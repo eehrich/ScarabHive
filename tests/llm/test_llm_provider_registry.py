@@ -75,6 +75,24 @@ class TestManifestScan:
                                 model="y"),
         })
 
+    def test_every_shipped_tts_provider_is_served_by_a_plugin(self):
+        """Same closure for TTS: every provider the shipped tts_models
+        configure must be declared via provides_tts in some manifest."""
+        from agent_system.config.settings import load_settings
+        used = {m.provider for m in
+                (load_settings().llm_system.tts_models or {}).values()}
+        assert used, "no tts_models in the shipped config — test went blind"
+        missing = used - registry.known_tts_providers()
+        assert not missing, (
+            f"TTS providers configured but served by no plugin: {sorted(missing)}")
+
+    def test_config_validation_rejects_an_unknown_tts_provider(self):
+        from pydantic import ValidationError
+        from agent_system.config.models import LLMSystemConfig, TTSModelConfig
+        with pytest.raises(ValidationError, match="provides_tts"):
+            LLMSystemConfig(tts_models={"t": TTSModelConfig(
+                provider="gemini_tst", model="x")})
+
     def test_batch_backends_are_declared_for_all_mapped_providers(self):
         """The resolver maps batch_provider to gemini/openai/anthropic; each
         needs a provides_batch declaration or batch jobs lose their backend."""

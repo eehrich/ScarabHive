@@ -9,5 +9,6 @@ description = "httpx clients for OpenAI-compatible endpoints (Chat Completions +
 author = "AgentSystem"
 type = ["llm-provider"]
 provides = ["openai_httpx", "openai_responses"]
+provides_tts = ["openai_speech"]
 requires = { agent_system = ">=0.6.0" }
 dependencies = []

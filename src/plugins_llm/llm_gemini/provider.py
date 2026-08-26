@@ -61,5 +61,13 @@ def make_batch_backend(cfg: "LLMModelConfig") -> Optional["BatchProviderClient"]
     return GeminiBatchClient(api_key=api_key)
 
 
+def build_gemini_tts(cfg):
+    """TTS factory (manifest key provides_tts); lazy so the SDK only loads
+    when a gemini_tts model is actually built."""
+    from .gemini_tts_client import build_gemini_tts as _build
+    return _build(cfg)
+
+
 PROVIDERS = {"gemini": build_gemini, "gemini_sdk": build_gemini_sdk}
 BATCH_BACKENDS = {"gemini": make_batch_backend}
+TTS_PROVIDERS = {"gemini_tts": build_gemini_tts}

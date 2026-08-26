@@ -2069,7 +2069,6 @@
       "description": "Individual TTS model configuration.\n\nDefines a TTS backend (e.g. Gemini TTS) with its connection and\ngeneration parameters.",
       "properties": {
         "provider": {
-          "const": "gemini_tts",
           "default": "gemini_tts",
           "title": "Provider",
           "type": "string"
@@ -2089,6 +2088,30 @@
           ],
           "default": null,
           "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Voice"
         },
         "request_timeout": {
           "default": 300,

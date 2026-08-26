@@ -182,9 +182,15 @@ class TTSModelConfig(BaseModel):
     Defines a TTS backend (e.g. Gemini TTS) with its connection and
     generation parameters.
     """
-    provider: Literal["gemini_tts"] = "gemini_tts"
+    # Free string like LLMModelConfig.provider: the plugins under
+    # src/plugins_llm/ own the vocabulary via `provides_tts` in their
+    # manifests; typos fail at config load through the same
+    # LLMSystemConfig validator that guards LLM providers.
+    provider: str = "gemini_tts"
     model: str  # e.g. "gemini-2.5-flash-preview-tts"
-    api_key: Optional[str] = None  # Falls back to GEMINI_API_KEY / GOOGLE_API_KEY
+    api_key: Optional[str] = None  # provider factory falls back to its env vars
+    base_url: Optional[str] = None  # openai_speech: api.openai.com vs openrouter.ai (default OpenRouter)
+    voice: Optional[str] = None  # default voice when the caller passes none (openai_speech requires one)
     request_timeout: int = 300  # TTS can be slow for long texts
     max_retries: int = 3
 
@@ -276,6 +282,19 @@ class LLMSystemConfig(BaseModel):
             raise ValueError(
                 f"llm_system.models: unknown provider on {unknown} — no plugin "
                 f"under src/plugins_llm declares it (known: {sorted(known)})")
+
+        from agent_system.llm.registry import known_tts_providers
+        known_tts = known_tts_providers()
+        unknown_tts = sorted(
+            f"{name} (provider={m.provider})"
+            for name, m in self.tts_models.items()
+            if m.provider not in known_tts
+        )
+        if unknown_tts:
+            raise ValueError(
+                f"llm_system.tts_models: unknown TTS provider on {unknown_tts} "
+                f"— no plugin under src/plugins_llm declares it via "
+                f"provides_tts (known: {sorted(known_tts)})")
         return self
 
     # TTS (Text-to-Speech) configuration

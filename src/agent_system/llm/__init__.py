@@ -6,9 +6,6 @@ from .tts import (
     TTSResult,
     TTSVoice,
     TTSSpeaker,
-    GeminiTTSClient,
-    GEMINI_TTS_VOICES,
-    make_tts_client,
     create_tts_from_profile,
 )
 from .capabilities import (
@@ -22,14 +19,11 @@ from .capabilities import (
 __all__ = [
     "ChatMessage",
     "LLMClient",
-    # TTS
+    # TTS (service definition; clients live in plugins_llm via provides_tts)
     "TTSClient",
     "TTSResult",
     "TTSVoice",
     "TTSSpeaker",
-    "GeminiTTSClient",
-    "GEMINI_TTS_VOICES",
-    "make_tts_client",
     "create_tts_from_profile",
     # Capabilities
     "ModelCapability",

@@ -5,12 +5,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent_system.llm.tts import (
-    GeminiTTSClient,
     TTSResult,
     TTSSpeaker,
     TTSVoice,
-    GEMINI_TTS_VOICES,
-    make_tts_client,
     create_tts_from_profile,
 )
 
@@ -74,202 +71,38 @@ class TestVoiceModels:
 
 
 # ---------------------------------------------------------------------------
-# GeminiTTSClient tests (mocked SDK)
-# ---------------------------------------------------------------------------
-
-def _make_mock_response(audio_bytes: bytes):
-    """Create a mock Gemini generate_content response with inline audio data."""
-    inline_data = MagicMock()
-    inline_data.data = audio_bytes
-
-    part = MagicMock()
-    part.inline_data = inline_data
-
-    content = MagicMock()
-    content.parts = [part]
-
-    candidate = MagicMock()
-    candidate.content = content
-
-    response = MagicMock()
-    response.candidates = [candidate]
-    return response
-
-
-class TestGeminiTTSClient:
-    """Unit tests for GeminiTTSClient with mocked google.genai SDK."""
-
-    @pytest.fixture
-    def mock_genai(self):
-        """Patch google.genai.Client and return mocks."""
-        with patch("agent_system.llm.tts.GeminiTTSClient.__init__", return_value=None):
-            client = GeminiTTSClient.__new__(GeminiTTSClient)
-            # Manually set attributes that __init__ would set
-            client.model = "gemini-2.5-flash-preview-tts"
-            client.api_key = "test-key"
-            client.request_timeout = 300
-            client.max_retries = 3
-            client._client = MagicMock()
-            yield client
-
-    @pytest.mark.asyncio
-    async def test_synthesize_single_speaker(self, mock_genai):
-        pcm = b"\x00\x00" * 24000  # 1 second of silence
-        mock_genai._client.models.generate_content = MagicMock(
-            return_value=_make_mock_response(pcm)
-        )
-
-        result = await mock_genai.synthesize("Hello world!", voice=TTSVoice(name="Puck"))
-
-        assert isinstance(result, TTSResult)
-        assert result.audio_data == pcm
-        assert result.sample_rate == 24000
-        assert result.sample_width == 2
-        assert result.channels == 1
-        assert result.voice_name == "Puck"
-        assert result.model == "gemini-2.5-flash-preview-tts"
-        assert result.duration_seconds == pytest.approx(1.0)
-
-    @pytest.mark.asyncio
-    async def test_synthesize_default_voice(self, mock_genai):
-        pcm = b"\x00\x00" * 100
-        mock_genai._client.models.generate_content = MagicMock(
-            return_value=_make_mock_response(pcm)
-        )
-
-        result = await mock_genai.synthesize("Test default voice")
-        assert result.voice_name == "Kore"  # Default voice
-
-    @pytest.mark.asyncio
-    async def test_synthesize_multi_speaker(self, mock_genai):
-        pcm = b"\x00\x00" * 24000
-        mock_genai._client.models.generate_content = MagicMock(
-            return_value=_make_mock_response(pcm)
-        )
-
-        speakers = [
-            TTSSpeaker(name="Joe", voice=TTSVoice(name="Kore")),
-            TTSSpeaker(name="Jane", voice=TTSVoice(name="Puck")),
-        ]
-
-        result = await mock_genai.synthesize_multi_speaker(
-            "Joe: Hello!\nJane: Hi there!",
-            speakers=speakers,
-        )
-
-        assert isinstance(result, TTSResult)
-        assert result.audio_data == pcm
-        assert "Joe=Kore" in result.voice_name
-        assert "Jane=Puck" in result.voice_name
-
-    @pytest.mark.asyncio
-    async def test_multi_speaker_max_two(self, mock_genai):
-        speakers = [
-            TTSSpeaker(name="A", voice=TTSVoice(name="Kore")),
-            TTSSpeaker(name="B", voice=TTSVoice(name="Puck")),
-            TTSSpeaker(name="C", voice=TTSVoice(name="Zephyr")),
-        ]
-        with pytest.raises(ValueError, match="at most 2 speakers"):
-            await mock_genai.synthesize_multi_speaker("text", speakers=speakers)
-
-    @pytest.mark.asyncio
-    async def test_multi_speaker_empty(self, mock_genai):
-        with pytest.raises(ValueError, match="At least one speaker"):
-            await mock_genai.synthesize_multi_speaker("text", speakers=[])
-
-    @pytest.mark.asyncio
-    async def test_empty_response_raises(self, mock_genai):
-        """Empty candidates should raise RuntimeError."""
-        response = MagicMock()
-        response.candidates = []
-        mock_genai._client.models.generate_content = MagicMock(return_value=response)
-
-        with pytest.raises(RuntimeError, match="empty response"):
-            await mock_genai.synthesize("Hello")
-
-    @pytest.mark.asyncio
-    async def test_no_inline_data_raises(self, mock_genai):
-        """Missing inline_data should raise RuntimeError."""
-        part = MagicMock()
-        part.inline_data = None
-        content = MagicMock()
-        content.parts = [part]
-        candidate = MagicMock()
-        candidate.content = content
-        response = MagicMock()
-        response.candidates = [candidate]
-
-        mock_genai._client.models.generate_content = MagicMock(return_value=response)
-
-        with pytest.raises(RuntimeError, match="no inline_data"):
-            await mock_genai.synthesize("Hello")
-
-    @pytest.mark.asyncio
-    async def test_zero_length_audio_raises(self, mock_genai):
-        mock_genai._client.models.generate_content = MagicMock(
-            return_value=_make_mock_response(b"")
-        )
-        with pytest.raises(RuntimeError, match="zero-length"):
-            await mock_genai.synthesize("Hello")
-
-    @pytest.mark.asyncio
-    async def test_retry_on_transient_error(self, mock_genai):
-        """Should retry on ServerError and succeed on second attempt."""
-        from google.genai.errors import ServerError
-
-        pcm = b"\x00\x00" * 100
-        mock_genai._client.models.generate_content = MagicMock(
-            side_effect=[
-                ServerError(500, {"error": {"message": "internal"}}, None),
-                _make_mock_response(pcm),
-            ]
-        )
-        mock_genai.max_retries = 2
-
-        result = await mock_genai.synthesize("Test retry")
-        assert result.audio_data == pcm
-
-    @pytest.mark.asyncio
-    async def test_retry_exhausted(self, mock_genai):
-        """Should raise after exhausting all retries."""
-        from google.genai.errors import ServerError
-
-        mock_genai._client.models.generate_content = MagicMock(
-            side_effect=ServerError(503, {"error": {"message": "unavailable"}}, None)
-        )
-        mock_genai.max_retries = 2
-
-        with pytest.raises(RuntimeError, match="failed after 2 attempts"):
-            await mock_genai.synthesize("Test fail")
-
-    @pytest.mark.asyncio
-    async def test_non_retryable_error_immediate(self, mock_genai):
-        """Non-retryable exceptions should propagate immediately."""
-        mock_genai._client.models.generate_content = MagicMock(
-            side_effect=ValueError("bad input")
-        )
-        with pytest.raises(ValueError, match="bad input"):
-            await mock_genai.synthesize("Test")
-
-
-# ---------------------------------------------------------------------------
 # Factory tests
 # ---------------------------------------------------------------------------
 
-class TestMakeTTSClient:
-    def test_gemini_provider(self):
-        with patch("agent_system.llm.tts.GeminiTTSClient") as mock_cls:
-            make_tts_client("gemini_tts", model="gemini-2.5-flash-preview-tts", api_key="key")
-            mock_cls.assert_called_once_with(
-                model="gemini-2.5-flash-preview-tts",
-                api_key="key",
-                request_timeout=300,
-                max_retries=3,
-            )
+class TestRegistryDispatch:
+    """create_tts_from_profile hands the resolved TTSModelConfig to
+    registry.build_tts_client — same seam pattern as the LLM providers."""
 
-    def test_unknown_provider(self):
-        with pytest.raises(ValueError, match="Unsupported TTS provider"):
-            make_tts_client("unknown_provider", api_key="key")
+    def test_unknown_provider_names_the_known_ones(self):
+        from agent_system.llm import registry
+        with pytest.raises(registry.ProviderNotFoundError, match="gemini_tts"):
+            registry.get_tts_provider("unknown_provider")
+
+    def test_profile_builds_the_real_gemini_client(self):
+        from plugins_llm.llm_gemini.gemini_tts_client import GeminiTTSClient
+        config = TestCreateTTSFromProfile._make_config(None)
+        client = create_tts_from_profile(config, "gemini-tts")
+        assert isinstance(client, GeminiTTSClient)
+        assert client.model == "gemini-2.5-flash-preview-tts"
+        assert client.api_key == "test-key"
+
+    def test_openai_speech_provider_builds_the_httpx_client(self):
+        from agent_system.config.models import TTSModelConfig
+        from agent_system.llm import registry
+        from plugins_llm.llm_openai_compat.openai_speech_client import (
+            OpenAISpeechTTSClient,
+        )
+        client = registry.build_tts_client(TTSModelConfig(
+            provider="openai_speech", model="qwen/qwen-audio-3.0-tts-flash",
+            api_key="sk-or-test", voice="loongjohn"))
+        assert isinstance(client, OpenAISpeechTTSClient)
+        assert client.default_voice == "loongjohn"
+        assert "openrouter.ai" in client.base_url
 
 
 class TestCreateTTSFromProfile:
@@ -296,17 +129,13 @@ class TestCreateTTSFromProfile:
         }
         return config
 
-    def test_resolve_profile(self):
+    def test_resolve_profile_passes_the_model_config_to_the_registry(self):
         config = self._make_config()
-        with patch("agent_system.llm.tts.make_tts_client") as mock_factory:
+        from agent_system.llm import registry
+        with patch.object(registry, "build_tts_client") as mock_build:
             create_tts_from_profile(config, "gemini-tts")
-            mock_factory.assert_called_once_with(
-                provider="gemini_tts",
-                model="gemini-2.5-flash-preview-tts",
-                api_key="test-key",
-                request_timeout=300,
-                max_retries=3,
-            )
+            (cfg,), _ = mock_build.call_args
+            assert cfg is config.llm_system.tts_models["gemini-tts-flash"]
 
     def test_missing_profile(self):
         config = self._make_config()
@@ -361,14 +190,3 @@ class TestTTSConfigModels:
         assert cfg.default_tts_profile == "test-profile"
 
 
-# ---------------------------------------------------------------------------
-# Voice list test
-# ---------------------------------------------------------------------------
-
-class TestGeminiVoices:
-    def test_voice_list_has_30_entries(self):
-        assert len(GEMINI_TTS_VOICES) == 30
-
-    def test_common_voices_present(self):
-        for name in ["Kore", "Puck", "Zephyr", "Charon", "Fenrir"]:
-            assert name in GEMINI_TTS_VOICES

@@ -618,6 +618,17 @@ llm_system:
       request_timeout: 300
       max_retries: 3
 
+    # OpenAI-kompatible Speech-API via OpenRouter (POST /audio/speech):
+    # ein Eintrag pro Modell; voice ist die Default-Stimme, per Aufruf
+    # (TTSVoice) uebersteuerbar. Key folgt dem Endpunkt (OPENROUTER_API_KEY).
+    openrouter-qwen-tts:
+      provider: openai_speech
+      model: qwen/qwen-audio-3.0-tts-flash
+      api_key: "${OPENROUTER_API_KEY}"
+      voice: loongjohn
+      request_timeout: 300
+      max_retries: 3
+
   # =============================================================================
   # TTS PROFILES
   # =============================================================================
@@ -631,5 +642,10 @@ llm_system:
       model_ref: gemini-tts-pro
       description: "Gemini 2.5 Pro TTS - higher quality"
       default_voice: Kore
+
+    or-qwen-tts:
+      model_ref: openrouter-qwen-tts
+      description: "Qwen Audio 3.0 TTS Flash via OpenRouter speech API"
+      default_voice: loongjohn
 
   default_tts_profile: gemini-tts

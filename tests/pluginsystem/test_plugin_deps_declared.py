@@ -146,14 +146,10 @@ def test_every_import_is_declared_in_core_or_the_plugins_toml():
 
 
 #: Core llm/ imports that deliberately live on a PLUGIN-declared dist, each
-#: with the reason. Anything new here needs the same kind of justification.
-CORE_LLM_KNOWN_PLUGIN_DEPS = {
-    # tts.py (Gemini TTS, its own factory chain) imports google-genai lazily;
-    # the dist is owned by plugins_llm/llm_gemini (see its plugin.toml) and
-    # installed via requirements/all.txt. Documented last Gemini remnant in
-    # core — moves to the plugin once writer_audio's import path can change.
-    "google",
-}
+#: with the reason. EMPTY since 2026-08-26: GeminiTTSClient (the last SDK
+#: import, google-genai in tts.py) moved to plugins_llm/llm_gemini — core
+#: llm/ is fully SDK-free. Anything new here needs a written justification.
+CORE_LLM_KNOWN_PLUGIN_DEPS: set = set()
 
 
 def test_core_llm_imports_stay_provider_free():

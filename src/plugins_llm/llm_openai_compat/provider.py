@@ -137,7 +137,15 @@ def build_openai_responses(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = N
     )
 
 
+def build_openai_speech_tts(cfg):
+    """TTS factory (manifest key provides_tts); lazy import keeps the
+    speech client out of LLM-only processes."""
+    from .openai_speech_client import build_openai_speech
+    return build_openai_speech(cfg)
+
+
 PROVIDERS = {
     "openai_httpx": build_openai_httpx,
     "openai_responses": build_openai_responses,
 }
+TTS_PROVIDERS = {"openai_speech": build_openai_speech_tts}

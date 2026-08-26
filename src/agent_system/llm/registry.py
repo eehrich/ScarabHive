@@ -46,8 +46,10 @@ PLUGIN_PACKAGE = "plugins_llm"
 _lock = threading.RLock()
 _provider_dirs: Optional[Dict[str, str]] = None  # provider name -> plugin dir name
 _batch_dirs: Optional[Dict[str, str]] = None  # batch provider name -> plugin dir name
+_tts_dirs: Optional[Dict[str, str]] = None  # tts provider name -> plugin dir name
 _factories: Dict[str, ProviderFactory] = {}
 _batch_backends: Dict[str, BatchBackendFactory] = {}
+_tts_factories: Dict[str, Callable] = {}
 
 
 class ProviderNotFoundError(ValueError):
@@ -105,12 +107,13 @@ def _read_manifest(plugin_dir: Path) -> Dict:
 
 def _scan_manifests() -> None:
     """Read every plugins_llm/*/plugin.toml once; imports nothing."""
-    global _provider_dirs, _batch_dirs
+    global _provider_dirs, _batch_dirs, _tts_dirs
     if _provider_dirs is not None:
         return
 
     providers: Dict[str, str] = {}
     batches: Dict[str, str] = {}
+    tts: Dict[str, str] = {}
     for plugin_dir in sorted(_plugins_root().iterdir()):
         if not plugin_dir.is_dir():
             continue
@@ -127,9 +130,14 @@ def _scan_manifests() -> None:
         for name in meta.get("provides_batch") or []:
             if name not in batches:
                 batches[name] = plugin_dir.name
+        for name in meta.get("provides_tts") or []:
+            if name not in tts:
+                tts[name] = plugin_dir.name
     _provider_dirs = providers
     _batch_dirs = batches
-    logger.debug("LLM provider manifests: %s (batch: %s)", providers, batches)
+    _tts_dirs = tts
+    logger.debug("LLM provider manifests: %s (batch: %s, tts: %s)",
+                 providers, batches, tts)
 
 
 def _load_plugin(dir_name: str) -> None:
@@ -139,6 +147,8 @@ def _load_plugin(dir_name: str) -> None:
         _factories.setdefault(name, factory)
     for name, factory in (getattr(module, "BATCH_BACKENDS", None) or {}).items():
         _batch_backends.setdefault(name, factory)
+    for name, factory in (getattr(module, "TTS_PROVIDERS", None) or {}).items():
+        _tts_factories.setdefault(name, factory)
 
 
 def get_provider(provider: str) -> ProviderFactory:
@@ -187,6 +197,57 @@ def get_batch_backend(batch_provider: str) -> Optional[BatchBackendFactory]:
         return _batch_backends.get(batch_provider)
 
 
+def get_tts_provider(tts_provider: str) -> Callable:
+    """TTS factory for one provider name (manifest key ``provides_tts``)."""
+    with _lock:
+        factory = _tts_factories.get(tts_provider)
+        if factory is not None:
+            return factory
+        _scan_manifests()
+        dir_name = (_tts_dirs or {}).get(tts_provider)
+        if dir_name is None:
+            known = sorted(_tts_dirs or {})
+            raise ProviderNotFoundError(
+                f"Unknown TTS provider: {tts_provider} (known: {', '.join(known)})")
+        try:
+            _load_plugin(dir_name)
+        except ImportError as e:
+            raise ImportError(
+                f"LLM provider plugin '{dir_name}' failed to import for "
+                f"TTS provider '{tts_provider}' — are its plugin.toml "
+                f"dependencies installed? ({e})") from e
+        factory = _tts_factories.get(tts_provider)
+        if factory is None:
+            raise ProviderNotFoundError(
+                f"Plugin '{dir_name}' declares TTS provider '{tts_provider}' "
+                f"in its manifest but its TTS_PROVIDERS dict does not export it")
+        return factory
+
+
+def build_tts_client(cfg) -> "object":
+    """Build the TTS client for a TTSModelConfig — the TTS construction seam.
+
+    Same lazy-SDK caveat as build_client: a missing dependency surfaces at
+    the factory call, so it gets the plugin-naming wrapper here too.
+    """
+    factory = get_tts_provider(cfg.provider)
+    try:
+        return factory(cfg)
+    except ModuleNotFoundError as e:
+        dir_name = (_tts_dirs or {}).get(cfg.provider, "?")
+        raise ImportError(
+            f"LLM provider plugin '{dir_name}' failed while building TTS "
+            f"provider '{cfg.provider}' — are its plugin.toml dependencies "
+            f"installed? ({e})") from e
+
+
+def known_tts_providers() -> frozenset:
+    """TTS provider names any plugin manifest declares — no imports happen."""
+    with _lock:
+        _scan_manifests()
+        return frozenset(_tts_dirs or {})
+
+
 def known_providers() -> frozenset:
     """Provider names any plugin manifest declares — no imports happen.
 
@@ -221,9 +282,11 @@ def build_client(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "L
 
 def reset_for_tests() -> None:
     """Drop all cached scan/import state (test isolation)."""
-    global _provider_dirs, _batch_dirs
+    global _provider_dirs, _batch_dirs, _tts_dirs
     with _lock:
         _provider_dirs = None
         _batch_dirs = None
+        _tts_dirs = None
         _factories.clear()
         _batch_backends.clear()
+        _tts_factories.clear()
