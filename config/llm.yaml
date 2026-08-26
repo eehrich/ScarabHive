@@ -608,6 +608,9 @@ llm_system:
       provider: gemini_tts
       model: gemini-3.1-flash-tts-preview
       api_key: "${GOOGLE_API_KEY}"
+      # Default-Stimme des Eintrags (per Aufruf via TTSVoice uebersteuerbar).
+      # Tief + deutsch: Algenib > Charon > Algieba; Katalog: GEMINI_TTS_VOICES.
+      voice: Algenib
       request_timeout: 300
       max_retries: 3
 
@@ -615,6 +618,7 @@ llm_system:
       provider: gemini_tts
       model: gemini-2.5-pro-preview-tts
       api_key: "${GOOGLE_API_KEY}"
+      voice: Algenib
       request_timeout: 300
       max_retries: 3
 
@@ -636,16 +640,13 @@ llm_system:
     gemini-tts:
       model_ref: gemini-tts-flash
       description: "Gemini 3.1 Flash TTS - fast, cost-effective"
-      default_voice: Kore
 
     gemini-tts-pro:
       model_ref: gemini-tts-pro
       description: "Gemini 2.5 Pro TTS - higher quality"
-      default_voice: Kore
 
     or-qwen-tts:
       model_ref: openrouter-qwen-tts
       description: "Qwen Audio 3.0 TTS Flash via OpenRouter speech API"
-      default_voice: loongjohn
 
   default_tts_profile: gemini-tts

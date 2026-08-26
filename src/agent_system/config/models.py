@@ -192,14 +192,18 @@ class TTSModelConfig(BaseModel):
     base_url: Optional[str] = None  # openai_speech: api.openai.com vs openrouter.ai (default OpenRouter)
     voice: Optional[str] = None  # default voice when the caller passes none (openai_speech requires one)
     request_timeout: int = 300  # TTS can be slow for long texts
-    max_retries: int = 3
+    max_retries: int = Field(3, ge=0)  # negative would silently skip every attempt
 
 
 class TTSProfile(BaseModel):
-    """Named TTS profile that references a TTS model."""
+    """Named TTS profile that references a TTS model.
+
+    No voice here: the default voice lives on the MODEL entry
+    (TTSModelConfig.voice) — a profile-level default_voice existed once,
+    was read by nobody, and only looked like configuration.
+    """
     model_ref: str  # Reference to key in tts_models dict
     description: Optional[str] = None
-    default_voice: Optional[str] = None  # Default voice name (e.g. "Kore")
 
 
 class LLMSystemConfig(BaseModel):

@@ -42,6 +42,7 @@ class GeminiTTSClient(TTSClient):
         api_key: Optional[str] = None,
         request_timeout: int = 300,
         max_retries: int = 3,
+        default_voice: Optional[str] = None,
     ) -> None:
         """Initialise the Gemini TTS client.
         
@@ -62,6 +63,9 @@ class GeminiTTSClient(TTSClient):
             )
         self.request_timeout = request_timeout
         self.max_retries = max_retries
+        # Review finding: TTSModelConfig.voice used to be silently ignored on
+        # this provider — the model entry's default voice now applies here too.
+        self.default_voice = default_voice or self.DEFAULT_VOICE
 
         from google import genai as _genai
         self._client = _genai.Client(api_key=self.api_key)
@@ -85,7 +89,7 @@ class GeminiTTSClient(TTSClient):
         """Single-speaker TTS via Gemini."""
         from google.genai import types
 
-        voice_name = voice.name if voice else self.DEFAULT_VOICE
+        voice_name = voice.name if voice else self.default_voice
 
         speech_config = types.SpeechConfig(
             voice_config=types.VoiceConfig(
@@ -340,9 +344,9 @@ class GeminiTTSClient(TTSClient):
         """
         try:
             import time as _time
-            from ..hooks import get_hook_registry, HookContext, HookType
+            from agent_system.hooks import get_hook_registry, HookContext, HookType
             try:
-                from ..mcp.status import current_request_id
+                from agent_system.mcp.status import current_request_id
                 req_id = current_request_id.get('') or ''
             except Exception:
                 req_id = ''
@@ -376,9 +380,9 @@ class GeminiTTSClient(TTSClient):
         """Fire POST_LLM_RESPONSE hook with TTS result or error."""
         try:
             import time as _time
-            from ..hooks import get_hook_registry, HookContext, HookType
+            from agent_system.hooks import get_hook_registry, HookContext, HookType
             try:
-                from ..mcp.status import current_request_id
+                from agent_system.mcp.status import current_request_id
                 req_id = current_request_id.get('') or ''
             except Exception:
                 req_id = ''
@@ -425,4 +429,5 @@ def build_gemini_tts(cfg: "TTSModelConfig") -> TTSClient:
         api_key=cfg.api_key,
         request_timeout=cfg.request_timeout,
         max_retries=cfg.max_retries,
+        default_voice=cfg.voice,
     )

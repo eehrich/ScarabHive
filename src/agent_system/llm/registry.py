@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from agent_system.config.models import LLMModelConfig
     from agent_system.llm.batch.base import BatchProviderClient
     from agent_system.llm.models import LLMClient
+    from agent_system.llm.tts import TTSClient
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +225,7 @@ def get_tts_provider(tts_provider: str) -> Callable:
         return factory
 
 
-def build_tts_client(cfg) -> "object":
+def build_tts_client(cfg) -> "TTSClient":
     """Build the TTS client for a TTSModelConfig — the TTS construction seam.
 
     Same lazy-SDK caveat as build_client: a missing dependency surfaces at

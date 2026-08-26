@@ -50,6 +50,7 @@ class TestGeminiTTSClient:
             client.api_key = "test-key"
             client.request_timeout = 300
             client.max_retries = 3
+            client.default_voice = "Kore"
             client._client = MagicMock()
             yield client
 
@@ -205,3 +206,30 @@ class TestGeminiVoices:
     def test_common_voices_present(self):
         for name in ["Kore", "Puck", "Zephyr", "Charon", "Fenrir"]:
             assert name in GEMINI_TTS_VOICES
+
+
+class TestBuildFactory:
+    """build_gemini_tts must forward the model entry's default voice —
+    review finding: TTSModelConfig.voice used to be silently ignored here."""
+
+    def test_model_entry_voice_reaches_the_client(self):
+        from unittest.mock import patch as _patch
+        from agent_system.config.models import TTSModelConfig
+        from plugins_llm.llm_gemini.gemini_tts_client import build_gemini_tts
+
+        with _patch("google.genai.Client"):
+            client = build_gemini_tts(TTSModelConfig(
+                provider="gemini_tts", model="gemini-3.1-flash-tts-preview",
+                api_key="test-key", voice="Algenib"))
+        assert client.default_voice == "Algenib"
+
+    def test_without_entry_voice_the_client_default_applies(self):
+        from unittest.mock import patch as _patch
+        from agent_system.config.models import TTSModelConfig
+        from plugins_llm.llm_gemini.gemini_tts_client import build_gemini_tts
+
+        with _patch("google.genai.Client"):
+            client = build_gemini_tts(TTSModelConfig(
+                provider="gemini_tts", model="gemini-3.1-flash-tts-preview",
+                api_key="test-key"))
+        assert client.default_voice == "Kore"

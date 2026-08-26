@@ -95,6 +95,15 @@ class TestResponseParsing:
         assert result.channels == 2
 
     @pytest.mark.asyncio
+    async def test_bitrate_is_not_a_sample_rate(self):
+        """Review finding: a plain rate= regex also matched bitrate= and
+        would write e.g. 128000 Hz into the WAV header (5x speed)."""
+        with _respond(lambda *a: _response(
+                content_type="audio/mpeg; bitrate=128000")):
+            result = await _client().synthesize("x")
+        assert result.sample_rate == 24000
+
+    @pytest.mark.asyncio
     async def test_missing_rate_falls_back_to_openai_default(self):
         with _respond(lambda *a: _response(content_type="audio/pcm")):
             result = await _client().synthesize("x")
@@ -139,6 +148,23 @@ class TestErrors:
 
 async def _instant_sleep(_delay):
     return None
+
+
+class TestUnsupportedParams:
+    @pytest.mark.asyncio
+    async def test_system_instruction_warns_once_not_per_segment(self, caplog):
+        """Review finding: the Gemini path sends a 40-line narrator style
+        prompt per segment - dropping it must be LOUD (warning), but once
+        per client, not once per segment."""
+        import logging
+        client = _client()
+        with _respond(lambda *a: _response()):
+            with caplog.at_level(logging.WARNING):
+                await client.synthesize("a", system_instruction="Stil: ruhig")
+                await client.synthesize("b", system_instruction="Stil: ruhig")
+        hits = [r for r in caplog.records
+                if "no request field" in r.getMessage()]
+        assert len(hits) == 1, f"expected exactly one warning, got {len(hits)}"
 
 
 class TestKeyFollowsEndpoint:

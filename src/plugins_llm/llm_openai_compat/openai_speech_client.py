@@ -58,6 +58,7 @@ class OpenAISpeechTTSClient(TTSClient):
         self.default_voice = default_voice
         self.request_timeout = request_timeout
         self.max_retries = max_retries
+        self._unsupported_warned = False
 
     async def synthesize(
         self,
@@ -75,10 +76,15 @@ class OpenAISpeechTTSClient(TTSClient):
                 f"`voice:` on the TTS model entry (model={self.model})")
         if system_instruction or language or seed is not None:
             # Visible instead of silently dropped: the speech wire has no
-            # fields for style prompts, language hints, or seeds.
-            logger.debug(
-                "system_instruction/language/seed have no request field on "
-                "the speech API and are ignored (model=%s).", self.model)
+            # fields for style prompts, language hints, or seeds — a caller
+            # coming from the Gemini path would lose its narrator style
+            # prompt WITHOUT this being loud. Warn once per client, not per
+            # segment.
+            if not self._unsupported_warned:
+                self._unsupported_warned = True
+                logger.warning(
+                    "system_instruction/language/seed have no request field "
+                    "on the speech API and are ignored (model=%s).", self.model)
 
         payload = {
             "model": self.model,
@@ -105,7 +111,7 @@ class OpenAISpeechTTSClient(TTSClient):
                         request=response.request, response=response)
                 else:
                     return self._to_result(response, voice_name)
-            except (httpx.TransportError, httpx.TimeoutException) as e:
+            except httpx.TransportError as e:  # includes TimeoutException
                 last_error = e
             if attempt < self.max_retries:
                 delay = 2.0 * (attempt + 1)
@@ -119,7 +125,7 @@ class OpenAISpeechTTSClient(TTSClient):
         sample_rate = DEFAULT_SAMPLE_RATE
         channels = self.CHANNELS
         content_type = response.headers.get("content-type", "")
-        rate_match = re.search(r"rate=(\d+)", content_type)
+        rate_match = re.search(r"(?<![a-z])rate=(\d+)", content_type)
         if rate_match:
             sample_rate = int(rate_match.group(1))
         ch_match = re.search(r"channels=(\d+)", content_type)

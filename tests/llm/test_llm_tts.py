@@ -124,7 +124,6 @@ class TestCreateTTSFromProfile:
             "gemini-tts": TTSProfile(
                 model_ref="gemini-tts-flash",
                 description="Flash TTS",
-                default_voice="Kore",
             ),
         }
         return config
@@ -147,7 +146,7 @@ class TestCreateTTSFromProfile:
         # Profile references a model that doesn't exist
         from agent_system.config.models import TTSProfile
         config.llm_system.tts_profiles = {
-            "gemini-tts": TTSProfile(model_ref="gemini-tts-flash", description="Flash TTS", default_voice="Kore"),
+            "gemini-tts": TTSProfile(model_ref="gemini-tts-flash", description="Flash TTS"),
             "broken": TTSProfile(model_ref="does-not-exist"),
         }
         with pytest.raises(ValueError, match="does-not-exist.*not found"):
@@ -171,7 +170,6 @@ class TestTTSConfigModels:
         from agent_system.config.models import TTSProfile
         p = TTSProfile(model_ref="my-model")
         assert p.model_ref == "my-model"
-        assert p.default_voice is None
         assert p.description is None
 
     def test_llm_system_config_tts_fields(self):
@@ -181,7 +179,7 @@ class TestTTSConfigModels:
                 "test": TTSModelConfig(model="gemini-2.5-flash-preview-tts"),
             },
             tts_profiles={
-                "test-profile": TTSProfile(model_ref="test", default_voice="Kore"),
+                "test-profile": TTSProfile(model_ref="test"),
             },
             default_tts_profile="test-profile",
         )

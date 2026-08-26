@@ -2120,6 +2120,7 @@
         },
         "max_retries": {
           "default": 3,
+          "minimum": 0,
           "title": "Max Retries",
           "type": "integer"
         }
@@ -2132,7 +2133,7 @@
       "additionalProperties": false
     },
     "TTSProfile": {
-      "description": "Named TTS profile that references a TTS model.",
+      "description": "Named TTS profile that references a TTS model.\n\nNo voice here: the default voice lives on the MODEL entry\n(TTSModelConfig.voice) — a profile-level default_voice existed once,\nwas read by nobody, and only looked like configuration.",
       "properties": {
         "model_ref": {
           "title": "Model Ref",
@@ -2149,18 +2150,6 @@
           ],
           "default": null,
           "title": "Description"
-        },
-        "default_voice": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Default Voice"
         }
       },
       "required": [

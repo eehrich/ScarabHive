@@ -175,3 +175,24 @@ def test_core_llm_imports_stay_provider_free():
         f"declare: {offenders} — either the dep belongs back in core.txt or "
         f"the code belongs in a plugin (documented exceptions: "
         f"{sorted(CORE_LLM_KNOWN_PLUGIN_DEPS)})")
+
+
+def test_plugins_llm_modules_use_no_parent_relative_imports():
+    """Review finding (moved code class): code moved from agent_system into a
+    plugin keeps its `from ..hooks import ...` — which now resolves inside
+    plugins_llm, fails, and (in hook paths wrapped in except Exception) dies
+    SILENTLY. Level-1 relative imports (same plugin package) are fine;
+    anything above must be absolute."""
+    root = REPO_ROOT / "src" / "plugins_llm"
+    offenders = []
+    for py in root.rglob("*.py"):
+        tree = ast.parse(py.read_text(encoding="utf-8-sig", errors="replace"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level >= 2:
+                offenders.append(
+                    f"{py.relative_to(root)}:{node.lineno}: "
+                    f"from {'.' * node.level}{node.module or ''} import ...")
+    assert not offenders, (
+        "parent-relative imports inside plugins_llm resolve against the "
+        "plugin package, not agent_system — make them absolute:\n  "
+        + "\n  ".join(offenders))
