@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import errno
 import json
 import logging
 from dataclasses import dataclass
@@ -44,6 +45,31 @@ from .tool_schema_builder import ToolSchemaBuilder, server_matches_patterns
 
 
 logger = logging.getLogger(__name__)
+
+# Local descriptor exhaustion. httpx reports it as a ConnectError, which is
+# indistinguishable from an unreachable endpoint unless the cause chain is
+# inspected — see _is_local_resource_exhaustion.
+_LOCAL_EXHAUSTION_ERRNOS = frozenset({errno.EMFILE, errno.ENFILE})
+
+
+def _is_local_resource_exhaustion(exc: BaseException) -> bool:
+    """Is this transport failure OUR machine running out of descriptors?
+
+    A provider being unreachable and this process being unable to open a socket
+    both surface as httpx.ConnectError, but they call for opposite responses:
+    the first is what fallback profiles exist for, the second cannot be helped
+    by any profile — the next client hits the same wall. On 2026-08-30 a
+    descriptor leak made the writer host do exactly that: 52 fallback switches
+    onto pricier models, none of which could have succeeded.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, OSError) and cur.errno in _LOCAL_EXHAUSTION_ERRNOS:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 @dataclass
@@ -2315,6 +2341,18 @@ class Agent(MCPServer):
                     #                still rescues the run.
                     status_code = getattr(getattr(e, "response", None), "status_code", None)
                     endpoint_level = status_code in (401, 402, 403, 404)
+                    if status_code is None and _is_local_resource_exhaustion(e):
+                        # No profile can rescue this: the next client cannot open
+                        # a socket either. Walking the chain would only burn the
+                        # fallbacks — onto more expensive models — and hide the
+                        # real cause behind a provider-shaped error message.
+                        logger.error(
+                            f"[{self.name}] Out of file descriptors while calling "
+                            f"the LLM ({e}). This is a local resource limit, not a "
+                            f"provider failure — not switching profiles. Check the "
+                            f"process's open descriptors against LimitNOFILE."
+                        )
+                        raise
                     if fallback_index < len(fallback_profiles):
                         fallback_profile = fallback_profiles[fallback_index]
                         fallback_index += 1

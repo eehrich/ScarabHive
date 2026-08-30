@@ -32,7 +32,10 @@ markdown>=3.5.0
 rich>=13.0.0
 pygments>=2.15.0
 websockets>=15.0.0
-chromadb>=1.4.0,<2.0
+# >=1.5: earlier versions have no Client.close(), so every VectorStore
+# leaks its tokio runtime (~6 file descriptors, ~5 threads) — with one
+# store per session that exhausted the API's descriptor limit in 22h.
+chromadb>=1.5.0,<2.0
 posthog>=3.0.0,<3.2.0
 chroma-hnswlib>=0.7.6
 sqlite-vec>=0.1.0

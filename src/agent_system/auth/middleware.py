@@ -295,10 +295,18 @@ class EndpointSecurityMiddleware:
             api_key_hash = hash_api_key(api_key)
             user_in_db = self._get_user_db().get_user_by_api_key(api_key_hash)
         except Exception as exc:  # noqa: BLE001
-            # DB-side failure (corrupted file, locked, etc.) — loud, no raw key.
+            # DB-side failure (corrupted file, locked, out of descriptors, ...)
+            # — loud, no raw key. The message matters: logging only the class
+            # name turned a descriptor exhaustion ("unable to open database
+            # file") into an unexplained OperationalError, and the 401 storm it
+            # caused read like an auth defect for hours. The exception carries
+            # the hash at most, never the key, and SQLite does not echo bound
+            # parameters into its messages.
             logger.error(
-                "API-Key DB lookup failed (%s); requests with X-API-Key will return 401",
+                "API-Key DB lookup failed (%s: %s); requests with X-API-Key "
+                "will return 401",
                 exc.__class__.__name__,
+                exc,
             )
             return (None, None)
 

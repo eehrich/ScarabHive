@@ -833,3 +833,66 @@ def test_recovery_without_messages_still_resets(
 
     assert agent._check_fallback_recovery() is True
     assert agent._active_fallback_llm is None
+
+
+@pytest.mark.asyncio
+async def test_descriptor_exhaustion_does_not_burn_the_fallback_chain(
+    system_config_with_profiles,
+):
+    """A local EMFILE must NOT be treated as an unreachable endpoint.
+
+    httpx reports "out of file descriptors" as a ConnectError, the same class
+    an unreachable provider produces — so the transport clause switched
+    profiles. No profile can help: the next client cannot open a socket
+    either. On 2026-08-30 a descriptor leak on the writer host did this 52
+    times, walking runs onto pricier fallback models that never had a chance
+    of succeeding, while the log blamed the provider.
+    """
+    import errno as _errno
+
+    agent_config = AgentConfig(llm_profile=["gemini", "openai"], max_steps=3)
+    agent_config.tools.allowed = ["*"]
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+
+    # The exact chain httpx produces, measured against a real socket under a
+    # lowered RLIMIT_NOFILE on the writer host:
+    #   httpx.ConnectError -> httpcore.ConnectError -> OSError(EMFILE)
+    # Three levels deep on purpose — a one-level fixture stays green even if
+    # the cause-chain walk stops after the first hop, which is exactly the
+    # mistake this fixture has to be able to catch.
+    import httpcore
+
+    try:
+        try:
+            raise OSError(_errno.EMFILE, "Too many open files")
+        except OSError as os_exc:
+            raise httpcore.ConnectError("[Errno 24] Too many open files") from os_exc
+    except httpcore.ConnectError as core_exc:
+        exhausted = httpx.ConnectError("[Errno 24] Too many open files")
+        exhausted.__cause__ = core_exc
+
+    primary = _TransportErrorLLM(exhausted)
+    fallback = _ScriptedLLM("fallback")
+
+    agent = Agent("test_agent", system_config_with_profiles, mcp_config,
+                  MCPRegistry(), llm=primary)
+    agent._create_fallback_llm = lambda profile: fallback
+
+    events = []
+    async for event in agent.run_events("test task"):
+        events.append(event)
+        if event.get("type") == "end":
+            break
+
+    assert primary.call_count >= 1, "fixture never called the primary"
+    assert fallback.call_count == 0, (
+        "a local descriptor limit switched the run onto a fallback profile — "
+        "it cannot succeed there and the swap costs a pricier model"
+    )
+    # And it has to fail LOUDLY. Refusing the fallback is only half the
+    # contract: swallowing the error instead would let a caller treat an
+    # unfinished run as a finished one, and this assertion is what stops a
+    # later refactor from doing that quietly.
+    assert any(e.get("type") == "error" for e in events), (
+        f"the run ended without an error event; types={[e.get('type') for e in events]}"
+    )

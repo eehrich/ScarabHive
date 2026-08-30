@@ -228,6 +228,9 @@ class VectorStore:
         results = store.query("docs", "Hi there", n_results=5)
     """
     
+    # Set once the first time close() meets a chromadb without Client.close().
+    _close_unsupported_warned: bool = False
+
     def __init__(
         self,
         persist_path: Union[str, Path],
@@ -272,8 +275,42 @@ class VectorStore:
             except Exception:
                 pass
             self._sqlite_conn = None
-        self._chroma_client = None
         self._chroma_collections.clear()
+        if self._chroma_client is not None:
+            # Dropping the reference is NOT enough. chromadb keeps every System in
+            # a process-global registry (SharedSystemClient._identifier_to_system,
+            # keyed by persist_directory), and each System owns a tokio runtime
+            # with its own threads, epoll and eventfd handles. Callers give every
+            # session its own persist path, so no client is ever reused and a
+            # dropped one leaks ~6 descriptors and ~5 threads that nothing
+            # reclaims — measured on the writer host at 229 leaked clients and 460
+            # tokio threads, which ran the API into the 1024 descriptor limit and
+            # turned every X-API-Key request into a 401. close() drops the
+            # refcount and stops the System.
+            close = getattr(self._chroma_client, "close", None)
+            if close is None:
+                # chromadb < 1.5 has no close() at all, so the leak cannot be
+                # avoided there. That is a property of the installation, not of
+                # this call — reported once per process instead of on every
+                # cleanup, which would be pure noise.
+                if not VectorStore._close_unsupported_warned:
+                    VectorStore._close_unsupported_warned = True
+                    logger.warning(
+                        "This chromadb version has no Client.close(); every "
+                        "VectorStore leaks its tokio runtime (~6 file "
+                        "descriptors, ~5 threads). Upgrade to chromadb >= 1.5 "
+                        "on any host that opens one store per session."
+                    )
+            else:
+                try:
+                    close()
+                except Exception as exc:  # noqa: BLE001 — cleanup must not raise
+                    logger.warning(
+                        "ChromaDB client close failed (%s) — its tokio runtime "
+                        "stays alive and keeps leaking file descriptors",
+                        exc.__class__.__name__,
+                    )
+            self._chroma_client = None
         logger.debug("VectorStore closed")
     
     def __enter__(self):

@@ -334,3 +334,91 @@ class TestVectorStoreConcurrency:
         # lock would be fine here, but this documents the reentrancy guarantee.
         store.close()
         store.close()  # must not deadlock
+
+
+class TestCloseReleasesChromaSystem:
+    """close() must hand the ChromaDB client back to the library.
+
+    chromadb parks every System in a process-global registry keyed by
+    persist_directory, and each System owns a tokio runtime with its own
+    threads and epoll/eventfd handles. Callers hand out one persist path per
+    session, so nothing is ever reused: dropping the reference alone leaked
+    ~6 descriptors and ~5 threads per store. On the writer host that reached
+    229 leaked clients / 460 tokio threads and pushed the API into the 1024
+    descriptor limit, where every X-API-Key lookup failed with a 401.
+    """
+
+    class _FakeChromaClient:
+        def __init__(self, raises: bool = False):
+            self.close_calls = 0
+            self._raises = raises
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self._raises:
+                raise RuntimeError("system already stopped")
+
+    def test_close_hands_the_client_back(self):
+        with create_temp_dir() as tmp:
+            store = VectorStore(persist_path=Path(tmp) / "vectors")
+            fake = self._FakeChromaClient()
+            store._chroma_client = fake
+            store._chroma_collections["archival_memory"] = object()
+
+            store.close()
+
+            assert fake.close_calls == 1, (
+                "VectorStore.close() dropped the reference without calling "
+                "close() — the tokio runtime stays alive and leaks descriptors"
+            )
+            assert store._chroma_client is None
+            assert store._chroma_collections == {}
+
+    def test_close_survives_a_failing_client(self, caplog):
+        """A failing close must not abort the caller's cleanup.
+
+        The only caller is context_engineer's cleanup_session, which closes
+        several stores in sequence; an exception here would skip the rest and
+        leak more than it saves. It must still be loud — a silent failure is
+        exactly the leak we are fixing.
+        """
+        with create_temp_dir() as tmp:
+            store = VectorStore(persist_path=Path(tmp) / "vectors")
+            fake = self._FakeChromaClient(raises=True)
+            store._chroma_client = fake
+
+            with caplog.at_level("WARNING"):
+                store.close()  # must not raise
+
+            assert store._chroma_client is None
+            assert any(
+                "ChromaDB client close failed" in r.message for r in caplog.records
+            ), "a failed close must be logged, or the leak returns unnoticed"
+
+    def test_missing_close_is_reported_once_not_per_cleanup(self, caplog, monkeypatch):
+        """chromadb < 1.5 has no Client.close().
+
+        There the leak cannot be avoided, so the operator must hear about it —
+        but once, not on every session cleanup. context_engineer closes a store
+        per session, which would otherwise bury the log.
+        """
+        monkeypatch.setattr(VectorStore, "_close_unsupported_warned", False)
+
+        class _OldClient:  # no close() — chromadb 1.4 shape
+            pass
+
+        def _close_once():
+            with create_temp_dir() as tmp:
+                store = VectorStore(persist_path=Path(tmp) / "vectors")
+                store._chroma_client = _OldClient()
+                store.close()
+                assert store._chroma_client is None
+
+        with caplog.at_level("WARNING"):
+            _close_once()
+            _close_once()
+
+        hits = [r for r in caplog.records if "has no Client.close()" in r.message]
+        assert len(hits) == 1, (
+            f"expected exactly one warning for the whole process, got {len(hits)}"
+        )
