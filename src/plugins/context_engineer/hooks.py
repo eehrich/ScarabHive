@@ -6,9 +6,12 @@ layered compaction strategies to optimize context usage.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import shutil
+import threading
 import time
 from dataclasses import fields
 from pathlib import Path
@@ -18,7 +21,7 @@ from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.models import ChatMessage
 from agent_system.mcp.status import StatusScope, status_bus
 
-from .archival_memory import ArchivalMemory
+from .archival_memory import ARCHIVAL_COLLECTION, ArchivalMemory
 from .compaction import (
     PLUGIN_LEVEL_KEYS,
     CompactionConfig,
@@ -36,6 +39,95 @@ from .paging import (
 from .tool_result_store import ToolResultStore
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Shared vector store
+#
+# chromadb parks one System per persist directory in a process-global
+# registry, and each System owns a tokio runtime (~6 descriptors, 4 threads).
+# Giving every session its own directory therefore meant one runtime PER
+# SESSION — 229 of them on the writer host, which exhausted the API's
+# descriptor limit and turned every API-key request into a 401. The vectors
+# never needed separate directories: every write carries the session_id and
+# every query filters on it. So all sessions — and all plugin instances in
+# the process — share one store per storage base, and the runtime count stays
+# constant however many sessions run.
+# ---------------------------------------------------------------------------
+_SHARED_VECTOR_STORES: dict[str, Any] = {}
+_SHARED_VECTOR_STORES_LOCK = threading.Lock()
+_SHARED_VECTORS_DIRNAME = "_shared_vectors"
+# A directory under the storage base is a session directory iff it holds one
+# of these. The TTL sweep deletes nothing else — not the shared vector
+# directory, not history.json, not whatever another plugin may drop there.
+_SESSION_MARKERS = ("archive.db", "tool_results.db", "core_memory.json")
+# A directory is renamed to <session_id> + this before rmtree. The rename is
+# atomic, so a session coming alive meanwhile gets a fresh directory instead
+# of writing into one being torn down — and a sweep stopped mid-rmtree (the
+# thread is a daemon; interpreter shutdown does not wait) leaves a leftover
+# the next run recognises, not a marker-less directory it would skip forever.
+_SWEEPING_SUFFIX = ".sweeping"
+# Sweep bookkeeping per storage base, process-wide: however many plugin
+# instances exist, one base is swept by one thread at a time, once per
+# interval. Per-instance state let a test process with dozens of instances
+# run dozens of concurrent sweeps against the same directory.
+_SWEEP_LOCK = threading.Lock()
+_SWEEP_LAST_RUN: dict[str, float] = {}
+_SWEEP_RUNNING: set[str] = set()
+# A failed store construction is retried after this long. Caching it for
+# good would pin every session to its own store — the leak this exists to
+# end — over a transient cause such as another process on the file.
+_SHARED_STORE_RETRY_SECONDS = 600.0
+_SHARED_STORE_FAILED_AT: dict[str, float] = {}
+
+
+def _shared_vector_store(storage_base: Path, create: bool = True) -> Any | None:
+    """The process-wide VectorStore for *storage_base*, or None.
+
+    None means "keep the per-session layout": either the backend is not
+    chromadb (sqlite-vec ignores metadata filters, and without them a shared
+    store would rank other sessions' messages — final, a property of the
+    installation), or the store could not be built just now (logged, retried
+    after _SHARED_STORE_RETRY_SECONDS). Each session then builds its own
+    store as before and degrades to text search if that fails too — the hook
+    itself never goes down over it.
+    """
+    key = str(storage_base.resolve())
+    with _SHARED_VECTOR_STORES_LOCK:
+        if key in _SHARED_VECTOR_STORES:
+            return _SHARED_VECTOR_STORES[key]
+        if not create:
+            return None
+        failed_at = _SHARED_STORE_FAILED_AT.get(key)
+        if failed_at is not None and time.time() - failed_at < _SHARED_STORE_RETRY_SECONDS:
+            return None
+        store: Any | None = None
+        try:
+            from agent_system.utils.vector_store import VectorStore, get_vector_backend
+            if get_vector_backend() != "chromadb":
+                _SHARED_VECTOR_STORES[key] = None
+                return None
+            store = VectorStore(persist_path=storage_base / _SHARED_VECTORS_DIRNAME)
+            store.get_or_create_collection(ARCHIVAL_COLLECTION)
+        except Exception as exc:  # noqa: BLE001 — degrade, never take the hook down
+            logger.error(
+                "shared VectorStore unavailable (%s: %s); sessions fall back to "
+                "their own stores or text search, retry in %ds",
+                exc.__class__.__name__, exc, _SHARED_STORE_RETRY_SECONDS,
+            )
+            if store is not None:
+                # Built but not usable: it already holds a Chroma runtime, and
+                # dropping the reference would leak it — in the very function
+                # that exists to stop that.
+                try:
+                    store.close()
+                except Exception:  # noqa: BLE001 — best effort on a failed store
+                    pass
+            _SHARED_STORE_FAILED_AT[key] = time.time()
+            return None
+        _SHARED_STORE_FAILED_AT.pop(key, None)
+        _SHARED_VECTOR_STORES[key] = store
+        logger.info("shared VectorStore initialized at %s", store.persist_path)
+        return store
 
 #: What the list tool can browse. Named sections, not guessed ones — the whole
 #: point of replacing `recall` is that the caller says which store it means.
@@ -200,7 +292,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # archival_memory) must NOT be closed by eviction while a compaction
         # holds references and is mid-flight on a worker thread (use-after-close).
         self._active_compactions: set[str] = set()
-        
+        # Sessions whose directory already exists while their components are
+        # still being built. Neither set above knows them yet, so the TTL
+        # sweep consults this one before deleting anything (reserved BEFORE
+        # mkdir, released after registration).
+        self._creating: set[str] = set()
+
         self.apply_config(None)
 
         logger.info(
@@ -255,6 +352,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # would report a key that is in fact used.
         self._session_ttl_seconds = int(merged.get("session_ttl_seconds", 7200))
         self._max_tracked_sessions = int(merged.get("max_tracked_sessions", 100))
+        # Off unless the operator's config turns it on. A background job that
+        # deletes directories must never start because someone merely
+        # instantiated the plugin — a test suite did exactly that against the
+        # real data/context_engineer and swept 18,000 local session
+        # directories before this default was 0.
+        self._session_data_ttl_days = int(merged.get("session_data_ttl_days", 0))
         self.min_time_between = float(merged.get("min_time_between_compactions", 120.0))
         self.enable_semantic_search = bool(merged.get("enable_semantic_search", False))
         self.core_memory_max_tokens = int(merged.get("core_memory_max_tokens", 2000))
@@ -292,7 +395,172 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         ]
         for sid in stale_compaction:
             del self._last_compaction_time[sid]
-    
+
+    # ------------------------------------------------------------------
+    # Session data TTL
+    #
+    # Nothing ever deleted a session directory: 1833 of them on the writer
+    # host since June, one per (mostly short-lived) writer sub-agent run. The
+    # sweep removes directories idle for longer than session_data_ttl_days,
+    # together with the session's vectors in the shared store — one criterion
+    # for both, so neither can outlive the other. Rate-limited and on its own
+    # thread: the first run after a deploy meets every legacy directory at
+    # once, and rmtree does not belong on the event loop.
+    # ------------------------------------------------------------------
+    _SWEEP_INTERVAL_SECONDS = 3600.0
+
+    def _maybe_start_sweep(self) -> None:
+        if self._session_data_ttl_days <= 0:
+            return
+        key = str(self._storage_base.resolve())
+        now = time.time()
+        with _SWEEP_LOCK:
+            # The interval check below already keeps sweeps apart — this one
+            # only matters when a sweep outlasts the interval (a huge backlog
+            # on a slow disk). Then it is the only thing preventing two
+            # threads from rmtree-ing the same directories.
+            if key in _SWEEP_RUNNING:
+                return
+            if now - _SWEEP_LAST_RUN.get(key, 0.0) < self._SWEEP_INTERVAL_SECONDS:
+                return
+            _SWEEP_LAST_RUN[key] = now
+            _SWEEP_RUNNING.add(key)
+        try:
+            self._start_sweep_thread(key)
+        except Exception as exc:  # noqa: BLE001 — whatever start() throws, the flag must clear
+            # Thread exhaustion. The flag must not stick — it would silence
+            # every later sweep in this process — and the session creation
+            # that triggered this must not fail over housekeeping.
+            with _SWEEP_LOCK:
+                _SWEEP_RUNNING.discard(key)
+            logger.error("session data sweep thread could not start (%s)", exc)
+
+    def _start_sweep_thread(self, key: str) -> None:
+        threading.Thread(
+            target=self._run_sweep, args=(key,),
+            name="context_engineer_sweep", daemon=True,
+        ).start()
+
+    def _run_sweep(self, key: str) -> None:
+        try:
+            self._sweep_stale_session_dirs()
+        except Exception:  # noqa: BLE001 — a failed sweep must not leave the flag stuck
+            logger.exception("session data sweep failed")
+        finally:
+            with _SWEEP_LOCK:
+                _SWEEP_RUNNING.discard(key)
+
+    def _is_session_live(self, session_id: str) -> bool:
+        """Known to THIS instance as live. A second plugin instance on the same
+        base is not consulted: for one of its sessions to be hit, it would
+        have to be idle for longer than the TTL by file mtime and still
+        registered there, which the 2 h eviction makes a corner case — and
+        the outcome would be logged write failures for that session, not a
+        crash."""
+        return (
+            session_id in self._session_components
+            or session_id in self._active_compactions
+            or session_id in self._creating
+        )
+
+    def _sweep_stale_session_dirs(self) -> int:
+        """Delete session directories idle longer than the TTL; returns the count.
+
+        Idle = the newest of the directory's own mtime and its marker files'
+        mtimes lies before the cutoff. The directory mtime alone would not do:
+        rewriting a file in place (core_memory.json) leaves it untouched, and
+        it only moves for the databases because SQLite's default DELETE
+        journal adds and removes a -journal entry per commit — switching the
+        stores to WAL would freeze it. The file mtimes depend on neither.
+        """
+        ttl_days = self._session_data_ttl_days
+        cutoff = time.time() - ttl_days * 86400
+        base = self._storage_base
+        if not base.is_dir():
+            return 0
+        started = time.monotonic()
+        removed = 0
+        scanned = 0
+        for path in list(base.iterdir()):
+            if not path.is_dir():
+                continue
+            leftover = path.name.endswith(_SWEEPING_SUFFIX)
+            if leftover:
+                # A previous run got as far as the rename. Its markers may be
+                # gone already, so neither age nor allow-list apply: finish it.
+                session_id = path.name[: -len(_SWEEPING_SUFFIX)]
+                scanned += 1
+            else:
+                markers = [path / m for m in _SESSION_MARKERS if (path / m).exists()]
+                if not markers:
+                    continue
+                scanned += 1
+                try:
+                    newest = max(p.stat().st_mtime for p in [path, *markers])
+                except OSError:
+                    continue
+                if newest >= cutoff:
+                    continue
+                session_id = path.name
+                # Checked right here and again right before the rename, not
+                # when the listing was taken: the session may come alive at
+                # any point in between.
+                if self._is_session_live(session_id):
+                    continue
+                # Vectors first. Were the directory removed first and this
+                # failed, no later sweep would ever see the session_id again
+                # and its vectors would stay forever. This way a failure
+                # leaves the directory in place and the next run retries
+                # both. A leftover never gets here: its vectors went in the
+                # run that renamed it — touching them again would hit the
+                # fresh vectors of a session that has since come back.
+                if not self._forget_session_vectors(session_id):
+                    continue
+            try:
+                if not leftover:
+                    if self._is_session_live(session_id):
+                        continue
+                    target = path.with_name(path.name + _SWEEPING_SUFFIX)
+                    path.rename(target)
+                    path = target
+                shutil.rmtree(path)
+            except OSError as exc:
+                # Windows refuses to rename or unlink an open SQLite file; one
+                # busy directory must not end the whole sweep.
+                logger.warning("sweep: %s not removed (%s)", path.name, exc.__class__.__name__)
+                continue
+            removed += 1
+        # Always, even for 0: after the first deploy nothing is left to remove,
+        # and "ran, nothing to do" must stay distinguishable from "never ran".
+        logger.info(
+            "session data sweep: removed %d of %d session directories idle for "
+            "more than %d days (%.1fs)",
+            removed, scanned, ttl_days, time.monotonic() - started,
+        )
+        return removed
+
+    def _forget_session_vectors(self, session_id: str) -> bool:
+        """Drop a session's vectors from the shared store; False if that failed.
+
+        True without doing anything when this process holds no shared store:
+        legacy directories kept their vectors inside themselves, and with
+        semantic search switched off nothing reads _shared_vectors — whatever
+        an earlier deploy left there is unused; delete that directory by hand
+        if the space matters.
+        """
+        store = _shared_vector_store(self._storage_base, create=False)
+        if store is None:
+            return True
+        try:
+            store.delete(ARCHIVAL_COLLECTION, where={"session_id": session_id})
+            return True
+        except Exception as exc:  # noqa: BLE001 — reported; the directory stays for a retry
+            logger.warning(
+                "sweep: vectors of %s not removed (%s); directory kept for the next run",
+                session_id, exc.__class__.__name__,
+            )
+            return False
+
     def _get_session_components(self, session_id: str,
                                 overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         """Get or create session-scoped components.
@@ -314,81 +582,97 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
 
         ov = overrides or {}
         if session_id not in self._session_components:
-            # Create session-specific storage paths
-            session_path = self._storage_base / session_id
-            session_path.mkdir(parents=True, exist_ok=True)
+            # Reserve the name BEFORE the directory exists: the TTL sweep runs
+            # on its own thread and skips every name in _creating. Without the
+            # reservation there is a window between mkdir and the registration
+            # at the end of this block in which the directory is on disk but
+            # no set knows the session — the sweep's first run after a deploy,
+            # with ~1800 legacy directories, is exactly when that window bites.
+            self._creating.add(session_id)
+            try:
+                # Create session-specific storage paths
+                session_path = self._storage_base / session_id
+                session_path.mkdir(parents=True, exist_ok=True)
             
-            # Initialize components
-            # The session_id is load-bearing, not decoration: every write that
-            # omits it falls back to "default", while list/search read with the
-            # REAL id and find nothing. Measured before this: a compaction
-            # stored a result, and list(section='tool_results') answered
-            # "0 of 0" — the agent could not see its own catalogue, and the
-            # system prompt telling it to look there was a dead instruction.
-            # Setting it on the store fixes every call site at once.
-            tool_store = ToolResultStore(session_path / "tool_results.db",
-                                         session_id=session_id)
-            core_memory = CoreMemory(storage_path=session_path / "core_memory.json",
-                                     max_tokens=self.core_memory_max_tokens)
-            archival_memory = ArchivalMemory(
-                session_path / "archive.db",
-                session_id=session_id,
-                enable_semantic_search=self.enable_semantic_search,
-                vector_store_path=session_path / "vectors" if self.enable_semantic_search else None
-            )
-            
-            # Initialize media store for inline media preservation
-            media_store = None
-            if self.store_media_before_compaction:
-                media_store = MediaStore(
-                    storage_path=session_path / "media",
-                    ttl_seconds=self.media_store_ttl_seconds,
-                    max_files=self.media_store_max_files
+                # Initialize components
+                # The session_id is load-bearing, not decoration: every write that
+                # omits it falls back to "default", while list/search read with the
+                # REAL id and find nothing. Measured before this: a compaction
+                # stored a result, and list(section='tool_results') answered
+                # "0 of 0" — the agent could not see its own catalogue, and the
+                # system prompt telling it to look there was a dead instruction.
+                # Setting it on the store fixes every call site at once.
+                tool_store = ToolResultStore(session_path / "tool_results.db",
+                                             session_id=session_id)
+                core_memory = CoreMemory(storage_path=session_path / "core_memory.json",
+                                         max_tokens=self.core_memory_max_tokens)
+                shared_store = (_shared_vector_store(self._storage_base)
+                                if self.enable_semantic_search else None)
+                archival_memory = ArchivalMemory(
+                    session_path / "archive.db",
+                    session_id=session_id,
+                    enable_semantic_search=self.enable_semantic_search,
+                    # Used only when there is no shared store (non-chromadb
+                    # backend): the session then keeps its own, as before.
+                    vector_store_path=session_path / "vectors" if self.enable_semantic_search else None,
+                    vector_store=shared_store,
                 )
             
-            # Per-agent hook overrides relax fields like `tool_result_keep_last`
-            # for media-heavy agents (cover_artist, repeated comfyui image
-            # loads) without touching the plugin-wide default for everyone else.
-            # By field name, so an override now works for EVERY field — the
-            # hand-written list this replaces silently ignored an override for
-            # any field its author had not thought to include, and three of
-            # them (store_media_before_compaction, media_store_ttl_seconds,
-            # media_store_max_files) were not even wired to `_o`.
-            compaction_config = compaction_config_from({
-                **{f.name: getattr(self, f.name) for f in fields(CompactionConfig)},
-                **{k: v for k, v in ov.items()
-                   if k not in PLUGIN_LEVEL_KEYS},
-            })
+                # Initialize media store for inline media preservation
+                media_store = None
+                if self.store_media_before_compaction:
+                    media_store = MediaStore(
+                        storage_path=session_path / "media",
+                        ttl_seconds=self.media_store_ttl_seconds,
+                        max_files=self.media_store_max_files
+                    )
             
-            logger.info(
-                f"[ContextEngineer] Created CompactionConfig for session {session_id}: "
-                f"max_messages={compaction_config.max_messages}, "
-                f"always_compact_media_keep_last={compaction_config.always_compact_media_keep_last}"
-            )
+                # Per-agent hook overrides relax fields like `tool_result_keep_last`
+                # for media-heavy agents (cover_artist, repeated comfyui image
+                # loads) without touching the plugin-wide default for everyone else.
+                # By field name, so an override now works for EVERY field — the
+                # hand-written list this replaces silently ignored an override for
+                # any field its author had not thought to include, and three of
+                # them (store_media_before_compaction, media_store_ttl_seconds,
+                # media_store_max_files) were not even wired to `_o`.
+                compaction_config = compaction_config_from({
+                    **{f.name: getattr(self, f.name) for f in fields(CompactionConfig)},
+                    **{k: v for k, v in ov.items()
+                       if k not in PLUGIN_LEVEL_KEYS},
+                })
             
-            # Create strategy
-            strategy = LayeredCompactionStrategy(
-                tool_store=tool_store,
-                core_memory=core_memory,
-                archival_memory=archival_memory,
-                config=compaction_config,
-                media_store=media_store
-            )
+                logger.info(
+                    f"[ContextEngineer] Created CompactionConfig for session {session_id}: "
+                    f"max_messages={compaction_config.max_messages}, "
+                    f"always_compact_media_keep_last={compaction_config.always_compact_media_keep_last}"
+                )
             
-            self._session_components[session_id] = {
-                "tool_store": tool_store,
-                "core_memory": core_memory,
-                "archival_memory": archival_memory,
-                "media_store": media_store,
-                "strategy": strategy,
-                "last_accessed": time.time()
-            }
+                # Create strategy
+                strategy = LayeredCompactionStrategy(
+                    tool_store=tool_store,
+                    core_memory=core_memory,
+                    archival_memory=archival_memory,
+                    config=compaction_config,
+                    media_store=media_store
+                )
             
-            # Cleanup expired sessions periodically
-            self._cleanup_expired_sessions()
+                self._session_components[session_id] = {
+                    "tool_store": tool_store,
+                    "core_memory": core_memory,
+                    "archival_memory": archival_memory,
+                    "media_store": media_store,
+                    "strategy": strategy,
+                    "last_accessed": time.time()
+                }
             
-            logger.debug(f"Created session components for {session_id}")
-        
+                # Cleanup expired sessions periodically
+                self._cleanup_expired_sessions()
+                self._maybe_start_sweep()
+            
+                logger.debug(f"Created session components for {session_id}")
+            finally:
+                self._creating.discard(session_id)
+
         return self._session_components[session_id]
     
     async def engineer_context(self, context: HookContext) -> HookResult:
@@ -1155,7 +1439,13 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         if "history" in wanted:
             archival: ArchivalMemory = components["archival_memory"]
             if needle:
-                found = archival.search(needle, session_id=session_id, limit=limit)
+                # Off the loop: search takes the vector store's lock, and that
+                # store is shared by every session — a batch embedding elsewhere
+                # can hold it for seconds. Awaited inline, that would freeze
+                # the whole API for the duration, not just this call.
+                found = await asyncio.to_thread(
+                    archival.search, needle, session_id=session_id, limit=limit,
+                )
                 if role:
                     # The index cannot filter by role, so do it here. Accepting
                     # the parameter and ignoring it would be worse than not

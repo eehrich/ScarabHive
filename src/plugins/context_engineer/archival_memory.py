@@ -25,6 +25,11 @@ from typing import Any
 
 from agent_system.llm.token_utils import estimate_content_tokens
 
+# The one collection every session's vectors live in. Sessions are told apart
+# by the session_id metadata on each entry, not by collection or directory —
+# which is what lets all of them share a single VectorStore (see hooks.py).
+ARCHIVAL_COLLECTION = "archival_memory"
+
 logger = logging.getLogger(__name__)
 
 
@@ -118,30 +123,43 @@ class ArchivalMemory:
         storage_path: Path,
         session_id: str | None = None,
         enable_semantic_search: bool = False,
-        vector_store_path: Path | None = None
+        vector_store_path: Path | None = None,
+        vector_store: Any | None = None,
     ):
         """Initialize archival memory.
-        
+
         Args:
             storage_path: Path to SQLite database file
             session_id: Default session ID
             enable_semantic_search: Enable VectorStore semantic search
-            vector_store_path: Path for VectorStore storage (if enabled)
+            vector_store_path: Path for VectorStore storage (if enabled and
+                no store is injected). The store built from it belongs to
+                this instance and is closed with it.
+            vector_store: A VectorStore SHARED with other sessions. Every
+                vector this instance writes carries its session_id, and
+                every query filters on it, so one store serves all sessions
+                — that is what keeps the process at one Chroma runtime
+                instead of one per session. An injected store is never
+                closed here; it belongs to whoever handed it in.
         """
         self.storage_path = storage_path
         self.session_id = session_id
         self.enable_semantic_search = enable_semantic_search
         self._db: sqlite3.Connection | None = None
         self._vector_store = None
-        self._vector_collection = "archival_memory"
+        self._owns_vector_store = False
+        self._vector_collection = ARCHIVAL_COLLECTION
         # Serializes connection access across event-loop + to_thread threads
         # (see _synchronized). Reentrant for nested synchronized calls.
         self._lock = threading.RLock()
 
         self._init_db()
-        
+
         if enable_semantic_search:
-            self._init_vector_store(vector_store_path or storage_path.parent / "vectors")
+            if vector_store is not None:
+                self._vector_store = vector_store
+            else:
+                self._init_vector_store(vector_store_path or storage_path.parent / "vectors")
     
     def _init_db(self) -> None:
         """Initialize SQLite database."""
@@ -191,6 +209,7 @@ class ArchivalMemory:
             from agent_system.utils.vector_store import VectorStore
             
             self._vector_store = VectorStore(persist_path=vector_path)
+            self._owns_vector_store = True
             # Ensure collection is created
             self._vector_store.get_or_create_collection(self._vector_collection)
             
@@ -204,7 +223,6 @@ class ArchivalMemory:
             self.enable_semantic_search = False
             self._vector_store = None
     
-    @_synchronized
     def store(
         self,
         message: dict[str, Any],
@@ -220,6 +238,28 @@ class ArchivalMemory:
             
         Returns:
             The archive entry ID
+        """
+        entry_id, document, vector_meta = self._store_row(message, summary, session_id)
+        # Indexed OUTSIDE this instance's lock, as store_many already does. The
+        # vector store is shared by every session, so its lock can be held for
+        # seconds by another session's batch embedding; waiting for it while
+        # holding the archive lock would stall every loop-synchronous reader of
+        # this archive (stats, counts, reads) — and with them the event loop.
+        if self.enable_semantic_search and self._vector_store:
+            self._index_semantic([entry_id], [document], [vector_meta])
+        return entry_id
+
+    @_synchronized
+    def _store_row(
+        self,
+        message: dict[str, Any],
+        summary: str | None,
+        session_id: str | None,
+    ) -> tuple[str, str, dict[str, Any]]:
+        """Write the row and its FTS entry under the lock.
+
+        Returns (entry_id, document to embed, vector metadata) for the caller
+        to index once the lock is released.
         """
         import uuid
         
@@ -293,29 +333,17 @@ class ArchivalMemory:
         """, (entry_id, summary, content, session_id))
         
         self._db.commit()
-        
-        # Add to VectorStore if enabled
-        if self.enable_semantic_search and self._vector_store:
-            try:
-                self._vector_store.add(
-                    collection=self._vector_collection,
-                    ids=[entry_id],
-                    documents=[f"{summary}\n{content[:1000]}"],
-                    metadatas=[{
-                        "session_id": session_id,
-                        "role": role,
-                        "timestamp": datetime.now().isoformat()
-                    }]
-                )
-            except Exception as e:
-                logger.error(f"Failed to add to VectorStore: {e}")
-        
+
         logger.debug(
             f"Archived message: id={entry_id}, role={role}, "
             f"tokens={token_count}, summary='{summary[:50]}...'"
         )
 
-        return entry_id
+        return entry_id, f"{summary}\n{content[:1000]}", {
+            "session_id": session_id,
+            "role": role,
+            "timestamp": datetime.now().isoformat(),
+        }
 
     def store_many(
         self,
@@ -449,7 +477,6 @@ class ArchivalMemory:
             # search on these entries, not the content.
             logger.error(f"Failed to add batch to VectorStore: {e}")
 
-    @_synchronized
     def search(
         self,
         query: str,
@@ -458,13 +485,20 @@ class ArchivalMemory:
         use_semantic: bool | None = None
     ) -> list[ArchivedMessage]:
         """Search archived messages.
-        
+
+        Not synchronized as a whole, on purpose — the same split as store():
+        the vector query runs against the store shared by every session and
+        can wait seconds for another session's batch embedding. Only the
+        SQLite parts (_search_text, the row fetch in _search_semantic) take
+        this instance's lock, so loop-synchronous readers never wait on
+        another session's work.
+
         Args:
             query: Search query
             session_id: Optional session filter
             limit: Maximum results
             use_semantic: Use semantic search (default: auto-detect)
-            
+
         Returns:
             List of matching archived messages
         """
@@ -511,6 +545,7 @@ class ArchivalMemory:
         # Join with OR for broader matching
         return ' OR '.join(escaped_tokens)
     
+    @_synchronized
     def _search_text(
         self,
         query: str,
@@ -588,20 +623,31 @@ class ArchivalMemory:
         """Semantic search using VectorStore."""
         if not self._vector_store:
             return self._search_text(query, session_id, limit)
-        
+        # The store is shared between sessions and only the session_id filter
+        # keeps them apart. A query without one would rank OTHER sessions'
+        # messages — in the per-session layout that was merely an empty
+        # directory, here it would be a leak. Unreachable from the plugin
+        # (hooks always set the id), guarded anyway.
+        if not session_id:
+            return self._search_text(query, session_id, limit)
+
         try:
-            # Build where filter (only supported by ChromaDB backend)
-            where = {"session_id": session_id} if session_id else None
-            
+            where = {"session_id": session_id}
+
             results = self._vector_store.query(
                 collection=self._vector_collection,
                 query_text=query,
                 n_results=limit,
                 where=where
             )
-            
+
             if not results or not results.get("ids") or not results["ids"]:
-                return []
+                # Nothing indexed does not mean nothing archived: the vector
+                # index starts empty after the move to the shared store, and
+                # batches above the semantic cap are only ever FTS-indexed.
+                # Answering [] here hid rows that sit in archive.db; the text
+                # index has them.
+                return self._search_text(query, session_id, limit)
             
             # Fetch full messages from SQLite.
             #
@@ -617,17 +663,24 @@ class ArchivalMemory:
             if ids and isinstance(ids[0], list):
                 ids = ids[0]
             if not ids:
-                return []
+                # ChromaDB's empty answer is [[]] — truthy, so it passes the
+                # check above and only shows here. Same reasoning: nothing
+                # indexed is not nothing archived.
+                return self._search_text(query, session_id, limit)
             placeholders = ",".join("?" * len(ids))
-            cursor = self._db.execute(f"""
-                SELECT id, role, content, summary, timestamp, session_id,
-                       token_count, metadata, tool_call_id, tool_name
-                FROM archived_messages
-                WHERE id IN ({placeholders})
-            """, ids)
-            
+            # Only the row fetch needs this instance's lock; the vector query
+            # above deliberately ran without it (see search()).
+            with self._lock:
+                cursor = self._db.execute(f"""
+                    SELECT id, role, content, summary, timestamp, session_id,
+                           token_count, metadata, tool_call_id, tool_name
+                    FROM archived_messages
+                    WHERE id IN ({placeholders})
+                """, ids)
+                rows = cursor.fetchall()
+
             # Maintain order from VectorStore results
-            rows_by_id = {row[0]: row for row in cursor.fetchall()}
+            rows_by_id = {row[0]: row for row in rows}
             return [
                 ArchivedMessage.from_row(rows_by_id[id_])
                 for id_ in ids if id_ in rows_by_id
@@ -875,5 +928,17 @@ class ArchivalMemory:
             self._db.close()
             self._db = None
         if self._vector_store:
-            self._vector_store.close()
+            if self._owns_vector_store:
+                self._vector_store.close()
+            else:
+                # Shared store: closing it here would stop the ONE Chroma
+                # runtime every other session is using at that moment — a
+                # process-wide interruption every time a session ends. (It
+                # does heal: chromadb >= 1.5 drops the stopped System from its
+                # registry on close, so the next access rebuilds it.) Only the
+                # owner, the plugin, closes it.
+                logger.debug(
+                    "ArchivalMemory %s released its shared VectorStore without closing it",
+                    self.session_id,
+                )
             self._vector_store = None

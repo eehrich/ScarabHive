@@ -300,6 +300,7 @@ context_engineer:
     # Memory Management
     session_ttl_seconds: 7200          # Session cleanup TTL (default: 2 hours)
     max_tracked_sessions: 100          # Max sessions before LRU eviction
+    session_data_ttl_days: 14          # Delete a session's on-disk data (archive, tool results, media) and its vectors after N idle days; 0 (default) = off
 ```
 
 ## Web Panel

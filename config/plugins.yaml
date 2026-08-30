@@ -997,7 +997,8 @@ plugins:
         keep_system_messages: true     # Never archive/drop system messages
 
         enable_semantic_search: true   # VectorStore-Semantiksuche (ChromaDB oder sqlite-vec)
-        
+        session_data_ttl_days: 14      # delete a session's on-disk data (archive, tool results, media) and its vectors after N idle days; 0 = off
+
         # Irreversible compaction settings
         drop_after_turns: 30           # Drop messages older than N turns (Layer 3 only)
         max_summary_tokens: 100        # Max tokens for archived message summaries

@@ -262,6 +262,13 @@ config:
     minimum: 10
     maximum: 1000
 
+  session_data_ttl_days:
+    type: integer
+    default: 0
+    description: "Delete a session's on-disk data (archive, tool results, media) and its vectors after this many days without activity. 0 (default) keeps the sweep off — it only runs where the operator's config turns it on; config/plugins.yaml ships 14"
+    minimum: 0
+    maximum: 3650
+
 
 
   # Core Memory

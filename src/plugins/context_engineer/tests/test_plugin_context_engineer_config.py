@@ -58,6 +58,7 @@ def _effective(srv: ContextEngineerServer, session: str = "probe") -> dict:
     values["session_ttl_seconds"] = srv._hooks_impl._session_ttl_seconds
     values["max_tracked_sessions"] = srv._hooks_impl._max_tracked_sessions
     values["storage_path"] = str(srv._hooks_impl._storage_base)
+    values["session_data_ttl_days"] = srv._hooks_impl._session_data_ttl_days
     return values
 
 
@@ -120,6 +121,7 @@ class TestShippedConfigArrives:
             "min_time_between_compactions": 42.0,
             "enable_semantic_search": False,
             "core_memory_max_tokens": 4321,
+            "session_data_ttl_days": 3,
         }
         srv = _server(probe)
         effective = _effective(srv)

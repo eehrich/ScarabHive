@@ -119,6 +119,7 @@ PLUGIN_LEVEL_KEYS = frozenset({
     "enable_semantic_search",
     "core_memory_max_tokens",
     "storage_path",
+    "session_data_ttl_days",
 })
 
 
