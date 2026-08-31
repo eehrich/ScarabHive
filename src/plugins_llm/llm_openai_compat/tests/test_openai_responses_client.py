@@ -551,10 +551,53 @@ def _iter_all_parts(payload):
 
 
 class TestAnthropicFuturePath:
-    """Forward-wiring: no Claude model routes through the Responses API today,
-    but if one is configured with prompt_cache_marker_style=anthropic it must
-    use cache_control (the shared policy) — NOT the GPT breakpoint path. The GPT
-    default path must stay byte-for-byte unchanged."""
+    """Claude on the Responses API must use cache_control (the shared policy),
+    NOT the GPT breakpoint path. The GPT default path stays byte-for-byte
+    unchanged.
+
+    ⚠️ These tests prove the PAYLOAD is right, not that the cache works.
+    Measured live 2026-09-01 against OpenRouter with the identical prompt
+    twice: over the Responses API both calls came back cached=0, write=0 and
+    billed the same $0.009278 -- OpenRouter drops cache_control on that route.
+    The same model over Chat Completions (openai_httpx): write=4617, then
+    cached=4617 at $0.0009674, a tenth of the price.
+
+    Claude therefore runs on `provider: openai_httpx` (see the guard in
+    tests/config/test_claude_models_declare_their_cache_dialect.py). Do not
+    read a green suite here as permission to move it back -- the wiring below
+    is correct and still arrives nowhere.
+    """
+
+    def test_claude_with_the_declared_dialect_is_cached(self):
+        """What config/llm_openrouter.yaml declares for openrouter-claude:
+        the marker style is a property of the MODEL, so the client never has
+        to recognize a model name. Before that line existed the style fell
+        back to the GPT one and — with no prompt_cache_key on the profile —
+        the markers were stripped entirely: 0% cache hits, full prompt billed
+        every turn (measured 2026-09-01, ~200k prompt tokens per turn)."""
+        c = _client(model="~anthropic/claude-sonnet-latest",
+                    prompt_cache_marker_style="anthropic",
+                    prompt_cache_mode="multi_turn")
+        msgs = [
+            ChatMessage(role="system", content="SYS"),
+            ChatMessage(role="user", content="Q1"),
+            ChatMessage(role="assistant", content="A1"),
+            ChatMessage(role="user", content="Q2"),
+        ]
+        tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+        p = c._build_payload(msgs, tools)
+
+        parts = list(_iter_all_parts(p))
+        assert any("cache_control" in part for part in parts)
+        assert all("prompt_cache_breakpoint" not in part for part in parts)
+        assert p["tools"][-1].get("cache_control") == {"type": "ephemeral"}
+
+    def test_a_non_claude_model_is_left_alone(self):
+        """Counter-check: the GPT path must stay free of Anthropic keys."""
+        c = _client(prompt_cache_mode="multi_turn")   # openai/gpt-5.6-terra
+        p = c._build_payload([ChatMessage(role="system", content="SYS"),
+                              ChatMessage(role="user", content="Q")], None)
+        assert all("cache_control" not in part for part in _iter_all_parts(p))
 
     def test_gpt_default_uses_breakpoints_not_cache_control(self):
         """Default (no marker style) = GPT-5.6 breakpoint path, no cache_control."""

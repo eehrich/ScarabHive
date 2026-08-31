@@ -142,6 +142,12 @@ llm_system:
 
     openrouter-claude:
       extends: openrouter-base
+      # Claude spricht cache_control, nicht die OpenAI-Breakpoints — und
+      # OpenRouter reicht die nur ueber Chat Completions durch, nicht ueber
+      # die Responses-API der Basis. Ohne beides laeuft Claude ohne Cache.
+      provider: openai_httpx
+      prompt_cache_marker_style: anthropic
+      include_thoughts: false     # Chat Completions liefert keine Thoughts
       capabilities:
         streaming: false
         image_input: true

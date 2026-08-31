@@ -28,11 +28,9 @@ llm_system:
         fallback_to_sync: true
         
       # Jeder LLM-Client bringt sein eigenes Batch-Backend unter SEINEM Namen
-      # mit: openai_httpx = der httpx-Client (der auch bisher die
-      # Batch-Modelle synchron bedient hat), openai = der SDK-Client. Beide
-      # sprechen dieselbe /v1/batches-API. Der Name im Modell-Eintrag
-      # (batch_provider) waehlt das Paar — frueher bildete der Kern
-      # "openai" still auf den httpx-Client ab.
+      # mit: openai_httpx = der httpx-Client, openai = der SDK-Client. Beide
+      # sprechen dieselbe /v1/batches-API; der Name im Modell-Eintrag
+      # (batch_provider) waehlt das Paar.
       openai_httpx:
         enabled: true
         collection_window_seconds: 10
