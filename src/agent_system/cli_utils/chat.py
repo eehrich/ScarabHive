@@ -516,9 +516,18 @@ async def run_chat_turn(
                     renderer.narration(content)
                 # Usage rides on thinking_complete per LLM call; sum them so a
                 # multi-step turn reports the whole turn, not just the last call.
-                _accumulate_usage(result["usage"], ev.get("usage"),
+                call_usage = ev.get("usage")
+                _accumulate_usage(result["usage"], call_usage,
                                   *_call_pricing_key(agent))
-                last_call_usage = ev.get("usage")
+                # Only a call that REPORTED usage becomes the reference. The
+                # server emits thinking_complete without it (server.py: the
+                # empty-assistant branch, and both `if usage` guards), and
+                # letting that reset the reference to None cost twice: the
+                # context fill fell back to nothing, and the final event no
+                # longer recognized itself as a repeat -- so the last call
+                # was billed a second time.
+                if call_usage is not None:
+                    last_call_usage = call_usage
             elif t == "heartbeat":
                 if show_status:
                     renderer.thinking_tick()
@@ -535,6 +544,7 @@ async def run_chat_turn(
                 if final_usage is not None and final_usage != last_call_usage:
                     _accumulate_usage(result["usage"], final_usage,
                                       *_call_pricing_key(agent))
+                    last_call_usage = final_usage
             elif t == "error":
                 message = str(ev.get("message") or "unknown error")
                 result["errors"].append(message)
@@ -563,6 +573,18 @@ async def run_chat_turn(
             except Exception:
                 logger.debug("Failed to unsubscribe status queue", exc_info=True)
         renderer.close()
+
+    # How full the window is after this turn: the LAST call's prompt (the whole
+    # history as the model saw it) plus what it answered. Summing every call
+    # would report the turn's throughput instead -- a multi-step turn sends the
+    # same history again and again.
+    if last_call_usage is not None:
+        call = normalize_usage(last_call_usage)
+        result["context_tokens"] = call.prompt_tokens + call.completion_tokens
+    client = getattr(agent, "llm", None)
+    window = getattr(client, "context_window", None)
+    if isinstance(window, int) and window > 0:
+        result["context_window"] = window
 
     return result
 
@@ -974,12 +996,16 @@ def _accumulate_usage(total: dict, usage: Any, model: Optional[str] = None,
         total["cost_unpriced_calls"] = total.get("cost_unpriced_calls", 0) + 1
 
 
-def _format_usage(totals: dict, elapsed: float, sym: dict) -> str:
-    """One dim footer line: tokens, cache hit rate, cost, wall time.
+def _format_usage(totals: dict, elapsed: float, sym: dict,
+                  context: Optional[tuple[int, Optional[int]]] = None) -> str:
+    """One dim footer line: context fill, tokens, cache hit rate, cost, time.
 
     The cost is already resolved per call by _accumulate_usage -- this only
     renders it. An estimated total carries a leading ~, and calls whose price
     could not be determined are named rather than silently omitted.
+
+    `context` is (tokens_in_window, window_size) for a single turn; the
+    session total has no such thing and passes None.
     """
     def _short(n: float) -> str:
         return f"{n / 1000:.1f}k" if n >= 1000 else f"{int(n)}"
@@ -987,12 +1013,31 @@ def _format_usage(totals: dict, elapsed: float, sym: dict) -> str:
     prompt = totals.get("prompt_tokens", 0) or 0
     completion = totals.get("completion_tokens", 0) or 0
     cached = totals.get("cached_tokens", 0) or 0
+    written = totals.get("cache_write_tokens", 0) or 0
 
     parts = []
+    if context:
+        used, window = context
+        if window:
+            # The window is a round number by nature -- "272k" reads better
+            # than the "272.0k" the generic short form would give it.
+            parts.append(f"ctx {_short(used)}/{window // 1000}k "
+                         f"({used * 100 // window}%)")
+        else:
+            parts.append(f"ctx {_short(used)}")
+
     if prompt or completion:
         head = f"{sym['up']}{_short(prompt)}"
-        if prompt and cached:
-            head += f" ({cached * 100 // prompt}% cached)"
+        # Always shown once anything was sent: 0% is the interesting case --
+        # it means the prefix cache is not being hit at all. Writes are named
+        # separately because "0% cached" alone cannot tell a broken cache from
+        # the first turn of a working one, which is exactly the confusion that
+        # cost an hour when Claude's cache_control was being dropped.
+        if prompt:
+            rate = f"{cached * 100 // prompt}% cached"
+            if written:
+                rate += f", +{_short(written)} written"
+            head += f" ({rate})"
         parts.append(f"{head} {sym['down']}{_short(completion)}")
 
     cost = totals.get("cost")
@@ -1006,6 +1051,14 @@ def _format_usage(totals: dict, elapsed: float, sym: dict) -> str:
 
     mins, secs = divmod(int(elapsed), 60)
     parts.append(f"{mins}m{secs:02d}s" if mins else f"{secs}s")
+    # Output speed, the number people compare between models: generated
+    # tokens over wall time. Prompt tokens are not "generated" and would
+    # inflate it by the whole history on every turn.
+    # Only per turn (`context` marks one): across a whole session the elapsed
+    # time includes the user thinking and typing, so the rate would say more
+    # about the human than about the model.
+    if context and completion and elapsed > 0:
+        parts.append(f"{completion / elapsed:.0f} tok/s")
     return sym["sep"].join(parts)
 
 
@@ -1867,9 +1920,13 @@ def run_chat_loop(
             usage = result.get("usage") or {}
             _merge_totals(ctx.total_usage, usage)
             if ctx.show_status:
+                context_fill = result.get("context_tokens")
                 print(renderer._colored(
                     _format_usage(usage, time.monotonic() - started,
-                                  renderer.sym), "90"))
+                                  renderer.sym,
+                                  context=(context_fill,
+                                           result.get("context_window"))
+                                  if context_fill else None), "90"))
 
             try:
                 saved = loop.run_until_complete(_save_session(ctx))

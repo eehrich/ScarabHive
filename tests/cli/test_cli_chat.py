@@ -365,6 +365,126 @@ class _FakeAgent:
         return True
 
 
+class TestTheReportedContextFill:
+    """`context_tokens` must describe the WINDOW, not the turn's throughput.
+
+    A multi-step turn resends the whole history on every step, so summing
+    the calls (which is right for cost) would report several times the
+    window size and show "ctx 300k/272k".
+    """
+
+    class _Client:
+        def __init__(self, window):
+            self.model = "m"
+            self.context_window = window
+
+    def _agent(self, events, window=272000):
+        agent = _FakeAgent(events)
+        agent.llm = self._Client(window)
+        return agent
+
+    async def test_the_last_call_decides_not_the_sum(self):
+        agent = self._agent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": [{"id": "t"}]},
+             "usage": {"prompt_tokens": 5000, "completion_tokens": 100}},
+            {"type": "thinking_complete", "assistant": {"tool_calls": None},
+             "usage": {"prompt_tokens": 9000, "completion_tokens": 300}},
+            {"type": "final", "summary": "done",
+             "usage": {"prompt_tokens": 9000, "completion_tokens": 300}},
+            {"type": "end"},
+        ])
+        r, _ = _renderer()
+        result = await run_chat_turn(agent, "q", "s", r)
+
+        assert result["context_tokens"] == 9300      # last call, not 14k+
+        assert result["context_window"] == 272000
+        assert result["usage"]["prompt_tokens"] == 14000  # cost still sums
+
+    async def test_an_extra_final_call_becomes_the_last_one(self):
+        """After max_steps a separate final-answer call runs with no
+        thinking_complete of its own — that one holds the real fill."""
+        agent = self._agent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": [{"id": "t"}]},
+             "usage": {"prompt_tokens": 5000, "completion_tokens": 100}},
+            {"type": "final", "summary": "done",
+             "usage": {"prompt_tokens": 7000, "completion_tokens": 50}},
+            {"type": "end"},
+        ])
+        r, _ = _renderer()
+        result = await run_chat_turn(agent, "q", "s", r)
+        assert result["context_tokens"] == 7050
+
+    async def test_a_client_without_a_window_reports_only_the_fill(self):
+        agent = self._agent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": None},
+             "usage": {"prompt_tokens": 800, "completion_tokens": 20}},
+            {"type": "final", "summary": "d"},
+            {"type": "end"},
+        ], window=None)
+        r, _ = _renderer()
+        result = await run_chat_turn(agent, "q", "s", r)
+        assert result["context_tokens"] == 820
+        assert "context_window" not in result
+
+    async def test_a_usage_less_step_does_not_erase_the_reference(self):
+        """The server emits thinking_complete without usage (empty-assistant
+        branch, and both `if usage` guards). That must not reset what the
+        last known call was: the fill would vanish, and — worse — the final
+        event would stop recognizing itself as a repeat and bill the call
+        a second time."""
+        agent = self._agent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": [{"id": "t"}]},
+             "usage": {"prompt_tokens": 8000, "completion_tokens": 200}},
+            {"type": "thinking_complete", "assistant": {"tool_calls": None}},
+            {"type": "final", "summary": "done",
+             "usage": {"prompt_tokens": 8000, "completion_tokens": 200}},
+            {"type": "end"},
+        ])
+        r, _ = _renderer()
+        result = await run_chat_turn(agent, "q", "s", r)
+
+        assert result["context_tokens"] == 8200, "the fill survives the gap"
+        assert result["usage"]["prompt_tokens"] == 8000, (
+            "the final event repeats the last call and must not be billed twice")
+
+    async def test_a_mock_window_is_not_taken_for_a_number(self):
+        """Same guard as _call_pricing_key next door: a bare MagicMock answers
+        every attribute, and `mock // 1000` in the formatter would take the
+        chat loop down after the answer was already on screen."""
+        from unittest.mock import MagicMock
+
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": None},
+             "usage": {"prompt_tokens": 800, "completion_tokens": 20}},
+            {"type": "final", "summary": "d"},
+            {"type": "end"},
+        ])
+        agent.llm = MagicMock()
+        r, _ = _renderer()
+        result = await run_chat_turn(agent, "q", "s", r)
+
+        assert "context_window" not in result
+        assert _format_usage({}, 1.0, _ASCII_SYMBOLS,
+                             context=(result["context_tokens"], None))
+
+    async def test_a_turn_without_usage_reports_no_fill(self):
+        """No LLM call ran (a pure command turn) — the footer must not claim
+        a context size of 0."""
+        agent = self._agent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "final", "summary": "d"},
+            {"type": "end"},
+        ])
+        r, _ = _renderer()
+        result = await run_chat_turn(agent, "q", "s", r)
+        assert "context_tokens" not in result
+
+
 class TestRunChatTurn:
     async def test_full_turn_routes_everything(self):
         agent = _FakeAgent([
@@ -619,10 +739,71 @@ class TestUsage:
                              1.0, _ASCII_SYMBOLS)
         assert "94% cached" in line
 
-    def test_no_cache_rate_without_cached_tokens(self):
+    def test_a_zero_cache_rate_is_shown_rather_than_hidden(self):
+        """It used to be omitted when nothing was cached — but "0% cached" is
+        the case worth seeing: the prefix cache is not being hit at all."""
         line = _format_usage({"prompt_tokens": 1000, "completion_tokens": 10},
                              1.0, _ASCII_SYMBOLS)
-        assert "cached" not in line
+        assert "0% cached" in line
+
+    def test_a_cache_write_is_named_next_to_a_zero_read_rate(self):
+        """"0% cached" alone cannot tell a broken cache from the first turn of
+        a working one — that ambiguity is what made Claude's dropped
+        cache_control look like a config error for an hour."""
+        line = _format_usage({"prompt_tokens": 19485, "completion_tokens": 54,
+                              "cached_tokens": 0, "cache_write_tokens": 19396},
+                             1.0, _ASCII_SYMBOLS)
+        assert "0% cached, +19.4k written" in line
+
+    def test_no_write_no_noise(self):
+        """Counter-check: a provider that reports no writes must not get a
+        "+0 written" tacked on."""
+        line = _format_usage({"prompt_tokens": 5000, "completion_tokens": 10,
+                              "cached_tokens": 4000}, 1.0, _ASCII_SYMBOLS)
+        assert "written" not in line and "80% cached" in line
+
+    def test_nothing_sent_means_no_cache_rate(self):
+        """Counter-check: 0/0 must not render as "0% cached" (or divide)."""
+        assert "cached" not in _format_usage({}, 1.0, _ASCII_SYMBOLS)
+
+
+class TestContextFill:
+    """The window fill after a turn, next to the throughput of that turn.
+
+    Both come from the LAST call: its prompt is the whole history as the
+    model saw it. Summing every call would report how much was pushed
+    through the turn, which for a multi-step turn counts the same history
+    once per step.
+    """
+
+    def test_fill_percentage_of_the_window(self):
+        line = _format_usage({"prompt_tokens": 100, "completion_tokens": 10},
+                             1.0, _ASCII_SYMBOLS, context=(118909, 272000))
+        assert "ctx 118.9k/272k (43%)" in line
+
+    def test_without_a_known_window_only_the_size(self):
+        """A client that does not declare context_window must still show the
+        fill instead of dropping the segment or dividing by zero."""
+        line = _format_usage({"prompt_tokens": 100, "completion_tokens": 10},
+                             1.0, _ASCII_SYMBOLS, context=(5000, None))
+        assert "ctx 5.0k" in line and "%)" not in line
+
+    def test_the_session_total_has_no_fill_and_no_rate(self):
+        """Elapsed there is wall time including the user typing — a tok/s
+        computed over it would describe the human, not the model."""
+        line = _format_usage({"prompt_tokens": 100, "completion_tokens": 900},
+                             600.0, _ASCII_SYMBOLS)
+        assert "ctx" not in line and "tok/s" not in line
+
+    def test_throughput_counts_generated_tokens_only(self):
+        """Prompt tokens are not generated; counting them would scale the
+        rate with the history on every turn."""
+        line = _format_usage({"prompt_tokens": 100000, "completion_tokens": 840},
+                             20.0, _ASCII_SYMBOLS, context=(1000, 200000))
+        # Compared as a whole segment: "42 tok/s" is a substring of the
+        # "5042 tok/s" that counting the prompt would produce, so `in` would
+        # pass on exactly the bug this guards.
+        assert line.split(_ASCII_SYMBOLS["sep"])[-1] == "42 tok/s"
 
     def test_provider_cost_is_billing_and_carries_no_tilde(self):
         total = {}
