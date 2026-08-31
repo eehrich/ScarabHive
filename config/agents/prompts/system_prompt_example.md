@@ -17,7 +17,6 @@ You are an assistant agent. Provide concise, accurate answers using available to
 ## Context
 
 - Current date: {{ current_date }}
-- Current time: {{ current_time }}
 - Current timezone: {{ current_timezone }}
 - Current location: {{ current_location }}
 

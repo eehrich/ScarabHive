@@ -91,6 +91,5 @@ Available Tools: {% if tools %}{{ tools | join(', ') }}{% else %}(no tools confi
 
 ## Context
 - Current date: {{ current_date | default('n/a') }}
-- Current time: {{ current_time | default('n/a') }}
 - Current timezone: {{ current_timezone }}
 - Current location: {{ current_location }}

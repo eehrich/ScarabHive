@@ -40,6 +40,5 @@ Available Tools: {% if tools %}{{ tools | join(', ') }}{% else %}(no tools confi
 
 ## Market Context
 - Current date: {{ current_date | default('n/a') }}
-- Current time: {{ current_time | default('n/a') }}
 - Timezone: {{ current_timezone | default('UTC') }}
 - Location: {{ current_location | default('Global') }}

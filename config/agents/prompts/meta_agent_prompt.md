@@ -20,7 +20,6 @@ Available Agents/Tools: {% if tools %}{{ tools | join(', ') }}{% else %}(no tool
 
 ## Context
 - Current date: {{ current_date | default('n/a') }}
-- Current time: {{ current_time | default('n/a') }}
 - Current timezone: {{ current_timezone }}
 - Current location: {{ current_location }}
 - use metric system units unless specified otherwise.
