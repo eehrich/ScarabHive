@@ -16,6 +16,22 @@ runtime uses it to decide whether a call goes to a plugin or out to a server.
 Handing these tools out under flat names would quietly widen what an agent is
 allowed to call.
 
+So an agent opts in with a dotted pattern, not the slashed one local plugins
+use:
+
+```yaml
+tools:
+  allowed:
+    - "everything.*"        # every tool of the 'everything' server
+    - "context7.resolve-library-id"   # or one by name
+```
+
+`mcp_client/*` is something else entirely: that grants the four management
+tools below (connect, disconnect, list), not any foreign tool. And an empty
+result is worth reading twice — if the server failed to connect, its tools were
+never discovered, and *every* pattern matches nothing. Check
+`External MCP servers: N connected` in the log before suspecting the pattern.
+
 ## Configuration
 
 Servers are configured in `config/mcp_servers.yaml`, unchanged:

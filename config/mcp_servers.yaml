@@ -17,6 +17,37 @@ external_servers:
   
   # Remote MCP server definitions
   remote_servers:
+    # --- Lokaler Server ueber stdio -------------------------------------
+    # Der einzige stdio-Eintrag hier, deshalb ausfuehrlich: bei transport
+    # stdio wird der Server GESTARTET statt angewaehlt, also braucht er
+    # `command` (+ optional `args`, `env`) statt `url`. Er laeuft als
+    # Subprozess mit unseren Rechten -- deshalb der Versions-Pin unten.
+    #
+    # npx/uvx SIND der Installationsweg des Oekosystems: sie holen das Paket
+    # beim ersten Start und cachen es. Nichts liegt im Repo. Wer Server doch
+    # auf Platte braucht (offline, gepinnt, Host ohne npm), legt sie nach
+    # external/ -- das ist dafuer vorgesehen und in .gitignore.
+    #
+    # Live geprueft am 01.09.2026 ueber die ganze Kette: Bootstrap verbindet
+    # ("1 connected, 0 failed", Protokoll 2025-06-18), der Agent
+    # mcp_external_test_agent sieht 13 Tools und hat zwei davon wirklich
+    # gerufen -- im Log stehen die Antworten des Servers, nicht die des LLM.
+    # Aus bleibt er trotzdem: ein Referenz-Testserver gehoert nicht in den
+    # Produktionsstart, und `npx` setzt node auf dem Host voraus.
+    everything:
+      enabled: false
+      transport: stdio
+      command: npx
+      # Ohne den Versions-Pin zieht `-y` bei JEDEM Start, was gerade neu ist.
+      # ACHTUNG: die npm-Version ist datumsbasiert und hat NICHTS mit der zu
+      # tun, die der Server im Handshake ueber sich meldet (dort "2.0.0").
+      # Ein Pin auf die gemeldete Version scheitert mit npm ENOTARGET, und
+      # der Server startet gar nicht erst -- `npm view <paket> version` fragen.
+      args: ["-y", "@modelcontextprotocol/server-everything@2026.8.31"]
+      description: Referenz-MCP-Server des Protokolls (Beispiel + Rauchtest)
+      features:
+        tools: true
+
     localhost:
       url: http://127.0.0.1:8081
       enabled: false
