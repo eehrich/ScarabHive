@@ -41,6 +41,11 @@ llm_system:
         order:
         - google-vertex
         - google-ai-studio
+        # Ohne diesen Riegel darf OpenRouter ueber die Liste hinaus ausweichen
+        # — dann greift die definierte Reihenfolge nicht mehr, und der
+        # Prompt-Cache des vorherigen Anbieters ist verloren. Faellt die Liste
+        # aus, uebernimmt die llm_profile-Kette mit einem anderen Modell.
+        allow_fallbacks: false
 
       # personal or appication specific prefferences
       safety_settings:
@@ -173,6 +178,7 @@ llm_system:
         order:
         - deepinfra
         - baidu
+        allow_fallbacks: false
 
       max_tokens: null
       service_tier: null
@@ -187,12 +193,16 @@ llm_system:
       extends: openrouter-deepseek
       model: ~deepseek/deepseek-v4-flash-latest
       provider_routing:
+        # deepinfra zuerst: bei unseren Cache-Raten rund halb so teuer wie
+        # streamlake (0,080 vs 0,220 $/M Input). streamlake als Zwilling —
+        # hoeherer Durchsatz und der guenstigste cache-read. baidu antwortet
+        # mit 429. Beide fp8.
         order:
-        - streamlake
         - deepinfra
-        - baidu
+        - streamlake
         quantizations:
         - fp8
+        allow_fallbacks: false
 
     # simple nothinking version of deepseek-flash for easy tasks
     openrouter-deepseek-flash-nothinking:
@@ -240,6 +250,7 @@ llm_system:
       provider_routing:
         order:
         - minimax
+        allow_fallbacks: false
       capabilities:
         image_input: true
 
