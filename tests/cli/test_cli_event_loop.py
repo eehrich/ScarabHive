@@ -89,15 +89,23 @@ class TestRunAsync:
         assert state["task"].cancelled() or state["task"].done()
 
     def test_a_new_loop_is_built_after_close(self):
-        """A closed loop must not be reused -- the CLI may run again in-process."""
-        async def loop_id():
-            return id(asyncio.get_running_loop())
+        """A closed loop must not be reused -- the CLI may run again in-process.
 
-        first = agent_cli.run_async(loop_id())
+        Compare the loop OBJECTS, not their ids: the first loop is closed and
+        unreferenced by the time the second exists, so CPython may hand the new
+        loop the same address -- an id() comparison failed exactly that way.
+        """
+        loops = []
+
+        async def note():
+            loops.append(asyncio.get_running_loop())
+
+        agent_cli.run_async(note())
         agent_cli.close_cli_loop()
-        second = agent_cli.run_async(loop_id())
+        agent_cli.run_async(note())
 
-        assert first != second
+        assert loops[0] is not loops[1]
+        assert loops[0].is_closed() and not loops[1].is_closed()
 
     def test_close_is_idempotent(self):
         agent_cli.run_async(asyncio.sleep(0))

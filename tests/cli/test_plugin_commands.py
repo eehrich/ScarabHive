@@ -382,13 +382,23 @@ class TestRunPluginCommandOnTheLoop:
         assert "cancelled" in capsys.readouterr().err
 
 
-def _drive_repl(monkeypatch, lines, agent):
+def _drive_repl(monkeypatch, lines, agent, loop=None, seen_loops=None):
     """Run the real run_chat_loop over *lines*, return the tasks that became
     LLM turns. _execute_turn is stubbed because it is the part that spends
-    money -- which is exactly what several of these tests assert about."""
+    money -- which is exactly what several of these tests assert about.
+
+    ``loop``/``seen_loops``: pass a loop through to run_chat_loop and collect
+    the loop each turn actually ran on -- the seam the borrowed-loop tests
+    need."""
     turns = []
-    monkeypatch.setattr("agent_system.cli_utils.chat._execute_turn",
-                        lambda loop, ctx, task, renderer: turns.append(task) or {})
+
+    def _fake_turn(loop, ctx, task, renderer):
+        if seen_loops is not None:
+            seen_loops.append(loop)
+        turns.append(task)
+        return {}
+
+    monkeypatch.setattr("agent_system.cli_utils.chat._execute_turn", _fake_turn)
     monkeypatch.setattr("agent_system.cli_utils.chat._available_skills",
                         lambda ctx: [])
     fed = iter(lines)
@@ -404,8 +414,45 @@ def _drive_repl(monkeypatch, lines, agent):
     run_chat_loop(
         agent=agent, entry_name="a", session_service=None, session_user="u",
         session_id="s1", was_new_session=False, llm_profile="p",
-        show_status=False)
+        show_status=False, loop=loop)
     return turns
+
+
+class TestChatBorrowedLoop:
+    """run_chat_loop must be able to run on a loop the caller keeps alive.
+
+    The CLI hands over its shared bootstrap loop because the external MCP
+    connections made during bootstrap only make progress while that loop
+    runs. Until 2026-09-02 chat always built a private loop -- the bootstrap
+    connections then reported connected=True (their task was parked, not
+    done) and every external call ran into the submit timeout.
+    """
+
+    def test_turns_run_on_the_borrowed_loop_and_it_stays_open(self, monkeypatch):
+        agent = _agent()
+        loop = asyncio.new_event_loop()
+        try:
+            seen = []
+            turns = _drive_repl(monkeypatch, ["hallo"], agent,
+                                loop=loop, seen_loops=seen)
+            assert turns == ["hallo"]
+            assert seen and all(entry is loop for entry in seen), (
+                "the turn ran on a different loop than the one handed in")
+            assert not loop.is_closed(), (
+                "chat tore down a loop it does not own -- the CLI still needs "
+                "it for shutdown_mcp/shutdown_batch_system")
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
+    def test_without_a_loop_chat_still_cleans_up_its_own(self, monkeypatch):
+        agent = _agent()
+        seen = []
+        _drive_repl(monkeypatch, ["hallo"], agent, seen_loops=seen)
+        assert seen, "no turn ran"
+        assert seen[0].is_closed(), (
+            "the private loop must be closed on the way out -- that teardown "
+            "is what keeps standalone use free of closed-pipe cascades")
 
 
 class TestTheReplDispatchesToThePlugin:

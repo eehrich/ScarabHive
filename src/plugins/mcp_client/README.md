@@ -58,6 +58,15 @@ same 13 tools, with the server's own wording in the log
 (`External tool everything_local.get-sum returned: The sum of 19 and 23 is 42.`).
 `tests/cli/test_cli_event_loop.py` pins the invariant.
 
+The chat REPL had the same problem one layer up: it built a **private** loop
+for its turns, so the bootstrap connections were parked on a loop that never
+ran again — `connected` stayed True (the task was parked, not done) and every
+call would have run into the submit timeout instead of failing fast. Chat now
+borrows the CLI's shared loop (`run_chat_loop(loop=...)`) and leaves its
+teardown to the owner; standalone use without `loop` keeps the private-loop
+behaviour. Verified in a piped chat session: the tool call completes in the
+turn, with the server's wording in the transcript.
+
 ## Configuration
 
 Servers are configured in `config/mcp_servers.yaml`, unchanged:

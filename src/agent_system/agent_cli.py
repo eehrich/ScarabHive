@@ -388,6 +388,29 @@ _cli_loop: Optional[asyncio.AbstractEventLoop] = None
 _cli_loop_thread: Optional[int] = None
 
 
+def get_cli_loop() -> asyncio.AbstractEventLoop:
+    """The CLI's shared loop, created on first use.
+
+    For the rare caller that needs the loop OBJECT rather than to run one
+    coroutine -- the chat REPL drives it directly with ``run_until_complete``
+    per turn. Handing chat its own loop instead would strand the MCP
+    connections from bootstrap on a loop that never runs again: ``connected``
+    stays True (the task is not done, its loop is merely parked), every
+    call runs into the submit timeout, and the tools fail slowly instead of
+    working. Borrowers must NOT close it; ``close_cli_loop`` owns teardown.
+    """
+    global _cli_loop, _cli_loop_thread
+    if _cli_loop is None or _cli_loop.is_closed():
+        _cli_loop_thread = threading.get_ident()
+        _cli_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_cli_loop)
+        # Every exit path -- early return of a subcommand, exception, sys.exit
+        # -- must still tear the loop down, so register once, here, instead of
+        # hoping a finally block covers them all.
+        atexit.register(close_cli_loop)
+    return _cli_loop
+
+
 def run_async(coro: Any) -> Any:
     """Run one coroutine on the CLI's single, persistent event loop.
 
@@ -400,18 +423,9 @@ def run_async(coro: Any) -> Any:
     exists for is a property of the CLI's single main thread, not of the
     process.
     """
-    global _cli_loop, _cli_loop_thread
     if _cli_loop is not None and _cli_loop_thread != threading.get_ident():
         return asyncio.run(coro)
-    if _cli_loop is None or _cli_loop.is_closed():
-        _cli_loop_thread = threading.get_ident()
-        _cli_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_cli_loop)
-        # Every exit path -- early return of a subcommand, exception, sys.exit
-        # -- must still tear the loop down, so register once, here, instead of
-        # hoping a finally block covers them all.
-        atexit.register(close_cli_loop)
-    return _cli_loop.run_until_complete(coro)
+    return get_cli_loop().run_until_complete(coro)
 
 
 def close_cli_loop() -> None:
@@ -433,10 +447,20 @@ def close_cli_loop() -> None:
             loop.run_until_complete(
                 asyncio.gather(*pending, return_exceptions=True))
         loop.run_until_complete(loop.shutdown_asyncgens())
+        # Subprocess transports (the stdio MCP servers!) are torn down by the
+        # executor thread pool; without waiting for it the interpreter can
+        # outrun those threads and their __del__ lands on a closed loop.
+        # Chat's own teardown learned this the hard way -- same reason here.
+        loop.run_until_complete(loop.shutdown_default_executor())
     except Exception as exc:  # pragma: no cover - best effort at exit
         logging.getLogger(__name__).debug("CLI loop teardown: %s", exc)
     finally:
         loop.close()
+        # asyncio.run leaves the thread's loop slot EMPTY afterwards (measured:
+        # get_event_loop -> RuntimeError "no current event loop"). Leaving our
+        # closed loop in the slot instead would hand later get_event_loop()
+        # callers a dead loop and "Event loop is closed" errors.
+        asyncio.set_event_loop(None)
 
 
 def main() -> None:
@@ -1923,6 +1947,10 @@ def main() -> None:
         if is_chat:
             from .cli_utils.chat import run_chat_loop
             run_chat_loop(
+                # The SHARED loop, not a private one: bootstrap connected the
+                # external MCP servers on it, and their tasks only make
+                # progress while this very loop runs the turns.
+                loop=get_cli_loop(),
                 agent=agent,
                 entry_name=entry_name,
                 session_service=session_service,

@@ -1780,8 +1780,15 @@ def run_chat_loop(
     initial_task: Optional[str] = None,
     session_manager: Any = None,
     template_vars: Optional[dict] = None,
+    loop: Optional[asyncio.AbstractEventLoop] = None,
 ) -> None:
-    """The chat REPL. Owns one event loop for its whole lifetime."""
+    """The chat REPL. Drives one event loop for its whole lifetime.
+
+    Pass ``loop`` to run the turns on a loop the caller keeps alive -- the CLI
+    hands over its shared bootstrap loop, because the external MCP connections
+    made there only make progress while THAT loop runs. Without ``loop`` the
+    REPL creates and, at the end, tears down a private one (standalone use and
+    the tests)."""
     ctx = _ChatContext(
         agent=agent, entry_name=entry_name, session_service=session_service,
         session_user=session_user, session_id=session_id,
@@ -1812,7 +1819,9 @@ def run_chat_loop(
     # which kills Enter/Backspace and turns Ctrl-C into a plain character.
     input_mode = snapshot_console_input_mode()
 
-    loop = asyncio.new_event_loop()
+    owns_loop = loop is None
+    if owns_loop:
+        loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     # Console logging would write into the live region behind its back.
@@ -2001,13 +2010,20 @@ def run_chat_loop(
         if ctx.last_saved:
             print(f"Session saved: {ctx.last_saved}", file=sys.stderr)
             print(f"Resume with: {_resume_hint(ctx, ctx.last_saved)}", file=sys.stderr)
+        # A BORROWED loop is not ours to tear down: the CLI's finally still
+        # runs shutdown_mcp/shutdown_batch_system on it after we return, and
+        # close_cli_loop() at exit does the cancel/asyncgens/executor/close
+        # dance exactly once. Cancelling all tasks here would kill the MCP
+        # connections and the batch manager out from under those shutdowns.
+        if not owns_loop:
+            return
         try:
-            # Shut MCP down ON THIS loop, before closing it. The caller's
-            # finally also calls shutdown_mcp(), but through asyncio.run() --
-            # i.e. on a FRESH loop, while every subprocess transport (the
-            # terminal plugin's shells) belongs to this one. Their __del__ then
-            # fired against a closed loop and printed a "ValueError: I/O
-            # operation on closed pipe" cascade after the goodbye message.
+            # Shut MCP down ON THIS loop, before closing it. The standalone
+            # caller has no later shutdown on this loop, while every
+            # subprocess transport (the terminal plugin's shells) belongs to
+            # it. Skipping this fired their __del__ against a closed loop and
+            # printed a "ValueError: I/O operation on closed pipe" cascade
+            # after the goodbye message.
             try:
                 from ..mcp.integration import shutdown_mcp
                 loop.run_until_complete(shutdown_mcp())
