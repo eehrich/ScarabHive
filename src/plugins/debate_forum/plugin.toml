@@ -8,6 +8,6 @@ version = "1.0.0"
 description = "Structured LLM debate forum with channels and Discord-style web UI"
 author = "AgentSystem"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp", "web"]
+type = ["mcp-server", "web"]
 category = "collaboration"
 requires = { agent_system = ">=0.6.0" }
