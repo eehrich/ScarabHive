@@ -1586,6 +1586,12 @@ hand during reviews because nobody wrote them down. Three short sections in
 your `README.md` remove that guesswork. They are required for new plugins;
 retrofit an existing plugin only when you are already editing it.
 
+**Scope:** plugins whose tools a model calls. A package that exposes no tools
+to a model — `type = ["llm-provider"]` (the LLM clients under
+`src/plugins_llm/`) or `type = ["library"]` — has no model-facing surface to
+describe, and these three sections do not apply to it. Its README still owes
+the ordinary things: what it provides, how to configure it, and the gotchas.
+
 ### 1. What the model sees
 
 The literal text that reaches the model — tool descriptions are obvious, but
