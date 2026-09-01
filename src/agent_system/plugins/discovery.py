@@ -407,7 +407,8 @@ async def register_plugin_hooks(
     plugin_instance: Any,
     metadata: Dict[str, Any] | None = None,
     registry: Any | None = None,
-    hooks_config: Any | None = None
+    hooks_config: Any | None = None,
+    instance_hook_config: Dict[str, Any] | None = None,
 ) -> List[str]:
     """Register hooks declared in plugin metadata.
     
@@ -417,6 +418,12 @@ async def register_plugin_hooks(
         metadata: Plugin metadata from plugin.yaml (optional, will use _plugin_metadata attribute if not provided)
         registry: Hook registry to use (optional, will use global registry if not provided)
         hooks_config: Global hooks configuration (optional, will load from config/plugins.yaml if not provided)
+        instance_hook_config: The server INSTANCE's ``hook_config`` mapping from
+            its (merged) MCPConfig. ``enabled: false`` disables every hook of
+            this instance at registration (below the operator's global
+            ``hooks.overrides``); any other value changes nothing. Lower-only,
+            so an instance can ship dark next to an enabled sibling, while
+            raising a schema default stays an operator decision.
     
     Returns:
         List of registered hook names
@@ -495,6 +502,18 @@ async def register_plugin_hooks(
             category = hook_metadata.get('category', None)  # Optional category/tag
             order_spec = hook_metadata.get('order', {})
             
+            # Instance-level default: the server config's hook_config.enabled
+            # speaks for THIS instance (schema speaks for the plugin type).
+            # LOWER-ONLY by design: False disables the instance's hooks,
+            # True does NOT lift a schema-level off-switch -- the shipped
+            # sub_agent_manager config says enabled:true against a schema
+            # that deliberately starts the hook disabled, and honouring the
+            # True would have flipped that hook on for every agent. Raising
+            # a default is the operator's move (global hooks.overrides).
+            # Applied before those overrides, so the operator still wins.
+            if isinstance(instance_hook_config, dict)                     and instance_hook_config.get('enabled') is False:
+                enabled = False
+
             # Apply global hooks configuration overrides
             # Build full hook name for lookup (plugin.hook_name)
             full_hook_name = f"{plugin_name}.{hook_name}"
@@ -589,7 +608,7 @@ async def register_plugin_hooks(
 _BOOTSTRAPPED_HOOKS_REGISTERED = False
 
 
-async def register_bootstrapped_plugin_hooks() -> List[str]:
+async def register_bootstrapped_plugin_hooks(settings: Any | None = None) -> List[str]:
     """Register hooks for all plugins already loaded into the global plugin registry.
 
     The HTTP agent server registers plugin hooks via
@@ -601,6 +620,10 @@ async def register_bootstrapped_plugin_hooks() -> List[str]:
     Call this once after ``bootstrap_servers`` to mirror the HTTP-server
     behaviour. Subsequent calls are no-ops.
 
+    ``settings`` is the caller's already-loaded AgentSystemConfig; it supplies
+    each instance's ``hook_config`` registration default. Without it hooks
+    register on schema defaults alone -- no config file is re-read here.
+
     Returns:
         List of all registered hook names (full ``plugin.hook`` form).
     """
@@ -610,6 +633,7 @@ async def register_bootstrapped_plugin_hooks() -> List[str]:
 
     from ..plugins.mcp_adapter import plugin_mcp_registry
     from ..hooks import load_hooks_config
+    from ..config.settings import get_mcp_config_by_name
 
     hooks_config = load_hooks_config()
     all_registered: List[str] = []
@@ -627,11 +651,19 @@ async def register_bootstrapped_plugin_hooks() -> List[str]:
             plugin_instance = plugin_instance.hooks_plugin
 
         try:
+            mcp_cfg = get_mcp_config_by_name(server_name, settings) if settings else None
+            instance_hook_config = getattr(mcp_cfg, 'hook_config', None) if mcp_cfg else None
+        except Exception:
+            logger.debug("No merged config for '%s'", server_name, exc_info=True)
+            instance_hook_config = None
+
+        try:
             registered = await register_plugin_hooks(
                 plugin_name=server_name,
                 plugin_instance=plugin_instance,
                 metadata=plugin_schema,
                 hooks_config=hooks_config,
+                instance_hook_config=instance_hook_config,
             )
             all_registered.extend(registered)
         except Exception as e:

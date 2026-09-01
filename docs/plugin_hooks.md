@@ -410,6 +410,30 @@ config:
     description: "Enable special feature"
 ```
 
+
+### Instanz-Default per `hook_config` (seit 2026-09-02)
+
+Das Schema spricht für den Plugin-TYP. Läuft dasselbe Plugin mehrfach als
+Instanz (z. B. `context_summarizer` und `writer_context_summarizer`), setzt
+die Server-Config einer Instanz ihren eigenen Registrier-Default:
+
+```yaml
+# config/plugins.yaml bzw. eingebundene Plugin-Configs
+servers:
+  writer_context_summarizer:
+    type: context_summarizer
+    hook_config:
+      enabled: false   # diese Instanz startet AUS; Agenten schalten sie
+                       # per hooks.overrides (exakter instanz.hook-Key) an
+```
+
+Wirkt **nur absenkend**: `enabled: false` schaltet die Hooks dieser Instanz
+aus; `enabled: true` hebt einen Schema-Default NICHT an (einen Default
+anzuheben ist Operator-Sache — globale `hooks.overrides`). Vorrang bei der
+Registrierung: Schema-Eintrag < Instanz-Absenkung < globale `hooks.overrides`
+< globaler Master-Schalter `hooks.enabled: false`. Zur Laufzeit gewinnt
+darüber der Agent-Override (exakter Key), siehe oben.
+
 ### hooks.py
 
 ```python

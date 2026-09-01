@@ -170,6 +170,7 @@ class MCPIntegration:
         """Register hooks from plugins."""
         from ..plugins.discovery import register_plugin_hooks
         from ..hooks import load_hooks_config
+        from ..config.settings import get_mcp_config_by_name
         
         hooks_config = load_hooks_config()
         
@@ -190,12 +191,24 @@ class MCPIntegration:
             if hasattr(plugin_instance, 'hooks_plugin'):
                 plugin_instance = plugin_instance.hooks_plugin
             
+            # The instance's own hook default lives in its MERGED server
+            # config (raw and merged differ; agents get the merged form).
+            # Guarded: one server whose merge does not validate must not
+            # take down startup -- it just registers on schema defaults.
+            try:
+                mcp_cfg = get_mcp_config_by_name(server_name, config)
+                instance_hook_config = getattr(mcp_cfg, 'hook_config', None) if mcp_cfg else None
+            except Exception:
+                logger.debug("No merged config for '%s'", server_name, exc_info=True)
+                instance_hook_config = None
+
             try:
                 registered_hooks = await register_plugin_hooks(
                     plugin_name=server_name,
                     plugin_instance=plugin_instance,
                     metadata=plugin_schema,
-                    hooks_config=hooks_config
+                    hooks_config=hooks_config,
+                    instance_hook_config=instance_hook_config,
                 )
                 if registered_hooks:
                     logger.debug(
