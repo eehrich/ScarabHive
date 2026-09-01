@@ -212,7 +212,8 @@ class TestFactoriesForwardRoutingPerProvider:
     daneben bleibt gruen, weil er seine Arbeit ja getan hat.
     """
 
-    @pytest.mark.parametrize("provider", ["openai_httpx", "openai_responses"])
+    @pytest.mark.parametrize(
+        "provider", ["openai_httpx", "openai_responses", "openrouter_sdk"])
     def test_routing_reaches_the_client(self, provider):
         client = _real_build_client()(LLMModelConfig(
             provider=provider, model="some/model", api_key="sk-test",

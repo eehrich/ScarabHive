@@ -91,6 +91,54 @@ YAML mehr gesetzt — ausgewertet wird es nur noch vom `openai_httpx`-Client
 (Default `keep_last`); andere Provider verwerfen es (anthropic nimmt es an,
 liest es nie).
 
+## `openrouter_sdk`: dieselbe Route über das offizielle SDK
+
+Seit 2026-09-01 gibt es einen zweiten Weg zum selben `/responses`-Endpunkt:
+`provider: openrouter_sdk` (Plugin `plugins_llm/llm_openrouter`) schickt den
+Request über OpenRouters offizielles Python-SDK. Er ist ein **A/B-Kandidat**,
+kein Ersatz: der Client erbt vom `openai_responses`-Client und tauscht nur
+`_post` — Payload-Bau, Cache-Breakpoints, Parser, Heilungsschleife und Hooks
+sind dieselben. Was in einem Vergleich abweicht, ist der Transport.
+
+Umschalten ist eine Zeile; die Einträge erben ohnehin von `openrouter-base`:
+
+```yaml
+    mein-modell:
+      extends: openrouter-base
+      provider: openrouter_sdk    # statt openai_responses
+```
+
+Voraussetzung: `pip install openrouter` (steht in `requirements/all.txt`).
+Ohne installiertes Paket ist nur dieser eine Eintrag betroffen — das Plugin
+wird erst importiert, wenn ein Modell den Provider nennt.
+
+**Was gemessen ist** (openrouter 1.1.108, 2026-09-01):
+
+* Die Antwort wird **aus dem rohen Body** gelesen, nicht aus dem typisierten
+  Ergebnis. Hauptgrund ist baulich: die geerbte Heilungsschleife entscheidet
+  am Statuscode, erkennt Body-Fehler in einer HTTP 200 und prüft
+  Reasoning-Ablehnungen am Body-**Text** — sie braucht den Rohtext ohnehin.
+  Dazu kommt eine bekannte Zerbrechlichkeit: `usage` ist `OptionalNullable`,
+  und `UsageCostDetails` verlangt
+  `upstream_inference_input_cost`/`…output_cost`. Fehlen die, fällt das
+  **ganze** `usage`-Objekt still auf `Unset()` — Tokens, `cost` und
+  Cache-Treffer weg, ohne Fehler. **Nicht live beobachtet**: die am
+  01.09.2026 gemessenen Antworten (deepseek-v4-flash, gemini-3.5-flash-lite)
+  trugen alle Pflichtfelder, das typisierte Modell hätte sie korrekt
+  geparst. Der rohe Body ist also Vorsorge, kein Reparaturfall.
+* Der Request geht typisiert raus und trägt alles, was diese Route braucht:
+  `provider`-Routing, `reasoning`, `service_tier`, `prompt_cache_key` und den
+  Cache-Breakpoint `prompt_cache_breakpoint`.
+* **Zwei Felder kann er nicht**, und er verweigert deshalb beim Bauen statt
+  sie zu verlieren: `safety_settings` (kein SDK-Parameter — damit fällt die
+  Gemini-Route aus) und Anthropic-`cache_control` pro Content-Part
+  (`prompt_cache_marker_style: anthropic`).
+* Das SDK ergänzt drei Felder von sich aus: `store: false`, `stream: false`
+  und `service_tier: "auto"`. Das letzte heißt: der Flex-Drop schickt den
+  Standard-Tier *explizit*, wo die httpx-Route das Feld weglässt.
+* Preis der Abhängigkeit: `pydantic<2.13`. Das deckelt die ganze Anwendung
+  eine Minor unter dem aktuellen Stand.
+
 ## Profile
 
 `turbo-batch` ist **kein Zwilling von `turbo` mehr.** `turbo` zeigt seit
