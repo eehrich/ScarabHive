@@ -19,6 +19,15 @@ und bleiben beim selben Backend.
 gepinnte Anbieter aus, übernimmt die **Agent-Kette** (llm_profile), nicht ein
 stiller 2x-Preissprung bei OpenRouter.
 
+### Kein `usage: {include: true}` mehr
+
+Das Feld ist bei OpenRouter deprecated und wirkungslos — Kosten, Cache-Treffer
+und `cost_details` kommen ohnehin in jeder Antwort. Am 01.09.2026 gegengeprüft,
+**streamend wie nicht-streamend**: mit und ohne Feld identische
+`usage`-Schlüssel und derselbe `cost`. Deshalb schicken die Clients es nicht
+mehr; wieder einbauen bringt nichts. `stream_options: {include_usage: true}`
+bleibt dagegen stehen — das braucht OpenAI direkt, nicht OpenRouter.
+
 ## DeepSeek via OpenRouter: fp8, nicht fp4
 
 Preistabelle vom 2026-08-20 (Input / Output / Cache-Read je 1M Token):
@@ -68,8 +77,23 @@ ausdrücklich da, weil sie es sonst von ihrem Elterneintrag erben würden.
 Die Gemini-Einträge laufen über `provider: openai_responses`, nicht über die
 Chat-Completions-Brücke. Auf dieser Route reisen die Output-Items des Modells
 **wortgleich** hin und zurück; die Brücke musste sie rekonstruieren, was die
-`"encrypted content ... could not be verified"`-400er erzeugte. `safety_settings`
-gehen unverändert durch.
+`"encrypted content ... could not be verified"`-400er erzeugte.
+
+**Die `openrouter-gemini*`-Einträge setzen kein `safety_settings`** — das Feld
+wirkt auf dieser Route nicht. Derselbe Unsinns-Wert
+(`category: HARM_CATEGORY_NOT_A_REAL_THING`) wird auf `/chat/completions` mit
+HTTP 400 samt Enum-Liste abgelehnt, auf `/responses` mit HTTP 200
+stillschweigend geschluckt: OpenRouter lässt es dort fallen, bevor es Google
+erreicht (gemessen 01.09.2026).
+
+Es fehlt dadurch nichts. `debug.echo_upstream_body` zeigt auf der Chat-Route,
+dass OpenRouter ohne eigene Angabe alle fünf Kategorien auf `OFF` setzt —
+freizügiger als die Schwellen, die hier früher standen (drei auf
+`BLOCK_ONLY_HIGH`, und `HARM_CATEGORY_CIVIC_INTEGRITY` fiel ganz aus dem
+Upstream-Body). Für Prosa war unsere Angabe die *strengere*.
+
+Wer wirklich eigene Schwellen braucht, nimmt die nativen `gemini-3-*`-Einträge
+(`provider: gemini_sdk`): die reden direkt mit Google, dort greift das Feld.
 
 `service_tier: flex` ist Googles Flex Processing: billiger, dafür längere
 Warteschlange. Bei einer 429 auf dem Flex-Tier lässt der Client das Feld einmal

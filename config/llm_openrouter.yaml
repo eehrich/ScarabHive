@@ -47,12 +47,10 @@ llm_system:
         # aus, uebernimmt die llm_profile-Kette mit einem anderen Modell.
         allow_fallbacks: false
 
-      # personal or appication specific prefferences
-      safety_settings:
-        HARM_CATEGORY_SEXUALLY_EXPLICIT: BLOCK_NONE
-        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-        HARM_CATEGORY_HATE_SPEECH: BLOCK_ONLY_HIGH
+      # Kein safety_settings: OpenRouter laesst das Feld auf /responses fallen.
+      # Wer eigene Schwellen braucht, nimmt die nativen gemini-3-*-Eintraege
+      # (provider: gemini_sdk), die direkt mit Google reden. Warum das hier
+      # nichts kostet: docs/llm_catalog.md
 
       capabilities:
         json_mode: true

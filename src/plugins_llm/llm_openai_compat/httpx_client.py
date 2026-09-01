@@ -168,8 +168,8 @@ class HTTPXOpenAIClient(LLMClient):
         self.capabilities = capabilities or {}
         self._verify: ssl.SSLContext | bool | None = None  # Normalized verify value
         
-        # OpenRouter requires "usage": {"include": true} for detailed usage (cached_tokens, cost)
-        # Other APIs reject this parameter with 400 Bad Request
+        # Gates the gateway-only parts of a request: provider_routing, the
+        # app-title header, and the Gemini/Claude dialect detection below.
         self._is_openrouter = "openrouter.ai" in base_url.lower()
         
         # Detect Gemini models via OpenRouter — need tool schema sanitization.
@@ -865,10 +865,6 @@ class HTTPXOpenAIClient(LLMClient):
             **self.extra_params
         }
         
-        # OpenRouter: request detailed usage (cached_tokens, cost)
-        if self._is_openrouter:
-            payload["usage"] = {"include": True}
-
         # Thinking/reasoning config for thinking models (OpenRouter, DeepSeek, etc.)
         reasoning = self._build_reasoning_param()
         if reasoning:
@@ -1421,10 +1417,6 @@ class HTTPXOpenAIClient(LLMClient):
             **self.extra_params
         }
         
-        # OpenRouter: request detailed usage (cached_tokens, cost)
-        if self._is_openrouter:
-            payload["usage"] = {"include": True}
-
         # Thinking/reasoning config for thinking models (OpenRouter, DeepSeek, etc.)
         reasoning = self._build_reasoning_param()
         if reasoning:

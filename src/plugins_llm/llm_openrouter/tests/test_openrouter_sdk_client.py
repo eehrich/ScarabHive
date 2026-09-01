@@ -355,13 +355,22 @@ async def _record(sink: list, info: dict) -> None:
     sink.append(info)
 
 
-class TestConstructionRefusesWhatTheSdkWouldSwallow:
-    def test_safety_settings_are_refused(self):
-        with pytest.raises(ValueError, match="safety_settings"):
-            build_openrouter_sdk_client(
+class TestConstructionHandlesWhatTheSdkCannotSend:
+    def test_safety_settings_warn_but_build(self, caplog):
+        """Not refused: OpenRouter drops the field on /responses anyway
+        (measured 2026-09-01 — an invalid value earns HTTP 200 there and
+        HTTP 400 on /chat/completions). Blocking the build would invent a
+        difference between the routes that does not exist."""
+        with caplog.at_level(logging.WARNING):
+            client = build_openrouter_sdk_client(
                 model="m", api_key="k", base_url="https://openrouter.ai/api/v1",
                 safety_settings={"HARM": "BLOCK_NONE"},
                 prompt_cache_marker_style=None)
+        assert isinstance(client, OpenRouterSDKClient)
+        assert "safety_settings" in caplog.text
+        # And the field must not reach the payload builder either, or every
+        # request would additionally log an unmapped-field warning.
+        assert client.safety_settings is None
 
     def test_anthropic_cache_markers_are_refused(self):
         with pytest.raises(ValueError, match="cache_control"):

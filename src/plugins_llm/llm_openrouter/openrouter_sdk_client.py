@@ -47,11 +47,22 @@ REQUEST-SIDE GAPS, DELIBERATELY LOUD
 ====================================
 Typed parameters cannot carry what the SDK's schema does not know, and they
 drop it without a word. Two payload keys this house sends have no SDK
-parameter, so they are refused at construction time rather than disappearing:
-``safety_settings`` and Anthropic-style per-part ``cache_control``
-(``prompt_cache_marker_style: anthropic``). The OpenAI-style marker this
-route actually uses — ``prompt_cache_breakpoint`` — IS in the SDK schema and
-travels unchanged (measured).
+parameter.
+
+``prompt_cache_marker_style: anthropic`` (per-part ``cache_control``) is
+REFUSED at construction: the httpx route does send it, so losing it here
+would cost cache hits with no error to show for it.
+
+``safety_settings`` only WARNS. Measured 2026-09-01: OpenRouter drops the
+field on ``/responses`` itself — the same nonsense value that earns an HTTP
+400 with the valid enum list on ``/chat/completions`` is swallowed with an
+HTTP 200 here. The httpx route therefore loses it too, just silently.
+Refusing to build would invent a difference between the routes that does not
+exist and would lock the Gemini entries out for nothing.
+
+The OpenAI-style cache marker this route actually uses —
+``prompt_cache_breakpoint`` — IS in the SDK schema and travels unchanged
+(measured).
 
 ONE SUBSTITUTED DEFAULT
 =======================
@@ -198,21 +209,23 @@ def build_openrouter_sdk_client(
     prompt_cache_marker_style: Optional[str],
     **kwargs: Any,
 ) -> OpenRouterSDKClient:
-    """Construct the client, refusing what the SDK would drop in silence.
+    """Construct the client, handling the two fields the SDK cannot send.
 
-    Both refusals are gaps, not bugs: the typed signature has no field for
-    them. Raising at construction beats a run whose safety thresholds or
-    cache breakpoints quietly never left the process — the operator can move
-    the model entry back to ``provider: openai_responses`` in one line.
+    The cache-marker refusal is a real gap: the httpx route sends that field
+    and this one cannot, so a run would lose cache hits with nothing to show
+    for it. Raising beats that — the operator moves the entry back to
+    ``provider: openai_responses`` in one line.
+
+    ``safety_settings`` is a different case and only warns; see the module
+    docstring for the measurement.
     """
     from agent_system.llm.cache_key import MARKER_STYLE_ANTHROPIC
 
     if safety_settings:
-        raise ValueError(
-            f"provider 'openrouter_sdk' cannot send safety_settings "
-            f"(model={model!r}): the SDK's typed request has no such "
-            f"parameter and would drop them silently. Use "
-            f"provider: openai_responses for models that need them.")
+        logger.warning(
+            "safety_settings are not sent for model=%s — OpenRouter ignores "
+            "them on /responses either way. The entry can drop the field.",
+            model)
     if prompt_cache_marker_style == MARKER_STYLE_ANTHROPIC:
         raise ValueError(
             f"provider 'openrouter_sdk' cannot send Anthropic-style per-part "
