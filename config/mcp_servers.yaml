@@ -3,12 +3,11 @@
 # ================================
 # Configuration for remote/external MCP servers
 #
-# ⚠ Reichweite: Tools externer Server erreichen Agenten NUR ueber die API,
-# nicht ueber `agent-cli run`. Die CLI verbindet in einem eigenen
-# asyncio.run() und schliesst dessen Loop, bevor der Agent fragt -- die
-# Verbindung ist dann schon tot. Ursache, Messung und die zwei moeglichen
-# Fixes stehen im README von src/plugins/mcp_client.
-# `agent-cli mcp test <name>` ist davon nicht betroffen.
+# Reichweite: Tools externer Server erreichen Agenten ueber die API UND ueber
+# `agent-cli run`. Letzteres ging bis 02.09.2026 nicht -- die CLI verband in
+# einem eigenen asyncio.run() und schloss dessen Loop, bevor der Agent fragte.
+# Sie faehrt jetzt EINEN Loop; die Erklaerung steht bei run_async() in
+# agent_system/agent_cli.py.
 
 external_servers:
   # Connection settings

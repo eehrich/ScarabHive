@@ -32,35 +32,31 @@ result is worth reading twice — if the server failed to connect, its tools wer
 never discovered, and *every* pattern matches nothing. Check
 `External MCP servers: N connected` in the log before suspecting the pattern.
 
-### External tools reach agents through the API only
+### The CLI needed one event loop for this to work
 
-`agent-cli run` cannot give an agent a foreign tool, and the reason is
+`agent-cli run` used to hand agents no foreign tools at all, and the reason was
 structural rather than a misconfiguration. A connection counts as live while
 its task runs (`ServerConnection.connected` is `self._task is not None and not
-self._task.done()`), but `agent_cli.py` drives bootstrap and the agent run
-through **separate `asyncio.run()` calls** — `initialize_mcp` in one, the run
-in another. `asyncio.run` closes its loop on return, so every connection task
-is already done by the time the agent asks for tools.
-
-Measured 2026-09-01 with two servers connected seconds earlier:
+self._task.done()`), but `agent_cli.py` drove bootstrap and the agent run
+through **separate `asyncio.run()` calls**, and `asyncio.run` closes its loop on
+return. Every connection task was therefore already done by the time the agent
+asked:
 
 ```
 INFO  External MCP servers: 2 connected, 0 failed
 PROBE conns=['everything','everything_local'] connected=[]
-DEBUG Filtered available tools for agent ... -> []
 WARNING Agent ... allow list patterns produced an empty tool set
 ```
 
-Under uvicorn one loop spans everything, so the same agent and the same server
-work over `/run` — verified the same day, with the server's own wording in the
-log (`External tool everything.get-sum returned: The sum of 17 and 25 is 42.`).
+Under uvicorn one loop spans everything, which is why the same agent and server
+always worked over `/run` — and why `agent-cli mcp test` looked fine too: it
+opens a loop of its own and uses it immediately.
 
-`agent-cli mcp test <name>` is unaffected: it does its own connecting inside
-the one loop it opens.
-
-Fixing it means one event loop across the CLI's bootstrap, run and shutdown, or
-a lazy reconnect when a configured server has no live connection. Both are
-changes to a CLI the whole writer pipeline runs on, so neither is a drive-by.
+Fixed 2026-09-02: the CLI runs every step on one persistent loop
+(`agent_cli.run_async`, torn down once at exit). Both routes now hand over the
+same 13 tools, with the server's own wording in the log
+(`External tool everything_local.get-sum returned: The sum of 19 and 23 is 42.`).
+`tests/cli/test_cli_event_loop.py` pins the invariant.
 
 ## Configuration
 

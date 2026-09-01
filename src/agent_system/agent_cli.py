@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
 import json
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 
 import yaml
@@ -362,6 +364,81 @@ async def _block_server_tool(tool_service: ToolService, server_name: str, tool_n
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
 
 
+#: The CLI runs a SEQUENCE of coroutines with plain synchronous code between
+#: them: bootstrap, batch system, session handling, the agent run, then the
+#: shutdowns. ``asyncio.run`` gives each of those its own loop and CLOSES it on
+#: return -- which silently kills whatever a previous step left running.
+#:
+#: That is not theoretical. An external MCP server connects during bootstrap
+#: and keeps a task alive for the session; ``ServerConnection.connected`` is
+#: ``self._task is not None and not self._task.done()``. With a loop per step
+#: that task is already done when the agent asks for tools, so the pool reports
+#: no connected server, the catalogue comes back empty, and the agent silently
+#: gets zero external tools -- while ``agent-cli mcp test`` works, because it
+#: opens and uses a single loop of its own. Measured 2026-09-01:
+#: "External MCP servers: 2 connected, 0 failed" followed seconds later by
+#: ``connected=[]``.
+#:
+#: One loop for the whole process fixes it without restructuring anything: the
+#: call sites keep their order and the synchronous code between them stays put.
+_cli_loop: Optional[asyncio.AbstractEventLoop] = None
+#: The thread the shared loop belongs to. A loop may only be driven from the
+#: thread that created it, and ``asyncio.run`` gave every thread its own by
+#: construction -- a property this helper would otherwise silently drop.
+_cli_loop_thread: Optional[int] = None
+
+
+def run_async(coro: Any) -> Any:
+    """Run one coroutine on the CLI's single, persistent event loop.
+
+    Drop-in for ``asyncio.run`` at this layer, with the one difference that
+    matters: the loop stays open afterwards, so anything the coroutine started
+    is still alive for the next call.
+
+    Off the owning thread it falls back to ``asyncio.run``. Sharing the loop
+    there would be a cross-thread use of an event loop -- the sequencing this
+    exists for is a property of the CLI's single main thread, not of the
+    process.
+    """
+    global _cli_loop, _cli_loop_thread
+    if _cli_loop is not None and _cli_loop_thread != threading.get_ident():
+        return asyncio.run(coro)
+    if _cli_loop is None or _cli_loop.is_closed():
+        _cli_loop_thread = threading.get_ident()
+        _cli_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_cli_loop)
+        # Every exit path -- early return of a subcommand, exception, sys.exit
+        # -- must still tear the loop down, so register once, here, instead of
+        # hoping a finally block covers them all.
+        atexit.register(close_cli_loop)
+    return _cli_loop.run_until_complete(coro)
+
+
+def close_cli_loop() -> None:
+    """Tear down the CLI loop: cancel leftovers, close async generators, close.
+
+    This is what ``asyncio.run`` did after every single step. Doing it ONCE at
+    process exit is the whole point -- doing it in between was the bug.
+    """
+    global _cli_loop, _cli_loop_thread
+    loop, _cli_loop = _cli_loop, None
+    _cli_loop_thread = None
+    if loop is None or loop.is_closed():
+        return
+    try:
+        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(
+                asyncio.gather(*pending, return_exceptions=True))
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    except Exception as exc:  # pragma: no cover - best effort at exit
+        logging.getLogger(__name__).debug("CLI loop teardown: %s", exc)
+    finally:
+        loop.close()
+
+
 def main() -> None:
     global logger
     # Windows-Konsolen/Pipes laufen oft mit cp1252 — Unicode in Ausgaben
@@ -668,7 +745,7 @@ def main() -> None:
                 return await client.post(url, headers=headers)
 
         try:
-            resp = asyncio.run(_do_reload())
+            resp = run_async(_do_reload())
         except httpx.ConnectError:
             print(json.dumps({"error": "cannot connect to server", "url": url,
                               "hint": "is the server running? set --url / AGENT_SERVER_URL"}, indent=2))
@@ -1059,7 +1136,7 @@ def main() -> None:
 
         # Run the async MCP handler
         try:
-            asyncio.run(handle_mcp_command())
+            run_async(handle_mcp_command())
         except Exception as e:
             print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return
@@ -1189,7 +1266,7 @@ def main() -> None:
     vprint("[cli] initializing MCP integration...")
     logger.info("Initializing MCP integration")
     try:
-        asyncio.run(initialize_mcp(config))
+        run_async(initialize_mcp(config))
         vprint("[cli] MCP integration initialized")
         logger.info("MCP integration initialized successfully")
     except Exception as e:
@@ -1199,7 +1276,7 @@ def main() -> None:
     # Initialize batch queue manager if any LLM models have batch enabled
     vprint("[cli] initializing batch queue manager...")
     try:
-        asyncio.run(init_batch_system(config))
+        run_async(init_batch_system(config))
         vprint("[cli] batch queue manager initialized")
         logger.info("Batch queue manager initialized successfully")
     except Exception as e:
@@ -1447,7 +1524,7 @@ def main() -> None:
         return True, was_new_session  # Continue with task execution
 
     # Run session operations
-    should_continue, was_new_session = asyncio.run(handle_session_operations())
+    should_continue, was_new_session = run_async(handle_session_operations())
     if not should_continue:
         return
 
@@ -1865,9 +1942,9 @@ def main() -> None:
             # Raw mode: use run_events with result collection
             from .servers.agent.result_utils import collect_final_result
 
-            result = asyncio.run(collect_final_result(agent, task_input, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
+            result = run_async(collect_final_result(agent, task_input, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
         else:
-            result = asyncio.run(_stream_and_run_with_status(agent, task_input, actual_session_id, show_mcp=show_mcp, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
+            result = run_async(_stream_and_run_with_status(agent, task_input, actual_session_id, show_mcp=show_mcp, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
 
         # Chat saved its own sessions per turn and prints its own output.
         if is_chat:
@@ -1918,12 +1995,12 @@ def main() -> None:
 
         # Only save session if not cancelled
         if not result.get("cancelled", False):
-            asyncio.run(save_session_after_task())
+            run_async(save_session_after_task())
 
     finally:
         # Shutdown batch queue manager first
         try:
-            asyncio.run(shutdown_batch_system())
+            run_async(shutdown_batch_system())
             vprint("[cli] batch queue manager shut down")
             logger.info("Batch queue manager shut down successfully")
         except Exception as e:
@@ -1931,7 +2008,7 @@ def main() -> None:
         
         # Ensure MCP integration is properly shut down to close aiohttp sessions
         try:
-            asyncio.run(shutdown_mcp())
+            run_async(shutdown_mcp())
             vprint("[cli] MCP integration shut down")
             logger.info("MCP integration shut down successfully")
         except Exception as e:
