@@ -1882,6 +1882,14 @@ def run_chat_loop(
                 task = expanded
                 command = None
 
+            if resolution.kind == "message":
+                # The "//" escape is resolved HERE, not left to the agent. The
+                # person typed "//compact" precisely so the model would see
+                # "/compact"; the terminal used to forward the raw line while
+                # the web surface stripped it, so the same keystrokes meant two
+                # different things depending on where they were typed.
+                task = resolution.payload
+
             if command == "exit":
                 break
             if command == "new":

@@ -145,7 +145,15 @@ def parse_chat_command(line: str) -> tuple[Optional[str], str]:
     """
     stripped = line.strip()
     if stripped.startswith("//"):
-        return None, stripped[1:]
+        # Only where an escape is NEEDED. "//compact" has to reach the agent
+        # as "/compact" -- that is what the escape is for. But "// TODO: fix"
+        # is a pasted comment and "//192.168.1.1/share" is a UNC path; eating
+        # a slash there corrupts the message the person actually sent.
+        escaped = stripped[1:]
+        head = escaped.split()
+        if head and (_COMMAND_WORD.match(head[0]) or _QUALIFIED_WORD.match(head[0])):
+            return None, escaped
+        return None, stripped
     if not stripped.startswith("/"):
         return None, stripped
     if "\n" in stripped:
@@ -252,6 +260,11 @@ def looks_like_command(text: str) -> bool:
     Commands never reach the agent -- but before "/h" became an alias, unknown
     ones were passed through as messages and are now sitting in old sessions.
     They are not part of the conversation and would only add noise.
+
+    Only a word that IS a command counts, not everything shaped like one: a
+    message escaped with "//" is stored with a SINGLE slash, exactly as the
+    person meant it, and hiding those left the agent's answer standing in
+    /history with no question above it.
     """
     stripped = text.strip()
     if "\n" in stripped:
@@ -259,4 +272,4 @@ def looks_like_command(text: str) -> bool:
         # command. Mirror that rule -- otherwise a multiline turn whose first
         # line looks like "/word ..." is hidden by /history and /last.
         return False
-    return bool(stripped) and bool(_COMMAND_WORD.match(stripped.split(" ")[0]))
+    return stripped.split(" ")[0].lower() in _COMMAND_ALIASES

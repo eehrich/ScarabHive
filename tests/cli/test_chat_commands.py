@@ -335,3 +335,45 @@ class TestBuiltinsCannotBeAdvertisedAway:
 
         assert spellings([PluginCommand("mem", "history", "", "mem_history")]) == [
             "mem:history"]
+
+
+class TestTheDoubleSlashEscape:
+    """`//text` sends a message that starts with a command word.
+
+    Two halves were wrong. The terminal never applied the escape at all -- it
+    forwarded the raw line while the web surface stripped it, so the same
+    keystrokes meant different things on the two surfaces. And the strip was
+    unconditional, which quietly ate a slash from any pasted line beginning
+    with `//`.
+    """
+
+    @pytest.mark.parametrize("line,expected", [
+        ("//help", "/help"),
+        ("//compact now", "/compact now"),
+        ("//plug:cmd", "/plug:cmd"),
+        ("//unbekannt bitte", "/unbekannt bitte"),
+    ])
+    def test_a_command_word_is_unescaped(self, line, expected):
+        assert parse_chat_command(line) == (None, expected)
+        assert resolve(line).payload == expected
+
+    @pytest.mark.parametrize("line", [
+        "// TODO: das noch fixen",
+        "//192.168.1.1/share",
+        "// eslint-disable-next-line",
+        "//",
+    ])
+    def test_anything_else_keeps_both_slashes(self, line):
+        """No escape was needed, so none is applied -- eating a slash here
+        corrupts the message the person actually sent."""
+        assert parse_chat_command(line) == (None, line)
+
+    def test_an_escaped_message_stays_visible_in_history(self):
+        """It is a message, not a command. Hiding it left the agent's answer
+        in /history with no question above it."""
+        assert looks_like_command("/unbekannt bitte") is False
+
+    def test_a_real_command_is_still_filtered_out_of_history(self):
+        """Counter-check: the leftovers this filter exists for must still go."""
+        assert looks_like_command("/sessions") is True
+        assert looks_like_command("/hist") is True

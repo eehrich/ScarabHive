@@ -382,36 +382,39 @@ class TestRunPluginCommandOnTheLoop:
         assert "cancelled" in capsys.readouterr().err
 
 
+def _drive_repl(monkeypatch, lines, agent):
+    """Run the real run_chat_loop over *lines*, return the tasks that became
+    LLM turns. _execute_turn is stubbed because it is the part that spends
+    money -- which is exactly what several of these tests assert about."""
+    turns = []
+    monkeypatch.setattr("agent_system.cli_utils.chat._execute_turn",
+                        lambda loop, ctx, task, renderer: turns.append(task) or {})
+    monkeypatch.setattr("agent_system.cli_utils.chat._available_skills",
+                        lambda ctx: [])
+    fed = iter(lines)
+
+    def fake_input(prompt=""):
+        try:
+            return next(fed)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+    agent.llm = SimpleNamespace(model="m")
+    run_chat_loop(
+        agent=agent, entry_name="a", session_service=None, session_user="u",
+        session_id="s1", was_new_session=False, llm_profile="p",
+        show_status=False)
+    return turns
+
+
 class TestTheReplDispatchesToThePlugin:
-    """Drives the real run_chat_loop with piped input. _execute_turn is stubbed
-    because it is the part that would spend money -- which is exactly the point
-    of the first assertion."""
-
     def _run(self, monkeypatch, lines, agent):
-        turns = []
-        monkeypatch.setattr("agent_system.cli_utils.chat._execute_turn",
-                            lambda loop, ctx, task, renderer: turns.append(task) or {})
-        monkeypatch.setattr("agent_system.cli_utils.chat._available_skills",
-                            lambda ctx: [])
-        fed = iter(lines)
-
-        def fake_input(prompt=""):
-            try:
-                return next(fed)
-            except StopIteration:
-                raise EOFError
-
-        monkeypatch.setattr(builtins, "input", fake_input)
-        run_chat_loop(
-            agent=agent, entry_name="a", session_service=None, session_user="u",
-            session_id="s1", was_new_session=False, llm_profile="p",
-            show_status=False)
-        return turns
+        return _drive_repl(monkeypatch, lines, agent)
 
     def test_a_plugin_command_runs_the_plugin_and_costs_no_turn(
             self, monkeypatch, capsys):
         agent = _agent()
-        agent.llm = SimpleNamespace(model="m")
         turns = self._run(monkeypatch, ["/compact"], agent)
         assert agent.calls, "the plugin tool was never dispatched"
         assert turns == [], "the command was sent to the LLM as a paid turn"
@@ -421,19 +424,33 @@ class TestTheReplDispatchesToThePlugin:
         """Counter-check: without it the assertion above passes for an agent
         that simply never runs anything."""
         agent = _agent()
-        agent.llm = SimpleNamespace(model="m")
         assert self._run(monkeypatch, ["wie geht es dir"], agent) == [
             "wie geht es dir"]
 
     def test_the_command_is_listed_in_help(self, monkeypatch, capsys):
         agent = _agent()
-        agent.llm = SimpleNamespace(model="m")
         self._run(monkeypatch, ["/help"], agent)
         assert "Plugin commands:" in capsys.readouterr().out
 
     def test_a_typo_suggests_the_plugin_command(self, monkeypatch, capsys):
         agent = _agent()
-        agent.llm = SimpleNamespace(model="m")
         self._run(monkeypatch, ["/compa"], agent)
         out = capsys.readouterr().out
         assert "Unknown command" in out and "/compact" in out
+
+
+class TestTheEscapeReachesTheAgent:
+    """The terminal used to forward "//compact" raw while the web surface sent
+    "/compact" -- the same keystrokes meant two different things."""
+
+    def test_an_escaped_command_word_arrives_unescaped(self, monkeypatch):
+        assert _drive_repl(monkeypatch, ["//compact"], _agent()) == ["/compact"]
+
+    def test_a_pasted_comment_keeps_both_slashes(self, monkeypatch):
+        assert _drive_repl(monkeypatch, ["// TODO: fix"], _agent()) == [
+            "// TODO: fix"]
+
+    def test_the_escape_does_not_run_the_plugin_command(self, monkeypatch):
+        agent = _agent()
+        _drive_repl(monkeypatch, ["//compact"], agent)
+        assert agent.calls == []

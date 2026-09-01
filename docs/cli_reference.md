@@ -159,9 +159,11 @@ rts
 ```
 
 or a trailing backslash to continue on the next line. A message that has to
-*start* with a command word is escaped with a doubled slash (`//new ...`);
-anything else beginning with `/` that is not a known command — a path like
-`/etc/nginx/nginx.conf`, for instance — is sent as an ordinary message.
+*start* with a command word is escaped with a doubled slash — `//new ...`
+reaches the agent as `/new ...`; anything else beginning with `/` that is not
+a known command — a path like `/etc/nginx/nginx.conf`, for instance — is sent
+as an ordinary message. The escape only fires where it is needed: a pasted
+`// TODO: fix` or `//192.168.1.1/share` keeps both slashes.
 
 **Display:** tool activity is rendered like the WebUI front panel -- one line
 per operation that updates in place and collapses into its `✓`/`✗` end state,
