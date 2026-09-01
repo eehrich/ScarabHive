@@ -5,9 +5,10 @@ carried it, so `if finish_reason == "length"` was dead code and a truncated
 answer was accepted as an empty one (which then triggers a 'Continue' nudge and
 replays the same runaway).
 
-Scope: only httpx_client and the gemini clients report finish_reason at all
-(anthropic, ollama and openai_responses never set it), so the guard is live
-for those providers only. The transport is provider-agnostic regardless.
+Scope: httpx_client, the gemini clients and -- since 2026-09-01 --
+openai_responses report finish_reason (anthropic and ollama still do not),
+so the guard is live for those providers. The transport is provider-agnostic
+regardless.
 """
 import pytest
 from unittest.mock import AsyncMock
@@ -149,6 +150,55 @@ class TestNonStreamingPath:
         events = await _collect(agent)
         errors = [e for e in events if e.get("type") == "error"]
         assert errors and "finish_reason=length" in errors[0].get("message", "")
+
+
+class TestTruncatedButNotEmpty:
+    """The existing guard only covers "the model produced nothing at all".
+
+    An answer WITH content that was cut off at the cap fell through as if
+    complete -- a scene ending mid-sentence, or a tool call whose arguments
+    JSON is half-written. Measured 2026-09-01: a writing agent hit
+    max_output_tokens, the cut-off text was accepted, nothing said so.
+    """
+
+    @pytest.mark.asyncio
+    async def test_truncated_with_content_is_reported(self, caplog):
+        agent = _agent()
+        agent.llm = _blocking_llm({
+            "assistant": {"role": "assistant", "content": "halber Satz, der mitten"},
+            "usage": {"completion_tokens": 4096},
+            "finish_reason": "length",
+        })
+        with caplog.at_level("WARNING"):
+            await _collect(agent)
+        assert any("truncated at the output cap" in r.message for r in caplog.records), (
+            f"keine Warnung: {[r.message for r in caplog.records]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_truncated_with_content_is_not_an_error(self):
+        """Deliberately no error: that would switch the fallback profile
+        persistently and discard output that is usually still usable."""
+        agent = _agent()
+        agent.llm = _blocking_llm({
+            "assistant": {"role": "assistant", "content": "halber Satz, der mitten"},
+            "usage": {"completion_tokens": 4096},
+            "finish_reason": "length",
+        })
+        events = await _collect(agent)
+        assert not [e for e in events if e.get("type") == "error"]
+
+    @pytest.mark.asyncio
+    async def test_complete_answer_is_not_reported(self, caplog):
+        agent = _agent()
+        agent.llm = _blocking_llm({
+            "assistant": {"role": "assistant", "content": "fertige Antwort"},
+            "finish_reason": "stop",
+        })
+        with caplog.at_level("WARNING"):
+            await _collect(agent)
+        assert not any("truncated at the output cap" in r.message
+                       for r in caplog.records)
 
 
 class TestStreamingErrorSurfacing:

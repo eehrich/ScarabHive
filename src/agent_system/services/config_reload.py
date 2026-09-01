@@ -20,6 +20,37 @@ from typing import Any, Dict
 logger = logging.getLogger(__name__)
 
 
+#: A hybrid plugin (tools + hooks + web UI in one class) is what the registry
+#: holds, and it keeps the actual MCP server behind an attribute instead of
+#: inheriting from it. Looking for ``reload_config`` only on the registered
+#: object therefore missed the ONLY implementation there was: measured
+#: 2026-09-01 on the live system, the reload reported "ok" and refreshed 0 of
+#: 286 servers, ``sub_agent_manager`` among the unsupported — although it
+#: implements the method on ``SubAgentManagerServer``.
+_INNER_SERVER_ATTRS = ("server", "mcp_server")
+
+
+def _reload_target(plugin: Any):
+    """The bound ``reload_config`` to call, or None if there is none.
+
+    Checks the registered object first, then its inner MCP server — the
+    hybrid-plugin convention. Delegating per plugin would work too, but
+    every future hybrid would have to remember it; the class of bug is
+    what needs closing, not the one instance.
+    """
+    fn = getattr(plugin, "reload_config", None)
+    if callable(fn):
+        return fn
+    for attr in _INNER_SERVER_ATTRS:
+        inner = getattr(plugin, attr, None)
+        if inner is None:
+            continue
+        fn = getattr(inner, "reload_config", None)
+        if callable(fn):
+            return fn
+    return None
+
+
 def reload_plugin_configs(fresh_config: Any) -> Dict[str, Any]:
     """Refresh live plugin instances from ``fresh_config``.
 
@@ -37,11 +68,7 @@ def reload_plugin_configs(fresh_config: Any) -> Dict[str, Any]:
     # The process-wide registry that holds the LIVE plugin instances. Its
     # adapters expose the underlying plugin as ``.plugin_server``.
     from agent_system.plugins.mcp_adapter import plugin_mcp_registry
-
-    servers_cfg: Dict[str, Any] = {}
-    plugins_cfg = getattr(fresh_config, "plugins", None)
-    if plugins_cfg is not None and getattr(plugins_cfg, "servers", None):
-        servers_cfg = plugins_cfg.servers or {}
+    from agent_system.config.settings import get_mcp_config_by_name
 
     report: Dict[str, Any] = {
         "refreshed": [],
@@ -54,14 +81,27 @@ def reload_plugin_configs(fresh_config: Any) -> Dict[str, Any]:
     for name in plugin_mcp_registry.list_servers():
         adapter = plugin_mcp_registry.get_server(name)
         plugin = getattr(adapter, "plugin_server", None)
-        new_cfg = servers_cfg.get(name)
+
+        # The MERGED config, exactly as bootstrap built the live instance from
+        # it (default_config + the ``type:`` inheritance chain). Handing over
+        # the raw ``plugins.servers[name]`` entry instead would feed back the
+        # unresolved base values: measured 2026-09-01 against the real config,
+        # 133 of 203 agents carry a raw ``max_steps`` of 20 while their merged
+        # value is 100 or 30 — a reload would have silently DOWNGRADED them.
+        try:
+            new_cfg = get_mcp_config_by_name(name, fresh_config)
+        except Exception as e:  # a broken entry must not abort the others
+            logger.exception("could not resolve config for server '%s'", name)
+            report["errors"].append(
+                {"server": name, "error": f"config resolution failed: {e}"})
+            continue
 
         if new_cfg is None:
             report["not_in_config"].append(name)
             continue
 
-        reload_fn = getattr(plugin, "reload_config", None)
-        if not callable(reload_fn):
+        reload_fn = _reload_target(plugin)
+        if reload_fn is None:
             report["unsupported"].append(name)
             continue
 

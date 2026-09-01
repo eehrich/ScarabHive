@@ -660,5 +660,128 @@ class TestAnthropicFuturePath:
         assert n <= 4
 
 
+class TestTruncationReachesTheCaller:
+    """A cut-off answer must be distinguishable from a complete one.
+
+    Measured 2026-09-01 in production: this client detected
+    ``status=incomplete``, logged a warning and returned the truncated
+    answer as a normal result. The agent server's content-filter guard
+    and its truncation guard both key on ``finish_reason``, so for every
+    Responses model both were dead. Two real cases that night: a
+    content_filter cut and a max_output_tokens cut of a writing agent.
+    """
+
+    def test_max_output_tokens_surfaces_as_length(self):
+        c = _client()
+        result = c._format_response({
+            "output": SAMPLE_OUTPUT,
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+        })
+        # "length" is the chat-completions vocabulary the server's guards
+        # already speak — not the Responses API's own wording.
+        assert result["finish_reason"] == "length"
+
+    def test_content_filter_surfaces(self):
+        c = _client()
+        result = c._format_response({
+            "output": SAMPLE_OUTPUT,
+            "status": "incomplete",
+            "incomplete_details": {"reason": "content_filter"},
+        })
+        assert result["finish_reason"] == "content_filter"
+
+    def test_unknown_reason_is_passed_through_not_dropped(self):
+        """A reason we have no mapping for must stay visible."""
+        c = _client()
+        result = c._format_response({
+            "output": SAMPLE_OUTPUT,
+            "status": "incomplete",
+            "incomplete_details": {"reason": "some_future_reason"},
+        })
+        assert result["finish_reason"] == "some_future_reason"
+
+    def test_complete_response_carries_no_finish_reason(self):
+        """The normal path must stay untouched — a spurious finish_reason
+        would feed the server's guards on every single healthy answer."""
+        c = _client()
+        result = c._format_response({"output": SAMPLE_OUTPUT, "status": "completed"})
+        assert "finish_reason" not in result
+
+    def test_incomplete_without_details_still_surfaces(self):
+        """``reason`` is Optional in the SDK type and upstream is known to
+        send the details empty. The status alone already says the answer is
+        cut off, so keying on the details would drop exactly those cases
+        back into silence."""
+        c = _client()
+        result = c._format_response({"output": SAMPLE_OUTPUT, "status": "incomplete"})
+        assert result["finish_reason"] == "length"
+
+    def test_incomplete_with_null_reason_still_surfaces(self):
+        c = _client()
+        result = c._format_response({
+            "output": SAMPLE_OUTPUT,
+            "status": "incomplete",
+            "incomplete_details": {"reason": None},
+        })
+        # "length" and not "content_filter": the conservative reading warns
+        # without switching the fallback profile for an hour.
+        assert result["finish_reason"] == "length"
+
+    def test_truncated_answer_still_keeps_its_content(self):
+        """Surfacing the truncation must not cost the partial output — the
+        caller decides what to do with it, this client does not discard."""
+        c = _client()
+        result = c._format_response({
+            "output": SAMPLE_OUTPUT,
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+        })
+        assert result["assistant"]["tool_calls"], "partial output was dropped"
+
+    def test_streaming_chunk_carries_the_truncation(self):
+        """The streaming assembler reads finish_reason off the CHUNK.
+
+        Setting it only on the result would leave the guards dead on this
+        path — the mutation that removes the chunk line stays green
+        without this test.
+        """
+        import asyncio
+
+        c = _client()
+
+        async def _fake_request(*a, **kw):
+            return {
+                "assistant": {"role": "assistant", "content": "half a sen"},
+                "usage": {"total_tokens": 5},
+                "finish_reason": "length",
+            }
+
+        c._request = _fake_request
+
+        async def _collect():
+            return [chunk async for chunk in c.chat_tools_streaming([], [])]
+
+        chunks = asyncio.run(_collect())
+        assert len(chunks) == 1, "fixture produced no final chunk"
+        assert chunks[0]["finish_reason"] == "length"
+
+    def test_streaming_chunk_stays_clean_when_complete(self):
+        import asyncio
+
+        c = _client()
+
+        async def _fake_request(*a, **kw):
+            return {"assistant": {"role": "assistant", "content": "done"}}
+
+        c._request = _fake_request
+
+        async def _collect():
+            return [chunk async for chunk in c.chat_tools_streaming([], [])]
+
+        chunks = asyncio.run(_collect())
+        assert "finish_reason" not in chunks[0]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

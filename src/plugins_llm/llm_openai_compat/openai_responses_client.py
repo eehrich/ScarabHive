@@ -99,6 +99,16 @@ logger = logging.getLogger(__name__)
 #: retried here instead of escalating to a model switch.
 _TRANSIENT_BODY_ERROR_CODES = frozenset({"server_error"})
 
+#: The Responses API names its truncation reasons differently from the
+#: chat-completions ``finish_reason`` the agent server's guards key on.
+#: An unmapped reason is passed through verbatim rather than dropped — a
+#: new upstream reason must stay visible, not vanish into a "complete"
+#: looking answer.
+_INCOMPLETE_REASON_TO_FINISH = {
+    "max_output_tokens": "length",
+    "content_filter": "content_filter",
+}
+
 #: format tag of the verbatim-items block this client writes/reads.
 RESPONSES_ITEMS_FORMAT = "openai-responses-items-v1"
 RESPONSES_ITEMS_TYPE = "reasoning.responses_items"
@@ -723,13 +733,32 @@ class OpenAIResponsesClient(LLMClient):
 
         status = response_data.get("status")
         incomplete = response_data.get("incomplete_details")
-        if status == "incomplete" and incomplete:
+        result: dict = {"assistant": assistant}
+        # ``status`` alone decides, not incomplete_details: the SDK types the
+        # reason as OPTIONAL (``Literal["max_output_tokens", "content_filter"]
+        # | None``), and upstream is known to send the object empty. Keying on
+        # the details would drop exactly those cases back into silence — the
+        # status already says the answer is cut off.
+        if status == "incomplete":
+            reason = (incomplete or {}).get("reason")
             logger.warning(
                 "Responses API returned incomplete response (%s), model=%s",
-                incomplete.get("reason"), self.model,
+                reason or "reason absent", self.model,
+            )
+            # Hand the truncation to the caller, not just to the log. Without
+            # this the agent server cannot tell a complete answer from one the
+            # provider cut short: its content-filter guard and its truncation
+            # guard both key on ``finish_reason``, and this client never set
+            # it — so for every Responses model both guards were dead.
+            #
+            # No reason given -> "length", the conservative reading: it warns
+            # and fails fast on an empty answer, but does NOT switch the
+            # fallback profile for an hour the way "content_filter" does.
+            # Guessing the heavier reason would punish the wrong model.
+            result["finish_reason"] = _INCOMPLETE_REASON_TO_FINISH.get(
+                reason, reason or "length",
             )
 
-        result: dict = {"assistant": assistant}
         usage = self._map_usage(response_data.get("usage"))
         if usage:
             result["usage"] = usage
@@ -1048,6 +1077,11 @@ class OpenAIResponsesClient(LLMClient):
         chunk = {"type": "final", "assistant": result.get("assistant", {})}
         if "usage" in result:
             chunk["usage"] = result["usage"]
+        # The streaming assembler reads the truncation off the chunk, not off
+        # the result — dropping it here would leave the guards dead on this
+        # path even though _format_response set it.
+        if "finish_reason" in result:
+            chunk["finish_reason"] = result["finish_reason"]
         yield chunk
 
     async def close(self) -> None:  # per-request AsyncClient — nothing to close

@@ -329,6 +329,59 @@ class Agent(MCPServer):
         # Set agent reference in MCP integration for cancellation support
         self._set_agent_reference_in_mcp()
 
+    #: Agent-config knobs that a deliberate reload may change on a LIVE agent.
+    #: Every one of them is a plain scalar that the run loop re-reads from
+    #: ``self.agent_config`` on each request, so a change takes effect on the
+    #: NEXT run while in-flight runs keep the value they started with.
+    #:
+    #: Deliberately NOT here, because the startup wired something from them and
+    #: refreshing only the config would desync the two:
+    #:   - llm_profile / advanced_llm_profile / llm_params / fallback_chain:
+    #:     ``self.llm`` was built from these at startup.
+    #:   - tools: the tool schemas are wired into the MCP integration at startup.
+    #:   - loop_detection / timeouts: read once into derived objects
+    #:     (``_loop_detection_config``, ``self.timeouts``).
+    #: Those still need a restart, and saying so beats pretending otherwise.
+    _RELOADABLE_AGENT_FIELDS = (
+        "max_steps",
+        "auto_escalate_on_stuck",
+        "escalate_rounds",
+        "escalate_max_calls",
+        "escalate_error_streak",
+        "fallback_recovery_seconds",
+        "fallback_recovery_jitter_percent",
+    )
+
+    def reload_config(self, mcp_config: Any) -> dict:
+        """Refresh the live agent's plain config knobs from a fresh parse.
+
+        Called by the deliberate config-reload flow (POST /admin/reload-config,
+        ``agent-cli reload``). Without this the reload skipped every agent as
+        "unsupported": raising an agent's ``max_steps`` needed a full API
+        restart, which drops in-flight book runs.
+
+        Returns the fields that actually changed ({} if none), so the caller
+        can report exactly what took effect.
+        """
+        new_agent_cfg = getattr(mcp_config, "agent_config", None)
+        if new_agent_cfg is None or self.agent_config is None:
+            return {}
+
+        changes: dict[str, dict] = {}
+        for field in self._RELOADABLE_AGENT_FIELDS:
+            if not hasattr(new_agent_cfg, field):
+                continue
+            new_value = getattr(new_agent_cfg, field)
+            old_value = getattr(self.agent_config, field, None)
+            if old_value == new_value:
+                continue
+            setattr(self.agent_config, field, new_value)
+            changes[field] = {"old": old_value, "new": new_value}
+
+        if changes:
+            logger.info("[%s] config reload applied: %s", self.name, changes)
+        return changes
+
     def _create_loop_detector(self) -> ToolCallLoopDetector:
         """Create a fresh loop detector for a single request.
 
@@ -2563,6 +2616,24 @@ class Agent(MCPServer):
             # Yield pending status events after LLM response
             for status_event in yield_pending_status_events():
                 yield status_event
+
+            # Truncated but NOT empty. The guard below only covers "the model
+            # produced nothing at all", so a cut-off answer WITH content fell
+            # through as if it were complete — a scene ending mid-sentence, or
+            # a tool call whose arguments JSON is half-written (which upstream
+            # then rejects on the next turn as invalid_prompt).
+            # Deliberately a warning and not an error: an error switches the
+            # fallback profile persistently and discards output that is
+            # usually still usable — the same trade-off the incomplete_stream
+            # branch settles the same way.
+            if finish_reason == "length" and (content or tool_calls):
+                logger.warning(
+                    "[%s] Answer truncated at the output cap (finish_reason=length, "
+                    "model=%s, chars=%d, tool_calls=%d) — it is NOT complete. "
+                    "Raise max_tokens or lower the reasoning level if this recurs.",
+                    self.name, getattr(current_llm, "model", "?"),
+                    len(content or ""), len(tool_calls or []),
+                )
 
             # Infinite loop guard: Track consecutive empty responses FIRST
             # (before checking tool calls, to catch completely empty responses)
