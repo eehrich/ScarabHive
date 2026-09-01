@@ -16,6 +16,11 @@ the skill registry, so `/writer` runs the writer skill exactly the way
 behaves, and it matches what the agent can already reach — `skills_list` never
 filtered by agent, so restricting the human here would leave the person at the
 keyboard with less reach than the model.
+
+Plugins are the third source: a plugin declares `commands:` in its schema.yaml
+and `/compact` runs context_engineer's compaction. They sit BETWEEN built-ins
+and skills — a skill folder someone drops in must not shadow shipped code, and
+neither may take over `/help`. See docs/plugin_commands_design.md.
 """
 from __future__ import annotations
 
@@ -73,9 +78,19 @@ _COMMAND_ALIASES: dict[str, str] = {
 # what separates a mistyped command from a path -- "/h" is a typo the user
 # wants flagged, "/etc/nginx/nginx.conf" is ordinary input for a sysadmin
 # agent and firing an LLM turn on either extreme is wrong.
+_NAME = r"[A-Za-z][A-Za-z0-9_-]*"
 _COMMAND_WORD = re.compile(r"^/[A-Za-z?][A-Za-z0-9_-]*$")
+_COMMAND_NAME = re.compile(rf"^{_NAME}$")
 
-Kind = Literal["command", "skill", "message", "unknown"]
+# The qualified plugin spelling, "/context_engineer:compact". Deliberately NOT
+# part of _COMMAND_WORD: that regex also filters stored messages
+# (looks_like_command), and widening it turned "/todo:milch kaufen" into an
+# "unknown command" -- on the web surface too, where plugin commands do not
+# even exist. A colon word is claimed only when it really names a declared
+# command; anything else stays the message it always was.
+_QUALIFIED_WORD = re.compile(rf"^/{_NAME}:{_NAME}$")
+
+Kind = Literal["command", "skill", "plugin", "message", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -83,10 +98,36 @@ class Resolution:
     """What a submitted line turned out to be."""
 
     kind: Kind
-    #: Command name, skill name, or None for a plain message.
+    #: Command name, skill name, ``plugin:command``, or None for a plain message.
     name: Optional[str]
-    #: Arguments for a command/skill, or the message itself.
+    #: Arguments for a command/skill/plugin command, or the message itself.
     payload: str
+
+
+@dataclass(frozen=True)
+class PluginCommand:
+    """A slash command a plugin declares in its ``schema.yaml``.
+
+    What a person sees follows the ecosystem: a name, one line of help, and a
+    hint for the arguments (Claude Code spells that ``argument-hint``). What it
+    RUNS is one of the plugin's own tools -- so a command can never reach past
+    what this agent is already allowed to call, and the plugin does not get a
+    second, unguarded entry point next to its tools.
+    """
+
+    plugin: str
+    name: str
+    summary: str
+    #: Flat tool name, already rendered ("context_engineer_compact").
+    tool: str
+    #: Tool parameter that receives the rest of the line. None = no arguments.
+    argument: Optional[str] = None
+    argument_hint: str = ""
+
+    @property
+    def qualified(self) -> str:
+        """``plugin:name`` -- the spelling that is never ambiguous."""
+        return f"{self.plugin}:{self.name}"
 
 
 def commands_for(surface: str) -> tuple[ChatCommand, ...]:
@@ -122,23 +163,69 @@ def parse_chat_command(line: str) -> tuple[Optional[str], str]:
     return None, stripped
 
 
-def resolve(line: str, skill_names: Sequence[str] = ()) -> Resolution:
-    """Classify a submitted line as command, skill, message or unknown.
+def is_builtin_command(name: str) -> bool:
+    """Whether ``/name`` is taken by a built-in and can never reach anything else."""
+    return f"/{name.lower()}" in _COMMAND_ALIASES
 
-    Built-ins win over skills: a skill called ``help`` must not shadow
-    ``/help``, or a bundle dropped into a skills folder could take over the
-    only way out of a confusing state.
+
+def is_typeable_command_name(name: str) -> bool:
+    """Whether ``/name`` would be recognised as a command word at all.
+
+    A plugin declaring ``name: "compact now"`` gets a help entry nobody can
+    invoke -- the parser never sees a command there, it sees a message.
+    """
+    return bool(_COMMAND_NAME.match(name))
+
+
+def match_plugin_command(
+    word: str, plugin_commands: Sequence[PluginCommand]
+) -> Optional[PluginCommand]:
+    """The plugin command a typed word (without the slash) means, or None.
+
+    The qualified spelling always wins. A BARE name only resolves while it is
+    unique: two plugins may each call a command ``compact``, and picking the
+    first would run the wrong one on the strength of registration order. Those
+    stay reachable as ``plugin:name``, which is what help then shows.
+    """
+    lowered = word.lower()
+    for command in plugin_commands:
+        if command.qualified.lower() == lowered:
+            return command
+    named = [c for c in plugin_commands if c.name.lower() == lowered]
+    return named[0] if len(named) == 1 else None
+
+
+def resolve(line: str, skill_names: Sequence[str] = (),
+            plugin_commands: Sequence[PluginCommand] = ()) -> Resolution:
+    """Classify a submitted line as command, plugin command, skill, message or
+    unknown.
+
+    Built-ins win over everything: a skill or plugin called ``help`` must not
+    shadow ``/help``, or a bundle dropped into a folder could take over the
+    only way out of a confusing state. Plugin commands come before skills for
+    the same reason one step down -- a plugin ships with the system, a skill
+    directory is whatever happens to lie on disk.
     """
     command, payload = parse_chat_command(line)
+    word, _, rest = line.strip().partition(" ")
     if command is None:
+        # "/plugin:name" is not a command WORD (see _QUALIFIED_WORD): it is
+        # claimed only when it really names a declared command, so an ordinary
+        # "/todo:milch kaufen" remains the message it looks like.
+        if _QUALIFIED_WORD.match(word):
+            qualified = match_plugin_command(word[1:], plugin_commands)
+            if qualified is not None:
+                return Resolution("plugin", qualified.qualified, rest.strip())
         return Resolution("message", None, payload)
     if command != "unknown":
         return Resolution("command", command, payload)
 
-    word = payload[1:]  # payload is the "/word" token for unknowns
+    unknown_word = payload[1:]  # payload is the "/word" token for unknowns
+    plugin_command = match_plugin_command(unknown_word, plugin_commands)
+    if plugin_command is not None:
+        return Resolution("plugin", plugin_command.qualified, rest.strip())
     for name in skill_names:
-        if name.lower() == word.lower():
-            _, _, rest = line.strip().partition(" ")
+        if name.lower() == unknown_word.lower():
             return Resolution("skill", name, rest.strip())
     return Resolution("unknown", None, payload)
 

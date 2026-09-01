@@ -142,6 +142,12 @@ global `--color` and `--no-status`.
 | `/help`, `/h`, `/?` | List the commands |
 | Ctrl-C | Cancel the **running turn**; twice at the prompt exits |
 
+Plugins add their own, listed under *Plugin commands* in `/help` — but only
+those whose tool this agent may call, so the list differs per agent. They run
+the plugin directly, without an LLM turn: `/compact` (context_engineer) shrinks
+the conversation on the spot. Two plugins claiming the same name are both
+reachable as `/<plugin>:<command>`. See `docs/plugin_commands_design.md`.
+
 **Multi-line input.** A plain Enter sends the message, so pasting a block
 needs one of:
 

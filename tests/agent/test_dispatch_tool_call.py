@@ -113,6 +113,9 @@ def make_agent(servers: Dict[str, Any], allowed=None, blocked=None):
         name = "test_agent"
         dispatch_tool_call = Agent.dispatch_tool_call
         _resolve_flat_tool_name = Agent._resolve_flat_tool_name
+        # The real authorization predicate, shared with the plugin commands
+        # (agent_system.plugin_commands asks it before LISTING a command).
+        tool_dispatch_denial = Agent.tool_dispatch_denial
 
         def __init__(self):
             self._servers = servers

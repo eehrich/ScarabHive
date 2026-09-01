@@ -9,6 +9,7 @@ This document explains how to create plugins (MCP servers) for AgentSystem. It w
 - [Quick Start: Your First Plugin](#quick-start-your-first-plugin)
 - [Plugin Structure and Layout](#plugin-structure-and-layout)
 - [Defining Schema (`schema.yaml`)](#defining-schema-schemayaml)
+  - [Slash Commands (`commands:`)](#slash-commands-commands)
 - [Defining Metadata (`plugin.toml`)](#defining-metadata-plugintoml)
 - [Implementing the Server](#implementing-the-server)
   - [Agent-Based Plugins](#agent-based-plugins)
@@ -683,6 +684,39 @@ web_ui:
 - Documents all web endpoints your plugin provides
 - Used for API discovery and debugging
 - Include path, method, and clear description
+
+### Slash Commands (`commands:`)
+
+Tools are what the *model* calls. A `commands:` entry is what a *person* can
+type at the chat prompt — `/compact` runs context_engineer's compaction without
+spending an LLM turn.
+
+```yaml
+commands:
+  - name: compact
+    description: "shrink this conversation now"   # the only thing /help shows
+    tool: "{{ name }}_compact"                    # required: a tool of THIS plugin
+    argument: query                               # optional: rest of the line -> this parameter
+    argument_hint: "<words>"                      # optional: shown in /help
+```
+
+Rules worth knowing before you add one:
+
+- **A command runs one of your own tools.** Execution goes through
+  `Agent.dispatch_tool_call`, so it inherits the agent's allowlist and the
+  runtime params (`_session_id`, `_agent`). An agent that may not call the tool
+  never even sees the command in `/help`.
+- **Names are shared with built-ins and skills.** Built-ins win, then plugin
+  commands, then skills. A bare name only resolves while it is unique; two
+  plugins claiming `compact` are both reachable as `/<plugin>:compact`.
+- **No arguments unless you declare `argument:`.** Typed arguments to a command
+  that takes none are refused, not dropped.
+- `pytest tests/pluginsystem/test_plugin_command_declarations.py` catches a
+  typo in `tool:` or `argument:` — without it, the command is filtered out by
+  authorization and simply never appears.
+
+The full rationale (why these are actions, not prompt expansion like Claude
+Code's plugin commands) is in `docs/plugin_commands_design.md`.
 
 ### Schema Best Practices
 

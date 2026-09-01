@@ -598,15 +598,23 @@ async def run_chat_turn(
 # tests) call them by these names.
 from agent_system.chat_commands import (  # noqa: E402
     CLI as _CLI_SURFACE,
+    PluginCommand,
     commands_for,
     looks_like_command as _looks_like_command,
     parse_chat_command,
     resolve as resolve_chat_input,
     suggest_command,
 )
+from agent_system.plugin_commands import (  # noqa: E402
+    collect_plugin_commands,
+    help_lines as _plugin_help_lines,
+    run_plugin_command,
+    spellings as _plugin_spellings,
+)
 
 
-def _help_text(skills: Sequence[str] = ()) -> str:
+def _help_text(skills: Sequence[str] = (),
+               plugin_commands: Sequence[PluginCommand] = ()) -> str:
     """Help built from the shared catalogue, plus the terminal-only input hints.
 
     Generated rather than written out: a second hand-kept list is a list that
@@ -615,6 +623,7 @@ def _help_text(skills: Sequence[str] = ()) -> str:
     width = max((len(c.display) for c in commands_for(_CLI_SURFACE)), default=0)
     lines = ["Commands:"]
     lines += [f"  {c.display:<{width}}   {c.summary}" for c in commands_for(_CLI_SURFACE)]
+    lines += _plugin_help_lines(plugin_commands)
     if skills:
         lines += ["", "Skills (run one directly, arguments are passed to it):"]
         lines += [f"  /{name}" for name in skills]
@@ -1486,6 +1495,30 @@ def _show_skills(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
     renderer.commit()
 
 
+def _run_plugin_command(loop: asyncio.AbstractEventLoop, ctx: "_ChatContext",
+                        commands: Sequence[PluginCommand], qualified: str,
+                        payload: str) -> None:
+    """Run one plugin command on the REPL's loop and print what it says.
+
+    The command is driven as a TASK, not as a bare coroutine:
+    ``run_until_complete`` leaves the future PENDING on KeyboardInterrupt, so
+    the command would quietly finish inside the NEXT turn -- and a compaction
+    resuming there rewrites the very message list that turn is reading, after
+    the person was told it had been interrupted. Cancelled the way
+    ``_cancel_turn`` cancels a turn.
+    """
+    match = next(c for c in commands if c.qualified == qualified)
+    task = loop.create_task(run_plugin_command(
+        ctx.agent, match, payload,
+        session_id=ctx.session_id, user_id=ctx.session_user))
+    try:
+        print(loop.run_until_complete(task))
+    except KeyboardInterrupt:
+        task.cancel()
+        loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        print(f"\n(/{match.name} cancelled)", file=sys.stderr)
+
+
 async def _list_sessions(ctx: _ChatContext) -> None:
     """Show the most recent sessions of this user."""
     if ctx.session_manager is None:
@@ -1793,6 +1826,10 @@ def run_chat_loop(
     print("Type /help for commands, /exit to quit. Ctrl-C cancels the running turn.")
     print(rule)
 
+    # Collected once: the set of plugins cannot change while the REPL runs
+    # (unlike the skill folders, which a person can edit mid-chat).
+    plugin_commands = collect_plugin_commands(ctx.agent)
+
     pending: list[str] = [initial_task.strip()] if initial_task and initial_task.strip() else []
     interrupts = 0  # consecutive Ctrl-C at the prompt; two in a row exit
     try:
@@ -1824,10 +1861,16 @@ def run_chat_loop(
             # built-in is looked up as a skill, so "/writer analysiere X" runs
             # the writer skill with "analysiere X" as its arguments.
             skill_names = _available_skills(ctx)
-            resolution = resolve_chat_input(task, skill_names)
+            resolution = resolve_chat_input(task, skill_names, plugin_commands)
             command = resolution.name if resolution.kind == "command" else (
                 "unknown" if resolution.kind == "unknown" else None)
             payload = resolution.payload
+
+            if resolution.kind == "plugin":
+                # The plugin does the work and prints; no LLM turn, no tokens.
+                _run_plugin_command(loop, ctx, plugin_commands,
+                                    resolution.name, payload)
+                continue
 
             if resolution.kind == "skill":
                 expanded = _expand_skill(ctx, resolution.name, payload)
@@ -1875,10 +1918,12 @@ def run_chat_loop(
                 _show_last(ctx, renderer)
                 continue
             if command == "help":
-                print(_help_text(skill_names))
+                print(_help_text(skill_names, plugin_commands))
                 continue
             if command == "unknown":
-                hint = suggest_command(payload, skill_names)
+                hint = suggest_command(
+                    payload,
+                    list(skill_names) + _plugin_spellings(plugin_commands))
                 did_you_mean = f"  Did you mean {hint}?" if hint else ""
                 print(f"Unknown command: {payload}{did_you_mean}")
                 print(f"/help lists the commands; //{payload[1:]} sends it as a message.")

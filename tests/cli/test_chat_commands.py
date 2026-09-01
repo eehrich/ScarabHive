@@ -10,6 +10,7 @@ import pytest
 
 from agent_system.chat_commands import (
     BUILTIN_COMMANDS,
+    PluginCommand,
     CLI,
     WEB,
     commands_for,
@@ -222,3 +223,115 @@ class TestExpansion:
         parts = split_arguments(huge)
         assert time.monotonic() - started < 1.0
         assert len(parts) > 1000
+
+
+class TestPluginCommands:
+    """Plugins are the third source in this namespace, between built-ins and
+    skills. What matters here is precedence and the ambiguity rule -- who wins
+    when two sources claim the same word."""
+
+    @staticmethod
+    def _command(plugin="context_engineer", name="compact", **kw):
+        return PluginCommand(plugin=plugin, name=name, summary="", tool=f"{plugin}_{name}", **kw)
+
+    def test_a_declared_command_resolves(self):
+        commands = [self._command()]
+        result = resolve("/compact", (), commands)
+        assert (result.kind, result.name) == ("plugin", "context_engineer:compact")
+
+    def test_arguments_are_the_rest_of_the_line(self):
+        commands = [self._command(name="find", argument="query")]
+        assert resolve("/find  two words ", (), commands).payload == "two words"
+
+    def test_the_qualified_spelling_resolves(self):
+        commands = [self._command()]
+        result = resolve("/context_engineer:compact now", (), commands)
+        assert result.kind == "plugin"
+        assert result.name == "context_engineer:compact"
+        assert result.payload == "now"
+
+    def test_builtins_are_not_shadowed(self):
+        """A plugin declaring 'help' must not take over the way out."""
+        result = resolve("/help", (), [self._command(name="help")])
+        assert (result.kind, result.name) == ("command", "help")
+
+    def test_plugin_commands_beat_skills(self):
+        result = resolve("/compact", ["compact"], [self._command()])
+        assert result.kind == "plugin"
+
+    def test_a_skill_still_resolves_next_to_plugin_commands(self):
+        """Counter-check for the precedence test above: the skill branch must
+        still be reachable, or the assertion there would pass for free."""
+        result = resolve("/writer x", ["writer"], [self._command()])
+        assert (result.kind, result.name, result.payload) == ("skill", "writer", "x")
+
+    def test_an_ambiguous_bare_name_does_not_pick_one(self):
+        """Two plugins, same command name: running the first by registration
+        order would silently do the wrong thing."""
+        commands = [self._command(plugin="a"), self._command(plugin="b")]
+        assert resolve("/compact", (), commands).kind == "unknown"
+
+    def test_an_ambiguous_name_stays_reachable_qualified(self):
+        commands = [self._command(plugin="a"), self._command(plugin="b")]
+        result = resolve("/b:compact", (), commands)
+        assert (result.kind, result.name) == ("plugin", "b:compact")
+
+    def test_an_unknown_command_is_still_unknown(self):
+        assert resolve("/nope", (), [self._command()]).kind == "unknown"
+
+    def test_case_is_ignored(self):
+        assert resolve("/COMPACT", (), [self._command()]).kind == "plugin"
+
+
+class TestColonWordsStayMessages:
+    """The qualified spelling `/plugin:name` must not make ordinary prose look
+    like a command.
+
+    The first attempt widened the command-word regex to allow a colon. That
+    regex ALSO filters stored messages (`looks_like_command`), so
+    "/todo:milch kaufen" became an "unknown command" at the prompt, was
+    rejected on the web surface where plugin commands do not even exist, and
+    vanished retroactively from /history and /last. Now a colon word is claimed
+    only when it really names a declared command.
+    """
+
+    @pytest.mark.parametrize("line", [
+        "/todo:kaufen milch",
+        "/note:morgen einkaufen",
+        "/ref:ABC-123 bitte pruefen",
+        "/note: still open",
+        "/note:",
+        "/etc/nginx/nginx.conf",
+    ])
+    def test_a_colon_word_is_an_ordinary_message(self, line):
+        assert parse_chat_command(line)[0] is None
+        assert resolve(line).kind == "message"
+
+    @pytest.mark.parametrize("line", ["/todo:kaufen milch", "/note:morgen"])
+    def test_and_stays_visible_in_history(self, line):
+        """looks_like_command filters stored messages out of /history and
+        /last. Whatever it calls a command disappears from the transcript."""
+        assert looks_like_command(line) is False
+
+    def test_an_undeclared_qualified_word_is_a_message(self):
+        """Nothing declares it, so it is prose -- not "unknown command"."""
+        assert resolve("/plug:cmd", (), []).kind == "message"
+
+    def test_a_declared_qualified_word_is_claimed(self):
+        command = PluginCommand("plug", "cmd", "", "plug_cmd")
+        assert resolve("/plug:cmd", (), [command]).kind == "plugin"
+
+    def test_the_escape_still_wins_over_a_declared_command(self):
+        command = PluginCommand("plug", "cmd", "", "plug_cmd")
+        result = resolve("//plug:cmd", (), [command])
+        assert (result.kind, result.payload) == ("message", "/plug:cmd")
+
+
+class TestBuiltinsCannotBeAdvertisedAway:
+    def test_a_plugin_command_named_like_a_builtin_needs_qualifying(self):
+        """/history is a built-in; a plugin command of that name is reachable
+        only as /plugin:history, and the help must say so."""
+        from agent_system.plugin_commands import spellings
+
+        assert spellings([PluginCommand("mem", "history", "", "mem_history")]) == [
+            "mem:history"]

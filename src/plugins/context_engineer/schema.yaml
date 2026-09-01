@@ -166,6 +166,15 @@ tools:
         properties: {}
         additionalProperties: false
 
+# Slash commands — what a PERSON can trigger at the chat prompt, as opposed to
+# the tools above, which the model calls. Each one runs one of these very
+# tools, so it inherits the agent's allowlist: an agent without
+# context_engineer_compact never sees /compact.
+commands:
+  - name: compact
+    description: "shrink this conversation now — externalize tool results and media"
+    tool: "{{ name }}_compact"
+
 # Web UI configuration
 web_ui:
   # Header button configuration

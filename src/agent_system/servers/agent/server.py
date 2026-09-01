@@ -623,6 +623,34 @@ class Agent(MCPServer):
             return self, self.name
         return None, None
 
+    def tool_dispatch_denial(self, tool_name: str, server_name: str) -> Optional[str]:
+        """Why this agent may not dispatch *tool_name*, or None if it may.
+
+        ONE definition of "may call", asked by two callers: ``dispatch_tool_call``
+        raises it, and the chat's plugin commands ask it before LISTING a
+        command, so /help never offers something that can only answer with a
+        refusal. A second, drifting copy of these patterns is how a UI starts
+        promising more than the agent has.
+
+        Full fidelity to schema build: allowed first, then blocked, both matched
+        on the same server/tool path by the SAME matcher schema build uses. No
+        allowlist configured -> deny (schema build shows zero tools in that case
+        too).
+        """
+        from .tool_schema_builder import tool_matches_patterns
+
+        tools_config = getattr(self.agent_config, "tools", None) if getattr(
+            self, "agent_config", None) else None
+        allowed_patterns = list(getattr(tools_config, "allowed", None) or [])
+        blocked_patterns = list(getattr(tools_config, "blocked", None) or [])
+        if not allowed_patterns or not tool_matches_patterns(
+                tool_name, server_name, allowed_patterns):
+            return f"Tool '{tool_name}' is not in this agent's allowed tools."
+        if blocked_patterns and tool_matches_patterns(
+                tool_name, server_name, blocked_patterns):
+            return f"Tool '{tool_name}' is blocked for this agent."
+        return None
+
     async def dispatch_tool_call(self, tool_name: str, params: Dict[str, Any], *,
                                  session_id: Optional[str] = None,
                                  user_id: Optional[str] = None,
@@ -644,7 +672,6 @@ class Agent(MCPServer):
         status convention themselves).
         """
         from .components.tool_execution import ToolDispatchError, inject_runtime_params
-        from .tool_schema_builder import tool_matches_patterns
 
         # External MCP tools (dotted names) take a different execution branch
         # (MCP client sessions) that programmatic dispatch does not replicate.
@@ -659,22 +686,9 @@ class Agent(MCPServer):
                 f"Unknown tool: '{tool_name}'. Use the exact tool name from your "
                 f"tool list.")
 
-        # Authorization — full fidelity to schema build: allowed first, then
-        # blocked, both matched on the same server/tool path by the SAME matcher
-        # schema build uses. No allowlist configured -> deny (schema build shows
-        # zero tools in that case too).
-        tools_config = getattr(self.agent_config, "tools", None) if getattr(
-            self, "agent_config", None) else None
-        allowed_patterns = list(getattr(tools_config, "allowed", None) or [])
-        blocked_patterns = list(getattr(tools_config, "blocked", None) or [])
-        if not allowed_patterns or not tool_matches_patterns(
-                tool_name, server_name, allowed_patterns):
-            raise ToolDispatchError(
-                f"Tool '{tool_name}' is not in this agent's allowed tools.")
-        if blocked_patterns and tool_matches_patterns(
-                tool_name, server_name, blocked_patterns):
-            raise ToolDispatchError(
-                f"Tool '{tool_name}' is blocked for this agent.")
+        denial = self.tool_dispatch_denial(tool_name, server_name)
+        if denial is not None:
+            raise ToolDispatchError(denial)
 
         # SECURITY: strip caller-supplied runtime params BEFORE injecting the
         # real ones — same guarantee the LLM tool path gives. This path is
