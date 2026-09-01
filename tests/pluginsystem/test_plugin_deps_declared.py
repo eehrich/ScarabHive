@@ -13,6 +13,7 @@ count — it is exactly what made the gap invisible.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import re
 import sys
 from pathlib import Path
@@ -48,6 +49,12 @@ KNOWN_OPTIONAL = {
     # Dev-layout absolute import (`from src.plugins...`) in __main__/cli —
     # not a package.
     ("sqlite_query", "src"),
+    # scripts/fix_comfyui_fp8.py repairs the transformers/kernels install on
+    # the ComfyUI HOST. Both imports sit inside its functions and describe
+    # that host's environment, not this plugin's runtime — declaring them
+    # would put a remote repair tool's pins into every install.
+    ("writer_jobs", "kernels"),
+    ("writer_jobs", "transformers"),
 }
 
 
@@ -67,14 +74,45 @@ def _core_dists() -> set[str]:
     return out
 
 
+#: Every root scripts/aggregate_plugin_deps.py collects from — read FROM the
+#: aggregator, not copied. A root the aggregator reads but this guard does not
+#: is a package whose undeclared imports reach a fresh install unchecked, which
+#: is how plugins_writer stayed unscanned while its manifests fed
+#: requirements/all.txt. A second hand-kept list would drift the same way.
+def _aggregator_roots() -> tuple[str, ...]:
+    spec = importlib.util.spec_from_file_location(
+        "_aggregate_plugin_deps", REPO_ROOT / "scripts" / "aggregate_plugin_deps.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # import-safe: main() is behind __main__
+    return tuple(p.name for p in module.PLUGIN_DIRS)
+
+
+PLUGIN_ROOTS = _aggregator_roots()
+
+
 def _plugin_dirs() -> list[Path]:
-    roots = (REPO_ROOT / "src" / "plugins", REPO_ROOT / "src" / "plugins_llm")
-    return sorted(d for root in roots for d in root.iterdir()
-                  if (d / "plugin.toml").exists())
+    """Every package under a plugin root — with or without a manifest.
+
+    A missing plugin.toml is not a reason to skip: it means the package
+    declares nothing, so its third-party imports are exactly the ones at risk
+    (writer_publish imported numpy with no manifest at all). Scanning it with
+    an empty declaration set is what makes "no manifest" safe rather than
+    invisible.
+    """
+    roots = [REPO_ROOT / "src" / name for name in PLUGIN_ROOTS]
+    return sorted(d for root in roots if root.is_dir()
+                  for d in root.iterdir()
+                  # Same skip rule as the aggregator (startswith "." or "_"):
+                  # two lists that must agree about which packages exist may
+                  # not disagree about which ones to ignore.
+                  if d.is_dir() and not d.name.startswith((".", "_")))
 
 
 def _declared(plugin_dir: Path) -> set[str]:
-    data = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
+    manifest = plugin_dir / "plugin.toml"
+    if not manifest.exists():
+        return set()
+    data = tomllib.loads(manifest.read_text(encoding="utf-8"))
     deps = data.get("plugin", {}).get("dependencies", [])
     reqs = data.get("plugin", {}).get("requires", {})
     names = {re.split(r"[<>=\[\s]", d)[0] for d in deps}
@@ -86,7 +124,12 @@ def _third_party_imports(plugin_dir: Path) -> set[str]:
     stdlib = set(sys.stdlib_module_names)
     found = set()
     for py in plugin_dir.rglob("*.py"):
-        if "tests" in py.parts:
+        # tests/ and test_suite/ are dev tooling: they never ship to a server
+        # venv, and their sibling imports (`from run import ...`) are local
+        # modules that no pip name could satisfy. Measured 2026-09-01: the
+        # three test_suite dirs import stdlib and siblings only, so excluding
+        # them hides no real dependency.
+        if "tests" in py.parts or "test_suite" in py.parts:
             continue
         # utf-8-sig: a BOM survives plain utf-8 reading as ﻿ and makes
         # ast.parse throw — which the old `except SyntaxError: continue`
@@ -116,11 +159,39 @@ def _third_party_imports(plugin_dir: Path) -> set[str]:
     return found
 
 
+def test_scan_covers_packages_without_a_manifest():
+    """A package with no plugin.toml must be scanned, not skipped.
+
+    The enumeration used to require a manifest, so a package without one was
+    invisible — writer_publish imported numpy at module level for years and no
+    guard saw it. It has a manifest now, which is exactly why this needs its
+    own test: with every offender declared, reverting the enumeration would
+    leave the suite green and the hole open.
+    """
+    dirs = _plugin_dirs()
+    manifestless = [d for d in dirs if not (d / "plugin.toml").exists()]
+    assert manifestless, (
+        "no manifest-less package left to prove the enumeration covers them — "
+        "if that is really true, this test and the empty-set branch in "
+        "_declared() can go")
+    for d in manifestless:
+        assert _declared(d) == set(), f"{d.name}: expected an empty declaration set"
+    assert "writer_core" in {d.name for d in manifestless}, (
+        "writer_core has no plugin.toml and must be among the scanned "
+        "manifest-less packages — if it got one, pick another example")
+
+
 def test_every_import_is_declared_in_core_or_the_plugins_toml():
     core = _core_dists()
     assert len(core) >= 20, "core requirements did not load — test would be vacuous"
     plugins = _plugin_dirs()
-    assert len(plugins) >= 30, f"only {len(plugins)} plugins found — scan went blind"
+    assert len(plugins) >= 65, f"only {len(plugins)} plugins found — scan went blind"
+    assert len(PLUGIN_ROOTS) >= 4, (
+        f"aggregator reports only {PLUGIN_ROOTS} — root list did not load")
+    scanned_roots = {d.parent.name for d in plugins}
+    assert scanned_roots == set(PLUGIN_ROOTS), (
+        f"scan covers {sorted(scanned_roots)}, aggregator collects from "
+        f"{sorted(PLUGIN_ROOTS)} — a root only the aggregator sees is unguarded")
 
     offenders = []
     scanned_imports = 0
