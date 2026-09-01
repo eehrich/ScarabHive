@@ -205,6 +205,13 @@ class OpenAIResponsesClient(LLMClient):
     wrapper that emits a single ``final`` chunk.
     """
 
+    #: Name this client reports to the hook consumers (message debugger, cost
+    #: accounting) and puts on its typed errors. A subclass that swaps only
+    #: the transport overrides it, so the two routes stay distinguishable in
+    #: the debugger and in session_costs — without a second copy of the
+    #: retry/healing loop.
+    _PROVIDER = "openai_responses"
+
     def __init__(
         self,
         model: str,
@@ -489,7 +496,13 @@ class OpenAIResponsesClient(LLMClient):
                 clean = dict(t)
                 if sanitize and clean.get("parameters"):
                     clean["parameters"] = sanitize_schema_for_gemini(clean["parameters"])
-                converted.append(clean)  # already flat
+                # "Flat" does not imply "tagged": a caller that hands over
+                # {name, description, parameters} produced an item without a
+                # discriminator, which is not a valid Responses tool. The
+                # nested branch above always tags; this one used to pass the
+                # gap through to the provider.
+                clean.setdefault("type", "function")
+                converted.append(clean)
         return converted or None
 
     # ------------------------------------------------------------------
@@ -801,10 +814,24 @@ class OpenAIResponsesClient(LLMClient):
         """Post-response notification for terminal failures — keeps the
         message debugger seeing failed requests, like the sibling clients."""
         await self._notify_post_response({
-            "provider": "openai_responses", "model": self.model, "url": url,
+            "provider": self._PROVIDER, "model": self.model, "url": url,
             "is_streaming": False, "duration_ms": duration_ms,
             "error": error_msg, "timestamp_ms": _time.time() * 1000,
         })
+
+    async def _post(self, client: httpx.AsyncClient, url: str,
+                    payload: dict) -> httpx.Response:
+        """The transport seam — one POST, raw response back.
+
+        Everything the loop below does (429 tier drop, reasoning-artifact
+        healing, body-level errors, retries, hook notification) reads only
+        ``status_code`` and the raw body, so a subclass can swap the way the
+        request travels without owning a second copy of that logic.
+
+        Transport failures must keep raising ``httpx.TimeoutException`` /
+        ``httpx.TransportError``: the retry branch catches exactly those.
+        """
+        return await client.post(url, json=payload, headers=self._headers())
 
     async def _request(self, messages: list, tools: Optional[list],
                        cancellation_token=None, status_scope=None) -> dict:
@@ -842,12 +869,12 @@ class OpenAIResponsesClient(LLMClient):
 
                 _request_start = _time.time()
                 await self._notify_pre_request({
-                    "provider": "openai_responses", "model": self.model, "url": url,
+                    "provider": self._PROVIDER, "model": self.model, "url": url,
                     "is_streaming": False, "payload": payload,
                     "timestamp_ms": _request_start * 1000,
                 })
                 try:
-                    response = await client.post(url, json=payload, headers=self._headers())
+                    response = await self._post(client, url, payload)
                 except (httpx.TimeoutException, httpx.TransportError) as e:
                     if attempt < self.max_retries:
                         backoff = self.retry_backoff * (2 ** attempt)
@@ -856,7 +883,7 @@ class OpenAIResponsesClient(LLMClient):
                             f"retry {attempt + 1}/{self.max_retries} in {backoff:.0f}s: {self.model}"
                         )
                         await self._notify_retry(
-                            "openai_responses", self.model, url, False,
+                            self._PROVIDER, self.model, url, False,
                             f"transport: {type(e).__name__}", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(backoff, cancellation_token)
                         attempt += 1
@@ -882,7 +909,7 @@ class OpenAIResponsesClient(LLMClient):
                             f"HTTP 429 on flex tier — dropping service_tier and "
                             f"retrying at standard tier: {self.model}")
                         await self._notify_retry(
-                            "openai_responses", self.model, url, False,
+                            self._PROVIDER, self.model, url, False,
                             "429 flex->standard tier drop", attempt, self.max_retries + 1)
                         continue
                     retry_after = None
@@ -894,10 +921,10 @@ class OpenAIResponsesClient(LLMClient):
                     if "quota" in body_text.lower() or "exhausted" in body_text.lower():
                         raise LLMQuotaExhaustedError(
                             f"Quota exhausted: {body_text[:200]}",
-                            provider="openai_responses", model=self.model, retry_after=retry_after)
+                            provider=self._PROVIDER, model=self.model, retry_after=retry_after)
                     raise LLMRateLimitError(
                         f"Rate limit exceeded: {body_text[:200]}",
-                        provider="openai_responses", model=self.model, retry_after=retry_after)
+                        provider=self._PROVIDER, model=self.model, retry_after=retry_after)
 
                 if response.status_code >= 500:
                     if attempt < self.max_retries:
@@ -906,7 +933,7 @@ class OpenAIResponsesClient(LLMClient):
                             f"Responses request {response.status_code}, "
                             f"retry {attempt + 1}/{self.max_retries} in {backoff:.0f}s: {self.model}")
                         await self._notify_retry(
-                            "openai_responses", self.model, url, False,
+                            self._PROVIDER, self.model, url, False,
                             f"HTTP {response.status_code}", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(backoff, cancellation_token)
                         attempt += 1
@@ -914,7 +941,7 @@ class OpenAIResponsesClient(LLMClient):
                     await self._notify_error(url, duration_ms, f"HTTP {response.status_code}: {body_text[:300]}")
                     raise LLMServerError(
                         f"HTTP {response.status_code}: {body_text[:300]}",
-                        provider="openai_responses", model=self.model,
+                        provider=self._PROVIDER, model=self.model,
                         status_code=response.status_code)
 
                 if response.status_code >= 400:
@@ -939,7 +966,7 @@ class OpenAIResponsesClient(LLMClient):
                             "%d message(s) (defective reasoning item). model=%s detail=%r",
                             response.status_code, n, self.model, body_text[:500])
                         await self._notify_retry(
-                            "openai_responses", self.model, url, False,
+                            self._PROVIDER, self.model, url, False,
                             f"http-{response.status_code} reasoning-items strip",
                             attempt, self.max_retries + 1)
                         continue
@@ -986,7 +1013,7 @@ class OpenAIResponsesClient(LLMClient):
                                 f"Body rate-limit on flex tier — dropping "
                                 f"service_tier, retrying at standard: {self.model}")
                             await self._notify_retry(
-                                "openai_responses", self.model, url, False,
+                                self._PROVIDER, self.model, url, False,
                                 "body-429 flex->standard tier drop",
                                 attempt, self.max_retries + 1)
                             continue
@@ -995,7 +1022,7 @@ class OpenAIResponsesClient(LLMClient):
                             f"Responses body rate-limit, retry {attempt + 1}/"
                             f"{self.max_retries} in {backoff:.0f}s: {self.model}")
                         await self._notify_retry(
-                            "openai_responses", self.model, url, False,
+                            self._PROVIDER, self.model, url, False,
                             "body rate-limit", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(backoff, cancellation_token)
                         attempt += 1
@@ -1014,7 +1041,7 @@ class OpenAIResponsesClient(LLMClient):
                         "from %d message(s) (defective reasoning item). model=%s detail=%r",
                         n, self.model, str(body_err)[:500])
                     await self._notify_retry(
-                        "openai_responses", self.model, url, False,
+                        self._PROVIDER, self.model, url, False,
                         "body-error reasoning-items strip", attempt, self.max_retries + 1)
                     continue
 
@@ -1031,14 +1058,14 @@ class OpenAIResponsesClient(LLMClient):
                         attempt + 1, self.max_retries, backoff, self.model,
                         str(body_err)[:200])
                     await self._notify_retry(
-                        "openai_responses", self.model, url, False,
+                        self._PROVIDER, self.model, url, False,
                         "body server-error", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(backoff, cancellation_token)
                     attempt += 1
                     continue
 
                 await self._notify_post_response({
-                    "provider": "openai_responses", "model": self.model, "url": url,
+                    "provider": self._PROVIDER, "model": self.model, "url": url,
                     "is_streaming": False, "duration_ms": duration_ms,
                     "response_data": response_data,
                     # Chat-shaped usage: session_costs.py & co. read
@@ -1051,7 +1078,7 @@ class OpenAIResponsesClient(LLMClient):
 
         raise LLMServerError(  # pragma: no cover — loop always returns/raises
             "Responses request retries exhausted",
-            provider="openai_responses", model=self.model, status_code=599)
+            provider=self._PROVIDER, model=self.model, status_code=599)
 
     # ------------------------------------------------------------------
     # LLMClient interface

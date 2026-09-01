@@ -356,6 +356,22 @@ class TestToolsAndPayload:
         assert conv == [{"type": "function", "name": "get_value",
                          "description": "d", "parameters": {"type": "object"}}]
 
+    def test_a_flat_tool_without_a_type_is_tagged(self):
+        """Der „already flat"-Zweig nahm den Aufrufer beim Wort und schickte
+        ein Tool ohne Diskriminator weiter. Die Responses-API verlangt
+        ``type`` — gefunden, als das SDK dieselbe Nutzlast typisiert
+        validierte und sie mit ``union_tag_invalid`` ablehnte."""
+        conv = _client()._convert_tools(
+            [{"name": "f", "description": "d", "parameters": {"type": "object"}}])
+        assert conv == [{"type": "function", "name": "f", "description": "d",
+                         "parameters": {"type": "object"}}]
+
+    def test_an_explicit_type_survives(self):
+        """Gegenprobe: der Riegel setzt nur, wo nichts steht — ein
+        Server-Tool (``web_search`` & Co.) darf nicht zur Funktion werden."""
+        conv = _client()._convert_tools([{"type": "web_search", "name": "s"}])
+        assert conv[0]["type"] == "web_search"
+
     def test_gemini_tool_schemas_sanitized(self):
         """Gemini-Modelle: Function-Declaration-feindliche JSON-Schema-Keywords
         (additionalProperties, default, format, oneOf, title) werden entfernt —
