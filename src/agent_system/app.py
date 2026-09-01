@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio  # noqa: F401 - used in nested closures in event_stream() and lifespan
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
@@ -68,6 +69,30 @@ from .core.request_context import (  # noqa: E402
 #: cap keeps a multi-megabyte paste from turning into CPU work on the event
 #: loop before anyone has decided it is even a command.
 MAX_CHAT_LINE = 100_000
+
+#: Workers in the asyncio default executor — every `asyncio.to_thread` and
+#: `run_in_executor(None, ...)` in this process shares them, and there are ~68
+#: such call sites across the plugins (session persistence, context_engineer
+#: compaction, memory, todo, terminal, the usage tracker's SQLite write).
+#:
+#: NOT derived from the CPU count. Python's default, min(32, cpu_count + 4), is
+#: sized for CPU-bound work; these threads are almost all BLOCKING I/O and
+#: spend their time waiting, not computing. On the production container
+#: (2 cores) that formula yielded SIX workers for the whole API. With a dozen
+#: sub-agents finishing calls at once, every post_llm_call hook queued for a
+#: slot — and the usage write holds one for up to its 10 s SQLite busy_timeout,
+#: twice the hook's own 5 s limit. Measured 2026-09-01: "Hook
+#: 'context_usage_tracker.track_usage' timed out after 5.0s" while the CPU sat
+#: at 94 % idle, and the writer admin panel answered in ten seconds.
+ASYNC_EXECUTOR_MAX_WORKERS = 32
+
+
+def _build_default_executor() -> ThreadPoolExecutor:
+    """The process-wide executor for off-loop blocking work."""
+    return ThreadPoolExecutor(
+        max_workers=ASYNC_EXECUTOR_MAX_WORKERS,
+        thread_name_prefix="app_asyncio",
+    )
 
 
 async def _parse_json_body(request: Request) -> Any:
@@ -430,22 +455,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         logger = logging.getLogger(__name__)
         
-        # Configure named thread pool for asyncio default executor
-        # This gives better thread names in profiler/debugger
+        # The default executor every `asyncio.to_thread` in this process lands
+        # in — sized for BLOCKING I/O, see _build_default_executor.
         import asyncio as _asyncio
-        import concurrent.futures
         loop = _asyncio.get_running_loop()
-        executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=None,  # Use default (min(32, cpu_count + 4))
-            thread_name_prefix="app_asyncio"
-        )
+        executor = _build_default_executor()
         loop.set_default_executor(executor)
-        logger.info("Configured asyncio default executor with thread_name_prefix='asyncio_worker'")
-        
+        logger.info("Configured asyncio default executor: %d workers, "
+                    "thread_name_prefix='app_asyncio'",
+                    ASYNC_EXECUTOR_MAX_WORKERS)
+
         # Create shutdown event for graceful SSE stream termination
         _shutdown_event = _asyncio.Event()
-        logger.info("Configured asyncio default executor with thread_name_prefix='asyncio_worker'")
-        
+
         logger.info("Lifespan startup: Initializing MCP integration...")
         await _init_mcp_for_app(app)
         logger.info("MCP integration initialized during lifespan startup")
