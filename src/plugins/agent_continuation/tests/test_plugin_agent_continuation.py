@@ -706,6 +706,83 @@ class TestContinuationBudget:
 # Test hook activation model
 # ===========================================================================
 
+class TestPerAgentBudget:
+    """The budget is one of the keys an agent may override.
+
+    Until 2026-09-01 it was read from the plugin config only, while every
+    other key honoured the agent's ``hooks.overrides``. Twenty agent YAMLs
+    carried a ``max_continuations`` that did nothing — two of them asking for
+    MORE than the plugin default (book_architect 20, book_polisher 15) and
+    silently getting 10.
+    """
+
+    @pytest.mark.asyncio
+    async def test_agent_budget_lower_than_plugin_budget_wins(self):
+        """An agent asking for less stops earlier than the plugin default."""
+        plugin = _make_plugin(max_continuations=10, strategy="rules")
+        ctx = _make_context(
+            content="Status update",
+            hook_config={"default": "continue", "max_continuations": 2},
+        )
+
+        assert (await plugin.evaluate_completion(ctx)).metadata["continue"] is True
+        assert (await plugin.evaluate_completion(ctx)).metadata["continue"] is True
+        assert (await plugin.evaluate_completion(ctx)).metadata.get("continue") is None
+
+    @pytest.mark.asyncio
+    async def test_agent_budget_higher_than_plugin_budget_wins(self):
+        """An agent asking for more is no longer capped at the plugin value."""
+        plugin = _make_plugin(max_continuations=2, strategy="rules")
+        ctx = _make_context(
+            content="Status update",
+            hook_config={"default": "continue", "max_continuations": 4},
+        )
+
+        for expected in (1, 2, 3, 4):
+            result = await plugin.evaluate_completion(ctx)
+            assert result.metadata["continue"] is True
+            assert result.metadata["continuation_count"] == expected
+        assert (await plugin.evaluate_completion(ctx)).metadata.get("continue") is None
+
+    @pytest.mark.asyncio
+    async def test_budget_from_agent_rules_in_plugins_yaml(self):
+        """The same key works through agent_rules, not just hook_config."""
+        plugin = _make_plugin(
+            max_continuations=10,
+            strategy="rules",
+            agent_rules={"test_agent": {"default": "continue",
+                                        "max_continuations": 1}},
+        )
+        ctx = _make_context(content="Status update")
+
+        assert (await plugin.evaluate_completion(ctx)).metadata["continue"] is True
+        assert (await plugin.evaluate_completion(ctx)).metadata.get("continue") is None
+
+    @pytest.mark.asyncio
+    async def test_plugin_budget_applies_without_agent_value(self):
+        """No agent value: the plugin default still decides."""
+        plugin = _make_plugin(max_continuations=1, strategy="rules")
+        ctx = _make_context(content="Status update",
+                            hook_config={"default": "continue"})
+
+        assert (await plugin.evaluate_completion(ctx)).metadata["continue"] is True
+        assert (await plugin.evaluate_completion(ctx)).metadata.get("continue") is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_value", ["viele", None, 0, -3, [5], True, False])
+    async def test_unusable_agent_value_falls_back_to_plugin_budget(self, bad_value):
+        """A typo must not disable the hook — 0 would mean 'never continue'."""
+        plugin = _make_plugin(max_continuations=2, strategy="rules")
+        ctx = _make_context(
+            content="Status update",
+            hook_config={"default": "continue", "max_continuations": bad_value},
+        )
+
+        assert (await plugin.evaluate_completion(ctx)).metadata["continue"] is True
+        assert (await plugin.evaluate_completion(ctx)).metadata["continue"] is True
+        assert (await plugin.evaluate_completion(ctx)).metadata.get("continue") is None
+
+
 class TestHookActivation:
     """Test that the hook always evaluates (gating is done by hook registry)."""
 

@@ -90,11 +90,11 @@ divergent allowlist.
 dropped as soon as a final answer arrives. It is a safety valve against a loop
 that keeps talking itself into another round.
 
-**It is plugin-level only.** The hook reads `strategy`, `continue_message`,
-`rules`, `default` and `llm_prompt` from the agent's override — but the budget
-check uses `self._max_continuations`, i.e. the value from `plugins.yaml`. A
-`max_continuations:` inside `hooks.overrides` is accepted by the config and has
-no effect, in either direction: an agent asking for 20 still stops at 10.
+It follows the same resolution as every other key: the agent's own
+`max_continuations` wins, the value from `plugins.yaml` is the fallback. A
+value that is not a positive number falls back too and says so in the log — a
+budget of 0 through a typo would silently disable the hook, which is never what
+someone writing this key means.
 
 ## Tests
 

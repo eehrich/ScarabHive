@@ -94,6 +94,7 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                   enabled: true
                   strategy: "rules"
                   default: "continue"
+                  max_continuations: 20
                   continue_message: "Keep working!"
                   rules:
                     - type: keyword_final
@@ -105,6 +106,48 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
 
         # 2. Fall back to agent_rules from plugins.yaml
         return self._agent_rules.get(context.agent_name, {})
+
+    def _resolve_max_continuations(
+        self, agent_cfg: Dict[str, Any], agent_name: str
+    ) -> int:
+        """Continuation budget for this agent: its own value, else the plugin's.
+
+        An agent that drives a long autonomous loop needs a different ceiling
+        than a reviewer that should answer in three turns, and it configures
+        that next to its rules. Before this resolution the key was accepted and
+        ignored, so twenty agents carried a number that did nothing — including
+        two asking for MORE than the plugin default and silently getting less.
+
+        A non-numeric or non-positive value falls back to the plugin value: a
+        budget of 0 would disable the whole hook through a typo, which is not
+        what someone writing ``max_continuations`` means.
+        """
+        raw = agent_cfg.get("max_continuations")
+        if raw is None:
+            return self._max_continuations
+        # bool before int(): YAML turns `true` into True and int(True) is 1,
+        # so a typo would silently buy exactly one continuation.
+        if isinstance(raw, bool):
+            logger.warning(
+                "[AgentContinuation] '%s': max_continuations=%r is a boolean — "
+                "using the plugin value %d",
+                agent_name, raw, self._max_continuations)
+            return self._max_continuations
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[AgentContinuation] '%s': max_continuations=%r is not a "
+                "number — using the plugin value %d",
+                agent_name, raw, self._max_continuations)
+            return self._max_continuations
+        if value < 1:
+            logger.warning(
+                "[AgentContinuation] '%s': max_continuations=%d is below 1 — "
+                "using the plugin value %d",
+                agent_name, value, self._max_continuations)
+            return self._max_continuations
+        return value
 
     # ------------------------------------------------------------------
     # Hook handler (must match name in schema.yaml)
@@ -132,19 +175,24 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         # Note: no agent gating here — the hook registry already ensures
         # this only fires for agents that opt-in via hooks.overrides.
 
+        # Resolve the per-agent config BEFORE the budget check: the budget is
+        # one of the keys an agent may override, and a check against the
+        # plugin-wide value would ignore it.
+        agent_cfg = self._get_agent_config(context)
+        max_continuations = self._resolve_max_continuations(agent_cfg, agent_name)
+
         # Budget check — use request_id for per-request tracking
         request_id = context.request_id
         count = self._continuation_counts.get(request_id, 0)
-        if count >= self._max_continuations:
+        if count >= max_continuations:
             logger.warning(
-                f"[AgentContinuation] Max continuations ({self._max_continuations}) "
+                f"[AgentContinuation] Max continuations ({max_continuations}) "
                 f"reached for request {request_id}"
             )
             self._continuation_counts.pop(request_id, None)
             return HookResult(success=True, modified=False)
 
         # Pick strategy (per-agent overrides global)
-        agent_cfg = self._get_agent_config(context)
         strategy = agent_cfg.get("strategy") or self._strategy
 
         logger.debug(
