@@ -70,6 +70,19 @@ tools:
         properties: {}
         additionalProperties: false
 
+# Slash commands — what a PERSON can trigger at the chat prompt. Each one runs
+# one of the tools above through the agent's own dispatch, so it inherits the
+# allowlist: an agent without these tools never sees the commands.
+commands:
+  - name: summarize
+    description: "summarize older messages now to shrink this conversation"
+    tool: "{{ name }}_summarize"
+    argument: reason
+    argument_hint: "[reason]"
+  - name: stats
+    description: "show context usage — message count, tokens, utilization"
+    tool: "{{ name }}_check_stats"
+
 # Configuration schema for this plugin
 config:
   summarization_trigger_percentage:

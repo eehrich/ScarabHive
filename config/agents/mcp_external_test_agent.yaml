@@ -28,6 +28,9 @@ plugins:
             # npx). Der Agent deckt beide ab, damit ein Rauchtest nicht davon
             # abhaengt, welche gerade eingeschaltet ist.
             - "everything_local.*"
+            # Slash, nicht Punkt: die Verwaltungstools des mcp_client-Plugins
+            # selbst -- damit sind auch /mcp, /mcp-connect usw. im Chat da.
+            - "mcp_client/*"
 
       metadata:
         author: "Enrico Ehrich"

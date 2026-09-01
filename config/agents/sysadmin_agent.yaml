@@ -72,7 +72,7 @@ plugins:
 
     # the agent
     sysadmin_agent:
-      type: basic_agent
+      type: multi_turn_agent
       enabled: true
       description: "System administration agent with SSH access to manage, monitor, and troubleshoot Linux servers across production and development environments"
 
@@ -105,6 +105,8 @@ plugins:
             #- "sysadmin_agent_manager/*"
             - "tavily_search/*"
             - "context_engineer/*"
+            - "context_summarizer/*"
+            - "mcp_client/*"
             - "file_ops/*"
             - "terminal/*"
             - "okf/*"                    # durable infra knowledge base (runbooks, known issues, hosts)
