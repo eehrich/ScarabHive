@@ -40,6 +40,37 @@ class TestParseLlmParamsArgs:
         assert isinstance(parsed["request_timeout"], float)
         assert parsed["include_thoughts"] is False
 
+    def test_literal_none_survives_as_string(self):
+        """``thinking_level=none`` ist ein WERT, kein „nicht gesetzt".
+
+        Die generische Auto-Typisierung machte daraus Python ``None`` — und
+        ein fehlendes Feld heißt beim Provider Default, bei DeepSeek also
+        ``high``. Wer über die CLI das Denken abschalten wollte, kaufte
+        stillschweigend das meiste davon (am Produktionspfad gemessen: der
+        Request ging ohne ``reasoning``-Feld raus).
+
+        Die Regel ist generisch: akzeptiert das Zielfeld die Schreibweise als
+        ``Literal``, gewinnt der String. ``prompt_cache_marker_style`` hat
+        dasselbe ``none`` und hing an derselben Falle.
+        """
+        assert parse_llm_params_args(["thinking_level=none"]) == {
+            "thinking_level": "none"}
+        assert parse_llm_params_args(["thinking_level=NONE"]) == {
+            "thinking_level": "none"}
+        assert parse_llm_params_args(["prompt_cache_marker_style=none"]) == {
+            "prompt_cache_marker_style": "none"}
+
+    def test_none_still_means_unset_where_no_literal_says_otherwise(self):
+        """Die Ausnahme darf nicht auf Felder ohne solchen Wert ausstrahlen.
+
+        ``temperature`` kennt kein ``"none"`` — dort ist ``none`` weiterhin
+        „nicht gesetzt", sonst kaeme ein String in ein float-Feld.
+        """
+        assert parse_llm_params_args(["temperature=none"]) == {
+            "temperature": None}
+        assert parse_llm_params_args(["thinking_budget=none"]) == {
+            "thinking_budget": None}
+
     def test_zero_stays_int_zero(self):
         # max_tokens=0 hat System-Semantik (Cap wird nicht gesendet) —
         # muss als int 0 ankommen, nicht als String/None.

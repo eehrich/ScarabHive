@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 
 import yaml
-from typing import Any, Dict, List, Tuple, Union, Optional
+from typing import (Any, Dict, List, Literal, Optional, Tuple, Union,
+                    get_args, get_origin)
 
 try:
     from tabulate import tabulate  # optional dependency for pretty tables
@@ -40,10 +41,35 @@ from .cli_utils.common import (
 from .cli_utils.commands.hooks import handle_hooks_command
 
 
-def _coerce_cli_value(value: str) -> Any:
-    """Auto-type a CLI KEY=VALUE value: int/float/bool/none, sonst String."""
+def _literal_strings(annotation: Any) -> frozenset:
+    """String values a field's type accepts verbatim (its ``Literal`` members).
+
+    Walks nested generics so ``Optional[Literal["none", ...]]`` is covered.
+    """
+    found: set = set()
+    todo = [annotation]
+    while todo:
+        ann = todo.pop()
+        if get_origin(ann) is Literal:
+            found.update(a for a in get_args(ann) if isinstance(a, str))
+        else:
+            todo.extend(get_args(ann))
+    return frozenset(found)
+
+
+def _coerce_cli_value(value: str, keep: frozenset = frozenset()) -> Any:
+    """Auto-type a CLI KEY=VALUE value: int/float/bool/none, sonst String.
+
+    ``keep`` holds spellings the target field accepts as a literal STRING;
+    those win over the generic coercion. Without it ``thinking_level=none``
+    became Python ``None`` — which drops the field instead of setting it, so
+    the request went out with no ``reasoning`` at all and the provider default
+    applied (DeepSeek: high). Asking for no thinking silently bought the most.
+    """
     v = value.strip()
     low = v.lower()
+    if low in keep:
+        return low
     if low in ("true", "false"):
         return low == "true"
     if low in ("none", "null"):
@@ -79,6 +105,8 @@ def parse_llm_params_args(raw_items: Optional[List[str]]) -> Optional[Dict[str, 
     """
     if not raw_items:
         return None
+    from .config.models import LLMModelConfig
+    fields = LLMModelConfig.model_fields
     params: Dict[str, Any] = {}
     for item in raw_items:
         if "=" not in item:
@@ -90,10 +118,11 @@ def parse_llm_params_args(raw_items: Optional[List[str]]) -> Optional[Dict[str, 
         key, _, value = item.partition("=")
         key = key.strip()
         if key:
-            params[key] = _coerce_cli_value(value)
+            field = fields.get(key)
+            keep = _literal_strings(field.annotation) if field else frozenset()
+            params[key] = _coerce_cli_value(value, keep)
     if params:
-        from .config.models import LLMModelConfig
-        valid_keys = set(LLMModelConfig.model_fields.keys())
+        valid_keys = set(fields.keys())
         unknown = sorted(set(params) - valid_keys)
         if unknown:
             raise ValueError(
