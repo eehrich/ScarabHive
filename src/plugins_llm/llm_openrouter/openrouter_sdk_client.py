@@ -91,8 +91,9 @@ _SDK_PARAMS = frozenset({
     "input", "instructions", "max_output_tokens", "metadata", "model",
     "models", "parallel_tool_calls", "plugins", "presence_penalty",
     "previous_response_id", "prompt_cache_key", "prompt_cache_options",
-    "provider", "reasoning", "service_tier", "temperature", "text",
-    "tool_choice", "tools", "top_p", "truncation", "user",
+    "provider", "reasoning", "safety_identifier", "service_tier", "session_id",
+    "temperature", "text", "tool_choice", "tools", "top_p", "truncation",
+    "user",
 })
 
 #: Keys dropped ON PURPOSE, with the reason. Not warned about — the SDK
@@ -178,7 +179,11 @@ class OpenRouterSDKClient(OpenAIResponsesClient):
                 retry_config=no_retries,
             )
             try:
-                await sdk.responses.send_async(**self._to_sdk_kwargs(payload))
+                await sdk.responses.send_async(
+                    # Header, not a body field — the gateway only reports
+                    # which backend answered when it is asked to.
+                    x_open_router_metadata="enabled",
+                    **self._to_sdk_kwargs(payload))
             except or_errors.OpenRouterError as e:
                 # Every SDK error carries the response it was raised from —
                 # including ResponseValidationError, which is how a perfectly

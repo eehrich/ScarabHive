@@ -89,7 +89,7 @@ from agent_system.llm.cache_key import (
     strip_cache_breakpoints,
 )
 from plugins_llm.llm_common.schema_sanitize import sanitize_schema_for_gemini
-from .httpx_client import HTTPXTimeoutConfig
+from .httpx_client import HTTPXTimeoutConfig, openrouter_routing_info
 from plugins_llm.llm_common.openai_utils import convert_audio_to_input_audio
 from agent_system.utils.reasoning_artifacts import strip_all_reasoning_artifacts
 
@@ -234,9 +234,19 @@ class OpenAIResponsesClient(LLMClient):
         prompt_cache_mode: Optional[str] = None,
         prompt_cache_marker_style: Optional[str] = None,
         temperature: Optional[float] = None,
+        plugins: Optional[list] = None,
+        prompt_cache_options: Optional[dict] = None,
+        safety_identifier: Optional[str] = None,
     ) -> None:
         self.model = model
         self.api_key = api_key
+        self.plugins = plugins
+        if plugins and "openrouter.ai" not in base_url.lower():
+            logger.warning(
+                "plugins are configured for model=%s but its endpoint is not "
+                "OpenRouter (%s) — they are NOT sent.", model, base_url)
+        self.prompt_cache_options = prompt_cache_options
+        self.safety_identifier = safety_identifier
         self.base_url = base_url.rstrip("/")
         self.context_window = context_window
         self.max_retries = max_retries
@@ -632,6 +642,21 @@ class OpenAIResponsesClient(LLMClient):
                 self.prompt_cache_key, payload["input"]
             )
             payload["prompt_cache_key"] = resolved_key
+            # Sticky routing on the same key. OpenRouter's prompt cache is
+            # BACKEND-local, so calls that share a prefix only hit it while
+            # they share a backend; session_id is the gateway's key for
+            # keeping them together (measured 2026-09-01: 6/6 calls on one
+            # provider with it, 4 different providers without). The cache key
+            # is exactly the right grouping — it already means "same stable
+            # prefix" — and needs no plumbing the client does not have.
+            if self._is_openrouter:
+                payload["session_id"] = resolved_key
+        if self.plugins and self._is_openrouter:
+            payload["plugins"] = self.plugins
+        if self.prompt_cache_options:
+            payload["prompt_cache_options"] = self.prompt_cache_options
+        if self.safety_identifier:
+            payload["safety_identifier"] = self.safety_identifier
         converted_tools = self._convert_tools(tools)
         if self.prompt_cache_marker_style == MARKER_STYLE_ANTHROPIC:
             # Zukunfts-Pfad: Claude via Responses-API -> cache_control statt
@@ -645,11 +670,22 @@ class OpenAIResponsesClient(LLMClient):
             payload["parallel_tool_calls"] = bool(self.parallel_tool_calls)
         return payload
 
+    @property
+    def _is_openrouter(self) -> bool:
+        return "openrouter.ai" in self.base_url.lower()
+
     def _headers(self) -> dict:
-        return {
+        headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        if self._is_openrouter:
+            # Opt-in, off by default at the gateway: without it the response
+            # carries no `openrouter_metadata` and nothing says WHICH backend
+            # answered. With provider_routing.order in play that is the one
+            # thing worth knowing, and it costs a header.
+            headers["X-OpenRouter-Metadata"] = "enabled"
+        return headers
 
     # ------------------------------------------------------------------
     # Response parsing: output items -> assistant dict
@@ -1064,10 +1100,18 @@ class OpenAIResponsesClient(LLMClient):
                     attempt += 1
                     continue
 
+                routing = openrouter_routing_info(response_data)
+                if routing:
+                    logger.debug("Routing %s: %s", self.model, routing)
                 await self._notify_post_response({
                     "provider": self._PROVIDER, "model": self.model, "url": url,
                     "is_streaming": False, "duration_ms": duration_ms,
                     "response_data": response_data,
+                    # Own key, not just buried in response_data: the message
+                    # debugger and any cost/routing audit read the flat
+                    # fields, and "which backend served this call" was not
+                    # answerable at all before.
+                    "routing": routing,
                     # Chat-shaped usage: session_costs.py & co. read
                     # $.prompt_tokens/$.completion_tokens from the stored
                     # usage_json — the raw Responses shape would yield 0s.

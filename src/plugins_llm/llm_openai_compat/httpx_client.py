@@ -49,6 +49,44 @@ from agent_system.utils.reasoning_artifacts import (
 logger = logging.getLogger(__name__)
 
 
+def openrouter_routing_info(response_data: dict) -> Optional[dict]:
+    """Which backend actually answered — from ``openrouter_metadata``.
+
+    The gateway only sends that block when the request carried
+    ``X-OpenRouter-Metadata: enabled``; without the header there is nothing
+    in the response that names the backend on the Responses route (the chat
+    route also has a plain top-level ``provider``, used here as a fallback).
+
+    Deliberately NOT a verdict on whether ``provider_routing.order`` held:
+    the config names gateway SLUGS (``google-vertex``) while the metadata
+    reports DISPLAY names (``Google``), and the two do not map by any rule we
+    could derive — a naive comparison would cry wolf on exactly the entries
+    that are pinned hardest. Reported, not judged.
+    """
+    meta = response_data.get("openrouter_metadata")
+    if not isinstance(meta, dict):
+        fallback = response_data.get("provider")
+        return {"selected": fallback} if isinstance(fallback, str) else None
+    endpoints = meta.get("endpoints") or {}
+    available = [e for e in (endpoints.get("available") or []) if isinstance(e, dict)]
+    selected = [e.get("provider") for e in available if e.get("selected")]
+    info = {
+        "selected": (selected[0] if selected
+                     else response_data.get("provider")),
+        "available": [e.get("provider") for e in available],
+        "attempt": meta.get("attempt"),
+        "strategy": meta.get("strategy"),
+        "region": meta.get("region"),
+    }
+    # `or None`: ein Metadaten-Block, aus dem nichts Brauchbares
+    # herausfaellt, darf kein leeres Dict melden — ein Feld, das immer
+    # etwas enthaelt, ist von einem funktionierenden nicht zu unterscheiden.
+    # `!= []` neben `is not None`: eine leere Anbieterliste ist keine
+    # Information. `attempt: 0` waere eine — deshalb kein Falsy-Test.
+    return {k: v for k, v in info.items()
+            if v is not None and v != []} or None
+
+
 @dataclass
 class HTTPXTimeoutConfig:
     """Fine-grained timeout configuration for HTTPX client."""
@@ -142,6 +180,14 @@ class HTTPXOpenAIClient(LLMClient):
         # Popped from extra_params and injected as top-level "provider" field below.
         self.provider_routing: dict | None = self.extra_params.pop("provider_routing", None)
 
+        # Gateway request plugins (context-compression, response-healing,
+        # moderation, ...) and the request-level cache controls. Both are
+        # passed through verbatim and default to unset — see the config model
+        # for why none of them is on by default.
+        self.plugins: list | None = self.extra_params.pop("plugins", None)
+        self.prompt_cache_options: dict | None = self.extra_params.pop(
+            "prompt_cache_options", None)
+
         # How to round-trip provider-side reasoning blocks (reasoning_details)
         # across turns. Provider-specific requirement, set per-model in config —
         # NOT inferred from the model name. Values:
@@ -171,6 +217,12 @@ class HTTPXOpenAIClient(LLMClient):
         # Gates the gateway-only parts of a request: provider_routing, the
         # app-title header, and the Gemini/Claude dialect detection below.
         self._is_openrouter = "openrouter.ai" in base_url.lower()
+        if self.plugins and not self._is_openrouter:
+            # Konfiguriert und trotzdem nicht gesendet ist genau die stille
+            # Drift, die dieses Feld sichtbar machen soll.
+            logger.warning(
+                "plugins are configured for model=%s but its endpoint is not "
+                "OpenRouter (%s) — they are NOT sent.", model, base_url)
         
         # Detect Gemini models via OpenRouter — need tool schema sanitization.
         # Gemini doesn't support certain JSON Schema keywords (additionalProperties,
@@ -256,6 +308,34 @@ class HTTPXOpenAIClient(LLMClient):
         if self._is_openrouter:
             self._headers["HTTP-Referer"] = self._openrouter_base_referer
             self._headers["X-Title"] = "ScarabHive"
+            # Opt-in, off by default at the gateway: without it no response
+            # says WHICH backend answered. With provider_routing.order in
+            # play that is the one thing worth knowing, and it costs a header.
+            self._headers["X-OpenRouter-Metadata"] = "enabled"
+
+    def _apply_gateway_extras(self, payload: dict,
+                              resolved_cache_key: str | None) -> None:
+        """Fields both request paths send identically — written once.
+
+        Streaming and non-streaming build their payloads separately in this
+        file, and every field added to only one of them has drifted since.
+
+        ``session_id`` is the gateway's sticky-routing key: OpenRouter's
+        prompt cache is backend-local, so calls sharing a prefix only hit it
+        while they share a backend. The resolved cache key IS that grouping,
+        so it doubles as the session. OpenRouter-only — a plain OpenAI
+        endpoint rejects unknown parameters.
+        """
+        if resolved_cache_key:
+            # GPT-5.6+ Cache-Routing-Key (s. __init__); "auto" = Praefix-Hash,
+            # kollisionsfrei bei parallelen Buechern (s. cache_key.py).
+            payload["prompt_cache_key"] = resolved_cache_key
+            if self._is_openrouter:
+                payload["session_id"] = resolved_cache_key
+        if self.plugins and self._is_openrouter:
+            payload["plugins"] = self.plugins
+        if self.prompt_cache_options:
+            payload["prompt_cache_options"] = self.prompt_cache_options
 
     def _apply_cache_breakpoints(
         self, message_dicts: list, resolved_key: str | None = None,
@@ -874,10 +954,7 @@ class HTTPXOpenAIClient(LLMClient):
         if self.service_tier:
             payload["service_tier"] = self.service_tier
 
-        # GPT-5.6+ Cache-Routing-Key (s. __init__); "auto" = Praefix-Hash,
-        # kollisionsfrei bei parallelen Buechern (s. cache_key.py).
-        if resolved_cache_key:
-            payload["prompt_cache_key"] = resolved_cache_key
+        self._apply_gateway_extras(payload, resolved_cache_key)
 
         # Provider routing (OpenRouter): bias toward a sticky backend so the
         # implicit prompt cache stays warm. Only honored by OpenRouter.
@@ -1303,6 +1380,7 @@ class HTTPXOpenAIClient(LLMClient):
                         "is_streaming": False, "duration_ms": _duration_ms,
                         "response_data": response_data,
                         "usage": _usage, "finish_reason": _finish,
+                        "routing": openrouter_routing_info(response_data),
                         "timestamp_ms": _time.time() * 1000,
                     })
 
@@ -1426,10 +1504,7 @@ class HTTPXOpenAIClient(LLMClient):
         if self.service_tier:
             payload["service_tier"] = self.service_tier
 
-        # GPT-5.6+ Cache-Routing-Key (s. __init__); "auto" = Praefix-Hash,
-        # kollisionsfrei bei parallelen Buechern (s. cache_key.py).
-        if resolved_cache_key:
-            payload["prompt_cache_key"] = resolved_cache_key
+        self._apply_gateway_extras(payload, resolved_cache_key)
 
         # Provider routing (OpenRouter): bias toward a sticky backend so the
         # implicit prompt cache stays warm. Only honored by OpenRouter.
@@ -1527,6 +1602,10 @@ class HTTPXOpenAIClient(LLMClient):
             # from the same block accumulate cleanly.
             accumulated_reasoning_details: dict[int, dict[str, Any]] = {}
             accumulated_usage = None  # usage information from final chunk
+            # Which backend served the stream: the gateway puts
+            # openrouter_metadata in the LAST chunk and a plain
+            # `provider` earlier, so the richer record wins.
+            accumulated_routing = None
             _last_finish_reason: str | None = None  # finish_reason from chunks
 
             # Check cancellation before each attempt
@@ -1757,6 +1836,7 @@ class HTTPXOpenAIClient(LLMClient):
                                         "url": url, "is_streaming": True,
                                         "duration_ms": _s_duration,
                                         "usage": accumulated_usage,
+                                        "routing": accumulated_routing,
                                         "finish_reason": _last_finish_reason,
                                         "timestamp_ms": _time.time() * 1000,
                                     })
@@ -1798,6 +1878,10 @@ class HTTPXOpenAIClient(LLMClient):
                                 # Track usage if available in chunk
                                 if "usage" in chunk_data:
                                     accumulated_usage = chunk_data["usage"]
+                                _routing = openrouter_routing_info(chunk_data)
+                                if _routing and (accumulated_routing is None
+                                                 or "available" in _routing):
+                                    accumulated_routing = _routing
 
                                 # Process chunk
                                 choices = chunk_data.get("choices", [])
@@ -1908,6 +1992,7 @@ class HTTPXOpenAIClient(LLMClient):
                                             "provider": "openai_httpx", "model": self.model,
                                             "url": url, "is_streaming": True,
                                             "duration_ms": _s_duration, "usage": accumulated_usage,
+                                            "routing": accumulated_routing,
                                             "finish_reason": _last_finish_reason,
                                             "timestamp_ms": _time.time() * 1000,
                                         })
@@ -1918,6 +2003,10 @@ class HTTPXOpenAIClient(LLMClient):
                                         chunk_data = json.loads(data)
                                         if "usage" in chunk_data:
                                             accumulated_usage = chunk_data["usage"]
+                                        _routing = openrouter_routing_info(chunk_data)
+                                        if _routing and (accumulated_routing is None
+                                                         or "available" in _routing):
+                                            accumulated_routing = _routing
                                         choices = chunk_data.get("choices", [])
                                         if choices:
                                             delta = choices[0].get("delta", {})
@@ -1987,6 +2076,7 @@ class HTTPXOpenAIClient(LLMClient):
                                 "provider": "openai_httpx", "model": self.model,
                                 "url": url, "is_streaming": True,
                                 "duration_ms": _s_duration, "usage": accumulated_usage,
+                                "routing": accumulated_routing,
                                 "finish_reason": _last_finish_reason,
                                 "timestamp_ms": _time.time() * 1000,
                             })

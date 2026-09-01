@@ -19,6 +19,53 @@ und bleiben beim selben Backend.
 gepinnte Anbieter aus, übernimmt die **Agent-Kette** (llm_profile), nicht ein
 stiller 2x-Preissprung bei OpenRouter.
 
+### Wer wirklich geliefert hat: `openrouter_metadata`
+
+Die Clients schicken auf OpenRouter-Endpunkten den Header
+`X-OpenRouter-Metadata: enabled`. Ohne ihn nennt **keine** Antwort das
+Backend — auf der Responses-Route gibt es kein anderes Feld dafür. Mit ihm
+landet in jedem `post_llm_response`-Hook ein Feld `routing`:
+
+```json
+{"selected": "DeepInfra", "available": ["DeepInfra", "StreamLake"],
+ "attempt": 1, "strategy": "latest", "region": "FRA"}
+```
+
+Damit ist zum ersten Mal nachvollziehbar, ob `provider_routing.order`
+gehalten hat. **Der Client urteilt darüber nicht selbst:** die Config nennt
+Gateway-Slugs (`google-vertex`), die Metadaten Anzeigenamen (`Google`), und
+die beiden lassen sich nicht nach einer Regel aufeinander abbilden — ein
+naiver Vergleich schlüge ausgerechnet bei den härtesten Pins Fehlalarm.
+Gemeldet, nicht gerichtet.
+
+### `session_id`: Cache-Lokalität ohne harten Pin
+
+OpenRouters Prompt-Cache ist backend-lokal (siehe oben). `session_id` ist der
+Sticky-Routing-Schlüssel des Gateways: gleiche Session → gleiches Backend.
+Gemessen am 01.09.2026: **6/6** Aufrufe auf einem Anbieter mit `session_id`,
+ohne ihn verteilten sich 6 Aufrufe auf **4** Anbieter.
+
+Die Clients senden dafür den **aufgelösten `prompt_cache_key`** — der bedeutet
+schon „gleicher stabiler Präfix", ist also genau die richtige Gruppierung, und
+braucht keine Verdrahtung, die es nicht gibt. Nur an OpenRouter; ein fremder
+OpenAI-Endpunkt lehnt unbekannte Parameter mit 400 ab.
+
+Das ersetzt `provider_routing.order` nicht, macht es aber entbehrlicher: wer
+den harten Pin lockert, behält mit `session_id` die Cache-Treffer und gewinnt
+zurück, dass ein ausgefallener Anbieter nicht mehr den ganzen Modelleintrag
+kostet.
+
+### Drei Felder, die bereitstehen und aus gutem Grund leer sind
+
+`plugins`, `prompt_cache_options` und `safety_identifier` reichen die Clients
+unverändert durch, gesetzt wird keines davon:
+
+| Feld | was es könnte | warum ungesetzt |
+|---|---|---|
+| `plugins` | `context-compression` (Prompt automatisch kürzen), `response-healing`, `moderation`, `file-parser`, `auto-router` | jedes ändert, was das Modell sieht oder kostet — nicht ohne Messung |
+| `prompt_cache_options` | `{"mode": "explicit"}` schaltet OpenAIs **eigene** Breakpoints ab, sodass nur unsere Marker zählen (GPT-5.6+) | welche der beiden Varianten besser cacht, ist hier ungemessen |
+| `safety_identifier` | stabiles Pseudonym pro Endnutzer; ohne es trägt der Request die **Konto**-Identität, ein Policy-Block trifft also alles | ein Wert pro Lauf müsste vom Aufrufer kommen, den Weg gibt es noch nicht (Responses-Route only) |
+
 ### Kein `usage: {include: true}` mehr
 
 Das Feld ist bei OpenRouter deprecated und wirkungslos — Kosten, Cache-Treffer

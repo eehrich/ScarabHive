@@ -74,6 +74,8 @@ def build_openai_httpx(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None)
         prompt_cache_key=cfg.prompt_cache_key,
         prompt_cache_mode=cfg.prompt_cache_mode,
         prompt_cache_marker_style=cfg.prompt_cache_marker_style,
+        plugins=cfg.plugins,
+        prompt_cache_options=cfg.prompt_cache_options,
     )
 
 
@@ -129,6 +131,9 @@ def build_openai_responses(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = N
         prompt_cache_mode=cfg.prompt_cache_mode,
         prompt_cache_marker_style=cfg.prompt_cache_marker_style,
         temperature=cfg.temperature,
+        plugins=cfg.plugins,
+        prompt_cache_options=cfg.prompt_cache_options,
+        safety_identifier=cfg.safety_identifier,
     )
 
 

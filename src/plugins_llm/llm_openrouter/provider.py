@@ -62,6 +62,9 @@ def build_openrouter_sdk(cfg: "LLMModelConfig",
         prompt_cache_key=cfg.prompt_cache_key,
         prompt_cache_mode=cfg.prompt_cache_mode,
         temperature=cfg.temperature,
+        plugins=cfg.plugins,
+        prompt_cache_options=cfg.prompt_cache_options,
+        safety_identifier=cfg.safety_identifier,
     )
 
 
