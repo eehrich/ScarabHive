@@ -32,6 +32,36 @@ result is worth reading twice — if the server failed to connect, its tools wer
 never discovered, and *every* pattern matches nothing. Check
 `External MCP servers: N connected` in the log before suspecting the pattern.
 
+### External tools reach agents through the API only
+
+`agent-cli run` cannot give an agent a foreign tool, and the reason is
+structural rather than a misconfiguration. A connection counts as live while
+its task runs (`ServerConnection.connected` is `self._task is not None and not
+self._task.done()`), but `agent_cli.py` drives bootstrap and the agent run
+through **separate `asyncio.run()` calls** — `initialize_mcp` in one, the run
+in another. `asyncio.run` closes its loop on return, so every connection task
+is already done by the time the agent asks for tools.
+
+Measured 2026-09-01 with two servers connected seconds earlier:
+
+```
+INFO  External MCP servers: 2 connected, 0 failed
+PROBE conns=['everything','everything_local'] connected=[]
+DEBUG Filtered available tools for agent ... -> []
+WARNING Agent ... allow list patterns produced an empty tool set
+```
+
+Under uvicorn one loop spans everything, so the same agent and the same server
+work over `/run` — verified the same day, with the server's own wording in the
+log (`External tool everything.get-sum returned: The sum of 17 and 25 is 42.`).
+
+`agent-cli mcp test <name>` is unaffected: it does its own connecting inside
+the one loop it opens.
+
+Fixing it means one event loop across the CLI's bootstrap, run and shutdown, or
+a lazy reconnect when a configured server has no live connection. Both are
+changes to a CLI the whole writer pipeline runs on, so neither is a drive-by.
+
 ## Configuration
 
 Servers are configured in `config/mcp_servers.yaml`, unchanged:

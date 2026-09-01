@@ -24,6 +24,10 @@ plugins:
             # Plugins plugin/tool. Der Punkt entscheidet zur Laufzeit, ob ein
             # Aufruf in ein Plugin geht oder nach draussen.
             - "everything.*"
+            # Zweite Installationsform desselben Servers (external/mcp statt
+            # npx). Der Agent deckt beide ab, damit ein Rauchtest nicht davon
+            # abhaengt, welche gerade eingeschaltet ist.
+            - "everything_local.*"
 
       metadata:
         author: "Enrico Ehrich"

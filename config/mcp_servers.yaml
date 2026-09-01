@@ -2,6 +2,13 @@
 # External MCP Servers Configuration
 # ================================
 # Configuration for remote/external MCP servers
+#
+# ⚠ Reichweite: Tools externer Server erreichen Agenten NUR ueber die API,
+# nicht ueber `agent-cli run`. Die CLI verbindet in einem eigenen
+# asyncio.run() und schliesst dessen Loop, bevor der Agent fragt -- die
+# Verbindung ist dann schon tot. Ursache, Messung und die zwei moeglichen
+# Fixes stehen im README von src/plugins/mcp_client.
+# `agent-cli mcp test <name>` ist davon nicht betroffen.
 
 external_servers:
   # Connection settings
@@ -45,6 +52,34 @@ external_servers:
       # der Server startet gar nicht erst -- `npm view <paket> version` fragen.
       args: ["-y", "@modelcontextprotocol/server-everything@2026.8.31"]
       description: Referenz-MCP-Server des Protokolls (Beispiel + Rauchtest)
+      features:
+        tools: true
+
+    # --- Derselbe Server, aber auf Platte statt auf Zuruf ---------------
+    # Der Ordner external/ ist gitignored: nach einem frischen Checkout ist er
+    # LEER und dieser Eintrag zeigt ins Nichts. Die Installation ist deshalb
+    # ein bewusster Schritt, kein Automatismus:
+    #
+    #   mkdir -p external/mcp && cd external/mcp
+    #   npm init -y
+    #   npm install @modelcontextprotocol/server-everything@2026.8.31
+    #
+    # (npm legt die Version in seine package.json; wer den Ordner behalten
+    # will, hat damit sein Pin.)
+    #
+    # `node <pfad>` statt des .bin-Shims: der ist auf Windows eine .cmd und
+    # auf Linux ein Symlink, der Pfad zur dist/index.js ist auf beiden gleich.
+    # Relativ zum Repo-Wurzelverzeichnis, aus dem API und CLI starten.
+    #
+    # Wann lohnt das gegenueber npx: gemessen 01.09.2026, Median aus je drei
+    # Verbindungen -- npx 1,11s, lokal 0,18s. Faktor 6, und der Start haengt
+    # nicht mehr am Netz. Dafuer muss jemand das Update anstossen.
+    everything_local:
+      enabled: false
+      transport: stdio
+      command: node
+      args: ["external/mcp/node_modules/@modelcontextprotocol/server-everything/dist/index.js"]
+      description: Wie 'everything', aber aus external/mcp statt ueber npx
       features:
         tools: true
 
