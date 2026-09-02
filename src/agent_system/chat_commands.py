@@ -66,6 +66,10 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("history", ("/history", "/hist"), "show the last n exchanges (default 6)",
                 usage="/history [n]"),
     ChatCommand("last", ("/last",), "tool calls and results of the last turn, in full"),
+    ChatCommand("attach", ("/attach",),
+                "attach a file to the NEXT message (repeat for more; "
+                "'/attach' lists, '/attach clear' empties)",
+                usage="/attach [<path> | clear]", surfaces=(CLI,)),
     ChatCommand("help", ("/help", "/h", "/?"), "this help", usage="/help, /h"),
 )
 

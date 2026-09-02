@@ -305,6 +305,7 @@ class TestSpellingsAndHelp:
 # ---------------------------------------------------------------------------
 
 import asyncio
+import base64
 import builtins
 from types import SimpleNamespace
 
@@ -501,3 +502,66 @@ class TestTheEscapeReachesTheAgent:
         agent = _agent()
         _drive_repl(monkeypatch, ["//compact"], agent)
         assert agent.calls == []
+
+
+class TestAttachCommand:
+    """/attach queues files for the NEXT message and sends them as one
+    multimodal ChatMessage -- the CLI-chat half of what agent-cli run's
+    --attach and the HTTP API's multipart upload already do."""
+
+    PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNg"
+        "+M/AAAACAQEAqCJhkAAAAABJRU5ErkJggg==")
+
+    def _png(self, tmp_path):
+        target = tmp_path / "sketch.png"
+        target.write_bytes(self.PNG)
+        return target
+
+    def test_attached_file_rides_on_the_next_message_then_queue_clears(
+            self, monkeypatch, tmp_path):
+        agent = _agent()
+        png = self._png(tmp_path)
+        turns = _drive_repl(monkeypatch,
+                            [f"/attach {png}", "build this", "and this"],
+                            agent)
+        from agent_system.llm.models import ChatMessage
+        first, second = turns
+        assert isinstance(first, ChatMessage), "attachment turn must be a ChatMessage"
+        kinds = [getattr(c, "type", None) for c in first.content]
+        # image_url is the builder's (OpenAI-style) spelling, same as the API path
+        assert kinds == ["text", "image_url"]
+        assert first.content[0].text == "build this"
+        assert second == "and this", "queue must be empty again after sending"
+
+    def test_a_missing_file_is_refused_at_attach_time(self, monkeypatch,
+                                                      tmp_path, capsys):
+        agent = _agent()
+        turns = _drive_repl(monkeypatch,
+                            [f"/attach {tmp_path / 'nope.png'}", "hi"], agent)
+        assert turns == ["hi"], "nothing may ride along"
+        assert "Not a file" in capsys.readouterr().out
+
+    def test_clear_empties_the_queue(self, monkeypatch, tmp_path):
+        agent = _agent()
+        png = self._png(tmp_path)
+        turns = _drive_repl(monkeypatch,
+                            [f"/attach {png}", "/attach clear", "hi"], agent)
+        assert turns == ["hi"]
+
+    def test_capability_refusal_blocks_the_send_and_keeps_the_queue(
+            self, monkeypatch, tmp_path, capsys):
+        """A text-only model must produce OUR message before any tokens are
+        spent -- and the queue survives so the person can switch profiles
+        without re-attaching (second try refuses again == still queued)."""
+        agent = _agent()
+        png = self._png(tmp_path)
+        import agent_system.llm.capabilities as caps
+        monkeypatch.setattr(caps, "ensure_model_supports",
+                            lambda model, **k: "model m cannot take images")
+        turns = _drive_repl(monkeypatch,
+                            [f"/attach {png}", "try one", "try two"], agent)
+        assert turns == [], "no turn may run against the refusal"
+        out = capsys.readouterr().out
+        assert out.count("Not sent:") == 2, "queue was dropped after first refusal"
+

@@ -46,7 +46,9 @@ class TestCatalogue:
         cli = {c.name for c in commands_for(CLI)}
         web = {c.name for c in commands_for(WEB)}
         assert web < cli
-        assert cli - web == {"exit"}
+        # attach takes paths on the server's own disk -- meaningless in a
+        # browser tab, which has the multipart upload instead.
+        assert cli - web == {"exit", "attach"}
 
 
 class TestParsing:

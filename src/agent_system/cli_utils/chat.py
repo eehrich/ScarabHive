@@ -887,6 +887,9 @@ class _ChatContext:
         self.last_saved: Optional[str] = None
         # Cumulative usage across the chat, for the exit line.
         self.total_usage: dict[str, float] = {}
+        # Files queued by /attach for the NEXT message (absolute or relative
+        # paths, already validated to exist when queued).
+        self.attachments: list[str] = []
 
     def pricing_key(self) -> tuple[Optional[str], bool]:
         """(model id, is_batch) for the central cost estimator."""
@@ -1640,6 +1643,84 @@ async def _poll_typed_input(reader: _KeyReader, renderer: ChatRenderer,
         logger.debug("Type-ahead poller stopped", exc_info=True)
 
 
+def _handle_attach(ctx: _ChatContext, payload: str) -> None:
+    """Queue one file for the next message, list the queue, or clear it.
+
+    The REST OF THE LINE is ONE path -- Windows paths contain spaces, and a
+    quoting grammar would cost more than typing /attach once per file.
+    """
+    from ..utils.multimodal_processor import detect_file_type
+
+    payload = payload.strip().strip('"').strip("'")
+    if not payload:
+        if not ctx.attachments:
+            print("No attachments queued. Usage: /attach <path>")
+        else:
+            for path in ctx.attachments:
+                print(f"  {path} [{detect_file_type(path)}]")
+        return
+    if payload.lower() == "clear":
+        ctx.attachments.clear()
+        print("Attachments cleared.")
+        return
+    from pathlib import Path as _Path
+    target = _Path(payload).expanduser()
+    if not target.is_file():
+        print(f"Not a file: {target}")
+        return
+    kind = detect_file_type(target)
+    if kind == "unknown":
+        print(f"Unsupported file type: {target.suffix or '(no extension)'} "
+              f"-- images, audio and text files work.")
+        return
+    ctx.attachments.append(str(target))
+    print(f"Attached ({len(ctx.attachments)}): {target.name} [{kind}] "
+          f"-- sent with the next message.")
+
+
+def _task_with_attachments(ctx: _ChatContext, task: str,
+                           renderer: ChatRenderer) -> Any:
+    """The queued files plus *task* as one multimodal message, or None.
+
+    None means: do not send. The queue is kept in that case so the person
+    can fix the problem (switch profile, drop a file) without re-attaching;
+    it is cleared only when the message actually goes out.
+    """
+    from ..llm.capabilities import ensure_model_supports
+    from ..utils.multimodal_processor import (
+        create_multimodal_message_extended, detect_file_type)
+
+    kinds: dict[str, list[str]] = {"image": [], "audio": [], "text": []}
+    for path in ctx.attachments:
+        kinds.setdefault(detect_file_type(path), []).append(path)
+
+    # Same rule as the HTTP API's capability_model_name: the per-request
+    # override wins over the agent's default. Inlined -- importing app.py
+    # here would drag FastAPI into the CLI.
+    model = getattr(ctx.llm_override, "model", None) or getattr(
+        getattr(ctx.agent, "llm", None), "model", None)
+    problem = ensure_model_supports(
+        model, images=len(kinds["image"]), audio=len(kinds["audio"]))
+    if problem:
+        print(f"Not sent: {problem}")
+        print(renderer._colored(f"(kept text: {task})", "90"))
+        return None
+    try:
+        message = create_multimodal_message_extended(
+            text=task,
+            image_paths=kinds["image"] or None,
+            audio_paths=kinds["audio"] or None,
+            text_file_paths=kinds["text"] or None,
+        )
+    except Exception as e:
+        print(f"Attachment failed, nothing sent: {e}")
+        return None
+    print(renderer._colored(
+        f"(sending with {len(ctx.attachments)} attachment(s))", "90"))
+    ctx.attachments.clear()
+    return message
+
+
 def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
                   task: str, renderer: ChatRenderer) -> dict:
     """One turn on the persistent loop, with two-stage Ctrl-C handling."""
@@ -1934,6 +2015,9 @@ def run_chat_loop(
             if command == "last":
                 _show_last(ctx, renderer)
                 continue
+            if command == "attach":
+                _handle_attach(ctx, payload)
+                continue
             if command == "help":
                 print(_help_text(skill_names, plugin_commands))
                 continue
@@ -1945,6 +2029,11 @@ def run_chat_loop(
                 print(f"Unknown command: {payload}{did_you_mean}")
                 print(f"/help lists the commands; //{payload[1:]} sends it as a message.")
                 continue
+
+            if ctx.attachments:
+                task = _task_with_attachments(ctx, task, renderer)
+                if task is None:
+                    continue
 
             started = time.monotonic()
             result = _execute_turn(loop, ctx, task, renderer)
