@@ -499,3 +499,78 @@ class TestReadOnly:
         assert res["status"] == "error", res
         assert res["error_type"] == "PermissionError", res
         assert "read-only" in res["error"]
+
+
+class TestStatusEvents:
+    """The status line must say WHAT happened.
+
+    Shipped behaviour was the scope's defaults: every call ended as a bare
+    'completed' — including refused ones, which therefore READ as successes
+    in the CLI/WebUI status stream. These tests ride the REAL path: the
+    events land on the real status bus via call_with_status, which is what
+    injects ``_status`` in production.
+    """
+
+    async def _run(self, server, action, params, scope):
+        from agent_system.mcp.status import get_status_bus
+        bus = get_status_bus()
+        queue = await bus.subscribe(server=scope)
+        try:
+            res = await server.call_with_status(action, params)
+        finally:
+            bus.unsubscribe(queue)
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+        assert events, "no status events arrived — the subscription is vacuous"
+        return res, events
+
+    @staticmethod
+    def _only(events, phase):
+        from agent_system.mcp.status import StatusPhase
+        matching = [e for e in events if e.phase is getattr(StatusPhase, phase)]
+        assert len(matching) == 1, [(e.phase, e.message) for e in events]
+        return matching[0]
+
+    async def test_load_end_names_file_and_kind(self, server, image_file):
+        res, events = await self._run(server, "media_ops_load",
+                                      {"path": str(image_file)},
+                                      "media_ops.load()")
+        assert res["status"] == "success", res
+        end = self._only(events, "END")
+        assert "shot.png" in end.message and "image" in end.message, end.message
+
+    async def test_denied_load_is_an_error_event_not_completed(
+            self, server, outside_file):
+        res, events = await self._run(server, "media_ops_load",
+                                      {"path": str(outside_file)},
+                                      "media_ops.load()")
+        assert res["status"] == "error", res
+        error = self._only(events, "ERROR")
+        assert error.message == res["error"]
+        from agent_system.mcp.status import StatusPhase
+        assert not any(e.phase is StatusPhase.END for e in events), \
+            "a refusal must not also read as 'completed'"
+
+    async def test_list_context_end_carries_the_count(self, server, context_media):
+        res, events = await self._run(server, "media_ops_list_context",
+                                      _params(context_media),
+                                      "media_ops.list_context()")
+        assert res["count"] > 0, "empty fixture would make this vacuous"
+        end = self._only(events, "END")
+        assert end.message.startswith(f"{res['count']} media item"), end.message
+
+    async def test_save_end_names_target_and_size(self, server, media_root,
+                                                  context_media):
+        listed = await server.call("media_ops_list_context",
+                                   _params(context_media))
+        entry = next(m for m in listed["media"]
+                     if m["inline"] and m["type"] == "image")
+        res, events = await self._run(
+            server, "media_ops_save",
+            _params(context_media, id=entry["id"],
+                    path=str(media_root / "kept.png")),
+            "media_ops.save()")
+        assert res["status"] == "success", res
+        end = self._only(events, "END")
+        assert "kept.png" in end.message and "image" in end.message, end.message

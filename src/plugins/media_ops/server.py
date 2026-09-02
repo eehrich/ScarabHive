@@ -123,38 +123,44 @@ class MediaOpsServer(SchemaBasedMCPServer):
         return self.sandbox.resolve(path, write=write)
 
     async def load(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        status = params.get("_status")
         path = params.get("path")
         if not path or not isinstance(path, str):
-            return _error("path is required (string)", "ValidationError")
+            return await _fail(status, "path is required (string)", "ValidationError")
 
         try:
             full = self._resolve(path)
         except PathSandboxDenied as e:
-            return _error(str(e), "PermissionError")
+            return await _fail(status, str(e), "PermissionError")
 
         if not full.is_file():
-            return _error(
-                f"File not found: {full}",
-                "FileNotFoundError",
-            )
+            return await _fail(status, f"File not found: {full}", "FileNotFoundError")
 
         entry = MEDIA_TYPES.get(full.suffix.lower())
         if entry is None:
-            return _error(
+            return await _fail(
+                status,
                 f"Unsupported file type: {full.suffix or '(no extension)'}. "
                 f"Supported extensions: {', '.join(sorted(MEDIA_TYPES))}",
                 "UnsupportedMediaType",
             )
         content_type, mime_type = entry
 
-        size_mb = full.stat().st_size / (1024 * 1024)
+        size_bytes = full.stat().st_size
+        size_mb = size_bytes / (1024 * 1024)
         if size_mb > self.max_file_size_mb:
-            return _error(
+            return await _fail(
+                status,
                 f"File is too large for the context: {size_mb:.1f} MB "
                 f"(limit {self.max_file_size_mb:g} MB): {full}",
                 "FileTooLarge",
             )
 
+        if status:
+            await status.end(
+                f"Loaded {full.name} [{content_type}, {_fmt_size(size_bytes)}]",
+                meta={"path": str(full)},
+            )
         return {
             "status": "success",
             "path": str(full),
@@ -201,11 +207,14 @@ class MediaOpsServer(SchemaBasedMCPServer):
         return messages or []
 
     async def list_context(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        status = params.get("_status")
         try:
             entries = _context_media(self._live_messages(params))
         except LookupError as e:
-            return _error(str(e), "SessionContextMissing")
+            return await _fail(status, str(e), "SessionContextMissing")
 
+        if status:
+            await status.end(f"{len(entries)} media item(s) in context")
         return {
             "status": "success",
             "count": len(entries),
@@ -214,41 +223,48 @@ class MediaOpsServer(SchemaBasedMCPServer):
         }
 
     async def save(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        status = params.get("_status")
         # First gate, before anything else: a read-only sandbox cannot be
         # talked into a write by any argument, and the model gets the reason
         # instead of a validation complaint about the arguments it supplied.
         if self.sandbox.read_only:
-            return _error(
+            return await _fail(
+                status,
                 f"Sandbox is read-only, refusing to write: {params.get('path')}",
                 "PermissionError")
 
         media_id = params.get("id")
         target = params.get("path")
         if not media_id or not isinstance(media_id, str):
-            return _error("id is required (string, from media_ops_list_context)",
-                          "ValidationError")
+            return await _fail(status,
+                               "id is required (string, from media_ops_list_context)",
+                               "ValidationError")
         if not target or not isinstance(target, str):
-            return _error("path is required (string)", "ValidationError")
+            return await _fail(status, "path is required (string)", "ValidationError")
 
         try:
             entries = _context_media(self._live_messages(params))
         except LookupError as e:
-            return _error(str(e), "SessionContextMissing")
+            return await _fail(status, str(e), "SessionContextMissing")
 
         entry = next((e for e in entries if e["id"] == media_id), None)
         if entry is None:
-            return _error(
+            return await _fail(
+                status,
                 f"No media with id {media_id!r} in the current context. "
                 f"Call media_ops_list_context for the current ids "
                 f"({len(entries)} item(s) available).",
                 "MediaNotFound",
             )
         if entry.get("error"):
-            return _error(f"Media {media_id} cannot be saved: {entry['error']}",
-                          "MediaUnreadable")
+            return await _fail(status,
+                               f"Media {media_id} cannot be saved: {entry['error']}",
+                               "MediaUnreadable")
 
         # Already a file on disk — hand back the path instead of copying it.
         if not entry["inline"]:
+            if status:
+                await status.end(f"Already on disk: {entry['path']} -- nothing written")
             return {
                 "status": "success",
                 "path": entry["path"],
@@ -259,16 +275,18 @@ class MediaOpsServer(SchemaBasedMCPServer):
         try:
             full = self._resolve(target, write=True)
         except PathSandboxDenied as e:
-            return _error(str(e), "PermissionError")
+            return await _fail(status, str(e), "PermissionError")
 
         if full.suffix.lower() not in MEDIA_TYPES:
-            return _error(
+            return await _fail(
+                status,
                 f"Unsupported target extension: {full.suffix or '(none)'}. "
                 f"Supported extensions: {', '.join(sorted(MEDIA_TYPES))}",
                 "UnsupportedMediaType",
             )
         if full.exists() and not params.get("overwrite"):
-            return _error(
+            return await _fail(
+                status,
                 f"File already exists: {full}. Pass overwrite=true to replace it.",
                 "FileExists",
             )
@@ -277,6 +295,12 @@ class MediaOpsServer(SchemaBasedMCPServer):
         full.write_bytes(entry["_data"])
         logger.info("media_ops saved %s (%d bytes) -> %s",
                     media_id, len(entry["_data"]), full)
+        if status:
+            await status.end(
+                f"Saved {entry['type']} -> {full.name} "
+                f"({_fmt_size(len(entry['_data']))})",
+                meta={"path": str(full)},
+            )
         return {
             "status": "success",
             "path": str(full),
@@ -368,8 +392,24 @@ def _context_media(messages: Any) -> List[Dict[str, Any]]:
     return entries
 
 
+def _fmt_size(n: int) -> str:
+    """Human size for status lines -- '0.00 MB' for a 3 KB file says nothing."""
+    return f"{n / 1048576:.1f} MB" if n >= 1048576 else f"{n / 1024:.1f} KB"
+
+
 def _error(msg: str, kind: str) -> Dict[str, Any]:
     return {"status": "error", "error": msg, "error_type": kind}
+
+
+async def _fail(status: Any, msg: str, kind: str) -> Dict[str, Any]:
+    """Error result that also lands in the status stream.
+
+    Without this the surrounding StatusScope closes with its default
+    'completed' -- a denied load would read as a success in the CLI/WebUI.
+    """
+    if status:
+        await status.error(msg, meta={"error_type": kind})
+    return _error(msg, kind)
 
 
 PLUGIN_FACTORY = MediaOpsServer
