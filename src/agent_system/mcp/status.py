@@ -492,17 +492,24 @@ class StatusScope:
     async def error(self, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
         """Report an error in the process"""
         self.ended = True
-        parent_id, depth_level = _calculate_tree_metadata(self.request_id)
-        await self.bus.publish(StatusEvent(
-            server=self.server,
-            request_id=self.request_id,
-            message=message,
-            phase=StatusPhase.ERROR,
-            level="error",
-            meta=meta,
-            parent_id=parent_id,
-            depth_level=depth_level
-        ))
+        # Same contract as end()/progress(): a status publishing failure must
+        # not break the operation that is reporting it -- this was the only
+        # publish site without the guard.
+        try:
+            parent_id, depth_level = _calculate_tree_metadata(self.request_id)
+            await self.bus.publish(StatusEvent(
+                server=self.server,
+                request_id=self.request_id,
+                message=message,
+                phase=StatusPhase.ERROR,
+                level="error",
+                meta=meta,
+                parent_id=parent_id,
+                depth_level=depth_level
+            ))
+        except Exception:
+            # Gracefully handle status publishing failures
+            pass
 
 
 
