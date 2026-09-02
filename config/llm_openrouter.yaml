@@ -235,12 +235,22 @@ llm_system:
       max_tokens: 0
 
 
-    openrouter-qwen3.7-flash:
+    openrouter-qwen3.8-27B:
       extends: openrouter-base
-      model: qwen/qwen3.7-flash
-      context_window: 1000000
-      max_tokens: 16384
-
+      model: qwen/qwen3.8-27b
+      context_window: 262144
+      max_tokens: 65535
+      provider_routing:
+        order:
+        - akashml
+        - chutes
+        quantizations:
+        - fp8
+      capabilities:
+        image_input: true
+        audio_input: true
+        video_input: true
+        
     openrouter-minimax-m3:
       extends: openrouter-base
       model: minimax/minimax-m3
@@ -259,6 +269,8 @@ llm_system:
     openrouter-glm:
       extends: openrouter-base
       model: z-ai/glm-5.3
+      capabilities:
+        image_input: true
 
     openrouter-glm-unlimited:
       extends: openrouter-glm
@@ -326,9 +338,9 @@ llm_system:
       description: "OpenRouter Grok - No output token limit"
       max_steps: 500
 
-    or-qwen-flash:
-      model_ref: openrouter-qwen3.7-flash
-      description: "OpenRouter Qwen3.7 Flash"
+    or-qwen-mini:
+      model_ref: openrouter-qwen3.8-27B
+      description: "OpenRouter Qwen3.8 27B" 
       max_steps: 500
 
     or-minimax-m3:
