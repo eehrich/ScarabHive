@@ -47,6 +47,90 @@ async def connection():
         await conn.stop()
 
 
+class TestImageResults:
+
+    """Image content blocks must become the house multimodal contract.
+
+
+
+    Before 2026-09-02 an image block either vanished (a text block won) or
+
+    its base64 landed inside the JSON payload -- one blender screenshot
+
+    pushed a live session past the model input limit.
+
+    """
+
+
+
+    @pytest.fixture(autouse=True)
+
+    def _media_dir(self, tmp_path, monkeypatch):
+
+        from plugins.mcp_client import connection as conn_mod
+
+        monkeypatch.setattr(conn_mod, "_MEDIA_DIR", tmp_path)
+
+        self.media_dir = tmp_path
+
+
+
+    async def test_image_result_is_persisted_not_inlined(self, connection):
+
+        result = await connection.call_tool("picture", {})
+
+        assert isinstance(result, dict)
+
+        items = result["_multimodal_content"]
+
+        assert len(items) == 1 and items[0]["type"] == "image"
+
+        assert items[0]["mime_type"] == "image/png"
+
+        saved = Path(items[0]["path"])
+
+        assert saved.exists() and saved.read_bytes().startswith(b"\x89PNG")
+
+        # The whole point: no base64 payload in what the model reads as text.
+
+        assert "iVBOR" not in str(result)
+
+
+
+    async def test_text_next_to_an_image_survives(self, connection):
+
+        result = await connection.call_tool("captioned_picture", {})
+
+        assert result["message"] == "a red pixel"
+
+        assert len(result["_multimodal_content"]) == 1
+
+
+
+    async def test_audio_blocks_take_the_same_path(self):
+        """MCP AudioContent carries the same data/mimeType pair as images.
+        Unit-level against the helper: the wire path is pinned by the image
+        tests, and the probe server has no audio tool to speak of."""
+        import base64
+        from plugins.mcp_client import connection as conn_mod
+        block = types.SimpleNamespace(
+            type="audio",
+            data=base64.b64encode(b"RIFFxxxxWAVE").decode(),
+            mimeType="audio/wav")
+        result = types.SimpleNamespace(content=[block])
+        items = conn_mod._persist_media_blocks(result, "probe", "speak")
+        assert len(items) == 1 and items[0]["type"] == "audio"
+        saved = Path(items[0]["path"])
+        assert saved.suffix == ".wav" and saved.read_bytes() == b"RIFFxxxxWAVE"
+
+    async def test_text_only_results_keep_the_old_shape(self, connection):
+
+        assert await connection.call_tool("echo", {"text": "hi"}) == "hi"
+
+
+
+
+
 class TestHandshake:
     @pytest.mark.asyncio
     async def test_start_completes_the_mcp_handshake(self, connection):
@@ -238,6 +322,31 @@ class TestCalls:
         assert _first_text(result) == "first"
         assert _first_text(SimpleNamespace(content=[])) is None
         assert _first_text(SimpleNamespace(content=None)) is None
+
+
+class TestPerServerTimeout:
+    async def test_a_server_specific_timeout_overrides_the_pool_default(self):
+        """A Blender render needs minutes; the global 5s default killed it.
+        The per-server value must reach the connection -- pydantic silently
+        dropping unknown fields is exactly how this breaks unnoticed."""
+        pool = ExternalServerPool(timeout=30.0)
+        pool.configure({"probe": make_config(timeout=0.2)})
+        connection = await pool.connect("probe")
+        try:
+            assert connection.timeout == 0.2
+            with pytest.raises(MCPConnectionError, match="did not answer within 0.2s"):
+                await connection.call_tool("sleep", {"seconds": 5})
+        finally:
+            await pool.close_all()
+
+    async def test_without_a_server_timeout_the_pool_default_holds(self):
+        pool = ExternalServerPool(timeout=12.0)
+        pool.configure({"probe": make_config()})
+        connection = await pool.connect("probe")
+        try:
+            assert connection.timeout == 12.0
+        finally:
+            await pool.close_all()
 
 
 class TestLifecycle:

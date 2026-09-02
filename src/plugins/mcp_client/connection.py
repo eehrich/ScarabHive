@@ -22,9 +22,12 @@ task.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 from agent_system.mcp.core import MCPTool
@@ -441,6 +444,31 @@ class ServerConnection:
             )
             raise RuntimeError(f"Tool call failed: {message}")
 
+        # Image blocks first: dumped into the text path they either vanish
+        # (text wins) or land as base64 INSIDE the JSON payload -- measured
+        # live with blender's get_viewport_screenshot, one screenshot pushed
+        # the conversation past the model's input limit and bricked the
+        # session. Persist them and answer with the house contract
+        # (_multimodal_content, path-based) that tool_execution already
+        # turns into a real image part for the model.
+        media = _persist_media_blocks(result, self.name, name)
+        if media:
+            texts = [getattr(item, "text", "") or ""
+                     for item in getattr(result, "content", None) or []
+                     if getattr(item, "type", None) == "text"]
+            payload = {
+                "status": "success",
+                "message": "\n".join(t for t in texts if t) or (
+                    f"{len(media)} media item(s) returned by {name}"),
+                "_multimodal_content": media,
+            }
+            await self._publish(
+                f"Tool call completed: {name}", StatusPhase.END, request_id,
+                {"tool": name, "server": self.name,
+                 "result_type": f"{len(media)} media item(s)"},
+            )
+            return payload
+
         text = _first_text(result)
         if text is not None:
             await self._publish(
@@ -487,6 +515,60 @@ def _describe(error: BaseException) -> str:
         if label not in seen:
             seen.append(label)
     return "; ".join(seen) if seen else f"{type(error).__name__}: {error}"
+
+
+#: Where image blocks from external tool results are written. Relative to the
+#: repo root that API and CLI start from (the same assumption the stdio
+#: server paths in mcp_servers.yaml make) and inside media_ops' sandbox
+#: root (data/), so the model can re-load or save them. Tests point this
+#: at a tmp_path.
+_MEDIA_DIR = Path("data/media/external_mcp")
+
+_MIME_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
+             "image/gif": ".gif", "audio/wav": ".wav", "audio/mpeg": ".mp3",
+             "audio/ogg": ".ogg", "audio/flac": ".flac"}
+
+#: MCP content block types that carry inline base64 media. Video has NO
+#: standard MCP content block -- a server shipping video does it as a blob
+#: resource, which this path does not unpack (named gap, not an oversight).
+_MEDIA_BLOCK_TYPES = ("image", "audio")
+
+
+def _persist_media_blocks(result: Any, server: str, tool: str) -> List[Dict[str, str]]:
+    """Write every image/audio content block to disk, as _multimodal_content items.
+
+    Returns an empty list when there is nothing to persist -- including on a
+    write failure: a broken disk must degrade to the old text behaviour, not
+    take the tool call down.
+    """
+    items: List[Dict[str, str]] = []
+    for index, block in enumerate(getattr(result, "content", None) or []):
+        btype = getattr(block, "type", None)
+        if btype not in _MEDIA_BLOCK_TYPES:
+            continue
+        data = getattr(block, "data", None)
+        mime = getattr(block, "mimeType", None) or (
+            "image/png" if btype == "image" else "application/octet-stream")
+        if not data:
+            continue
+        try:
+            raw = base64.b64decode(data)
+            target_dir = _MEDIA_DIR / server
+            target_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{tool}-{int(time.time() * 1000)}-{index}{_MIME_EXT.get(mime, '.bin')}"
+            target = target_dir / filename
+            target.write_bytes(raw)
+        except Exception:
+            logger.warning("Could not persist image block %d of %s.%s",
+                           index, server, tool, exc_info=True)
+            continue
+        items.append({
+            "type": btype,
+            "path": str(target),
+            "mime_type": mime,
+            "description": f"{btype.capitalize()} returned by external tool {server}.{tool}",
+        })
+    return items
 
 
 def _first_text(result: Any) -> Optional[str]:

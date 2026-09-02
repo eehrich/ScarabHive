@@ -122,6 +122,21 @@ show what is blocked.
 | `mcp_client_disconnect` | Close one server's connection |
 | `mcp_client_tools` | Tools of the connected servers; `force_refresh` bypasses the cache |
 
+## Image and audio results become files, not text
+
+A tool result's `image`/`audio` content blocks are written to
+`data/media/external_mcp/<server>/` and returned as the house contract
+(`_multimodal_content`, path-based) that the agent turns into a real
+image part for the model. Before 2026-09-02 such a block either vanished
+(the first text block won) or its base64 landed inside the JSON payload —
+one blender `get_viewport_screenshot` pushed a live session past the
+model's input limit. Text blocks next to the media survive as `message`.
+
+Video has no standard MCP content block; a server shipping video does it
+as a blob resource, which this path does not unpack (named gap). The
+dump directory is not cleaned up automatically — screenshots are small,
+but a long-running host may want a sweep eventually.
+
 ## One connection, one task
 
 Worth knowing before changing `connection.py`: the SDK's transports and

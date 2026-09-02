@@ -2007,6 +2007,18 @@
           "default": null,
           "title": "Env"
         },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
         "auth": {
           "anyOf": [
             {

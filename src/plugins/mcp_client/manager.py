@@ -91,7 +91,10 @@ class ExternalServerPool:
                 await existing.stop()
 
             connection = ServerConnection(
-                name, config, ssl_verify=self.ssl_verify, timeout=self.timeout,
+                name, config, ssl_verify=self.ssl_verify,
+                # Per-server timeout wins over the pool default: long-running
+                # tools (a Blender render) died on the global 5s otherwise.
+                timeout=getattr(config, "timeout", None) or self.timeout,
             )
             await connection.start()
             self._connections[name] = connection

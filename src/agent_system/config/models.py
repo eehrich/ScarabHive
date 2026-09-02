@@ -845,6 +845,12 @@ class RemoteMCPConfig(BaseModel):
     args: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None
 
+    # Per-server answer timeout in seconds; None falls back to the global
+    # external_servers.connection.timeout. A Blender render needs minutes,
+    # the everything demo answers in milliseconds -- one global value
+    # cannot serve both.
+    timeout: Optional[float] = None
+
     # Authentication and security
     auth: Optional[MCPAuthConfig] = None
 
