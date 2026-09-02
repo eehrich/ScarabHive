@@ -563,5 +563,134 @@ class TestErrorMessages:
         assert 'must implement' in error_msg
 
 
+# ============================================================================
+# Test: the error safety net in call_with_status()
+# ============================================================================
+
+class TestErrorResultsReachTheStatusStream:
+    """A handler that RETURNS an error must not end as 'completed'.
+
+    Audited 2026-09-02 across all 45 plugins with tools: 19 had at least one
+    error path that returned a failure result without touching ``_status``,
+    so the scope closed with its default END and the failure read as a
+    success in CLI and WebUI. The net lives here, at the one place every
+    tool call routes through, instead of in every plugin.
+    """
+
+    @staticmethod
+    async def _events(server, action, params=None):
+        """Run one tool call and return the status events it published."""
+        from agent_system.mcp.status import get_status_bus
+
+        bus = get_status_bus()
+        queue = await bus.subscribe(server=f"{server.name}.{action}()")
+        try:
+            result = await server.call_with_status(action, params or {})
+        finally:
+            bus.unsubscribe(queue)
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+        assert events, "no status events arrived — the subscription is vacuous"
+        return result, events
+
+    @staticmethod
+    def _server(system_config, mcp_config):
+        class ResultShapeServer(MCPServer):
+            """One tool per result shape the fleet actually returns."""
+
+            def get_tools(self):
+                return []
+
+            async def status_error(self, params):
+                return {"status": "error", "error": "sandbox denied",
+                        "error_type": "PermissionError"}
+
+            async def success_false(self, params):
+                return {"success": False, "error": "host unreachable"}
+
+            async def negative_answer(self, params):
+                """Did its job; the ANSWER is no. Not a failure."""
+                return {"success": False, "message": "was not connected"}
+
+            async def fine(self, params):
+                return {"status": "success", "rows": 3}
+
+            async def speaks_for_itself(self, params):
+                await params["_status"].error("host unreachable: db-1")
+                return {"status": "error", "error": "host unreachable: db-1"}
+
+            async def reports_error_as_data(self, params):
+                """Succeeded; the THING it queried is in error state."""
+                await params["_status"].end("Checked db-1: unhealthy")
+                return {"status": "error", "error": "db-1 is down"}
+
+        return ResultShapeServer('shapes', system_config, mcp_config)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action,expected", [
+        ("status_error", "sandbox denied"),
+        ("success_false", "host unreachable"),
+    ])
+    async def test_a_returned_error_is_published_as_error(
+            self, system_config, mcp_config, action, expected):
+        from agent_system.mcp.status import StatusPhase
+
+        server = self._server(system_config, mcp_config)
+        result, events = await self._events(server, action)
+
+        assert result["error"] == expected, "the result must pass through untouched"
+        errors = [e for e in events if e.phase is StatusPhase.ERROR]
+        assert len(errors) == 1, [(e.phase, e.message) for e in events]
+        assert errors[0].message == expected
+        assert not [e for e in events if e.phase is StatusPhase.END], \
+            "a failure must not also read as 'completed'"
+
+    @pytest.mark.asyncio
+    async def test_error_type_travels_as_meta(self, system_config, mcp_config):
+        from agent_system.mcp.status import StatusPhase
+
+        server = self._server(system_config, mcp_config)
+        _, events = await self._events(server, "status_error")
+        error = next(e for e in events if e.phase is StatusPhase.ERROR)
+        assert error.meta == {"error_type": "PermissionError"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", [
+        "fine",
+        # success: False without an 'error' is a negative ANSWER, not a
+        # failure -- mcp_client.disconnect says this for a server that was
+        # not connected. Flagging it would cry wolf on a healthy call.
+        "negative_answer",
+    ])
+    async def test_a_successful_call_still_ends(self, system_config, mcp_config,
+                                                action):
+        """Counter-check: the net must not turn healthy calls into errors."""
+        from agent_system.mcp.status import StatusPhase
+
+        server = self._server(system_config, mcp_config)
+        _, events = await self._events(server, action)
+        assert [e.phase for e in events] == [StatusPhase.START, StatusPhase.END]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action,phase,message", [
+        # The plugin reported it itself — the net must not double-report.
+        ("speaks_for_itself", "ERROR", "host unreachable: db-1"),
+        # The plugin ENDED deliberately: the call succeeded and 'error' is
+        # its payload, not its outcome. The net must keep its hands off.
+        ("reports_error_as_data", "END", "Checked db-1: unhealthy"),
+    ])
+    async def test_the_plugins_own_verdict_wins(self, system_config, mcp_config,
+                                                action, phase, message):
+        from agent_system.mcp.status import StatusPhase
+
+        server = self._server(system_config, mcp_config)
+        _, events = await self._events(server, action)
+        terminal = [e for e in events if e.phase is not StatusPhase.START]
+        assert len(terminal) == 1, [(e.phase, e.message) for e in terminal]
+        assert terminal[0].phase is getattr(StatusPhase, phase)
+        assert terminal[0].message == message
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

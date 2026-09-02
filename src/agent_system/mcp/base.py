@@ -8,6 +8,31 @@ if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 
+def _error_result_message(result: Any) -> str | None:
+    """The error text of a failed tool result, or None if it is not one.
+
+    Two conventions live side by side in the plugin fleet, counted 2026-09-02
+    over ``src/plugins/**`` (tests excluded): ``{"status": "error"}`` at 342
+    sites in 23 plugins, ``{"success": False}`` at 35 sites in 5. Both are
+    recognised here so the safety net in ``call_with_status`` does not depend
+    on which one a plugin happens to use.
+
+    ``success: False`` additionally requires an ``error`` key: on its own the
+    flag also carries legitimate negative ANSWERS, where the call did its job
+    and the answer is "no" -- ``mcp_client.disconnect`` returns
+    ``{"success": False, "message": "was not connected"}`` for a server that
+    was not connected. ``status: "error"`` is unambiguous by its own name and
+    needs no such qualifier.
+    """
+    if not isinstance(result, dict):
+        return None
+    if result.get("status") == "error":
+        return str(result.get("error") or result.get("message") or "failed")
+    if result.get("success") is False and result.get("error"):
+        return str(result["error"])
+    return None
+
+
 class MCPServer(ABC):
     """Base class for MCP servers.
     
@@ -93,7 +118,21 @@ class MCPServer(ABC):
             if "_session_id" in params:
                 params_with_status["_session_id"] = params["_session_id"]
 
-            return await self.call(action, params_with_status)
+            result = await self.call(action, params_with_status)
+
+            # Safety net for the whole plugin fleet: a handler that RETURNS an
+            # error result without reporting it leaves the scope to close with
+            # its default END "completed" -- the failure then reads as a
+            # success in CLI and WebUI. Audited 2026-09-02: 19 of 45 plugins
+            # had at least one such path. Only fires when the handler said
+            # nothing itself, so a plugin's own status.error/end always wins.
+            if not status.ended:
+                message = _error_result_message(result)
+                if message is not None:
+                    meta = {"error_type": result.get("error_type")} if result.get("error_type") else None
+                    await status.error(message, meta=meta)
+
+            return result
 
     async def list_tools(self) -> List[MCPTool]:
         """List tools available from this MCP server.
