@@ -631,8 +631,21 @@ class ComfyUIServer(SchemaBasedMCPServer):
         elif operation == "status":
             result = await self._op_status(params)
             if status:
-                job_status = result.get("status", "unknown")
-                await status.end(f"Job status: {job_status}")
+                # Three cases, and only the presence of "status" separates
+                # them: a missing prompt_id and a dead connection come back as
+                # {"error": ...} with NO status (the .get() default turned both
+                # into a green END "Job status: unknown"), while a job that
+                # really failed carries status "failed" AND an error -- keying
+                # on "error" alone would have called that one "unavailable".
+                prompt_id = params.get("prompt_id")
+                job_status = result.get("status")
+                if job_status is None:
+                    await status.error(
+                        f"Job status unavailable: {result.get('error', 'unknown reason')}")
+                elif job_status == "failed":
+                    await status.error(f"Job {prompt_id} failed: {result.get('error')}")
+                else:
+                    await status.end(f"Job {prompt_id}: {job_status}")
             return result
         
         # ===== RESULT =====
@@ -654,6 +667,13 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # ===== QUEUE =====
         elif operation == "queue":
             queue_data = await self.client.get_queue()
+            # get_queue() reports an unreachable server as {"error": ...} —
+            # counting its (absent) lists would turn that into a healthy,
+            # empty queue and hand the caller status: success.
+            if "error" in queue_data:
+                if status:
+                    await status.error(f"Queue unavailable: {queue_data['error']}")
+                return {"status": "error", "error": queue_data["error"]}
             result = {
                 "status": "success",
                 "pending": len(queue_data.get("queue_pending", [])),
@@ -680,10 +700,19 @@ class ComfyUIServer(SchemaBasedMCPServer):
             # web router guard. ComfyUIClient.cancel returns
             # {"status": "error", ...} on failure; without this guard we
             # would lie to consumers about the live job state.
-            if result.get("status") in ("cancelled", "already_finished"):
+            cancelled = result.get("status") in ("cancelled", "already_finished")
+            if cancelled:
                 self.job_tracker.update_status(prompt_id, "cancelled")
             if status:
-                await status.end("Job cancelled")
+                # The guard above already knows cancel can fail — the status
+                # line said "Job cancelled" regardless, so a refused interrupt
+                # read as a success while the job kept rendering.
+                if cancelled:
+                    await status.end(f"Job {prompt_id}: {result.get('status')}")
+                else:
+                    await status.error(
+                        f"Job {prompt_id} not cancelled: "
+                        f"{result.get('error') or result.get('status') or 'unknown reason'}")
             return result
         
         # ===== LOAD =====
@@ -1561,11 +1590,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
             
             # Check if completed or failed
             if current_status == "completed":
-                if status:
-                    job_info = self.job_tracker.get_job(prompt_id)
-                    wf_name = job_info.get("workflow_name", "workflow") if job_info else "workflow"
-                    await status.end(f"'{wf_name}' completed ({int(elapsed)}s)")
-                
+                job_info = self.job_tracker.get_job(prompt_id)
+                wf_name = job_info.get("workflow_name", "workflow") if job_info else "workflow"
+
                 # If include_content, fetch results to get multimodal content
                 if include_content:
                     result_params = {
@@ -1575,10 +1602,27 @@ class ComfyUIServer(SchemaBasedMCPServer):
                         "output_prefix": params.get("output_prefix", "comfy"),
                         "_session_id": params.get("_session_id")  # Pass through session_id for isolation
                     }
+                    # The end line used to be published BEFORE this call, which
+                    # runs with status=None: a failed fetch left the green line
+                    # standing and never reported its own error.
                     result = await self._op_result(result_params, None)
                     result["elapsed_seconds"] = elapsed
+                    if status:
+                        if result.get("error"):
+                            await status.error(
+                                f"'{wf_name}' rendered ({int(elapsed)}s) but the "
+                                f"results could not be fetched: {result['error']}")
+                        else:
+                            # total_files, not len(outputs): outputs is a dict
+                            # of lists per category, so len() would count
+                            # categories.
+                            await status.end(
+                                f"'{wf_name}' completed ({int(elapsed)}s), "
+                                f"{result.get('total_files', 0)} output file(s)")
                     return result
-                
+
+                if status:
+                    await status.end(f"'{wf_name}' completed ({int(elapsed)}s)")
                 return {
                     "status": "completed",
                     "prompt_id": prompt_id,
