@@ -581,11 +581,14 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                     f"Memory usage: {usage_pct:.0f}% "
                     f"({len(session.thoughts)}/{session.max_history_size})"
                 )
+                # No level= here: StatusScope.progress() takes (message, meta)
+                # only, and the extra kwarg raised TypeError -- so from thought
+                # 81 on, every call to this tool reported a failure although
+                # the thought had already been persisted.
                 await safe_status_call(
                     "progress",
                     f"Memory usage: {len(session.thoughts)}/{session.max_history_size} "
-                    f"thoughts ({usage_pct:.0f}%)",
-                    level="warning"
+                    f"thoughts ({usage_pct:.0f}%)"
                 )
 
             # Consistent progress display: never show X/Y with X > Y
