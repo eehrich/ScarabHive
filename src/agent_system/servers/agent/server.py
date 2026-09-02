@@ -20,6 +20,7 @@ from ...config.models import AgentSystemConfig, MCPConfig
 from ...core.cancellation import get_cancellation_manager, CancellationToken
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
+from ...utils.json_utils import history_safe_tool_calls
 from ...utils.reasoning_artifacts import strip_all_reasoning_artifacts
 import httpx
 
@@ -1525,11 +1526,19 @@ class Agent(MCPServer):
 
         # include persisted session messages
         if session_msgs:
-            # Convert dicts to ChatMessage objects if needed
+            # Convert dicts to ChatMessage objects if needed. Persisted
+            # history may predate history_safe_tool_calls (or was written by
+            # an older build) -- sanitize on load, or a session poisoned by
+            # invalid arguments JSON stays dead on every resume.
             for msg in session_msgs:
                 if isinstance(msg, dict):
+                    if msg.get("tool_calls"):
+                        msg = {**msg, "tool_calls":
+                               history_safe_tool_calls(msg["tool_calls"])}
                     messages.append(ChatMessage(**msg))
                 else:
+                    if getattr(msg, "tool_calls", None):
+                        msg.tool_calls = history_safe_tool_calls(msg.tool_calls)
                     messages.append(msg)
 
         # add the new user input as last message
@@ -2518,7 +2527,7 @@ class Agent(MCPServer):
             assistant_msg = ChatMessage(
                 role="assistant",
                 content=content or "",
-                tool_calls=tool_calls if tool_calls else None,
+                tool_calls=history_safe_tool_calls(tool_calls) if tool_calls else None,
                 reasoning_content=assistant.get("reasoning_content"),
                 reasoning_details=reasoning_details,
                 # Anthropic thinking blocks (+ the model that signed them).
@@ -2582,7 +2591,7 @@ class Agent(MCPServer):
                         assistant_msg.content = content or ""
                     if new_tool_calls is not None:
                         tool_calls = new_tool_calls
-                        assistant_msg.tool_calls = tool_calls if tool_calls else None
+                        assistant_msg.tool_calls = history_safe_tool_calls(tool_calls) if tool_calls else None
 
                     # Set content_format from hook metadata (e.g., 'html', 'markdown', 'text')
                     if "content_format" in hook_metadata:

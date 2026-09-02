@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 import json_repair as _json_repair_lib
 
@@ -167,3 +167,69 @@ def safe_serialize(obj: Any) -> str:
             return json.dumps(_convert(obj), ensure_ascii=False)
         except Exception:
             return json.dumps({"error": f"Unserializable object of type {type(obj).__name__}"}, ensure_ascii=False)
+
+
+def history_safe_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Copy tool calls so stored chat history always carries valid arguments JSON.
+
+    tool_execution repairs malformed ``function.arguments`` for the execution
+    itself, but the assistant message used to keep the raw string. Providers
+    that validate history server-side then reject EVERY later request of the
+    session ("Assistant tool call function.arguments must be valid JSON") --
+    a poisoned session survives model fallback and burns to max steps
+    (observed with v6 agents, 2026-09-01).
+
+    Shape guard: only DICT-shaped repairs survive. repair_json turns common
+    defects (concatenated objects, truncated list-wraps) into LISTS -- valid
+    JSON, but Anthropic/Gemini put the parsed value into ``tool_use.input`` /
+    ``functionCall.args``, which must be an object; a stored list would poison
+    those providers instead. A single-dict list is unwrapped exactly like
+    tool_execution does for the execution itself; everything else degrades to
+    ``{}`` -- the paired JSONParseError tool message already tells the model.
+
+    Returns copies only where a fix is needed; the original objects stay
+    untouched on purpose, because the execution path must still error an
+    irreparable call back to the model instead of running it with defaulted
+    arguments.
+    """
+    safe: List[Dict[str, Any]] = []
+    for tc in tool_calls:
+        func = tc.get("function") if isinstance(tc, dict) else None
+        raw = func.get("arguments") if isinstance(func, dict) else None
+        fixed: Optional[str] = None
+        if isinstance(func, dict) and raw is None:
+            # Ollama-native calls carry no/dict arguments; string-expecting
+            # providers 400 on a missing key after a profile fallback.
+            fixed = "{}"
+        elif isinstance(raw, dict):
+            fixed = json.dumps(raw, ensure_ascii=False)
+        elif isinstance(func, dict) and not isinstance(raw, str):
+            # Exotic shapes (list, number, bool) — no producer emits them,
+            # but the promise of this function is unconditional.
+            fixed = "{}"
+        elif isinstance(raw, str):
+            if not raw.strip():
+                fixed = "{}"
+            else:
+                try:
+                    json.loads(raw)
+                except json.JSONDecodeError:
+                    repaired = repair_json(raw)
+                    if (isinstance(repaired, list) and len(repaired) == 1
+                            and isinstance(repaired[0], dict)):
+                        repaired = repaired[0]
+                    if isinstance(repaired, dict):
+                        fixed = json.dumps(repaired, ensure_ascii=False)
+                    else:
+                        fixed = "{}"
+                    logger.warning(
+                        "Tool call arguments were not valid JSON (len=%d) -- "
+                        "history stores the %s version",
+                        len(raw),
+                        "repaired" if fixed != "{}" else "emptied",
+                    )
+        if fixed is not None:
+            safe.append({**tc, "function": {**func, "arguments": fixed}})
+        else:
+            safe.append(tc)
+    return safe

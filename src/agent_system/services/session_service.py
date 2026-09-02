@@ -160,8 +160,15 @@ class SessionService:
             from agent_system.llm.models import ChatMessage
             messages_objects = []
 
+            from agent_system.utils.json_utils import history_safe_tool_calls
+
             for msg_dict in session_data["messages"]:
                 try:
+                    # Sanitize on restore: invalid arguments JSON in persisted
+                    # tool calls poisons every later request of the session.
+                    if isinstance(msg_dict, dict) and msg_dict.get("tool_calls"):
+                        msg_dict = {**msg_dict, "tool_calls":
+                                    history_safe_tool_calls(msg_dict["tool_calls"])}
                     # ChatMessage can be constructed from dict
                     chat_msg = ChatMessage(**msg_dict)
                     messages_objects.append(chat_msg)
