@@ -10,7 +10,7 @@ plugins:
       description: "3D modelling and scene building in a locally running Blender via blender-mcp (objects, materials, bpy scripts)"
 
       agent_config:
-        llm_profile: [normal]
+        llm_profile: [or-gemini-flash]
         llm_profile_advanced: []
         llm_params:
           "*":
@@ -22,6 +22,7 @@ plugins:
           allowed:
             - "blender.*"          # every tool of the connected Blender server
             - "mcp_client/*"       # connect/disconnect/list + the /mcp commands
+            - "media_ops/*"        # load reference images / save renders and screenshots
             - "datetime/*"
 
         hooks:
