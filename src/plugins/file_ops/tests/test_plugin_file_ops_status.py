@@ -205,3 +205,92 @@ async def test_permission_denied_calls_status_error(server, tmp_allowed_dir, moc
     assert any(keyword in call_args.lower() for keyword in ["not allowed", "permission", "not found", "error"])
 
 
+
+
+# ---------------------------------------------------------------------------
+# A failure that is RETURNED, not raised
+# ---------------------------------------------------------------------------
+# The five reading tools ended unconditionally on the result dict, so an error
+# that operations.py / search.py hands back (instead of raising) closed the
+# scope with a healthy line -- "Read config.yaml: 0/0 lines" for a file that
+# could not be read. Only the raising paths were reported truthfully.
+
+
+@pytest.mark.asyncio
+async def test_a_returned_read_error_is_not_a_successful_read(
+        server, tmp_allowed_dir, mock_status):
+    test_file = tmp_allowed_dir / "unreadable.txt"
+    test_file.write_text("content")
+    server.operations.read_file_safe = AsyncMock(return_value={
+        "status": "error",
+        "error": "File is not valid UTF-8",
+        "error_type": "DecodeError",
+    })
+
+    result = await server.read_file({
+        "filePath": str(test_file),
+        "_status": mock_status,
+    })
+
+    assert result["status"] == "error"
+    mock_status.end.assert_not_called()
+    mock_status.error.assert_called_once()
+    assert "not valid UTF-8" in mock_status.error.call_args[0][0]
+    assert mock_status.error.call_args[1]["meta"]["error_type"] == "DecodeError"
+
+
+@pytest.mark.asyncio
+async def test_a_successful_read_still_ends(server, tmp_allowed_dir, mock_status):
+    """Counter-check: the guard must not turn healthy reads into errors."""
+    test_file = tmp_allowed_dir / "readable.txt"
+    test_file.write_text("one\ntwo\n")
+
+    result = await server.read_file({
+        "filePath": str(test_file),
+        "_status": mock_status,
+    })
+
+    assert result["status"] != "error", result
+    mock_status.error.assert_not_called()
+    mock_status.end.assert_called_once()
+    assert "readable.txt" in mock_status.end.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_a_returned_listing_error_is_not_an_empty_directory(
+        server, tmp_allowed_dir, mock_status):
+    (tmp_allowed_dir / "sub").mkdir()
+    server.operations.list_directory_safe = AsyncMock(return_value={
+        "status": "error",
+        "error": "Path is not a directory",
+        "error_type": "NotADirectoryError",
+    })
+
+    result = await server.list_directory({
+        "dir_path": str(tmp_allowed_dir / "sub"),
+        "_status": mock_status,
+    })
+
+    assert result["status"] == "error"
+    mock_status.end.assert_not_called()
+    mock_status.error.assert_called_once()
+    assert "not a directory" in mock_status.error.call_args[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_the_missing_file_message_names_the_file(
+        server, tmp_allowed_dir, mock_status):
+    """The message read params['file_path'], the parameter is 'filePath' --
+    so every one of these said "File not found: None"."""
+    server.operations.read_file_safe = AsyncMock(side_effect=FileNotFoundError())
+    missing = tmp_allowed_dir / "gone.txt"
+    missing.write_text("x")  # passes the validator, then the read raises
+
+    result = await server.read_file({
+        "filePath": str(missing),
+        "_status": mock_status,
+    })
+
+    assert result["status"] == "error"
+    assert "gone.txt" in result["error"], result["error"]
+    assert "None" not in result["error"]

@@ -17,6 +17,26 @@ from .search import FileSearchEngine
 logger = logging.getLogger(__name__)
 
 
+async def _end_or_error(status, result: Dict[str, Any], message: str,
+                        meta: Dict[str, Any]) -> None:
+    """Close the status scope according to what `result` actually says.
+
+    The reading tools ended unconditionally, so a failure that operations.py
+    or search.py RETURNS (rather than raises) closed the scope with a healthy
+    line -- "Read config.yaml: 0/0 lines" for a file that could not be read.
+    Only the raising paths were reported truthfully.
+    """
+    if status is None:
+        return
+    if isinstance(result, dict) and result.get("status") == "error":
+        await status.error(
+            result.get("error", "Unknown error"),
+            meta={**meta, "error_type": result.get("error_type", "UnknownError")},
+        )
+        return
+    await status.end(message, meta=meta)
+
+
 class FileOpsServer(SchemaBasedMCPServer):
     """MCP server providing secure file operations with search capabilities."""
 
@@ -125,16 +145,20 @@ class FileOpsServer(SchemaBasedMCPServer):
             if status:
                 lines_read = result.get("lines_read", 0)
                 total_lines = result.get("total_lines", 0)
-                await status.end(f"Read {safe_path.name}: {lines_read}/{total_lines} lines", meta={
-                    "file": str(safe_path),
-                    "lines_read": lines_read,
-                    "total_lines": total_lines
-                })
+                await _end_or_error(
+                    status, result,
+                    f"Read {safe_path.name}: {lines_read}/{total_lines} lines", meta={
+                        "file": str(safe_path),
+                        "lines_read": lines_read,
+                        "total_lines": total_lines
+                    })
 
             return result
 
         except FileNotFoundError:
-            error_msg = f"File not found: {params.get('file_path')}"
+            # 'filePath' is the parameter name (line 99) -- 'file_path' never
+            # existed here, so this message always read "File not found: None".
+            error_msg = f"File not found: {params.get('filePath')}"
             if status:
                 await status.error(error_msg, meta={"error_type": "FileNotFoundError"})
             return {
@@ -463,12 +487,14 @@ class FileOpsServer(SchemaBasedMCPServer):
             if status:
                 total_files = result.get("total_files", 0)
                 total_dirs = result.get("total_directories", 0)
-                await status.end(f"Listed {safe_path.name}: {total_files} files, {total_dirs} directories", meta={
-                    "directory": str(safe_path),
-                    "total_files": total_files,
-                    "total_directories": total_dirs,
-                    "recursive": recursive
-                })
+                await _end_or_error(
+                    status, result,
+                    f"Listed {safe_path.name}: {total_files} files, {total_dirs} directories", meta={
+                        "directory": str(safe_path),
+                        "total_files": total_files,
+                        "total_directories": total_dirs,
+                        "recursive": recursive
+                    })
 
             return result
 
@@ -515,11 +541,13 @@ class FileOpsServer(SchemaBasedMCPServer):
 
             if status:
                 found = result.get("total_found", 0)
-                await status.end(f"File search '{pattern}': {found} matches", meta={
-                    "pattern": pattern,
-                    "found": found,
-                    "truncated": result.get("truncated", False)
-                })
+                await _end_or_error(
+                    status, result,
+                    f"File search '{pattern}': {found} matches", meta={
+                        "pattern": pattern,
+                        "found": found,
+                        "truncated": result.get("truncated", False)
+                    })
 
             return result
 
@@ -563,12 +591,14 @@ class FileOpsServer(SchemaBasedMCPServer):
             if status:
                 matches = result.get("total_matches", 0)
                 files = result.get("total_files", 0)
-                await status.end(f"Grep '{query[:30]}': {matches} matches in {files} files", meta={
-                    "query": query[:50],
-                    "matches": matches,
-                    "files": files,
-                    "truncated": result.get("truncated", False)
-                })
+                await _end_or_error(
+                    status, result,
+                    f"Grep '{query[:40]}': {matches} matches in {files} files", meta={
+                        "query": query[:50],
+                        "matches": matches,
+                        "files": files,
+                        "truncated": result.get("truncated", False)
+                    })
 
             return result
 
@@ -605,11 +635,13 @@ class FileOpsServer(SchemaBasedMCPServer):
 
             if status:
                 count = result.get("count", 0)
-                await status.end(f"Semantic search '{query[:30]}': {count} matches", meta={
-                    "query": query[:50],
-                    "count": count,
-                    "filter": filter_pattern
-                })
+                await _end_or_error(
+                    status, result,
+                    f"Semantic search '{query[:40]}': {count} matches", meta={
+                        "query": query[:50],
+                        "count": count,
+                        "filter": filter_pattern
+                    })
 
             return result
 
