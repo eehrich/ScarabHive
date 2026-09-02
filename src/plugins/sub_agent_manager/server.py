@@ -19,6 +19,17 @@ from plugins.sub_agent_manager.manager import SubAgentManager
 logger = logging.getLogger(__name__)
 
 
+def _without_status(params: dict) -> dict:
+    """Params for an INTERNAL sub-step, so it cannot close our status scope.
+
+    All handlers share one StatusScope per tool call. A handler that calls a
+    sibling with the original params hands it ``_status``; the sibling ends
+    the scope, and everything the outer handler says afterwards is dropped
+    (``StatusScope.ended``). The outer handler owns the line.
+    """
+    return {k: v for k, v in params.items() if k != "_status"}
+
+
 def _register_request_user(request_id: str, user_id: str) -> None:
     """Register sub-agent request_id -> user_id mapping.
 
@@ -788,7 +799,17 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 )
 
                 if status:
-                    await status.end(f"Created sub-agent {sub_session_id} (type: {agent_name})")
+                    # result_text carries the outcome ("Error: ..."/"Cancelled: ...")
+                    # -- the same predicate the retry gate above uses. The end
+                    # line reported "Created ..." either way, so an aborted run
+                    # was the green line that stayed in the WebUI.
+                    if result_text.startswith(("Error:", "Cancelled:")):
+                        await status.error(
+                            f"Sub-agent {sub_session_id} ({agent_name}): {result_text}")
+                    else:
+                        await status.end(
+                            f"Created sub-agent {sub_session_id} (type: {agent_name}), "
+                            f"{len(result_text)} chars")
 
                 return {
                     "instance_id": sub_session_id,
@@ -1037,7 +1058,15 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 )
 
                 if status:
-                    await status.end(f"Continued sub-agent {instance_id} (type: {agent_type})")
+                    # Same as the create path: an aborted continuation must
+                    # not leave a green line behind.
+                    if result_text.startswith(("Error:", "Cancelled:")):
+                        await status.error(
+                            f"Sub-agent {instance_id} ({agent_type}): {result_text}")
+                    else:
+                        await status.end(
+                            f"Continued sub-agent {instance_id} (type: {agent_type}), "
+                            f"{len(result_text)} chars")
 
                 return {
                     "instance_id": instance_id,
@@ -1772,7 +1801,12 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     job.pop("task_handle", None)
                     job.pop("_awaiting_poll", None)
                     if status:
-                        await status.end(f"Poll: {instance_id} status={job_status}")
+                        # A failed or cancelled job is not an END: that phase
+                        # renders as a completed row.
+                        if job_status in ("failed", "cancelled"):
+                            await status.error(f"Poll: {instance_id} {job_status}")
+                        else:
+                            await status.end(f"Poll: {instance_id} status={job_status}")
                     return job
 
             # Not in async jobs - check if sub-agent exists in DB (may be completed or never ran async)
@@ -1863,7 +1897,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
             if not is_async:
                 # Not in async jobs - check DB immediately (may already be completed)
-                poll_result = await self._handle_poll(params)
+                # Silent poll: sharing the scope let the inner poll close it,
+                # so wait's own verdict below never reached the status stream.
+                poll_result = await self._handle_poll(_without_status(params))
                 if poll_result.get("status") == "completed":
                     if status_ctx:
                         await status_ctx.end(f"Instance {instance_id} already completed")
@@ -1880,9 +1916,13 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 # Check status
                 async with self._async_jobs_lock:
                     if instance_id not in self._async_jobs:
-                        # Async tracking lost - check DB
-                        poll_result = await self._handle_poll(params)
+                        # Async tracking lost - check DB (silent, see above)
+                        poll_result = await self._handle_poll(_without_status(params))
                         if poll_result.get("status") in ["completed", "error"]:
+                            # Say it ourselves: the inner poll is silent now,
+                            # and the scope default would drop the instance id.
+                            if status_ctx and poll_result.get("status") == "completed":
+                                await status_ctx.end(f"Instance {instance_id} completed")
                             return poll_result
                         # Still not found - instance was deleted
                         if status_ctx:
@@ -1953,7 +1993,14 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             timeout = self.default_wait_timeout  # Use configured timeout only
 
             if not isinstance(instance_ids, list):
-                return {"status": "error", "error": "instance_ids must be a list"}
+                # No status.error here: the returned error IS the message, and
+                # call_with_status publishes it for any error result the
+                # handler did not report itself. A second call would only
+                # duplicate the text (mutation-checked: removing it keeps the
+                # test green, so it carried nothing).
+                return {"status": "error",
+                        "error": f"Wait_all: 'instance_ids' must be a list "
+                                 f"(got {type(instance_ids).__name__})"}
 
             if status_ctx:
                 await status_ctx.progress(f"Waiting for {len(instance_ids)} instances...")
