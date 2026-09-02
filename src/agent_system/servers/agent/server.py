@@ -771,6 +771,31 @@ class Agent(MCPServer):
             result = await server.call(tool_name, params)
         logger.info("Tool %s returned (programmatic dispatch): %s",
                     tool_name, str(result)[:500])
+
+        # A tool may stage a rewritten history via set_compacted_messages
+        # (the summarizer's manual path does). During a run the request's own
+        # machinery consumes that staging (_select_llm_messages /
+        # _finalize_request) -- but a direct dispatch with no active request
+        # (chat slash commands, web buttons) has no finalize: the staging sat
+        # stale, /stats kept showing the old history, and the NEXT turn's
+        # selection either discarded it or rebuilt the history around it.
+        # Apply it here instead. "A request owns the session" == session lock
+        # held; in-run dispatch (tool_script) therefore never takes this
+        # branch. The live entry is refreshed too -- it outlives the previous
+        # turn and is what stats-style readers see first.
+        tracker = getattr(self, "_session_tracker", None)
+        if session_id and tracker is not None:
+            compacted = tracker.get_compacted_messages(session_id)
+            if compacted is not None and not tracker.check_session_locked(session_id)[0]:
+                tracker.set_session_messages(session_id, compacted)
+                tracker.clear_compacted_messages(session_id)
+                self._set_live_messages(session_id, compacted)
+                try:
+                    await self._save_session_to_disk(session_id)
+                except Exception:
+                    logger.warning(
+                        "Compacted history for %s applied in memory but the "
+                        "disk save failed", session_id, exc_info=True)
         return result
 
     # ------------------------------------------------------------------

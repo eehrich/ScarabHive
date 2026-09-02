@@ -251,3 +251,87 @@ class TestInjectRuntimeParams:
         original = {"a": 1}
         inject_runtime_params(original, session_id="s")
         assert original == {"a": 1}
+
+
+# ---------------------------------------------------------------------------
+# Staged compacted history on direct dispatch (no active request)
+# ---------------------------------------------------------------------------
+
+from agent_system.servers.agent.components.session_tracking import SessionTracker
+
+
+class StagingServer:
+    """Tool double that stages a rewritten history, like the summarizer's
+    manual path: it cannot modify the conversation directly, so it stores
+    the compacted list on the session tracker."""
+
+    def __init__(self, compacted):
+        self.compacted = compacted
+
+    async def call(self, tool_name, params):
+        agent = params["_agent"]
+        agent._session_tracker.set_compacted_messages(
+            params["_session_id"], self.compacted)
+        return {"status": "success"}
+
+
+def make_tracking_agent(servers, allowed):
+    agent = make_agent(servers, allowed=allowed)
+    agent._session_tracker = SessionTracker()
+    agent.saved_sessions = []
+    agent._live = {}
+
+    async def _save(session_id):
+        agent.saved_sessions.append(session_id)
+    agent._save_session_to_disk = _save
+    agent._set_live_messages = lambda sid, msgs: agent._live.__setitem__(sid, msgs)
+    return agent
+
+
+OLD_HISTORY = [{"role": "user", "content": f"m{i}"} for i in range(5)]
+COMPACTED = [{"role": "user", "content": "[Summary of 4 messages]"},
+             {"role": "user", "content": "m4"}]
+
+
+class TestDispatchAppliesStagedCompaction:
+    @pytest.mark.asyncio
+    async def test_staging_is_applied_persisted_and_cleared_without_a_run(self):
+        """The /summarize bug: tool staged 19 messages, nobody consumed them,
+        /stats kept reporting the old history. Direct dispatch outside a run
+        must apply the staging to the tracker, the live entry and disk."""
+        agent = make_tracking_agent({"summarizer": StagingServer(COMPACTED)},
+                                    allowed=["summarizer/*"])
+        agent._session_tracker.set_session_messages("s1", OLD_HISTORY)
+
+        await agent.dispatch_tool_call("summarizer_summarize", {}, session_id="s1")
+
+        assert agent._session_tracker.get_session_messages("s1") == COMPACTED
+        assert agent._session_tracker.get_compacted_messages("s1") is None
+        assert agent._live.get("s1") == COMPACTED
+        assert agent.saved_sessions == ["s1"]
+
+    @pytest.mark.asyncio
+    async def test_staging_is_left_alone_while_a_request_holds_the_session(self):
+        """In-run dispatch (tool_script) must not steal the staging -- the
+        request's own _select_llm_messages/_finalize_request consume it."""
+        agent = make_tracking_agent({"summarizer": StagingServer(COMPACTED)},
+                                    allowed=["summarizer/*"])
+        agent._session_tracker.set_session_messages("s1", OLD_HISTORY)
+        assert await agent._session_tracker.acquire_session_lock("s1", "req-1")
+
+        await agent.dispatch_tool_call("summarizer_summarize", {}, session_id="s1")
+
+        assert agent._session_tracker.get_compacted_messages("s1") == COMPACTED
+        assert agent._session_tracker.get_session_messages("s1") == OLD_HISTORY
+        assert agent.saved_sessions == []
+
+    @pytest.mark.asyncio
+    async def test_without_staging_nothing_is_touched(self):
+        agent = make_tracking_agent({"plain": PlainServer()}, allowed=["plain/*"])
+        agent._session_tracker.set_session_messages("s1", OLD_HISTORY)
+
+        await agent.dispatch_tool_call("plain_tool", {}, session_id="s1")
+
+        assert agent._session_tracker.get_session_messages("s1") == OLD_HISTORY
+        assert agent.saved_sessions == []
+
