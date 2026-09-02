@@ -82,102 +82,38 @@ external_servers:
       features:
         tools: true
 
-    localhost:
-      url: http://127.0.0.1:8081
-      enabled: false
-      description: Local streaming MCP server
-      transport: streaming
-      initialization_options:
-        pirate_mode: false
+    # Bruecke zu einem lokal laufenden Blender (blender-mcp 1.9.0): der
+    # stdio-Server uebersetzt MCP -> Socket localhost:9876, auf dem das
+    # Blender-Addon lauscht. Der Socket verbindet LAZY pro Tool-Aufruf,
+    # der Handshake klappt also auch ohne laufendes Blender.
+    #
+    # Installation (external/ ist gitignored):
+    #   uv venv external/mcp/blender_mcp/.venv
+    #   uv pip install --python external/mcp/blender_mcp/.venv blender-mcp==1.9.0
+    #   external/mcp/blender_mcp/.venv/Scripts/blender-mcp.exe install-addon
+    # Blender-Seite (einmalig): Addon 'Interface: Blender MCP' aktivieren,
+    # dann im N-Panel "BlenderMCP" -> "Start MCP Server" (Port 9876).
+    #
+    # Default AN, anders als die Demo-Server: mcp_client_connect kennt nur
+    # enabled-Server (manager.py filtert beim Laden), ein "bei Bedarf
+    # verbinden" gibt es fuer disabled also nicht. Die Bruecke ohne
+    # laufendes Blender ist nur ein Leerlaufprozess -- der Socket wird
+    # erst am Tool-Aufruf aufgebaut, der dann klar meldet, dass in
+    # Blender der MCP-Server nicht laeuft.
+    blender:
+      enabled: true
+      transport: stdio
+      # Renders brauchen Minuten; das globale connection.timeout (5s) toetete
+      # jeden execute_blender_code-Aufruf. Die Bridge selbst kappt Richtung
+      # Blender bei 180s -- 300 hier heisst: ihr Fehler kommt zuerst und
+      # traegt die bessere Meldung.
+      timeout: 300
+      command: external/mcp/blender_mcp/.venv/Scripts/blender-mcp.exe
+      description: Blender-Steuerung (Szene, Objekte, Material, Code) via blender-mcp
+      env:
+        # Paket funkt sonst Prompts + Screenshots an ein fremdes Supabase.
+        BLENDER_MCP_DISABLE_TELEMETRY: "true"
       features:
         tools: true
-      tools:
-        allowed:
-          - hello
-        blocked: []
-    
-    controlhost:
-      url: http://192.0.2.114:8000/mcp
-      enabled: false
-      description: controlhost MCP server
-      transport: streaming
-      features:
-        tools: true
-    
-    my1:
-      url: http://192.0.2.113/ts/mcp
-      enabled: false
-      description: My Smithery MCP Server 1
-      transport: streaming
-      features:
-        tools: false
-    
-    my2:
-      url: http://192.0.2.113/other/mcp
-      enabled: false
-      description: My Smithery MCP Server 2
-      transport: streaming
-      features:
-        tools: false
-    
-    open_web_search:
-      url: https://server.smithery.ai/@Aas-ee/open-websearch/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
-      enabled: false
-      description: Remote Open Web Search
-      transport: streaming
-      features:
-        tools: true
-    
-    x_tools:
-      url: https://server.smithery.ai/@acakom/x-mcp-server/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
-      enabled: false
-      description: Remote X-Tools (Twitter)
-      transport: streaming
-      features:
-        tools: true
-      initialization_options:
-        key: ${SMITHERY_API_KEY}
-        bearer_token: ${X_BEARER_TOKEN}
-        consumer_key: ''
-        consumer_secret: ''
-        access_token: ${X_ACCESS_TOKEN}
-        access_token_secret: ''
-    
-    context7:
-      url: https://server.smithery.ai/@upstash/context7-mcp/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
-      enabled: false
-      description: Remote Context7 MCP
-      transport: streaming
-      features:
-        tools: true
-    
-    weather_mcp:
-      url: https://server.smithery.ai/@smithery-ai/national-weather-service/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
-      enabled: false
-      description: Remote Weather Forecast MCP
-      transport: streaming
-      features:
-        tools: true
-      tools:
-        blocked:
-          - get_local_time
-    
-    exa_search:
-      url: https://server.smithery.ai/exa/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
-      enabled: false
-      description: Remote Exa Search
-      transport: streaming
-      features:
-        tools: true
-      tools:
-        blocked:
-          - deep_researcher_start
-          - deep_researcher_check
-    
-    ai_research_assistant:
-      url: https://server.smithery.ai/@hamid-vakilzadeh/mcpsemanticscholar/mcp?api_key=${SMITHERY_API_KEY}&profile=${SMITHERY_PROFILE}
-      enabled: false
-      description: AI Research Assistant
-      transport: streaming
-      features:
-        tools: true
+
+
