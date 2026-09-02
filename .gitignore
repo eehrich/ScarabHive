@@ -74,7 +74,7 @@ data/okf/
 data/context_usage_tracker.json
 data/writer_books.db
 tests/data/
-
+data/media/
 
 # #673 Blind-Reader Test-Driver Scratch
 src/plugins_writer/writer_pipeline_v4/test_suite/_blind_task.md
