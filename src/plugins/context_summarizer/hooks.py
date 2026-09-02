@@ -350,7 +350,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 "context_summarizer",
                 summarizer_request_id,
                 start_msg=f"Summarizing {len(old_msgs)} older messages using LLM (preserving {len(recent_msgs)} recent messages)",
-                end_msg="Context summarization completed"
             ) as scope:
                 # Small sleep to allow START message to be delivered
                 await asyncio.sleep(0.01)
@@ -410,6 +409,11 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'reduction_ratio': reduction_ratio,
                             'min_reduction': self.min_reduction
                         }
+                    )
+                    # A run that changed nothing must not end as 'completed'.
+                    await scope.end(
+                        f"Not applied: {reduction_ratio:.1%} reduction is "
+                        f"below the {self.min_reduction:.1%} minimum"
                     )
                 else:
                     # Convert dicts back to ChatMessage objects
@@ -521,6 +525,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     # Invalidate usage tracker data for this session after successful summarization
                     # This prevents subsequent hooks from using stale token counts
                     self._invalidate_usage_tracker_session(context, session_id, "context_summarizer")
+
+                    # End line survives alone in the WebUI -- carry the numbers.
+                    await scope.end(
+                        f"Summarized {len(old_msgs)} messages: {original_tokens} -> "
+                        f"{new_tokens} tokens ({reduction_ratio:.1%} reduction)"
+                    )
             
             # Return after StatusScope is properly closed
             return result

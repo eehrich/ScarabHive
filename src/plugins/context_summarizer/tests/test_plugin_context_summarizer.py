@@ -198,7 +198,9 @@ async def test_status_messages_published(summarizer_plugin, mock_agent, mock_llm
         )
         
         result = await summarizer_plugin.summarize_context(context)
-        
+
+        assert result.modified, \
+            "summarization never ran — the status assertions below would be vacuous"
         if result.modified:
             # StatusScope only sends START and END (no manual PROGRESS anymore)
             assert len(published_statuses) >= 2, "Should have at least START and END status messages"
@@ -213,8 +215,9 @@ async def test_status_messages_published(summarizer_plugin, mock_agent, mock_llm
             end_messages = [s for s in published_statuses if s['phase'].value == 'end']
             assert len(end_messages) > 0, "Should have END status message"
             assert end_messages[0]['server'] == 'context_summarizer'
-            # StatusScope generates generic end message
-            assert 'completed' in end_messages[0]['message'].lower()
+            # The end line must carry the outcome, not a generic 'completed'.
+            msg = end_messages[0]['message']
+            assert msg.startswith('Summarized ') and 'tokens' in msg, msg
             
             # CRITICAL: Verify unique request_id with suffix (like tool calls)
             # All summarizer status messages should use test-status-123_001 instead of test-status-123
@@ -225,6 +228,50 @@ async def test_status_messages_published(summarizer_plugin, mock_agent, mock_llm
     
     finally:
         pass
+
+
+@pytest.mark.asyncio
+async def test_rejected_summarization_status_says_not_applied(
+        summarizer_plugin, mock_agent, mock_llm, monkeypatch):
+    """A run whose reduction was refused must not read as 'completed'.
+
+    That was the shipped behaviour: the scope's static end message fired for
+    the rejected branch too, so a no-op looked like a success in the UI.
+    """
+    from agent_system.mcp.status import get_status_bus
+
+    published = []
+
+    async def mock_publish(event):
+        published.append(event)
+
+    monkeypatch.setattr(get_status_bus(), 'publish', mock_publish)
+
+    messages = create_test_messages(300)
+    summarizer_plugin.trigger_percentage = 0.01
+    # The POTENTIAL reduction (~0.97) passes the pre-check outside the scope;
+    # bloated summaries make the ACHIEVED reduction negative — the in-scope
+    # rejected branch. NB: the chunk path calls summarizer_llm.chat(), not
+    # generate() — mocking generate would leave str(AsyncMock()) as summary.
+    mock_llm.chat = AsyncMock(return_value='padding words ' * 4000)
+
+    context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id='test-rejected-1',
+        session_id='session-rej',
+        agent=mock_agent,
+        messages=messages,
+        llm=mock_llm,
+    )
+
+    result = await summarizer_plugin.summarize_context(context)
+
+    assert result.modified is False
+    assert result.metadata.get('reason') == 'insufficient_reduction', result.metadata
+    ends = [e for e in published
+            if e.server == 'context_summarizer' and e.phase.value == 'end']
+    assert len(ends) == 1, [(e.server, e.phase.value, e.message) for e in published]
+    assert ends[0].message.startswith('Not applied:'), ends[0].message
 
 
 @pytest.mark.asyncio

@@ -177,3 +177,61 @@ class TestEventBasedMediaCompaction:
         assert result.success is True
         assert result.modified is False, "Expected no compaction without event trigger"
         assert result.metadata.get("reason") == "below_threshold"
+
+    @pytest.mark.asyncio
+    async def test_compaction_status_end_carries_the_result(
+            self, hooks_impl, tmp_path, monkeypatch):
+        """The hook's END line must say WHAT changed.
+
+        Shipped behaviour was a static 'Context engineering completed' —
+        while the CompactionResult with all the numbers sat right beside it.
+        """
+        from agent_system.mcp.status import get_status_bus
+
+        published = []
+
+        async def mock_publish(event):
+            published.append(event)
+
+        monkeypatch.setattr(get_status_bus(), "publish", mock_publish)
+
+        audio_file = tmp_path / "status_audio.mp3"
+        audio_file.write_bytes(b"x" * 1024)
+        messages = [
+            {
+                "role": "user",
+                "content": "Message with media",
+                "multimodal_content": [
+                    {"type": "audio", "path": str(audio_file),
+                     "mime_type": "audio/mpeg"}
+                ],
+            },
+            {"role": "assistant", "content": "I processed your audio"},
+            {"role": "user", "content": "Thanks, what did you find?"},
+        ]
+        context = HookContext(
+            hook_type="pre_llm_call",
+            request_id="test-status-request",
+            session_id="test-status-session",
+            agent=None,
+            agent_name="test_agent",
+            messages=messages,
+            llm_response=None,
+            tool_call=None,
+            tool_result=None,
+            output=None,
+            metadata={},
+            step=1,
+            llm=None,
+            cancellation_token=None,
+        )
+
+        result = await hooks_impl.engineer_context(context)
+        assert result.modified is True, \
+            "nothing was compacted — the status assertions would be vacuous"
+
+        ends = [e for e in published
+                if e.server == "context_engineer" and e.phase.value == "end"]
+        assert len(ends) == 1, [(e.server, e.phase, e.message) for e in published]
+        assert ends[0].message.startswith("Context engineered: "), ends[0].message
+        assert "media" in ends[0].message, ends[0].message

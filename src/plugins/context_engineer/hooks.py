@@ -855,9 +855,30 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "context_engineer",
                     session_id,
                     start_msg=f"Engineering context: {current_tokens} tokens (target: {self.target_tokens}){' [MANUAL]' if is_manual else ''}",
-                    end_msg="Context engineering completed"
-                ):
+                ) as scope:
                     await asyncio.sleep(0.01)  # Allow START message to be delivered
+                    # The end line is what survives in the WebUI (it replaces
+                    # the start line), so it must carry the result -- a bare
+                    # 'completed' says nothing. The something_compacted gate
+                    # guarantees at least one part below is non-zero.
+                    parts = []
+                    if result.tokens_saved > 0:
+                        parts.append(f"saved {result.tokens_saved} tokens "
+                                     f"({result.reduction_percent:.1f}%)")
+                    if result.tool_results_stored:
+                        parts.append(f"{result.tool_results_stored} tool result(s) stored")
+                    if result.messages_archived:
+                        parts.append(f"{result.messages_archived} message(s) archived")
+                    if result.messages_dropped:
+                        parts.append(f"{result.messages_dropped} message(s) dropped")
+                    if result.messages_pruned:
+                        parts.append(f"{result.messages_pruned} message(s) pruned")
+                    media_total = (result.media_deduplicated
+                                   + result.media_compacted_after_event
+                                   + result.media_always_compacted)
+                    if media_total:
+                        parts.append(f"{media_total} media item(s) compacted")
+                    await scope.end("Context engineered: " + ", ".join(parts))
             
             # Invalidate usage tracker data for this session if something was compacted
             # This prevents subsequent hooks (e.g., context_summarizer) from using stale
