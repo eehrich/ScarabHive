@@ -302,30 +302,43 @@ async def test_remove_machine_from_config(mock_system_config, empty_mcp_config, 
             'username': 'testuser'
         })
     
-    mock_config = {
-        'servers': {
-            'ssh_control': {
-                'machines': [
-                    {'name': 'test-machine', 'host': '192.168.1.100', 'username': 'testuser'}
-                ]
-            }
-        }
-    }
-    
+    # Round trip instead of a hand-built config: remove must find what add
+    # WROTE. A hand-written dict is what let the two drift apart -- add wrote
+    # config['plugins']['servers'][...] while remove read config['servers'][...],
+    # so removal silently did nothing and still reported success.
+    with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
+               AsyncMock(return_value=mock_connection)), \
+         patch('pathlib.Path.exists', return_value=False), \
+         patch('builtins.open', mock_open(read_data='')), \
+         patch('yaml.safe_dump') as add_dump:
+        add_result = await plugin.mcp_server.add_machine({
+            'name': 'persisted-machine',
+            'host': '192.168.1.101',
+            'username': 'testuser',
+            'persistent': True,
+        })
+
+    assert add_result['persistent'] is True, add_result.get('config_error')
+    assert add_dump.called, "fixture wrote nothing — the round trip would be vacuous"
+    written_config = add_dump.call_args[0][0]
+
     with patch('pathlib.Path.exists', return_value=True), \
          patch('builtins.open', mock_open(read_data='dummy')), \
-         patch('yaml.safe_load', return_value=mock_config), \
+         patch('yaml.safe_load', return_value=written_config), \
          patch('yaml.safe_dump') as mock_dump:
-        
+
         result = await plugin.mcp_server.remove_machine({
-            'name': 'test-machine',
+            'name': 'persisted-machine',
             'remove_from_config': True
         })
-    
+
     assert result['success'] is True
-    assert result['removed_from_config'] is True
+    assert result['removed_from_config'] is True, result.get('config_error')
     # Verify yaml.safe_dump was called
     assert mock_dump.called
+    # And the machine is really gone from what was written back
+    remaining = mock_dump.call_args[0][0]['plugins']['servers']['ssh_control']['machines']
+    assert [m['name'] for m in remaining] == []
 
 
 @pytest.mark.asyncio

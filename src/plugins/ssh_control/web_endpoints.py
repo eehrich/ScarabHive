@@ -419,17 +419,19 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         with open(config_path, 'r', encoding='utf-8') as file_handle:
                             config = yaml.safe_load(file_handle) or {}
 
-                        if (
-                            'servers' in config and
-                            'ssh_control' in config['servers'] and
-                            'machines' in config['servers']['ssh_control']
-                        ):
-                            original_count = len(config['servers']['ssh_control']['machines'])
-                            config['servers']['ssh_control']['machines'] = [
-                                machine for machine in config['servers']['ssh_control']['machines']
+                        # Same nesting the ADD endpoint writes ('plugins'
+                        # first, see the persist block above). Reading
+                        # config['servers'][...] here meant this branch could
+                        # never find what it had written itself, and every
+                        # removal logged "not found".
+                        section = (config.get('plugins') or {}).get('servers', {}).get('ssh_control')
+                        if section and 'machines' in section:
+                            original_count = len(section['machines'])
+                            section['machines'] = [
+                                machine for machine in section['machines']
                                 if machine.get('name') != name
                             ]
-                            new_count = len(config['servers']['ssh_control']['machines'])
+                            new_count = len(section['machines'])
 
                             if original_count > new_count:
                                 with open(config_path, 'w', encoding='utf-8') as file_handle:

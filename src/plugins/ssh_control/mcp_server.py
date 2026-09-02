@@ -624,13 +624,18 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             self.connection_manager.machines[name] = machine_config
             logger.info(f"Added machine '{name}' to connection manager")
 
-            # Persist to config if requested
+            # Persist to config if requested. What actually HAPPENED is
+            # tracked here: the except below deliberately does not fail the
+            # operation, but the end line and the result used to claim
+            # persistence from the requested flag either way.
+            config_persisted = False
+            config_error: str | None = None
+            config_path = Path('config/mcp.yaml')
             if persistent:
                 if status:
                     await status.progress(f"Saving to config: {name}")
 
                 try:
-                    config_path = Path('config/mcp.yaml')
 
                     # Load existing config
                     if config_path.exists():
@@ -682,16 +687,25 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                         yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
 
                     logger.info(f"Persisted machine '{name}' to {config_path}")
+                    config_persisted = True
 
                 except Exception as e:
+                    config_error = str(e)
                     logger.error(f"Failed to persist machine config: {e}", exc_info=True)
                     # Don't fail the operation, just log the error
 
             # Send completion status
+            if persistent and config_persisted:
+                where = f", saved to {config_path}"
+            elif persistent:
+                where = f", NOT saved to config: {config_error}"
+            else:
+                where = " (this session only)"
             if status:
                 await status.end(
-                    f"Added machine: {name}" + (" (persistent)" if persistent else ""),
-                    meta={'machine': name, 'host': host, 'persistent': persistent}
+                    f"Added machine: {name} ({username}@{host}:{port}){where}",
+                    meta={'machine': name, 'host': host,
+                          'persistent': config_persisted}
                 )
 
             return {
@@ -702,8 +716,9 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                 'username': username,
                 'auth_method': auth_method,
                 'tags': tags,
-                'persistent': persistent,
-                'message': f"Machine '{name}' added successfully" + (", saved to config" if persistent else "")
+                'persistent': config_persisted,
+                'config_error': config_error,
+                'message': f"Machine '{name}' added successfully{where}"
             }
 
         except Exception as e:
@@ -759,27 +774,34 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             del self.connection_manager.machines[name]
             logger.info(f"Removed machine '{name}' from connection manager")
 
-            # Remove from config if requested
+            # Remove from config if requested. Same as add_machine: what the
+            # end line reports is what HAPPENED, not what was asked for.
+            config_removed = False
+            config_error: str | None = None
+            config_path = Path('config/mcp.yaml')
             if remove_from_config:
                 if status:
                     await status.progress(f"Removing from config: {name}")
 
                 try:
-                    config_path = Path('config/mcp.yaml')
-
-                    if config_path.exists():
+                    if not config_path.exists():
+                        config_error = f"{config_path} does not exist"
+                    else:
                         with open(config_path, 'r', encoding='utf-8') as f:
                             config = yaml.safe_load(f) or {}
 
                         # Navigate to machines list
-                        if ('servers' in config and
-                            'ssh_control' in config['servers'] and
-                            'machines' in config['servers']['ssh_control']):
-
-                            machines = config['servers']['ssh_control']['machines']
-
-                            # Filter out the machine
-                            config['servers']['ssh_control']['machines'] = [
+                        # Same nesting add_machine writes ('plugins' first) --
+                        # without it this branch never found what add wrote and
+                        # reported a removal that never happened.
+                        section = (config.get('plugins') or {}).get('servers', {}).get('ssh_control')
+                        machines = (section or {}).get('machines')
+                        if not machines:
+                            config_error = f"no machines section for ssh_control in {config_path}"
+                        elif not any(m.get('name') == name for m in machines):
+                            config_error = f"'{name}' is not in {config_path}"
+                        else:
+                            section['machines'] = [
                                 m for m in machines if m.get('name') != name
                             ]
 
@@ -788,23 +810,32 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                                 yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
 
                             logger.info(f"Removed machine '{name}' from {config_path}")
+                            config_removed = True
 
                 except Exception as e:
+                    config_error = str(e)
                     logger.error(f"Failed to remove from config: {e}", exc_info=True)
                     # Don't fail the operation, just log the error
 
             # Send completion status
+            if remove_from_config and config_removed:
+                where = f", deleted from {config_path}"
+            elif remove_from_config:
+                where = f", NOT deleted from config: {config_error}"
+            else:
+                where = " (this session only)"
             if status:
                 await status.end(
-                    f"Removed machine: {name}" + (" (from config)" if remove_from_config else ""),
-                    meta={'machine': name, 'removed_from_config': remove_from_config}
+                    f"Removed machine: {name}{where}",
+                    meta={'machine': name, 'removed_from_config': config_removed}
                 )
 
             return {
                 'success': True,
                 'machine': name,
-                'removed_from_config': remove_from_config,
-                'message': f"Machine '{name}' removed successfully" + (", deleted from config" if remove_from_config else "")
+                'removed_from_config': config_removed,
+                'config_error': config_error,
+                'message': f"Machine '{name}' removed successfully{where}"
             }
 
         except Exception as e:
