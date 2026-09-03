@@ -337,9 +337,15 @@ def _expand_roots(skill_dirs: Sequence[str]) -> List[Path]:
         if any(ch in raw for ch in "*?["):
             matches = sorted(glob.glob(raw, recursive=True))
             if not matches:
-                # A pattern that matches nothing is almost always a typo. Saying
-                # so beats an empty skill list with no explanation.
-                logger.warning("Skill dir pattern %r matched no directory", raw)
+                # A wildcard matching nothing is a legitimate forward-looking
+                # hook, not a defect: ``src/plugins*/*/skills`` reserves the
+                # convention before the first plugin adopts it, so a WARNING
+                # would cry wolf at every start for a healthy config. INFO,
+                # not debug — it stays visible in a normal run, it just is
+                # not something to fix. The case the warning really guarded
+                # — an empty skill list with no explanation — is caught
+                # once, below.
+                logger.info("Skill dir pattern %r matched no directory", raw)
             for match in matches:
                 _add(Path(match))
         else:
@@ -347,7 +353,14 @@ def _expand_roots(skill_dirs: Sequence[str]) -> List[Path]:
             if path.is_dir():
                 _add(path)
             else:
-                logger.debug("Skill dir %s does not exist, skipping", path)
+                # A FIXED path is the case that is almost always a typo — a
+                # wildcard can wait for its first match, a literal one cannot.
+                logger.warning("Skill dir %s does not exist, skipping", path)
+    if skill_dirs and not roots:
+        logger.warning(
+            "No skill directory resolved from %r — skills stay empty",
+            list(skill_dirs),
+        )
     return roots
 
 

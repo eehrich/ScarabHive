@@ -233,13 +233,46 @@ class TestWildcardRoots:
         assert reg.names() == ["alpha"]
         assert not any("Duplicate" in r.getMessage() for r in caplog.records)
 
-    def test_pattern_without_matches_is_reported(self, tmp_path, caplog):
-        """An empty skill list with no explanation is the failure mode here."""
+    def test_waiting_wildcard_is_not_an_error(self, tmp_path, caplog):
+        """A wildcard that matches nothing yet is a legitimate hook, not a
+        typo: ``src/plugins*/*/skills`` reserves the convention before the
+        first plugin adopts it. Warning on every discovery would train the
+        operator to ignore the log."""
+        root = tmp_path / "skills"
+        _write_skill(root / "group", "alpha", "A")
+        waiting = str(tmp_path / "plugins*" / "*" / "skills")
+        with caplog.at_level(logging.INFO, logger="agent_system.skills.registry"):
+            reg = SkillRegistry()
+            reg.discover([str(root / "*"), waiting])
+        assert reg.names() == ["alpha"], "fixture: the real root must carry"
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING], (
+            "the waiting pattern warned: "
+            + repr([r.getMessage() for r in caplog.records])
+        )
+        # It must stay visible all the same — otherwise a missing skill
+        # is hunted for in the dark later on.
+        assert any(r.levelno == logging.INFO and "matched no directory" in r.getMessage()
+                   for r in caplog.records), "silent instead of informative"
+
+    def test_missing_fixed_path_is_reported(self, tmp_path, caplog):
+        """THIS is the typo case — a literal path cannot wait for a match."""
+        root = tmp_path / "skills"
+        _write_skill(root, "alpha", "A")
+        with caplog.at_level(logging.WARNING, logger="agent_system.skills.registry"):
+            reg = SkillRegistry()
+            reg.discover([str(root), str(tmp_path / "typoo")])
+        assert reg.names() == ["alpha"]
+        assert any("does not exist" in r.getMessage() for r in caplog.records)
+
+    def test_nothing_resolved_at_all_is_still_reported(self, tmp_path, caplog):
+        """The concern the old per-pattern warning really guarded: an empty
+        skill list with no explanation. Now reported once, for the whole
+        list, however it came about."""
         with caplog.at_level(logging.WARNING, logger="agent_system.skills.registry"):
             reg = SkillRegistry()
             reg.discover([str(tmp_path / "nowhere" / "*")])
         assert reg.names() == []
-        assert any("matched no directory" in r.getMessage() for r in caplog.records)
+        assert any("skills stay empty" in r.getMessage() for r in caplog.records)
 
     def test_plain_roots_still_work_beside_patterns(self, tmp_path):
         plain, grouped = tmp_path / "plain", tmp_path / "grouped"
