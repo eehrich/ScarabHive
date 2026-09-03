@@ -197,7 +197,12 @@ class TestPluginConfigIntegration:
         async def capture_status_update(message):
             status_calls.append(message)
 
+        # Both channels: the closing message used to be a `progress` call, so
+        # the scope closed with its own default "completed" and the elapsed
+        # time was lost. It is an `end` now -- same two updates the caller
+        # sees, one of them on the phase that survives in the WebUI.
         mock_status.progress = AsyncMock(side_effect=capture_status_update)
+        mock_status.end = AsyncMock(side_effect=capture_status_update)
 
         # Call wait with short duration but server should use its configured interval (2.5s)
         result = await server.call("wait", {

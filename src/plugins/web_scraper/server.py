@@ -583,7 +583,17 @@ class WebScraperServer(SchemaBasedMCPServer):
         if self.cache_enabled and not ignore_cache:
             cached_result = await self.cache.get(cache_key)
             if cached_result is not None:
-                await status.end("Retrieved from cache", meta={"cache_hit": True})
+                # Discriminate on the OPERATION, not on a key: the content
+                # path attaches its extracted links too (":links attach" a few
+                # hundred lines down), and caches them under this very key --
+                # so keying on "links" reported a link count for a content
+                # scrape of any page that has anchors, which is all of them.
+                if operation == "links":
+                    got = f"{len(cached_result.get('links') or [])} link(s)"
+                else:
+                    got = f"{len(cached_result.get('text') or '')} chars"
+                await status.end(f"{got} (cached) -- {url[:60]}",
+                                 meta={"cache_hit": True})
                 logger.debug(f"Cache hit for URL: {url[:80]}...")
                 return cached_result
 
@@ -808,12 +818,20 @@ class WebScraperServer(SchemaBasedMCPServer):
                         break
 
             links_result = {"url": url, "final_url": final_url, "status_code": status_code, "links": links}
-            
+
             # Cache the result
             if self.cache_enabled:
                 await self.cache.set(cache_key, links_result, ttl=custom_cache_ttl)
                 logger.debug(f"Cached links for URL: {url[:80]}...")
-                
+
+            # The whole links branch never ended -- half the tool surface
+            # closed on the scope default "completed".
+            if status:
+                await status.end(
+                    f"Extracted {len(links)} link(s), HTTP {status_code} -- {url[:60]}",
+                    meta={"final_url": final_url, "status_code": status_code,
+                          "link_count": len(links)})
+
             return links_result
 
         # otherwise return full fetch-style result
@@ -842,7 +860,13 @@ class WebScraperServer(SchemaBasedMCPServer):
             result["links"] = links
         # publish success
         try:
-            await status.end(f"Completed fetch {url} (status={status_code})", meta={"final_url": final_url, "status_code": status_code, "content_type": content_type})
+            # Same shape as the cache-hit line above, so the second call for
+            # the same page does not read differently from the first. Outcome
+            # first: the WebUI cuts on the right, and the url can be long.
+            await status.end(
+                f"{len(text or '')} chars, HTTP {status_code} -- {url[:60]}",
+                meta={"final_url": final_url, "status_code": status_code,
+                      "content_type": content_type})
         except Exception:
             pass
         

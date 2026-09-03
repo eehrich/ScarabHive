@@ -856,8 +856,13 @@ class OkfServer(SchemaBasedMCPServer):
             return {"status": "error", "error": msg}
 
         rel = self._bundle_rel(root, index_path)
+        # The only one of the nine tools whose end line named no subject.
+        subject = params.get("bundle", "")
+        if subdir:
+            subject = f"{subject}/{subdir}"
         await status.end(
-            f"regenerated {written} index file(s) — {count} concept(s)"
+            f"regenerated {written} index file(s), {count} concept(s) "
+            f"-- {subject[:60]}"
         )
         return {"status": "ok", "path": rel, "entries": count, "indexes": written}
 

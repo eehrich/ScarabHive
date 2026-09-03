@@ -873,7 +873,9 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 )
 
                 if status:
-                    await status.end(f"Stored: {result['memory_id']}")
+                    # The end line replaces the progress line, so it has to
+                    # carry the title too -- the id alone says nothing.
+                    await status.end(f"Stored: {title[:50]} ({result['memory_id']})")
                 return result
 
             elif operation == "recall":
@@ -922,7 +924,8 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 )
 
                 if status:
-                    await status.end(f"Found {len(result.get('results', []))} memories")
+                    await status.end(
+                        f"{len(result.get('results', []))} memories -- '{query[:50]}'")
                 return result
 
             elif operation == "list":
@@ -994,7 +997,15 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                     if "error" in result:
                         await status.error(result.get("message", result["error"]))
                     else:
-                        await status.end(f"Updated: {memory_id}")
+                        # Which fields actually changed -- the id alone was
+                        # the same text the progress line already had. Read
+                        # from the result, which already computes exactly
+                        # this: recomputing it here gave the same answer
+                        # today and two answers the day one of them changes.
+                        changed = result.get("updated_fields") or []
+                        await status.end(
+                            f"Updated {memory_id}: {', '.join(changed)}"
+                            if changed else f"Updated {memory_id} (no fields given)")
                 return result
 
             else:

@@ -45,6 +45,10 @@ class DebateForumServer(SchemaBasedMCPServer):
         if not name:
             return {"error": "name is required"}
         result = self.db.create_group(name=name, description=description)
+        status = params.get("_status")
+        if status:
+            await status.end(
+                f"Group #{result['group_id']} '{str(result['name'])[:40]}' created")
         return {"status": "created", "group_id": result["group_id"], "name": result["name"]}
 
     # ── Tool: list_groups ─────────────────────────────────────
@@ -52,6 +56,9 @@ class DebateForumServer(SchemaBasedMCPServer):
     async def list_groups(self, params: dict[str, Any]) -> dict[str, Any]:
         limit = params.get("limit", 100)
         groups = self.db.list_groups(limit=limit)
+        status = params.get("_status")
+        if status:
+            await status.end(f"Listed {len(groups)} group(s)")
         return {"groups": groups, "count": len(groups)}
 
     # ── Tool: create_channel ──────────────────────────────────
@@ -75,7 +82,9 @@ class DebateForumServer(SchemaBasedMCPServer):
         )
 
         if status:
-            await status.end(f"Channel #{result['channel_id']} created")
+            await status.end(
+                f"Channel #{result['channel_id']} '{str(result['name'])[:40]}' created"
+                + (f" in group {result['group_id']}" if result.get("group_id") else ""))
 
         return {
             "status": "created",
@@ -112,7 +121,7 @@ class DebateForumServer(SchemaBasedMCPServer):
             result = self.db.append_message(message_id, content)
             status = params.get("_status")
             if status:
-                await status.progress(
+                await status.end(
                     f"Appended {len(content)} chars to message {message_id} "
                     f"(now {result['length']})"
                 )
@@ -155,7 +164,10 @@ class DebateForumServer(SchemaBasedMCPServer):
         )
 
         if status:
-            await status.end(f"Message posted (id={result['message_id']})")
+            await status.end(
+                f"Posted to #{channel_id} (round {round_num}, "
+                f"id={result['message_id']}, {len(content)} chars) "
+                f"-- {str(agent_name)[:30]} [{str(agent_role)[:20]}]")
 
         return {
             "status": "posted",
@@ -177,8 +189,11 @@ class DebateForumServer(SchemaBasedMCPServer):
         if not channel:
             return {"error": f"Channel {channel_id} not found"}
 
+        status = params.get("_status")
         if fmt == "json":
             messages = self.db.get_messages(channel_id, limit=max_messages)
+            if status:
+                await status.end(f"Thread #{channel_id}: {len(messages)} message(s) as json")
             return {
                 "channel": channel,
                 "messages": messages,
@@ -186,10 +201,14 @@ class DebateForumServer(SchemaBasedMCPServer):
             }
         else:
             thread_text = self.db.format_thread(channel_id, max_messages=max_messages)
+            count = self.db.get_message_count(channel_id)
+            if status:
+                await status.end(
+                    f"Thread #{channel_id}: {count} message(s), {len(thread_text)} chars")
             return {
                 "channel_id": channel_id,
                 "thread": thread_text,
-                "message_count": self.db.get_message_count(channel_id),
+                "message_count": count,
             }
 
     # ── Tool: conclude ────────────────────────────────────────
@@ -276,6 +295,11 @@ class DebateForumServer(SchemaBasedMCPServer):
         if not ok:
             return {"error": f"Failed to rename channel {channel_id}"}
 
+        scope = params.get("_status")
+        if scope:
+            await scope.end(
+                f"Channel #{channel_id} renamed: "
+                f"'{str(old_name)[:40]}' -> '{new_name.strip()[:40]}'")
         return {
             "status": "renamed",
             "channel_id": channel_id,
@@ -294,6 +318,17 @@ class DebateForumServer(SchemaBasedMCPServer):
         channels = self.db.list_channels(
             status=status_filter, search=search, limit=limit, group_id=group_id
         )
+
+        # NB: `status` is taken by the status FILTER parameter here, hence
+        # `scope` -- the collision is why this handler never reported.
+        scope = params.get("_status")
+        if scope:
+            filters = ", ".join(
+                f"{k}={str(v)[:30]}" for k, v in
+                (("status", status_filter), ("search", search), ("group", group_id))
+                if v)
+            await scope.end(
+                f"Listed {len(channels)} channel(s)" + (f" [{filters}]" if filters else ""))
 
         return {
             "channels": channels,

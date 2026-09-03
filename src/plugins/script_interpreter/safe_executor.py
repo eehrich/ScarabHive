@@ -9,6 +9,22 @@ import builtins
 import math
 from .errors import UnsupportedFeatureError
 
+#: Seeded into every sandbox's variable table so ``isinstance(x, int)`` works.
+#: They are NOT user variables: anything that counts or lists variables has to
+#: subtract them, or a script that assigned one name reports nine -- which is
+#: what the status line and the "Variables:" output block both did.
+_SEEDED_TYPES = {
+    'int': int,
+    'str': str,
+    'float': float,
+    'bool': bool,
+    'list': list,
+    'dict': dict,
+    'tuple': tuple,
+    'set': set,
+}
+SEEDED_TYPE_NAMES = frozenset(_SEEDED_TYPES)
+
 
 class FunctionReturn(Exception):
     """Exception used to handle function returns in SafeExecutor."""
@@ -22,17 +38,9 @@ class SafeExecutor:
     def __init__(self, config):
         self.config = config
         self.allowed_functions = set(config.allowed_functions)
-        # Initialize variables with built-in types for isinstance() usage
-        self.variables = {
-            'int': int,
-            'str': str,
-            'float': float,
-            'bool': bool,
-            'list': list,
-            'dict': dict,
-            'tuple': tuple,
-            'set': set,
-        }
+        # Seeded so isinstance() works; SEEDED_TYPE_NAMES is the same set,
+        # for anyone who REPORTS variables.
+        self.variables = dict(_SEEDED_TYPES)
         self.user_functions = {}  # Store user-defined functions
         self.output_buffer = []
         self.start_time = None

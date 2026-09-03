@@ -431,11 +431,18 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             # Check idempotency: return cached result if key exists
             if idempotency_key and idempotency_key in self._idempotency_cache:
                 cached_event_id = self._idempotency_cache[idempotency_key]
-                await safe_status_call("end", f"Idempotent request (key={idempotency_key[:8]}..., event_id={cached_event_id[:8]}...)")
+                # The end fired here before, i.e. BEFORE the cached thought was
+                # found. On a miss the code falls through and writes a NEW
+                # thought whose real end is then dropped (StatusScope.ended).
                 # Find the cached thought and return its response
                 for s in self._sessions.values():
                     for t in s.thoughts:
                         if t.event_id == cached_event_id:
+                            await safe_status_call(
+                                "end",
+                                f"Idempotent hit: thought #{t.number} in session "
+                                f"{s.session_id} ({len(s.thoughts)} thoughts, "
+                                f"key={idempotency_key[:8]}...)")
                             return {
                                 "status": "success",
                                 "session_id": s.session_id,
@@ -692,7 +699,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
 
                 del self._sessions[session_id]
 
-                await safe_status_call("end", "Cleared 1 session")
+                await safe_status_call(
+                    "end", f"Cleared session {session_id} ({thought_count} thoughts)")
 
                 return {
                     "status": "success",
@@ -728,17 +736,24 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         Tool name: {{ name }}_get_summary → e.g., 'sequential_thinking_get_summary'
         Method called after dispatcher strips prefix → 'get_summary'
         """
+        status = params.get("_status")
+
+        # Helper to safely call status methods when status is available
+        async def safe_status_call(method_name: str, *args, **kwargs):
+            if status:
+                method = getattr(status, method_name)
+                await method(*args, **kwargs)
+
         try:
-            session_id = params["session_id"]
+            # Read AFTER status, and explicitly: params["session_id"] raised
+            # KeyError while `status` was still unbound, so the except block
+            # below reported an UnboundLocalError instead of the real reason.
+            session_id = params.get("session_id")
+            if not session_id:
+                await safe_status_call("error", "session_id is required")
+                return {"status": "error", "error": "session_id is required"}
             max_thoughts = params.get("max_thoughts", self.max_summary_thoughts)
             include_branches = params.get("include_branches", True)
-            status = params.get("_status")
-
-            # Helper to safely call status methods when status is available
-            async def safe_status_call(method_name: str, *args, **kwargs):
-                if status:
-                    method = getattr(status, method_name)
-                    await method(*args, **kwargs)
 
             if session_id not in self._sessions:
                 await safe_status_call("error", f"Session {session_id} not found")

@@ -159,7 +159,14 @@ class LLMRouterServer(SchemaBasedMCPServer):
 
             content = await client.chat(messages, cancellation_token=cancellation_token)
 
-            await status.end(f"Chat completed using profile '{profile}'")
+            # The end line repeated the progress line: neither the model
+            # that actually served the call nor the response size, although
+            # both are read two lines below.
+            # Outcome first: the model id can be long ("anthropic/claude-...")
+            # and the WebUI cuts the line on the right.
+            await status.end(
+                f"{len(content or '')} chars via '{profile}' "
+                f"-- {getattr(client, 'model', 'unknown')}")
             return {
                 "content": content,
                 "profile": profile,

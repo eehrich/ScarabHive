@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from .executor import ScriptExecutor
+from .executor import ScriptExecutor
+from .safe_executor import SEEDED_TYPE_NAMES
 from .config import ScriptInterpreterConfig
 
 if TYPE_CHECKING:
@@ -144,25 +145,49 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
                     if 'stack_trace' in error_info:
                         error_msg += f"\n\nStack trace:\n{error_info['stack_trace']}"
                         
-                    await status.error(f"Execution failed: {error_msg}")
+                    # Headline only. `error_msg` accumulates code context
+                    # and a stack trace, and the status message is one row --
+                    # the full text goes back in `error_message`, where the
+                    # caller already reads it. Unbounded it also landed in the
+                    # SSE payload and in the persisted sub-agent activity.
+                    await status.error(
+                        f"Execution failed: {error_msg.splitlines()[0][:120]}")
                     return {"error": error_info, "error_message": error_msg, "error_details": error_info}
                 else:
                     # Simple string error (legacy format)
-                    await status.error(f"Execution failed: {error_info}")
+                    await status.error(f"Execution failed: {str(error_info)[:120]}")
                     return {"error": error_info or "Execution failed", "suggestion": result.get("suggestion", "")}
             else:
                 # Publish end status with execution metadata
+                # The sandbox seeds its variable table with eight built-in
+                # types so isinstance() works; they are not the script's.
+                # Counting them reported "9 variable(s)" for a script that
+                # assigned one -- and listed `int=<class 'int'>` back to the
+                # caller. Subtracted once, for both readers.
+                user_vars = {k: v for k, v in (result.get("variables") or {}).items()
+                             if k not in SEEDED_TYPE_NAMES}
                 meta = {
                     "execution_time": result.get("execution_time"),
-                    "variables": len(result.get("variables", {})),
+                    "variables": len(user_vars),
                 }
-                await status.end("Execution completed", meta=meta)
+                # The numbers only lived in meta, which the WebUI does not
+                # render -- the line that stays said "Execution completed".
+                bits = []
+                if result.get("output"):
+                    bits.append(f"{len(result['output'])} chars output")
+                if meta["variables"]:
+                    bits.append(f"{meta['variables']} variable(s)")
+                if meta["execution_time"] is not None:
+                    bits.append(f"{meta['execution_time']:.3f}s")
+                await status.end(
+                    f"Executed: {', '.join(bits)}" if bits else "Executed (no output)",
+                    meta=meta)
 
                 output_parts = []
                 if result.get("output"):
                     output_parts.append(f"Output: {result['output']}")
-                if result.get("variables"):
-                    var_str = ", ".join(f"{k}={v}" for k, v in result["variables"].items())
+                if user_vars:
+                    var_str = ", ".join(f"{k}={v}" for k, v in user_vars.items())
                     output_parts.append(f"Variables: {var_str}")
                 if result.get("execution_time") is not None:
                     output_parts.append(f"Execution time: {result['execution_time']:.3f}s")
@@ -188,9 +213,11 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
             entry = self._executors.get(session_id)
             if entry:
                 entry[0].reset_sandbox()
-            await status.end("Sandbox reset completed")
+            await status.end(f"Sandbox reset for session {session_id}")
             return {"result": "🔄 Python sandbox reset - all variables and state cleared"}
         except Exception as e:
-            await status.error("Reset failed")
+            # The reason was in the return value but not in the status line,
+            # which is the one the person sees.
+            await status.error(f"Reset failed: {str(e)}")
             return {"error": f"Reset failed: {str(e)}"}
 

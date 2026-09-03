@@ -105,11 +105,18 @@ class MCPClientServer(SchemaBasedMCPServer):
 
     async def list_servers(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Tool: show the configured external MCP servers and their state."""
-        status = self.pool.status()
+        pool_status = self.pool.status()
+        connected = self.pool.list_connected()
+        # NB: `status` here is the scope, `pool_status` the servers -- the two
+        # used to share the name, which is why nothing was ever reported.
+        scope = params.get("_status")
+        if scope:
+            await scope.end(
+                f"{len(pool_status)} server(s) configured, {len(connected)} connected")
         return {
-            "servers": list(status.values()),
-            "connected": self.pool.list_connected(),
-            "total": len(status),
+            "servers": list(pool_status.values()),
+            "connected": connected,
+            "total": len(pool_status),
         }
 
     async def connect(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -125,6 +132,10 @@ class MCPClientServer(SchemaBasedMCPServer):
         # the new catalog, not a cache that a scheduled task has not
         # cleared yet.
         await capabilities.anotify_tool_catalog_changed()
+        scope = params.get("_status")
+        if scope:
+            await scope.end(
+                f"Connected {name} (protocol {connection.protocol_version})")
         return {
             "success": True,
             "server": name,
@@ -142,18 +153,35 @@ class MCPClientServer(SchemaBasedMCPServer):
         # the new catalog, not a cache that a scheduled task has not
         # cleared yet.
         await capabilities.anotify_tool_catalog_changed()
+        scope = params.get("_status")
+        if scope:
+            # Not connected is a legitimate ANSWER, not a failure -- end, not
+            # error, and the central net in call_with_status leaves it alone
+            # because the result carries no 'error' key.
+            await scope.end(f"{name}: {'disconnected' if closed else 'was not connected'}")
         return {"success": closed, "server": name,
                 "message": "disconnected" if closed else "was not connected"}
 
     async def tools(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Tool: list the tools of the connected servers."""
-        by_server = await self.pool.list_tools_by_server(
+        all_by_server = await self.pool.list_tools_by_server(
             force_refresh=bool(params.get("force_refresh"))
         )
         server = params.get("server")
-        if server:
-            by_server = {server: by_server.get(server, [])}
+        by_server = {server: all_by_server.get(server, [])} if server else all_by_server
+        total = sum(len(tools) for tools in by_server.values())
+        scope = params.get("_status")
+        if scope:
+            if not server:
+                await scope.end(f"{total} tool(s) on {len(by_server)} server(s)")
+            elif server in all_by_server:
+                # With a name given the dict is always size 1, so the old
+                # "on 1 server(s)" said nothing -- and an unknown or
+                # disconnected name read as a server that has no tools.
+                await scope.end(f"{total} tool(s) on {server}")
+            else:
+                await scope.end(f"{server}: not connected")
         return {
             "servers": by_server,
-            "total": sum(len(tools) for tools in by_server.values()),
+            "total": total,
         }

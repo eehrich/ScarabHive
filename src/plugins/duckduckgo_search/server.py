@@ -65,7 +65,11 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
         if self.cache_enabled and not ignore_cache:
             cached_result = await self.cache.get(cache_key)
             if cached_result is not None:
-                await status.end("Retrieved from cache", meta={"cache_hit": True})
+                # Subject and count, like the fresh path further down.
+                await status.end(
+                    f"{len(cached_result.get('results', []))} results (cached) "
+                    f"-- {query[:60]}",
+                    meta={"cache_hit": True, "results": len(cached_result.get("results", []))})
                 logger.debug(f"Cache hit for query: {query[:50]}...")
                 return cached_result
             

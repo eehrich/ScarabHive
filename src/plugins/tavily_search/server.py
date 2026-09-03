@@ -136,7 +136,13 @@ class TavilySearchServer(SchemaBasedMCPServer):
         if self.cache_enabled and not ignore_cache:
             cached = await self.cache.get(cache_key)
             if cached is not None:
-                await status.end("Retrieved from cache", meta={"cache_hit": True})
+                # Subject and count, like the fresh path below -- the bare
+                # "Retrieved from cache" replaced the progress line that had
+                # the query, so a cache hit said nothing at all.
+                hits = cached.get("result_count", len(cached.get("results", [])))
+                await status.end(
+                    f"{hits} results (cached) -- {query[:60]}",
+                    meta={"cache_hit": True, "results": hits})
                 logger.debug(f"Cache hit for Tavily search: {query[:50]}...")
                 return cached
         
@@ -245,7 +251,15 @@ class TavilySearchServer(SchemaBasedMCPServer):
         if self.cache_enabled and not ignore_cache:
             cached = await self.cache.get(cache_key)
             if cached is not None:
-                await status.end("Retrieved from cache", meta={"cache_hit": True})
+                # What was EXTRACTED, not what was requested -- the cached
+                # payload carries its own counts, and partial failures are
+                # cached too, so `len(urls)` reported three pages for a call
+                # that had returned one.
+                got = cached.get("success_count", len(cached.get("results", [])))
+                missed = cached.get("failed_count", 0)
+                await status.end(
+                    f"{got} page(s) (cached)" + (f", {missed} failed" if missed else ""),
+                    meta={"cache_hit": True, "success": got, "failed": missed})
                 logger.debug(f"Cache hit for Tavily extract: {len(urls)} URLs")
                 return cached
         

@@ -63,7 +63,7 @@ Please provide:
 - Different perspectives or viewpoints
 - Source URLs for verification
 """
-        return await self._run_task(research_prompt, request_id, params.get("_session_id"), params.get("_status"))
+        return await self._run_task(research_prompt, request_id, params.get("_session_id"), params.get("_status"), topic)
     
     async def fact_check(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Fact-check a specific claim.
@@ -93,7 +93,7 @@ Please provide:
 - Important context or nuances
 - Source URLs for verification
 """
-        return await self._run_task(fact_check_prompt, request_id, params.get("_session_id"), params.get("_status"))
+        return await self._run_task(fact_check_prompt, request_id, params.get("_session_id"), params.get("_status"), claim)
     
     async def source_analysis(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze and compare sources for a topic.
@@ -124,7 +124,7 @@ Please provide:
 - Synthesis of the most reliable information
 - Source URLs for each perspective
 """
-        return await self._run_task(compare_prompt, request_id, params.get("_session_id"), params.get("_status"))
+        return await self._run_task(compare_prompt, request_id, params.get("_session_id"), params.get("_status"), topic)
     
     async def research_assistant(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """General research assistant for any task.
@@ -138,11 +138,21 @@ Please provide:
         request_id = params.get("request_id") or params.get("requestId")
         
         # For general tasks, just pass through to the agent
-        return await self._run_task(task, request_id, params.get("_session_id"), params.get("_status"))
+        return await self._run_task(task, request_id, params.get("_session_id"), params.get("_status"), task)
 
-    async def _run_task(self, prompt: str, request_id: str, session_id: str | None, status) -> Dict[str, Any]:
-        """Run a task by streaming agent events and collecting results."""
+    async def _run_task(self, prompt: str, request_id: str, session_id: str | None,
+                        status, subject: str = "") -> Dict[str, Any]:
+        """Run a task by streaming agent events and collecting results.
+
+        These are the longest-running tools in the fleet and reported nothing
+        at all -- every run closed on the scope default "completed". `subject`
+        is the short thing the caller asked about; `prompt` is the whole
+        rendered research prompt and is useless as a status line.
+        """
         result: Dict[str, Any] = {"task": prompt, "calls": []}
+        subject = (subject or prompt)[:60]
+        if status:
+            await status.progress(f"Researching: {subject}")
         try:
             async for event in self.run_events(prompt, request_id=request_id, session_id=session_id):
                 event_type = event.get("type")
@@ -162,6 +172,10 @@ Please provide:
             
             result["status"] = "success"
             result["agent"] = self.name
+            if status:
+                await status.end(
+                    f"{len(result['calls'])} tool call(s), "
+                    f"{len(result.get('summary') or '')} chars -- {subject}")
             return result
         except Exception as e:  # pragma: no cover - defensive
             return {"status": "error", "error": str(e), "agent": self.name}

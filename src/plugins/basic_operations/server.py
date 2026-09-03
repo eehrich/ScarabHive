@@ -177,9 +177,17 @@ class BasicOperationsServer(SchemaBasedMCPServer):
                     self.name, sleep_time, update_interval, remaining
                 )
             
-            # Final status update (English) - always include message
+            # end, not progress: this was the last thing said, so the scope's
+            # default END overwrote it with a bare "completed" and the elapsed
+            # time was lost.
             elapsed = time.time() - start_time
-            await status.progress(f"{message}: completed after {elapsed:.1f}s")
+            # str(): `params.get("message", "Waiting")` returns None when the
+            # model sends "message": null, and nothing validates tool params
+            # against the schema at runtime. The old line interpolated it
+            # ("None: completed"), this one subscripts it -- so without this
+            # a completed wait would return an error.
+            await status.end(
+                f"Waited {elapsed:.1f}s of {seconds:.1f}s -- {str(message)[:60]}")
             
             logger.info(f"Wait completed after {elapsed:.1f} seconds")
             
@@ -234,7 +242,12 @@ class BasicOperationsServer(SchemaBasedMCPServer):
                 }
             
             logger.debug(f"Ping from {self.name} at {timestamp}")
-            
+
+            # ping never said anything at all, so the line read "completed".
+            status = params.get("_status")
+            if status:
+                await status.end(f"Pong from {self.name} at {timestamp}")
+
             return result
             
         except Exception as e:

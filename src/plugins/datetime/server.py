@@ -12,6 +12,44 @@ if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
 
 
+# operation -> the field(s) that hold ITS answer, first match wins. Read off
+# the real return dicts of every handler, not guessed: the fields differ per
+# operation, and several handlers echo their INPUT under a plausible-looking
+# name, which a shared priority list happily reports as the result.
+#
+# Keyed on every operation NAME the dispatcher accepts, which is more than the
+# number of handlers: three operations have two spellings, and it is the
+# ALIAS that `schema.yaml` advertises to the model. A first version of this
+# table listed the handlers instead and missed `add_time`, `subtract_time` and
+# `to_timestamp` -- i.e. the only spellings a model ever sends, for three of
+# the eleven operations. `test_answer_fields_covers_every_operation` compares
+# this table against the schema enum so that cannot happen again.
+_ANSWER_FIELDS: dict[str, tuple[str, ...]] = {
+    "current": ("current_time",),
+    "format": ("formatted_time",),
+    "parse": ("parsed_datetime", "iso_format"),
+    # One handler behind both, and `_subtract_time` delegates to `_add_time`:
+    # `human_readable` is the computed moment, `result_datetime` its ISO form.
+    "add": ("human_readable", "result_datetime"),
+    "add_time": ("human_readable", "result_datetime"),
+    "subtract": ("human_readable", "result_datetime"),
+    "subtract_time": ("human_readable", "result_datetime"),
+    "convert_timezone": ("human_readable", "converted_time"),
+    # Direction decides which field is the answer. Given a timestamp,
+    # `timestamp` is the ECHOED INPUT and the answer is the moment
+    # (`human_readable`); given a datetime, that key does not exist and
+    # `timestamp` IS the computed answer. Order does the discriminating.
+    "timestamp": ("human_readable", "timestamp"),
+    "to_timestamp": ("human_readable", "timestamp"),
+    "calendar_info": ("weekday_name", "date"),
+    # Two success shapes: counting business days between two dates, and
+    # adding N of them to one date.
+    "business_days": ("business_days_between", "result_date"),
+    "day_of_week": ("day_of_week",),
+    "days_until": ("days",),
+}
+
+
 class DateTimeServer(SchemaBasedMCPServer):
     """DateTime MCP Server that provides comprehensive date and time information.
 
@@ -81,12 +119,25 @@ class DateTimeServer(SchemaBasedMCPServer):
         except Exception as e:
             result = {"status": "error", "error": str(e)}
 
-        # Publish status for operation completion
-        status_msg = f"Completed operations: {operation}"
+        # Publish status for operation completion. The end line is the one
+        # that stays (the WebUI lets it replace the progress line), so it
+        # carries the ANSWER -- "Completed operations: now" said nothing, and
+        # the same text also went out as the error, so a failure read as
+        # "Completed".
         if result.get("status") == "error":
-            await status.error(status_msg)
+            await status.error(f"{operation} failed: {result.get('error', 'unknown error')}")
         else:
-            await status.end(status_msg)
+            # Which field IS the answer differs per operation, so it is named
+            # per operation. A shared priority list cannot know this: measured
+            # over every handler, such a list produced "current: 3" (the
+            # weekday INDEX) and "timestamp: current time" (the echoed input)
+            # -- values that look like answers and are not.
+            answer = next(
+                (str(result[key]) for key in _ANSWER_FIELDS.get(operation, ())
+                 if result.get(key) is not None),
+                None,
+            )
+            await status.end(f"{operation}: {answer[:70]}" if answer else operation)
 
         return result
 

@@ -173,7 +173,18 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                     'stderr': result.stderr,
                     'exit_code': result.exit_code,
                     'duration': result.duration,
-                    'success': result.exit_code == 0
+                    # Contract change, deliberate: a caller who passes
+                    # check_exit_code=false has declared a non-zero exit
+                    # acceptable. Without this the counters below and the
+                    # status branch called a tolerated exit a failure --
+                    # while the response carried no `error` key, because the
+                    # branch below only sets one when check_exit_code is on.
+                    # Consumers enumerated 2026-09-02: no CODE reads this
+                    # field outside this method (no endpoint, template or
+                    # test); it is read by the calling AGENT, in the returned
+                    # `results` list and the `successful`/`failed` counts --
+                    # which is exactly where the two answers used to disagree.
+                    'success': result.exit_code == 0 or not check_exit_code
                 }
 
                 # Check exit code if required
@@ -187,13 +198,23 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             successful = sum(1 for r in responses if r.get('success', False))
             failed = sum(1 for r in responses if not r.get('success', False))
 
-            # Truncate command for display
-            cmd_display = command if len(command) <= 50 else command[:47] + "..."
+            # Same budget as the progress line at :134 -- the END replaces it
+            # in the WebUI, so capping it harder loses information twice.
+            cmd_display = command if len(command) <= 60 else command[:57] + "..."
             machine_str = machines[0] if len(machines) == 1 else f"{len(machines)} machines"
+            # The outcome sits right here and used to be dropped -- one
+            # short summary, not a per-machine list: the line has to fit.
+            if len(machines) == 1:
+                r = responses[0]
+                detail = f"exit {r.get('exit_code')} in {r.get('duration', 0):.1f}s"
+            else:
+                detail = f"{successful} ok"
 
+            # Outcome first: the WebUI cuts the line at the right edge, so a
+            # long command in front would take the result with it.
             if failed == 0:
                 await status.end(
-                    f"Executed: {machine_str}: {cmd_display}",
+                    f"{machine_str}: {detail} -- {cmd_display}",
                     meta={
                         'successful': successful,
                         'failed': failed,
@@ -201,8 +222,13 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                     }
                 )
             else:
+                first_error = next(
+                    (str(r.get('error') or r.get('stderr', ''))[:60]
+                     for r in responses if not r.get('success', False)), '')
                 await status.error(
-                    f"Executed: {machine_str}: {cmd_display} ({successful} ok, {failed} failed)",
+                    f"{machine_str}: {successful} ok, {failed} failed"
+                    + (f" ({first_error})" if first_error else "")
+                    + f" -- {cmd_display}",
                     meta={
                         'successful': successful,
                         'failed': failed,

@@ -221,7 +221,11 @@ class TestTavilyWebSearch:
                 result = await server.call("web_search", {"query": "test", "_status": mock_status})
                 
                 assert result == cached_data
-                mock_status.end.assert_called_with("Retrieved from cache", meta={"cache_hit": True})
+                # Contract, not wording: the line that stays must name the
+                # query and the count. "Retrieved from cache" said neither.
+                message, kwargs = mock_status.end.call_args[0][0], mock_status.end.call_args[1]
+                assert "test" in message and "0 results" in message, message
+                assert kwargs["meta"]["cache_hit"] is True
 
 
 class TestTavilyExtract:

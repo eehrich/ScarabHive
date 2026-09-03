@@ -1122,8 +1122,22 @@ class ComfyUIServer(SchemaBasedMCPServer):
         self.job_tracker.set_outputs(prompt_id, output_paths)
         
         if status:
-            total_files = sum(len(v) for v in outputs.values())
-            await status.end(f"Retrieved {total_files} output file(s)")
+            # Count what actually LANDED: a download failure only writes
+            # save_error into the record, so the raw count could report three
+            # files while none of them is on disk. And name the job.
+            records = [r for files in outputs.values() for r in files]
+            if download:
+                # local_path is only set on the download path; without it
+                # nothing was meant to land, so nothing can have failed.
+                landed = sum(1 for r in records if r.get("local_path"))
+                failed = len(records) - landed
+                await status.end(
+                    f"{landed} output file(s)"
+                    + (f", {failed} failed to save" if failed else "")
+                    + f" -- job {prompt_id}")
+            else:
+                await status.end(
+                    f"{len(records)} output file(s) on the server -- job {prompt_id}")
         
         result: dict[str, Any] = {
             "status": "completed",

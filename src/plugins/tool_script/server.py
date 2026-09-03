@@ -231,7 +231,18 @@ class ToolScriptServer(SchemaBasedMCPServer):
             except _ScriptAbort as e:
                 return self._failure(ctx, executor, str(e), line=None)
 
-        return self._shape_result(ctx, executor, exec_result, status)
+        shaped = self._shape_result(ctx, executor, exec_result, status)
+        # _shape_result took `status` and never used it, so the informative
+        # progress lines were wiped by the scope default "completed". The
+        # failure exits below it return {"status": "error"} and are published
+        # by the net in call_with_status -- only the success end is ours.
+        if status and shaped.get("status") == "ok":
+            ok = sum(1 for c in ctx.calls if c.get("ok"))  # same field as _failure
+            # Deliberately no result size: measuring it means serialising the
+            # whole result a second time, and a script's result is whatever
+            # the tools it called returned -- that can be megabytes.
+            await status.end(f"Script ran: {ok}/{len(ctx.calls)} tool call(s)")
+        return shaped
 
     # ------------------------------------------------------------------
     # call_tool bridge (runs in the worker thread)

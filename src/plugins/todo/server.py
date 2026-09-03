@@ -1094,7 +1094,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Short status message
             if status:
-                await status.end(f"Created {task_id}")
+                await status.end(
+                    f"Created {task_id}" + (" (blocked)" if is_blocked else "")
+                    + f": {title[:60]}")
 
             return {
                 "task_id": task_id,
@@ -1434,7 +1436,8 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Short status message
             if status:
-                await status.end(f"Updated {task_id}")
+                what = ", ".join(changes) if changes else "no changes"
+                await status.end(f"Updated {task_id}: {what[:60]}")
 
             return {
                 "task_id": task_id,
@@ -1765,11 +1768,17 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             if cascade and task.blocks:
                 for block_id in list(task.blocks):
                     if block_id in collection.tasks:
-                        # Recursive cascade (call implementation directly)
+                        # Recursive cascade (call implementation directly).
+                        # WITHOUT _status: all frames share one StatusScope,
+                        # so the deepest child used to call status.end() and
+                        # set ended=True -- the end line of the task that was
+                        # actually requested was a no-op after that.
+                        sub_context = {k: v for k, v in (context or {}).items()
+                                       if k != "_status"}
                         sub_result = await self._delete_todo_impl(
                             task_id=block_id,
                             cascade=True,
-                            context=context
+                            context=sub_context
                         )
                         cascade_deleted.append(block_id)
                         cascade_deleted.extend(sub_result.get("cascade_deleted", []))
@@ -1790,7 +1799,10 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Short status message
             if status:
-                await status.end(f"Deleted {task_id}")
+                await status.end(
+                    f"Deleted {task_id}"
+                    + (f" + {len(cascade_deleted)} dependent task(s)"
+                       if cascade_deleted else ""))
 
             return {
                 "task_id": task_id,

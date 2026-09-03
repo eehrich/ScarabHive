@@ -161,7 +161,14 @@ class BasicAgent(SchemaBasedAgent):
                     }
 
             if status:
-                await status.progress("Task completed successfully")
+                # end, not progress: this was the last thing said, so the
+                # scope's default overwrote it with a bare "completed" and
+                # threw away steps, tool calls and result size.
+                task_text = params.get("task") or ""
+                subject = task_text if len(task_text) <= 60 else task_text[:57] + "..."
+                await status.end(
+                    f"{step_count} step(s), {len(tool_calls)} tool call(s), "
+                    f"{len(result_text or '')} chars -- {subject}")
 
             # Return the actual result from the final event
             return {

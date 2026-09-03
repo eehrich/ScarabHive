@@ -805,7 +805,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     # was the green line that stayed in the WebUI.
                     if result_text.startswith(("Error:", "Cancelled:")):
                         await status.error(
-                            f"Sub-agent {sub_session_id} ({agent_name}): {result_text}")
+                            f"Sub-agent {sub_session_id} ({agent_name}): "
+                            f"{result_text[:70]}")
                     else:
                         await status.end(
                             f"Created sub-agent {sub_session_id} (type: {agent_name}), "
@@ -1062,7 +1063,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     # not leave a green line behind.
                     if result_text.startswith(("Error:", "Cancelled:")):
                         await status.error(
-                            f"Sub-agent {instance_id} ({agent_type}): {result_text}")
+                            f"Sub-agent {instance_id} ({agent_type}): "
+                            f"{result_text[:70]}")
                     else:
                         await status.end(
                             f"Continued sub-agent {instance_id} (type: {agent_type}), "
@@ -1902,7 +1904,15 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 poll_result = await self._handle_poll(_without_status(params))
                 if poll_result.get("status") == "completed":
                     if status_ctx:
-                        await status_ctx.end(f"Instance {instance_id} already completed")
+                        # No result size here: on this branch `_handle_poll`
+                        # reaches the DB path, whose `result` is the fixed
+                        # string "Sub-agent execution completed (session
+                        # persisted)". Measuring it reported 51 chars for
+                        # every sub-agent, whatever it had produced -- a
+                        # fabricated number is worse than none.
+                        await status_ctx.end(
+                            f"Instance {instance_id} already completed "
+                            f"({poll_result.get('agent_type', 'unknown type')})")
                     return poll_result
                 elif poll_result.get("status") == "error":
                     if status_ctx:

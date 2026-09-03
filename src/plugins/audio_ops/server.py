@@ -836,7 +836,11 @@ class AudioOpsServer(SchemaBasedMCPServer):
                         })
             
             if status:
-                await status.end(f"Found {len(files)} audio files")
+                unreadable = sum(1 for f in files if "error" in f)
+                await status.end(
+                    f"{len(files)} audio file(s)"
+                    + (f", {unreadable} unreadable" if unreadable else "")
+                    + f" -- {Path(effective_storage).name}")
             
             return {
                 "status": "success",
@@ -845,6 +849,15 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "total_count": len(files)
             }
             
+        except AudioOpsError as e:
+            if status:
+                await status.error(str(e), meta={"error_type": e.error_type, **e.details})
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": e.error_type,
+                "details": e.details,
+            }
         except Exception as e:
             logger.error(f"Unexpected error in list: {e}", exc_info=True)
             if status:
@@ -977,7 +990,11 @@ class AudioOpsServer(SchemaBasedMCPServer):
             }]
             
             if status:
-                await status.end(f"Loaded {filename} for analysis")
+                detail = (
+                    f"{segment_info['segment_duration_seconds']}s segment "
+                    f"{segment_info['start_time']}s-{segment_info['end_time']}s "
+                    f"of {duration_sec:.1f}s" if segment_info else f"{duration_sec:.1f}s")
+                await status.end(f"Loaded {detail}, {mime_type} -- {str(filename)[:60]}")
             
             result: dict[str, Any] = {
                 "status": "success",
@@ -1910,7 +1927,8 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 })
             
             if status:
-                await status.end(f"Found {len(silences)} silence segments")
+                await status.end(
+                    f"{len(silences)} silence segment(s) -- {Path(source_file).name}")
 
             return {
                 "status": "success",
@@ -2032,7 +2050,9 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 ], capture_output=True, check=True)
 
                 if status:
-                    await status.end("No silences to compress")
+                    await status.end(
+                        f"No silences in {Path(source_file).name}, "
+                        f"copied to {Path(dest_file).name}")
                 return {
                     "status": "success",
                     "compressed_count": 0,
@@ -2074,7 +2094,9 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 ], capture_output=True, check=True)
 
                 if status:
-                    await status.end("No silences exceed max duration")
+                    await status.end(
+                        f"No silence over {max_silence}s in {Path(source_file).name}, "
+                        f"copied to {Path(dest_file).name}")
                 return {
                     "status": "success",
                     "compressed_count": 0,

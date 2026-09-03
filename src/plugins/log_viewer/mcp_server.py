@@ -54,12 +54,33 @@ class LogViewerMCPServer(SchemaBasedMCPServer):
             result = {"error": str(e)}
             logger.exception(f"Error in tool {tool}: {e}")
 
-        # Publish status for operation completion
-        status_msg = f"Completed {tool} operation"
+        # Publish status for operation completion. "Completed <tool>
+        # operation" repeated the scope name and threw away both the reason
+        # for a failure and the counts of a success -- and it went out as the
+        # error text too, so a failure read as "Completed".
         if "error" in result:
-            await status.error(status_msg)
+            await status.error(str(result["error"]))
         else:
-            await status.end(status_msg)
+            # Built from what the three handlers really return -- `tool` is
+            # the only name guaranteed to be bound here (method_name lives
+            # inside the try).
+            if "logs" in result:
+                summary = f"{len(result['logs'])} log file(s)"
+            elif "returned_lines" in result:
+                # Counts first, path last: `log_file` is a full path from the
+                # allowlist, and the WebUI cuts the line on the RIGHT -- with
+                # the path in front the numbers would be the part that goes.
+                # Kept from the END for the same reason: the file name is what
+                # identifies it, the leading directories are not.
+                summary = (f"{result['returned_lines']}/{result.get('total_lines', '?')} "
+                           f"lines -- {str(result.get('log_file', 'log'))[-50:]}")
+            elif "total_matches" in result:
+                summary = (f"{result['total_matches']} matches in "
+                           f"{result.get('files_searched', '?')} file(s) -- "
+                           f"'{str(result.get('pattern', ''))[:50]}'")
+            else:
+                summary = tool
+            await status.end(summary)
 
         return result
     
