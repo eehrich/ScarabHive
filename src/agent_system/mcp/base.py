@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC
 from typing import Any, List, TYPE_CHECKING
 from .core import MCPTool
@@ -8,29 +9,72 @@ if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 
+#: One status row's worth of text. The WebUI renders it on a single line
+#: (`.progress-message` is nowrap + ellipsis), so anything past this is
+#: invisible there and pure weight everywhere else.
+#:
+#: Deliberately the SAME number as `MAX_LINE` in
+#: tests/plugins/test_status_end_lines.py, which holds every plugin's own end
+#: line to it: an error and a success land in the same row, so two budgets for
+#: one surface would just be a number nobody could justify. (No import across
+#: that boundary -- production must not depend on a test module.)
+_STATUS_MESSAGE_LIMIT = 140
+
+
 def _error_result_message(result: Any) -> str | None:
     """The error text of a failed tool result, or None if it is not one.
 
-    Two conventions live side by side in the plugin fleet, counted 2026-09-02
-    over ``src/plugins/**`` (tests excluded): ``{"status": "error"}`` at 342
-    sites in 23 plugins, ``{"success": False}`` at 35 sites in 5. Both are
-    recognised here so the safety net in ``call_with_status`` does not depend
-    on which one a plugin happens to use.
+    THREE conventions live side by side in the plugin fleet, counted
+    2026-09-02 over ``src/plugins/**`` (tests excluded):
 
-    ``success: False`` additionally requires an ``error`` key: on its own the
-    flag also carries legitimate negative ANSWERS, where the call did its job
-    and the answer is "no" -- ``mcp_client.disconnect`` returns
+    * ``{"status": "error", ...}`` -- 342 sites in 23 plugins
+    * ``{"error": ...}`` with no status at all -- 130 sites, debate_forum and
+      comfyui alone account for 53
+    * ``{"success": False, "error": ...}`` -- 35 sites in 5 plugins
+
+    The bare-``error`` rule is the one ``tool_script`` already applies when it
+    decides whether a scripted tool call failed (``server.py``, "Tools signal
+    failure by RETURN VALUE, in two shapes"): an ``error`` counts only when
+    there is no ``status`` beside it, so a result that says
+    ``{"status": "failed", "error": [...]}`` about the THING it queried is not
+    mistaken for a failed call.
+
+    ``success: False`` requires an ``error`` key for the same reason: on its
+    own the flag also carries legitimate negative ANSWERS, where the call did
+    its job and the answer is "no" -- ``mcp_client.disconnect`` returns
     ``{"success": False, "message": "was not connected"}`` for a server that
-    was not connected. ``status: "error"`` is unambiguous by its own name and
-    needs no such qualifier.
+    was not connected.
     """
     if not isinstance(result, dict):
         return None
-    if result.get("status") == "error":
-        return str(result.get("error") or result.get("message") or "failed")
-    if result.get("success") is False and result.get("error"):
-        return str(result["error"])
-    return None
+    # A user cancellation is not a failure this net reports. The fleet is
+    # split on how it says so -- 11 sites return {"error": "...cancelled by
+    # user", "cancelled": True}, 20 return {"status": "cancelled"} -- and the
+    # second shape is invisible here. Flagging only the first would render the
+    # SAME user action red in one plugin and green in the next; before this
+    # net they all closed alike. Plugins that want a cancellation to show red
+    # already do it themselves (terminal, basic_operations,
+    # sub_agent_manager). Unifying the two shapes is a decision about what a
+    # cancelled call should look like, not a status-line repair.
+    if result.get("cancelled") is True:
+        return None
+    status = result.get("status")
+    error = result.get("error")
+    if status == "error":
+        message = error or result.get("message") or "failed"
+    elif error and status is None and result.get("success") is not True:
+        message = error
+    elif result.get("success") is False and error:
+        message = error
+    else:
+        return None
+    # Capped: the value is a tool's, and a structured `error` (a stack trace,
+    # a list of node messages) would otherwise land whole in the status
+    # stream. The status row is one line -- the full payload is in the result
+    # the caller already has. This caps only what THIS net publishes; a plugin
+    # that calls status.error itself is responsible for its own length.
+    text = str(message)
+    return text if len(text) <= _STATUS_MESSAGE_LIMIT else text[:_STATUS_MESSAGE_LIMIT - 3] + "..."
 
 
 class MCPServer(ABC):
@@ -126,11 +170,23 @@ class MCPServer(ABC):
             # success in CLI and WebUI. Audited 2026-09-02: 19 of 45 plugins
             # had at least one such path. Only fires when the handler said
             # nothing itself, so a plugin's own status.error/end always wins.
-            if not status.ended:
-                message = _error_result_message(result)
-                if message is not None:
-                    meta = {"error_type": result.get("error_type")} if result.get("error_type") else None
-                    await status.error(message, meta=meta)
+            # try/except around the whole net: it inspects a value the TOOL
+            # produced, so a dict subclass with a throwing ``get`` or an
+            # object with a throwing ``__bool__`` could turn a call that
+            # returned cleanly into a raise. Reporting must never break the
+            # operation it reports on -- the same contract every method on
+            # StatusScope already keeps.
+            try:
+                if not status.ended:
+                    message = _error_result_message(result)
+                    if message is not None:
+                        error_type = result.get("error_type")
+                        await status.error(
+                            message,
+                            meta={"error_type": error_type} if error_type else None)
+            except Exception:  # pragma: no cover - reporting must not throw
+                logging.getLogger(__name__).debug(
+                    "Could not report the error result of %s", action, exc_info=True)
 
             return result
 
@@ -188,9 +244,8 @@ class MCPServer(ABC):
         Args:
             tools_schema: List of tool schemas to modify in-place
         """
-        import logging
         logger = logging.getLogger(__name__)
-        
+
         if not self.mcp_config or not hasattr(self.mcp_config, 'self_tool_descriptions'):
             return
         

@@ -613,6 +613,30 @@ class TestErrorResultsReachTheStatusStream:
                 """Did its job; the ANSWER is no. Not a failure."""
                 return {"success": False, "message": "was not connected"}
 
+            async def bare_error(self, params):
+                """The third convention -- debate_forum, comfyui, log_viewer."""
+                return {"error": "name is required"}
+
+            async def status_about_the_thing(self, params):
+                """Succeeded; the QUERIED job is the one that failed. `status`
+                beside the error is what separates this from a failed call --
+                the same rule tool_script applies."""
+                return {"status": "failed", "error": "CUDA out of memory"}
+
+            async def hostile_result(self, params):
+                """A tool may return anything. Inspecting it must not be able
+                to break the call that produced it."""
+                class Hostile(dict):
+                    def get(self, *a, **kw):
+                        raise RuntimeError("nice try")
+                return Hostile(status="error", error="never read")
+
+            async def structured_error(self, params):
+                """A stack trace under 'error' must not land whole in the
+                status row."""
+                return {"status": "error",
+                        "error": ["node %d exploded" % i for i in range(60)]}
+
             async def fine(self, params):
                 return {"status": "success", "rows": 3}
 
@@ -631,6 +655,7 @@ class TestErrorResultsReachTheStatusStream:
     @pytest.mark.parametrize("action,expected", [
         ("status_error", "sandbox denied"),
         ("success_false", "host unreachable"),
+        ("bare_error", "name is required"),
     ])
     async def test_a_returned_error_is_published_as_error(
             self, system_config, mcp_config, action, expected):
@@ -645,6 +670,26 @@ class TestErrorResultsReachTheStatusStream:
         assert errors[0].message == expected
         assert not [e for e in events if e.phase is StatusPhase.END], \
             "a failure must not also read as 'completed'"
+
+    @pytest.mark.asyncio
+    async def test_a_hostile_result_cannot_break_the_call(self, system_config,
+                                                          mcp_config):
+        """The net inspects a value the TOOL produced. If that inspection can
+        raise, a call that returned cleanly would start failing."""
+        server = self._server(system_config, mcp_config)
+        result = await server.call_with_status("hostile_result", {})
+        assert isinstance(result, dict), "the result must still reach the caller"
+
+    @pytest.mark.asyncio
+    async def test_a_structured_error_is_capped(self, system_config, mcp_config):
+        from agent_system.mcp.base import _STATUS_MESSAGE_LIMIT
+        from agent_system.mcp.status import StatusPhase
+
+        server = self._server(system_config, mcp_config)
+        _, events = await self._events(server, "structured_error")
+        error = next(e for e in events if e.phase is StatusPhase.ERROR)
+        assert len(error.message) <= _STATUS_MESSAGE_LIMIT, len(error.message)
+        assert error.message.endswith("..."), error.message
 
     @pytest.mark.asyncio
     async def test_error_type_travels_as_meta(self, system_config, mcp_config):
@@ -662,6 +707,9 @@ class TestErrorResultsReachTheStatusStream:
         # failure -- mcp_client.disconnect says this for a server that was
         # not connected. Flagging it would cry wolf on a healthy call.
         "negative_answer",
+        # An 'error' WITH a status beside it describes the thing that was
+        # queried, not the call.
+        "status_about_the_thing",
     ])
     async def test_a_successful_call_still_ends(self, system_config, mcp_config,
                                                 action):
