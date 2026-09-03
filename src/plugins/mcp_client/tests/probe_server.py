@@ -5,6 +5,8 @@ than a mock is the whole point: the previous client passed its unit tests for
 years while being unable to speak to any current server, because the tests
 asserted against hand-written JSON-RPC dicts instead of a real handshake.
 """
+import base64 as _b64
+
 from mcp.server.fastmcp import FastMCP, Image
 
 mcp = FastMCP("probe")
@@ -39,8 +41,6 @@ async def sleep(seconds: float) -> str:
 
 # 1x1 red PNG, the smallest real image a tool can hand back. Base64 keeps
 # the source ASCII-clean -- an escaped bytes literal got mangled once.
-import base64 as _b64
-
 _TINY_PNG = _b64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNg"
     "+M/AAAACAQEAqCJhkAAAAABJRU5ErkJggg=="
