@@ -1,0 +1,131 @@
+# The coding agent.
+#
+# It owns the change; the three sub-agents in this plugin are its instruments:
+# coder_explorer finds things, coder_reviewer attacks the finished change,
+# coder_tester runs the checks. Only this agent writes files.
+#
+# Knowledge lives in skills, not in this prompt (docs/skills_design.md):
+#   always     coding-harness      — the loop it works by, and when to delegate
+#   on_demand  adversarial-review  — pulled before it reviews its own fix round
+#              tdd                 — pulled when it writes tests
+#              diagnosing-bugs     — pulled when it hunts a bug
+#              codebase-design     — pulled when the question is where a seam goes
+# The last three already existed under skills/coding/ — the harness reuses them
+# rather than restating them.
+plugins:
+  servers:
+
+    coder:
+      type: basic_agent
+      enabled: true
+      description: "Coding agent with a harness: plans, changes, tests and has its work adversarially reviewed by sub-agents before calling it done"
+
+      self_tool_descriptions:
+        coder_execute_task: "Implement, fix or refactor code in the workspace — plans the change, edits files, runs the tests and has the result reviewed before reporting"
+        coder_list_available_tools: "List the coding tools available (files, shell, sub-agents, skills)"
+
+      agent_config:
+        # `code` is the profile built for this (gpt-5-codex). The fallbacks sit
+        # at OTHER providers on purpose: if OpenAI is down, the chain still
+        # carries (see reference_seed_fallback_pattern / cross-provider fallback).
+        llm_profile: [code, or-claude-sonnet, or-deepseek-pro]
+        # Reached via use_advanced_model=true when a caller escalates.
+        llm_profile_advanced: [claude-opus, or-claude-sonnet]
+
+        llm_params:
+          "*":
+            context_window: 200000
+            # Interactive multi-turn work: marks the conversation end as a
+            # cache breakpoint on Anthropic profiles, implicit continuation
+            # caching on GPT profiles.
+            prompt_cache_mode: multi_turn
+
+        # A real change is many turns: read, edit, run tests, react to a
+        # failure, review, fix. 300 is a safety net, not a target.
+        max_steps: 300
+
+        system_template: "./prompts/coder.md"
+
+        template_vars:
+          # One place the bundle path is written. The prompt renders it, so it
+          # cannot drift from what the injection hook above reads. It is a
+          # STATIC value -- it does not change between calls, so it does not
+          # cost the prompt cache anything.
+          okf_bundle: "data/okf/coder"
+
+        skills:
+          always: ["coding-harness"]
+          on_demand: ["adversarial-review", "tdd", "diagnosing-bugs", "codebase-design"]
+
+        tools:
+          allowed:
+            - "coder_fs/*"                 # read/write inside the sandbox
+            - "coder_shell/*"              # builds, tests, git (read)
+            - "coder_sam/*"                # explorer, reviewer, tester
+            - "skills/*"                   # read the bundled reference files
+            - "todo/*"                     # the task list, visible across turns
+            - "coder_okf/*"                # durable project knowledge it wrote
+            - "sequential_thinking/*"      # think a hard step through
+            - "datetime/*"
+
+          # semantic_search is dead weight here and worse than useless: with
+          # ChromaDB embeddings off (the default) it still reports
+          # status=success with zero hits, so "nothing found" is
+          # indistinguishable from "the feature is off" — and the call
+          # creates an empty vector store on disk as a side effect.
+          # grep_search covers the need. Enable embeddings first if you ever
+          # want this back.
+          # Note the doubled name -- that is the house convention and it is
+          # correct: a "server/tool" pattern is matched EXACTLY against
+          # server_name + "/" + tool_name, and the tool name already carries
+          # the instance prefix. Written as "coder_fs/semantic_search" this
+          # pattern matches nothing and blocks nothing, silently. Verified
+          # both ways with tool_matches_patterns(): semantic_search gone,
+          # grep_search still there.
+          blocked:
+            - "coder_fs/coder_fs_semantic_search"
+
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+            # The task list is the plan. Injecting it every turn is what keeps
+            # a long change from drifting off its own plan.
+            todo.inject_todo_tasks:
+              enabled: true
+            sequential_thinking.inject_active_sessions:
+              enabled: true
+            # Without this the agent starts every session at zero. It is the
+            # piece every comparable harness has (CLAUDE.md, AGENTS.md,
+            # HERMES.md): durable facts about this project, carried forward.
+            #
+            # Unlike a flat notes file this folds in only what the current turn
+            # is ABOUT -- the lexical hit plus its linked neighbours -- so the
+            # bundle can grow past what would fit in a prompt.
+            #
+            # hook_bundle is mandatory: without it the hook returns silently
+            # without doing anything, which is indistinguishable from an empty
+            # bundle. It must also resolve inside coder_okf's sandbox, or the
+            # same silence follows. There is a test for both.
+            # Only hook_bundle belongs here -- it is the one key with no
+            # default. How much to inject is set once on the coder_okf
+            # instance; repeating it here would just be a second place to
+            # forget.
+            coder_okf.okf_context_injection:
+              enabled: true
+              hook_bundle: data/okf/coder
+            # Which sub-agents are alive, and what they are doing.
+            coder_sam.inject_sub_agent_context:
+              enabled: true
+            # Long coding sessions overflow the window; without this the run
+            # dies at the context limit instead of compacting.
+            context_engineer.engineer_context:
+              enabled: true
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["coding", "harness", "review", "tests"]
+        category: "development"
+        visibility: "both"

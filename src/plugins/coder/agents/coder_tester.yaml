@@ -1,0 +1,65 @@
+# Test runner — runs the checks and reports them small.
+#
+# Why this is a sub-agent and not just the coder calling pytest itself: a
+# failing suite prints hundreds of lines, and almost none of them carry
+# signal. The coder needs the assertion and the five relevant frames, not the
+# collection log. The tester absorbs the noise in its own context.
+#
+# It holds NO edit tools — only the coder writes code. It does hold the shell,
+# and a shell can write; that is deliberate (the mutation probe needs to move
+# a file back and forth) and it is the reason this agent is not called
+# "read-only".
+plugins:
+  servers:
+
+    coder_tester:
+      type: basic_agent
+      enabled: true
+      description: "Test runner — runs targeted suites, reports failures compactly, and performs the mutation probe on request"
+
+      self_tool_descriptions:
+        coder_tester_execute_task: "Run the given tests (or lint/type checks) and report pass/fail with only the lines that carry the failure — optionally prove a test bites via a mutation probe"
+        coder_tester_list_available_tools: "List the shell and read-only file tools available"
+
+      agent_config:
+        # Running a command and quoting the failure verbatim is not a
+        # reasoning task. Diagnosis belongs to the coder.
+        llm_profile: [or-deepseek-flash, or-gemini-flash, or-gpt-mini]
+        llm_profile_advanced: [or-deepseek-pro]
+
+        llm_params:
+          "*":
+            context_window: 200000
+
+        max_steps: 40
+
+        system_template: "./prompts/coder_tester.md"
+
+        tools:
+          allowed:
+            - "coder_shell/*"
+            - "coder_fs_ro/*"
+
+          # semantic_search is dead weight here and worse than useless: with
+          # ChromaDB embeddings off (the default) it still reports
+          # status=success with zero hits, so "nothing found" is
+          # indistinguishable from "the feature is off" — and the call
+          # creates an empty vector store on disk as a side effect.
+          # grep_search covers the need. Enable embeddings first if you ever
+          # want this back.
+          # Note the doubled name -- that is the house convention and it is
+          # correct: a "server/tool" pattern is matched EXACTLY against
+          # server_name + "/" + tool_name, and the tool name already carries
+          # the instance prefix. Written as "coder_fs/semantic_search" this
+          # pattern matches nothing and blocks nothing, silently. Verified
+          # both ways with tool_matches_patterns(): semantic_search gone,
+          # grep_search still there.
+          blocked:
+            - "coder_fs_ro/coder_fs_ro_semantic_search"
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["coding", "tests", "mutation"]
+        category: "development"
+        visibility: "tool"

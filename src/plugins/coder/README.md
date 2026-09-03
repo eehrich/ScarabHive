@@ -1,0 +1,258 @@
+# coder plugin — a coding agent with a harness
+
+A coding agent is only as good as what surrounds it: what it knows before it
+starts, what it delegates, and what has to be true before it may call the work
+done. That surround is the harness, and this plugin is it.
+
+**This plugin ships no tools.** It has no `plugin.py` and no `server.py` — it
+is configuration: four agents, their prompts, and two skill bundles. Plugin
+discovery skips a directory without an entrypoint file, so nothing has to be
+registered for that to work (same shape as `writer_publish`).
+
+## What you get
+
+| Agent | Role | Writes? |
+|---|---|---|
+| `coder` | Owns the change: plans, edits, runs tests, gets reviewed | **yes** — the only one |
+| `coder_explorer` | Read-only finder: "where is X, who calls Y" | no (enforced) |
+| `coder_reviewer` | Attacks the finished change | no (enforced) |
+| `coder_tester` | Runs suites, reports failures small, mutation probe | no edit tools |
+
+Plus the instances they run on, in [agents/tools.yaml](agents/tools.yaml):
+`coder_fs` (sandboxed read/write), `coder_fs_ro` (the same tree, read-only),
+`coder_shell`, and `coder_sam` (the sub-agent manager).
+
+Try it:
+
+```bash
+.venv/Scripts/agent-cli.exe run --agent coder "..."
+.venv/Scripts/agent-cli.exe chat --agent coder
+```
+
+## The one knob you will want
+
+`allowed_directories` on **both** `coder_fs` and `coder_fs_ro` in
+`agents/tools.yaml`. It decides which tree the harness may touch at all;
+the default is `data/workspace/` plus the plugin's own `skills/`.
+
+Keep the two lists identical. A reviewer that cannot read what the coder just
+wrote reviews nothing, and it will not say so — it will review what it can
+reach.
+
+## Why the roles are separate agents
+
+Not for tidiness. Each one buys something a prompt section cannot:
+
+**Context economy.** Answering "who calls `build_client`?" means sweeping
+thirty files. The coder needs the three-line answer, not the thirty files, and
+it still needs its window for the actual change. The explorer and the tester
+exist to spend *their* context so the coder keeps its own.
+
+**A fresh pair of eyes.** The coder knows what it meant, and that knowledge is
+exactly what hides the bug. The reviewer starts with no conversation history
+and sees only the code.
+
+**A guarantee instead of a request.** "Whoever reviews, reviews read-only" is
+a rule that a prompt can only ask for. Here `coder_fs_ro` sets
+`read_only: true`, and `file_ops` then does not even render its write tools
+into the schema — plus the server rejects a write a second time if one is
+called anyway. The reviewer cannot quietly turn into a second author.
+
+Nesting is capped at 2 and none of the three roles owns a sub-agent manager,
+so a review cannot start a review.
+
+## Knowledge lives in skills, not in the prompts
+
+Two new bundles under [skills/](skills/), reachable because
+`config/config.yaml` lists `src/plugins*/*/skills` as a skill root:
+
+- **`coding-harness`** — the seven-step loop, when to delegate, what must be
+  true before "done", and what to carry into the next session. Always in the
+  coder's prompt.
+- **`adversarial-review`** — how to review so the findings are real. Always in
+  the reviewer's prompt, and the coder pulls it on demand before reviewing its
+  own fix round.
+
+Three bundles that already existed under `skills/coding/` are referenced
+rather than restated: `tdd`, `diagnosing-bugs`, `codebase-design`. The
+existing `code-review` skill is deliberately **not** wired in — its process
+assumes another tool's sub-agent mechanics, so it would send the agent looking
+for tools it does not have.
+
+### Prompts carry no *per-call* variables
+
+Deliberate, and worth keeping that way. The system prompt is the cached
+prefix; a `{{ current_step }}` in it changes on every single call and
+invalidates the cache for everything after it. Whatever varies per turn
+belongs in an injection hook, not in the template. Skill bodies follow the
+same rule.
+
+Static template variables are fine and there is one: `{{ okf_bundle }}`, so
+the bundle path is written once and cannot drift from what the injection hook
+reads. It is the same string on every call, so it costs the cache nothing.
+
+## Persistent knowledge — an OKF bundle
+
+The coder keeps what it learns in `data/okf/coder`: an OKF bundle, which is a
+directory of markdown concepts with YAML frontmatter and links between them.
+Plain files, git-versionable, readable without any tooling.
+
+`coder_okf.okf_context_injection` folds the part of it that the *current turn
+is about* into the prompt — the lexical hit plus its linked neighbours, capped
+at six concepts. That is the reason for a graph rather than a notes file: the
+bundle can grow well past what would fit in a prompt, and the agent still
+starts each turn with the relevant slice of it. Everything else it fetches
+itself with `coder_okf_search` / `_read_concept` / `_neighbors`, and writes
+with `_write_concept` / `_append_log`.
+
+**It gets its own OKF instance, not the shared `okf` server.** The shared one
+is sandboxed to all of `data/okf`, so any agent using it can write into every
+other agent's bundle — including the sysadmin agent's `infra` runbooks, which
+are injected into *that* agent's prompt. `coder_okf` is rooted at the one
+bundle instead, so the boundary is enforced rather than requested. Measured:
+a write to `data/okf/infra` comes back `bundle 'data/okf/infra' is outside the
+allowed OKF directories`.
+
+Two silent failure modes are covered by tests, because neither announces
+itself: a `hook_bundle` outside the instance's sandbox makes the hook return
+without injecting anything (indistinguishable from "nothing learned yet"), and
+a sandbox as wide as the shared one re-opens the cross-bundle write.
+
+The bundle directory does not need to exist — it is created on the first
+write, and until then the hook simply does nothing. `data/okf/` is gitignored,
+so this knowledge is local state.
+
+What belongs in it, and what does not, is spelled out in the `coding-harness`
+skill: measured facts, traps, conventions and decisions **with their reasons**
+— never a second copy of what the code already says, because the copy is the
+one that goes stale and it will be believed.
+
+The agent may also write to `src/plugins/coder/skills/` — it can correct the
+discipline it works by. Everything else about this plugin stays out of reach:
+an agent that can rewrite its own tool allowlist does not have one.
+
+Not wired up, deliberately: read-only bundle access for the reviewer. It would
+let a review check a change against a recorded convention, and `okf` supports
+`read_only: true` for exactly that. It needs one more instance, and it is only
+worth it once the bundle actually holds conventions — add it then.
+
+## One tool is deliberately blocked
+
+`semantic_search` is in `tools.blocked` for all four agents. With ChromaDB
+embeddings off — the default — it does not fail: it returns
+`status: success` with zero results, so "nothing found" is indistinguishable
+from "the feature is off", and the call quietly creates an empty vector store
+on disk on the way. `grep_search` covers the need. Turn the embeddings on
+first if you ever want it back.
+
+Note the doubled name in that pattern — `coder_fs/coder_fs_semantic_search` —
+because a `server/tool` pattern is matched **exactly** against
+`server_name + "/" + tool_name`, and the tool name already carries the
+instance prefix. Written the intuitive way, `coder_fs/semantic_search` matches
+nothing and blocks nothing, without a word of complaint. The rest of the repo
+uses the doubled form throughout; this is the trap it avoids.
+
+## Where the shell is honest about its limits
+
+`coder_shell` is **not** confined by the kernel. `terminal`'s `sandbox.mode`
+needs bubblewrap, and on Windows a confining mode makes every command fail
+with `SANDBOX_UNAVAILABLE` — so it is left at the default. The blacklist there
+(`rm -rf /`, `git push`, `git reset --hard`, …) is a speed bump against typos
+and nothing more: a pattern list cannot bound what `bash -c` can do.
+
+The enforced boundary in this harness is `coder_fs`, not the shell. Read that
+as: do not hand `coder_shell` to an agent you would not trust with the whole
+machine.
+
+It starts in `data/workspace` (`platform.initial_cwd`) so tests run where the
+code lives. One consequence is worth knowing: with the default sandbox,
+`data/workspace/` is *inside* this repository and *ignored* by it, so `git`
+from there resolves to the AgentSystem repo — it would show the agent other
+people's uncommitted changes and none of its own. The prompt therefore tells
+the agent to check `git rev-parse --show-toplevel` before trusting git at all.
+Make the workspace project its own repository and git works normally; the
+blacklist blocks `push`, `reset --hard`, `checkout --` and `clean` either way.
+
+## What this borrows, and from where
+
+Surveyed while building it — Claude Code, OpenAI Codex CLI, Hermes Agent
+(Nous Research), plus Gemini CLI, OpenHands, Amp, Aider and Factory Droid:
+
+| Taken | From |
+|---|---|
+| Read-only explorer sub-agent with its own context | Claude Code `Explore`, Amp sub-agents, Hermes `delegate_tool` |
+| Skills with progressive disclosure (index → body → reference file) | Agent Skills standard; our `skills` plugin already matches it |
+| "At most one task in progress at a time" | Codex `update_plan` |
+| Resolve ambiguity by reading the code before asking | Codex Plan Mode, phase 1 |
+| Copy files before an irreversible sweep | Gemini CLI checkpointing, in the cheap form |
+| Durable facts always in context, procedures loaded on demand | Hermes' split between `MEMORY.md` and skills |
+| A byte-stable system prompt for cache reasons | Hermes freezes its memory snapshot at session start for the same reason |
+
+Two places where this harness deliberately goes further than what those
+systems ship:
+
+- **The reviewer must try to refute its own finding** before reporting it.
+  None of the surveyed harnesses require this; roughly a third of findings do
+  not survive the attempt, and "fixing" those damages working code.
+- **The review round is a precondition for "done"**, not a command the user
+  has to remember. Every surveyed system runs its reviewer only when asked.
+
+## Not built, and why
+
+- **A hard plan gate.** Codex blocks edits until a plan is approved. The
+  `task_switch` plugin could gate a phase transition the same way here. The
+  task list plus "understand first" covers most of it; add the gate if plans
+  turn out to get skipped in practice.
+- **A repo map** (Aider builds one with tree-sitter and PageRank). The
+  explorer answers the same questions on demand. This would be a plugin, not
+  a config change.
+- **Automatic lesson extraction.** See above — deliberate beats automatic.
+
+## Adding another agent here
+
+One file per agent under `agents/`, its prompt under `agents/prompts/`, and
+`system_template: "./prompts/<name>.md"` — that path resolves next to the YAML,
+so nothing is hard-coded to a repo layout. A new sub-agent must be listed in
+`coder_sam.allowed_agents` or it cannot be spawned;
+`tests/config/test_config_no_silent_drift.py::test_every_allowed_sub_agent_exists`
+fails on a name that does not resolve, so the typo surfaces at test time
+instead of at runtime.
+
+## Tests
+
+```bash
+.venv/Scripts/python.exe -m pytest src/plugins/coder/tests -q
+```
+
+[tests/test_coder_harness.py](tests/test_coder_harness.py) guards the
+properties that are specific to this plugin and would otherwise break in
+silence — the read-only instance offering no write tools, both sandboxes
+covering the same tree, every tool named in a prompt existing and being
+visible, `semantic_search` blocked while `grep_search` survives, and the
+prompts staying free of per-call template variables.
+
+Each of those was checked by mutation — break the config, watch the right test
+go red, restore:
+
+| Mutation | Test that caught it |
+|---|---|
+| `read_only: false` on `coder_fs_ro` | write tools reappear in the schema |
+| dropped one directory from the read-only sandbox | sandboxes-cover-the-same-tree |
+| block pattern written as `coder_fs/semantic_search` | dead-tool-stays-blocked |
+| `{{ current_step }}` added to a prompt | no-per-call-template-variables |
+| prompt naming `coder_fs_ro_manage` | prompt-names-unusable-tools |
+| `coder_fs/*` given to the explorer | read-only-agents-have-no-writable-tools |
+| `coder_okf` sandboxed to all of `data/okf` | bundle-sandbox-is-not-the-shared-one |
+| `hook_bundle` pointed at another agent's bundle | injected-bundle-resolves-inside-that-sandbox |
+| `okf_bundle` removed from `template_vars` | prompt-tells-the-agent-which-bundle |
+| prompt naming `coder_okf_recall` | prompt-names-unusable-tools |
+
+The general config guards cover the rest and are not restated here — a bogus
+entry in `coder_sam.allowed_agents` fails
+`tests/config/test_config_no_silent_drift.py::test_every_allowed_sub_agent_exists`,
+and a bogus `llm_profile` fails `test_every_profile_reference_resolves`. Both
+were confirmed by mutation too.
+
+## License
+
+Apache-2.0 — see `LICENSE`.
