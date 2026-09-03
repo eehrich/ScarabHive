@@ -12,10 +12,10 @@ includes:
   - llm_openrouter.yaml
   - plugins.yaml
   - mcp_servers.yaml
-  - agents/*.yaml
-  - ../src/plugins_writer/*/agents/*.yaml
-  - agents_trading/*.yaml
-  - agents_priv/*.yaml
+  # agents in config dir
+  - agents*/*.yaml
+  # plugin agent configs
+  - ../src/plugins*/*/agents/*.yaml
 
 # Context information automatically added to prompts
 context:
@@ -70,6 +70,8 @@ skills:
     - .claude/skills
     # Grouped skills, if you ever want subfolders: skills/<group>/<skill>/
     - skills/*/
+    # Plugins specific skills
+    - src/plugins*/*/skills
 
 # Multi-user authentication and authorization (optional)
 auth:
