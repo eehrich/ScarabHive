@@ -135,46 +135,55 @@ async def create_and_register_agent(
     Raises:
         ValueError: If agent configuration not found or invalid
     """
-    # Check if agent already exists in registry
-    try:
-        existing_agent = registry.get(agent_name)
-        if isinstance(existing_agent, Agent):
-            logger.debug(f"Using existing agent '{agent_name}' from registry")
-            # Update session_service for existing agent
-            if session_service and hasattr(existing_agent, '_session_service'):
-                existing_agent._session_service = session_service
-            return existing_agent
-    except KeyError:
-        pass  # Agent doesn't exist, need to create it
-    
-    # Try to get MCP config from plugins.servers
-    mcp_config = get_mcp_config_by_name(agent_name, config)
-    
-    if not mcp_config:
-        # Build helpful error message
+    def _with_agent_listing(message: str) -> str:
         available_agents = []
-        
-        # Get agents from plugins.servers
         if config.plugins and config.plugins.servers:
             available_agents.extend([
                 name for name, server in config.plugins.servers.items()
                 if server.enabled and server.agent_config is not None
             ])
-        
-        # Remove duplicates and sort
         available_agents = sorted(set(available_agents))
-        
-        error_msg = f"Agent '{agent_name}' not found in configuration."
         if available_agents:
-            error_msg += "\n\nAvailable agents:\n  " + "\n  ".join(available_agents)
-        else:
-            error_msg += "\n\nNo agents are configured. Check your config files."
-        
-        raise ValueError(error_msg)
-    
+            return message + "\n\nAvailable agents:\n  " + "\n  ".join(available_agents)
+        return message + "\n\nNo agents are configured. Check your config files."
+
+    # Check if agent already exists in registry
+    try:
+        existing_agent = registry.get(agent_name)
+    except KeyError:
+        existing_agent = None  # Agent doesn't exist, need to create it
+
+    if isinstance(existing_agent, Agent):
+        logger.debug(f"Using existing agent '{agent_name}' from registry")
+        # Update session_service for existing agent
+        if session_service and hasattr(existing_agent, '_session_service'):
+            existing_agent._session_service = session_service
+        return existing_agent
+
+    if existing_agent is not None:
+        # Building one here would register it OVER that server and take it out
+        # of the registry for the rest of the process.
+        raise ValueError(_with_agent_listing(
+            f"'{agent_name}' is registered as {type(existing_agent).__name__}, not an Agent."))
+
+    # "Is this an agent at all" has to be decided on the RAW entry:
+    # plugins.default_config carries an agent_config, so the MERGED config has
+    # one for every tool server as well -- measured on the real config, 96 of
+    # 219 servers have no raw agent_config and every one of them is a tool
+    # server. A gate on the merged config waves all of them through.
+    raw_config = config.plugins.servers.get(agent_name) if config.plugins else None
+    if raw_config is not None and not raw_config.agent_config:
+        raise ValueError(_with_agent_listing(f"'{agent_name}' is a tool server, not an agent."))
+
+    # Try to get MCP config from plugins.servers
+    mcp_config = get_mcp_config_by_name(agent_name, config)
+
+    if not mcp_config:
+        raise ValueError(_with_agent_listing(f"Agent '{agent_name}' not found in configuration."))
+
     if not mcp_config.agent_config:
         raise ValueError(f"Agent '{agent_name}' has no agent_config section")
-    
+
     # Create the agent using the signature: Agent(name, system_config, mcp_config, registry, session_service)
     agent = Agent(agent_name, config, mcp_config, registry, session_service=session_service)
     

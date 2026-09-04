@@ -56,16 +56,6 @@ _session_manager: Optional[SessionManager] = None
 _session_service: Optional[Any] = None  # SessionService, imported at runtime to avoid circular import
 
 
-def _live_config(fallback: Any) -> Any:
-    """The config the ConfigService currently holds.
-
-    POST /admin/reload-config swaps that one, while every handler closed over
-    the config build_app started with. A handler that answers about
-    configuration (profiles, defaults, overrides) has to read it live, or it
-    keeps answering from the state at process start.
-    """
-    return (_config_service.get_config() if _config_service else None) or fallback
-
 # Security: Track request_id -> user_id mapping for status stream authorization.
 # Owner is core.request_context (usable from agent layer without upward import);
 # re-exported here under the historical name for existing importers.
@@ -329,6 +319,54 @@ async def _validate_client_request_id(client_request_id: str) -> str:
     return rid
 
 
+def _build_entry_agent(entry_name: str, config, registry, session_service):
+    """Build the entry agent when bootstrap did not register one under that
+    name, from its MERGED server config, and register it.
+
+    Merged means default_config plus the ``type:`` chain -- what bootstrap
+    gives every other agent. This used to read plugins.default_config alone,
+    so the entry agent ran with that block's max_steps and profile no matter
+    what its own entry said (measured 01.09.2026: 133 of 203 agents carry a
+    raw max_steps of 20 where the merged value is 100 or 30). The branch
+    before it, ``_config_service.get_agent_config``, could never contribute:
+    AgentSystemConfig has no ``agents`` field, so it raises on every call.
+    """
+    from .servers.agent.server import Agent as CoreAgent
+    from .config.settings import get_mcp_config_by_name
+
+    mcp_cfg = get_mcp_config_by_name(entry_name, config)
+
+    if not mcp_cfg:
+        logging.getLogger(__name__).warning(
+            "No server configuration found for agent '%s', falling back to plugins.default_config",
+            entry_name
+        )
+        # Read from the config that was passed in, not from the module-global
+        # ConfigService: that global belongs to whichever build_app ran last.
+        mcp_cfg = config.plugins.default_config if config.plugins else None
+
+    if not mcp_cfg:
+        from .config.models import MCPConfig, AgentConfig, ToolConfig
+        logging.getLogger(__name__).warning(
+            "No default_config found in plugins configuration, creating default MCPConfig with llm_profile='normal'"
+        )
+        mcp_cfg = MCPConfig(type="agent", enabled=True,
+                            agent_config=AgentConfig(llm_profile="normal", tools=ToolConfig()))
+
+    agent = CoreAgent(entry_name, config, mcp_cfg, registry, session_service=session_service)
+    if entry_name in registry.list():
+        # Only reachable when the name is taken by something that is not an
+        # Agent -- registering here would drop that server out of the registry
+        # for the rest of the process.
+        logging.getLogger(__name__).error(
+            "Entry agent '%s' collides with a registered %s -- keeping the registered server",
+            entry_name, type(registry.get(entry_name)).__name__
+        )
+    else:
+        registry.register(entry_name, agent)
+    return agent
+
+
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
     from pathlib import Path
@@ -544,6 +582,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Create FastAPI app
     app = FastAPI(title="Agent System (MCP)", lifespan=custom_lifespan)
+
+    def _live_config():
+        """The config THIS app currently runs on.
+
+        POST /admin/reload-config replaces app.state.config (admin_endpoints),
+        while every handler below closed over the config build_app started
+        with. Anything that answers a question ABOUT the configuration --
+        profiles, defaults, an override -- has to read the live one, or it
+        keeps answering from the state at process start. Per app on purpose:
+        a module-level ConfigService is overwritten by the next build_app and
+        would make one app answer with another app's config.
+        """
+        return getattr(app.state, "config", None) or config
 
     # Initialize security enforcer (always created, respects auth.enabled)
     from .auth.enforcement import EndpointSecurityEnforcer, AnonymousUser
@@ -846,39 +897,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Create new agent if not found in registry
     if selected_agent is None:
-        from .servers.agent.server import Agent as CoreAgent
-        try:
-            # Check if this is a config-based agent first, then fallback to MCP server config
-            agent_cfg = _config_service.get_agent_config(entry_name, config)
-            if agent_cfg:
-                server_cfg = agent_cfg
-            else:
-                # Not a config-based agent, try MCP server config
-                server_mcp = _config_service.get_mcp_server_config(entry_name, config)
-                server_cfg = server_mcp.model_dump() if server_mcp and hasattr(server_mcp, 'model_dump') else {}
-
-            if not server_cfg:
-                logging.getLogger(__name__).warning(
-                    "No server configuration found for agent '%s', using defaults", entry_name
-                )
-        except Exception as e:
-            logger.debug(f"Failed to load server config: {e}")
-
-        # Build MCPConfig for agent - use ConfigService
-        from .config.models import MCPConfig, AgentConfig, ToolConfig
-        mcp_cfg = _config_service.get_default_mcp_config(config)
-
-        if not mcp_cfg:
-            # Create default MCPConfig if not found
-            logging.getLogger(__name__).warning(
-                "No default_config found in plugins configuration, creating default MCPConfig with llm_profile='normal'"
-            )
-            tool_cfg = ToolConfig()
-            agent_cfg = AgentConfig(llm_profile="normal", tools=tool_cfg)
-            mcp_cfg = MCPConfig(type="agent", enabled=True, agent_config=agent_cfg)
-
-        selected_agent = CoreAgent(entry_name, config, mcp_cfg, registry, session_service=_session_service)
-        registry.register(entry_name, selected_agent)
+        selected_agent = _build_entry_agent(entry_name, config, registry, _session_service)
     else:
         # Bind reused agent to current registry and update session_service
         try:
@@ -1233,7 +1252,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Create LLM override if profile specified. Resolved against the LIVE
         # config -- a profile added by a reload was "not found" here and fell
         # back to the default profile.
-        live = _live_config(config)
+        live = _live_config()
         if llm_profile and live.llm_system and live.llm_system.profiles:
             if llm_profile not in live.llm_system.profiles:
                 # LLM profile not found - fallback to default profile
@@ -1266,8 +1285,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/admin/config")
     def get_config():
-        """Return the full system configuration (admin only)."""
-        return config.model_dump()
+        """Return the full system configuration (admin only).
+
+        Live, not the start state: the endpoint whose whole job is to show the
+        configuration must not report the state before the reload that just
+        succeeded.
+        """
+        return _live_config().model_dump()
 
     @app.get("/agents")
     def list_agents(response: Response):
@@ -1300,7 +1324,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     continue
         except Exception as e:
             logger.debug(f"Failed to list agents: {e}")
-        return {"agents": sorted(agents), "default": _live_config(config).default_agent}
+        # The agent /run actually uses without agent_name is this object --
+        # not config.default_agent, which a reload can move without moving
+        # the entry agent with it.
+        return {"agents": sorted(agents), "default": agent.name}
 
     @app.get("/llm/profiles")
     def list_llm_profiles(response: Response):
@@ -1310,7 +1337,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         default_profile = None
         # Live config: /run accepts a profile a reload added, so the list the
         # UI picks from must know it too.
-        live = _live_config(config)
+        live = _live_config()
         try:
             if live.llm_system and live.llm_system.profiles:
                 for profile_name, profile_config in live.llm_system.profiles.items():
