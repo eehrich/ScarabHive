@@ -18,7 +18,7 @@ Examples:
     python src/scripts/validate_agent_configs.py src/plugins_writer/*/agents/*.yaml
 
     # Validate specific files
-    python src/scripts/validate_agent_configs.py src/plugins_writer/writer_core/agents/book_architect.yaml
+    python src/scripts/validate_agent_configs.py src/plugins_writer/writer_core/agents/book_launcher.yaml
 
     # Use in CI/CD
     python src/scripts/validate_agent_configs.py src/plugins_writer/*/agents/*.yaml || exit 1
@@ -106,7 +106,7 @@ def main() -> int:
         print("  validate-agents <yaml_file1> [yaml_file2] ...")
         print("\nExamples:")
         print("  validate-agents src/plugins_writer/*/agents/*.yaml")
-        print("  validate-agents src/plugins_writer/writer_core/agents/book_architect.yaml")
+        print("  validate-agents src/plugins_writer/writer_core/agents/book_launcher.yaml")
         return 1
 
     # Get all YAML files from arguments
