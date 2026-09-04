@@ -1,0 +1,67 @@
+# 3D modelling in a locally running Blender.
+#
+# Everything this agent needs now lives in this plugin: the tools (server.py),
+# this config and the prompt beside it. It no longer depends on the external
+# `blender` MCP server in config/mcp_servers.yaml, so there is nothing to
+# connect and no second process to keep alive.
+plugins:
+  servers:
+
+    # The tool surface. Defaults (host/port/timeouts/output_directory) come
+    # from the plugin's schema.yaml; override them here if Blender listens
+    # elsewhere. Careful with a remote host: Blender writes screenshots and
+    # exports itself, so those land on ITS machine, not this one.
+    blender:
+      type: blender
+      enabled: true
+      description: "Locally running Blender: scene, bpy, viewport, export"
+
+    blender_agent:
+      type: multi_turn_agent
+      enabled: true
+      description: "3D modelling and scene building in a locally running Blender (objects, materials, bpy scripts, export to glb/fbx/obj/stl)"
+
+      self_tool_descriptions:
+        blender_agent_execute_task: "Model, modify or inspect a 3D scene in the running Blender and export the result into the workspace"
+        blender_agent_list_available_tools: "List the Blender tools available (scene, object, bpy, screenshot, export)"
+
+      agent_config:
+        # Flash leads because this work is iterative and VISUAL: the agent
+        # takes a viewport screenshot and looks at it, over and over, and the
+        # cheap vision model is the one that makes that affordable. The
+        # fallbacks are other families, so one provider's bad day does not
+        # stop the chain. If bpy script quality matters more than cost here,
+        # put or-claude-sonnet first — that is the whole change.
+        llm_profile: [or-gemini-flash, or-gemini-pro, or-claude-sonnet]
+        llm_profile_advanced: []
+        llm_params:
+          "*":
+            prompt_cache_mode: multi_turn
+        max_steps: 60
+        system_template: "./prompts/blender_agent.md"
+
+        tools:
+          # "+" on every entry = MERGE with what multi_turn_agent brings.
+          # A bare list would REPLACE it, and the base contributes
+          # "+context_engineer/*" -- without which the hook enabled below
+          # evicts big scene dumps and then tells the agent to fetch them back
+          # with a tool it does not have.
+          allowed:
+            - "+blender/*"         # scene, object, execute, screenshot, export
+            - "+media_ops/*"       # LOOK at a screenshot it just took
+            - "+datetime/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            # Screenshots and scene dumps are large; without this a long
+            # modelling session dies at the context limit.
+            context_engineer.engineer_context:
+              enabled: true
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["blender", "3d", "modelling", "export"]
+        category: "creative"
+        visibility: "both"

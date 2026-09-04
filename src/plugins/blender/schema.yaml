@@ -1,0 +1,128 @@
+# Blender control — tools, config.
+#
+# Six tools on purpose. The upstream bridge offers 28, of which 23 are asset
+# marketplaces; every one of them costs schema tokens in every request whether
+# the task is 3D modelling or not. What is missing here is reachable through
+# {{ name }}_execute, which is the whole of bpy.
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_status"
+      description: |
+        Is Blender reachable, which addon version, what commands it supports,
+        and which asset providers (PolyHaven, Sketchfab, ...) are switched on
+        in that Blender. Call this first when a tool fails with a connection
+        error — it says whether the addon answers at all.
+      parameters:
+        type: object
+        properties: {}
+        required: []
+
+  - type: function
+    function:
+      name: "{{ name }}_scene"
+      description: |
+        The current scene: objects with their transforms, what is selected,
+        frame range and fps. Look here before changing anything, and again
+        afterwards to confirm the change landed.
+      parameters:
+        type: object
+        properties: {}
+        required: []
+
+  - type: function
+    function:
+      name: "{{ name }}_object"
+      description: |
+        One object in detail — type, transform, mesh statistics, materials.
+        Use after {{ name }}_scene has told you the name.
+      parameters:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Object name exactly as the scene lists it."
+        required: [name]
+
+  - type: function
+    function:
+      name: "{{ name }}_execute"
+      description: |
+        Run Python (bpy) inside Blender and get whatever it printed. This is
+        how anything without a dedicated tool gets done: creating objects,
+        modifiers, materials, animation, rendering.
+
+        Keep scripts short and self-contained, and prefer the data-block API
+        (bpy.data...) over bpy.ops where both exist — operators depend on the
+        UI context and fail in ways that are hard to read from here.
+      parameters:
+        type: object
+        properties:
+          code:
+            type: string
+            description: "Python source. Print what you want to read back."
+        required: [code]
+
+  - type: function
+    function:
+      name: "{{ name }}_screenshot"
+      description: |
+        Render the 3D viewport to a PNG in the output directory and return its
+        path. To actually LOOK at it, load that path with media_ops.
+      parameters:
+        type: object
+        properties:
+          filename:
+            type: string
+            description: "File name inside the output directory (default viewport.png)."
+          max_size:
+            type: integer
+            minimum: 128
+            maximum: 4096
+            description: "Longest edge in pixels (default 1000)."
+        required: []
+
+  - type: function
+    function:
+      name: "{{ name }}_export"
+      description: |
+        Save the scene, or just the selected objects, to a file in the output
+        directory. Use this rather than writing an export call by hand: the
+        operator lives in a different namespace per format and the "selected
+        only" flag is spelled differently in each, so a hand-written export
+        quietly writes the whole scene instead.
+
+        Formats: glb, gltf, fbx, obj, stl, ply, usd, abc, and blend for the
+        Blender file itself.
+      parameters:
+        type: object
+        properties:
+          format:
+            type: string
+            enum: [glb, gltf, fbx, obj, stl, ply, usd, abc, blend]
+            description: "Target format."
+          filename:
+            type: string
+            description: "File name inside the output directory (default export.<format>)."
+          selected_only:
+            type: boolean
+            default: false
+            description: "Export only the selected objects instead of the whole scene."
+        required: [format]
+
+config:
+  # The addon listens here once "Start MCP Server" is clicked in Blender's
+  # N-panel. Remote Blender: point host at it, but note that exports and
+  # screenshots are then written on THAT machine, not this one.
+  host: "127.0.0.1"
+  port: 9876
+
+  # Plain queries. Fast, and a hang should surface quickly.
+  timeout: 60
+  # execute/screenshot/export: a render or a heavy script runs for minutes.
+  long_timeout: 600
+
+  # Everything Blender writes for us lands here, and nothing may escape it.
+  # Blender's process does the writing, so this must be a path it can reach.
+  output_directory: "data/workspace/blender"

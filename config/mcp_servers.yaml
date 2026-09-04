@@ -3,10 +3,10 @@
 # ================================
 # Configuration for remote/external MCP servers
 #
-# Reichweite: Tools externer Server erreichen Agenten ueber die API UND ueber
-# `agent-cli run`. Letzteres ging bis 02.09.2026 nicht -- die CLI verband in
-# einem eigenen asyncio.run() und schloss dessen Loop, bevor der Agent fragte.
-# Sie faehrt jetzt EINEN Loop; die Erklaerung steht bei run_async() in
+# Reach: tools from external servers arrive at agents through the API AND
+# through `agent-cli run`. The latter did not work until 2026-09-02 -- the CLI
+# connected inside its own asyncio.run() and closed that loop before the agent
+# ever asked. It now runs ONE loop; the explanation sits at run_async() in
 # agent_system/agent_cli.py.
 
 external_servers:
@@ -14,106 +14,117 @@ external_servers:
   connection:
     timeout: 5.0
     parallel_connect: true
-  
+
   # Caching configuration
   cache:
     enabled: true
     tool_list_ttl: 3600.0  # TTL for tool list cache (seconds)
     max_size: null         # Maximum cache entries (null = unlimited)
-  
+
   # Remote MCP server definitions
+  #
+  # CAREFUL when adding these from another file: a config included AFTER this
+  # one that declares `external_servers.remote_servers` REPLACES this whole
+  # block rather than merging into it -- its siblings `connection` and `cache`
+  # do merge. Measured 2026-09-04: one entry added from config/agents/*.yaml
+  # left `remote_servers` holding only that entry, and the three below were
+  # gone without a word. Declare external servers here, in this file.
   remote_servers:
-    # --- Lokaler Server ueber stdio -------------------------------------
-    # Der einzige stdio-Eintrag hier, deshalb ausfuehrlich: bei transport
-    # stdio wird der Server GESTARTET statt angewaehlt, also braucht er
-    # `command` (+ optional `args`, `env`) statt `url`. Er laeuft als
-    # Subprozess mit unseren Rechten -- deshalb der Versions-Pin unten.
+    # --- A local server over stdio --------------------------------------
+    # The only stdio entry here, hence the detail: with transport stdio the
+    # server is STARTED rather than dialled, so it needs `command` (plus
+    # optional `args`, `env`) instead of `url`. It runs as a subprocess with
+    # our privileges -- which is what the version pin below is for.
     #
-    # npx/uvx SIND der Installationsweg des Oekosystems: sie holen das Paket
-    # beim ersten Start und cachen es. Nichts liegt im Repo. Wer Server doch
-    # auf Platte braucht (offline, gepinnt, Host ohne npm), legt sie nach
-    # external/ -- das ist dafuer vorgesehen und in .gitignore.
+    # npx/uvx ARE the ecosystem's installation path: they fetch the package on
+    # first start and cache it. Nothing lands in the repo. If you do need
+    # servers on disk (offline, pinned, a host without npm), put them under
+    # external/ -- that is what it is for, and it is in .gitignore.
     #
-    # Live geprueft am 01.09.2026 ueber die ganze Kette: Bootstrap verbindet
-    # ("1 connected, 0 failed", Protokoll 2025-06-18), der Agent
-    # mcp_external_test_agent sieht 13 Tools und hat zwei davon wirklich
-    # gerufen -- im Log stehen die Antworten des Servers, nicht die des LLM.
-    # Aus bleibt er trotzdem: ein Referenz-Testserver gehoert nicht in den
-    # Produktionsstart, und `npx` setzt node auf dem Host voraus.
+    # Verified live on 2026-09-01 across the whole chain: bootstrap connects
+    # ("1 connected, 0 failed", protocol 2025-06-18), the agent
+    # mcp_external_test_agent sees 13 tools and actually called two of them --
+    # the log holds the server's answers, not the LLM's. It stays off all the
+    # same: a reference test server does not belong in a production start, and
+    # `npx` assumes node on the host.
     everything:
       enabled: false
       transport: stdio
       command: npx
-      # Ohne den Versions-Pin zieht `-y` bei JEDEM Start, was gerade neu ist.
-      # ACHTUNG: die npm-Version ist datumsbasiert und hat NICHTS mit der zu
-      # tun, die der Server im Handshake ueber sich meldet (dort "2.0.0").
-      # Ein Pin auf die gemeldete Version scheitert mit npm ENOTARGET, und
-      # der Server startet gar nicht erst -- `npm view <paket> version` fragen.
+      # Without the version pin, `-y` pulls whatever is newest on EVERY start.
+      # NOTE: the npm version is date-based and has NOTHING to do with the one
+      # the server reports about itself in the handshake (there: "2.0.0").
+      # Pinning to the reported version fails with npm ENOTARGET and the
+      # server never starts -- ask `npm view <package> version`.
       args: ["-y", "@modelcontextprotocol/server-everything@2026.8.31"]
-      description: Referenz-MCP-Server des Protokolls (Beispiel + Rauchtest)
+      description: Protocol reference MCP server (example + smoke test)
       features:
         tools: true
 
-    # --- Derselbe Server, aber auf Platte statt auf Zuruf ---------------
-    # Der Ordner external/ ist gitignored: nach einem frischen Checkout ist er
-    # LEER und dieser Eintrag zeigt ins Nichts. Die Installation ist deshalb
-    # ein bewusster Schritt, kein Automatismus:
+    # --- The same server, from disk instead of on demand -----------------
+    # external/ is gitignored: after a fresh checkout it is EMPTY and this
+    # entry points at nothing. Installing is therefore a deliberate step, not
+    # an automatism:
     #
     #   mkdir -p external/mcp && cd external/mcp
     #   npm init -y
     #   npm install @modelcontextprotocol/server-everything@2026.8.31
     #
-    # (npm legt die Version in seine package.json; wer den Ordner behalten
-    # will, hat damit sein Pin.)
+    # (npm writes the version into its package.json; keep the folder and that
+    # is your pin.)
     #
-    # `node <pfad>` statt des .bin-Shims: der ist auf Windows eine .cmd und
-    # auf Linux ein Symlink, der Pfad zur dist/index.js ist auf beiden gleich.
-    # Relativ zum Repo-Wurzelverzeichnis, aus dem API und CLI starten.
+    # `node <path>` rather than the .bin shim: that is a .cmd on Windows and a
+    # symlink on Linux, while the path to dist/index.js is the same on both.
+    # Relative to the repo root, which is where API and CLI start.
     #
-    # Wann lohnt das gegenueber npx: gemessen 01.09.2026, Median aus je drei
-    # Verbindungen -- npx 1,11s, lokal 0,18s. Faktor 6, und der Start haengt
-    # nicht mehr am Netz. Dafuer muss jemand das Update anstossen.
+    # When it pays off against npx: measured 2026-09-01, median of three
+    # connections each -- npx 1.11s, local 0.18s. Factor six, and the start no
+    # longer depends on the network. The price is that someone has to trigger
+    # the update.
     everything_local:
       enabled: false
       transport: stdio
       command: node
       args: ["external/mcp/node_modules/@modelcontextprotocol/server-everything/dist/index.js"]
-      description: Wie 'everything', aber aus external/mcp statt ueber npx
+      description: Like 'everything', but from external/mcp instead of via npx
       features:
         tools: true
 
-    # Bruecke zu einem lokal laufenden Blender (blender-mcp 1.9.0): der
-    # stdio-Server uebersetzt MCP -> Socket localhost:9876, auf dem das
-    # Blender-Addon lauscht. Der Socket verbindet LAZY pro Tool-Aufruf,
-    # der Handshake klappt also auch ohne laufendes Blender.
+    # Bridge to a locally running Blender (blender-mcp 1.9.0): the stdio
+    # server translates MCP into a socket on localhost:9876, where the Blender
+    # addon listens.
     #
-    # Installation (external/ ist gitignored):
+    # OFF since the native `blender` plugin (src/plugins/blender) exists: that
+    # speaks the addon socket directly, so nobody needs this bridge -- and an
+    # enabled external server is started for EVERY agent run, which meant a
+    # whole process spawned for nobody.
+    #
+    # It stays declared because it is the only thing that delivers the
+    # PolyHaven/Sketchfab/Hyper3D marketplace tools. To get those: set
+    # enabled: true here and add "blender.*" to the agent's allowlist. Both
+    # then run side by side -- `blender/*` (local plugin, slash) and
+    # `blender.*` (external server, dot) are strictly separate namespaces.
+    #
+    # Installation (external/ is gitignored):
     #   uv venv external/mcp/blender_mcp/.venv
     #   uv pip install --python external/mcp/blender_mcp/.venv blender-mcp==1.9.0
     #   external/mcp/blender_mcp/.venv/Scripts/blender-mcp.exe install-addon
-    # Blender-Seite (einmalig): Addon 'Interface: Blender MCP' aktivieren,
-    # dann im N-Panel "BlenderMCP" -> "Start MCP Server" (Port 9876).
-    #
-    # Default AN, anders als die Demo-Server: mcp_client_connect kennt nur
-    # enabled-Server (manager.py filtert beim Laden), ein "bei Bedarf
-    # verbinden" gibt es fuer disabled also nicht. Die Bruecke ohne
-    # laufendes Blender ist nur ein Leerlaufprozess -- der Socket wird
-    # erst am Tool-Aufruf aufgebaut, der dann klar meldet, dass in
-    # Blender der MCP-Server nicht laeuft.
+    # Blender side (once): enable the addon 'Interface: Blender MCP', then in
+    # the N-panel "BlenderMCP" click "Start MCP Server" (port 9876). The
+    # native plugin needs this same addon -- only the bridge is redundant.
     blender:
-      enabled: true
+      enabled: false
       transport: stdio
-      # Renders brauchen Minuten; das globale connection.timeout (5s) toetete
-      # jeden execute_blender_code-Aufruf. Die Bridge selbst kappt Richtung
-      # Blender bei 180s -- 300 hier heisst: ihr Fehler kommt zuerst und
-      # traegt die bessere Meldung.
+      # Renders take minutes; the global connection.timeout (5s) killed every
+      # execute_blender_code call. The bridge itself cuts off towards Blender
+      # at 180s -- 300 here means its error arrives first and carries the
+      # better message.
       timeout: 300
       command: external/mcp/blender_mcp/.venv/Scripts/blender-mcp.exe
-      description: Blender-Steuerung (Szene, Objekte, Material, Code) via blender-mcp
+      description: Blender control (scene, objects, material, code) via blender-mcp
       env:
-        # Paket funkt sonst Prompts + Screenshots an ein fremdes Supabase.
+        # Otherwise the package sends prompts + screenshots to a third-party
+        # Supabase.
         BLENDER_MCP_DISABLE_TELEMETRY: "true"
       features:
         tools: true
-
-

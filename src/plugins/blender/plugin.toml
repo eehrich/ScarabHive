@@ -1,0 +1,17 @@
+# blender plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest.
+#
+# No dependencies: the addon socket speaks JSON over TCP, so the standard
+# library covers it. That is the point of talking to the addon directly
+# instead of wrapping the blender-mcp bridge and its virtualenv.
+[plugin]
+name = "blender"
+version = "1.0.0"
+description = "Control a locally running Blender: inspect the scene, run bpy, capture the viewport, export 3D files into the workspace"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["mcp-server"]
+category = "creative"
+tags = ["blender", "3d", "modelling", "export"]
+requires = { python = ">=3.10", agent_system = ">=0.6.0" }
+dependencies = []
