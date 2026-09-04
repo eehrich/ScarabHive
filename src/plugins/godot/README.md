@@ -6,30 +6,46 @@ injected input, screenshots, the error log.
 
 Self-contained: the tools (`server.py`), the vendored editor addon
 (`addon/`), the agents (`agents/`), their prompts and skills all live here.
-The concept and the measurements behind it: [docs/konzept.md](docs/konzept.md).
+Why it is built this way: [docs/konzept.md](docs/konzept.md).
 
-## Quick start
+## Setup
 
-Once per project, editor closed:
+**1. Point the plugin at your Godot.** One knob, in `agents/tools.yaml`:
+
+```yaml
+godot_binary: "C:/prog/Godot/Godot_v4.7.2-stable_win64_console.exe"
+```
+
+On Windows this must be the `_console.exe`. The plain `.exe` detaches and
+prints nothing, so every headless tool would report silence. It is not
+looked up in `PATH` on purpose: say which Godot this is.
+
+**2. Prepare each project once, with the editor closed:**
 
 ```
-godot_setup(project="shmup")
+godot_setup(project="my_game")
 ```
 
-creates `data/workspace/shmup` if needed, copies the addon into
-`addons/godot_mcp`, enables it and runs an import so the addon registers its
-runtime autoload. Then open the project in Godot; the addon listens on
-`127.0.0.1:6550` from the moment the editor loads it.
+It creates `data/workspace/my_game` if it does not exist, copies the addon
+into `addons/godot_mcp`, enables it, and runs an import so the addon
+registers its runtime autoload. Running it again on a prepared project is
+harmless; it reports `present`, `updated` or `reinstalled`.
+
+An existing project of your own works the same way: put it under
+`data/workspace/` (or repoint `projects_root`) and run setup on it.
+
+**3. Open the project in Godot** for anything that touches the editor. The
+addon listens on `127.0.0.1:6550` from the moment the editor loads it.
+
+**4. Talk to it:**
 
 ```
 agent-cli chat --agent gamedev        # the harness: coder + Godot + asset sub-agents
 agent-cli chat --agent godot_agent    # Godot only, no harness
 ```
 
-`godot_status` says whether the binary answers and which project the editor
-has open. The binary is set once in `agents/tools.yaml`
-(`godot_binary`) — on Windows the `_console.exe`, the plain one returns no
-stdout.
+`godot_status` answers the two questions you have when something feels
+wrong: does the binary run, and which project does the editor have open.
 
 ## Tools
 
@@ -66,20 +82,51 @@ Skills: `gamedev-loop` (always), `godot-conventions`, `asset-pipeline`
 (on demand). The image agent lives with its tools in
 `src/plugins/image_compose/agents/`.
 
-## What was measured
+## What to expect
 
-Against Godot 4.7.2 and the Shmup project in `data/workspace/shmup`:
+Things that surprise people on the first day:
 
-- A runtime `push_error` leaves the exit code at 0; `--check-only` on a
-  parse error exits 1. Hence `godot_run` parses stderr.
-- `--headless --import` loads the addon, which writes `autoload/MCPGameBridge`
-  into `project.godot` — `godot_setup` needs no editor.
-- The addon answers in a headless editor 2.5 s after start (no screenshots
-  there: dummy renderer) and in the GUI editor 4.5 s after start.
-- End to end in the GUI editor: open scene, tree of 7 nodes, 44 properties
-  of `Player`, editor screenshot, run frozen, step 2 frames, game screenshot,
-  step 1.5 s holding the `left` action with a position report `(8, 256)`,
-  `step_until` hitting its cap, logs with cursor, stop.
+- **"It ran" comes from the errors, not the exit code.** A runtime
+  `push_error` leaves Godot's exit code at 0, so `godot_run` reads the
+  parsed error blocks instead. A parse error under `godot_check` does exit
+  1, and it is reported with `file:line`.
+- **The addon cannot create nodes.** It reads, changes and reparents what
+  exists. New nodes come from editing the `.tscn` or from a script.
+- **`godot_play` starts frozen.** Nothing advances until you `step` frames
+  or milliseconds, which is what makes a run reproducible. `freeze: false`
+  if you want it live.
+- **A freshly opened project sits on the 3D tab.** An editor screenshot
+  then shows an empty grid; pass `viewport: "2d"` for a 2D game.
+- **The editor is single-client.** One connection per command, one client
+  at a time, so a second agent on the same editor gets `BUSY`.
+- **Screenshots return a path,** not an image. `media_ops_load` puts the
+  picture into the context when the agent actually wants to look.
+
+## When something does not work
+
+| The message | What it means |
+|---|---|
+| `cannot start the Godot binary ...` | `godot_binary` is wrong or not executable. Give the full path to the console executable. |
+| `no Godot editor is listening on 127.0.0.1:6550` | The project is not open in the editor, or it has no addon yet. Open it, or run `godot_setup` first with the editor closed. |
+| `BUSY: another client is already connected` | Something else holds the editor: a second agent, or a stale session. Close it, or restart the editor. |
+| `STALE: the addon closed the connection as idle` | The addon drops idle sockets after 45 s. Harmless, the next call reconnects. |
+| `TIMEOUT: <command> gave no answer` | The editor is busy or a step is longer than the timeout. Raise `long_timeout`, or step in smaller pieces. |
+| `PROTOCOL: the reply is not JSON` | Something other than the godot_mcp addon answers on that port. Check `port`. |
+| `CAPTURE_FAILED` on a screenshot | The editor runs headless, where the dummy renderer draws nothing. Screenshots need a real editor window. |
+| Every headless tool reports empty output on Windows | The plain `Godot.exe` instead of `Godot_..._console.exe`. |
+
+## Configuration
+
+In `agents/tools.yaml`, or wherever the instance is declared:
+
+| Key | Default | |
+|---|---|---|
+| `godot_binary` | `godot` | The console executable. The one you must set. |
+| `projects_root` | `data/workspace` | Every project a tool touches must live below this. |
+| `output_directory` | `data/workspace/godot` | Where screenshots and exports land, and nothing may escape it. |
+| `host` / `port` | `127.0.0.1` / `6550` | Where the editor addon listens. |
+| `timeout` | `60` | Plain editor queries. |
+| `long_timeout` | `600` | Subprocess runs, game-time steps, exports, big imports. |
 
 ## Tests
 
@@ -89,44 +136,6 @@ answering the way 4.7.2 was measured to) and a fake addon over websockets;
 every `!`/`+` swap, the hook overrides, the sub-agent list, and that prompts
 and skills name only tools that render.
 
-Mutation-proven guards (break the line, watch the test go red, restore):
-
-| Break this | This fails |
-|---|---|
-| Verdict from exit code instead of errors | a-runtime-error-is-a-failed-run-even-though-godot-exits-0 |
-| `dedupe_load_failures` | check-all-reports-the-broken-file-with-its-line-once |
-| Script-frame preference in `parse_godot_stderr` | a-push-error-is-located-in-the-script |
-| `_MESSAGE_LOCATION` | a-resource-message-keeps-its-own-location |
-| `_enable_plugin` before `--import` | setup-creates-a-project…autoload-lands |
-| `_resolve_project` / `_resolve_output` confinement | outside-the-root / outside-the-output-directory cases |
-| `frozen` default, and `null` meaning frozen | play-run-starts-frozen-by-default / with-frozen-null |
-| Reply id check; close codes 4001/4002 → BUSY/STALE; non-JSON → PROTOCOL | foreign-id / close-during-the-command / not-json |
-| `status` never raising | status-survives-whatever-the-editor-does |
-| Unparsed stderr carried (crash dumps, `printerr`) | unprefixed-stderr-is-carried-not-dropped |
-| `frames` default 60 applied in code | run-without-frames-quits-after-60 |
-| Export needs a clean run, not just a changed file | export-that-wrote-a-file-but-did-not-finish |
-| Setup sees an import timeout; refuses to guess the version | setup-that-times-out / refuses-to-guess-the-engine-version |
-| `FAILED <path>` lines become CHECK errors | script-that-fails-without-a-parse-block-is-still-named |
-| Screenshot decoded and PNG-checked before the write | bad-image-data-never-touches-the-previous-screenshot |
-| Images inside play/command replies spilled to files | screenshots-inside-an-input-sequence-become-files |
-| `observe state` sends `paths`/`include`, not `specs` | every-observe-action-sends-what-the-game-bridge-reads |
-| `_clip` bounds nested dicts and big strings | clip-bounds-a-dict-with-no-list-to-halve |
-| `_enable_plugin` bounded to its section | does-not-mistake-a-later-sections-enabled-key |
-| `image_compose._confine`, all three writes, spec BEFORE the render | test_output_sandbox |
-
-Not reachable from pytest: `scripts/check_scripts.gd` itself (the walker's
-skip list and its `FAILED`/`CHECKED` lines) — the stub mirrors it, so those
-tests measure the stub. It was measured live instead: a broken script gives
-`CHECKED 2 FAILED 1`, exit 1; an `@abstract` class still instantiates on
-4.7.2, so it is not flagged.
-
-## Review
-
-Two read-only reviewers over the finished plugin found 23 things, all
-verified at the code and fixed before the commit. The class that mattered:
-**success reported without proof** — an export that timed out but had
-changed its file, a setup whose import hung after the autoload landed, a
-`_clip` that returned an oversized dict with `truncated: True`, a screenshot
-whose garbage base64 became an empty file over the previous frame. And one
-**silent wrong answer**: `observe state` sent a parameter the game bridge
-never reads and got a plausible reply about other nodes.
+Every guard in `server.py` was broken on purpose once, to check that a test
+goes red for it. Two read-only review rounds ran over the finished plugin
+before it was committed.
