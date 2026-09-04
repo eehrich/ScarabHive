@@ -637,7 +637,6 @@ def _reset_all_global_state():
     try:
         from agent_system import app as app_module
         app_module._app_registry = None
-        app_module._app_config = None
         app_module._mcp_integration = None
         app_module._mcp_server_handler = None
         app_module._config_service = None

@@ -12,8 +12,10 @@ from agent_system.chat_commands import (
     BUILTIN_COMMANDS,
     PluginCommand,
     CLI,
+    UNKNOWN_SERVER,
     WEB,
     commands_for,
+    group_tools_by_server,
     looks_like_command,
     parse_chat_command,
     resolve,
@@ -379,3 +381,46 @@ class TestTheDoubleSlashEscape:
         """Counter-check: the leftovers this filter exists for must still go."""
         assert looks_like_command("/sessions") is True
         assert looks_like_command("/hist") is True
+
+
+class TestToolGrouping:
+    """``/tools`` groups by the server that provides a tool -- in the terminal
+    and in the browser, from one rule."""
+
+    def test_the_longest_server_name_wins(self):
+        """``coder_file_ops_read_file`` belongs to ``coder_file_ops``. Under
+        the shorter match it lands beside a ``coder`` it never came from."""
+        groups = dict(group_tools_by_server(
+            [{"name": "coder_file_ops_read_file"}, {"name": "coder_run"}],
+            ["coder", "coder_file_ops"]))
+
+        assert [t["name"] for t in groups["coder_file_ops"]] == ["coder_file_ops_read_file"]
+        assert [t["name"] for t in groups["coder"]] == ["coder_run"]
+
+    def test_a_single_tool_server_carries_its_bare_name(self):
+        """sequential_thinking and todo ARE their tool -- no underscore to
+        match on, so equality has to count."""
+        groups = dict(group_tools_by_server([{"name": "todo"}], ["todo"]))
+
+        assert [t["name"] for t in groups["todo"]] == ["todo"]
+
+    def test_no_group_is_invented_that_no_registry_holds(self):
+        """The bug the rule replaced: splitting the name on "_" filed
+        ``sequential_thinking``'s tool under a ``sequential`` that was never
+        registered. Only a name the registry really has may become a group;
+        anything else is named as unclaimed."""
+        groups = dict(group_tools_by_server(
+            [{"name": "sequential_thinking"}], ["file_ops"]))
+
+        assert list(groups) == [UNKNOWN_SERVER]
+        assert [t["name"] for t in groups[UNKNOWN_SERVER]] == ["sequential_thinking"]
+
+    def test_the_order_is_the_display_order(self):
+        """Both surfaces print what this returns, so the sorting belongs here
+        rather than twice in two languages."""
+        groups = group_tools_by_server(
+            [{"name": "zeta_one"}, {"name": "alpha_one"}, {"name": "zeta_two"}],
+            ["zeta", "alpha"])
+
+        assert [server for server, _ in groups] == ["alpha", "zeta"]
+        assert [t["name"] for t in dict(groups)["zeta"]] == ["zeta_one", "zeta_two"]

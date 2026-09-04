@@ -1333,6 +1333,56 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             return {"agent": agent_name, "error": str(e)}
 
+    @app.get("/agents/{agent_name}/tools")
+    async def get_agent_tools(request: Request, agent_name: str):
+        """The tools an agent REALLY has: name, description, and its server.
+
+        The same ground truth the terminal chat's /tools prints -- the filtered
+        schema the model is given, not what the model says it has. The
+        neighbouring /allowed-tools answers a different question: its
+        "available" list holds SERVER names, so the browser had no way to the
+        tools themselves and /tools said "only in the terminal".
+
+        User role, like its neighbour, not admin like the debug twin: any
+        agent_name is allowed here because /run already is -- an authenticated
+        user can RUN any registered agent by name (_get_agent_with_overrides
+        checks that it is an agent, not who may see it), so reading the tool
+        names of one discloses nothing that running it would not.
+
+        No filter parameter on purpose: the terminal filters the list it
+        already holds, and a server that returns only the matches also
+        returns a ``total`` that can no longer tell "this agent has no tools"
+        from "nothing matched" -- the caller would have to guess which
+        sentence to show.
+        """
+        from .chat_commands import group_tools_by_server
+        from .servers.agent.server import Agent as _Agent
+
+        registry = getattr(request.app.state, "mcp_registry", None) or _app_registry
+        try:
+            srv = registry.get(agent_name) if registry is not None else None
+        except Exception as e:
+            logger.debug("Failed to get agent %s: %s", agent_name, e)
+            srv = None
+        if srv is None:
+            raise HTTPException(status_code=404, detail=f"agent '{agent_name}' not found")
+        if not isinstance(srv, _Agent):
+            raise HTTPException(status_code=400,
+                                detail=f"'{agent_name}' is a tool server, not an agent")
+
+        tools = await srv._list_usable_tools_with_details({})
+        try:
+            servers = list(registry.list())
+        except Exception:
+            logger.debug("Could not read registry server names", exc_info=True)
+            servers = []
+        return {
+            "agent": agent_name,
+            "total": len(tools),
+            "groups": [{"server": server, "tools": grouped}
+                       for server, grouped in group_tools_by_server(tools, servers)],
+        }
+
     @app.get("/agents/debug/{agent_name}/allowed-tools")
     async def get_agent_allowed_tools_debug(agent_name: str):
         """Return detailed pattern match diagnostics for an agent's allowed tools.

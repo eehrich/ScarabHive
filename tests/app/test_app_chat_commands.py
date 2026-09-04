@@ -29,6 +29,48 @@ def client():
 
 
 @pytest.fixture(scope="module")
+def tooled_agent(client, auth_headers):
+    """An agent that really has tools, plus its listing.
+
+    Not the default one: ``chat_agent`` ships without a ``tools`` block, which
+    means deny-all -- a correct answer of zero tools, and useless for showing
+    that the grouping works.
+
+    Asked from the app's own registry, not from GET /agents: that endpoint
+    reads a module global the autouse reset in conftest empties before every
+    test, so it answers [] in here no matter what is registered.
+
+    Preferred is an agent whose tools really exercise the grouping: one where
+    TWO registered names could claim the same tool (``coder_fs_read_file``
+    fits both ``coder`` and ``coder_fs``). Without that a shortest-match bug
+    groups everything just as plausibly -- measured, it survived the whole
+    class.
+    """
+    from agent_system.servers.agent.server import Agent
+
+    registry = client.app.state.mcp_registry
+    registered = list(registry.list())
+    names = [name for name in registered if isinstance(registry.get(name), Agent)]
+    assert names, "fixture: no agent registered at all"
+
+    def claimants(tool_name: str) -> int:
+        return sum(1 for server in registered
+                   if tool_name == server or tool_name.startswith(server + "_"))
+
+    fallback = None
+    for name in names:
+        data = client.get(f"/agents/{name}/tools", headers=auth_headers).json()
+        if not data.get("total"):
+            continue
+        fallback = fallback or (name, data)
+        if any(claimants(tool["name"]) > 1
+               for group in data["groups"] for tool in group["tools"]):
+            return name, data
+    assert fallback, f"fixture: none of the {len(names)} agents reports a single tool"
+    return fallback
+
+
+@pytest.fixture(scope="module")
 def auth_headers():
     row = sqlite3.connect("data/users.db").execute(
         "select id, username, role from users where username='admin'"
@@ -118,3 +160,81 @@ class TestBadInput:
     def test_endpoints_require_authentication(self, client):
         assert client.get("/chat/commands").status_code == 401
         assert client.post("/chat/resolve", json={"line": "/help"}).status_code == 401
+
+
+class TestAgentTools:
+    """What ``/tools`` answers with in the browser.
+
+    The neighbouring /allowed-tools cannot serve it: its "available" list holds
+    SERVER names, so the web chat had no way to the tools themselves and said
+    "only in the terminal".
+    """
+
+    def test_every_tool_carries_the_server_it_came_from(self, tooled_agent, client, auth_headers):
+        """The LONGEST registered name that fits, not merely one that fits:
+        ``coder_fs_read_file`` belongs to ``coder_fs``, and ``coder`` is
+        registered too. Checking "some prefix matches" would pass either way.
+        """
+        from agent_system.chat_commands import UNKNOWN_SERVER
+
+        _agent, data = tooled_agent
+        registered = list(client.app.state.mcp_registry.list())
+        listed = [tool for group in data["groups"] for tool in group["tools"]]
+        assert any(sum(1 for server in registered
+                       if tool["name"] == server or tool["name"].startswith(server + "_")) > 1
+                   for tool in listed), \
+            "fixture: no tool that two server names could claim -- a shortest-match " \
+            "bug would group this agent just as plausibly"
+
+        assert len(listed) == data["total"], "a tool fell out of its group"
+        assert any(group["server"] != UNKNOWN_SERVER for group in data["groups"]), \
+            "every tool landed in the unknown group -- the servers never reached the grouping"
+
+        for group in data["groups"]:
+            for tool in group["tools"]:
+                candidates = [s for s in registered
+                              if tool["name"] == s or tool["name"].startswith(s + "_")]
+                expected = max(candidates, key=len) if candidates else UNKNOWN_SERVER
+                assert group["server"] == expected, \
+                    f"{tool['name']} is filed under {group['server']}, not {expected}"
+
+    def test_the_endpoint_does_not_filter(self, tooled_agent, client, auth_headers):
+        """Filtering stays with the caller, as it is in the terminal.
+
+        A server that returns only the matches also returns a ``total`` that
+        can no longer tell "this agent has no tools" from "nothing matched" --
+        and the browser would have to guess which sentence to show. So a
+        filter parameter must not quietly grow back here.
+        """
+        agent, everything = tooled_agent
+        tools = [tool for group in everything["groups"] for tool in group["tools"]]
+        assert len(tools) > 1, "fixture: one tool cannot show the absence of filtering"
+
+        asked = client.get(f"/agents/{agent}/tools?filter={tools[0]['name']}",
+                           headers=auth_headers).json()
+
+        assert asked["total"] == everything["total"], \
+            "the endpoint narrowed its answer -- total no longer counts what the agent has"
+        assert asked["groups"] == everything["groups"]
+
+    def test_an_unknown_agent_is_a_404(self, client, auth_headers):
+        assert client.get("/agents/no_such_agent_here/tools",
+                          headers=auth_headers).status_code == 404
+
+    def test_a_tool_server_is_not_an_agent(self, client, auth_headers):
+        """Naming a plain MCP server has to say so, not answer with an empty
+        tool list that reads like a broken agent."""
+        from agent_system.servers.agent.server import Agent
+
+        registry = client.app.state.mcp_registry
+        plain = next((name for name in registry.list()
+                      if not isinstance(registry.get(name), Agent)), None)
+        assert plain, "fixture: no non-agent server registered to ask about"
+
+        response = client.get(f"/agents/{plain}/tools", headers=auth_headers)
+
+        assert response.status_code == 400
+        assert "not an agent" in response.json()["detail"]
+
+    def test_it_requires_authentication(self, client):
+        assert client.get("/agents/whoever/tools").status_code == 401

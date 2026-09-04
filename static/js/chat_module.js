@@ -108,13 +108,480 @@
   }
 
   /**
+   * A note with rendered content, for /history: assistant answers reach the
+   * browser as sanitized HTML from the backend's formatting hooks. Everything
+   * a person or a tool wrote goes through escapeHtml on the way in.
+   */
+  function addRichNote(chatContainer, html) {
+    if (!chatContainer) return;
+    const row = document.createElement('div');
+    row.className = 'row';
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'msg note';
+    const body = document.createElement('div');
+    body.innerHTML = html;
+    msgDiv.appendChild(body);
+    row.appendChild(msgDiv);
+    chatContainer.appendChild(row);
+    scrollBottom(true);
+  }
+
+  // ---------------------------------------------------------------------
+  // What the commands read.
+  //
+  // Every one of them answers from an endpoint the rest of the UI already
+  // uses -- no second source of truth, and nothing here decides WHICH
+  // commands exist: that is the shared catalogue in chat_commands.py.
+  // ---------------------------------------------------------------------
+
+  function authHeaders() {
+    // The browser also carries the access_token cookie; the header is what
+    // makes a token kept in localStorage work the same way.
+    const token = localStorage.getItem('token');
+    return token ? { 'Authorization': 'Bearer ' + token } : {};
+  }
+
+  async function getJSON(url) {
+    const resp = await fetch(url, { headers: authHeaders(), credentials: 'include' });
+    if (!resp.ok) {
+      let detail = resp.status + ' ' + resp.statusText;
+      try {
+        const body = await resp.json();
+        if (body && body.detail) detail = body.detail;
+      } catch (e) { /* not JSON -- keep the status line */ }
+      const error = new Error(detail);
+      error.status = resp.status;
+      throw error;
+    }
+    return await resp.json();
+  }
+
+  function currentAgentName() {
+    return (window.selectorModule && typeof window.selectorModule.getCurrentAgent === 'function')
+      ? window.selectorModule.getCurrentAgent()
+      : null;
+  }
+
+  /**
+   * A value as printable text, the way json.dumps does it for the terminal.
+   *
+   * The one accepted difference between the two renderers: JSON.stringify
+   * writes {"a":1} where json.dumps writes {"a": 1, "b": [1, 2]}. Matching it
+   * would need a serializer of our own, and the difference is whitespace
+   * inside a truncated one-line preview -- measured across 30 cases, it is
+   * the only place the two disagree.
+   */
+  function asText(value) {
+    if (typeof value === 'string') return value;
+    if (value === undefined || value === null) return '';
+    try { return JSON.stringify(value); } catch (e) { return String(value); }
+  }
+
+  function oneLine(value, max) {
+    const text = asText(value).replace(/\s+/g, ' ').trim();
+    return text.length > max ? text.slice(0, max - 1) + '…' : text;
+  }
+
+  /** Tool arguments and results travel as a JSON string or already decoded. */
+  function decodeMaybeJson(raw) {
+    if (raw && typeof raw === 'object') return raw;
+    if (typeof raw !== 'string') return raw;
+    try { return JSON.parse(raw); } catch (e) { return raw; }
+  }
+
+  /**
+   * Readable text of a message whose content may be multimodal.
+   *
+   * A part without text becomes "[<type>]", exactly as _message_text does in
+   * the terminal. Returning '' for it instead made an image-only turn -- the
+   * browser's own upload path sends one, with an empty text part in front --
+   * look like no turn at all: /last then cut at the PREVIOUS turn and
+   * /history dropped the question while keeping the answer.
+   */
+  function messageText(msg) {
+    const content = msg && msg.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content.map(function (part) {
+        if (typeof part === 'string') return part;
+        return (part && part.text) || '[' + ((part && part.type) || 'part') + ']';
+      }).filter(Boolean).join(' ');
+    }
+    return content === undefined || content === null ? '' : String(content);
+  }
+
+  /**
+   * splitlines(), not split("\n"). Three differences, all of them visible in
+   * the note: a tool result from a Windows shell carries CRLF and would keep
+   * a stray \r per line; an empty result is no lines at all, not one empty
+   * one; and a trailing newline does not add a blank line at the end.
+   */
+  function splitLines(text) {
+    const value = String(text);
+    if (!value) return [];
+    return value.replace(/(\r\n|\r|\n)$/, '').split(/\r\n|\r|\n/);
+  }
+
+  /**
+   * /tools filtering, where the terminal does it too: on the list already in
+   * hand. Name or description, case-insensitive. Filtering on the server
+   * would cost the count of what the agent HAS -- and with it the difference
+   * between "no tool matches" and "this agent has no tools at all".
+   */
+  function filterToolGroups(groups, needle) {
+    if (!needle) return groups;
+    const wanted = needle.toLowerCase();
+    return (groups || []).map(function (group) {
+      return {
+        server: group.server,
+        tools: (group.tools || []).filter(function (tool) {
+          return (tool.name || '').toLowerCase().indexOf(wanted) >= 0
+            || (tool.description || '').toLowerCase().indexOf(wanted) >= 0;
+        }),
+      };
+    }).filter(function (group) { return group.tools.length; });
+  }
+
+  /**
+   * Whether a stored user message is really a slash command.
+   *
+   * Commands never reached the agent, so they are not part of the
+   * conversation -- but unknown ones used to be passed through and sit in old
+   * sessions. Mirrors chat_commands.looks_like_command, including its rule
+   * that anything multiline is a message, never a command.
+   *
+   * Narrower than the Python side by one step: the catalogue is fetched for
+   * the WEB surface, so the terminal-only spellings (/exit, /attach) are not
+   * in it, and neither is anything before the catalogue has loaded. Both cases
+   * only ever show a line that would have been hidden -- never the reverse.
+   */
+  function looksLikeCommand(text) {
+    const stripped = String(text || '').trim();
+    if (!stripped || stripped.indexOf('\n') >= 0) return false;
+    const first = stripped.split(' ')[0].toLowerCase();
+    const commands = ((window.slashCommands || {}).catalogue || {}).commands || [];
+    return commands.some(function (command) {
+      return (command.aliases || []).indexOf(first) >= 0;
+    });
+  }
+
+  /** A user message that actually went to the agent. */
+  function isRealTurn(msg) {
+    if (!msg || msg.role !== 'user') return false;
+    const text = messageText(msg).trim();
+    return !!text && !looksLikeCommand(text);
+  }
+
+  async function sessionMessages() {
+    if (!currentSessionId) return null;
+    const session = await getJSON('/api/sessions/' + encodeURIComponent(currentSessionId));
+    return session.messages || [];
+  }
+
+  /** One tool request: compact for /history, key-per-line for /last. */
+  function toolCallLines(call, full) {
+    const fn = (call && call.function) || {};
+    const name = fn.name || (call && call.name) || '?';
+    // `||`, not a presence check: an empty argument string falls through to
+    // the flat shape in the terminal's reader, and this has to agree with it.
+    const raw = fn.arguments || (call && call.arguments);
+    const data = decodeMaybeJson(raw);
+    // Arrays are objects in JS but not dicts in the terminal's renderer:
+    // without this an array-shaped result prints as 0:, 1:, 2: instead of
+    // the lines it is.
+    const isObject = data && typeof data === 'object' && !Array.isArray(data);
+
+    if (!full) {
+      const inner = isObject
+        ? Object.keys(data).map(function (key) {
+            return key + '=' + oneLine(data[key], 40);
+          }).join(', ')
+        : oneLine(raw, 80);
+      return ['  → ' + name + '(' + oneLine(inner, 100) + ')'];
+    }
+
+    const out = ['→ ' + name];
+    if (!isObject) {
+      splitLines(asText(raw)).forEach(function (line) { out.push('    ' + line); });
+      return out;
+    }
+    Object.keys(data).forEach(function (key) {
+      // Escaped newlines are what made this a wall of text -- render the
+      // value as the lines it actually is.
+      const lines = splitLines(asText(data[key]));
+      if (lines.length <= 1) {
+        out.push('    ' + key + ': ' + lines[0]);
+      } else {
+        out.push('    ' + key + ':');
+        lines.forEach(function (line) { out.push('      ' + line); });
+      }
+    });
+    return out;
+  }
+
+  /** One tool result, mirroring toolCallLines' two modes. */
+  function toolResultLines(msg, full) {
+    const raw = messageText(msg);
+    const data = decodeMaybeJson(raw);
+    // Arrays are objects in JS but not dicts in the terminal's renderer:
+    // without this an array-shaped result prints as 0:, 1:, 2: instead of
+    // the lines it is.
+    const isObject = data && typeof data === 'object' && !Array.isArray(data);
+
+    if (!full) {
+      if (isObject) {
+        const body = data.content || data.stdout || data.changes || '';
+        // rstrip, not trim: the terminal keeps the gap a missing status
+        // leaves, and this line is compared against it character for
+        // character.
+        return ['  ← ' + ((data.status || '') + ' ' + oneLine(body, 70))
+          .replace(/\s+$/, '')];
+      }
+      return ['  ← ' + oneLine(raw, 90)];
+    }
+
+    const out = [];
+    if (isObject) {
+      Object.keys(data).forEach(function (key) {
+        const lines = splitLines(asText(data[key]));
+        if (lines.length <= 1) {
+          out.push('    ' + key + ': ' + lines[0]);
+        } else {
+          out.push('    ' + key + ':');
+          lines.forEach(function (line) { out.push('      ' + line); });
+        }
+      });
+    } else {
+      splitLines(raw).forEach(function (line) { out.push('    ' + line); });
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------------
+  // The commands themselves
+  // ---------------------------------------------------------------------
+
+  async function cmdSessions(container) {
+    const sessions = await getJSON('/api/sessions');
+    if (!sessions.length) {
+      addNote(container, 'No sessions yet.');
+      return;
+    }
+    const lines = sessions.slice(0, 10).map(function (s) {
+      const marker = s.session_id === currentSessionId ? '*' : ' ';
+      const count = String(s.message_count || 0).padStart(4);
+      return ' ' + marker + ' ' + s.session_id + '  ' + count + ' msg  ' +
+        (s.agent_name || '?') + '  ' + oneLine(s.title || 'Untitled', 48);
+    });
+    addNote(container, 'Recent sessions:\n' + lines.join('\n') +
+      '\nUse /resume <id> to continue one.');
+  }
+
+  async function cmdResume(container, payload) {
+    const id = (payload || '').trim();
+    if (!id) {
+      addNote(container, 'Usage: /resume <session-id>   (/sessions lists them)');
+      return;
+    }
+    if (!window.sessionManager || typeof window.sessionManager.loadSession !== 'function') {
+      addNote(container, 'Session switching is not available in this window.');
+      return;
+    }
+    // Ask first: loadSession answers an unknown id with a browser alert, which
+    // is the wrong voice for something the person typed into the chat.
+    await getJSON('/api/sessions/' + encodeURIComponent(id));
+    await window.sessionManager.loadSession(id);
+    // It returns without throwing when the person cancels the "a run is still
+    // active" dialog, and when its own fetch fails -- so the switch has to be
+    // confirmed, not assumed. Claiming it while the old conversation is still
+    // on screen is worse than saying nothing.
+    //
+    // Checked against THIS module's currentSessionId, not the session
+    // manager's: that is the one the other five commands read, and the one
+    // the next message continues. It is set by the session:loaded handler,
+    // which loadSession dispatches synchronously before it returns.
+    if (currentSessionId === id) {
+      addNote(container, 'Resumed session: ' + id);
+    } else {
+      addNote(container, 'Session ' + id + ' was not loaded -- the switch was cancelled or failed.');
+    }
+  }
+
+  async function cmdTools(container, payload) {
+    const agent = currentAgentName();
+    if (!agent) {
+      addNote(container, 'No agent selected yet.');
+      return;
+    }
+    const query = (payload || '').trim();
+    const data = await getJSON('/agents/' + encodeURIComponent(agent) + '/tools');
+    if (!data.total) {
+      addNote(container, 'This agent has no tools (tools.allowed is empty = deny-all).');
+      return;
+    }
+    const groups = filterToolGroups(data.groups, query);
+    const shown = groups.reduce(function (sum, group) { return sum + group.tools.length; }, 0);
+    if (!shown) {
+      addNote(container, "No tool matches '" + query + "'.");
+      return;
+    }
+    const lines = [shown + ' tool(s) available to ' + data.agent +
+      (query ? " matching '" + query + "'" : '') + ':'];
+    groups.forEach(function (group) {
+      lines.push(group.server);
+      (group.tools || []).forEach(function (tool) {
+        const summary = oneLine(tool.description || '', 70);
+        lines.push('  ' + tool.name + (summary ? '  -- ' + summary : ''));
+      });
+    });
+    addNote(container, lines.join('\n'));
+  }
+
+  async function cmdCosts(container) {
+    if (!currentSessionId) {
+      addNote(container, 'No session yet -- nothing has been billed.');
+      return;
+    }
+    let data;
+    try {
+      data = await getJSON('/plugins/context_usage_tracker/usage?session_id=' +
+        encodeURIComponent(currentSessionId));
+    } catch (e) {
+      if (e.status === 404) {
+        addNote(container, 'The context_usage_tracker plugin is not active -- ' +
+          'there are no per-call records to add up.');
+        return;
+      }
+      throw e;
+    }
+    const stats = data.statistics || {};
+    const totals = stats.totals;
+    if (!totals) {
+      addNote(container, 'No LLM calls recorded for this session yet.');
+      return;
+    }
+    const short = function (n) {
+      const value = n || 0;
+      // trunc, not round: int() in the terminal's formatter cuts as well.
+      return value >= 1000 ? (value / 1000).toFixed(1) + 'k' : String(Math.trunc(value));
+    };
+    const samples = (stats.timespan || {}).sample_count || 0;
+    const estimated = totals.cost_estimated_calls || 0;
+    // Calls the tracker saw but could price neither way -- naming them keeps
+    // the total from looking complete when it is not.
+    const unpriced = Math.max(0, samples - (totals.cost_known_calls || 0));
+    addNote(container,
+      'Session ' + currentSessionId + ' (incl. sub-agents):\n' +
+      '  calls        ' + samples + (estimated ? '  (' + estimated + ' estimated)' : '') + '\n' +
+      '  tokens       ↑' + short(totals.prompt_tokens) +
+      '  ↓' + short(totals.completion_tokens) +
+      '  cache ' + Math.round(totals.cache_hit_rate || 0) + '%\n' +
+      '  cost         ' + (estimated ? '~$' : '$') + (totals.cost || 0).toFixed(4) +
+      (unpriced ? '  (' + unpriced + ' unpriced)' : '') +
+      // Without this line the ~ in front of the amount is an unexplained
+      // squiggle; the terminal spells it out for the same reason.
+      (estimated ? '\n  ~ = estimated from config/llm_pricing.yaml, not provider billing' : ''));
+  }
+
+  async function cmdHistory(container, payload) {
+    const raw = (payload || '').trim();
+    // What int() accepts and nothing else: parseInt("3abc") is 3 and
+    // Number("0x1f") is 31, while the terminal answers both with the usage
+    // line. A count below 1 is clamped there, not refused.
+    if (raw && !/^[+-]?\d+$/.test(raw)) {
+      addNote(container, 'Usage: /history [count]   (got: ' + raw + ')');
+      return;
+    }
+    const limit = raw ? Math.max(parseInt(raw, 10), 1) : 6;
+    const messages = await sessionMessages();
+    if (messages === null) {
+      addNote(container, 'No session yet.');
+      return;
+    }
+    if (!messages.length) {
+      addNote(container, 'No messages in this session yet.');
+      return;
+    }
+
+    // Count backwards in USER turns, so "6" means six exchanges rather than
+    // six raw messages (a single turn can hold a dozen tool messages).
+    let start = 0;
+    let seen = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (isRealTurn(messages[i])) {
+        seen++;
+        if (seen >= limit) { start = i; break; }
+      }
+    }
+    if (!seen) {
+      addNote(container, 'No agent exchanges in this session yet.');
+      return;
+    }
+
+    const plain = function (text) {
+      return '<pre class="note-text">' + escapeHtml(text) + '</pre>';
+    };
+    const parts = [plain('Last ' + seen + ' exchange(s) of session ' + currentSessionId + ':')];
+    messages.slice(start).forEach(function (msg) {
+      const text = messageText(msg).trim();
+      if (msg.role === 'user') {
+        if (!text || looksLikeCommand(text)) return;
+        parts.push(plain('\n› ' + text));
+      } else if (msg.role === 'assistant') {
+        if (text) {
+          // response-text, not note-text: the answer is rendered markdown, and
+          // the note's monospace pre-wrap would set it as if it were a log.
+          parts.push('<div class="response-text">' +
+            formatContent(msg.content, msg.content_format) + '</div>');
+        }
+        (msg.tool_calls || []).forEach(function (call) {
+          parts.push(plain(toolCallLines(call, false).join('\n')));
+        });
+      } else if (msg.role === 'tool') {
+        parts.push(plain(toolResultLines(msg, false).join('\n')));
+      }
+    });
+    parts.push(plain("(/last shows the last turn's tool traffic in full)"));
+    addRichNote(container, parts.join(''));
+  }
+
+  async function cmdLast(container) {
+    const messages = await sessionMessages();
+    if (messages === null) {
+      addNote(container, 'No session yet.');
+      return;
+    }
+    let lastUser = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (isRealTurn(messages[i])) { lastUser = i; break; }
+    }
+    if (lastUser < 0) {
+      addNote(container, 'No turn to show yet.');
+      return;
+    }
+    const lines = [];
+    messages.slice(lastUser + 1).forEach(function (msg) {
+      if (msg.role === 'assistant') {
+        (msg.tool_calls || []).forEach(function (call) {
+          lines.push.apply(lines, toolCallLines(call, true));
+        });
+      } else if (msg.role === 'tool') {
+        lines.push.apply(lines, toolResultLines(msg, true));
+      }
+    });
+    addNote(container, lines.length ? lines.join('\n') : 'The last turn used no tools.');
+  }
+
+  /**
    * Run a built-in command in the browser.
    *
    * Only the surface-specific part lives here; which commands exist comes from
-   * the shared catalogue. A command the web UI cannot do yet says so out loud
-   * rather than doing nothing -- silence would read as a broken command.
+   * the shared catalogue. A command this surface does not offer at all (there
+   * is no terminal to leave, so no /exit) never reaches this point -- what
+   * does reach it and has no handler says so out loud rather than doing
+   * nothing, because silence would read as a broken command.
    */
-  function runChatCommand(name, payload) {
+  async function runChatCommand(name, payload) {
     const container = chatContainer;
     if (name === 'help') {
       addNote(container, window.slashCommands.helpLines().join('\n'));
@@ -143,7 +610,25 @@
         : 'No session yet -- it is created with the first message.');
       return;
     }
-    addNote(container, '/' + name + ' is only available in the terminal chat (agent-cli) for now.');
+
+    const handlers = {
+      sessions: function () { return cmdSessions(container); },
+      resume: function () { return cmdResume(container, payload); },
+      tools: function () { return cmdTools(container, payload); },
+      costs: function () { return cmdCosts(container); },
+      history: function () { return cmdHistory(container, payload); },
+      last: function () { return cmdLast(container); },
+    };
+    const handler = handlers[name];
+    if (!handler) {
+      addNote(container, '/' + name + ' is only available in the terminal chat (agent-cli).');
+      return;
+    }
+    try {
+      await handler();
+    } catch (e) {
+      addNote(container, '/' + name + ' failed: ' + ((e && e.message) || e));
+    }
   }
 
   /**
@@ -1443,8 +1928,11 @@
           return;
         }
         if (resolved.kind === 'command') {
-          runChatCommand(resolved.name, resolved.payload);
+          // Awaited: the commands that ask the server for their answer take a
+          // round trip, and letting the caller finish first re-armed the input
+          // before the note appeared.
           clearInput(taskInput);
+          await runChatCommand(resolved.name, resolved.payload);
           submitting = false;
           return;
         }

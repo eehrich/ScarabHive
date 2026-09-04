@@ -277,3 +277,37 @@ def looks_like_command(text: str) -> bool:
         # line looks like "/word ..." is hidden by /history and /last.
         return False
     return stripped.split(" ")[0].lower() in _COMMAND_ALIASES
+
+
+#: What a tool is filed under when no registered server claims its name.
+UNKNOWN_SERVER = "(unknown server)"
+
+
+def group_tools_by_server(
+    tools: Sequence[dict], server_names: Iterable[str]
+) -> list[tuple[str, list[dict]]]:
+    """Group the tools of ``/tools`` under the server that provides them.
+
+    A tool name carries its server as a prefix, so the LONGEST registered
+    server name that matches wins: ``coder_file_ops_read_file`` belongs to
+    ``coder_file_ops``, not to a shorter ``coder``. Equality covers
+    single-tool servers, where the tool carries the server's bare name
+    (``sequential_thinking``, ``todo``).
+
+    Splitting on "_" instead invented groups that do not exist ("sequential"
+    next to "sequential_thinking"), which is why a tool no registered server
+    claims is named as such rather than filed somewhere plausible.
+
+    Returns the groups in display order (by server name), so the terminal and
+    the browser show the same list instead of two orderings of one truth.
+    """
+    known = sorted(server_names, key=len, reverse=True)
+    groups: dict[str, list[dict]] = {}
+    for tool in tools:
+        name = tool.get("name", "?")
+        server = next(
+            (s for s in known if name == s or name.startswith(s + "_")),
+            UNKNOWN_SERVER,
+        )
+        groups.setdefault(server, []).append(tool)
+    return [(server, groups[server]) for server in sorted(groups)]

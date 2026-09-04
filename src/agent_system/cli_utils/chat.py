@@ -600,6 +600,7 @@ from agent_system.chat_commands import (  # noqa: E402
     CLI as _CLI_SURFACE,
     PluginCommand,
     commands_for,
+    group_tools_by_server,
     looks_like_command as _looks_like_command,
     parse_chat_command,
     resolve as resolve_chat_input,
@@ -1124,7 +1125,9 @@ def _render_tool_call(renderer: ChatRenderer, call: Any, full: bool) -> None:
         text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         lines = text.splitlines()
         if len(lines) <= 1:
-            renderer.println(f"    {key}: {text}", color="90")
+            # The LINE, not the raw text: a value ending in "\n" is one line,
+            # and printing it whole put a blank line under it.
+            renderer.println(f"    {key}: {lines[0] if lines else ''}", color="90")
         else:
             renderer.println(f"    {key}:", color="90")
             for line in lines:
@@ -1149,7 +1152,8 @@ def _render_tool_result(renderer: ChatRenderer, message: Any, full: bool) -> Non
             text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
             lines = text.splitlines()
             if len(lines) <= 1:
-                renderer.println(f"    {key}: {text}", color="32")
+                # see _render_tool_call: the line, not the raw text
+                renderer.println(f"    {key}: {lines[0] if lines else ''}", color="32")
             else:
                 renderer.println(f"    {key}:", color="32")
                 for line in lines:
@@ -1381,28 +1385,16 @@ async def _show_tools(ctx: "_ChatContext", renderer: ChatRenderer, payload: str)
             print(f"No tool matches '{payload}'.")
             return
 
-    # Group by the server prefix, which is how they are configured.
-    groups: dict[str, list[dict]] = {}
-    known = sorted(_server_names(ctx), key=len, reverse=True)
-    for tool in tools:
-        name = tool.get("name", "?")
-        # Longest registered server prefix wins, so coder_file_ops_read_file
-        # groups under coder_file_ops and not under a shorter "coder". The
-        # equality case covers single-tool servers, where the tool carries the
-        # server's bare name (sequential_thinking, todo).
-        server = next((s for s in known if name == s or name.startswith(s + "_")), None)
-        if server is None:
-            # No registered server matches. Splitting on "_" invented groups
-            # ("sequential" next to "sequential_thinking"); say it plainly.
-            server = "(unknown server)"
-        groups.setdefault(server, []).append(tool)
+    # Grouped by the server prefix, which is how they are configured -- the
+    # rule lives in chat_commands so the browser shows the same list.
+    groups = group_tools_by_server(tools, _server_names(ctx))
 
-    total = sum(len(v) for v in groups.values())
+    total = sum(len(v) for _, v in groups)
     print(f"{total} tool(s) available to {ctx.entry_name}"
           + (f" matching '{payload}'" if needle else "") + ":")
-    for server in sorted(groups):
+    for server, server_tools in groups:
         renderer.println(f"{server}", color="34")
-        for tool in groups[server]:
+        for tool in server_tools:
             name = tool.get("name", "?")
             first_line = " ".join((tool.get("description") or "").split())
             renderer.println(f"  {name}"

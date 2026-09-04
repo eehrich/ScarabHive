@@ -148,6 +148,14 @@ the plugin directly, without an LLM turn: `/compact` (context_engineer) shrinks
 the conversation on the spot. Two plugins claiming the same name are both
 reachable as `/<plugin>:<command>`. See `docs/plugin_commands_design.md`.
 
+**In the browser** the same commands run, from the same catalogue and the same
+parser — `/sessions`, `/resume`, `/tools`, `/costs`, `/history` and `/last`
+answer from the API (`/agents/<name>/tools`, `/api/sessions`, the usage
+tracker) instead of from the local agent. Two are terminal-only by nature:
+`/exit` (no terminal to leave) and `/attach` (the browser has its own upload
+button). Plugin commands are terminal-only for now — the browser reports them
+as unknown.
+
 **Multi-line input.** A plain Enter sends the message, so pasting a block
 needs one of:
 
