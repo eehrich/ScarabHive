@@ -61,6 +61,20 @@ A screenshot that looks right proves that frame. A `report` expression
 (`step ... report=["root.get_node('Player').position"]`) proves the number.
 Use both when the task is "the player should be at Y".
 
+**Place the state, do not drive to it.** "Hold right for 3 s and jump
+somewhere" reaches the thing under test by luck, and a miss looks like a
+bug in the thing. Put the actor where the test starts — `exec` sets
+`position` — then fire the one input that matters and read the result.
+One coin per run beats one run for four coins: when it fails you know
+which.
+
+**Ask the engine, do not re-implement it.** A question like "does this
+jump clear that platform" is answered by placing the player, jumping, and
+`step_until` on `is_on_floor()` or a y-threshold — a handful of calls
+against the real physics. Rebuilding the trajectory frame by frame in
+`godot_script` costs dozens of runs and still uses your arithmetic
+instead of Godot's.
+
 ## 7. Assets
 
 A model, a texture, a sprite: brief a sub-agent (`asset-pipeline`), get a

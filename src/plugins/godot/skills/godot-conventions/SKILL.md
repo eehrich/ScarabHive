@@ -62,6 +62,25 @@ Copy into `res://assets/...` → `godot_import_assets` → reference it. A file
 that was never imported loads as null and the error says
 `Cannot open file`, not "not imported".
 
+**Pixel art: set the filter once, for the project.** Nearest belongs in
+`project.godot`, not on every node:
+
+```
+[rendering]
+textures/canvas_textures/default_texture_filter=0
+```
+
+The per-node key is `texture_filter` and **its numbers are different**:
+node `0` = Inherit, `1` = Nearest, `2` = Linear; project `0` = Nearest,
+`1` = Linear (the default). Setting it per node also has to be repeated for
+every sprite ever added — a blur that comes back with the next asset. The
+project default only reaches nodes still on Inherit, so a sprite an earlier
+session pinned to Linear stays blurry until that line goes.
+
+Editing `project.godot` while the editor is open is a race: the editor
+holds the settings in memory and writes them back. Edit with it closed, or
+follow with `godot_command restart_editor`.
+
 # Scripts
 
 ```gdscript

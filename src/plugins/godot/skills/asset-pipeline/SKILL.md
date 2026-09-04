@@ -74,9 +74,10 @@ Then move into `assets/textures/` or `assets/sprites/`, import, reference:
 texture = ExtResource("2_ship")
 ```
 
-For pixel art, the import filter matters: after the first import, set
-`texture filter` to Nearest on the node (`texture_filter = 1` in the
-`.tscn`), or the sprite blurs.
+For pixel art the filter matters, and it belongs in `project.godot` once
+(`[rendering] textures/canvas_textures/default_texture_filter=0`), not on
+each node — details and the shifted enums in `godot-conventions`. Per node
+it has to be repeated for every sprite ever added.
 
 # Sprites need transparency?
 
