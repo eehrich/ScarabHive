@@ -24,7 +24,9 @@ plugins:
         coder_reviewer_list_available_tools: "List the read-only review tools available"
 
       agent_config:
-        llm_profile: [or-claude-sonnet, code, or-deepseek-pro]
+        # Same chain as the coder: judging a change is not the cheaper half of
+        # the work, so it does not get the cheaper model.
+        llm_profile: [or-claude-sonnet, or-gpt-full]
         llm_profile_advanced: [claude-opus, or-claude-sonnet]
 
         llm_params:
@@ -67,8 +69,11 @@ plugins:
         hooks:
           enabled: true
           overrides:
+            # Off: it rewrites the cached prompt prefix on every call, and
+            # what it injects are this agent's own thoughts -- already in the
+            # transcript, and re-readable through its own tool.
             sequential_thinking.inject_active_sessions:
-              enabled: true
+              enabled: false
 
       metadata:
         author: "Enrico Ehrich"

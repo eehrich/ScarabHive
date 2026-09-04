@@ -130,7 +130,14 @@ plugins:
         - data/okf/coder
       # Injection defaults. The agent-level hook override sets `hook_bundle`;
       # without it the hook does nothing at all.
-      hook_max_concepts: 6
+      #
+      # The hook injects each concept's FULL body, hard-truncated at 1500
+      # characters (not configurable). So this number is a token ceiling:
+      # 10 concepts = at most 15000 characters, roughly 3.7k tokens. Against a
+      # 200k window that is affordable, and a coding task usually touches more
+      # than a couple of conventions at once -- 6 was cutting the neighbourhood
+      # too early, given 3 lexical seeds expand one hop before this cap applies.
+      hook_max_concepts: 10
       hook_graph_depth: 1
       max_concept_file_kb: 512
       max_bundle_files: 5000

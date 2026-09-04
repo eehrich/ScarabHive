@@ -25,10 +25,12 @@ plugins:
         coder_list_available_tools: "List the coding tools available (files, shell, sub-agents, skills)"
 
       agent_config:
-        # `code` is the profile built for this (gpt-5-codex). The fallbacks sit
-        # at OTHER providers on purpose: if OpenAI is down, the chain still
-        # carries (see reference_seed_fallback_pattern / cross-provider fallback).
-        llm_profile: [code, or-claude-sonnet, or-deepseek-pro]
+        # Sonnet leads, GPT catches. Both links are different model families,
+        # so a bad day for one does not take the chain -- but both route
+        # through OpenRouter, so an OpenRouter outage takes both. Swap either
+        # link to its direct-API twin (claude-sonnet / gpt-full) if that
+        # matters more than billing through one account.
+        llm_profile: [or-claude-sonnet, or-gpt-full]
         # Reached via use_advanced_model=true when a caller escalates.
         llm_profile_advanced: [claude-opus, or-claude-sonnet]
 
@@ -90,12 +92,28 @@ plugins:
           overrides:
             markdown_formatter.format_markdown_output:
               enabled: true
-            # The task list is the plan. Injecting it every turn is what keeps
-            # a long change from drifting off its own plan.
+            # OFF on purpose, all three of them below.
+            #
+            # Each inserts a system message directly behind the first one --
+            # inside the cached prompt prefix -- and each carries content that
+            # changes MID-TURN: a task gets updated, a thought is added, a
+            # sub-agent finishes. So the prefix is invalidated exactly while
+            # the agent is working hardest, and every following call pays full
+            # price for a context it already has.
+            #
+            # Nothing is lost. All three sources are the agent's OWN tool
+            # calls, so they sit in the transcript already, and the tools are
+            # in its allowlist to re-read on demand:
+            #   todo                -> `todo` (operation: list)
+            #   thinking sessions   -> the thoughts are its own tool results
+            #   live sub-agents     -> `coder_sam_manage_sub_agent` (list)
+            # The three sub-agent NAMES are in the prompt anyway, so the
+            # injected "available agents" line was a duplicate of a line that
+            # is already in the cached prefix for free.
             todo.inject_todo_tasks:
-              enabled: true
+              enabled: false
             sequential_thinking.inject_active_sessions:
-              enabled: true
+              enabled: false
             # Without this the agent starts every session at zero. It is the
             # piece every comparable harness has (CLAUDE.md, AGENTS.md,
             # HERMES.md): durable facts about this project, carried forward.
@@ -103,6 +121,13 @@ plugins:
             # Unlike a flat notes file this folds in only what the current turn
             # is ABOUT -- the lexical hit plus its linked neighbours -- so the
             # bundle can grow past what would fit in a prompt.
+            #
+            # This one stays ON although it injects at the same place, because
+            # it does not churn the way the three above do: it keys on the last
+            # USER message, so the block is byte-identical across every LLM
+            # call within a turn, and only moves when the user speaks -- when
+            # the prefix changes anyway. The one exception is the agent writing
+            # a concept mid-turn; that is a deliberate, rare act.
             #
             # hook_bundle is mandatory: without it the hook returns silently
             # without doing anything, which is indistinguishable from an empty
@@ -115,9 +140,9 @@ plugins:
             coder_okf.okf_context_injection:
               enabled: true
               hook_bundle: data/okf/coder
-            # Which sub-agents are alive, and what they are doing.
+            # Off for the same reason as the two above.
             coder_sam.inject_sub_agent_context:
-              enabled: true
+              enabled: false
             # Long coding sessions overflow the window; without this the run
             # dies at the context limit instead of compacting.
             context_engineer.engineer_context:

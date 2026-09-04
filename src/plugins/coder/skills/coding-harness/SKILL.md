@@ -179,6 +179,16 @@ Two rules that decide whether this stays useful or becomes a liability:
 - **When the bundle and the code disagree, say so.** Do not quietly follow
   either. One of them is wrong, and which one it is matters.
 
+**Keep a concept under ~1500 characters.** This is not a style preference.
+When a concept is folded into a prompt, its body is cut off at 1500 characters
+mid-sentence, with no warning to the reader — so everything you wrote past
+that point is knowledge you will never see again. Measured on the bundles that
+already exist here: more than half of all concepts are long enough to be cut.
+
+So when a subject outgrows that, **split it into linked concepts** rather than
+letting one sprawl. Two concepts of 800 characters both arrive whole; one of
+1600 arrives as a fragment that reads like a complete thought.
+
 Reference material that would apply to *any* project belongs in a skill, not
 in the bundle. If it would still be true in a different codebase, it is a
 procedure, and the bundle is the wrong place for it.

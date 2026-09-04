@@ -91,6 +91,32 @@ Static template variables are fine and there is one: `{{ okf_bundle }}`, so
 the bundle path is written once and cannot drift from what the injection hook
 reads. It is the same string on every call, so it costs the cache nothing.
 
+### Injection hooks that churn the prefix are off
+
+The same rule, one level up. `todo.inject_todo_tasks`,
+`sequential_thinking.inject_active_sessions` and
+`coder_sam.inject_sub_agent_context` each insert a system message directly
+behind the first one — inside the cached prefix — and each carries content
+that changes **mid-turn**: a task is updated, a thought is added, a sub-agent
+finishes. So the prefix dies exactly while the agent is working hardest, and
+every later call in that turn pays full price.
+
+Nothing is lost by turning them off. All three inject the agent's *own tool
+calls*, which are in the transcript already, and each tool is in its allowlist
+to re-read on demand (`todo` with `operation: list`, `coder_sam_manage_sub_agent`
+with `list`). The three sub-agent names are in the prompt anyway, so the
+injected "available agents" line duplicated something the cached prefix
+already carried for free.
+
+`coder_okf.okf_context_injection` stays **on** despite injecting at the same
+place, and the difference is measurable: it keys on the last *user* message,
+so its block is byte-identical across every LLM call within a turn and only
+moves when the user speaks — which changes the prefix anyway. The one
+exception is the agent writing a concept mid-turn, a deliberate and rare act.
+
+A test holds this line, because flipping one back on has no visible symptom —
+just a quietly larger bill.
+
 ## Persistent knowledge — an OKF bundle
 
 The coder keeps what it learns in `data/okf/coder`: an OKF bundle, which is a
@@ -99,7 +125,19 @@ Plain files, git-versionable, readable without any tooling.
 
 `coder_okf.okf_context_injection` folds the part of it that the *current turn
 is about* into the prompt — the lexical hit plus its linked neighbours, capped
-at six concepts. That is the reason for a graph rather than a notes file: the
+at ten concepts (`hook_max_concepts`).
+
+That cap is a token ceiling, and it is worth knowing how it is spent: the hook
+injects each concept's **full body**, hard-truncated at 1500 characters, and
+that 1500 is hardcoded in the plugin. Ten concepts is therefore at most ~15000
+characters, roughly 3.7k tokens — affordable against a 200k window.
+
+The number that actually bites is the per-concept one. Measured across the
+bundles already in `data/okf/`, **55% of concepts are long enough to be cut**
+mid-sentence, and nothing warns the reader that it happened. Raising the count
+does not help a concept that is being halved; writing shorter ones does. The
+`coding-harness` skill therefore tells the agent to keep a concept under ~1500
+characters and split rather than sprawl. That is the reason for a graph rather than a notes file: the
 bundle can grow well past what would fit in a prompt, and the agent still
 starts each turn with the relevant slice of it. Everything else it fetches
 itself with `coder_okf_search` / `_read_concept` / `_neighbors`, and writes
@@ -246,6 +284,7 @@ go red, restore:
 | `hook_bundle` pointed at another agent's bundle | injected-bundle-resolves-inside-that-sandbox |
 | `okf_bundle` removed from `template_vars` | prompt-tells-the-agent-which-bundle |
 | prompt naming `coder_okf_recall` | prompt-names-unusable-tools |
+| a churning injection hook switched back on | no-hook-rewrites-the-cached-prefix |
 
 The general config guards cover the rest and are not restated here — a bogus
 entry in `coder_sam.allowed_agents` fails

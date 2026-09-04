@@ -113,6 +113,42 @@ def test_both_sandboxes_cover_the_same_tree(config):
     )
 
 
+#: Hooks that insert a system message behind the first one -- inside the
+#: cached prompt prefix -- and whose content changes MID-TURN. Enabling one
+#: costs the cache from that call on, and nothing about the run looks wrong.
+_PREFIX_CHURNING_HOOKS = [
+    "todo.inject_todo_tasks",
+    "sequential_thinking.inject_active_sessions",
+    "coder_sam.inject_sub_agent_context",
+]
+
+
+@pytest.mark.parametrize("agent", HARNESS_AGENTS)
+@pytest.mark.parametrize("hook", _PREFIX_CHURNING_HOOKS)
+def test_no_hook_rewrites_the_cached_prefix_mid_turn(config, agent, hook):
+    """Every one of these injects what the agent already has: its own tool
+    calls, still in the transcript, with the tool in its allowlist to re-read
+    on demand. The trade is a broken prefix for a duplicate, so they stay off.
+
+    The OKF injection is deliberately NOT in this list -- it keys on the last
+    user message, so it is byte-identical across the calls within a turn."""
+    hooks = getattr(_agent_config(config, agent), "hooks", None)
+    override = (getattr(hooks, "overrides", None) or {}).get(hook)
+    if override is None:
+        return  # not configured, and every one of these defaults to off
+    enabled = (
+        override.get("enabled")
+        if isinstance(override, dict)
+        else getattr(override, "enabled", None)
+    )
+    assert enabled is not True, (
+        f"{agent} enables {hook}, which rewrites the cached system-prompt "
+        "prefix whenever a task, a thought or a sub-agent changes -- so every "
+        "later call in the turn pays full price for context the agent already "
+        "has in its transcript"
+    )
+
+
 class TestKnowledgeBundleIsIsolatedAndReachable:
     """Both failure modes here are silent: a bundle path outside the sandbox
     makes the injection hook return without doing anything, and a sandbox that
