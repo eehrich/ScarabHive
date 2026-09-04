@@ -17,10 +17,13 @@ here works there, and one downloaded from anywhere works here.
 ```
 skills/
 └── coding/                       # a group — see "Where skills are found"
-    └── amiga-coding/
+    └── trading-view/
         ├── SKILL.md              # YAML frontmatter + instructions
         └── references/           # optional: depth, read on demand
 ```
+
+A skill that belongs to one plugin lives with it instead, under
+`src/plugins/<name>/skills/` — same layout, also discovered (see below).
 
 The standard also names `scripts/` (executable code) and `assets/` (templates,
 data). Any subdirectory works — the names only matter for humans and for other
@@ -66,7 +69,7 @@ Reference it by name from the agent config — no prompt file has to be touched:
 ```yaml
 agent_config:
   skills: ["amiga-coding"]          # shorthand for always
-  # or, explicit (this is what config/agents/amiga_coder.yaml does):
+  # or, explicit (what src/plugins/amiga/agents/amiga_coder.yaml does):
   skills:
     always:    ["amiga-coding"]     # full body goes into the system prompt
     on_demand: ["m68k-assembly"]    # only a one-line index goes in
