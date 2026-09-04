@@ -29,15 +29,27 @@ def loader() -> type:
 def safe_load(stream: str | bytes | IO[str] | IO[bytes]) -> Any:
     """Drop-in for ``yaml.safe_load``: same contract, C parser when present.
 
-    A syntax error is re-parsed with the pure-Python loader so the operator
-    keeps the message they know: libyaml reports line and column, the Python
-    parser also prints the offending line with a caret under it. Only on the
-    error path, and only for text (a file object is already consumed by then).
+    Anything the C parser rejects is handed to the pure-Python loader, which
+    settles both halves of the contract at once:
+
+    * it is an ACCELERATOR, not a stricter parser. libyaml rejects documents
+      SafeLoader accepts -- a ``%YAML 1.3`` directive, a BOM in the middle of
+      a document -- and those loaded before this module existed. They still do.
+    * when it fails too, its error is the better one: libyaml reports line and
+      column, the Python parser also prints the offending line with a caret.
+
+    ``UnicodeEncodeError`` belongs in the same net: libyaml raises it on a lone
+    surrogate, which is not a ``YAMLError`` at all, so no caller catching YAML
+    errors would ever see it. SafeLoader turns the same input into a
+    ``ReaderError``.
+
+    Only on the error path, and only for text (a file object is already
+    consumed by then).
     """
     active = loader()
     try:
         return yaml.load(stream, Loader=active)
-    except yaml.YAMLError:
+    except (yaml.YAMLError, UnicodeEncodeError):
         if active is not yaml.SafeLoader and isinstance(stream, (str, bytes)):
-            yaml.load(stream, Loader=yaml.SafeLoader)  # raises the richer error
+            return yaml.load(stream, Loader=yaml.SafeLoader)
         raise

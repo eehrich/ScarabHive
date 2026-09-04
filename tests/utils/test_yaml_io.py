@@ -66,13 +66,21 @@ def test_no_production_code_calls_the_pure_python_loader():
         r"\b\w*yaml\.(?:safe_load|load|full_load|unsafe_load)\("
         r"|from\s+yaml\s+import\s+[^\n]*\b(?:safe_load|load|full_load|unsafe_load)\b"
     )
+    # Check the instrument before believing its reading: a pattern that stops
+    # matching reports a clean repo forever, and so does a scan over no files.
+    for probe in ("x = yaml.safe_load(text)", "_yaml.load(text)",
+                  "from yaml import safe_load"):
+        assert pattern.search(probe), f"the scan pattern no longer matches {probe!r}"
+    scanned = 0
     for pkg in ("agent_system", "plugins", "plugins_writer", "plugins_llm", "plugins_trading"):
         for py in (SRC / pkg).rglob("*.py"):
             if "tests" in py.parts or py.name == "yaml_io.py":
                 continue
+            scanned += 1
             for lineno, line in enumerate(py.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
                 if pattern.search(line):
                     offenders.append(f"{py.relative_to(REPO)}:{lineno}: {line.strip()}")
+    assert scanned, "no production file was scanned"
     assert not offenders, "\n".join(offenders)
 
 
@@ -108,6 +116,37 @@ def test_a_syntax_error_keeps_the_pure_python_message():
     message = str(err.value)
     assert "line 2" in message, message
     assert "^" in message, f"the source line with the caret is gone:\n{message}"
+
+
+def test_the_c_parser_is_an_accelerator_not_a_stricter_one():
+    """Documents libyaml rejects and SafeLoader accepts must still load.
+
+    Both shapes measured 2026-09-04: a ``%YAML`` directive for a version
+    libyaml refuses, and a BOM in the middle of a document. Both went through
+    ``yaml.safe_load`` before this module existed, so rejecting them now would
+    be a regression nobody asked for -- a config file that loaded yesterday.
+    """
+    if yaml_io.loader() is yaml.SafeLoader:
+        pytest.skip("no libyaml here: there is nothing to fall back from")
+
+    for text, expected in (("%YAML 1.3\n---\na: 1\n", {"a": 1}),
+                           ("a: 1\n﻿b: 2\n", {"a": 1, "﻿b": 2})):
+        with pytest.raises(yaml.YAMLError):
+            yaml.load(text, Loader=yaml_io.loader())  # fixture: the C parser really refuses
+        assert yaml_io.safe_load(text) == expected, text
+
+
+def test_a_lone_surrogate_raises_a_yaml_error():
+    """libyaml raises UnicodeEncodeError on it -- not a YAMLError at all, so
+    no caller that catches YAML errors would ever see it. The pure-Python
+    loader makes it the ReaderError it has always been."""
+    if yaml_io.loader() is yaml.SafeLoader:
+        pytest.skip("no libyaml here: the C-only error cannot occur")
+
+    with pytest.raises(UnicodeEncodeError):
+        yaml.load("a: \ud800", Loader=yaml_io.loader())  # fixture: that is the C error
+    with pytest.raises(yaml.YAMLError):
+        yaml_io.safe_load("a: \ud800")
 
 
 def test_a_broken_file_object_still_raises(tmp_path):
