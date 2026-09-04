@@ -62,7 +62,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         # above that object is the caller's, and writing the merged list back
         # into it would make the stored machines look configured to the next
         # instance built from the same config -- at which point they could no
-        # longer be removed from the store.
+        # longer be removed from the store.
         config_dict = {**config_dict,
                        'machines': machine_store.merge_into(
                            name, config_dict.get('machines') or [])}
