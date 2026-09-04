@@ -205,3 +205,16 @@ def test_under_a_test_directory_a_broken_server_raises(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="boom"):
         Runtime(config).start()
+
+
+def test_materialize_injects_the_session_service():
+    """An agent built later (lazily, or on demand) must not miss what every
+    agent built at start got -- so the injection belongs in the build path,
+    not only in the walk that runs once after bootstrap."""
+    session_service = object()
+    runtime = Runtime(_config({"probe_session": _agent_server()}),
+                      session_service=session_service)
+
+    agent = runtime.materialize("probe_session")
+
+    assert agent._session_service is session_service

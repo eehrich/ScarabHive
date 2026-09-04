@@ -45,6 +45,7 @@ class InitializationService:
         self.config = config
         self._session_manager: Optional[SessionManager] = None
         self._session_service: Optional[SessionService] = None
+        self._runtime = None  # agent_system.runtime.Runtime, created on bootstrap
         self._initialized = False
 
     @property
@@ -85,16 +86,23 @@ class InitializationService:
         Returns:
             MCPRegistry with all servers bootstrapped and dependencies injected
         """
-        from ..servers.bootstrap import bootstrap_servers
-        
+        from ..runtime import Runtime, configure_process_singletons
+
         # Create registry if not provided
         if registry is None:
             registry = MCPRegistry()
             logger.debug("Created new MCPRegistry")
 
-        # Bootstrap all configured servers/plugins
+        # Bootstrap all configured servers/plugins. The Runtime is KEPT: it
+        # holds the declaration of every configured server, so a caller can
+        # later ask about one -- or build it -- without a second discovery.
         logger.info("Bootstrapping MCP servers from config")
-        bootstrap_servers(self.config, registry)
+        configure_process_singletons(self.config)
+        self._runtime = Runtime(
+            self.config, registry=registry,
+            session_service=self.session_service if inject_sessions else None,
+        )
+        self._runtime.start()
         logger.info("Servers registered: %s", ", ".join(registry.list()))
 
         # Inject session_service into all agents
@@ -161,6 +169,15 @@ class InitializationService:
         self._initialized = True
         logger.info("[InitializationService] API initialization complete")
         return self.session_service
+
+    @property
+    def runtime(self):
+        """The Runtime this service bootstrapped with, or None before bootstrap.
+
+        Whoever holds it can ask what a server IS (``describe``) and build one
+        on demand (``materialize``) instead of re-running discovery.
+        """
+        return self._runtime
 
     @property
     def initialized(self) -> bool:

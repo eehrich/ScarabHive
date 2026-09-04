@@ -933,6 +933,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     app.state.agent = agent
     app.state.mcp_registry = registry
     app.state.config = config
+    # The Runtime that built the registry: it knows every DECLARED server, not
+    # just the built ones, and is the only place that builds one.
+    app.state.runtime = _initialization_service.runtime if _initialization_service else None
     # For the deliberate config reload (POST /admin/reload-config, `agent-cli
     # reload`): the service + path let the endpoint re-parse the on-disk config.
     app.state.config_service = _config_service

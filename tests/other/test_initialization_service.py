@@ -125,3 +125,43 @@ class TestInitializationService:
         # But both work
         assert len(registry1.list()) > 0
         assert len(registry2.list()) > 0
+
+
+class TestTheRuntimeIsKept:
+    """Bootstrapping must leave the Runtime behind, not throw it away.
+
+    It holds the declaration of every configured server -- what a server IS
+    without building it, and the only path that builds one. A caller that has
+    to re-discover instead gets a second set of factory objects and a second
+    second of start-up.
+    """
+
+    @pytest.fixture
+    def service(self):
+        return InitializationService(load_settings())
+
+    def test_no_runtime_before_bootstrap(self, service):
+        assert service.runtime is None
+
+    def test_the_runtime_survives_bootstrap_and_knows_every_declaration(self, service):
+        registry = service.bootstrap_and_inject(MCPRegistry())
+
+        runtime = service.runtime
+        assert runtime is not None, "the Runtime was thrown away after bootstrap"
+        assert runtime.registry is registry
+        declared = set(runtime.declarations())
+        assert declared, "fixture: nothing was declared at all"
+        assert set(registry.list()) <= declared, (
+            "servers in the registry that no declaration explains: "
+            f"{sorted(set(registry.list()) - declared)}")
+
+    def test_every_agent_has_the_session_service_afterwards(self, service):
+        """The end state, whichever path put it there: the Runtime injects it
+        while building, and the injection walk covers agents built elsewhere.
+        (The Runtime's own half is measured in the runtime tests.)"""
+        registry = service.bootstrap_and_inject(MCPRegistry())
+
+        from agent_system.servers.agent.server import Agent
+        agents = [registry.get(n) for n in registry.list() if isinstance(registry.get(n), Agent)]
+        assert agents, "fixture: no agent was built"
+        assert all(a._session_service is service.session_service for a in agents)
