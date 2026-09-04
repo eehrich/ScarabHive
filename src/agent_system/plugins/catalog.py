@@ -8,14 +8,16 @@ for a membership test.
 The catalog names a directory the way discovery does: by its FOLDER name. A
 manifest ``name`` field renames nothing (``todo`` ships one saying
 ``todo_management`` and is discovered as ``todo``), and a directory counts only
-when its entrypoint module exists -- a library-only plugin (``coder``,
-``writer_publish``: manifest, no plugin.py) is not a type, discovery skips it.
+when its entrypoint module exists AND names a factory -- a library-only plugin
+(``coder``, ``writer_publish``: manifest, no plugin.py) is not a type, and
+neither is a module without ``PLUGIN_FACTORY``; discovery drops both.
 
 Whatever cannot be named without executing the module makes the catalog fall
 back to the real discovery, so its answer stays identical to discovery's:
 a legacy directory without a manifest, a single-file plugin (its ``register()``
-may return any name), a ``PLUGIN_NAME`` constant, an entry-point plugin. None
-of these exist in this repo today (measured: 0/0/0/0 across all three plugin
+may return any name), a directory plugin that defines ``register()`` itself, a
+``PLUGIN_NAME`` constant, an entry-point plugin. None of these exist in this
+repo today (measured 2026-09-04: 0 of each across all three plugin
 directories), which is why the fallback is cheap to keep and worth keeping.
 """
 from __future__ import annotations
@@ -74,13 +76,28 @@ class PluginCatalog:
                     if (sub / "plugin.py").exists():
                         needs_import = True  # legacy plugin, name only known after exec
                     continue
+                # Parse the entrypoint exactly as discovery does: the two
+                # defaults hold unless the value carries a colon.
+                module, factory = "plugin", "PLUGIN_FACTORY"
                 entrypoint = metadata.get("entrypoint", "plugin:PLUGIN_FACTORY")
-                module = entrypoint.split(":", 1)[0] if isinstance(entrypoint, str) else "plugin"
+                if isinstance(entrypoint, str) and ":" in entrypoint:
+                    module, factory = entrypoint.split(":", 1)
                 entry_file = sub / f"{module}.py"
                 if not entry_file.exists():
                     continue  # library-only plugin; discovery skips it too
-                if self._declares_own_name(entry_file):
+                source = self._read(entry_file)
+                if source is None:
+                    needs_import = True  # unreadable: let discovery decide
+                    continue
+                if "PLUGIN_NAME" in source or "def register(" in source:
+                    # The module names itself, and only running it says how.
+                    # Adding the folder name here as well would invent a type
+                    # discovery never registers. Asked FIRST: discovery reads
+                    # register() before it looks for any factory at all.
                     needs_import = True
+                    continue
+                if factory not in source and "PLUGIN_FACTORY" not in source:
+                    continue  # nothing to export; discovery drops it as well
                 names.add(sub.name)
                 self._manifests[sub.name] = metadata
         if self._entry_point_plugins_exist():
@@ -88,12 +105,12 @@ class PluginCatalog:
         return names, needs_import
 
     @staticmethod
-    def _declares_own_name(entry_file: Path) -> bool:
+    def _read(entry_file: Path) -> str | None:
         try:
-            return "PLUGIN_NAME" in entry_file.read_text(encoding="utf-8", errors="replace")
+            return entry_file.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             logger.debug("Cannot read %s: %s", entry_file, e)
-            return True  # unreadable: let discovery decide
+            return None
 
     @staticmethod
     def _entry_point_plugins_exist(group: str = "agent_system.mcp_plugins") -> bool:
