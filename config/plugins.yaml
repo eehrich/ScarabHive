@@ -880,7 +880,6 @@ plugins:
 
       allowed_agents:
         - financial_analyst_agent
-        - code_reviewer_agent
         - meta_web_research_agent
         - sysadmin_agent
         - comfyui_agent

@@ -193,7 +193,6 @@ config:
     - basic_agent
     - web_research_agent
     - financial_analyst_agent
-    - code_reviewer_agent
     - meta_web_research_agent
   blocked_agents:
   hook_config:
