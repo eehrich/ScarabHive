@@ -32,8 +32,10 @@ plugins:
         image_agent_list_available_tools: "List the image tools available (ComfyUI generation, composition, analysis, loading)"
 
       agent_config:
-        # It has to LOOK at what it made: both links can see images.
-        llm_profile: [or-claude-sonnet, or-gemini-pro]
+        # It has to LOOK at what it made, so both links can see images. The
+        # loop is many cheap vision calls (generate, look, judge, repeat);
+        # Flash carries that, Sonnet is the fallback when it is unavailable.
+        llm_profile: [or-gemini-flash, or-claude-sonnet]
         llm_profile_advanced: []
         llm_params:
           "*":
