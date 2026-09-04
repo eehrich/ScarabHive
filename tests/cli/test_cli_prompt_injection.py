@@ -79,7 +79,10 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
 
     # Make reading the template deterministic: ensure Path.read_text returns the original template
     original_template = Path('config/prompts/system_prompt.md').read_text(encoding='utf-8')
-    monkeypatch.setattr(Path, 'read_text', lambda self, encoding='utf-8': original_template)
+    # **kwargs on purpose: this replaces read_text for EVERY reader in the CLI
+    # run, and a signature that only knows `encoding` turns any other caller
+    # (errors=, newline=) into a TypeError far away from this test.
+    monkeypatch.setattr(Path, 'read_text', lambda self, encoding='utf-8', **kwargs: original_template)
 
     cli.main()
 

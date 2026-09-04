@@ -516,17 +516,29 @@ def _report_unknown_llm_profiles(cfg: AgentSystemConfig) -> None:
 
 
 # Cache for plugin discovery (avoid repeated calls)
-_plugins_cache: dict[str, type] | None = None
+_plugins_cache: frozenset[str] | None = None
 # Cache for resolved server inheritance
 _inheritance_cache: dict[str, tuple[str, dict]] = {}
 
 
-def _get_plugins_cached() -> dict[str, type]:
-    """Get plugins with caching to avoid repeated discovery."""
+def _known_plugin_types() -> frozenset[str]:
+    """The plugin type names, for the membership tests below.
+
+    Read from the manifests, not by discovering: this used to import every
+    plugin module in the process just to answer "is this type a plugin?"
+    (measured 2026-09-04 in a fresh process: 0.85 s, 187 plugin modules in
+    sys.modules). The catalog looks in the same directory discovery would use
+    without arguments -- ONE directory, the importable ``plugins`` package,
+    not the three in config.plugins.plugin_dirs. Widening that here is not a
+    free cleanup: `repair_pipeline` (type: writer_issues) inherits its
+    ``write_key`` from the sibling server because ``writer_issues`` is NOT in
+    this set, and would lose it (measured over all 219 servers: that one).
+    """
     global _plugins_cache
     if _plugins_cache is None:
-        from ..plugins import discover_all_plugins
-        _plugins_cache = discover_all_plugins()
+        from ..plugins.catalog import PluginCatalog
+        from ..plugins.discovery import default_plugin_dirs
+        _plugins_cache = PluginCatalog(default_plugin_dirs()).types()
     return _plugins_cache
 
 
@@ -578,7 +590,7 @@ def _resolve_server_inheritance(
     # This is not real inheritance, treat it as if type is a plugin
     if typ == server_name:
         # Check if it's a known plugin
-        plugins = _get_plugins_cached()
+        plugins = _known_plugin_types()
         if typ in plugins:
             # Type is a real plugin, return as-is
             result = (typ, server_dict)
@@ -589,7 +601,7 @@ def _resolve_server_inheritance(
             return (typ, server_dict)
     
     # Check if type is a known plugin (use cached plugins)
-    plugins = _get_plugins_cached()
+    plugins = _known_plugin_types()
     
     if typ in plugins:
         # Type is a real plugin, no further inheritance needed

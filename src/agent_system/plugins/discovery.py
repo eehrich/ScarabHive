@@ -371,6 +371,33 @@ def discover_entrypoint_plugins(group: str = "agent_system.mcp_plugins") -> Dict
     return out
 
 
+def default_plugin_dirs() -> list[Path]:
+    """Where filesystem discovery looks when no dirs are given.
+
+    The importable ``plugins`` package (editable installs put it under src/),
+    else the synthetic ``plugins`` module a previous discovery left in
+    sys.modules. NOTE this is ONE directory -- ``config.plugins.plugin_dirs``
+    lists three, and callers that want all of them pass them explicitly.
+    """
+    source_dirs: list[Path] = []
+    try:
+        spec = importlib.util.find_spec("plugins")
+        if spec is not None:
+            for location in getattr(spec, "submodule_search_locations", None) or []:
+                source_dirs.append(Path(location))
+    except Exception:
+        # ignore and continue — we'll still discover entrypoint plugins
+        pass
+    if not source_dirs:
+        try:
+            mod = sys.modules.get("plugins")
+            if mod is not None and getattr(mod, "__path__", None):
+                source_dirs.extend(Path(p) for p in mod.__path__)
+        except Exception as e:
+            logger.debug(f"Failed to reuse existing 'plugins' module paths: {e}")
+    return source_dirs
+
+
 def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent_system.mcp_plugins") -> Dict[str, Callable[..., MCPServer]]:
     """Discover plugins from filesystem directories and entry points.
 
@@ -385,33 +412,7 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
     # and use its filesystem paths for discovery. This avoids hardcoding
     # repository paths while ensuring discoverability in common dev
     # and editable-install setups.
-    source_dirs = list(dirs) if dirs else []
-    if not source_dirs:
-        try:
-            import importlib
-            spec = importlib.util.find_spec("plugins")
-            if spec is not None:
-                submodule_locations = getattr(spec, "submodule_search_locations", None)
-                if submodule_locations:
-                    for p in submodule_locations:
-                        source_dirs.append(Path(p))
-        except Exception:
-            # ignore and continue — we'll still discover entrypoint plugins
-            pass
-        # If importlib couldn't find a spec, it's possible a previous
-        # discovery run created a synthetic 'plugins' module in
-        # sys.modules (we do this to load filesystem plugins under the
-        # 'plugins.<name>' namespace). In that case reuse its __path__
-        # entries so subsequent discovery (e.g. nested bootstraps) can
-        # still locate the filesystem plugins.
-        if not source_dirs:
-            try:
-                mod = sys.modules.get("plugins")
-                if mod is not None and getattr(mod, "__path__", None):
-                    for p in mod.__path__:
-                        source_dirs.append(Path(p))
-            except Exception as e:
-                logger.debug(f"Failed to reuse existing 'plugins' module paths: {e}")
+    source_dirs = list(dirs) if dirs else default_plugin_dirs()
     # Normalize each source dir to an absolute Path and discover plugins there.
     for raw in source_dirs:
         try:
