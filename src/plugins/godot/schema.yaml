@@ -50,10 +50,10 @@ tools:
       name: "{{ name }}_import_assets"
       description: |
         Import new or changed assets (a copied .glb, .png, .wav ...) so the
-        project can use them: runs the editor's import step headless. Do it
-        after landing a file in the project and before running or
-        referencing it; with the editor open, follow with
-        {{ name }}_command rescan_filesystem.
+        project can use them. Do it after landing a file in the project and
+        before running or referencing it. A running editor on this project
+        is refreshed afterwards so it sees the result (`editor_refreshed`);
+        that refresh never decides the import.
       parameters:
         type: object
         properties:

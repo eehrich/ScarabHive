@@ -53,7 +53,7 @@ wrong: does the binary run, and which project does the editor have open.
 |---|---|
 | `godot_status` | Binary version; editor reachable, addon version, open project |
 | `godot_setup` | Create a project and/or install + enable the addon; idempotent |
-| `godot_import_assets` | Import new files (`--headless --import`) |
+| `godot_import_assets` | Import new or changed files; refreshes a running editor afterwards |
 | `godot_check` | Parse errors with `file:line` — one script, or every `.gd` outside `addons/` |
 | `godot_run` | Play a scene N frames; verdict from the parsed error blocks, **not** the exit code |
 | `godot_script` | A SceneTree script against the project: the engine API without the editor |

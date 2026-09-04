@@ -47,6 +47,11 @@ class FakeAddon:
         self.sleep: dict[str, float] = {}
         #: Close with this code instead of answering (4001 busy, 4002 stale).
         self.close_code: int | None = None
+        #: Answer these commands with an error envelope instead of a result.
+        self.errors: set[str] = set()
+        #: What mcp_handshake reports as the open project (the server fixture
+        #: points it at the test project).
+        self.project_path = "C:/fake/"
         #: Send this text instead of a JSON reply.
         self.raw_reply: str | None = None
         self.port = 0
@@ -78,9 +83,12 @@ class FakeAddon:
 
     def _reply(self, command: str, params: dict) -> dict:
         ok = lambda result: {"status": "success", "result": result}  # noqa: E731
+        if command in self.errors:
+            return {"status": "error",
+                    "error": {"code": "SCAN_TIMEOUT", "message": f"{command} refused"}}
         if command == "mcp_handshake":
             return ok({"addon_version": "4.1.11", "godot_version": "4.7.2-stable (official)",
-                       "project_name": "fake_project", "project_path": "C:/fake/"})
+                       "project_name": "fake_project", "project_path": self.project_path})
         if command == "get_scene_tree":
             return ok({"tree": {"name": "Main", "type": "Node", "children": [
                 {"name": "Player", "type": "CharacterBody2D", "children": []},
@@ -124,6 +132,9 @@ class FakeAddon:
                                      "type": "res://main.tscn:3 - ext_resource, invalid UID: boom"}]})
         if command == "get_input_map":
             return ok({"actions": {"jump": ["Space"]}})
+        if command == "rescan_filesystem":
+            return ok({"scanned": True, "reimported": params.get("paths") or [],
+                       "duration_ms": 12})
         return {"status": "error", "error": {"code": "UNKNOWN_COMMAND",
                                              "message": f"Unknown command: {command}"}}
 
@@ -160,7 +171,15 @@ def server(addon, project, tmp_path, monkeypatch):
     srv = PLUGIN_FACTORY(name="godot", system_config=AgentSystemConfig(), mcp_config=config)
     srv._godot = [sys.executable, str(STUB)]
     srv._stub_log = log  # test-only handle
+    addon.project_path = str(project)  # the editor has this project open
     return srv
+
+
+@pytest.fixture
+def no_editor(server):
+    """Port 1 answers nothing and cannot be taken by a stray process."""
+    server._port = 1
+    return server
 
 
 def stub_calls(server) -> list[list[str]]:
@@ -432,15 +451,93 @@ async def test_setup_creates_a_project_installs_and_enables_the_addon_and_the_au
     assert "resource_format_text.cpp" not in line
 
 
-async def test_import_assets_runs_the_import_step_and_reports_its_errors(server, project):
+async def test_the_import_runs_headless_and_then_refreshes_the_open_editor(server, addon, project):
+    """The headless run is what decides: it is the one that takes the
+    project as an argument and names the files that failed. The editor is
+    refreshed afterwards so it sees the result."""
     result, line = await run_tool(server, "godot_import_assets", {"project": "shmup"})
-    assert result["ok"] is True
+    assert result["ok"] is True and result["editor_refreshed"] is True
     (argv,) = stub_calls(server)
     assert "--import" in argv and "--headless" in argv
-    assert "shmup" in line and "0 errors" in line
+    assert ("rescan_filesystem", {}) in addon.calls
+    assert "shmup" in line and "editor refreshed" in line
+
+
+async def test_an_editor_on_another_project_is_not_rescanned(server, addon, project):
+    """`rescan_filesystem` takes no project -- it scans whatever the editor
+    has open. Rescanning the wrong one and reporting success for this one is
+    a silent wrong answer."""
+    addon.project_path = str(project.parent / "other")
+    result, line = await run_tool(server, "godot_import_assets", {"project": "shmup"})
+    assert result["ok"] is True and result["editor_refreshed"] is False
+    assert "rescan_filesystem" not in [c for c, _ in addon.calls]
+    assert "editor not refreshed" in line
+
+
+@pytest.mark.parametrize("close_code, code", [(4001, "BUSY"), (4002, "STALE")])
+async def test_a_refresh_that_fails_does_not_fail_the_import(server, addon, project,
+                                                             close_code, code):
+    """A busy editor, or the addon dropping a socket it considers idle while
+    its own scan runs on: the assets are imported either way."""
+    addon.close_code = close_code
+    result, line = await run_tool(server, "godot_import_assets", {"project": "shmup"})
+    assert result["ok"] is True and result["editor_refreshed"] is False
+    assert code in (result["editor_note"] or "")
+    assert stub_calls(server), "the import still ran"
+
+
+async def test_a_rescan_the_editor_refuses_does_not_fail_the_import(server, addon, project):
+    """The handshake succeeds, the scan does not: the assets are imported,
+    the editor's view is stale, and the reply says which."""
+    addon.errors = {"rescan_filesystem"}
+    result, line = await run_tool(server, "godot_import_assets", {"project": "shmup"})
+    assert result["ok"] is True and result["editor_refreshed"] is False
+    assert "SCAN_TIMEOUT" in (result["editor_note"] or "")
+    assert stub_calls(server), "the import still ran"
+    assert "editor not refreshed" in line
+
+
+async def test_an_addon_error_that_is_not_the_port_complaint_still_counts(server, project, no_editor):
+    """The exemption is one measured line, not the addon's whole output. A
+    broader match would swallow a real failure inside the addon."""
+    (project / "ADDON_ERROR").write_text("", encoding="utf-8")
+    result, line = await run_tool(server, "godot_import_assets", {"project": "shmup"})
+    assert result["ok"] is False
+    assert any("godot-mcp" in e["message"] for e in result["errors"])
+
+
+async def test_without_an_editor_the_import_stands_on_its_own(server, project, no_editor):
+    result, line = await run_tool(server, "godot_import_assets", {"project": "shmup"})
+    assert result["ok"] is True and result["editor_refreshed"] is False
+    assert result["editor_note"] is None, "no editor is not a defect worth a note"
+    (argv,) = stub_calls(server)
+    assert "--import" in argv and "--headless" in argv
+    assert "shmup" in line and "0 errors" in line and "not refreshed" not in line
     (project / "main.tscn").unlink()
     result, line = await run_tool(server, "godot_import_assets", {"project": "shmup"})
     assert result["ok"] is False and "Cannot open file" in line
+
+
+async def test_the_addons_own_port_complaint_is_a_warning_not_a_project_error(server, project, no_editor):
+    """Every run that loads the project in EDITOR mode starts the bundled
+    addon, which cannot bind the port a running editor holds. Measured in a
+    real session: that complaint made a working import read as failed."""
+    (project / "PORT_TAKEN").write_text("", encoding="utf-8")
+    result, line = await run_tool(server, "godot_import_assets", {"project": "shmup"})
+    assert result["ok"] is True and result["errors"] == []
+    assert any("Failed to start server" in w["message"] for w in result["warnings"]),         "kept as a warning, not dropped"
+    assert "0 errors" in line
+
+
+async def test_the_addons_own_port_complaint_does_not_fail_an_export(server, project, tmp_path, no_editor):
+    """The export is the expensive one: it demands a clean run, so the same
+    complaint turned a correctly written pack into ExportFailed."""
+    (project / "PORT_TAKEN").write_text("", encoding="utf-8")
+    result, line = await run_tool(server, "godot_export",
+                                  {"project": "shmup", "preset": "Windows",
+                                   "output": "game.exe"})
+    assert result["status"] == "success", result
+    assert any("Failed to start server" in w["message"] for w in result["warnings"])
 
 
 async def test_setup_is_idempotent_and_says_present(server, project):
@@ -510,7 +607,7 @@ async def test_setup_refuses_to_guess_the_engine_version(server, project):
     assert "version" in line
 
 
-async def test_import_assets_with_a_bad_exit_and_no_blocks_is_an_error(server, project):
+async def test_import_assets_with_a_bad_exit_and_no_blocks_is_an_error(server, project, no_editor):
     (project / "IMPORT_FAIL").write_text("", encoding="utf-8")
     result, line = await run_tool(server, "godot_import_assets", {"project": "shmup"})
     assert result["ok"] is False and "exit 2" in line

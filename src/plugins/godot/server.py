@@ -92,6 +92,8 @@ _LONG_COMMANDS = {
     "game_time_step", "game_time_step_until", "exec_run",
     "execute_input_sequence", "type_text", "run_project",
     "capture_game_screenshot", "capture_editor_screenshot",
+    # A scan walks the project and imports what it finds.
+    "rescan_filesystem",
 }
 
 
@@ -200,6 +202,19 @@ def dedupe_load_failures(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 _PROGRESS = re.compile(r"^\[\s*\d+% \]")
 
 
+def _is_addon_noise(block: dict[str, Any]) -> bool:
+    """Our own addon complaining that the port is taken.
+
+    Every run that loads the project in EDITOR mode -- ``--import`` and
+    ``--export-*`` -- starts the bundled EditorPlugin, which tries to bind
+    the port a running editor already holds and pushes an error. It says
+    nothing about the project, but it lands in the same stderr as real
+    errors, so it failed exports outright and made clean imports look
+    broken. Kept as a warning; nothing is dropped.
+    """
+    return block["message"].startswith("[godot-mcp] Failed to start server on ")
+
+
 def _clean_stdout(stdout: str) -> str:
     lines = [ln for ln in stdout.splitlines()
              if not _BANNER.match(ln) and not _PROGRESS.match(ln)]
@@ -258,8 +273,10 @@ class GodotServer(SchemaBasedMCPServer):
             "timed_out": raw["timed_out"],
             "timeout": timeout,
             "output": _clean_stdout(raw["stdout"]),
-            "errors": [e for e in errors if "WARNING" not in e["kind"]],
-            "warnings": [e for e in errors if "WARNING" in e["kind"]],
+            "errors": [e for e in errors
+                       if "WARNING" not in e["kind"] and not _is_addon_noise(e)],
+            "warnings": [e for e in errors
+                         if "WARNING" in e["kind"] or _is_addon_noise(e)],
             # stderr the block parser did not consume: crash backtraces,
             # printerr(), anything unprefixed. Never silently dropped.
             "stderr": "\n".join(rest),
@@ -685,12 +702,47 @@ class GodotServer(SchemaBasedMCPServer):
         # what is on disk now, not what was intended.
         return ADDON_RES_PATH in cfg.read_text(encoding="utf-8")
 
-    async def import_assets(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Import everything new in the project: ``--headless --import``.
+    async def _refresh_editor(self, project: Path) -> tuple[bool, str | None]:
+        """Make a running editor notice what the import wrote.
 
-        A file copied into the project is not usable until the editor has
-        imported it -- and the editor may be closed, or open on a scene that
-        does not notice. This is the same call ``setup`` ends with.
+        Best effort by design: the import's verdict comes from the headless
+        run, which is the one that knows which project it touched and which
+        files failed. The addon's ``rescan_filesystem`` knows neither -- it
+        scans whatever project the editor has open and answers ``scanned:
+        true`` whether or not a file failed to import -- so it can refresh
+        the editor's view and nothing more.
+        """
+        try:
+            info = await self._call("mcp_handshake", {"server_version": "agent_system"}, timeout=10)
+        except GodotNotReachable:
+            return False, None  # no editor to refresh: not a defect
+        except Exception as exc:
+            return False, str(exc)
+        open_path = str(info.get("project_path") or "").strip()
+        try:
+            same = bool(open_path) and Path(open_path).resolve() == project.resolve()
+        except OSError:
+            same = False
+        if not same:
+            return False, f"the editor has '{info.get('project_name') or open_path}' open"
+        try:
+            await self._call("rescan_filesystem", {})
+        except Exception as exc:
+            # STALE is the likely one: the addon drops a socket idle for 45 s
+            # while its own scan may run to 60. The scan finishes regardless.
+            return False, str(exc)
+        return True, None
+
+    async def import_assets(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Import everything new or changed in the project.
+
+        A file copied into the project is not usable until it has been
+        imported -- and the editor may be closed, or open on a scene that
+        does not notice. The headless import is what decides: it takes the
+        project as an argument and reports the files that failed.
+
+        A running editor is refreshed afterwards so it sees the result, but
+        that refresh cannot fail the import.
         """
         status = params["_status"]
         try:
@@ -701,13 +753,19 @@ class GodotServer(SchemaBasedMCPServer):
             return self._fail(exc)
         errors = result["errors"]
         ok = self._clean(result)
+        refreshed, why = await self._refresh_editor(project)
         line = f"{project.name}: import exit {result['exit']}, {len(errors)} errors"
+        if refreshed:
+            line += ", editor refreshed"
+        elif why:
+            line += f", editor not refreshed ({why})"
         if ok:
             await status.end(self._short(line))
         else:
             await status.error(self._short(f"{line}: {self._reason(result)}"))
         return {"status": "success", "ok": ok,
                 "exit": result["exit"], "timed_out": result["timed_out"],
+                "editor_refreshed": refreshed, "editor_note": why,
                 "errors": errors, "warnings": result["warnings"], "stderr": result["stderr"]}
 
     async def check(self, params: dict[str, Any]) -> dict[str, Any]:

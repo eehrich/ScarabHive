@@ -13,6 +13,8 @@ Behaviour is keyed on markers in the files it is pointed at:
   CRASH       in main.gd -> a crash handler dump (no ERROR: prefix), exit 139
   hang.tscn   as scene -> never quits (for the timeout path)
   HANG_IMPORT / IMPORT_FAIL marker files in the project -> --import hangs / exits 2
+  PORT_TAKEN  marker file -> the bundled addon cannot bind its port (editor open)
+  ADDON_ERROR marker file -> a different addon error, which IS a project error
   preset "Partial" -> writes the file, then exits 1; "Slow" -> writes, then hangs
 """
 from __future__ import annotations
@@ -59,6 +61,14 @@ def flag(argv: list[str], name: str) -> str | None:
 
 def res_to_path(project: Path, res: str) -> Path:
     return project / res[len("res://"):] if res.startswith("res://") else Path(res)
+
+
+def addon_port_taken() -> None:
+    """What the bundled addon prints when a running editor holds the port.
+    Every EDITOR-mode run loads it: --import and --export-*."""
+    sys.stderr.write(
+        "ERROR: [godot-mcp] Failed to start server on 127.0.0.1:6550: Already in use\n"
+        "   at: push_error (core/variant/variant_utility.cpp:1023)\n")
 
 
 def main(argv: list[str]) -> int:
@@ -113,6 +123,12 @@ def main(argv: list[str]) -> int:
 
     if "--import" in argv:
         print("[   0% ] \x1b[90m\x1b[1mfirst_scan_filesystem\x1b[22m | Started\x1b[39m\x1b[0m")
+        if (project / "PORT_TAKEN").exists():
+            addon_port_taken()
+        if (project / "ADDON_ERROR").exists():
+            sys.stderr.write(
+                "ERROR: [godot-mcp] command_router.gd: failed to register commands\n"
+                "   at: push_error (core/variant/variant_utility.cpp:1023)\n")
         if (project / "IMPORT_FAIL").exists():
             return 2
         cfg = project / "project.godot"
@@ -143,6 +159,8 @@ def main(argv: list[str]) -> int:
         if exp in argv:
             i = argv.index(exp)
             preset, out = argv[i + 1], argv[i + 2]
+            if (project / "PORT_TAKEN").exists():
+                addon_port_taken()
             print("[  16% ] \x1b[90mfirst_scan_filesystem | Lese Dateistruktur\x1b[0m")
             if preset == "Nope":
                 sys.stderr.write("ERROR: This project doesn't have an `export_presets.cfg` file at its root.\n"
