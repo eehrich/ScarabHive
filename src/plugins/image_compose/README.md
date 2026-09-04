@@ -29,8 +29,11 @@ homogeneity, optionally restricted to a third or half of the image.
 `image`, `text`, `rect`, `gradient`, `svg`, `vignette`. Every layer takes
 `opacity`, `rotation`, `blend_mode` (`normal|multiply|screen|overlay`) and a
 position that is either absolute `[x, y]` or an anchor with a pixel or
-percentage offset. The full per-field reference lives in `schema.yaml` — it is
-the prompt the model reads, so that file is the specification.
+percentage offset. An `image` layer with `cutout: true` has its background
+removed by rembg before it is fitted (real alpha; `trim` crops to the
+object, `alpha_threshold` makes the edge hard for pixel art). The full per-field reference lives in
+`schema.yaml` — it is the prompt the model reads, so that file is the
+specification.
 
 ## Two warnings the renderer emits
 

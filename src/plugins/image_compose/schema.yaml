@@ -17,7 +17,11 @@ tools:
                 position: [x,y] OR {anchor, offset:[dx,dy]} OR {anchor, offset_pct:[%,%]}
                 anchor ∈ top_left|top_center|top_right|center_left|center|center_right|bottom_left|bottom_center|bottom_right
 
-              image: src(path|data-URI), size:[w,h]|{width_pct,height_pct}, fit(cover|contain|stretch)
+              image: src(path|data-URI), size:[w,h]|{width_pct,height_pct}, fit(cover|contain|stretch),
+                     cutout(true = remove the background with rembg isnet-general-use; real alpha, applied before fit.
+                            Or a model name: birefnet-general-lite keeps thin parts (whiskers, rope) but is ~5x slower, isnet-anime for anime, u2net for a second opinion),
+                     trim(true: crop to the visible bounding box before fit — a sprite fills its canvas instead of the frame around it),
+                     alpha_threshold(1-255: alpha becomes 0 or 255 after the fit — pixel art, kills the soft halo a cutout leaves. Omit to keep soft edges)
               text:  text, font(sans|sans_bold|serif|serif_bold|mono|display|display_grotesk|script|stencil|display_block|filename), size, color("#rrggbb[aa]"),
                      align(left|center|right), max_width(px|{width_pct}), line_height, tracking, uppercase,
                      stroke:{width,color}, shadow:{offset:[dx,dy], blur, color}
@@ -144,6 +148,17 @@ config:
       type: string
       default: "."
       description: "Base directory for resolving relative output paths."
+    output_directories:
+      type: array
+      items:
+        type: string
+      default: []
+      description: >
+        Write sandbox for the composite, its layer directory and the spec
+        file. Empty = unrestricted (the default; the writer's cover pipeline
+        relies on it). Non-empty = every written path must resolve inside one
+        of these directories; anything else is refused before it is created.
+        Give an instance that a sub-agent drives its own directory here.
     overlap_check_enabled:
       type: boolean
       default: true

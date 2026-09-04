@@ -43,6 +43,18 @@ class ImageComposeServer(SchemaBasedMCPServer):
         aliases_cfg = getattr(mcp_config, "font_aliases", {}) or {}
         self.font_aliases: dict[str, str] = dict(aliases_cfg) if isinstance(aliases_cfg, dict) else {}
 
+        # Optional write sandbox. Empty (the default) keeps the historical
+        # behaviour -- the composite, its layer directory and the spec land
+        # wherever output_path says, which the writer's cover pipeline relies
+        # on. A non-empty list confines all three to those directories, so an
+        # instance handed to a sub-agent cannot write into another agent's
+        # tree on a model-chosen path.
+        dirs_cfg = getattr(mcp_config, "output_directories", None) or []
+        self.output_directories: list[Path] = [
+            (project_root / d).resolve() if not Path(d).is_absolute() else Path(d).resolve()
+            for d in dirs_cfg
+        ]
+
         # Inter-layer overlap check (text/svg pairs only). Defaults match the
         # cover_artist prompt's HARTE REGEL #7. Plugin users with different
         # composition policies can disable or retune via plugin config.
@@ -91,6 +103,7 @@ class ImageComposeServer(SchemaBasedMCPServer):
             out_full = Path(output_path)
             if not out_full.is_absolute():
                 out_full = (self.output_root / out_full).resolve()
+            out_full = self._confine(out_full, "output_path")
             out_full.parent.mkdir(parents=True, exist_ok=True)
 
             # Per-layer PNG export:
@@ -110,6 +123,18 @@ class ImageComposeServer(SchemaBasedMCPServer):
             else:
                 # Omitted → auto-derive next to the composite
                 layers_dir = out_full.parent / f"{out_full.stem}_layers"
+            if layers_dir is not None:
+                layers_dir = self._confine(layers_dir, "layers_dir")
+
+            # Resolved and confined HERE, before compose() writes anything:
+            # a refused spec_path after the render would leave the composite
+            # and its layer directory on disk under an error result.
+            spec_full: Path | None = None
+            if spec_path and isinstance(spec_path, str):
+                spec_full = Path(spec_path)
+                if not spec_full.is_absolute():
+                    spec_full = (self.output_root / spec_full).resolve()
+                spec_full = self._confine(spec_full, "spec_path")
 
             n_layers = len(spec.get("layers") or [])
             if status:
@@ -145,10 +170,7 @@ class ImageComposeServer(SchemaBasedMCPServer):
             # stored as UTF-8 chars instead of \u escapes. This sidesteps the
             # double-encoding mojibake we saw when LLMs serialised specs as
             # JSON strings themselves and passed them through file_ops.
-            if spec_path and isinstance(spec_path, str):
-                spec_full = Path(spec_path)
-                if not spec_full.is_absolute():
-                    spec_full = (self.output_root / spec_full).resolve()
+            if spec_full is not None:
                 spec_full.parent.mkdir(parents=True, exist_ok=True)
                 spec_full.write_text(
                     json.dumps(spec, ensure_ascii=False, indent=2),
@@ -202,6 +224,20 @@ class ImageComposeServer(SchemaBasedMCPServer):
             if status:
                 await status.error(f"Unexpected error: {e}")
             return _error(str(e), type(e).__name__)
+
+    def _confine(self, path: Path, what: str) -> Path:
+        """``path`` if it lies inside one of ``output_directories`` (or the
+        sandbox is off); raises CompositionError otherwise, BEFORE anything
+        is created on disk."""
+        if not self.output_directories:
+            return path
+        resolved = path.resolve()
+        for root in self.output_directories:
+            if resolved == root or root in resolved.parents:
+                return resolved
+        allowed = ", ".join(str(r) for r in self.output_directories)
+        raise CompositionError(
+            f"{what} {path} lies outside the allowed output directories ({allowed})")
 
     async def analyze(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Measure brightness/colour/edges of an image (optionally a region).

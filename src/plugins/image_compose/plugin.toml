@@ -25,4 +25,10 @@ requires = { agent_system = ">=0.6.0" }
 # Das [pycairo]-Extra traegt BEIDE Backends selbst (rlPyCairo>=0.2,<1 und
 # freetype-py>=2.3,<2.4) — eigene Pins daneben kollidierten prompt: mein
 # freetype-py>=2.4 stand gegen reportlabs <2.4. Das Extra ist die Quelle.
-dependencies = ["svglib>=1.5", "reportlab[pycairo]>=4.0", "numpy>=1.26"]
+# rembg: the `cutout` option on image layers (compositor.py, lazy import).
+# It raises three floors the whole install shares — onnxruntime>=1.23.2
+# (core.txt asks only for >=1.20), numpy>=2.3 and Pillow>=12.1 — and pulls
+# scikit-image, scipy, pymatting and pooch. Resolved on the server
+# (Python 3.13.7) and locally; measured 2026-09-04. The model file
+# (~170 MB) is downloaded once per host into ~/.rembg on first use.
+dependencies = ["svglib>=1.5", "reportlab[pycairo]>=4.0", "numpy>=1.26", "rembg[cpu]>=2.0.60"]

@@ -10,6 +10,7 @@ import io
 import logging
 import math
 import re
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -766,12 +767,110 @@ def _render_image_layer(layer: dict, canvas_size: tuple[int, int],
     if not src:
         raise CompositionError("image layer: 'src' is required")
     img = _load_image_src(src, project_root)
+    # Cutout at source resolution, before any fit: the matting model sees the
+    # pixels the generator made, not a resampled copy.
+    cutout = _flag(layer.get("cutout"))
+    if cutout:
+        img = _cutout(img, cutout)
+    if _flag(layer.get("trim")):
+        # Crop to what is visible, so a `contain` fit scales the object and
+        # not the empty frame the generator drew around it.
+        box = img.getchannel("A").getbbox()
+        if box is None:
+            raise CompositionError("trim: the image is fully transparent, nothing to keep")
+        img = img.crop(box)
     target = _resolve_size_field(layer.get("size"), canvas_size, default=None)
     if target:
         fit = layer.get("fit", "cover")
         img = _fit_image(img, target, fit)
+    # After the fit: resampling would put soft alpha back (measured: 99
+    # alpha values in a 64x64 sprite thresholded before its resize).
+    if layer.get("alpha_threshold") is not None:
+        img = _binarise_alpha(img, layer["alpha_threshold"])
     pos = _resolve_position(layer.get("position"), img.size, canvas_size)
     return img.convert("RGBA"), pos
+
+
+# ── Background removal ───────────────────────────────────────────────────
+#
+# rembg (ONNX, CPU) turns an opaque generated image into a real cutout.
+# Measured on 4.7.2-era assets (2026-09-04): isnet-general-use gives a clean
+# matte on a painted character (1.4 % soft pixels, 0.9 s at 1248x1824 CPU),
+# u2net leaves half-transparent props; on an 80x110 pixel sprite isnet
+# leaves a dark halo that `alpha_threshold` removes. birefnet-general-lite
+# keeps the whiskers isnet loses, at 14.4 s against 2.6 s and a 224 MB
+# model. The model file is fetched once per host into ~/.rembg on first use.
+
+CUTOUT_DEFAULT_MODEL = "isnet-general-use"
+_cutout_sessions: dict[str, Any] = {}
+# compose() runs in a thread per request (server.py hands it to asyncio.to_thread),
+# so two cold renders would otherwise each build — and download — the same model.
+_cutout_lock = threading.Lock()
+
+_TRUE_WORDS = {"true", "yes", "on", "1"}
+_FALSE_WORDS = {"false", "no", "off", "0", "none", "null", ""}
+
+
+def _flag(value: Any) -> Any:
+    """A stringified boolean becomes one; anything else passes through.
+
+    LLMs write `"cutout": "true"` as readily as `true`, and a bare string is
+    a model name here — without this, "true" would be looked up as a model
+    and "false" would switch the cutout ON.
+    """
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in _TRUE_WORDS:
+            return True
+        if word in _FALSE_WORDS:
+            return False
+    return value
+
+
+def _remove_background(img: Image.Image, model: str) -> Image.Image:
+    """The rembg seam: imported here on first use, never at module import."""
+    try:
+        from rembg import new_session, remove
+    except ImportError as e:
+        raise CompositionError(f"cutout needs the rembg package (pip install 'rembg[cpu]'): {e}")
+    session = _cutout_sessions.get(model)
+    if session is None:
+        with _cutout_lock:
+            session = _cutout_sessions.get(model)
+            if session is None:
+                try:
+                    session = _cutout_sessions[model] = new_session(model)
+                except Exception as e:
+                    raise CompositionError(f"cutout: rembg model {model!r} unavailable: {e}")
+    return remove(img, session=session).convert("RGBA")
+
+
+def _cutout(img: Image.Image, cutout: Any) -> Image.Image:
+    """`cutout: true` uses the default model, a string names one."""
+    model = cutout if isinstance(cutout, str) else CUTOUT_DEFAULT_MODEL
+    return _remove_background(img.convert("RGBA"), model)
+
+
+def _binarise_alpha(img: Image.Image, threshold: Any) -> Image.Image:
+    """Every pixel fully opaque or fully clear — pixel art has no soft edges."""
+    # A bool reaches int() as 0 or 1 and would turn the whole layer opaque —
+    # silently undoing the cutout it was meant to sharpen. So would 0. Both
+    # can only mean "off", and "off" is written by leaving the key out.
+    if isinstance(threshold, bool):
+        raise CompositionError(
+            f"alpha_threshold must be an integer 1-255, got {threshold!r} — "
+            f"omit the key instead of switching it off")
+    try:
+        t = int(threshold)
+    except (TypeError, ValueError):
+        raise CompositionError(f"alpha_threshold must be an integer 1-255, got {threshold!r}")
+    if not 1 <= t <= 255:
+        raise CompositionError(
+            f"alpha_threshold must be 1-255, got {t}" +
+            (" — 0 would make every pixel opaque; omit the key instead" if t == 0 else ""))
+    img = img.convert("RGBA")
+    img.putalpha(img.getchannel("A").point(lambda v: 255 if v >= t else 0))
+    return img
 
 
 def _render_text_layer(layer: dict, canvas_size: tuple[int, int],
@@ -1170,7 +1269,10 @@ def _fit_image(img: Image.Image, target: tuple[int, int], fit: str) -> Image.Ima
             new_w, new_h = max(1, int(th * src_aspect)), th
         resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         canvas = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
-        canvas.paste(resized, ((tw - new_w) // 2, (th - new_h) // 2), resized)
+        # No mask: pasting an RGBA image through itself premultiplies it
+        # (alpha 200 comes out 157 and white turns grey). The canvas is
+        # empty, so a plain paste is the correct copy.
+        canvas.paste(resized, ((tw - new_w) // 2, (th - new_h) // 2))
         return canvas
     # cover (default): scale to fill, then center-crop
     if src_aspect > dst_aspect:
