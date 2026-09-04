@@ -30,7 +30,8 @@ This plugin enables secure remote machine control through SSH with support for m
 
 ## Configuration
 
-Configure the SSH Control plugin in `config/mcp.yaml`:
+Configure the SSH Control plugin in its agent YAML under `config/agents/`
+(the block is `ssh_control:` inside `plugins.servers`):
 
 ```yaml
 mcp:
@@ -152,7 +153,9 @@ servers:
    - Authentication method (key/password/agent)
    - Credentials (key path or password)
    - Tags (optional, comma-separated)
-3. Check "Save to config file" to persist the machine
+3. Check "Keep across restarts" to store the machine in
+   `data/ssh_control/machines.<instance>.yaml`. Password machines cannot be
+   stored: the secret would have to be written to disk.
 4. Click "Add Machine" to test connection and add
 
 #### View Connection Status
@@ -369,7 +372,8 @@ eventSource.onerror = (error) => {
   - Improved error message display
   - Added proper status indicators (connected/disconnected)
   - Backend error categorization (401/503/504)
-  - Verified persistence to config/mcp.yaml
+  - Verified persistence to config/mcp.yaml (a file nothing read back;
+    replaced 2026-09-04 by data/ssh_control/machines.<instance>.yaml)
 
 ## License
 
@@ -380,4 +384,5 @@ This plugin is part of the AgentSystem project and follows the same license.
 For issues, questions, or contributions:
 - File issues in the main AgentSystem repository
 - Check logs in `logs/api.log` for detailed error messages
-- Review `config/mcp.yaml` for configuration issues
+- Review the `ssh_control:` block in `config/agents/` for configuration issues,
+  and `data/ssh_control/machines.<instance>.yaml` for machines added at runtime

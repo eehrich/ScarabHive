@@ -521,7 +521,7 @@
                 <div class="form-group">
                     <label>
                         <input type="checkbox" id="persistent" class="form-checkbox">
-                        <span class="form-label" style="display: inline;">Save to config file</span>
+                        <span class="form-label" style="display: inline;">Keep across restarts</span>
                     </label>
                 </div>
 
@@ -539,7 +539,7 @@
             <div class="modal-header">Remove Machine?</div>
             <div style="margin-bottom: 20px; color: #cccccc; font-size: 14px; line-height: 1.5;">
                 <p id="confirmRemoveText" style="margin: 0 0 12px 0;"></p>
-                <p style="margin: 0; color: #858585; font-size: 12px;">Note: This will only remove it from the current session. To permanently remove it from the config file, edit config/mcp.yaml manually.</p>
+                <p style="margin: 0; color: #858585; font-size: 12px;">This removes the machine for good, including from the store that survives restarts. A machine that comes from the YAML configuration will come back at the next start &mdash; remove it there.</p>
             </div>
             <div class="form-buttons">
                 <button type="button" class="btn btn-secondary" id="cancelRemoveBtn">Cancel</button>
@@ -1141,7 +1141,7 @@
 
                     try {
                         console.log('Sending DELETE request...');
-                        const response = await fetch(`/plugins/ssh_control/api/machines/${machineName}?remove_from_config=false`, {
+                        const response = await fetch(`/plugins/ssh_control/api/machines/${machineName}?remove_from_config=true`, {
                             method: 'DELETE'
                         });
 

@@ -65,6 +65,7 @@ data/context_usage_tracker/
 data/message_debugger/
 data/batch_jobs/
 data/json_store/
+data/ssh_control/
 data/batch/
 data/comfyui/
 data/debate_forum/

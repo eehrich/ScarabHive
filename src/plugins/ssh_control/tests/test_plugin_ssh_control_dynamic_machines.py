@@ -1,7 +1,7 @@
 """Tests for SSH Control dynamic machine provisioning (add/remove)."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, mock_open
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 @pytest.fixture
@@ -172,33 +172,167 @@ async def test_add_machine_connection_timeout(mock_system_config, empty_mcp_conf
 
 
 @pytest.mark.asyncio
-async def test_add_machine_persistent_flag(mock_system_config, empty_mcp_config, mock_connection):
-    """Test add_machine with persistent=True saves to config."""
+async def test_add_machine_persistent_writes_the_store(
+        mock_system_config, empty_mcp_config, mock_connection, isolated_machine_store):
+    """persistent=True must land in data/ssh_control/machines.<instance>.yaml.
+
+    A real file, not mocked yaml: the mocks were what let this pass while the
+    plugin wrote a path nothing reads.
+    """
+    import yaml
+
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
-    
+
     plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
-    
-    mock_config = {'servers': {'ssh_control': {'machines': []}}}
-    
-    with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
-               AsyncMock(return_value=mock_connection)), \
-         patch('pathlib.Path.exists', return_value=True), \
-         patch('builtins.open', mock_open(read_data='servers:\n  ssh_control:\n    machines: []\n')), \
-         patch('yaml.safe_load', return_value=mock_config), \
-         patch('yaml.safe_dump') as mock_dump:
-        
+
+    with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
+               AsyncMock(return_value=mock_connection)):
         result = await plugin.mcp_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser',
-            'persistent': True
+            'persistent': True,
         })
-    
+
     assert result['success'] is True
-    # Verify yaml.safe_dump was called (config was written)
-    assert mock_dump.called
+    assert result['persistent'] is True, result.get('config_error')
+
+    store_file = isolated_machine_store / 'machines.ssh_control_test.yaml'
+    assert store_file.exists(), f"nothing written to {store_file}"
+    stored = yaml.safe_load(store_file.read_text(encoding='utf-8'))['machines']
+    assert [m['name'] for m in stored] == ['test-machine']
+    assert stored[0]['host'] == '192.168.1.100'
 
 
+@pytest.mark.asyncio
+async def test_a_persisted_machine_survives_a_restart(
+        mock_system_config, empty_mcp_config, mock_connection):
+    """The point of `persistent`, and the bug that hid here for as long as it existed.
+
+    add_machine wrote config/mcp.yaml, which config/config.yaml does not
+    include -- so nothing ever read it back and every "saved" machine was gone
+    at the next start. The tool reported success either way. This drives the
+    only thing that proves persistence: build a SECOND server with the same
+    instance name and look for the machine.
+    """
+    from plugins.ssh_control.plugin import PLUGIN_FACTORY
+
+    first = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
+               AsyncMock(return_value=mock_connection)):
+        await first.mcp_server.add_machine({
+            'name': 'survivor',
+            'host': '192.168.1.101',
+            'username': 'testuser',
+            'persistent': True,
+        })
+
+    # A machine added WITHOUT the flag must not come back -- otherwise this
+    # test would pass on a store that simply keeps everything.
+    with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
+               AsyncMock(return_value=mock_connection)):
+        await first.mcp_server.add_machine({
+            'name': 'ephemeral',
+            'host': '192.168.1.102',
+            'username': 'testuser',
+            'persistent': False,
+        })
+
+    restarted = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+
+    assert 'survivor' in restarted.mcp_server.connection_manager.machines
+    assert 'ephemeral' not in restarted.mcp_server.connection_manager.machines
+    assert restarted.mcp_server.connection_manager.machines['survivor'].host == '192.168.1.101'
+
+
+@pytest.mark.asyncio
+async def test_a_password_machine_is_refused_not_half_stored(
+        mock_system_config, empty_mcp_config, mock_connection, isolated_machine_store):
+    """Storing it without the password would restore a machine that cannot connect.
+
+    The secret must not go into a plain file -- but writing the entry WITHOUT
+    it is worse than not writing it: it comes back at the next start, fails
+    every command with "Password required" from auth.py, and occupies the name
+    so add_machine refuses to repair it. So the tool says no, now, in the
+    result the operator reads.
+    """
+    from plugins.ssh_control.plugin import PLUGIN_FACTORY
+
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+
+    with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
+               AsyncMock(return_value=mock_connection)):
+        result = await plugin.mcp_server.add_machine({
+            'name': 'pw-machine',
+            'host': '192.168.1.103',
+            'username': 'testuser',
+            'auth_method': 'password',
+            'password': 'hunter2',
+            'persistent': True,
+        })
+
+    # Added to the running session, but NOT stored, and it says why.
+    assert result['success'] is True
+    assert 'pw-machine' in plugin.mcp_server.connection_manager.machines
+    assert result['persistent'] is False
+    assert 'password' in result['config_error'], result
+    assert not (isolated_machine_store / 'machines.ssh_control_test.yaml').exists()
+
+
+@pytest.mark.asyncio
+async def test_a_restored_machine_can_actually_connect(
+        mock_system_config, empty_mcp_config, mock_connection):
+    """Surviving the restart is worthless if the entry cannot be used.
+
+    add_machine defaults key_path to '~/.ssh/id_rsa', and the first version of
+    the store skipped the field when it held that default. The machine came
+    back looking fine in list_machines and died on first use in auth.py with
+    "Key path required" -- while blocking its own name, because add_machine
+    rejects a duplicate. So this asserts the restored machine reaches the
+    authenticator, not merely that it exists.
+    """
+    from plugins.ssh_control.plugin import PLUGIN_FACTORY
+
+    first = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
+               AsyncMock(return_value=mock_connection)):
+        await first.mcp_server.add_machine({
+            'name': 'usable',
+            'host': '192.168.1.104',
+            'username': 'testuser',
+            'persistent': True,
+        })
+
+    restored = PLUGIN_FACTORY(
+        'ssh_control_test', mock_system_config, empty_mcp_config
+    ).mcp_server.connection_manager.machines['usable']
+
+    # The real check: the authenticator's own precondition, not a field test.
+    assert restored.key_path, "restored without a key path -- auth.py would raise"
+    with patch('asyncssh.connect', AsyncMock(return_value=mock_connection)),          patch('os.path.exists', return_value=True):
+        from plugins.ssh_control.auth import SSHAuthenticator
+        await SSHAuthenticator.create_connection(restored, None, False)
+
+
+def test_configured_machines_win_over_the_store(mock_system_config, isolated_machine_store):
+    """A stored entry must not silently shadow what an admin wrote in config."""
+    from agent_system.config.models import MCPConfig
+    from plugins.ssh_control import machine_store
+    from plugins.ssh_control.plugin import PLUGIN_FACTORY
+
+    machine_store.add('ssh_control_test', {
+        'name': 'hosta', 'host': '10.0.0.99', 'username': 'stale',
+        'auth_method': 'key', 'key_path': '~/.ssh/id_rsa'})
+
+    config = MCPConfig()
+    config.machines = [
+        {'name': 'hosta', 'host': '192.0.2.2', 'username': 'root', 'auth_method': 'key'}]
+
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, config)
+
+    machines = plugin.mcp_server.connection_manager.machines
+    assert machines['hosta'].host == '192.0.2.2',         "the stored entry overrode the configured one"
+    assert machines['hosta'].username == 'root'
 @pytest.mark.asyncio
 async def test_remove_machine_success(mock_system_config, empty_mcp_config, mock_connection):
     """Test successful removal of an SSH machine."""
@@ -287,30 +421,24 @@ async def test_remove_machine_cleanup_connections(mock_system_config, empty_mcp_
 
 
 @pytest.mark.asyncio
-async def test_remove_machine_from_config(mock_system_config, empty_mcp_config, mock_connection):
-    """Test remove_machine with remove_from_config=True."""
+async def test_remove_machine_from_the_store(
+        mock_system_config, empty_mcp_config, mock_connection, isolated_machine_store):
+    """A real round trip: remove must find what add WROTE.
+
+    A hand-built dict is what let the two halves drift apart -- add wrote
+    plugins.servers.ssh_control while remove read servers.ssh_control, so
+    removal silently did nothing and still reported success. Both now go
+    through machine_store, and this drives the file on disk.
+    """
+    import yaml
+
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
-    
+
     plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
-    
-    # Add machine
-    with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
-               AsyncMock(return_value=mock_connection)):
-        await plugin.mcp_server.add_machine({
-            'name': 'test-machine',
-            'host': '192.168.1.100',
-            'username': 'testuser'
-        })
-    
-    # Round trip instead of a hand-built config: remove must find what add
-    # WROTE. A hand-written dict is what let the two drift apart -- add wrote
-    # config['plugins']['servers'][...] while remove read config['servers'][...],
-    # so removal silently did nothing and still reported success.
+    store_file = isolated_machine_store / 'machines.ssh_control_test.yaml'
+
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
-               AsyncMock(return_value=mock_connection)), \
-         patch('pathlib.Path.exists', return_value=False), \
-         patch('builtins.open', mock_open(read_data='')), \
-         patch('yaml.safe_dump') as add_dump:
+               AsyncMock(return_value=mock_connection)):
         add_result = await plugin.mcp_server.add_machine({
             'name': 'persisted-machine',
             'host': '192.168.1.101',
@@ -319,28 +447,43 @@ async def test_remove_machine_from_config(mock_system_config, empty_mcp_config, 
         })
 
     assert add_result['persistent'] is True, add_result.get('config_error')
-    assert add_dump.called, "fixture wrote nothing — the round trip would be vacuous"
-    written_config = add_dump.call_args[0][0]
+    assert 'persisted-machine' in store_file.read_text(encoding='utf-8'),         "nothing was stored -- the round trip would be vacuous"
 
-    with patch('pathlib.Path.exists', return_value=True), \
-         patch('builtins.open', mock_open(read_data='dummy')), \
-         patch('yaml.safe_load', return_value=written_config), \
-         patch('yaml.safe_dump') as mock_dump:
-
-        result = await plugin.mcp_server.remove_machine({
-            'name': 'persisted-machine',
-            'remove_from_config': True
-        })
+    result = await plugin.mcp_server.remove_machine({
+        'name': 'persisted-machine',
+        'remove_from_config': True,
+    })
 
     assert result['success'] is True
     assert result['removed_from_config'] is True, result.get('config_error')
-    # Verify yaml.safe_dump was called
-    assert mock_dump.called
-    # And the machine is really gone from what was written back
-    remaining = mock_dump.call_args[0][0]['plugins']['servers']['ssh_control']['machines']
+    remaining = yaml.safe_load(store_file.read_text(encoding='utf-8'))['machines']
     assert [m['name'] for m in remaining] == []
 
 
+@pytest.mark.asyncio
+async def test_removing_a_configured_machine_says_it_was_not_stored(
+        mock_system_config, mock_connection):
+    """Honest reporting: machines from the YAML config are not in the store.
+
+    The old code answered "removed from config" for these, because it wrote a
+    file it had just created and then reported the requested flag.
+    """
+    from agent_system.config.models import MCPConfig
+    from plugins.ssh_control.plugin import PLUGIN_FACTORY
+
+    config = MCPConfig()
+    config.machines = [
+        {'name': 'hosta', 'host': '192.0.2.2', 'username': 'root', 'auth_method': 'key'}]
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, config)
+
+    result = await plugin.mcp_server.remove_machine({
+        'name': 'hosta',
+        'remove_from_config': True,
+    })
+
+    assert result['success'] is True
+    assert result['removed_from_config'] is False
+    assert 'not in' in result['config_error'], result
 @pytest.mark.asyncio
 async def test_add_remove_machine_integration(mock_system_config, empty_mcp_config, mock_connection):
     """Integration test: add then remove a machine."""
@@ -374,3 +517,35 @@ async def test_add_remove_machine_integration(mock_system_config, empty_mcp_conf
     
     assert remove_result['success'] is True
     assert 'integration-test' not in plugin.mcp_server.connection_manager.machines
+
+
+def test_the_old_never_read_file_is_reported_not_migrated(
+        mock_system_config, empty_mcp_config, caplog):
+    """Machines stranded in config/mcp.yaml get a warning, not a resurrection.
+
+    Those entries have been inert since they were written (nothing included
+    the file), so silently bringing hosts back at some later restart would be
+    a surprise. Naming the file and the count tells the operator where they
+    are.
+    """
+    import logging
+
+    import yaml
+
+    from plugins.ssh_control import machine_store
+    from plugins.ssh_control.plugin import PLUGIN_FACTORY
+
+    machine_store.LEGACY_PATH.write_text(yaml.safe_dump({
+        'plugins': {'servers': {'ssh_control': {'machines': [
+            {'name': 'Stranded1', 'host': '10.0.0.1', 'username': 'root'},
+            {'name': 'Stranded2', 'host': '10.0.0.2', 'username': 'root'},
+        ]}}}
+    }), encoding='utf-8')
+
+    with caplog.at_level(logging.WARNING, logger='plugins.ssh_control.mcp_server'):
+        plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+
+    assert '2 machine(s)' in caplog.text, caplog.text
+    assert str(machine_store.LEGACY_PATH) in caplog.text
+    # Reported, NOT loaded.
+    assert plugin.mcp_server.connection_manager.machines == {}

@@ -12,6 +12,7 @@ from typing import Any, TYPE_CHECKING
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
+from . import machine_store
 from .connection_manager import SSHConnectionManager
 
 if TYPE_CHECKING:
@@ -52,7 +53,30 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         else:
             # Fallback
             config_dict = dict(mcp_config)
+
+        # Machines added at runtime are read back HERE, which is the whole
+        # point: before this, `persistent: true` wrote a file that no loader
+        # included, so every "saved" machine was gone at the next start.
+        #
+        # A NEW dict, not an assignment into config_dict: in the dict branch
+        # above that object is the caller's, and writing the merged list back
+        # into it would make the stored machines look configured to the next
+        # instance built from the same config -- at which point they could no
+        # longer be removed from the store.
+        config_dict = {**config_dict,
+                       'machines': machine_store.merge_into(
+                           name, config_dict.get('machines') or [])}
+
         self.connection_manager = SSHConnectionManager(config_dict, command_history=self.command_history)
+
+        stranded = machine_store.legacy_machine_count()
+        if stranded:
+            logger.warning(
+                "%s still holds %d machine(s) that nothing reads -- ssh_control "
+                "wrote them there before the store moved to %s. Re-add them or "
+                "move them by hand, then delete the file.",
+                machine_store.LEGACY_PATH, stranded, machine_store.store_path(name),
+            )
 
         logger.info(
             f"SSH Control MCP Server '{name}' initialized with "
@@ -543,8 +567,6 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             Dict with success status and machine info
         """
         from .models import MachineConfig
-        import yaml
-        from pathlib import Path
 
         status = params.get('_status')
 
@@ -650,81 +672,60 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             self.connection_manager.machines[name] = machine_config
             logger.info(f"Added machine '{name}' to connection manager")
 
-            # Persist to config if requested. What actually HAPPENED is
-            # tracked here: the except below deliberately does not fail the
-            # operation, but the end line and the result used to claim
-            # persistence from the requested flag either way.
+            # Persist if requested. What actually HAPPENED is tracked here:
+            # the except deliberately does not fail the operation, but the
+            # end line and the result used to claim persistence from the
+            # requested flag either way.
             config_persisted = False
             config_error: str | None = None
-            config_path = Path('config/mcp.yaml')
+            config_path = machine_store.store_path(self.name)
             if persistent:
                 if status:
-                    await status.progress(f"Saving to config: {name}")
+                    await status.progress(f"Saving to the machine store: {name}")
 
-                try:
+                # Password and passphrase are deliberately left out -- the
+                # store is a plain file, and a key path is a reference while
+                # a password is the secret itself.
+                stored = {
+                    'name': name,
+                    'host': host,
+                    'port': port,
+                    'username': username,
+                    'auth_method': auth_method,
+                    'max_connections': max_connections,
+                }
+                if auth_method == 'key':
+                    # ALWAYS, including the default path: an entry without it
+                    # is read back at the next start and then dies in auth.py
+                    # with "Key path required", while occupying the name.
+                    # Omitting it was harmless only while nothing read the
+                    # file back.
+                    stored['key_path'] = key_path
+                if tags:
+                    stored['tags'] = tags
 
-                    # Load existing config
-                    if config_path.exists():
-                        with open(config_path, 'r', encoding='utf-8') as f:
-                            config = yaml.safe_load(f) or {}
-                    else:
-                        config = {}
-
-                    # Ensure mcp_system.servers.ssh_control structure exists
-                    if 'plugins' not in config or not isinstance(config['plugins'], dict):
-                        config['plugins'] = {}
-
-                    mcp_sys = config['plugins']
-                    if 'servers' not in mcp_sys or not isinstance(mcp_sys['servers'], dict):
-                        mcp_sys['servers'] = {}
-
-                    if 'ssh_control' not in mcp_sys['servers'] or not isinstance(mcp_sys['servers']['ssh_control'], dict):
-                        mcp_sys['servers']['ssh_control'] = {}
-
-                    target = mcp_sys['servers']['ssh_control']
-
-                    # Ensure machines list exists
-                    if 'machines' not in target or not isinstance(target['machines'], list):
-                        target['machines'] = []
-
-                    # Add machine config
-                    machine_dict = {
-                        'name': name,
-                        'host': host,
-                        'port': port,
-                        'username': username,
-                        'auth_method': auth_method,
-                        'max_connections': max_connections
-                    }
-
-                    if key_path != '~/.ssh/id_rsa':
-                        machine_dict['key_path'] = key_path
-
-                    if tags:
-                        machine_dict['tags'] = tags
-
-                    # Don't save password to config for security
-                    # Key path is saved, but password is not
-
-                    target['machines'].append(machine_dict)
-
-                    # Write back to config
-                    with open(config_path, 'w', encoding='utf-8') as f:
-                        yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
-
-                    logger.info(f"Persisted machine '{name}' to {config_path}")
-                    config_persisted = True
-
-                except Exception as e:
-                    config_error = str(e)
-                    logger.error(f"Failed to persist machine config: {e}", exc_info=True)
-                    # Don't fail the operation, just log the error
+                # A machine that cannot be restored is not stored at all --
+                # see machine_store.unrestorable_reason. Reported here, while
+                # the operator is present, instead of failing at the next
+                # start with a name that can no longer be re-added.
+                config_error = machine_store.unrestorable_reason(stored)
+                if config_error:
+                    logger.info(f"Not storing '{name}': {config_error}")
+                else:
+                    try:
+                        machine_store.add(self.name, stored)
+                        logger.info(f"Stored machine '{name}' in {config_path}")
+                        config_persisted = True
+                    except Exception as e:
+                        config_error = str(e)
+                        logger.error(f"Failed to store machine '{name}': {e}", exc_info=True)
+                        # Don't fail the operation, just log the error
 
             # Send completion status
             if persistent and config_persisted:
                 where = f", saved to {config_path}"
             elif persistent:
-                where = f", NOT saved to config: {config_error}"
+                where = f", NOT stored: {config_error}"
             else:
                 where = " (this session only)"
             if status:
@@ -765,8 +766,6 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         Returns:
             Dict with success status
         """
-        import yaml
-        from pathlib import Path
 
         status = params.get('_status')
         name = params.get('name')
@@ -800,54 +799,34 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             del self.connection_manager.machines[name]
             logger.info(f"Removed machine '{name}' from connection manager")
 
-            # Remove from config if requested. Same as add_machine: what the
-            # end line reports is what HAPPENED, not what was asked for.
+            # Remove from the store if requested. Same as add_machine: what
+            # the end line reports is what HAPPENED, not what was asked for.
             config_removed = False
             config_error: str | None = None
-            config_path = Path('config/mcp.yaml')
+            config_path = machine_store.store_path(self.name)
             if remove_from_config:
                 if status:
-                    await status.progress(f"Removing from config: {name}")
+                    await status.progress(f"Removing from the machine store: {name}")
 
                 try:
-                    if not config_path.exists():
-                        config_error = f"{config_path} does not exist"
+                    config_removed = machine_store.remove(self.name, name)
+                    if config_removed:
+                        logger.info(f"Removed machine '{name}' from {config_path}")
                     else:
-                        with open(config_path, 'r', encoding='utf-8') as f:
-                            config = yaml.safe_load(f) or {}
-
-                        # Navigate to machines list
-                        # Same nesting add_machine writes ('plugins' first) --
-                        # without it this branch never found what add wrote and
-                        # reported a removal that never happened.
-                        section = (config.get('plugins') or {}).get('servers', {}).get('ssh_control')
-                        machines = (section or {}).get('machines')
-                        if not machines:
-                            config_error = f"no machines section for ssh_control in {config_path}"
-                        elif not any(m.get('name') == name for m in machines):
-                            config_error = f"'{name}' is not in {config_path}"
-                        else:
-                            section['machines'] = [
-                                m for m in machines if m.get('name') != name
-                            ]
-
-                            # Write back to config
-                            with open(config_path, 'w', encoding='utf-8') as f:
-                                yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
-
-                            logger.info(f"Removed machine '{name}' from {config_path}")
-                            config_removed = True
-
+                        # Not an error: a machine from config/agents/*.yaml was
+                        # never in the store, and saying so beats claiming a
+                        # removal that did not happen.
+                        config_error = f"'{name}' is not in {config_path}"
                 except Exception as e:
                     config_error = str(e)
-                    logger.error(f"Failed to remove from config: {e}", exc_info=True)
+                    logger.error(f"Failed to remove '{name}' from the store: {e}", exc_info=True)
                     # Don't fail the operation, just log the error
 
             # Send completion status
             if remove_from_config and config_removed:
                 where = f", deleted from {config_path}"
             elif remove_from_config:
-                where = f", NOT deleted from config: {config_error}"
+                where = f", NOT deleted from the store: {config_error}"
             else:
                 where = " (this session only)"
             if status:

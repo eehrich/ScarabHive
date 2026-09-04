@@ -129,7 +129,7 @@ tools:
             description: "Optional tags for filtering (default: [])"
           persistent:
             type: boolean
-            description: "Save to config/mcp.yaml for persistence (default: false). Note: passwords are never saved."
+            description: "Keep the machine across restarts by storing it in data/ssh_control/machines.<instance>.yaml (default: false). Passwords and passphrases are never stored, only a key path."
           max_connections:
             type: integer
             description: "Max parallel connections (default: 3)"
@@ -172,7 +172,7 @@ tools:
             description: "Machine name to remove"
           remove_from_config:
             type: boolean
-            description: "Also remove from config/mcp.yaml if present (default: false)"
+            description: "Also delete it from data/ssh_control/machines.<instance>.yaml (default: false). Machines that come from the YAML configuration are not in that store and cannot be removed this way."
         required:
           - name
       cleanup_notes:

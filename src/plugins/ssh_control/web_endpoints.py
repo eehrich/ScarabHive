@@ -18,6 +18,8 @@ import asyncio
 
 from agent_system.plugins.web_adapter import PluginWebInterface
 
+from . import machine_store
+
 if TYPE_CHECKING:
     pass
 
@@ -299,73 +301,53 @@ class SSHControlWebEndpoints(PluginWebInterface):
             logger.info("Added machine '%s' to runtime connection manager", request.name)
 
             if request.persistent:
-                try:
-                    import yaml
-                    config_path = Path('config/mcp.yaml')
+                # One store, one shape -- see machine_store. This endpoint
+                # used to carry its own copy of the read-modify-write, which
+                # is how it and the remove endpoint came to disagree.
+                stored = {
+                    'name': request.name,
+                    'host': request.host,
+                    'port': request.port,
+                    'username': request.username,
+                    'auth_method': request.auth_method,
+                    'max_connections': request.max_connections,
+                }
+                if request.auth_method == 'key':
+                    stored['key_path'] = request.key_path
+                if request.tags:
+                    stored['tags'] = request.tags
 
-                    if not config_path.exists():
-                        logger.warning("Config file %s does not exist, cannot persist", config_path)
-                        return {
-                            "success": True,
-                            "message": f"Machine '{request.name}' added to runtime (config file not found for persistence)",
-                            "machine": request.name,
-                            "persisted": False
-                        }
-
-                    with open(config_path, 'r', encoding='utf-8') as file_handle:
-                        config = yaml.safe_load(file_handle) or {}
-
-                    if 'plugins' not in config or not isinstance(config['plugins'], dict):
-                        config['plugins'] = {}
-
-                    mcp_sys = config['plugins']
-                    if 'servers' not in mcp_sys or not isinstance(mcp_sys['servers'], dict):
-                        mcp_sys['servers'] = {}
-
-                    if 'ssh_control' not in mcp_sys['servers'] or not isinstance(mcp_sys['servers']['ssh_control'], dict):
-                        mcp_sys['servers']['ssh_control'] = {}
-
-                    target = mcp_sys['servers']['ssh_control']
-
-                    if 'machines' not in target or not isinstance(target['machines'], list):
-                        target['machines'] = []
-
-                    machine_dict = {
-                        'name': request.name,
-                        'host': request.host,
-                        'port': request.port,
-                        'username': request.username,
-                        'auth_method': request.auth_method,
-                        'tags': request.tags,
-                        'max_connections': request.max_connections,
-                        'timeout': 30
-                    }
-
-                    if request.auth_method == 'key':
-                        machine_dict['key_path'] = request.key_path
-
-                    target['machines'].append(machine_dict)
-
-                    with open(config_path, 'w', encoding='utf-8') as file_handle:
-                        yaml.safe_dump(config, file_handle, default_flow_style=False, sort_keys=False)
-
-                    logger.info("Persisted machine '%s' to %s", request.name, config_path)
-
+                # Same refusal the tool applies: a machine that cannot be
+                # restored is not stored -- see machine_store.
+                refusal = machine_store.unrestorable_reason(stored)
+                if refusal:
+                    logger.info("Not storing '%s': %s", request.name, refusal)
                     return {
                         "success": True,
-                        "message": f"Machine '{request.name}' added successfully and persisted to config",
-                        "machine": request.name,
-                        "persisted": True
-                    }
-
-                except Exception as exc:  # pragma: no cover - file IO errors
-                    logger.error("Failed to persist machine to config: %s", exc, exc_info=True)
-                    return {
-                        "success": True,
-                        "message": f"Machine '{request.name}' added to runtime, but failed to persist: {str(exc)}",
+                        "message": f"Machine '{request.name}' added to runtime, but not stored: {refusal}",
                         "machine": request.name,
                         "persisted": False,
-                        "persistence_error": str(exc)
+                        "persistence_error": refusal,
+                    }
+
+                try:
+                    path = machine_store.add(self.name, stored)
+                    logger.info("Stored machine '%s' in %s", request.name, path)
+                    return {
+                        "success": True,
+                        "message": f"Machine '{request.name}' added and stored in {path}",
+                        "machine": request.name,
+                        "persisted": True,
+                    }
+                except Exception as exc:  # pragma: no cover - file IO errors
+                    logger.error("Failed to store machine '%s': %s",
+                                 request.name, exc, exc_info=True)
+                    return {
+                        "success": True,
+                        "message": f"Machine '{request.name}' added to runtime, but not stored: {exc}",
+                        "machine": request.name,
+                        "persisted": False,
+                        "persistence_error": str(exc),
                     }
 
             return {
@@ -410,46 +392,23 @@ class SSHControlWebEndpoints(PluginWebInterface):
             config_removed = False
             if remove_from_config:
                 try:
-                    import yaml
-                    config_path = Path('config/mcp.yaml')
-
-                    if not config_path.exists():
-                        logger.warning("Config file %s does not exist", config_path)
+                    # Through the same store the ADD endpoint writes.
+                    config_removed = machine_store.remove(self.name, name)
+                    if config_removed:
+                        logger.info("Removed machine '%s' from %s", name,
+                                    machine_store.store_path(self.name))
                     else:
-                        with open(config_path, 'r', encoding='utf-8') as file_handle:
-                            config = yaml.safe_load(file_handle) or {}
-
-                        # Same nesting the ADD endpoint writes ('plugins'
-                        # first, see the persist block above). Reading
-                        # config['servers'][...] here meant this branch could
-                        # never find what it had written itself, and every
-                        # removal logged "not found".
-                        section = (config.get('plugins') or {}).get('servers', {}).get('ssh_control')
-                        if section and 'machines' in section:
-                            original_count = len(section['machines'])
-                            section['machines'] = [
-                                machine for machine in section['machines']
-                                if machine.get('name') != name
-                            ]
-                            new_count = len(section['machines'])
-
-                            if original_count > new_count:
-                                with open(config_path, 'w', encoding='utf-8') as file_handle:
-                                    yaml.safe_dump(config, file_handle, default_flow_style=False, sort_keys=False)
-
-                                logger.info("Removed machine '%s' from %s", name, config_path)
-                                config_removed = True
-                            else:
-                                logger.warning("Machine '%s' not found in config file", name)
-
+                        logger.info("Machine '%s' was not in %s (configured, not stored)",
+                                    name, machine_store.store_path(self.name))
                 except Exception as exc:  # pragma: no cover - file IO errors
-                    logger.error("Failed to remove machine from config: %s", exc, exc_info=True)
+                    logger.error("Failed to remove machine '%s' from the store: %s",
+                                 name, exc, exc_info=True)
                     return {
                         "success": True,
-                        "message": f"Machine '{name}' removed from runtime, but failed to remove from config: {str(exc)}",
+                        "message": f"Machine '{name}' removed from runtime, but not from the store: {exc}",
                         "machine": name,
                         "config_removed": False,
-                        "config_error": str(exc)
+                        "config_error": str(exc),
                     }
 
             return {
