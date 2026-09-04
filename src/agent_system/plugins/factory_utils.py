@@ -14,13 +14,15 @@ from agent_system.config.models import AgentSystemConfig, MCPConfig
 logger = logging.getLogger(__name__)
 
 
-def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[[str, AgentSystemConfig, MCPConfig], Agent]:
+def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[..., Agent]:
     """Return a standard PLUGIN_FACTORY callable for an Agent subclass.
 
     MODERN: Clean interface expecting system-wide config and plugin-specific MCP config.
-    
-    Signature produced: (name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> Agent
-    
+
+    Signature produced: (name, system_config, mcp_config, registry=None) -> Agent.
+    The factory carries ``_accepts_registry = True``; callers that do not know
+    about it (mcp_adapter) keep calling it with three arguments.
+
     Args:
         agent_cls: The Agent subclass to instantiate
         
@@ -31,29 +33,32 @@ def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[[str, AgentSys
         The factory signature uses AgentSystemConfig and MCPConfig as the modern standard.
         The Agent constructor expects: (name, system_config, mcp_config, registry)
     """
-    def _factory(name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> Agent:
+    def _factory(name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig,
+                 registry: MCPRegistry | None = None) -> Agent:
         """Create an agent plugin instance.
-        
+
         Args:
-            name: Plugin instance name  
+            name: Plugin instance name
             system_config: Complete system configuration (LLM, network, context, etc.)
             mcp_config: Plugin-specific MCP configuration (enabled, type, agent_config)
+            registry: The shared MCPRegistry. bootstrap passes it; a caller
+                that has none gets a private, empty one.
+
+        The registry has to reach the constructor: Agent.__init__ hands it to
+        the ToolExecutionManager, and replacing ``inst.registry`` afterwards
+        (what bootstrap did) left that manager holding the throwaway
+        registry it was built with -- its fallbacks then resolved tools
+        against an empty one.
         """
-        # Agent constructor signature: (name, system_config, mcp_config, registry, llm, llm_factory)
-        # Note: Registry will be injected by bootstrap.py after all plugins are registered
-        # Create temporary empty registry that will be replaced by bootstrap
-        registry = MCPRegistry()
-        
-        # IMPORTANT: Do not call any methods that need registry access during __init__
-        # The registry will be populated and replaced by bootstrap.py
-        inst = agent_cls(name, system_config, mcp_config, registry)
-        
+        inst = agent_cls(name, system_config, mcp_config, registry if registry is not None else MCPRegistry())
+
         logger.debug(
-            "Instantiated agent plugin %s (type=%s) via generic factory (registry will be injected)",
+            "Instantiated agent plugin %s (type=%s) via generic factory",
             name, mcp_config.type
         )
         return inst
-    
+
+    _factory._accepts_registry = True  # bootstrap checks this before passing registry=
     return _factory
 
 

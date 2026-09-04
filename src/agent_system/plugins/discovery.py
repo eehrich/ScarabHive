@@ -98,6 +98,30 @@ def _register_shared_modules(path: Path, pkg_name: str) -> None:
             logger.debug(f"Failed to register shared module {module_name}: {e}")
 
 
+def _already_loaded(module_name: str, plugin_file: Path):
+    """The module for ``plugin_file`` if THIS file was executed under
+    ``module_name`` before, else None.
+
+    Discovery runs more than once per process (servers/bootstrap.py and
+    config/settings._get_plugins_cached, again on every reload) and used to
+    exec every plugin.py each time. Measured 2026-09-04: of 50 shared types
+    only 20 factories were identical, and a class defined in a plugin.py
+    (SubAgentManagerHybridPlugin) existed twice -- ``isinstance`` against it
+    was wrong between the two runs. Keyed by file, not by name: tests build
+    throwaway plugins under the same package names in different directories
+    and must get a fresh module for a different file.
+    """
+    existing = sys.modules.get(module_name)
+    if existing is None:
+        return None
+    try:
+        if Path(existing.__file__).resolve() == plugin_file.resolve():
+            return existing
+    except (AttributeError, TypeError, OSError):
+        pass
+    return None
+
+
 def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
     """Discover plugins in a directory.
 
@@ -157,13 +181,20 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         if spec is None or spec.loader is None:
             logger.debug("Skipping plugin %s: cannot create spec", plugin_file)
             continue
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = mod
-        try:
-            spec.loader.exec_module(mod)
-        except Exception as e:
-            logger.warning(f"Failed to load plugin module {plugin_file}: {e}", exc_info=True)
-            continue
+        mod = _already_loaded(spec.name, plugin_file)
+        if mod is None:
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except Exception as e:
+                # Drop the half-executed torso, exactly as importlib does on a
+                # failed import: _already_loaded would otherwise hand it to the
+                # next discovery as "loaded", the plugin would stay missing and
+                # the warning would never be logged again.
+                sys.modules.pop(spec.name, None)
+                logger.warning(f"Failed to load plugin module {plugin_file}: {e}", exc_info=True)
+                continue
 
         try:
             if hasattr(mod, "register") and inspect.isfunction(mod.register):
@@ -211,12 +242,16 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         spec = importlib.util.spec_from_file_location(f"plugins.{p.stem}", str(p))
         if spec is None or spec.loader is None:
             continue
-        mod = importlib.util.module_from_spec(spec)
-        try:
-            spec.loader.exec_module(mod)
-        except Exception as e:
-            logger.warning(f"Failed to load single-file plugin module {p}: {e}", exc_info=True)
-            continue
+        mod = _already_loaded(spec.name, p)
+        if mod is None:
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except Exception as e:
+                sys.modules.pop(spec.name, None)  # see the dir-plugin loop above
+                logger.warning(f"Failed to load single-file plugin module {p}: {e}", exc_info=True)
+                continue
         try:
             if hasattr(mod, "register") and inspect.isfunction(mod.register):
                 name, factory = mod.register()

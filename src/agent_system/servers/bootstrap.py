@@ -1,7 +1,8 @@
 """Server bootstrap for MCP plugin system.
 
 Discovers and instantiates all configured MCP servers (plugins).
-All plugins now use modern constructor: (name, system_config, mcp_config)
+All plugins use the modern constructor (name, system_config, mcp_config);
+agent factories additionally take the shared registry as registry=.
 """
 from __future__ import annotations
 
@@ -20,7 +21,8 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
     """Discover and register all configured MCP servers.
     
     Uses config.plugins for local plugin servers.
-    All plugins use (name, system_config, mcp_config) constructor.
+    Plugin factories take (name, system_config, mcp_config); agent factories
+    (marked with ``_accepts_registry``) also receive this shared registry.
     """
     # Configure the process-wide cancellation manager ONCE, here at bootstrap.
     # (Historically this ran in every Agent.__init__, which REPLACED the global
@@ -87,8 +89,13 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
         if factory:
             try:
                 # MODERN: All plugins use (name, system_config, mcp_config) signature
-                # Pass the MCPConfig object directly (not dict)
-                inst = factory(key, config, server_mcp_cfg)
+                # Pass the MCPConfig object directly (not dict). Agent factories
+                # (make_agent_plugin_factory) also take the shared registry --
+                # it must reach Agent.__init__, see factory_utils.
+                if getattr(factory, "_accepts_registry", False):
+                    inst = factory(key, config, server_mcp_cfg, registry=registry)
+                else:
+                    inst = factory(key, config, server_mcp_cfg)
                 registry.register(key, inst)
                 
                 # CRITICAL FIX: Also register in global plugin_mcp_registry to prevent duplicate instantiation
@@ -150,10 +157,11 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
         elif typ == "agent":
             try:
                 from .agent.server import Agent
-                
-                # Agent uses (name, system_config, mcp_config, registry) constructor
-                agent_registry = MCPRegistry()
-                registry.register(key, Agent(key, config, server_mcp_cfg, agent_registry))
+
+                # Agent uses (name, system_config, mcp_config, registry) constructor.
+                # The SHARED registry, like every other agent -- a private one
+                # left this agent unable to reach any sibling tool.
+                registry.register(key, Agent(key, config, server_mcp_cfg, registry))
             except Exception as e:
                 logger.exception("Failed to instantiate agent '%s': %s", key, e)
                 if "test" in str(Path.cwd()):
