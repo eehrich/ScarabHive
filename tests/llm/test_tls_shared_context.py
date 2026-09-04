@@ -188,6 +188,7 @@ def test_every_async_client_on_the_llm_path_passes_verify():
     calls (httpx_client's streaming transport and non-streaming client) are
     measured by the recorder tests above."""
     offenders = []
+    sites = 0
     # A literal value is as bad as a missing one: verify=True builds a fresh
     # context per client again, and that is exactly the code this change
     # removed. Only a value that comes from somewhere else (httpx_verify, or a
@@ -199,6 +200,7 @@ def test_every_async_client_on_the_llm_path_passes_verify():
                 continue
             text = py.read_text(encoding="utf-8", errors="replace")
             for match in re.finditer(r"httpx\.(AsyncClient|Client|AsyncHTTPTransport|HTTPTransport)\(", text):
+                sites += 1
                 depth, i = 1, match.end()
                 while i < len(text) and depth:
                     depth += {"(": 1, ")": -1}.get(text[i], 0)
@@ -209,4 +211,7 @@ def test_every_async_client_on_the_llm_path_passes_verify():
                     offenders.append(f"{py.relative_to(REPO)}:{line} (no verify=)")
                 elif literal.search(span):
                     offenders.append(f"{py.relative_to(REPO)}:{line} (literal verify=, not the shared context)")
+    # A scanner that finds no construction site at all is green for the wrong
+    # reason -- rename the module alias and this whole test goes blind.
+    assert sites, "no httpx construction site found: the scan pattern no longer matches the code"
     assert not offenders, "\n".join(offenders)

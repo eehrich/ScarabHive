@@ -194,6 +194,14 @@ class Runtime:
 
     def materialize(self, name: str) -> Any:
         """THE one build path: construct, register in both registries, post-process."""
+        # Idempotent: a name already in the registry is handed back, NOT built
+        # a second time -- that is what makes a later lazy build safe to call
+        # from anywhere. It also means an instance somebody else registered
+        # under this name keeps its place (bootstrap used to overwrite it) and
+        # then never sees the plugin-registry entry or the post-processing.
+        # No caller can reach that today: every one of them passes a fresh
+        # MCPRegistry, and the only other writer, create_and_register_agent,
+        # runs after the bootstrap.
         existing = self.registry._servers.get(name)
         if existing is not None:
             return existing

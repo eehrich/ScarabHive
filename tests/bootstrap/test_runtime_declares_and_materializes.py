@@ -83,7 +83,12 @@ def test_materialize_applies_the_instance_config():
 
 def test_visibility_defaults_to_private():
     """Secure by default: an agent nobody made visible is neither in the UI
-    list nor a tool."""
+    list nor a tool.
+
+    An END-STATE check, and it stays green if apply_to's visibility block
+    disappears: Agent.__init__ sets both flags False itself, so for the
+    private case the block is a no-op. What measures the block is the pair
+    above and below -- 'both' and the manifest's 'ui'."""
     runtime = Runtime(_config({"probe_hidden": _agent_server()}))
 
     agent = runtime.materialize("probe_hidden")
