@@ -45,12 +45,22 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TTSVoice:
     """Voice configuration for TTS.
-    
+
     Attributes:
-        name: Prebuilt voice name (e.g. "Kore", "Puck", "Zephyr").
-              See Gemini docs for full list of 30 voices.
+        name: Prebuilt voice name (e.g. "Kore", "Puck", "Zephyr"; see the
+              provider's catalog) — or just a label when ``reference_audio``
+              is set.
+        reference_audio: Raw audio file bytes (WAV, FLAC, OGG, AIFF, MP4/M4A
+              or MP3 container) of the voice to clone. ``openai_speech`` sends
+              them as OpenRouter's stateless ``input_references`` and omits
+              ``voice``; a client without ``supports_voice_cloning`` refuses
+              them in ``check_voice`` — never a silent preset instead.
+        reference_text: Transcript of ``reference_audio`` (optional; sharpens
+              the clone).
     """
     name: str
+    reference_audio: Optional[bytes] = None
+    reference_text: Optional[str] = None
 
 
 @dataclass
@@ -234,6 +244,33 @@ class TTSClient:
     Subclasses must implement ``synthesize`` and optionally
     ``synthesize_multi_speaker``.
     """
+
+    #: Whether ``TTSVoice.reference_audio`` is honoured. ``check_voice``
+    #: refuses a reference on a client without it — never narrate a book in
+    #: a preset voice instead.
+    supports_voice_cloning: bool = False
+
+    #: Whether ``system_instruction``/``language``/``seed`` reach the model.
+    #: False on wire formats that have no field for them (the speech API):
+    #: a caller must then know its narrator direction is NOT applied, rather
+    #: than record it as if it were.
+    supports_style_prompt: bool = True
+
+    def check_voice(self, voice: Optional[TTSVoice]) -> None:
+        """Raise ValueError if this client cannot honour ``voice``.
+
+        Called by ``synthesize`` before any request, and by callers that
+        want a long run to fail ONCE up front rather than per segment.
+        Providers extend it with their own preconditions (a required voice
+        name, sample size limits, ...).
+        """
+        if voice is not None and voice.reference_audio is not None \
+                and not self.supports_voice_cloning:
+            raise ValueError(
+                f"{type(self).__name__} cannot clone voices — reference_audio "
+                f"on voice {voice.name!r} cannot be honoured; use a client "
+                f"with supports_voice_cloning (e.g. openai_speech with "
+                f"fish-audio/s2.1-pro)")
 
     async def synthesize(
         self,

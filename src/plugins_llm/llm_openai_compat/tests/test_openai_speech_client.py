@@ -305,3 +305,158 @@ class TestKeyFollowsEndpoint:
             voice="alloy"))
         assert client.api_key == "sk-explicit"
         assert client.default_voice == "alloy"
+
+
+class TestVoiceCloning:
+    """OpenRouter's stateless cloning: the sample rides in `input_references`
+    as a base64 data URI (plus its transcript) and `voice` stays out."""
+
+    WAV = b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 20
+
+    @pytest.mark.asyncio
+    async def test_reference_goes_out_as_input_references_without_voice(self):
+        import base64
+        seen = {}
+
+        def handler(url, json, headers):
+            seen.update(json=json)
+            return _response()
+
+        with _respond(handler):
+            result = await _client().synthesize(
+                "Hallo", voice=TTSVoice(
+                    name="clone:egon", reference_audio=self.WAV,
+                    reference_text="Draussen zwitscherte ein Vogel."))
+
+        refs = seen["json"]["input_references"]
+        assert refs == [
+            {"type": "input_audio", "input_audio": {
+                "data": "data:audio/wav;base64,"
+                        + base64.b64encode(self.WAV).decode()}},
+            {"type": "text", "text": "Draussen zwitscherte ein Vogel."},
+        ]
+        assert "voice" not in seen["json"]
+        assert seen["json"]["input"] == "Hallo"
+        assert result.voice_name == "clone:egon"
+
+    @pytest.mark.asyncio
+    async def test_reference_without_transcript_sends_only_the_audio_part(self):
+        seen = {}
+
+        def handler(url, json, headers):
+            seen.update(json=json)
+            return _response()
+
+        with _respond(handler):
+            await _client(default_voice=None).synthesize(
+                "Hallo", voice=TTSVoice(name="c", reference_audio=self.WAV))
+        assert [p["type"] for p in seen["json"]["input_references"]] == ["input_audio"]
+
+    @pytest.mark.asyncio
+    async def test_oversized_reference_is_refused_before_any_request(self):
+        posted = []
+
+        def handler(url, json, headers):
+            posted.append(url)
+            return _response()
+
+        too_big = b"\x00" * (15 * 1024 * 1024 + 1)
+        with _respond(handler), pytest.raises(ValueError, match="15 MiB"):
+            await _client().synthesize(
+                "x", voice=TTSVoice(name="c", reference_audio=too_big))
+        assert posted == []
+
+    def test_mime_follows_the_container_magic(self):
+        from plugins_llm.llm_openai_compat.openai_speech_client import _audio_mime
+        assert _audio_mime(b"RIFF....WAVE") == "audio/wav"
+        assert _audio_mime(b"fLaC....") == "audio/flac"
+        assert _audio_mime(b"OggS....") == "audio/ogg"
+        assert _audio_mime(b"FORM....AIFF") == "audio/aiff"
+        assert _audio_mime(b"....ftypM4A ") == "audio/mp4"
+        assert _audio_mime(b"ID3\x04\x00\x00") == "audio/mpeg"
+        # MPEG-1 Layer III without / with CRC, MPEG-2.5: the 11 sync bits
+        for b1 in (0xFB, 0xFA, 0xE3):
+            assert _audio_mime(bytes([0xFF, b1, 0x90, 0])) == "audio/mpeg"
+
+    def test_unknown_container_is_refused_not_labelled_wav(self):
+        from plugins_llm.llm_openai_compat.openai_speech_client import _audio_mime
+        with pytest.raises(ValueError, match="container"):
+            _audio_mime(b"\x00\x01garbage")
+
+    def test_client_declares_the_capability(self):
+        assert OpenAISpeechTTSClient.supports_voice_cloning is True
+
+    @pytest.mark.asyncio
+    async def test_hook_payload_carries_the_size_not_the_sample(self):
+        """3 MB of base64 per segment would otherwise land in the debugger."""
+        hooked = {}
+
+        async def fake_request(**kwargs):
+            hooked.update(kwargs["payload"])
+
+        with _respond(lambda u, j, h: _response()), \
+             patch("plugins_llm.llm_openai_compat.openai_speech_client."
+                   "notify_tts_request", fake_request):
+            await _client().synthesize(
+                "Hallo", voice=TTSVoice(name="c", reference_audio=self.WAV))
+        assert "input_references" not in hooked
+        assert hooked["reference_bytes"] == len(self.WAV)
+        assert hooked["input_chars"] == 5
+        assert hooked["voice"] == "c"  # the clone's label, absent on the wire
+
+
+class TestCheckVoice:
+    """check_voice carries every precondition synthesize would trip over, so
+    a caller can fail a long run once up front."""
+
+    def test_no_voice_and_no_reference_is_refused(self):
+        with pytest.raises(ValueError, match="requires a voice"):
+            _client(default_voice=None).check_voice(None)
+
+    def test_a_reference_alone_is_enough(self):
+        _client(default_voice=None).check_voice(
+            TTSVoice(name="", reference_audio=b"RIFF....WAVE"))
+
+    def test_an_empty_reference_is_refused(self):
+        with pytest.raises(ValueError, match="empty"):
+            _client().check_voice(TTSVoice(name="c", reference_audio=b""))
+
+    def test_size_and_container_are_checked_here_too(self):
+        with pytest.raises(ValueError, match="15 MiB"):
+            _client().check_voice(
+                TTSVoice(name="c", reference_audio=b"RIFF" + b"\x00" * (15 * 1024 * 1024)))
+        with pytest.raises(ValueError, match="container"):
+            _client().check_voice(TTSVoice(name="c", reference_audio=b"\x00\x01garbage"))
+
+    @pytest.mark.asyncio
+    async def test_an_empty_reference_never_becomes_a_preset_voice(self):
+        """b"" is falsy: before, it fell through to the `voice:` branch and
+        the clone label went out as a preset voice name."""
+        posted = []
+        with _respond(lambda u, j, h: posted.append(j) or _response()), \
+             pytest.raises(ValueError, match="empty"):
+            await _client().synthesize("x", voice=TTSVoice(name="clone:egon", reference_audio=b""))
+        assert posted == []
+
+    @pytest.mark.asyncio
+    async def test_a_clone_without_label_never_reports_the_preset_default(self):
+        hooked = {}
+
+        async def fake_request(**kwargs):
+            hooked.update(kwargs["payload"])
+
+        with _respond(lambda u, j, h: _response()), \
+             patch("plugins_llm.llm_openai_compat.openai_speech_client."
+                   "notify_tts_request", fake_request):
+            result = await _client(default_voice="alloy").synthesize(
+                "x", voice=TTSVoice(name="", reference_audio=b"RIFF....WAVE"))
+        assert result.voice_name == "cloned-voice"
+        assert hooked["voice"] == "cloned-voice"
+
+
+def test_the_speech_api_declares_no_style_prompt():
+    """system_instruction/language/seed have no wire field here — a caller
+    must be able to ask BEFORE it records them as applied."""
+    from agent_system.llm.tts import TTSClient
+    assert OpenAISpeechTTSClient.supports_style_prompt is False
+    assert TTSClient.supports_style_prompt is True

@@ -430,3 +430,47 @@ class TestTheRequestItself:
         warnings = [r for r in caplog.records
                     if "hooks are NOT being dispatched" in r.getMessage()]
         assert warnings, "a dead hook dispatch stayed below WARNING"
+
+
+class TestNoCloning:
+    """Gemini cannot clone. A reference on the voice must fail the CALL --
+    through synthesize()/synthesize_multi_speaker(), before any request --
+    not quietly turn into a preset voice for a whole book."""
+
+    @pytest.mark.asyncio
+    async def test_synthesize_refuses_a_reference_before_any_request(self, mock_genai):
+        mock_genai._client.models.generate_content = MagicMock()
+        with pytest.raises(ValueError, match="cannot clone"):
+            await mock_genai.synthesize(
+                "Hallo", voice=TTSVoice(name="clone:egon", reference_audio=b"RIFF"))
+        mock_genai._client.models.generate_content.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_multi_speaker_refuses_a_reference_on_any_speaker(self, mock_genai):
+        mock_genai._client.models.generate_content = MagicMock()
+        speakers = [TTSSpeaker(name="A", voice=TTSVoice(name="Kore")),
+                    TTSSpeaker(name="B", voice=TTSVoice(name="c", reference_audio=b"RIFF"))]
+        with pytest.raises(ValueError, match="cannot clone"):
+            await mock_genai.synthesize_multi_speaker(
+                "A: hi\nB: ho", speakers=speakers)
+        mock_genai._client.models.generate_content.assert_not_called()
+
+    def test_capability_flag_says_no(self):
+        assert GeminiTTSClient.supports_voice_cloning is False
+
+
+def test_gemini_carries_the_style_prompt():
+    """Gemini has system_instruction/language/seed — the flag must not
+    accidentally turn the narrator direction off for the pipeline."""
+    assert GeminiTTSClient.supports_style_prompt is True
+
+
+@pytest.mark.asyncio
+async def test_an_empty_reference_is_still_a_reference(mock_genai):
+    """b"" is falsy: a truthiness check would let it through and send the
+    clone label 'clone:egon' to Gemini as a PREBUILT voice name."""
+    mock_genai._client.models.generate_content = MagicMock()
+    with pytest.raises(ValueError, match="cannot clone"):
+        await mock_genai.synthesize(
+            "Hallo", voice=TTSVoice(name="clone:egon", reference_audio=b""))
+    mock_genai._client.models.generate_content.assert_not_called()

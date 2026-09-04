@@ -11,7 +11,7 @@ httpx is a core requirement, so this plugin installs with the framework.
 | `openai_httpx` | LLM | `HTTPXOpenAIClient` | `/chat/completions` |
 | `openai_responses` | LLM | `OpenAIResponsesClient` | `/responses` |
 | `openai_httpx` | batch | `OpenAIBatchClient` | `/v1/batches` (OpenAI only) |
-| `openai_speech` | TTS | `openai_speech_client` | `/audio/speech` |
+| `openai_speech` | TTS | `openai_speech_client` | `/audio/speech` (+ voice cloning via `input_references`) |
 
 ```yaml
 # config/llm*.yaml
@@ -20,6 +20,16 @@ my-model:
   api_key: ${OPENROUTER_API_KEY}
   base_url: https://openrouter.ai/api/v1
 ```
+
+## Voice cloning on the speech client
+
+Put the sample on the voice — `TTSVoice(name="clone:egon",
+reference_audio=wav_bytes, reference_text=transcript)` — and the client
+sends it as OpenRouter's stateless `input_references` (base64 data URI in
+every request, ≤ 15 MiB, no upload step) and omits `voice`. OpenRouter
+routes only to endpoints flagged `supports_voice_cloning` in the endpoints
+API and answers 404 otherwise; as of 2026-09 that is `fish-audio/s2.1-pro`
+alone (Voxtral and MAI-Voice-2 advertise cloning but are not flagged).
 
 ## Why there are two LLM clients
 

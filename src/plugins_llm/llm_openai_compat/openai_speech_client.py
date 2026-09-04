@@ -12,11 +12,18 @@ writes WAV itself, and PCM avoids an mp3 decode dependency. The sample
 rate is parsed from the Content-Type when the gateway sends one
 (``audio/pcm;rate=24000;channels=1``), defaulting to OpenAI's 24 kHz /
 16-bit / mono.
+
+Voice cloning is OpenRouter's stateless ``input_references``: the sample
+travels inside every request as a base64 data URI (plus its transcript),
+no upload step. OpenRouter routes such a request only to endpoints flagged
+``supports_voice_cloning`` and answers 404 otherwise — so a model without
+cloning fails loudly instead of speaking in a preset voice.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import re
 import time
@@ -39,6 +46,33 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 #: OpenAI PCM output contract; used when the response names no rate.
 DEFAULT_SAMPLE_RATE = 24000
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+#: OpenRouter rejects larger reference samples with a 400 (20 MiB base64).
+MAX_REFERENCE_BYTES = 15 * 1024 * 1024
+
+
+def _audio_mime(data: bytes) -> str:
+    """Container from the magic bytes — the data URI has to name one.
+
+    Unknown containers are an error, not "audio/wav": a mislabelled sample
+    fails at the provider with a message that points nowhere.
+    """
+    if data.startswith(b"RIFF"):
+        return "audio/wav"
+    if data.startswith(b"fLaC"):
+        return "audio/flac"
+    if data.startswith(b"OggS"):
+        return "audio/ogg"
+    if data.startswith(b"FORM"):
+        return "audio/aiff"
+    if data[4:8] == b"ftyp":
+        return "audio/mp4"
+    # MPEG audio frame sync: 11 set bits (covers Layer III with/without CRC,
+    # MPEG-1/2/2.5), or an ID3v2 tag in front of it.
+    if data.startswith(b"ID3") or (len(data) > 1 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0):
+        return "audio/mpeg"
+    raise ValueError(
+        f"Reference audio has an unrecognised container (starts with "
+        f"{data[:4]!r}); use WAV, FLAC, OGG, AIFF, MP4/M4A or MP3")
 
 
 class OpenAISpeechTTSClient(TTSClient):
@@ -46,6 +80,9 @@ class OpenAISpeechTTSClient(TTSClient):
 
     SAMPLE_WIDTH = 2
     CHANNELS = 1
+    supports_voice_cloning = True
+    #: No wire field for style/language/seed — see the warning in synthesize.
+    supports_style_prompt = False
 
     def __init__(
         self,
@@ -64,6 +101,29 @@ class OpenAISpeechTTSClient(TTSClient):
         self.max_retries = max_retries
         self._unsupported_warned = False
 
+    def check_voice(self, voice: Optional[TTSVoice]) -> None:
+        """Everything that would fail the request before it is sent: a voice
+        name or a reference, a non-empty reference within OpenRouter's limit
+        and in a container the data URI can name."""
+        super().check_voice(voice)
+        reference = voice.reference_audio if voice else None
+        if reference is None:
+            if not ((voice.name if voice else None) or self.default_voice):
+                raise ValueError(
+                    f"The speech API requires a voice: pass TTSVoice or set "
+                    f"`voice:` on the TTS model entry (model={self.model})")
+            return
+        if not reference:
+            raise ValueError(
+                f"Reference audio is empty (0 bytes) for voice {voice.name!r} "
+                f"(model={self.model})")
+        if len(reference) > MAX_REFERENCE_BYTES:
+            raise ValueError(
+                f"Reference audio is {len(reference) / 2**20:.1f} MiB, the "
+                f"speech API accepts at most 15 MiB — use a shorter clip "
+                f"(model={self.model})")
+        _audio_mime(reference)
+
     async def synthesize(
         self,
         text: str,
@@ -73,11 +133,14 @@ class OpenAISpeechTTSClient(TTSClient):
         system_instruction: Optional[str] = None,
         seed: Optional[int] = None,
     ) -> TTSResult:
-        voice_name = (voice.name if voice else None) or self.default_voice
-        if not voice_name:
-            raise ValueError(
-                f"The speech API requires a voice: pass TTSVoice or set "
-                f"`voice:` on the TTS model entry (model={self.model})")
+        self.check_voice(voice)
+        reference = voice.reference_audio if voice else None
+        if reference is not None:
+            # The label stays the clone's own; the preset default must not
+            # show up in the result or the debugger for a cloned segment.
+            voice_name = voice.name or "cloned-voice"
+        else:
+            voice_name = (voice.name if voice else None) or self.default_voice
         if system_instruction or language or seed is not None:
             # Visible instead of silently dropped: the speech wire has no
             # fields for style prompts, language hints, or seeds — a caller
@@ -90,12 +153,22 @@ class OpenAISpeechTTSClient(TTSClient):
                     "system_instruction/language/seed have no request field "
                     "on the speech API and are ignored (model=%s).", self.model)
 
-        payload = {
+        payload: dict = {
             "model": self.model,
             "input": text,
-            "voice": voice_name,
             "response_format": "pcm",
         }
+        if reference is not None:
+            # No `voice` next to the sample: the reference IS the voice, and
+            # what a provider would do with both is undefined.
+            parts: list[dict] = [{"type": "input_audio", "input_audio": {
+                "data": f"data:{_audio_mime(reference)};base64,"
+                        f"{base64.b64encode(reference).decode()}"}}]
+            if voice.reference_text:
+                parts.append({"type": "text", "text": voice.reference_text})
+            payload["input_references"] = parts
+        else:
+            payload["voice"] = voice_name
         headers = {"Authorization": f"Bearer {self.api_key}"}
         url = f"{self.base_url}/audio/speech"
 
@@ -105,9 +178,16 @@ class OpenAISpeechTTSClient(TTSClient):
         # switching a profile from gemini_tts to this provider used to make
         # the whole audio pipeline invisible in one line.
         started = time.time()
+        # The sample stays out of the hook payload: the debugger would
+        # otherwise store megabytes of base64 per segment.
+        hook_payload = {k: v for k, v in payload.items() if k != "input_references"}
+        hook_payload["input_chars"] = len(text)
+        if reference is not None:
+            hook_payload["reference_bytes"] = len(reference)
+            hook_payload["voice"] = voice_name  # the clone's label, for the debugger
         await notify_tts_request(
             provider="openai_speech", model=self.model, url=url,
-            payload={**payload, "input_chars": len(text)})
+            payload=hook_payload)
 
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):

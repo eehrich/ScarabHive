@@ -101,6 +101,7 @@ class GeminiTTSClient(TTSClient):
         """Single-speaker TTS via Gemini."""
         from google.genai import types
 
+        self.check_voice(voice)
         voice_name = voice.name if voice else self.default_voice
 
         speech_config = types.SpeechConfig(
@@ -151,6 +152,8 @@ class GeminiTTSClient(TTSClient):
         language: Optional[str] = None,
     ) -> TTSResult:
         """Multi-speaker TTS via Gemini (max 2 speakers)."""
+        for sp in speakers:
+            self.check_voice(sp.voice)
         from google.genai import types
 
         if len(speakers) > 2:
