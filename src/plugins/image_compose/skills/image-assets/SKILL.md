@@ -64,7 +64,9 @@ deliver the best, name the deviation.
              "position": {"anchor": "center"}, "size": [W, H], "fit": "cover"}]}
 ```
 
-`images_render(spec=..., output_path="<name>.png", layers_dir="", include_content=true)`.
+`images_render(spec=..., output_path="data/workspace/images/<name>.png",
+layers_dir="", include_content=true)`. Paths are project-relative: a bare
+name would land outside the workspace and is refused.
 `fit: cover` fills and crops; `contain` letterboxes.
 
 **Sprites**: generate the object on a plain, contrasting background (say so
@@ -84,18 +86,25 @@ plainer one rather than accepting it.
 
 ```json
 {"size": [2W, 2H], "layers": [
-  {"type": "image", "src": "<name>.png", "position": [0, 0],  "size": [W, H]},
-  {"type": "image", "src": "<name>.png", "position": [W, 0],  "size": [W, H]},
-  {"type": "image", "src": "<name>.png", "position": [0, H],  "size": [W, H]},
-  {"type": "image", "src": "<name>.png", "position": [W, H],  "size": [W, H]}]}
+  {"type": "image", "src": "data/workspace/images/<name>.png", "position": [0, 0], "size": [W, H]},
+  {"type": "image", "src": "data/workspace/images/<name>.png", "position": [W, 0], "size": [W, H]},
+  {"type": "image", "src": "data/workspace/images/<name>.png", "position": [0, H], "size": [W, H]},
+  {"type": "image", "src": "data/workspace/images/<name>.png", "position": [W, H], "size": [W, H]}]}
 ```
 
-Render to `<name>_tiling_check.png`, look at the cross in the middle. A
-visible seam → regenerate with `seamless tileable` moved to the front of
-the prompt and a new seed; two seams later, deliver and say "seam visible
-at the horizontal edge".
+Render it with `layers_dir=""` — a throwaway needs no layer export — and
+look at the cross in the middle. A visible seam → regenerate with
+`seamless tileable` moved to the front of the prompt and a new seed; two
+seams later, deliver and say "seam visible at the horizontal edge".
+
+A brief that said "tileable" and a report that says `Tileable: yes` mean
+this render happened. Without it the line reads `no (not checked)`.
 
 # 7. Report
 
 The five-line block from your prompt. The path is the deliverable; the
 `Verified:` line is what makes it trustworthy.
+
+**The path is the one the tool returned.** A successful render replies
+with `output_path`; copy that. An error reply has none — then there is no
+path to report, only a fix to make and a render to repeat.

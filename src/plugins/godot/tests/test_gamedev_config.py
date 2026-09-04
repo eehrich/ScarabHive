@@ -143,11 +143,12 @@ def test_the_asset_agents_cannot_touch_the_projects(config):
         assert not allows(agent, "coder_fs/coder_fs_manage")
         assert not allows(agent, "godot/godot_script")
     images = config.plugins.servers["images"]
-    out = getattr(images, "output_directories")
-    assert out == ["data/workspace/images"]
-    root = Path(getattr(images, "output_root")).resolve()
-    assert any(root == Path(d).resolve() or Path(d).resolve() in root.parents for d in out), \
-        "output_root outside output_directories would refuse every relative render"
+    assert getattr(images, "output_directories") == ["data/workspace/images"]
+    # Write paths are project-relative (the schema says so, and the read side
+    # has always resolved them that way); the sandbox is the only thing that
+    # decides where they may land. A second base directory to resolve against
+    # is what once doubled the path.
+    assert getattr(images, "output_root", None) is None
 
 
 # ── prompts and skills name only tools that exist ─────────────────────────

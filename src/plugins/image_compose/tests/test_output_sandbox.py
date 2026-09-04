@@ -20,12 +20,16 @@ SPEC = {"size": [8, 8], "background": "#ffffff",
 
 
 def make_server(tmp_path: Path, confined: bool):
+    """Write paths are project-relative, so the test's project root is
+    tmp_path and the sandbox a directory inside it."""
     allowed = tmp_path / "allowed"
     allowed.mkdir(exist_ok=True)
     kwargs = {"output_directories": [str(allowed)]} if confined else {}
-    config = MCPConfig(type="image_compose", enabled=True, output_root=str(allowed),
+    config = MCPConfig(type="image_compose", enabled=True,
                        fonts_dir=str(tmp_path / "fonts"), **kwargs)
-    return PLUGIN_FACTORY(name="images", system_config=AgentSystemConfig(), mcp_config=config), allowed
+    srv = PLUGIN_FACTORY(name="images", system_config=AgentSystemConfig(), mcp_config=config)
+    srv.project_root = tmp_path
+    return srv, allowed
 
 
 async def render(server, **params):
@@ -34,7 +38,7 @@ async def render(server, **params):
 
 async def test_a_composite_inside_the_sandbox_is_written(tmp_path):
     server, allowed = make_server(tmp_path, confined=True)
-    result = await render(server, output_path="sub/ok.png")
+    result = await render(server, output_path="allowed/sub/ok.png")
     assert result["status"] == "success", result
     assert Path(result["output_path"]) == allowed / "sub" / "ok.png"
     assert (allowed / "sub" / "ok.png").is_file()
@@ -60,10 +64,10 @@ async def test_the_layer_directory_and_the_spec_are_confined_as_well(tmp_path):
     """The composite alone being inside is not enough: the other two writes
     take their own paths."""
     server, allowed = make_server(tmp_path, confined=True)
-    result = await render(server, output_path="ok.png", layers_dir="../layers_out")
+    result = await render(server, output_path="allowed/ok.png", layers_dir="../layers_out")
     assert result["status"] == "error" and "layers_dir" in result["error"]
     assert not (tmp_path / "layers_out").exists()
-    result = await render(server, output_path="ok.png", spec_path="../spec.json")
+    result = await render(server, output_path="allowed/ok.png", spec_path="../spec.json")
     assert result["status"] == "error" and "spec_path" in result["error"]
     assert not (tmp_path / "spec.json").exists()
     # Refused BEFORE the render: a composite left behind under an error
@@ -77,5 +81,5 @@ async def test_without_the_setting_writes_go_wherever_they_are_told(tmp_path):
     would start failing the day this shipped."""
     server, allowed = make_server(tmp_path, confined=False)
     assert server.output_directories == []
-    result = await render(server, output_path="../free.png")
-    assert result["status"] == "success" and (tmp_path / "free.png").is_file()
+    result = await render(server, output_path="elsewhere/free.png")
+    assert result["status"] == "success" and (tmp_path / "elsewhere" / "free.png").is_file()

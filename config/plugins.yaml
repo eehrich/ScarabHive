@@ -177,7 +177,6 @@ plugins:
       enabled: true
       description: "Compose layered images (background + text + shapes + gradients + SVG)"
       fonts_dir: "src/plugins/image_compose/fonts"   # plugin-bundled assets
-      output_root: "."
       # font_aliases: drop a TTF into fonts_dir and map an alias name to its filename.
       # Available aliases (used in image_compose schema + cover_artist prompt):
       #   sans, sans_bold, serif, serif_bold, mono, display,

@@ -61,7 +61,7 @@ image_compose:
   type: image_compose
   enabled: true
   fonts_dir: "src/plugins/image_compose/fonts"
-  output_root: "."
+  # output_directories: ["data/workspace/images"]   # write sandbox; empty = unrestricted
   overlap_check_enabled: true
   overlap_min_gap_px: 30
   # font_aliases:

@@ -144,10 +144,6 @@ config:
         Example: { "serif_bold": "CrimsonPro-Bold.ttf" }
       additionalProperties:
         type: string
-    output_root:
-      type: string
-      default: "."
-      description: "Base directory for resolving relative output paths."
     output_directories:
       type: array
       items:

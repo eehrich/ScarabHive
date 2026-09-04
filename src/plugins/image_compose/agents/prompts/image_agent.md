@@ -42,8 +42,10 @@ composition step is what moves it into the workspace at the right size.
 
 One block, nothing else:
 
+`Path` is the `output_path` the last render returned, copied verbatim.
+
 ```
-Path:       data/workspace/images/<name>.png
+Path:       <output_path from the render reply>
 Size:       <w>x<h>
 Tileable:   yes (2x2 checked) | no | not requested
 Background: opaque | transparent (cutout, checked) | transparent (composed)

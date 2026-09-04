@@ -32,13 +32,10 @@ class ImageComposeServer(SchemaBasedMCPServer):
 
         project_root = Path.cwd()
         fonts_dir_cfg = getattr(mcp_config, "fonts_dir", "data/fonts") or "data/fonts"
-        output_root_cfg = getattr(mcp_config, "output_root", ".") or "."
 
         self.project_root = project_root
         self.fonts_dir = (project_root / fonts_dir_cfg).resolve() \
             if not Path(fonts_dir_cfg).is_absolute() else Path(fonts_dir_cfg)
-        self.output_root = (project_root / output_root_cfg).resolve() \
-            if not Path(output_root_cfg).is_absolute() else Path(output_root_cfg)
 
         aliases_cfg = getattr(mcp_config, "font_aliases", {}) or {}
         self.font_aliases: dict[str, str] = dict(aliases_cfg) if isinstance(aliases_cfg, dict) else {}
@@ -70,9 +67,9 @@ class ImageComposeServer(SchemaBasedMCPServer):
 
         self.fonts_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
-            "ImageComposeServer initialized — fonts_dir=%s, output_root=%s, aliases=%d, "
+            "ImageComposeServer initialized — fonts_dir=%s, write_sandbox=%s, aliases=%d, "
             "overlap_check=%s (min_gap=%dpx)",
-            self.fonts_dir, self.output_root, len(self.font_aliases),
+            self.fonts_dir, self.output_directories or "unrestricted", len(self.font_aliases),
             self.overlap_check_enabled, self.overlap_min_gap_px,
         )
 
@@ -100,10 +97,7 @@ class ImageComposeServer(SchemaBasedMCPServer):
             return _error("output_path is required (string)", "ValidationError")
 
         try:
-            out_full = Path(output_path)
-            if not out_full.is_absolute():
-                out_full = (self.output_root / out_full).resolve()
-            out_full = self._confine(out_full, "output_path")
+            out_full = self._confine(self._resolve_out(output_path), "output_path")
             out_full.parent.mkdir(parents=True, exist_ok=True)
 
             # Per-layer PNG export:
@@ -117,9 +111,16 @@ class ImageComposeServer(SchemaBasedMCPServer):
             if layers_dir_param is False or layers_dir_param == "":
                 layers_dir = None  # explicit opt-out
             elif layers_dir_param:
-                layers_dir = Path(layers_dir_param)
-                if not layers_dir.is_absolute():
-                    layers_dir = (self.output_root / layers_dir).resolve()
+                layers_dir = self._resolve_out(layers_dir_param)
+                # compose() clears layer_*.png from this directory before
+                # writing. Pointed at the directory the composite goes to,
+                # that deletes delivered assets whose name starts with
+                # "layer_" -- and the reply would still say success.
+                if layers_dir == out_full.parent:
+                    raise CompositionError(
+                        f"layers_dir {layers_dir} is the directory the composite is written "
+                        f"to; the per-layer export needs one of its own (omit layers_dir for "
+                        f"{out_full.stem}_layers, or pass \"\" to skip it)")
             else:
                 # Omitted → auto-derive next to the composite
                 layers_dir = out_full.parent / f"{out_full.stem}_layers"
@@ -131,10 +132,7 @@ class ImageComposeServer(SchemaBasedMCPServer):
             # and its layer directory on disk under an error result.
             spec_full: Path | None = None
             if spec_path and isinstance(spec_path, str):
-                spec_full = Path(spec_path)
-                if not spec_full.is_absolute():
-                    spec_full = (self.output_root / spec_full).resolve()
-                spec_full = self._confine(spec_full, "spec_path")
+                spec_full = self._confine(self._resolve_out(spec_path), "spec_path")
 
             n_layers = len(spec.get("layers") or [])
             if status:
@@ -224,6 +222,28 @@ class ImageComposeServer(SchemaBasedMCPServer):
             if status:
                 await status.error(f"Unexpected error: {e}")
             return _error(str(e), type(e).__name__)
+
+    def _resolve_out(self, value: str) -> Path:
+        """A write path: relative to the project root, or absolute.
+
+        The same rule the read side has always used (``analyze``,
+        ``find_region``, and an image layer's ``src``), and the one the
+        schema states. There used to be a second one -- an ``output_root``
+        the server prepended to relative paths -- and the two disagreed
+        whenever it was not the project root: an agent that passed the
+        project-relative path it had been briefed with got the root
+        prepended, so the file landed at
+        ``<root>/data/workspace/images/x.png``. That is inside the write
+        sandbox, so nothing refused it, and the caller then looked for its
+        asset where it had meant to put it (measured 2026-09-04; the
+        sub-agent reported the doubled path upward). One rule cannot
+        disagree with itself, and where a path may go is what
+        ``output_directories`` says.
+
+        ``base / absolute`` is that absolute path, so absolutes need no
+        branch of their own.
+        """
+        return (self.project_root / Path(value)).resolve()
 
     def _confine(self, path: Path, what: str) -> Path:
         """``path`` if it lies inside one of ``output_directories`` (or the
