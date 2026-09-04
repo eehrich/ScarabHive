@@ -18,11 +18,12 @@ Usage:
 
 from __future__ import annotations
 
+import functools
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Any
 
-from .job_tracker import BatchJobTracker, set_job_tracker
+from .job_tracker import BatchJobTracker, get_job_tracker, set_job_tracker
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig
@@ -377,12 +378,11 @@ async def _register_batch_clients(
             if backend_factory is None:
                 log.warning(f"Unknown batch provider: {batch_provider}")
                 continue
-            client = backend_factory(model_config)
-            if client is None:
-                log.info("No API key found, skipping %s batch client", batch_provider)
-                continue
-            queue_manager.register_batch_client(batch_provider, client)
-            log.info("Registered %s batch client", batch_provider)
+            # The plugin is resolved (manifest scan, import) HERE, so an
+            # unknown or broken provider still shows up at startup; only the
+            # client -- SDK import, HTTP client, API key -- waits for first use.
+            queue_manager.register_batch_client_factory(
+                batch_provider, functools.partial(backend_factory, model_config))
         except Exception as e:
             log.error(f"Failed to register batch client for {batch_provider}: {e}")
 
@@ -403,15 +403,25 @@ async def _cancel_provider_batches(
         Total number of batches cancelled
     """
     total_cancelled = 0
-    
-    for provider, client in queue_manager._batch_clients.items():
+    tracker = get_job_tracker()
+
+    for provider in queue_manager.batch_providers():
         # Only cancel for providers in the cancel set
         if provider not in providers_to_cancel:
             log.debug(f"Skipping cancel for provider {provider} (cancel_on_startup=false)")
             continue
-            
+
+        # Ask the tracker BEFORE building the client: cancel_all_pending_batches
+        # only ever cancels tracked jobs, so with nothing tracked there is
+        # nothing to do -- and no reason to import an SDK for it.
+        tracked = await tracker.get_tracked_jobs(provider) if tracker else set()
+        if not tracked:
+            log.debug(f"No tracked {provider} batch jobs to cancel")
+            continue
+
         try:
-            if hasattr(client, 'cancel_all_pending_batches'):
+            client = queue_manager._client_for(provider)
+            if client is not None and hasattr(client, 'cancel_all_pending_batches'):
                 cancelled = await client.cancel_all_pending_batches()
                 total_cancelled += cancelled
                 if cancelled > 0:

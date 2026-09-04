@@ -217,9 +217,12 @@ class TestBatchRegistration:
         from types import SimpleNamespace
         from agent_system.llm.batch.initialization import _register_batch_clients
 
+        # The manager receives a FACTORY per provider (the client is built on
+        # first use, see BatchQueueManager.register_batch_client_factory);
+        # resolving it here is what the queue manager does in _client_for.
         registered = {}
         manager = SimpleNamespace(
-            register_batch_client=lambda name, client: registered.__setitem__(name, client))
+            register_batch_client_factory=lambda name, factory: registered.__setitem__(name, factory))
         asyncio.run(_register_batch_clients(
             manager, providers, batch_system_config=None,
             log=logging.getLogger("test")))
@@ -232,18 +235,23 @@ class TestBatchRegistration:
             "openai": LLMModelConfig(provider="batch", batch_provider="openai",
                                      model="gpt-x", api_key="sk-test"),
         })
-        assert type(registered.get("anthropic")).__name__ == "AnthropicBatchClient", (
+        assert set(registered) == {"anthropic", "openai"}, (
             "the registry lookup in _register_batch_clients no longer reaches "
             "the queue manager — batch models silently lose their backend")
-        assert type(registered.get("openai")).__name__ == "OpenAIBatchClient"
+        assert type(registered["anthropic"]()).__name__ == "AnthropicBatchClient"
+        assert type(registered["openai"]()).__name__ == "OpenAIBatchClient"
 
-    def test_missing_key_skips_without_registering(self, monkeypatch):
+    def test_missing_key_resolves_to_no_client(self, monkeypatch):
+        """Registration no longer looks at the key (that would mean building
+        the client at startup); the factory answers None on first use and the
+        queue manager forgets the provider then."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         registered = self._run({
             "anthropic": LLMModelConfig(provider="batch", batch_provider="anthropic",
                                         model="claude-x"),
         })
-        assert registered == {}
+        assert set(registered) == {"anthropic"}
+        assert registered["anthropic"]() is None
 
     def test_unknown_batch_provider_registers_nothing(self):
         registered = self._run({

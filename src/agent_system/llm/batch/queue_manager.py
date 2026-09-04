@@ -12,7 +12,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 import uuid
 
 from agent_system.utils.id import short_id
@@ -136,6 +136,7 @@ class BatchQueueManager:
         
         # Batch client callbacks (set by register_batch_client)
         self._batch_clients: Dict[str, Any] = {}  # provider -> client
+        self._batch_client_factories: Dict[str, Callable[[], Any]] = {}  # provider -> builder
         
         # Metrics
         self._metrics = BatchMetrics()
@@ -187,7 +188,59 @@ class BatchQueueManager:
         # cancellation looks its jobs up by exactly this key.
         client.provider_name = provider
         logger.info(f"Registered batch client for provider: {provider}")
-    
+
+    def register_batch_client_factory(self, provider: str, factory: Callable[[], Any]) -> None:
+        """Register a batch provider whose client is built on first use.
+
+        Building a backend imports its SDK (google.genai: ~1.1 s, 88 MB) and
+        opens an HTTP client; done eagerly for every configured provider that
+        was paid at EVERY process start -- each ``agent-cli run`` included --
+        whether or not a batch request ever followed. ``factory`` returns the
+        client, or None when the provider cannot come up (no API key); the
+        first ``_client_for`` resolves it and registers it like
+        ``register_batch_client`` would.
+        """
+        self._batch_client_factories[provider] = factory
+        logger.info(f"Registered batch backend for provider {provider} (built on first use)")
+
+    def has_batch_client(self, provider: str) -> bool:
+        """Whether a request for ``provider`` can be served. Resolves the
+        client: a submit IS first use, and a provider whose factory declines
+        (no key) must be refused here, before the request is queued and sits
+        out the collection window."""
+        return self._client_for(provider) is not None
+
+    def batch_providers(self) -> list[str]:
+        """Every provider name that has a client or can still build one."""
+        return list(dict.fromkeys([*self._batch_clients, *self._batch_client_factories]))
+
+    def _client_for(self, provider: str) -> Any:
+        """The provider's client, building it on first use; None if unknown,
+        if its factory declined (no API key) or if building it failed. Either
+        outcome is logged once and the factory is forgotten, so neither the
+        poll loop nor the next submit repeats the attempt every time.
+
+        Never raises: this runs inside _submit_batch, after the job is in
+        _active_jobs -- an exception there is swallowed by the collection
+        task and leaves the caller waiting for its full timeout."""
+        client = self._batch_clients.get(provider)
+        if client is not None:
+            return client
+        factory = self._batch_client_factories.pop(provider, None)
+        if factory is None:
+            return None
+        try:
+            client = factory()
+        except Exception as e:
+            logger.error("Failed to build %s batch client: %s", provider, e, exc_info=True)
+            return None
+        if client is None:
+            logger.info("No API key found, skipping %s batch client", provider)
+            return None
+        client.provider_name = provider
+        self._batch_clients[provider] = client
+        return client
+
     def _ensure_polling_started(self) -> None:
         """Ensure polling task is started and running in the current event loop.
         
@@ -261,17 +314,13 @@ class BatchQueueManager:
         recovered_count = 0
         
         # Determine which providers to recover from
-        providers_to_check: list[tuple[str, Any]] = list(self._batch_clients.items())
-        if providers:
-            providers_to_check = [
-                (p, c) for p, c in self._batch_clients.items() 
-                if p in providers
-            ]
-        
-        provider_names = [p for p, _ in providers_to_check]
+        provider_names = [p for p in self.batch_providers() if not providers or p in providers]
         logger.info(f"Starting job recovery, checking {len(provider_names)} providers: {provider_names}")
-        
-        for provider, client in providers_to_check:
+
+        for provider in provider_names:
+            client = self._client_for(provider)
+            if client is None:
+                continue
             try:
                 if not hasattr(client, 'list_batches'):
                     logger.debug(f"Provider {provider} doesn't support list_batches")
@@ -420,10 +469,10 @@ class BatchQueueManager:
         self._ensure_polling_started()
         
         # Validate provider early (fail fast before queuing)
-        if provider not in self._batch_clients:
+        if not self.has_batch_client(provider):
             raise ValueError(
                 f"No batch client registered for provider: {provider}. "
-                f"Available providers: {list(self._batch_clients.keys())}"
+                f"Available providers: {self.batch_providers()}"
             )
         
         # Create request
@@ -650,7 +699,7 @@ class BatchQueueManager:
         self._metrics.total_requests += len(batch_requests)
         
         # Get batch client
-        client = self._batch_clients.get(provider)
+        client = self._client_for(provider)
         if not client:
             logger.error(f"No batch client registered for provider: {provider}")
             job.status = BatchStatus.FAILED
@@ -807,7 +856,7 @@ class BatchQueueManager:
     async def _poll_job(self, job: BatchJob) -> None:
         """Poll a single batch job for status updates."""
         logger.debug("Polling batch job %s (provider: %s)", job.job_id[:8], job.provider)
-        client = self._batch_clients.get(job.provider)
+        client = self._client_for(job.provider)
         if not client:
             logger.warning("No batch client for provider: %s", job.provider)
             return
@@ -932,7 +981,7 @@ class BatchQueueManager:
         Args:
             job: The BatchJob to retry
         """
-        client = self._batch_clients.get(job.provider)
+        client = self._client_for(job.provider)
         if not client:
             logger.error(f"No batch client for provider {job.provider}, cannot retry")
             job.error_message = f"No batch client for provider: {job.provider}"
@@ -1116,7 +1165,7 @@ class BatchQueueManager:
             logger.warning(f"Job {job_id} is already in terminal state: {job.status}")
             return False
         
-        client = self._batch_clients.get(job.provider)
+        client = self._client_for(job.provider)
         if not client:
             return False
         
@@ -1184,7 +1233,7 @@ class BatchQueueManager:
         
         # Cancel the job at the provider
         if job.provider_job_id:
-            client = self._batch_clients.get(job.provider)
+            client = self._client_for(job.provider)
             if client:
                 try:
                     logger.info(
