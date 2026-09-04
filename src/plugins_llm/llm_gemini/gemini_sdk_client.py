@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib
+import importlib.util
 import json
 import logging
 import random
@@ -30,9 +32,6 @@ import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from agent_system.utils.json_utils import repair_json
-
-from google import genai
-from google.genai import types
 
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
@@ -50,6 +49,30 @@ from .gemini_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _LazyModule:
+    """A module imported on first attribute access.
+
+    ``import google.genai`` costs about 1.1 s and 88 MB (measured 2026-09-04)
+    and used to run at module import -- i.e. while an agent with a gemini_sdk
+    profile was being BUILT, long before (and whether or not) it made a call.
+    Every ``genai.X`` / ``types.X`` below goes through here; the annotations
+    are strings (``from __future__ import annotations``) and never trigger it.
+    """
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._module = None
+
+    def __getattr__(self, attr: str) -> Any:
+        if self._module is None:
+            self._module = importlib.import_module(self._name)
+        return getattr(self._module, attr)
+
+
+genai = _LazyModule("google.genai")
+types = _LazyModule("google.genai.types")
 
 
 class GeminiSDKClient(LLMClient):
@@ -126,10 +149,17 @@ class GeminiSDKClient(LLMClient):
         
         # Store safety settings for Gemini content filtering
         self.safety_settings = safety_settings
-        
-        # Initialize the official client
-        self._client = genai.Client(api_key=api_key)
-        
+
+        # The SDK is imported and its client built on the first call (see
+        # ``_client``) -- ``import google.genai`` costs ~1.1 s and 88 MB, and
+        # most agents that get built never make a Gemini call. A MISSING
+        # package must still fail here, where Agent.__init__ turns it into
+        # the startup warning an operator looks for; find_spec resolves the
+        # module without executing it.
+        if importlib.util.find_spec("google.genai") is None:
+            raise ImportError("google-genai is not installed (provider gemini_sdk needs it)")
+        self._sdk_client = None
+
         logger.info(
             f"Initialized GeminiSDKClient with model={model} "
             f"context_window={context_window} "
@@ -137,6 +167,17 @@ class GeminiSDKClient(LLMClient):
             f"thinking_budget={self.extra_params.get('thinking_budget')} "
             f"thinking_level={self.extra_params.get('thinking_level')}"
         )
+
+    @property
+    def _client(self):
+        """The SDK client, built on first use (see __init__ for why)."""
+        if self._sdk_client is None:
+            self._sdk_client = genai.Client(api_key=self.api_key)
+        return self._sdk_client
+
+    @_client.setter
+    def _client(self, value) -> None:
+        self._sdk_client = value
 
     def _convert_messages_to_sdk(
         self, messages: List[ChatMessage]
