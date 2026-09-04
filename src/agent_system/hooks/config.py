@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
+from agent_system.utils import yaml_io
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ class HooksConfig:
         
         try:
             with open(config_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
+                data = yaml_io.safe_load(f) or {}
             
             hooks_section = data.get("hooks", {})
             

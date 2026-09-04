@@ -20,7 +20,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Repo verlangt >=3.11
     tomllib = None  # type: ignore[assignment]
 
-import yaml
+from agent_system.utils import yaml_io
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def load_plugin_metadata(plugin_dir: Path) -> dict[str, Any]:
     if yaml_path.exists():
         try:
             with yaml_path.open("r", encoding="utf-8") as fh:
-                data = yaml.safe_load(fh) or {}
+                data = yaml_io.safe_load(fh) or {}
             return data if isinstance(data, dict) else {}
         except Exception as e:
             logger.warning("Failed to parse %s: %s", yaml_path, e)

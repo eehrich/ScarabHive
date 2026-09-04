@@ -45,7 +45,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import yaml
+from agent_system.utils import yaml_io
 
 from .plugin_hook import PluginHook, HookContext, HookResult
 
@@ -124,7 +124,7 @@ class SchemaBasedPluginHook(PluginHook):
             )
 
         with open(schema_path, encoding="utf-8") as f:
-            schema = yaml.safe_load(f)
+            schema = yaml_io.safe_load(f)
 
         if not isinstance(schema, dict):
             raise ValueError(f"schema.yaml must contain a dict, got {type(schema)}")

@@ -9,7 +9,7 @@ import re
 import time
 from datetime import datetime  # noqa: F401 - used in health endpoint
 from .utils.id import short_id
-import yaml
+from agent_system.utils import yaml_io
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Any
@@ -1055,7 +1055,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         try:
             agent_config_path = Path(__file__).parents[2] / "config" / "config.yaml"
             with open(agent_config_path, 'r', encoding='utf-8') as f:
-                agent_config = yaml.safe_load(f) or {}
+                agent_config = yaml_io.safe_load(f) or {}
         except Exception as e:
             logger.debug(f"Failed to load config for health check: {e}")
 

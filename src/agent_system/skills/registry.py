@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-import yaml
+from agent_system.utils import yaml_io
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ def split_frontmatter(text: str) -> Tuple[Optional[Dict[str, Any]], str]:
     if not match:
         return None, text
     try:
-        data = yaml.safe_load(match.group(1))
+        data = yaml_io.safe_load(match.group(1))
     except Exception:  # noqa: BLE001 - a broken header must not lose the body
         return None, text
     if not isinstance(data, dict):

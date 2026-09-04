@@ -13,6 +13,7 @@ from typing import Any, Optional
 from pathlib import Path
 import os
 import yaml
+from agent_system.utils import yaml_io
 import glob as glob_module
 
 from .models import AgentSystemConfig, MCPConfig
@@ -150,7 +151,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
     # If the master config exists, load it and then load any included files
     if cfg_path.exists():
         try:
-            master = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            master = yaml_io.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
         except yaml.YAMLError as e:
             logger.error(f"YAML syntax error in config file '{cfg_path}': {e}")
             raise ValueError(f"Failed to parse configuration file '{cfg_path}': {e}") from e
@@ -202,7 +203,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                 inc_path = cfg_path.parent.joinpath(inc_path)
             if inc_path.exists():
                 try:
-                    part = yaml.safe_load(inc_path.read_text(encoding="utf-8")) or {}
+                    part = yaml_io.safe_load(inc_path.read_text(encoding="utf-8")) or {}
                     logger.debug(f"Loaded included config: {inc_path.name}")
                     
                     # Resolve relative paths (./prompts/...) relative to include file dir

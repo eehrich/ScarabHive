@@ -27,7 +27,7 @@ _workdir_override: Path | None = None
 
 def get_config() -> dict:
     """Load audio_ops plugin configuration."""
-    import yaml
+    from agent_system.utils import yaml_io
     
     possible_paths = [
         Path.cwd() / "config" / "plugins.yaml",
@@ -46,7 +46,7 @@ def get_config() -> dict:
         sys.exit(1)
     
     with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+        config = yaml_io.safe_load(f)
     
     audio_config = config.get("plugins", {}).get("servers", {}).get("audio_ops", {})
     if not audio_config:

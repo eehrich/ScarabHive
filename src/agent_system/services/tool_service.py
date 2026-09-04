@@ -11,6 +11,7 @@ import logging
 from typing import Any, Optional
 from pathlib import Path
 import yaml
+from agent_system.utils import yaml_io
 
 from agent_system.mcp.integration import MCPIntegration
 from agent_system.config.models import AgentSystemConfig
@@ -190,7 +191,7 @@ class ToolService:
         async with lock:
             try:
                 # Load raw YAML (preserve formatting and comments)
-                raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                raw = yaml_io.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
             except Exception as e:
                 return {
                     "success": False,
@@ -296,7 +297,7 @@ class ToolService:
         async with lock:
             try:
                 # Load raw YAML (preserve formatting and comments)
-                raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                raw = yaml_io.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
             except Exception as e:
                 return {
                     "success": False,

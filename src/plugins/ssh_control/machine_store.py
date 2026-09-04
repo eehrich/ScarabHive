@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from agent_system.utils import yaml_io
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ def load(instance: str) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        data = yaml_io.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as e:
         logger.error("Could not read the machine store %s: %s", path, e)
         return []
@@ -188,7 +189,7 @@ def legacy_machine_count() -> int:
     if not LEGACY_PATH.exists():
         return 0
     try:
-        data = yaml.safe_load(LEGACY_PATH.read_text(encoding="utf-8")) or {}
+        data = yaml_io.safe_load(LEGACY_PATH.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
         return 0
     if not isinstance(data, dict):

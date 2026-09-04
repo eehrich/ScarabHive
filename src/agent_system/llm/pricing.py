@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-import yaml
+from agent_system.utils import yaml_io
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def load_pricing(path: Optional[Path] = None) -> Dict[str, Dict[str, float]]:
         return _cache["table"]
     try:
         with open(path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data = yaml_io.safe_load(f) or {}
         table = {
             model: {k: float(v) for k, v in prices.items()}
             for model, prices in data.items()
