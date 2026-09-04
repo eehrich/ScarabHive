@@ -31,6 +31,8 @@ from typing import Optional, TYPE_CHECKING
 
 import httpx
 
+from agent_system.llm.tls import httpx_verify
+
 from agent_system.llm.tts import (
     TTSClient, TTSResult, TTSVoice,
     notify_tts_request, notify_tts_response,
@@ -192,7 +194,7 @@ class OpenAISpeechTTSClient(TTSClient):
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=self.request_timeout) as client:
+                async with httpx.AsyncClient(timeout=self.request_timeout, verify=httpx_verify()) as client:
                     response = await client.post(url, json=payload, headers=headers)
                 if response.status_code in _RETRYABLE_STATUS:
                     last_error = httpx.HTTPStatusError(

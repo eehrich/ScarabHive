@@ -7,6 +7,7 @@ import time as _time
 from agent_system.utils.id import short_id
 
 from agent_system.llm.models import ChatMessage, LLMClient
+from agent_system.llm.tls import httpx_verify
 from agent_system.config.models import ModelCapabilitiesConfig
 from . import ollama_utils
 
@@ -45,19 +46,10 @@ class OllamaNativeAsyncClient(LLMClient):
                     f"Current model: {self.model}"
                 )
 
-        # Store verify parameter and create SSLContext if needed
+        # The configured flag stays readable as-is; what httpx gets is the
+        # process-wide context for that flag (no per-client SSL setup).
         self._verify = verify if verify is not None else True
-        self._verify_arg = self._verify
-        if self._verify is False:
-            try:
-                import ssl
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                self._verify_arg = ctx
-            except Exception:
-                # Fallback to False if SSLContext creation fails
-                self._verify_arg = False
+        self._verify_arg = httpx_verify(self._verify)
 
     async def _execute_with_cancellation(self, http_task: asyncio.Task, cancellation_token):
         """Execute HTTP task with efficient event-based cancellation monitoring.

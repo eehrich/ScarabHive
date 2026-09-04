@@ -8,6 +8,7 @@ import logging
 import time as _time
 import httpx
 
+from agent_system.llm.tls import httpx_verify
 from agent_system.utils.id import short_id
 from agent_system.utils.json_utils import repair_json
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
@@ -40,20 +41,7 @@ class OpenAIAsyncClient(LLMClient):
         if verify is not None:
             try:
                 import httpx as _httpx
-                import ssl as _ssl
-                # If verify explicitly False, create an SSLContext that disables
-                # certificate verification to ensure behavior across backends
-                verify_arg = verify
-                if verify is False:
-                    try:
-                        ctx = _ssl.create_default_context()
-                        ctx.check_hostname = False
-                        ctx.verify_mode = _ssl.CERT_NONE
-                        verify_arg = ctx
-                    except Exception:
-                        verify_arg = False
-
-                httpx_client = _httpx.AsyncClient(verify=verify_arg, timeout=timeout)
+                httpx_client = _httpx.AsyncClient(verify=httpx_verify(verify), timeout=timeout)
             except Exception as e:
                 logger = logging.getLogger(__name__)
                 logger.warning(f"Failed to create custom httpx client for OpenAI, will use SDK default: {e}", exc_info=True)

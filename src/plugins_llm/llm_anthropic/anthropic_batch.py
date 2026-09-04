@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from agent_system.llm.tls import httpx_verify
+
 from agent_system.utils.json_utils import repair_json
 
 from agent_system.llm.batch.base import BatchProviderClient
@@ -118,6 +120,7 @@ class AnthropicBatchClient(BatchProviderClient):
         
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout),
+            verify=httpx_verify(),
             headers={
                 "x-api-key": api_key,
                 "anthropic-version": "2023-06-01",

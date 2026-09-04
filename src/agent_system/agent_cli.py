@@ -750,6 +750,7 @@ def main() -> None:
         # Funktionen shadowen (NameError bei jedem anderen Subcommand).
         try:
             import httpx
+            from .llm.tls import httpx_verify
         except ImportError:
             print(json.dumps({"error": "httpx library not installed",
                               "message": "Install with: pip install httpx"}, indent=2))
@@ -765,7 +766,7 @@ def main() -> None:
         headers = {"X-API-Key": api_key} if api_key else {}
 
         async def _do_reload():
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout, verify=httpx_verify()) as client:
                 return await client.post(url, headers=headers)
 
         try:

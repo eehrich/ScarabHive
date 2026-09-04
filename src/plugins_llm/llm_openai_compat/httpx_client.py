@@ -17,6 +17,8 @@ from dataclasses import dataclass
 import httpx
 import ssl
 
+from agent_system.llm.tls import httpx_verify
+
 from agent_system.llm.cache_key import (
     ANTHROPIC_MAX_CACHE_BLOCKS,
     CACHE_BP_SENTINEL,
@@ -266,21 +268,10 @@ class HTTPXOpenAIClient(LLMClient):
                     f"Current model: {self.model}"
                 )
 
-        # Normalize verify: when explicitly False, create an SSLContext that disables
-        # certificate verification. This is more robust across httpx/httpcore
-        # backends and when using proxies that perform TLS interception.
-        if self.verify is False:
-            try:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                self._verify = ctx
-            except Exception:
-                # Fall back to boolean False if SSLContext can't be created for any reason
-                self._verify = False
-        else:
-            # Keep None or True as-is (None means httpx default behavior)
-            self._verify = self.verify
+        # One shared SSLContext (verifying or not) instead of letting httpx
+        # build a fresh one per AsyncClient -- this client opens a new
+        # AsyncClient per REQUEST, so that was 160 ms on every LLM call.
+        self._verify = httpx_verify(self.verify)
 
         logger.debug(f"HTTPXOpenAIClient initialized model={model} base_url={base_url} verify={self._verify}")
 
@@ -1637,7 +1628,12 @@ class HTTPXOpenAIClient(LLMClient):
                     retries=0,  # We handle retries ourselves
                     socket_options=socket_options,
                     # Disable HTTP/2 to avoid potential compatibility issues
-                    http2=False
+                    http2=False,
+                    # httpx ignores the client-level verify once a transport is
+                    # passed in -- the TLS context has to be handed to the
+                    # transport itself, or every streaming request builds its
+                    # own (measured: one CA-bundle load per request).
+                    verify=self._verify,
                 )
                 
                 client_kwargs: dict[str, Any] = {

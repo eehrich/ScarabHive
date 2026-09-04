@@ -26,6 +26,8 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
+from agent_system.llm.tls import httpx_verify
+
 from . import anthropic_utils
 from agent_system.llm.cache_key import (
     CACHE_BP_SENTINEL,
@@ -142,7 +144,7 @@ class AnthropicAsyncClient(LLMClient):
             # certificate with nothing pointing at the setting.
             import httpx as _httpx
             client_kwargs["http_client"] = _httpx.AsyncClient(
-                verify=False, timeout=request_timeout)
+                verify=httpx_verify(False), timeout=request_timeout)
 
         self._client = AsyncAnthropic(**client_kwargs)
         

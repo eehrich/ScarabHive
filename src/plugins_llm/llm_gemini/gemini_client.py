@@ -13,6 +13,8 @@ from typing import Dict, List
 
 import httpx
 
+from agent_system.llm.tls import httpx_verify
+
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from .gemini_utils import (
@@ -242,7 +244,7 @@ class GeminiClient(LLMClient):
 
             try:
                 logger.debug(f"Gemini streaming: Starting request to {self.model}")
-                async with httpx.AsyncClient(timeout=self.timeouts, verify=self.verify) as client:
+                async with httpx.AsyncClient(timeout=self.timeouts, verify=httpx_verify(self.verify)) as client:
                     async with client.stream("POST", url, json=payload) as response:
                         # Handle server errors (5xx) - retry with exponential backoff
                         if response.status_code >= 500 and attempt < self.max_retries:
@@ -745,7 +747,7 @@ class GeminiClient(LLMClient):
                 )
 
             try:
-                async with httpx.AsyncClient(timeout=self.timeouts, verify=self.verify) as client:
+                async with httpx.AsyncClient(timeout=self.timeouts, verify=httpx_verify(self.verify)) as client:
                     response = await client.post(url, json=payload)
 
                     if response.status_code != 200:

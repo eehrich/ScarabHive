@@ -21,6 +21,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 import httpx
 
+from agent_system.llm.tls import httpx_verify
+
 from agent_system.llm.batch.base import BatchProviderClient
 from agent_system.llm.batch.models import BatchJob, BatchStatus, TERMINAL_STATUSES
 from agent_system.llm.batch.job_tracker import get_job_tracker
@@ -165,6 +167,7 @@ class OpenAIBatchClient(BatchProviderClient):
         # (multipart/form-data for file uploads, application/json for JSON requests)
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout),
+            verify=httpx_verify(),
             headers={
                 "Authorization": f"Bearer {api_key}",
             },

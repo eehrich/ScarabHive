@@ -58,12 +58,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import ssl
 import time as _time
 from typing import Any, Optional
 
 import httpx
 
+from agent_system.llm.tls import httpx_verify
 from agent_system.llm.models import (
     ChatMessage,
     LLMClient,
@@ -886,14 +886,7 @@ class OpenAIResponsesClient(LLMClient):
             write=self.timeout_config.write,
             pool=self.timeout_config.pool,
         )
-        verify: Any = self.ssl_verify
-        if self.ssl_verify:
-            try:
-                verify = ssl.create_default_context()
-            except Exception:
-                verify = True
-
-        async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=httpx_verify(self.ssl_verify)) as client:
             # while-loop with explicit increments: the one-shot
             # encrypted-reasoning heal must NOT consume a retry slot — with a
             # for-loop a heal on the final attempt would strip the session and
