@@ -1424,38 +1424,41 @@ class CustomAgent(Agent):
 ```
 
 **4. Factory Function (`plugin.py`):**
+
+Normally one line — the helper produces the factory bootstrap expects:
+
 ```python
-from typing import Optional
-from agent_system.agent.config import AgentConfig
-from agent_system.mcp.registry import MCPRegistry
+from agent_system.plugins.factory_utils import make_agent_plugin_factory
+from .server import MyAgent
+
+PLUGIN_FACTORY = make_agent_plugin_factory(MyAgent)
+```
+
+Write it by hand only when the factory has to decide something (e.g. return a
+plain MCP server for one configuration and an agent for another). Then keep
+the signature bootstrap calls, and take the SHARED registry:
+
+```python
+from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.mcp.base import MCPRegistry
 from .server import MyAgent
 
 
-def PLUGIN_FACTORY(
-    name: str,
-    config: dict,
-    registry: MCPRegistry,
-    parent_llm: Optional[dict] = None,
-    **kwargs
-) -> MyAgent:
-    """Create and configure the agent plugin."""
+def PLUGIN_FACTORY(name: str, system_config: AgentSystemConfig,
+                   mcp_config: MCPConfig, registry: MCPRegistry | None = None) -> MyAgent:
+    """Create the agent plugin instance."""
+    return MyAgent(name, system_config, mcp_config,
+                   registry if registry is not None else MCPRegistry())
 
-    # Use parent_llm config if available
-    if parent_llm:
-        config = config.copy()
-        config["llm"] = parent_llm
 
-    # Create agent config
-    agent_config = AgentConfig(**config)
-
-    # Create and register agent
-    agent = MyAgent(name=name, config=agent_config.model_dump())
-
-    # Bootstrap with registry (gives access to other agents/tools)
-    agent.bootstrap_servers(registry)
-
-    return agent
+# Tells bootstrap to pass registry= at all. Without it the agent gets a private,
+# empty registry, and the ToolExecutionManager built in __init__ keeps that one
+# -- assigning inst.registry afterwards is too late.
+PLUGIN_FACTORY._accepts_registry = True
 ```
+
+`mcp_config` is the MERGED server config (plugins.default_config plus the
+`type:` chain), not the raw entry — the same one every other agent gets.
 
 ### Agent vs Schema-Based Plugins
 
