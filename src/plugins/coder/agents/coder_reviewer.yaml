@@ -34,8 +34,12 @@ plugins:
             context_window: 200000
 
         # Read the diff, read around it, chase the callers, try to break each
-        # finding. That is a lot of reading for one report.
-        max_steps: 60
+        # finding. That is a lot of reading for one report, and on a large
+        # change it is hours of it. The cap has to be a safety net, not a
+        # budget: a reviewer that runs out mid-verification reports the
+        # findings it happened to reach, which reads exactly like a clean
+        # review.
+        max_steps: 200
 
         system_template: "./prompts/coder_reviewer.md"
 
