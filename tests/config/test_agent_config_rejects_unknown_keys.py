@@ -46,14 +46,24 @@ class TestUnknownKeysAreRejected:
         names the file instead of letting bootstrap explode."""
         import yaml
 
+        import re
+
         rejected = []
         scanned = 0
+        declaring: set[Path] = set()   # files whose TEXT declares an agent_config
+        reached: set[Path] = set()     # files where the walk actually parsed one
         for root in ("config", "src"):
             for path in (Path(__file__).parents[2] / root).rglob("*.yaml"):
                 if "docs" in path.parts:
                     continue
                 try:
-                    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+                    text = path.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                if re.search(r"^\s*agent_config\s*:", text, re.M):
+                    declaring.add(path)
+                try:
+                    data = yaml.safe_load(text)
                 except Exception:
                     continue
 
@@ -63,6 +73,7 @@ class TestUnknownKeysAreRejected:
                         block = node.get("agent_config")
                         if isinstance(block, dict):
                             scanned += 1
+                            reached.add(path)
                             try:
                                 AgentConfig(**block)
                             except ValidationError as exc:
@@ -75,9 +86,15 @@ class TestUnknownKeysAreRejected:
 
                 walk(data)
 
-        # 207 blocks at the time of writing; the floor sits close enough that
-        # losing a whole directory of agent yamls trips it, not just a total
-        # blackout.
-        assert scanned >= 180, \
-            f"only {scanned} agent_config blocks found — the scan went blind"
+        # The instrument checks itself against the repo instead of against a
+        # number: every file that DECLARES an agent_config must also have been
+        # parsed into one. A walk that stops descending, or a file that fails to
+        # parse and is skipped, shows up here as a difference -- while agents
+        # being added or deleted (v5b and the old book_architect generation went
+        # on 04.09.2026, 207 blocks -> 124) does not age the test.
+        assert declaring, "no agent_config anywhere in config/ or src/ — the scan went blind"
+        assert declaring == reached, (
+            "the scan did not reach every file that declares an agent_config:\n  "
+            + "\n  ".join(str(p) for p in sorted(declaring ^ reached)))
+        assert scanned >= len(declaring), f"{scanned} blocks from {len(declaring)} files"
         assert not rejected, "\n".join(rejected)
