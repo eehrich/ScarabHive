@@ -91,6 +91,29 @@ Static template variables are fine and there is one: `{{ okf_bundle }}`, so
 the bundle path is written once and cannot drift from what the injection hook
 reads. It is the same string on every call, so it costs the cache nothing.
 
+### The completion gate sits at the tail, on purpose
+
+First live run: the agent built the thing, ran a syntax check *and* a real
+three-case test of the only non-trivial function — then reported done without
+a `coder_reviewer` round, which its prompt lists as a hard condition.
+
+Measured cause, not guessed: the gate sat at **27%** of a 15k-character system
+prompt with 11k characters after it, and the last thing the model read was a
+skill index. Nothing enforced it; recency worked against it.
+
+Two changes, both structural rather than louder wording:
+
+- The report contract moved to the **end of the `coding-harness` skill** — now
+  at 93%, the last body text before the on-demand index.
+- Skipping the review is **allowed and must be stated**. Every report closes
+  with `Ran:` / `Check:` / `Reviewed:`, and `Reviewed: skipped — <reason>` is
+  a legitimate answer. An absolute rule that is obviously silly for a 60-line
+  toy gets broken, and a broken rule teaches that gates are negotiable; a rule
+  that permits the skip but forbids the silence can be followed every time.
+
+If you want it absolute instead, delete the `— or ... skipped` clause in both
+the prompt and the skill. The visibility contract stays either way.
+
 ### Injection hooks that churn the prefix are off
 
 The same rule, one level up. `todo.inject_todo_tasks`,
