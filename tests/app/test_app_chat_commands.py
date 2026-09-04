@@ -21,7 +21,7 @@ DEV_SECRET = "published-signing-key-replace-with-your-own-0000000000"
 def client():
     """Client WITHOUT the lifespan: these routes need no startup state.
 
-    ``_app_config`` is set by ``build_app`` itself, so entering the lifespan
+    ``app.state.config`` is set by ``build_app`` itself, so entering the lifespan
     would only buy plugin bootstrap this module does not use -- and holding it
     open across a module is what made this file hang.
     """

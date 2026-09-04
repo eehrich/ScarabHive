@@ -21,7 +21,6 @@ from starlette.datastructures import UploadFile  # Use starlette's UploadFile fo
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .config.models import AgentConfig
 from .api.endpoints import router as api_router
 from .mcp.base import MCPRegistry
 from .utils.logging import setup_logging
@@ -42,8 +41,10 @@ from .services.background_job_manager import (
 
 
 # Global registry for MCP endpoints access
+# (No _app_config next to it: a module global belongs to whichever build_app
+# ran last, and a reload writes app.state.config -- _live_config() is the one
+# source. The global had exactly one reader left, answering from process start.)
 _app_registry: Optional[MCPRegistry] = None
-_app_config: Optional[AgentConfig] = None
 _mcp_integration = None
 
 # Global services (initialized in build_app)
@@ -834,63 +835,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # Agents from bootstrap_servers were created without session_service
                 # ALWAYS inject, even if attribute exists, to refresh the reference
                 selected_agent._session_service = _session_service
-                # Apply server-level configuration overrides
-                try:
-                    # Check if this is a config-based agent first, then fallback to MCP server config
-                    agent_cfg = _config_service.get_agent_config(entry_name, config)
-                    if agent_cfg:
-                        server_cfg = agent_cfg
-                    else:
-                        # Not a config-based agent, try MCP server config
-                        server_mcp = _config_service.get_mcp_server_config(entry_name, config)
-                        server_cfg = server_mcp.model_dump() if server_mcp and hasattr(server_mcp, 'model_dump') else {}
-
-                    overrides = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
-                    if isinstance(overrides, dict) and overrides:
-                        # Check if we need to update tools config
-                        tools_cfg = overrides.get('tools', {})
-                        needs_copy = (
-                            ('allowed' in tools_cfg or 'blocked' in tools_cfg) or
-                            'max_steps' in server_cfg
-                        )
-                        if needs_copy:
-                            updates = {}
-                            # Update tools.allowed if specified and agent doesn't have it set
-                            if 'allowed' in tools_cfg:
-                                agent_tools = selected_agent.agent_config.tools if selected_agent.agent_config.tools else None
-                                if agent_tools is None or not agent_tools.allowed:
-                                    try:
-                                        from .config.models import ToolConfig
-                                        new_tools = ToolConfig(
-                                            allowed=tools_cfg.get('allowed', []),
-                                            blocked=agent_tools.blocked if agent_tools else []
-                                        )
-                                        updates['tools'] = new_tools
-                                    except Exception as e:
-                                        logger.debug(f"Failed to apply tools.allowed override: {e}")
-                            # Update tools.blocked if specified and agent doesn't have it set
-                            if 'blocked' in tools_cfg and 'tools' not in updates:
-                                agent_tools = selected_agent.agent_config.tools if selected_agent.agent_config.tools else None
-                                if agent_tools is None or not agent_tools.blocked:
-                                    try:
-                                        from .config.models import ToolConfig
-                                        new_tools = ToolConfig(
-                                            allowed=agent_tools.allowed if agent_tools else [],
-                                            blocked=tools_cfg.get('blocked', [])
-                                        )
-                                        updates['tools'] = new_tools
-                                    except Exception as e:
-                                        logger.debug(f"Failed to apply tools.blocked override: {e}")
-                            if 'max_steps' in server_cfg and isinstance(server_cfg.get('max_steps'), int):
-                                try:
-                                    updates['max_steps'] = int(server_cfg.get('max_steps'))
-                                except Exception as e:
-                                    logger.debug(f"Failed to apply max_steps override: {e}")
-                            if updates:
-                                selected_agent.agent_config = selected_agent.agent_config.model_copy(update=updates)
-                            logging.getLogger(__name__).debug("Applied entry agent server overrides for %s", entry_name)
-                except Exception as e:
-                    logging.getLogger(__name__).debug("Failed to apply entry agent overrides for %s: %s", entry_name, e)
+                # No server overrides are applied here on purpose. The
+                # block that used to stand here could never run: its first
+                # statement, ConfigService.get_agent_config, raises
+                # AttributeError on every call (AgentSystemConfig has no
+                # `agents` field) and a debug-level except swallowed it.
+                # Nothing is missing: the Runtime built this agent from the
+                # MERGED server config (default_config + the type: chain),
+                # which is where those very overrides come from.
     except Exception as e:
         logger.debug(f"Failed to get entry agent from registry: {e}")
         selected_agent = None
@@ -942,10 +894,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     app.state.config_path = cfg_path
     logger.info("Default agent, registry, and config stored in app.state for dependency injection")
 
-    # Store registry and config globally
-    global _app_registry, _app_config
+    # Store registry globally
+    global _app_registry
     _app_registry = registry
-    _app_config = config
 
     # Include API router
     app.include_router(api_router)
@@ -2779,7 +2730,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         from agent_system.skills.registry import default_skill_dirs
 
         configured = list(
-            getattr(getattr(_app_config, "skills", None), "skill_dirs", []) or []
+            getattr(getattr(_live_config(), "skills", None), "skill_dirs", []) or []
         )
         registry = get_skill_registry()
         registry.ensure_discovered(configured or list(default_skill_dirs()))
