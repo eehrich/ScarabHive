@@ -51,16 +51,17 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
     
     monkeypatch.setattr(InitializationService, 'initialize_for_cli', fake_initialize_for_cli)
 
-    # Mock _get_plugins_config to return a config with agent_config
+    # The entry agent's config comes from the MERGED server config
+    # (get_mcp_config_by_name), which reads config.plugins -- so the plugins
+    # section goes on the config itself, not behind a patched accessor.
     from agent_system.config.models import PluginsConfig
-    mock_plugins_cfg = PluginsConfig(servers={
+    mock_config.plugins = PluginsConfig(servers={
         "basic_agent": MCPConfig(
             type="agent",
             enabled=True,
             agent_config=AgentConfig(system_prompt="test")
         )
     })
-    monkeypatch.setattr('agent_system.agent_cli._get_plugins_config', lambda cfg: mock_plugins_cfg)
 
     # Patch the Agent class used by CLI to return our fake entry agent so main() will use it.
     # The CLI constructs the Agent as Agent(name, system_config, mcp_config, registry).

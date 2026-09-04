@@ -19,7 +19,7 @@ try:
 except Exception:
     tabulate = None
 
-from .config.settings import load_settings
+from .config.settings import get_mcp_config_by_name, load_settings
 from .config.models import AgentSystemConfig
 from .llm.models import ChatMessage
 from .plugins import discover_all_plugins
@@ -137,6 +137,42 @@ def parse_llm_params_args(raw_items: Optional[List[str]]) -> Optional[Dict[str, 
 def _get_plugins_config(config: AgentSystemConfig):
     """Get plugins configuration."""
     return config.plugins
+
+
+def _build_entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCPRegistry,
+                       session_service) -> Agent:
+    """Build the entry agent when bootstrap did not register it, from its
+    MERGED server config, and register it.
+
+    This used to read the raw ``plugins.servers[name]`` entry -- without
+    default_config and the ``type:`` inheritance chain that bootstrap applies
+    to every other agent. Measured 2026-09-01 on the real config: 133 of 203
+    agents carry a raw ``max_steps`` of 20 where the merged value is 100 or
+    30, so an agent built here ran a quietly downgraded configuration.
+
+    Exits with a listing of the available agents when the name has no
+    agent config at all (unchanged behaviour). That gate keeps reading the
+    RAW entry: plugins.default_config carries an agent_config, so every
+    merged config has one and a merged gate would wave through any tool
+    server name (measured on the real config: 96 of 219 servers have no raw
+    agent_config, all of them tool servers, no agent among them).
+    """
+    logger.info("Creating new Agent instance '%s'", entry_name)
+    raw_config = config.plugins.servers.get(entry_name) if config.plugins else None
+    if not raw_config or not getattr(raw_config, 'agent_config', None):
+        logger.error(f"Cannot create agent '{entry_name}': no agent_config found in MCP config")
+        print(f"Error: Agent '{entry_name}' not found and cannot be created (no agent_config in plugins.yaml).", file=sys.stderr)
+        print("\nAvailable agents:", file=sys.stderr)
+        for name in registry.list():
+            server = registry.get(name)
+            if isinstance(server, Agent):
+                print(f"  - {name}", file=sys.stderr)
+        sys.exit(1)
+
+    mcp_config = get_mcp_config_by_name(entry_name, config)
+    agent = Agent(entry_name, config, mcp_config, registry, session_service=session_service)
+    registry.register(entry_name, agent)
+    return agent
 
 
 logger = logging.getLogger(__name__)
@@ -1337,22 +1373,7 @@ def main() -> None:
             sys.exit(1)
 
     if agent is None:
-        # Create new agent - need agent_config for this
-        logger.info("Creating new Agent instance '%s'", entry_name)
-        plugins_cfg = _get_plugins_config(config)
-        mcp_config = plugins_cfg.servers.get(entry_name) if plugins_cfg else None
-        if not mcp_config or not getattr(mcp_config, 'agent_config', None):
-            logger.error(f"Cannot create agent '{entry_name}': no agent_config found in MCP config")
-            print(f"Error: Agent '{entry_name}' not found and cannot be created (no agent_config in plugins.yaml).", file=sys.stderr)
-            print("\nAvailable agents:", file=sys.stderr)
-            for name in registry.list():
-                server = registry.get(name)
-                if isinstance(server, _Agent):
-                    print(f"  - {name}", file=sys.stderr)
-            sys.exit(1)
-
-        agent = _Agent(entry_name, config, mcp_config, registry, session_service=session_service)
-        registry.register(entry_name, agent)
+        agent = _build_entry_agent(entry_name, config, registry, session_service)
         vprint(f"[cli] created agent: {entry_name}")
 
     # Process multimodal attachments (images, audio, text files)

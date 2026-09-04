@@ -55,6 +55,17 @@ _initialization_service: Optional[Any] = None  # InitializationService
 _session_manager: Optional[SessionManager] = None
 _session_service: Optional[Any] = None  # SessionService, imported at runtime to avoid circular import
 
+
+def _live_config(fallback: Any) -> Any:
+    """The config the ConfigService currently holds.
+
+    POST /admin/reload-config swaps that one, while every handler closed over
+    the config build_app started with. A handler that answers about
+    configuration (profiles, defaults, overrides) has to read it live, or it
+    keeps answering from the state at process start.
+    """
+    return (_config_service.get_config() if _config_service else None) or fallback
+
 # Security: Track request_id -> user_id mapping for status stream authorization.
 # Owner is core.request_context (usable from agent layer without upward import);
 # re-exported here under the historical name for existing importers.
@@ -1219,11 +1230,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
 
-        # Create LLM override if profile specified
-        if llm_profile and config.llm_system and config.llm_system.profiles:
-            if llm_profile not in config.llm_system.profiles:
+        # Create LLM override if profile specified. Resolved against the LIVE
+        # config -- a profile added by a reload was "not found" here and fell
+        # back to the default profile.
+        live = _live_config(config)
+        if llm_profile and live.llm_system and live.llm_system.profiles:
+            if llm_profile not in live.llm_system.profiles:
                 # LLM profile not found - fallback to default profile
-                default_profile = config.llm_system.default_profile
+                default_profile = live.llm_system.default_profile
                 logger.warning(f"LLM profile '{llm_profile}' not found, falling back to default profile '{default_profile}'")
                 llm_profile = default_profile
 
@@ -1233,14 +1247,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 from .config.models import AgentConfig
 
                 llm_override = create_llm_from_profile(
-                    config=config,
+                    config=live,
                     llm_profile=llm_profile,
-                    ssl_verify=getattr(config.network, "ssl_verify", None)
+                    ssl_verify=getattr(live.network, "ssl_verify", None)
                 )
 
                 # Get profile info for status display
                 temp_agent_config = AgentConfig(llm_profile=llm_profile)
-                resolved = resolve_llm_config_for_agent(config, temp_agent_config)
+                resolved = resolve_llm_config_for_agent(live, temp_agent_config)
                 model = resolved.spec.model
                 provider = resolved.spec.provider
                 llm_profile_info = f"{llm_profile}:{provider}/{model}"
@@ -1286,7 +1300,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     continue
         except Exception as e:
             logger.debug(f"Failed to list agents: {e}")
-        return {"agents": sorted(agents), "default": config.default_agent}
+        return {"agents": sorted(agents), "default": _live_config(config).default_agent}
 
     @app.get("/llm/profiles")
     def list_llm_profiles(response: Response):
@@ -1294,16 +1308,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         response.headers["Cache-Control"] = "no-store"  # same staleness class as /agents
         profiles = []
         default_profile = None
+        # Live config: /run accepts a profile a reload added, so the list the
+        # UI picks from must know it too.
+        live = _live_config(config)
         try:
-            if config.llm_system and config.llm_system.profiles:
-                for profile_name, profile_config in config.llm_system.profiles.items():
+            if live.llm_system and live.llm_system.profiles:
+                for profile_name, profile_config in live.llm_system.profiles.items():
                     profiles.append({
                         "name": profile_name,
                         "model_ref": profile_config.model_ref,
                         "description": profile_config.description or profile_name,
                         "max_steps": profile_config.max_steps
                     })
-                default_profile = config.llm_system.default_profile
+                default_profile = live.llm_system.default_profile
         except Exception as e:
             logger.debug(f"Failed to list LLM profiles: {e}")
         return {
