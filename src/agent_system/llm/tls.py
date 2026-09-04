@@ -18,15 +18,28 @@ union of what the two conventions in this repo trusted before (httpx's
 default is certifi only; the Responses client used ``ssl.create_default_context``,
 i.e. the OS store), so a CA that only one of them knew keeps working.
 
+That union stops where an operator has NARROWED the trust base: with
+SSL_CERT_FILE or SSL_CERT_DIR set, httpx trusts exactly what is in there and
+nothing else, and adding the OS store would silently undo it. Measured on the
+dev box (2026-09-04, SSL_CERT_FILE pointing at a one-certificate bundle):
+httpx alone 1 CA, plus ``load_default_certs`` 115. Widening a deliberately
+narrow trust base is not a performance decision to make on the side.
+
 ``verify=False`` keeps its meaning (no certificate check) -- it just stops
 building a throwaway context for it too.
 """
 from __future__ import annotations
 
 import functools
+import os
 import ssl
 
 import httpx
+
+
+def _trust_is_pinned() -> bool:
+    """Has the environment pinned the trust base (SSL_CERT_FILE/SSL_CERT_DIR)?"""
+    return bool(os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"))
 
 
 @functools.lru_cache(maxsize=None)
@@ -35,7 +48,7 @@ def _context(verify: bool | str) -> ssl.SSLContext:
     # CERT_NONE without hostname check for False, a CA file or directory
     # for a str) ...
     ctx = httpx.create_ssl_context(verify=verify)
-    if verify is True:
+    if verify is True and not _trust_is_pinned():
         # ... plus the OS trust store on top, see the module docstring.
         ctx.load_default_certs()
     return ctx

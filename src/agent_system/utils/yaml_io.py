@@ -27,5 +27,17 @@ def loader() -> type:
 
 
 def safe_load(stream: str | bytes | IO[str] | IO[bytes]) -> Any:
-    """Drop-in for ``yaml.safe_load``: same contract, C parser when present."""
-    return yaml.load(stream, Loader=loader())
+    """Drop-in for ``yaml.safe_load``: same contract, C parser when present.
+
+    A syntax error is re-parsed with the pure-Python loader so the operator
+    keeps the message they know: libyaml reports line and column, the Python
+    parser also prints the offending line with a caret under it. Only on the
+    error path, and only for text (a file object is already consumed by then).
+    """
+    active = loader()
+    try:
+        return yaml.load(stream, Loader=active)
+    except yaml.YAMLError:
+        if active is not yaml.SafeLoader and isinstance(stream, (str, bytes)):
+            yaml.load(stream, Loader=yaml.SafeLoader)  # raises the richer error
+        raise

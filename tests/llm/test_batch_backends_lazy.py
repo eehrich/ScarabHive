@@ -123,3 +123,25 @@ async def test_a_backend_that_fails_to_build_is_refused_at_submit(tmp_path, monk
     finally:
         llm_factory.set_batch_queue_manager(None)
         set_job_tracker(None)
+
+
+@pytest.mark.asyncio
+async def test_without_cancel_on_startup_nothing_is_cancelled(tmp_path, counting_backend):
+    """The other direction of the flag -- the one the filter in
+    ``_cancel_provider_batches`` exists for.
+
+    With cancel_on_startup off, a tracked job must survive the restart: it is
+    recovered, not cancelled. Recovery has to ask the provider what it has, so
+    here the client IS built at startup; that cost is inherent to recovery,
+    not the eager construction this change removed.
+    """
+    seed = BatchJobTracker(tmp_path)
+    await seed.add_job("gemini", "batches/left-over")
+
+    manager = await initialization.init_batch_system(_config(tmp_path, cancel_on_startup=False))
+
+    assert manager is not None, "fixture: batch system did not come up"
+    assert len(counting_backend) == 1, "recovery must build the client it queries"
+    manager._client_for("gemini").cancel_all_pending_batches.assert_not_awaited()
+    assert await seed.get_tracked_jobs("gemini") == {"batches/left-over"}, \
+        "the tracked job was dropped although cancel_on_startup is off"

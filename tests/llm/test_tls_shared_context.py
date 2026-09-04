@@ -101,6 +101,33 @@ def test_the_verifying_context_also_trusts_the_os_store(monkeypatch):
     assert len(calls) == 1, "a no-verify context must not load a trust store"
 
 
+def test_a_pinned_trust_base_is_not_widened_by_the_os_store(monkeypatch, tmp_path):
+    """SSL_CERT_FILE means "trust exactly this" -- adding the OS store on top
+    would silently undo it. Measured on the dev box: httpx alone honours the
+    pin (1 CA), plus load_default_certs it is 115."""
+    import certifi
+
+    one_cert = tmp_path / "one.pem"
+    bundle = Path(certifi.where()).read_text(encoding="utf-8")
+    one_cert.write_text(
+        bundle.split("-----END CERTIFICATE-----")[0] + "-----END CERTIFICATE-----\n",
+        encoding="utf-8")
+
+    monkeypatch.setenv("SSL_CERT_FILE", str(one_cert))
+    tls._context.cache_clear()
+    pinned = len(httpx_verify(True).get_ca_certs())
+
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    tls._context.cache_clear()
+    wide = len(httpx_verify(True).get_ca_certs())
+    tls._context.cache_clear()
+
+    assert pinned == 1, f"the pinned trust base was widened to {pinned} CAs"
+    assert wide > pinned, (
+        f"fixture: without the pin the context has {wide} CAs -- that is not more than "
+        f"the pinned {pinned}, so this test cannot tell the two apart")
+
+
 @pytest.mark.asyncio
 async def test_the_non_streaming_client_carries_the_shared_context(monkeypatch):
     """The other production path of the httpx client, taken when a model's
@@ -161,18 +188,25 @@ def test_every_async_client_on_the_llm_path_passes_verify():
     calls (httpx_client's streaming transport and non-streaming client) are
     measured by the recorder tests above."""
     offenders = []
+    # A literal value is as bad as a missing one: verify=True builds a fresh
+    # context per client again, and that is exactly the code this change
+    # removed. Only a value that comes from somewhere else (httpx_verify, or a
+    # field fed by it) passes.
+    literal = re.compile(r"""verify\s*=\s*(True|False|["'])""")
     for pkg in ("agent_system", "plugins_llm"):
         for py in (REPO / "src" / pkg).rglob("*.py"):
             if "tests" in py.parts or py.name == "tls.py":
                 continue
             text = py.read_text(encoding="utf-8", errors="replace")
-            for match in re.finditer(r"httpx\.(AsyncClient|AsyncHTTPTransport)\(", text):
+            for match in re.finditer(r"httpx\.(AsyncClient|Client|AsyncHTTPTransport|HTTPTransport)\(", text):
                 depth, i = 1, match.end()
                 while i < len(text) and depth:
                     depth += {"(": 1, ")": -1}.get(text[i], 0)
                     i += 1
                 span = text[match.end():i]
+                line = text.count("\n", 0, match.start()) + 1
                 if "verify=" not in span and "**" not in span:
-                    line = text.count("\n", 0, match.start()) + 1
-                    offenders.append(f"{py.relative_to(REPO)}:{line}")
+                    offenders.append(f"{py.relative_to(REPO)}:{line} (no verify=)")
+                elif literal.search(span):
+                    offenders.append(f"{py.relative_to(REPO)}:{line} (literal verify=, not the shared context)")
     assert not offenders, "\n".join(offenders)

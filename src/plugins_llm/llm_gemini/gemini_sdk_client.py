@@ -27,6 +27,7 @@ import importlib
 import importlib.util
 import json
 import logging
+import os
 import random
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
@@ -158,6 +159,16 @@ class GeminiSDKClient(LLMClient):
         # module without executing it.
         if importlib.util.find_spec("google.genai") is None:
             raise ImportError("google-genai is not installed (provider gemini_sdk needs it)")
+        # The other way genai.Client() fails is a missing key -- and that one
+        # would surface inside the first call's retry loop, where a
+        # deterministic failure is retried to exhaustion instead of being
+        # reported once at startup. Checked here, without the SDK, and
+        # with the SDK's own environment fallbacks (a key in the env or
+        # Vertex mode is a valid setup with no api_key argument).
+        if not self.api_key and not any(os.environ.get(name) for name in
+                                        ("GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI")):
+            raise ValueError("gemini_sdk needs an api_key: none configured, and none of "
+                             "GOOGLE_API_KEY / GEMINI_API_KEY / GOOGLE_GENAI_USE_VERTEXAI is set")
         self._sdk_client = None
 
         logger.info(

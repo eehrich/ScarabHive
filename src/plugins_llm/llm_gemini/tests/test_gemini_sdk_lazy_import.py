@@ -57,3 +57,31 @@ def test_missing_sdk_fails_at_construction():
             print("no_error")
     """)
     assert "import_error True" in out, out
+
+
+def test_a_missing_key_fails_at_construction_too():
+    """The second way ``genai.Client()`` fails. Deferred to the first call it
+    would land inside the retry loop, where a deterministic failure is retried
+    to exhaustion instead of being reported once at startup. The SDK's own
+    environment fallbacks still count as configured."""
+    out = _run("""
+        import os
+        for name in ("GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI"):
+            os.environ.pop(name, None)
+        from agent_system.llm import registry
+        registry._scan_manifests()
+        registry._load_plugin(registry._provider_dirs["gemini_sdk"])
+        from plugins_llm.llm_gemini.gemini_sdk_client import GeminiSDKClient
+        try:
+            GeminiSDKClient(model="gemini-x", api_key=None)
+        except ValueError as e:
+            print("value_error", "api_key" in str(e))
+        else:
+            print("no_error")
+
+        os.environ["GOOGLE_API_KEY"] = "from-the-environment"
+        client = GeminiSDKClient(model="gemini-x", api_key=None)
+        print("env_key_accepted", client.api_key is None)
+    """)
+    assert "value_error True" in out, out
+    assert "env_key_accepted True" in out, out

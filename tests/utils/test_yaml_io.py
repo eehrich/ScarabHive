@@ -58,8 +58,15 @@ def test_no_production_code_calls_the_pure_python_loader():
     goes through yaml_io. ``src/scripts`` is deliberately excluded -- dev
     tools that do not import agent_system."""
     offenders = []
-    pattern = re.compile(r"\byaml\.(safe_load|load|full_load|unsafe_load)\(")
-    for pkg in ("agent_system", "plugins", "plugins_writer", "plugins_llm"):
+    # Every spelling that reaches PyYAML's loaders, not only the one this repo
+    # happens to use today: the module under any alias (``yaml.``, ``_yaml.``)
+    # and the from-import form. A guard that knows one spelling measures the
+    # spelling, not the rule.
+    pattern = re.compile(
+        r"\b\w*yaml\.(?:safe_load|load|full_load|unsafe_load)\("
+        r"|from\s+yaml\s+import\s+[^\n]*\b(?:safe_load|load|full_load|unsafe_load)\b"
+    )
+    for pkg in ("agent_system", "plugins", "plugins_writer", "plugins_llm", "plugins_trading"):
         for py in (SRC / pkg).rglob("*.py"):
             if "tests" in py.parts or py.name == "yaml_io.py":
                 continue
@@ -85,3 +92,29 @@ def test_load_settings_parses_through_the_helper(monkeypatch):
     monkeypatch.setattr(yaml_io, "safe_load", counting)
     settings.load_settings(str(REPO / "config" / "config.yaml"))
     assert len(calls) > 1, "load_settings did not parse through yaml_io"
+
+
+def test_a_syntax_error_keeps_the_pure_python_message():
+    """What an operator reads when a config file breaks.
+
+    libyaml reports line and column but not the offending line with a caret
+    under it; the pure-Python parser does, and that message is the one this
+    repo's config errors have always shown.
+    """
+    bad = "a: 1\n  b: [unclosed\n"
+    with pytest.raises(yaml.YAMLError) as err:
+        yaml_io.safe_load(bad)
+
+    message = str(err.value)
+    assert "line 2" in message, message
+    assert "^" in message, f"the source line with the caret is gone:\n{message}"
+
+
+def test_a_broken_file_object_still_raises(tmp_path):
+    """The re-parse must not swallow the error for a stream it cannot replay:
+    a file object is already consumed when the C parser gives up."""
+    path = tmp_path / "broken.yaml"
+    path.write_text("a: 1\n  b: [unclosed\n", encoding="utf-8")
+    with path.open(encoding="utf-8") as handle:
+        with pytest.raises(yaml.YAMLError):
+            yaml_io.safe_load(handle)
