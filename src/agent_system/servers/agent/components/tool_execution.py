@@ -80,7 +80,7 @@ class ToolExecutionManager:
     """Manages execution of tools and handles results."""
 
     def __init__(self, registry: MCPRegistry, agent: Optional[Agent] = None):
-        self.registry = registry  # Legacy registry (empty for now)
+        self.registry = registry  # Legacy fallback; the shared one since bootstrap passes it in
         # Optional Agent instance for centralized counters and MCP integration access
         self._agent = agent
         # NOTE: session_id/user_id are deliberately NOT instance state — they are

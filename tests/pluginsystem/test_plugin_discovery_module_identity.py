@@ -8,6 +8,7 @@ existed twice, so ``isinstance`` against it was wrong between the two runs.
 """
 from __future__ import annotations
 
+import pytest
 from pathlib import Path
 
 from agent_system.plugins.discovery import discover_all_plugins
@@ -94,3 +95,113 @@ def test_a_plugin_that_failed_to_execute_is_not_remembered_as_loaded(tmp_path, c
         encoding="utf-8")
     repaired = discover_all_plugins(dirs=[root])
     assert "exec_probe" in repaired
+
+
+def test_a_module_that_exits_hard_leaves_nothing_behind(tmp_path):
+    """``except Exception`` does not catch a module-level ``sys.exit()``.
+
+    The torso would stay in sys.modules and be handed out as "loaded" from
+    then on -- and "the process dies anyway" does not hold: under pytest a
+    SystemExit from one test leaves the session running, and every later test
+    would see the plugin missing.
+    """
+    import sys
+
+    root = tmp_path / "plugins"
+    d = root / "exit_probe"
+    d.mkdir(parents=True)
+    (d / "plugin.toml").write_text('[plugin]\nname = "exit_probe"\n', encoding="utf-8")
+    (d / "plugin.py").write_text("import sys\nsys.exit('bad config')\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        discover_all_plugins(dirs=[root])
+    assert "plugins.exit_probe.plugin" not in sys.modules, \
+        "the torso of the exited module stayed behind and would be reused as 'loaded'"
+
+    (d / "plugin.py").write_text(
+        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "    return None\n",
+        encoding="utf-8")
+    assert "exit_probe" in discover_all_plugins(dirs=[root])
+
+
+def test_a_single_file_plugin_does_not_take_a_packages_name(tmp_path):
+    """Single-file plugins register under ``plugins.<stem>`` -- the same name
+    a directory plugin owns as its synthetic package. Overwriting it would
+    break that plugin's relative imports for the rest of the process."""
+    import sys
+
+    root = tmp_path / "plugins"
+    d = root / "twin"
+    d.mkdir(parents=True)
+    (d / "plugin.toml").write_text('[plugin]\nname = "twin_dir"\n', encoding="utf-8")
+    (d / "plugin.py").write_text(
+        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "    return 'from-the-directory'\n",
+        encoding="utf-8")
+    (root / "twin.py").write_text(
+        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "    return 'from-the-file'\n",
+        encoding="utf-8")
+
+    found = discover_all_plugins(dirs=[root])
+
+    assert "twin" in found, "fixture: nothing was discovered at all"
+    assert "plugins.twin.plugin" in sys.modules, \
+        "fixture: the directory plugin never ran, so there is no package to protect"
+    package = sys.modules.get("plugins.twin")
+    assert package is not None and hasattr(package, "__path__"), \
+        "the single-file plugin replaced the directory plugin's package in sys.modules"
+
+
+def test_a_shared_submodule_that_failed_is_retried(tmp_path, caplog):
+    """Shared modules (writer_core and friends) are imported once per process
+    and skipped afterwards via ``sys.modules``. A submodule whose import blew
+    up must therefore not stay behind -- it would never be tried again, and
+    the failure was only a DEBUG line."""
+    import logging
+    import sys
+
+    root = tmp_path / "plugins"
+    shared = root / "shared_probe"
+    shared.mkdir(parents=True)
+    (shared / "__init__.py").write_text("VALUE = 'ok'\n", encoding="utf-8")
+    (shared / "broken.py").write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="agent_system.plugins.discovery"):
+        discover_all_plugins(dirs=[root])
+    assert any("shared_probe" in r.message for r in caplog.records), \
+        "a shared module that does not load must be a warning, not a debug line"
+    assert "plugins.shared_probe.broken" not in sys.modules, \
+        "the failed submodule stayed behind and would never be retried"
+
+    (shared / "broken.py").write_text("VALUE = 'repaired'\n", encoding="utf-8")
+    discover_all_plugins(dirs=[root])
+    assert sys.modules["plugins.shared_probe.broken"].VALUE == "repaired"
+
+
+def test_a_module_someone_else_imported_survives_a_failed_registration(tmp_path, monkeypatch):
+    """Taking back the torso must take back only OUR module.
+
+    A shared module that pytest (or any importer) already loaded properly is
+    still in sys.modules when a submodule of it blows up; dropping it there
+    would force a re-import and hand out a second identity of every class in
+    it -- the exact bug the module reuse in this file exists to prevent.
+    """
+    import sys
+    import types
+
+    root = tmp_path / "plugins"
+    shared = root / "keep_probe"
+    shared.mkdir(parents=True)
+    (shared / "__init__.py").write_text("VALUE = 'ok'\n", encoding="utf-8")
+    (shared / "broken.py").write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+
+    already_imported = types.ModuleType("plugins.keep_probe")
+    already_imported.MARKER = "the one somebody else imported"
+    monkeypatch.setitem(sys.modules, "plugins.keep_probe", already_imported)
+
+    discover_all_plugins(dirs=[root])
+
+    assert sys.modules["plugins.keep_probe"] is already_imported, \
+        "the properly imported module was dropped because a submodule failed"

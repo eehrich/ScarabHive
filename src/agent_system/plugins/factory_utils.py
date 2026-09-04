@@ -46,9 +46,13 @@ def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[..., Agent]:
 
         The registry has to reach the constructor: Agent.__init__ hands it to
         the ToolExecutionManager, and replacing ``inst.registry`` afterwards
-        (what bootstrap did) left that manager holding the throwaway
-        registry it was built with -- its fallbacks then resolved tools
-        against an empty one.
+        (what bootstrap did) left that manager holding the throwaway registry
+        it was built with. For a factory-built agent that stayed harmless --
+        the manager's LAST fallback is the only reader of it, and the lookups
+        before it go through ``self._agent.registry``, the one bootstrap
+        replaced. What it does fix outright is the ``type: agent`` branch,
+        where the agent object itself got the private registry and had no
+        shared one to fall back to.
         """
         inst = agent_cls(name, system_config, mcp_config, registry if registry is not None else MCPRegistry())
 

@@ -65,6 +65,7 @@ def _register_shared_modules(path: Path, pkg_name: str) -> None:
                 _registered_shared_modules[pkg_name].add(subdir.name)
                 continue  # Already properly loaded
         
+        sub_mod = None
         try:
             # First, register all Python files in the shared module as submodules
             # This is needed for relative imports within __init__.py to work
@@ -79,7 +80,15 @@ def _register_shared_modules(path: Path, pkg_name: str) -> None:
                     if submod_spec and submod_spec.loader:
                         submod = importlib.util.module_from_spec(submod_spec)
                         sys.modules[submod_name] = submod
-                        submod_spec.loader.exec_module(submod)
+                        try:
+                            submod_spec.loader.exec_module(submod)
+                        except BaseException:
+                            # Same torso rule as in the plugin loops below: the
+                            # `not in sys.modules` check above would skip a
+                            # half-executed submodule for the rest of the
+                            # process, so it must not stay behind.
+                            sys.modules.pop(submod_name, None)
+                            raise
             
             # Now create and execute the main module's __init__.py
             sub_mod = types.ModuleType(module_name)
@@ -95,7 +104,15 @@ def _register_shared_modules(path: Path, pkg_name: str) -> None:
             _registered_shared_modules[pkg_name].add(subdir.name)
             logger.debug(f"Registered shared module: {module_name}")
         except Exception as e:
-            logger.debug(f"Failed to register shared module {module_name}: {e}")
+            # Take back only OUR half-executed module: a failure in the
+            # submodule loop above happens before it exists, and dropping a
+            # module somebody else imported properly would force a re-import
+            # and hand out a second identity of every class in it.
+            if sub_mod is not None and sys.modules.get(module_name) is sub_mod:
+                sys.modules.pop(module_name, None)
+            # A shared module that does not load takes every plugin importing
+            # it with it -- that is a warning, not a debug line.
+            logger.warning(f"Failed to register shared module {module_name}: {e}", exc_info=True)
 
 
 def _already_loaded(module_name: str, plugin_file: Path):
@@ -187,12 +204,16 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
             sys.modules[spec.name] = mod
             try:
                 spec.loader.exec_module(mod)
-            except Exception as e:
+            except BaseException as e:
                 # Drop the half-executed torso, exactly as importlib does on a
                 # failed import: _already_loaded would otherwise hand it to the
                 # next discovery as "loaded", the plugin would stay missing and
-                # the warning would never be logged again.
+                # the warning would never be logged again. BaseException on
+                # purpose -- a module-level sys.exit() raises SystemExit, and
+                # in a pytest process the run continues afterwards.
                 sys.modules.pop(spec.name, None)
+                if not isinstance(e, Exception):
+                    raise
                 logger.warning(f"Failed to load plugin module {plugin_file}: {e}", exc_info=True)
                 continue
 
@@ -245,11 +266,21 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         mod = _already_loaded(spec.name, p)
         if mod is None:
             mod = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = mod
+            # Claim the name only when it is free or already a module: a
+            # directory plugin of the same name owns "plugins.<name>" as a
+            # synthetic package, and overwriting that would break its relative
+            # imports for the rest of the process. Without the entry the
+            # module still runs -- it is only not reusable next time.
+            claims_name = not hasattr(sys.modules.get(spec.name), "__path__")
+            if claims_name:
+                sys.modules[spec.name] = mod
             try:
                 spec.loader.exec_module(mod)
-            except Exception as e:
-                sys.modules.pop(spec.name, None)  # see the dir-plugin loop above
+            except BaseException as e:
+                if claims_name:
+                    sys.modules.pop(spec.name, None)  # see the dir-plugin loop above
+                if not isinstance(e, Exception):
+                    raise
                 logger.warning(f"Failed to load single-file plugin module {p}: {e}", exc_info=True)
                 continue
         try:
