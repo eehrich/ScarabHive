@@ -33,10 +33,13 @@ ist der Ort, an dem sie auffallen sollen. Modelle mit `extra="allow"`
 
 ## Handgepflegte Schemas (kein Modell dahinter)
 
-- **`plugin-config.schema.json`**: Format der Legacy-`plugin.yaml`-Manifeste.
-  Im Baum liegen heute ausschließlich `plugin.toml`-Manifeste;
-  `plugin_manifest.py` liest `plugin.yaml` nur noch als Fallback. Nirgends
-  in `.vscode/settings.json` gemappt.
+- **`plugin-config.schema.json`**: Format der Plugin-Manifeste — der
+  `[plugin]`-Tabelle in `plugin.toml` (73 im Baum) ebenso wie der Legacy-
+  `plugin.yaml` (0 im Baum), die `plugin_manifest.py` nur noch als Fallback
+  liest. Angewandt von `src/scripts/validate_plugin.py`; nirgends in
+  `.vscode/settings.json` gemappt, im Editor wirkt es also nicht.
+  ⚠️ `additionalProperties: false` — ein neuer Manifest-Schlüssel muss hier
+  eingetragen werden, sonst weist der Validator das Plugin ab.
 - **`session-schema.json`**: Dokumentiert das Session-JSON auf der Platte.
   Der `SessionManager` arbeitet dict-basiert ohne Pydantic-Modell — das
   Schema ist reine Dokumentation und kann veraltet sein.

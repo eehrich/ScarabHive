@@ -95,13 +95,15 @@ class PluginValidator:
 
     def _check_file_structure(self) -> bool:
         """Check that required files exist."""
-        required_files = ["plugin.yaml"]
-
-        for filename in required_files:
-            file_path = self.plugin_path / filename
-            if not file_path.exists():
-                self.errors.append(f"Missing required file: {filename}")
-                return False
+        # plugin.toml preferred, plugin.yaml as the legacy fallback -- the same
+        # order load_plugin_metadata uses two methods below. Demanding
+        # plugin.yaml here made this validator refuse EVERY plugin in the tree
+        # at its first check: measured 2026-09-05, 73 plugin.toml and 0
+        # plugin.yaml, so nothing behind this line had run in a long time.
+        if not any((self.plugin_path / name).exists()
+                   for name in ("plugin.toml", "plugin.yaml")):
+            self.errors.append("Missing required file: plugin.toml (or legacy plugin.yaml)")
+            return False
 
         # Check for either schema.yaml or plugin.py (entrypoint)
         has_schema = (self.plugin_path / "schema.yaml").exists()
