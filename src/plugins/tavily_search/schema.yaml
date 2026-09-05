@@ -1,4 +1,8 @@
+# Jinja2 variables: {{ name }}, {{ api_key_configured }}
+# Without a key there is nothing these tools could do, so none is offered.
 tools:
+{% if not api_key_configured %}  []
+{% else %}
   - type: function
     function:
       name: "{{ name }}_web_search"
@@ -94,6 +98,7 @@ tools:
             description: "Bypass cache and fetch fresh content"
         required: [urls]
         additionalProperties: false
+{% endif %}
 
 config:
   api_key: ""  # Set via TAVILY_API_KEY env var or in plugins.yaml

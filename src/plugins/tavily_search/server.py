@@ -36,7 +36,11 @@ class TavilySearchServer(SchemaBasedMCPServer):
         # Get API key from config or environment
         self.api_key = getattr(mcp_config, 'api_key', None) or os.environ.get('TAVILY_API_KEY', '')
         if not self.api_key:
-            logger.warning("Tavily API key not configured. Set TAVILY_API_KEY env var or api_key in plugins.yaml")
+            # Without a key the server stays loadable but offers NO tools (see
+            # get_template_vars): an agent must not see a tool whose every call
+            # can only fail, or it burns a step finding that out.
+            logger.warning("Tavily API key not configured -- %s offers no tools. "
+                           "Set TAVILY_API_KEY or api_key in plugins.yaml", name)
         
         # Initialize cache (30 minutes default for search results)
         cache_ttl = getattr(mcp_config, 'cache_ttl', 1800)
@@ -50,6 +54,12 @@ class TavilySearchServer(SchemaBasedMCPServer):
         # Lazy-loaded client
         self._client: Any = None
     
+    def get_template_vars(self) -> dict[str, Any]:
+        """schema.yaml renders its tools only when a key is configured."""
+        vars = super().get_template_vars()
+        vars["api_key_configured"] = bool(self.api_key)
+        return vars
+
     async def _get_client(self) -> Any:
         """Get or create async Tavily client."""
         if self._client is None:

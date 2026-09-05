@@ -403,3 +403,21 @@ class TestTavilyPluginFactory:
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
             server = PLUGIN_FACTORY("custom_tavily", mock_system_config, mock_mcp_config)
             assert server.name == "custom_tavily"
+
+
+class TestToolsHiddenWithoutKey:
+    """No key, no tools. The alternative -- two tools whose every call fails
+    with 'API key not configured' -- costs an agent a step per session to
+    find out, and a prompt rule to avoid. The schema hides them instead."""
+
+    def test_without_a_key_the_server_offers_nothing(self, mock_system_config, mock_mcp_config):
+        with patch.dict('os.environ', {}, clear=True):
+            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            assert server.api_key == ""
+            assert server.get_tools() == []
+
+    def test_with_a_key_both_tools_are_back(self, mock_system_config, mock_mcp_config):
+        with patch.dict('os.environ', {'TAVILY_API_KEY': 'tvly-x'}):
+            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            names = {t["function"]["name"] for t in server.get_tools()}
+        assert names == {"tavily_web_search", "tavily_extract"}
