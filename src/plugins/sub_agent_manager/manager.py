@@ -58,7 +58,9 @@ class SubAgentManager:
         Args:
             session_service: Session service for persistence
             registry: MCP registry for agent lookup
-            max_nesting_depth: Maximum recursion depth for nested sub-agents
+            max_nesting_depth: Levels of sub-agents this manager grants below the
+                calling session. Sub-sessions inherit the remaining budget, and a
+                manager further down can only lower it, never raise it.
             max_sub_agents_per_type: Maximum number of active sub-agents per type per session
             max_sub_agents_per_session: Maximum total number of active sub-agents per session
             auto_archive_on_limit: If True, automatically archive the oldest sub-agent when
@@ -156,14 +158,27 @@ class SubAgentManager:
                 )
             parent_data = await session_manager.load_session(user_id, parent_session_id)
 
-        # Check nesting depth
+        # Check nesting depth.
+        #
+        # `depth` counts from the root of the whole tree; it is reported, not
+        # enforced.  What bounds a tree is the budget: how many further levels
+        # may be created below this session.  `max_nesting_depth` is what THIS
+        # manager grants below its caller, the inherited budget is what an
+        # ancestor already granted, and the smaller of the two wins.  So a
+        # strict manager keeps bounding its whole subtree even when a looser
+        # one is called further down, and it still works when its own agent
+        # runs nested -- neither of which a limit on the absolute depth can do.
         parent_depth = parent_data.get("depth", 1)
         child_depth = parent_depth + 1
 
-        if child_depth > self.max_nesting_depth:
+        inherited = parent_data.get("depth_budget")
+        budget = self.max_nesting_depth if inherited is None else min(inherited, self.max_nesting_depth)
+
+        if budget < 1:
             raise ValueError(
-                f"Maximum nesting depth ({self.max_nesting_depth}) exceeded. "
-                f"Parent depth={parent_depth}, attempted child depth={child_depth}"
+                f"Maximum nesting depth exceeded: session {parent_session_id} "
+                f"(depth {parent_depth}) has no levels left below it "
+                f"(max_nesting_depth={self.max_nesting_depth}, inherited budget={inherited})"
             )
 
         # Get existing sub-agents
@@ -281,6 +296,7 @@ class SubAgentManager:
         session_data = await session_manager.load_session(user_id, sub_session_id)
 
         session_data["depth"] = child_depth
+        session_data["depth_budget"] = budget - 1  # what the child may still grant
 
         if "parent_session" not in session_data:
             session_data["parent_session"] = {}

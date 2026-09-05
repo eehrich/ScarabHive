@@ -16,12 +16,8 @@ plugins:
       description: "research: parallel sub-researchers for a question with independent parts"
       # It spawns research_worker, which owns no manager -- so a branch cannot
       # branch again, and that holds by construction rather than by a counter.
-      #
-      # This depth is therefore only an outer bound, and it is the framework
-      # default on purpose: `depth` is absolute over the whole session tree,
-      # so a low cap here would forbid forking exactly when research_agent is
-      # ITSELF a sub-agent (it starts at depth 2 then) -- the case the README
-      # advertises.
+      # This depth is therefore only an outer bound and stays at the framework
+      # default.
       max_nesting_depth: 5
       # Each branch carries the full prompt and skill; four in parallel is the
       # widest a question needs, and it caps the cost.

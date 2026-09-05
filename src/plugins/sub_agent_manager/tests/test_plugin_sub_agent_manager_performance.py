@@ -355,9 +355,9 @@ async def test_max_nesting_depth_performance(sub_agent_manager, session_service)
         "_agent": MagicMock(name="coordinator", agent_config=MagicMock(llm_profile="normal"))
     }
 
-    # Create sub-agents up to max depth - 1 (so we can still add one more)
+    # Create sub-agents up to the full budget (so the next one is refused)
     current_parent = root_session_id
-    for depth in range(1, sub_agent_manager.max_nesting_depth):
+    for depth in range(1, sub_agent_manager.max_nesting_depth + 1):
         sub_id = await sub_agent_manager.create_sub_session(
             parent_session_id=current_parent,
             agent_type="test_agent",

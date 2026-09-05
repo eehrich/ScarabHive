@@ -238,7 +238,7 @@ def _session_node(s: Dict[str, Any]) -> Dict[str, Any]:
         "message_count": s.get("message_count", 0),
         "last_agent_response": s.get("last_agent_response"),
         "tags": s.get("tags", []),
-        "depth": s.get("depth", 0),
+        "depth": s.get("depth", 1),
         "context_vars": s.get("context_vars", {}),
         "has_children": bool(s.get("has_children")),
         "children": [],

@@ -299,7 +299,8 @@ async def test_e2e_max_nesting_depth_enforcement(
         mock_agent.agent_config = AgentConfig(llm_profile="normal")
         registry.register(agent_name, mock_agent)
     
-    manager = SubAgentManager(session_service, registry, max_nesting_depth=3)
+    # max_nesting_depth=2 means two levels below the caller: level 2 and 3.
+    manager = SubAgentManager(session_service, registry, max_nesting_depth=2)
     
     # Level 1: Root
     root_id = "depth_root"
@@ -334,7 +335,7 @@ async def test_e2e_max_nesting_depth_enforcement(
         )
     
     print("✅ Max Nesting Depth Test Passed:")
-    print("   Max depth: 3")
+    print("   Max depth: 2 levels below the root")
     print("   Level 2 & 3: ✓ Created")
     print("   Level 4: ✗ Rejected (as expected)")
 
@@ -562,3 +563,75 @@ async def test_create_sub_session_eventually_gives_up_on_persistent_collision(
             agent_type="web_research_agent",
             initial_message="task",
         )
+
+
+def _registry(*agent_names):
+    """Registry holding a mock agent per name."""
+    registry = MCPRegistry()
+    for name in agent_names:
+        agent = Mock()
+        agent.name = name
+        agent.agent_config = AgentConfig(llm_profile="normal")
+        registry.register(name, agent)
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_a_strict_manager_bounds_its_whole_subtree(session_manager, session_service):
+    """A loose manager further down may not undo a strict one above it.
+
+    The budget travels with the session, so the strict cap keeps holding for
+    everything below the sub-agent it created.
+    """
+    registry = _registry("worker")
+    strict = SubAgentManager(session_service, registry, max_nesting_depth=1)
+    loose = SubAgentManager(session_service, registry, max_nesting_depth=9)
+
+    await session_manager.create_session(
+        user_id="admin", session_id="subtree_root", title="Root",
+        agent_name="coordinator", llm_profile="default",
+    )
+
+    child = await strict.create_sub_session(
+        parent_session_id="subtree_root", agent_type="worker",
+        initial_message="one level is all you get",
+    )
+
+    with pytest.raises(ValueError, match="Maximum nesting depth"):
+        await loose.create_sub_session(
+            parent_session_id=child, agent_type="worker",
+            initial_message="the loose manager must not widen the strict budget",
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_strict_manager_still_works_when_its_own_agent_is_nested(
+    session_manager, session_service
+):
+    """The cap is a budget below the caller, not a position in the tree.
+
+    An agent with a low cap used to stop working entirely as soon as somebody
+    else spawned it, because the limit was read off the absolute depth.
+    """
+    registry = _registry("coordinator", "worker")
+    outer = SubAgentManager(session_service, registry, max_nesting_depth=9)
+    strict = SubAgentManager(session_service, registry, max_nesting_depth=2)
+
+    await session_manager.create_session(
+        user_id="admin", session_id="nested_root", title="Root",
+        agent_name="coordinator", llm_profile="default",
+    )
+
+    nested_coordinator = await outer.create_sub_session(
+        parent_session_id="nested_root", agent_type="coordinator",
+        initial_message="you are somebody else's sub-agent now",
+    )
+
+    child = await strict.create_sub_session(
+        parent_session_id=nested_coordinator, agent_type="worker",
+        initial_message="and you can still spawn",
+    )
+
+    data = await session_manager.load_session("admin", child)
+    assert data["depth"] == 3          # third level of the tree
+    assert data["depth_budget"] == 1   # one more level below it, from cap 2

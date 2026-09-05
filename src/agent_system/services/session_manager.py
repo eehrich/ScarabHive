@@ -498,7 +498,7 @@ class SessionManager:
                     "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
                     "tags": session_data["metadata"].get("tags", []),
                     "parent_session": session_data.get("parent_session"),
-                    "depth": session_data.get("depth", 0),
+                    "depth": session_data.get("depth", 1),
                 }
             except Exception as e:
                 logger.warning("Failed to read session %s for index rebuild: %s", session_file, e)
@@ -688,7 +688,7 @@ class SessionManager:
                 "last_agent_response": "",
                 "tags": session_data["metadata"].get("tags", []),
                 "parent_session": session_data.get("parent_session"),
-                "depth": session_data.get("depth", 0)
+                "depth": session_data.get("depth", 1)
             }
             await self._update_index_entry(safe_user_id, sid, metadata)
             
@@ -842,7 +842,7 @@ class SessionManager:
                     "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
                     "tags": session_data["metadata"].get("tags", []),
                     "parent_session": session_data.get("parent_session"),
-                    "depth": session_data.get("depth", 0)
+                    "depth": session_data.get("depth", 1)
                 }
                 await self._update_index_entry(user_id, session_id, metadata)
             

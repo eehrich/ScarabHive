@@ -69,6 +69,14 @@ parent's current values through — the intended behaviour for old sessions.
 | `default_wait_timeout` | 3600 s | a `wait_all` that never returns |
 | `auto_archive_on_limit` | false | — when true, the oldest is archived instead of refusing |
 
+`max_nesting_depth` counts **levels below the session that calls this
+manager**, not absolute depth in the session tree: `1` lets a coordinator
+spawn workers that cannot spawn anything themselves, `5` allows five levels
+below the caller. Each sub-session inherits the remaining budget, and every
+manager further down takes the smaller of that budget and its own knob — so a
+strict manager bounds its entire subtree, and it goes on working unchanged
+when its own agent is somebody else's sub-agent.
+
 Two more that are not limits but guards:
 
 * **No concurrent run of the same instance.** `_running_agents` plus a lock;

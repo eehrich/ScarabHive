@@ -295,9 +295,9 @@ async def test_e2e_max_nesting_depth_enforcement(sub_agent_manager, session_serv
     parent_agent = MockAgent("meta_agent", "normal")
     params = {"_user_id": user_id, "_agent": parent_agent}
 
-    # Create nested chain up to max_depth - 1
+    # Create nested chain up to the full budget
     current_parent = root_session_id
-    for depth in range(1, sub_agent_manager.max_nesting_depth):
+    for depth in range(1, sub_agent_manager.max_nesting_depth + 1):
         sub_id = await sub_agent_manager.create_sub_session(
             parent_session_id=current_parent,
             agent_type="web_research_agent",
