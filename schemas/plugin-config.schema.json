@@ -44,6 +44,15 @@
       "uniqueItems": true,
       "default": ["mcp-server"]
     },
+    "lazy": {
+      "type": "boolean",
+      "description": "Opt-in: servers of this type may be built on first use instead of at start. A contract about the constructor -- config and an LLM client, no I/O, no thread, no socket -- and only agent plugins qualify: agent_system.runtime refuses to register a lazy type that builds anything other than an Agent."
+    },
+    "visibility": {
+      "type": "string",
+      "enum": ["ui", "tool", "both", "private"],
+      "description": "Default visibility for servers of this type, used when the instance's own metadata sets none (agent_system.runtime, ServerDecl.visibility). No shipped manifest declares one today; the key was missing here although the runtime has always read it, so the first manifest to use it would have been rejected."
+    },
     "category": {
       "type": "string",
       "description": "Plugin category for organization",

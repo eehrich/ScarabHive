@@ -246,9 +246,16 @@ class Agent(MCPServer):
                     if isinstance(e, ValueError) and msg in (
                             "OPENAI_API_KEY is required when provider=openai",
                             "OPENAI_API_KEY is required when provider=openai_httpx"):
-                        logger.debug("LLM not initialized (no API key): %s", msg)
+                        logger.debug("Agent '%s': LLM not initialized (no API key): %s",
+                                     name, msg)
                     else:
-                        logger.warning("LLM initialization failed: %s", msg)
+                        # WITH the agent name. Without it these lines are
+                        # indistinguishable: one model removed from llm.yaml
+                        # produced 50 identical warnings (measured), and the
+                        # agents kept running with llm=None until their first
+                        # request.
+                        logger.warning("Agent '%s': LLM initialization failed: %s",
+                                       name, msg)
                     self.llm = None
 
         # Set per-agent OpenRouter app identity (unique HTTP-Referer per agent)

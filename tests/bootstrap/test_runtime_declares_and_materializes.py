@@ -212,6 +212,26 @@ def test_under_a_test_directory_a_broken_server_raises(tmp_path, monkeypatch):
         Runtime(config).start()
 
 
+def test_a_deploy_path_that_merely_looks_like_a_test_is_not_one(monkeypatch):
+    """``/opt/agentsystem/releases/latest`` contains "test". So does
+    ``C:/Users/tester/...``.
+
+    The cwd substring alone would turn one broken plugin into a dead process
+    on such a host, where the policy is to log and carry on. And it is not
+    sufficient the other way either: the repo root itself contains no "test",
+    so the check only ever fires for tests that chdir into a pytest tmp dir.
+    pytest's own environment marker is what separates the two.
+    """
+    from agent_system.runtime import _in_test_cwd
+
+    monkeypatch.setattr("agent_system.runtime.Path.cwd",
+                        lambda: Path("/opt/agentsystem/releases/latest"))
+    assert _in_test_cwd() is True, "fixture: under pytest this path has to match"
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    assert _in_test_cwd() is False, "a deploy path was taken for a test tree"
+
+
 def test_materialize_injects_the_session_service():
     """An agent built later (lazily, or on demand) must not miss what every
     agent built at start got -- so the injection belongs in the build path,

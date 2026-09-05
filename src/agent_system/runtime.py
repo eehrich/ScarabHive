@@ -19,6 +19,7 @@ under a test working directory, where a failed instantiation re-raises).
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -30,6 +31,21 @@ from .mcp.base import MCPRegistry
 logger = logging.getLogger(__name__)
 
 VISIBILITIES = ("ui", "tool", "both", "private")
+
+
+def _in_test_cwd() -> bool:
+    """Under a test working directory a swallowed failure is a green lie.
+
+    Both halves are needed. The cwd substring alone is a production landmine:
+    it matches ``/opt/agentsystem/releases/latest`` ("la-TEST-") and
+    ``C:/Users/tester/...``, where a single broken plugin would then take the
+    process down instead of being logged and skipped. And it is not enough on
+    its own to mean "test" either -- the repo root, where the suite actually
+    runs, contains no "test" at all, so this only ever fires for the tests
+    that chdir into a pytest tmp directory. pytest sets PYTEST_CURRENT_TEST
+    for every test it runs, which is what makes the pair safe.
+    """
+    return "test" in str(Path.cwd()) and "PYTEST_CURRENT_TEST" in os.environ
 
 
 @dataclass
@@ -51,6 +67,20 @@ class ServerDecl:
         by ``config.mode``).
         """
         return self.factory is None and self.type == "agent"
+
+    @property
+    def lazy(self) -> bool:
+        """Manifest opt-in of the plugin TYPE: `lazy = true` in plugin.toml.
+
+        It is a contract about the constructor -- config and an LLM client,
+        no I/O, no thread, no socket -- and therefore a promise per type, not
+        per class: `writer_pipeline_v4` and `writer_story_designer` build
+        Agents as well, and their ``__init__`` has not been read yet. What
+        the flag buys is that such a server may be built on first use instead
+        of at start; ``materialize`` refuses to register a type that claims it
+        and then builds something other than an Agent.
+        """
+        return (self.plugin_metadata or {}).get("lazy") is True
 
     @property
     def visibility(self) -> str:
@@ -162,11 +192,95 @@ class Runtime:
         """What is known about a server without building it."""
         return self._decls.get(name)
 
+    def validate(self) -> list[str]:
+        """Config errors of LAZY declarations, found without an instance.
+
+        Lazy is the set where "this declaration builds an Agent" is a promise
+        the manifest made and ``materialize`` enforces -- so it is the set
+        whose agent_config can be judged without building anything.
+
+        NOT the whole story, and the gap is named on purpose: an EAGER agent
+        type with the same broken config also degrades quietly, because
+        ``Agent.__init__`` swallows the LLM error and leaves ``llm=None``
+        (measured 2026-09-05: one model removed from llm.yaml, 50 agents built
+        fine and warned 50 times). Widening this loop is not the fix -- every
+        declaration carries an inherited ``agent_config``, ``file_ops``
+        included, so validating "everything that has one" would report the
+        unused LLM profile of a file server. The fix for that half sits where
+        the instance exists: the warning in ``Agent.__init__`` names its agent.
+
+        Few checks, because most of a declaration is already judged earlier
+        and a second guard for the same thing only drifts apart from the
+        first. Measured 2026-09-05 against the pydantic models, after two
+        claims in an earlier version of this docstring turned out to be
+        wrong: config LOAD already rejects an unknown ``provider:``, a
+        ``provider: batch`` without a backend, and any ``llm_params`` that do
+        not validate (``AgentConfig._validate_llm_params`` runs each of them
+        through ``LLMModelConfig``, flat form and profile-keyed). A profile
+        that exists nowhere is logged per agent by ``settings``, over the
+        whole chain -- more than this sees.
+
+        Three things are left, and nothing else covers them:
+
+        - a profile whose ``model_ref`` was deleted from llm.yaml --
+          ``_profiles_must_point_at_usable_models`` looks only at model_refs
+          that EXIST, and the chain check compares profile NAMES;
+        - a missing ``agent_config``, which ``Agent.__init__`` raises on;
+        - a ``system_template`` whose file is not there, today a
+          FileNotFoundError in the first request's prompt render.
+
+        Only the PRIMARY profile is resolved, exactly as ``Agent.__init__``
+        does; the fallbacks of the chain are the ``settings`` check's job.
+
+        Returns the findings; each is logged once as an ``error``. It does NOT
+        raise: a broken LLM config is something the system deliberately
+        survives (``Agent.__init__`` leaves ``llm=None``), and turning that
+        into a dead process would be a policy change nobody asked for.
+        """
+        findings: list[str] = []
+        for name, decl in self._decls.items():
+            if not decl.lazy:
+                continue
+            findings.extend(self._findings_for(name, decl))
+        return findings
+
+    def _findings_for(self, name: str, decl: ServerDecl) -> list[str]:
+        agent_config = decl.mcp_config.agent_config
+        if agent_config is None:
+            # Agent.__init__ raises on this one -- so this is the only finding
+            # here that would take the server down rather than degrade it.
+            return [self._report(name, "has no agent_config")]
+
+        from .llm.factory import resolve_llm_config_for_agent
+
+        findings = []
+        try:
+            resolve_llm_config_for_agent(self.config, agent_config)
+        except Exception as e:
+            findings.append(self._report(name, f"LLM config does not resolve: {e}"))
+
+        # Only when the file would actually be opened. RawPromptStrategy sits
+        # BEFORE TemplateFileStrategy in PromptRenderer, so an agent carrying a
+        # raw system_prompt never reads its template -- 11 of the shipped lazy
+        # servers are in exactly that state (measured 2026-09-05), and
+        # reporting their template would be a defect nobody can act on.
+        template = agent_config.system_template
+        if template and not agent_config.system_prompt and not Path(template).is_file():
+            findings.append(self._report(name, f"system_template '{template}' does not exist"))
+        return findings
+
+    @staticmethod
+    def _report(name: str, problem: str) -> str:
+        finding = f"agent '{name}': {problem}"
+        logger.error("Lazy agent validation -- %s", finding)
+        return finding
+
     # ------------------------------------------------------------------
     # construction
     # ------------------------------------------------------------------
     def start(self) -> "Runtime":
         """Build every declared server, in config order."""
+        self.validate()
         for name in list(self._decls):
             self._build_logged(name)
         try:
@@ -188,7 +302,7 @@ class Runtime:
                                  decl.type, name, e)
             else:
                 logger.exception("Failed to instantiate agent '%s': %s", name, e)
-            if "test" in str(Path.cwd()):
+            if _in_test_cwd():
                 raise
             return None
 
@@ -211,6 +325,26 @@ class Runtime:
             raise KeyError(name)
 
         instance = self._construct(decl)
+        if decl.lazy:
+            # The manifest promised an Agent (see ServerDecl.lazy). Refuse
+            # here rather than register it: once the start skips lazy servers,
+            # a lazy non-agent would materialize inside whichever walker
+            # touched it first -- a start-up side effect moved to an arbitrary
+            # later moment, which is what `lazy` exists to avoid.
+            #
+            # The cost of refusing is that the server is GONE for this process
+            # (``_build_logged`` logs the exception and returns None) although
+            # it would have worked. That is the intended trade: a wrong `lazy`
+            # is a manifest bug, and it has to be loud on the first start
+            # rather than surprising somebody in week three. The constructor
+            # has already run at this point, so whatever it grabbed stays
+            # grabbed -- another reason the flag belongs on types whose
+            # __init__ was read.
+            from .servers.agent.server import Agent
+            if not isinstance(instance, Agent):
+                raise TypeError(
+                    f"server '{name}': type '{decl.type}' declares lazy = true in its "
+                    f"manifest but built a {type(instance).__name__}, not an Agent")
         self.registry.register(name, instance)
 
         if decl.factory is not None:

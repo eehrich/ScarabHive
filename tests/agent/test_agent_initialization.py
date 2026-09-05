@@ -1,4 +1,5 @@
 """Test Agent initialization with new config system."""
+import logging
 import pytest
 from unittest.mock import MagicMock
 
@@ -23,6 +24,28 @@ def test_agent_requires_agent_config():
     
     with pytest.raises(ValueError, match="requires agent_config"):
         Agent("test_agent", system_config, mcp_config, registry)
+
+
+def test_a_swallowed_llm_error_names_the_agent(caplog):
+    """An agent whose LLM config is broken is built anyway, with ``llm=None``,
+    and says so in one warning. Without the agent's name in it those warnings
+    are indistinguishable: removing a single model from llm.yaml produced 50
+    identical lines (measured 2026-09-05), and every one of those agents kept
+    serving until its first request failed.
+    """
+    system_config = AgentSystemConfig(llm_system=LLMSystemConfig(
+        models={"m": LLMModelConfig(provider="openai", model="m", api_key="fake")},
+        profiles={"normal": LLMProfile(model_ref="deleted_from_llm_yaml")},
+        default_profile="normal"))
+    mcp_config = MCPConfig(type="agent", enabled=True,
+                           agent_config=AgentConfig(llm_profile="normal"))
+
+    with caplog.at_level(logging.WARNING, logger="agent_system.servers.agent.server"):
+        agent = Agent("lonely_agent", system_config, mcp_config, MCPRegistry())
+
+    assert agent.llm is None, "fixture: this config has to fail, or nothing is logged"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert [m for m in warnings if "lonely_agent" in m], warnings
 
 
 def test_agent_requires_registry():

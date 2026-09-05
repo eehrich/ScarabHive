@@ -8,6 +8,11 @@ version = "1.0.0"
 description = "Basic agent plugin providing agent execution capabilities as MCP tools"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
+# The constructor reads config and builds an LLM client -- no I/O, no
+# thread, no socket -- so a server of this type may be built on first use
+# instead of at start. Enforced: agent_system.runtime refuses to register
+# a lazy type that builds something other than an Agent.
+lazy = true
 type = ["mcp-server"]
 category = "tools"
 tags = ["agent", "execution", "llm", "task", "basic"]
