@@ -4,7 +4,7 @@
   "title": "Agent System Plugin Configuration Schema",
   "description": "Schema for plugin.yaml files in the Agent System",
   "type": "object",
-  "required": ["name", "version", "description", "entrypoint", "requires"],
+  "required": ["name", "version", "description", "requires"],
   "properties": {
     "name": {
       "type": "string",
@@ -30,7 +30,7 @@
     },
     "entrypoint": {
       "type": "string",
-      "description": "Python module path to plugin factory (e.g., 'plugin:PLUGIN_FACTORY')",
+      "description": "Python module path to plugin factory (e.g., 'plugin:PLUGIN_FACTORY'). Required for every type except 'library' (config only) and 'llm-provider' (found through provider.py) -- validate_plugin.py enforces that condition.",
       "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*:[a-zA-Z_][a-zA-Z0-9_]*$"
     },
     "type": {
@@ -38,11 +38,31 @@
       "description": "Plugin capabilities as a list. Combine values to describe multi-capability plugins.",
       "items": {
         "type": "string",
-        "enum": ["mcp-server", "web", "hooks", "custom"]
+        "enum": ["mcp-server", "web", "hooks", "library", "llm-provider", "custom"]
       },
       "minItems": 1,
       "uniqueItems": true,
       "default": ["mcp-server"]
+    },
+    "provides": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "LLM provider names this plugin serves (type 'llm-provider'). agent_system.llm.registry scans the manifests for this key and never imports the plugin until a model actually names one of them; a `provider:` in llm.yaml that no manifest claims fails config load."
+    },
+    "provides_batch": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Batch backend names this plugin serves (agent_system.llm.registry, `provides_batch`). A model with provider: batch resolves its real client through this."
+    },
+    "provides_tts": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "TTS provider names this plugin serves (agent_system.llm.registry, `provides_tts`)."
+    },
+    "default_base_url": {
+      "type": "object",
+      "additionalProperties": {"type": "string"},
+      "description": "Per-provider default endpoint, {provider: url}. Read by agent_system.llm.registry; must be a table, anything else is ignored with a warning."
     },
     "lazy": {
       "type": "boolean",

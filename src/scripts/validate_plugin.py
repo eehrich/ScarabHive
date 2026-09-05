@@ -93,6 +93,24 @@ class PluginValidator:
         # Report results
         return self._report_results()
 
+    #: Types that ship no plugin-registry entrypoint module. A "library"
+    #: plugin (amiga, coder, research, writer_publish) is agents, skills and
+    #: prompts -- config, no code; an "llm-provider" is found by the LLM
+    #: registry through provider.py, not through PLUGIN_FACTORY. Demanding
+    #: plugin.py or an `entrypoint` from either was this validator refusing a
+    #: shape the runtime supports.
+    CODELESS_TYPES = frozenset({"library", "llm-provider"})
+
+    def declared_types(self) -> list[str]:
+        """The manifest's `type` list, old string form converted."""
+        declared = (self.plugin_yaml or {}).get("type", ["mcp-server"])
+        if isinstance(declared, str):
+            return self._convert_old_type_format(declared)
+        return list(declared or [])
+
+    def _is_codeless(self) -> bool:
+        return bool(self.CODELESS_TYPES & set(self.declared_types()))
+
     def _check_file_structure(self) -> bool:
         """Check that required files exist."""
         # plugin.toml preferred, plugin.yaml as the legacy fallback -- the same
@@ -105,22 +123,22 @@ class PluginValidator:
             self.errors.append("Missing required file: plugin.toml (or legacy plugin.yaml)")
             return False
 
-        # Check for either schema.yaml or plugin.py (entrypoint)
-        has_schema = (self.plugin_path / "schema.yaml").exists()
-        has_plugin_py = (self.plugin_path / "plugin.py").exists()
-        has_server_py = (self.plugin_path / "server.py").exists()
+        # The manifest decides what else has to be there -- so read it first.
+        # (_load_configs runs after this method and does it again; here we only
+        # need the type, and a manifest that cannot be read is reported there.)
+        from agent_system.plugins.plugin_manifest import load_plugin_metadata
+        self.plugin_yaml = load_plugin_metadata(self.plugin_path)
 
-        if not has_schema:
+        if not (self.plugin_path / "schema.yaml").exists() and not self._is_codeless():
             self.warnings.append(
                 "No schema.yaml found - plugin may be config-only or have programmatic tools"
             )
 
-        if not has_plugin_py and not has_server_py:
-            self.errors.append(
-                "Missing plugin.py or server.py - no entrypoint module found"
-            )
-            return False
-
+        # No entrypoint check here on purpose: _validate_entrypoint does it
+        # properly, against the module the manifest actually NAMES, and it
+        # runs to the end instead of aborting the whole validation at the
+        # first finding. Measured: with this block gone, a plugin whose
+        # plugin.py is missing is still refused -- by that check.
         return True
 
     def _load_configs(self) -> bool:
@@ -131,25 +149,21 @@ class PluginValidator:
             from agent_system.plugins.plugin_manifest import load_plugin_metadata
             self.plugin_yaml = load_plugin_metadata(self.plugin_path)
 
-            # Load schema.yaml (optional) - handle Jinja2 templates
+            # Render schema.yaml through the RUNTIME's loader, not through a
+            # regex. Stripping `{% ... %}` leaves BOTH branches of a
+            # conditional standing: tavily_search declares `tools: []` without
+            # an API key and a block sequence with one, and the stripped result
+            # was neither -- "expected <block end>" for a file the runtime
+            # renders fine. Measured 2026-09-05: 8 of the 62 schemas carry
+            # Jinja logic, and the real loader parses all 62.
             schema_yaml_path = self.plugin_path / "schema.yaml"
             if schema_yaml_path.exists():
-                with open(schema_yaml_path, "r", encoding="utf-8") as f:
-                    schema_content = f.read()
-
-                # Replace template variables with placeholder values for validation
-                import re
-                # Replace {{ name }} with placeholder
-                schema_content = re.sub(r'\{\{\s*name\s*\}\}', 'plugin_name', schema_content)
-                # Remove Jinja2 control structures {% ... %}
-                schema_content = re.sub(r'\{%.*?%\}', '', schema_content, flags=re.DOTALL)
-                # Replace other {{ var | filter }} or {{ var }} with simple placeholder (no quotes)
-                schema_content = re.sub(r'\{\{[^}]+\}\}', 'TEMPLATE_VALUE', schema_content)
-
+                from agent_system.plugins.schema_loader import load_schema_from_dir
                 try:
-                    self.schema_yaml = yaml.safe_load(schema_content)
-                except yaml.YAMLError as e:
-                    self.errors.append(f"YAML parsing error in schema.yaml: {e}")
+                    self.schema_yaml = load_schema_from_dir(
+                        self.plugin_path, {"name": self.plugin_path.name})
+                except Exception as e:
+                    self.errors.append(f"schema.yaml does not render or parse: {e}")
                     return False
 
             return True
@@ -401,15 +415,12 @@ class PluginValidator:
             self.warnings.append("'hooks' list is empty")
 
         seen_hook_names: set[str] = set()
-        valid_hook_types = [
-            "pre_llm_call",
-            "post_llm_call",
-            "pre_tool_call",
-            "post_tool_call",
-            "format_output",
-            "session_start",
-            "session_end"
-        ]
+        # From the enum, not from a copy: this list was missing
+        # pre_llm_request and post_llm_response (HookType has had them since
+        # the LLM-client-level hooks landed), so message_debugger -- a shipped,
+        # working plugin -- was reported as broken.
+        from agent_system.hooks.plugin_hook import HookType
+        valid_hook_types = [h.value for h in HookType]
 
         for idx, hook in enumerate(hooks):
             if not isinstance(hook, dict):
@@ -431,7 +442,10 @@ class PluginValidator:
                 self.errors.append(f"Hook '{hook_name}' missing 'type' field")
                 continue
 
-            hook_type = hook["type"]
+            # SchemaBasedHookPlugin does `hook.get("type", "").upper()`, so
+            # `PRE_LLM_CALL` and `pre_llm_call` are the same hook to the
+            # runtime -- and the docstring of that class writes it upper case.
+            hook_type = str(hook["type"]).lower()
             if hook_type not in valid_hook_types:
                 self.errors.append(
                     f"Hook '{hook_name}' has invalid type: {hook_type}. "
@@ -625,7 +639,8 @@ class PluginValidator:
 
         entrypoint = self.plugin_yaml.get("entrypoint")
         if not entrypoint:
-            self.errors.append("Missing 'entrypoint' in plugin.yaml")
+            if not self._is_codeless():
+                self.errors.append("Missing 'entrypoint' in the manifest")
             return
 
         # Parse entrypoint format: "module:FACTORY"

@@ -325,9 +325,21 @@ Other single-capability examples: `type = ["web"]` (web UI/endpoints only),
 - `mcp-server`: Plugin provides MCP tools/server
 - `web`: Plugin provides web UI/endpoints
 - `hooks`: Plugin provides lifecycle event hooks
+- `library`: Config only — agents, skills, prompts, no code. Such a plugin has
+  **no `entrypoint` and no `plugin.py`** (`coder`, `amiga`, `research`,
+  `writer_publish`)
+- `llm-provider`: An LLM/TTS/batch backend under `src/plugins_llm/`. Found by
+  `agent_system.llm.registry` through its `provides` / `provides_batch` /
+  `provides_tts` manifest keys and its `provider.py` — also **without an
+  `entrypoint`**
 - `custom`: Plugin has custom capabilities
 
 Combine multiple types by listing them (e.g., `[mcp-server, web]` for hybrid plugins).
+
+`src/scripts/validate_plugin.py <dir>` checks a manifest against
+`schemas/plugin-config.schema.json`, which is strict
+(`additionalProperties: false`) — **a new manifest key has to be entered there**,
+or the validator rejects the plugin.
 
 ### Advanced Options
 
@@ -347,6 +359,14 @@ tags = ["web", "scraping", "api"]
 # Framework version constraint (not a pip dependency)
 requires = { python = ">=3.11", agent_system = ">=0.4.0" }
 
+# Agent plugins only: servers of this type may be built on FIRST USE instead
+# of at start. A promise about the constructor -- config and an LLM client,
+# nothing else: no file, no thread, no socket, no network. The runtime holds
+# you to it (agent_system.runtime refuses to register a lazy type that builds
+# anything other than an Agent), and a contract test builds one of every lazy
+# type. Leave it off unless the __init__ has been read with this in mind.
+lazy = true
+
 # Python package requirements OWNED by this plugin (pip specs only — not
 # other plugins). Aggregated into the install; see "Dependencies" below.
 dependencies = ["requests>=2.25.0", "beautifulsoup4>=4.9.0"]
@@ -364,7 +384,9 @@ dependencies = ["requests>=2.25.0", "beautifulsoup4>=4.9.0"]
   - Default: `plugin:PLUGIN_FACTORY` if field is omitted
 
 **Plugin Classification:**
-- **`type`**: List of plugin capabilities (`mcp-server`, `web`, `hooks`, `custom`)
+- **`type`**: List of plugin capabilities (`mcp-server`, `web`, `hooks`,
+  `library`, `llm-provider`, `custom`) — see above; `library` and
+  `llm-provider` need no `entrypoint`
 - **`category`**: Functional category (`tools`, `monitoring`, `data`, `ui`, `utilities`)
 - **`tags`**: Searchable keywords for discovery
 
