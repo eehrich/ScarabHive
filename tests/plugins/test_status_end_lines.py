@@ -97,7 +97,6 @@ UNCOVERED = {
     "comfyui": "the changed line is inside execute(): a live ComfyUI on :8188",
     "ssh_control": "the changed line is inside execute(): an asyncssh session",
     "basic_agent": "the changed line is in execute_task(), which runs an LLM",
-    "web_research_agent": "the changed line runs a nested agent (LLM)",
     "llm_router": "the changed line is in chat(), which builds a client and calls it",
     "memory": "store/recall/update all reach the chroma vector store",
     "okf": "the changed line regenerates an index over a real bundle on disk",
@@ -615,10 +614,9 @@ async def test_duckduckgo_cache_hit_names_query_and_count():
 
 
 @pytest.mark.parametrize("operation,expected", [
-    # The cached payload carries BOTH shapes: the content path attaches its
-    # extracted links too. Keying the line on the "links" key therefore
-    # reported a link count for a content scrape -- which is why both
-    # operations are driven against the same cached dict.
+    # ONE cached page serves both operations (the scraper parses text and
+    # anchors in a single pass), so the line has to be keyed on the
+    # operation asked for, not on which keys the cached dict happens to have.
     ("content", "120 chars"),
     ("links", "3 link(s)"),
 ])
@@ -627,7 +625,9 @@ async def test_web_scraper_cache_hit_reports_the_operations_own_result(
     from plugins.web_scraper.server import WebScraperServer
     server = WebScraperServer("web_scraper", AgentSystemConfig(),
                               MCPConfig(type="web_scraper"))
-    cached = {"text": "x" * 120, "links": [1, 2, 3]}
+    link = {"href": "/a", "abs_url": "https://example.org/a", "text": "a", "rel": []}
+    cached = {"text": "x" * 120, "links": [link, link, link], "status_code": 200,
+              "final_url": "https://example.org/a", "title": "A"}
 
     with patch.object(server.cache, "get", return_value=cached):
         _, closing = await run_tool(server, "web_scraper_page", {

@@ -219,38 +219,30 @@ class TestWebScraperCaching:
         return server
 
     def test_cache_key_creation(self, mock_scraper):
-        """Test web scraper cache key creation."""
+        """The key is (session, url). It deliberately does NOT carry the
+        response-shaping parameters: one fetch is parsed once, and text,
+        links, tables and lists are all served from that entry."""
         url = "https://example.com/test"
-        
-        key1 = mock_scraper._create_cache_key(
-            url, "content", 8000, True, False, False, False
-        )
-        
-        key2 = mock_scraper._create_cache_key(
-            url, "content", 8000, True, False, False, False
-        )
-        
-        # Same parameters should create same key
-        assert key1 == key2
-        
-        # Different parameters should create different key
-        key3 = mock_scraper._create_cache_key(
-            url, "links", 8000, True, False, False, False
-        )
-        
-        assert key1 != key3
+
+        assert mock_scraper._create_cache_key(url) == mock_scraper._create_cache_key(url)
+        assert mock_scraper._create_cache_key(url) != mock_scraper._create_cache_key(url + "/other")
+
+    def test_a_cached_page_is_never_served_across_sessions(self, mock_scraper):
+        """The entry holds the fetched body, which may have been retrieved
+        with one user's cookies."""
+        url = "https://example.com/dashboard"
+        key_a = mock_scraper._create_cache_key(url, session_id="a")
+        assert key_a == mock_scraper._create_cache_key(url, session_id="a")
+        assert key_a != mock_scraper._create_cache_key(url, session_id="b")
+        assert key_a != mock_scraper._create_cache_key(url)
 
     def test_url_normalization_in_cache_key(self, mock_scraper):
-        """Test URL normalization for consistent cache keys."""
-        # URLs with same content but different order of query params
-        url1 = "https://example.com?param1=value1&param2=value2"
-        url2 = "https://example.com?param2=value2&param1=value1"
-        
-        key1 = mock_scraper._create_cache_key(url1, "content", 8000, False, False, False, False)
-        key2 = mock_scraper._create_cache_key(url2, "content", 8000, False, False, False, False)
-        
-        # Should create the same cache key due to normalization
-        assert key1 == key2
+        """Query-parameter order and the fragment must not split the entry."""
+        key1 = mock_scraper._create_cache_key("https://example.com?param1=value1&param2=value2")
+        key2 = mock_scraper._create_cache_key("https://example.com?param2=value2&param1=value1")
+        key3 = mock_scraper._create_cache_key("https://example.com?param1=value1&param2=value2#section")
+
+        assert key1 == key2 == key3
 
 
 class TestDuckDuckGoSearchCaching:
@@ -282,30 +274,30 @@ class TestDuckDuckGoSearchCaching:
         query = "artificial intelligence"
         max_results = 10
         
-        key1 = mock_ddg_search._create_cache_key(query, max_results)
-        key2 = mock_ddg_search._create_cache_key(query, max_results)
+        key1 = mock_ddg_search._cache_key(query, max_results)
+        key2 = mock_ddg_search._cache_key(query, max_results)
         
         # Same parameters should create same key
         assert key1 == key2
         
         # Different parameters should create different key
-        key3 = mock_ddg_search._create_cache_key("different query", max_results)
+        key3 = mock_ddg_search._cache_key("different query", max_results)
         assert key1 != key3
         
-        key4 = mock_ddg_search._create_cache_key(query, 5)
+        key4 = mock_ddg_search._cache_key(query, 5)
         assert key1 != key4
 
     def test_query_normalization(self, mock_ddg_search):
         """Test query normalization for consistent cache keys."""
         # Queries with different case should normalize to same cache key
-        key1 = mock_ddg_search._create_cache_key("AI Machine Learning", 5)
-        key2 = mock_ddg_search._create_cache_key("ai machine learning", 5)
+        key1 = mock_ddg_search._cache_key("AI Machine Learning", 5)
+        key2 = mock_ddg_search._cache_key("ai machine learning", 5)
         
         # Should be the same due to lowercase normalization
         assert key1 == key2
         
         # Test whitespace normalization
-        key3 = mock_ddg_search._create_cache_key("  ai machine learning  ", 5)
+        key3 = mock_ddg_search._cache_key("  ai machine learning  ", 5)
         assert key1 == key3
 
 

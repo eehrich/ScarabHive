@@ -1,69 +1,98 @@
+# Jinja2 variables: {{ name }}, {{ download_enabled }}
+# `download` is rendered only when the instance has allowed_directories --
+# a tool that can only refuse is not offered.
 tools:
   - type: function
     function:
       name: "{{ name }}_page"
-      description: Scrape web pages to extract text content, structured data (tables, forms, lists), or extract all links. Supports flexible content extraction modes.
+      description: "Read a web page as text (default) or list its links. Text is boilerplate-stripped and paged: the result says total_chars and truncated, fetch the rest with offset. Non-text URLs (PDF, images) are refused here; use {{ name }}_download for those."
       parameters:
         type: object
         properties:
           url:
             type: string
-            description: "Target URL to scrape"
+            description: "http(s) URL to fetch"
           operation:
             type: string
-            enum: [content, links]
-            default: content
-            description: "'content' extracts page content, 'links' extracts all anchor hrefs"
+            enum: ["content", "links"]
+            default: "content"
+            description: "'content' returns the page text, 'links' its anchors"
+          max_chars:
+            type: integer
+            default: 8000
+            description: "Characters of text to return (0 = all). The full text is cached, so paging is free."
+          offset:
+            type: integer
+            default: 0
+            description: "Start of the text window, for the next page of a long article"
+          extract_tables:
+            type: boolean
+            default: false
+            description: "Also return the page's tables as headers and rows"
+          extract_lists:
+            type: boolean
+            default: false
+            description: "Also return the page's lists (ul, ol, dl) as items"
+          include_nofollow:
+            type: boolean
+            default: false
+            description: "links: keep rel=nofollow anchors"
+          only_same_domain:
+            type: boolean
+            default: false
+            description: "links: only anchors on the page's own domain"
+          max_links:
+            type: integer
+            default: 0
+            description: "links: cap the list (0 = all)"
           timeout:
             type: number
             default: 20
             description: "Request timeout in seconds"
-          include_html:
-            type: boolean
-            default: false
-            description: "Include raw HTML in response"
-          max_chars:
-            type: integer
-            default: 8000
-            description: "Truncate text length (0=unlimited, default 8000 for token efficiency)"
-          extract_tables:
-            type: boolean
-            default: false
-            description: "Extract and structure table data"
-          extract_forms:
-            type: boolean
-            default: false
-            description: "Extract form elements and inputs"
-          extract_lists:
-            type: boolean
-            default: false
-            description: "Extract list structures (ul, ol, li)"
-          include_nofollow:
-            type: boolean
-            default: false
-            description: "Include nofollow links (for links operation)"
-          only_same_domain:
-            type: boolean
-            default: false
-            description: "Only extract links from same domain (for links operation)"
-          max_links:
-            type: integer
-            default: 0
-            description: "Maximum number of links to return (0=unlimited, for links operation)"
-          user_agent:
-            type: string
-            description: "Custom User-Agent header for requests"
           ignore_cache:
             type: boolean
             default: false
-            description: "Bypass cache and force fresh request"
+            description: "Fetch again instead of using the cached copy"
           cache_ttl:
             type: integer
-            description: "Custom cache TTL in seconds (overrides default)"
+            minimum: 0
+            description: "Cache lifetime for this page in seconds (default from config)"
         required: [url]
         additionalProperties: false
+{% if download_enabled %}
+  - type: function
+    function:
+      name: "{{ name }}_download"
+      description: "Save what a URL serves (PDF, image, archive, any file) to a path inside the allowed download directory. Returns the path, size, content type and sha256."
+      parameters:
+        type: object
+        properties:
+          url:
+            type: string
+            description: "http(s) URL of the file"
+          path:
+            type: string
+            description: "Destination file path inside an allowed directory, e.g. data/workspace/downloads/spec.pdf"
+          overwrite:
+            type: boolean
+            default: false
+            description: "Replace the file if it exists"
+          timeout:
+            type: number
+            default: 60
+            description: "Request timeout in seconds"
+        required: [url, path]
+        additionalProperties: false
+{% endif %}
+
 config:
-  ssl_verify: true
-  proxies:
+  proxies: []
   cache_ttl: 1800
   cache_enabled: true
+  # Empty = rotate through a pool of browser identities. Set one fixed
+  # descriptive string WITH A REAL CONTACT ADDRESS for sites that require it;
+  # Wikimedia refuses browser strings with 403 and its bot-policy text.
+  user_agent: ""
+  # Where `download` may write. Empty = no download tool at all.
+  allowed_directories: []
+  max_download_mb: 100
