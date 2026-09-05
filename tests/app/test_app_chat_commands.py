@@ -162,6 +162,203 @@ class TestBadInput:
         assert client.post("/chat/resolve", json={"line": "/help"}).status_code == 401
 
 
+@pytest.fixture(scope="module")
+def commanded_agent(client, auth_headers) -> str:
+    """An agent that really has a plugin command to offer.
+
+    Not the default one: ``chat_agent`` ships without a ``tools`` block, so it
+    may dispatch nothing and gets no plugin commands at all -- which is the
+    other half of the pair these tests need.
+    """
+    from agent_system.servers.agent.server import Agent
+
+    registry = client.app.state.mcp_registry
+    for name in registry.list():
+        if not isinstance(registry.get(name), Agent):
+            continue
+        listed = client.get(f"/chat/commands?surface=web&agent={name}",
+                            headers=auth_headers).json()
+        if listed.get("plugin_commands"):
+            return name
+    raise AssertionError("fixture: no agent offers a plugin command")
+
+
+class TestPluginCommands:
+    """Plugin commands in the browser: the same list and the same
+    authorization the terminal has.
+
+    The security property this pins is that the caller names a COMMAND and the
+    server resolves it against what THIS agent may dispatch -- naming a tool,
+    or a command another agent has, must not work.
+    """
+
+    def test_the_list_is_per_agent(self, commanded_agent, client, auth_headers):
+        """The whole point: a command whose tool an agent may not call is not
+        listed for it. chat_agent may call nothing, so it gets nothing."""
+        entry = client.get("/agents", headers=auth_headers).json().get("default")
+        assert entry, "fixture: no default agent"
+
+        offered = client.get(f"/chat/commands?surface=web&agent={commanded_agent}",
+                             headers=auth_headers).json()
+        deny_all = client.get(f"/chat/commands?surface=web&agent={entry}",
+                              headers=auth_headers).json()
+
+        assert offered["plugin_commands"], "fixture: this agent was chosen for having one"
+        assert deny_all["plugin_commands"] == []
+        assert deny_all["commands"], "the built-ins must not depend on the agent"
+
+    def test_every_command_is_offered_with_a_spelling_and_a_hint(self, commanded_agent,
+                                                                 client, auth_headers):
+        """What autocomplete needs, and the qualified form next to it.
+
+        NOT measured here: that the spelling is the RIGHT one when a plugin
+        names a command like a built-in -- no shipped command does, so this
+        data cannot tell the two apart. That rule is pinned where it lives,
+        in tests/cli/test_plugin_commands.py::spellings.
+        """
+        listed = client.get(f"/chat/commands?surface=web&agent={commanded_agent}",
+                            headers=auth_headers).json()["plugin_commands"]
+
+        assert listed, "fixture: this agent was chosen for having a command"
+        for command in listed:
+            assert command["spelling"], "autocomplete has nothing to insert"
+            assert command["qualified"] == f"{command['qualified'].split(':')[0]}:{command['name']}"
+            assert command["display"].startswith("/" + command["spelling"])
+            assert command["kind"] == "plugin"
+
+    def test_a_command_really_runs_on_the_agent_that_was_named(self, commanded_agent,
+                                                               client, auth_headers):
+        """The end of the path: dispatch, tool, formatted answer.
+
+        Without a session the compaction command answers "Session context not
+        available" -- a real dispatch with nothing to compact, which is what
+        makes this safe to run in a test.
+        """
+        listed = client.get(f"/chat/commands?surface=web&agent={commanded_agent}",
+                            headers=auth_headers).json()["plugin_commands"][0]
+
+        response = client.post("/chat/command",
+                               json={"name": listed["spelling"],
+                                     "agent_name": commanded_agent},
+                               headers=auth_headers)
+
+        assert response.status_code == 200, response.text
+        answer = response.json()
+        assert answer["name"] == listed["qualified"]
+        assert answer["text"], "the command answered with nothing at all"
+
+    def test_a_caller_without_an_agent_gets_the_entry_agent(self, client, auth_headers):
+        """The same agent /run would have used -- one rule, not two.
+
+        Here that is the deny-all chat_agent, so the list is empty; the
+        assertion below states that premise instead of leaving the empty list
+        looking like a rule of its own.
+        """
+        entry = client.get("/agents", headers=auth_headers).json()["default"]
+        entry_list = client.get(f"/chat/commands?surface=web&agent={entry}",
+                                headers=auth_headers).json()["plugin_commands"]
+
+        listed = client.get("/chat/commands?surface=web", headers=auth_headers).json()
+
+        assert listed["plugin_commands"] == entry_list
+        assert listed["commands"], "the built-ins are agent-independent"
+
+    def test_resolve_only_knows_the_command_with_its_agent(self, commanded_agent, client, auth_headers):
+        """Same line, two answers: the agent decides whether /compact exists."""
+        spelling = client.get(f"/chat/commands?surface=web&agent={commanded_agent}",
+                              headers=auth_headers).json()["plugin_commands"][0]["spelling"]
+
+        without = client.post("/chat/resolve", json={"line": f"/{spelling}"},
+                              headers=auth_headers).json()
+        with_agent = client.post("/chat/resolve",
+                                 json={"line": f"/{spelling} rest", "agent_name": commanded_agent},
+                                 headers=auth_headers).json()
+
+        assert without["kind"] == "unknown"
+        assert with_agent["kind"] == "plugin"
+        assert with_agent["payload"] == "rest"
+
+    def test_the_caller_cannot_name_a_tool(self, commanded_agent, client, auth_headers):
+        """The command runs a tool, but the caller may only name the COMMAND.
+        Handing the tool through would be the second, unguarded entry point
+        the plugin-command design exists to avoid."""
+        listed = client.get(f"/chat/commands?surface=web&agent={commanded_agent}",
+                            headers=auth_headers).json()["plugin_commands"][0]
+        registry = client.app.state.mcp_registry
+        from agent_system.plugin_commands import collect_plugin_commands
+        tool = next(c.tool for c in collect_plugin_commands(registry.get(commanded_agent))
+                    if c.qualified == listed["qualified"])
+
+        response = client.post("/chat/command",
+                               json={"name": tool, "agent_name": commanded_agent},
+                               headers=auth_headers)
+
+        assert response.status_code == 404
+        assert "is not a command" in response.json()["detail"]
+
+    def test_a_command_this_agent_may_not_run_is_refused(self, commanded_agent, client, auth_headers):
+        """The same command name, an agent that may not dispatch its tool."""
+        entry = client.get("/agents", headers=auth_headers).json()["default"]
+        spelling = client.get(f"/chat/commands?surface=web&agent={commanded_agent}",
+                              headers=auth_headers).json()["plugin_commands"][0]["spelling"]
+
+        response = client.post("/chat/command",
+                               json={"name": spelling, "agent_name": entry},
+                               headers=auth_headers)
+
+        assert response.status_code == 404
+
+    @pytest.mark.parametrize("named", ["no_such_agent", "file_ops"])
+    def test_a_name_that_is_no_agent_is_refused_as_such(self, named, client, auth_headers):
+        """Both 404s must say WHICH kind they are.
+
+        The status alone cannot tell "no such agent" from "not a command this
+        agent can run" -- and the second is what a fall-back to the entry
+        agent would answer, which is exactly the mistake this pins. ``file_ops``
+        is registered but no Agent: without the type check it reaches
+        run_plugin_command, whose first move is dispatch_tool_call -- an
+        attribute a plain MCP server does not have.
+        """
+        response = client.post("/chat/command",
+                               json={"name": "compact", "agent_name": named},
+                               headers=auth_headers)
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "no such agent"
+
+    def test_an_overlong_payload_is_refused(self, commanded_agent, client, auth_headers):
+        from agent_system.app import MAX_CHAT_LINE
+
+        response = client.post("/chat/command",
+                               json={"name": "compact", "agent_name": commanded_agent,
+                                     "payload": "x" * (MAX_CHAT_LINE + 1)},
+                               headers=auth_headers)
+
+        assert response.status_code == 413
+
+    def test_a_session_of_another_user_is_refused(self, commanded_agent, client, auth_headers):
+        """The command acts ON the session -- compaction rewrites it -- so a
+        foreign id must not become a tool's working set. Seeded in the
+        in-memory tracker the ownership check reads first, which keeps this
+        test off the real session directory.
+        """
+        tracker = client.app.state.agent._session_tracker
+        foreign = "parity-probe-not-yours"
+        tracker.set_session_metadata(foreign, {"user_id": "somebody_else"})
+        try:
+            response = client.post("/chat/command",
+                                   json={"name": "compact", "agent_name": commanded_agent,
+                                         "session_id": foreign},
+                                   headers=auth_headers)
+        finally:
+            tracker._session_metadata.pop(foreign, None)
+
+        assert response.status_code == 403, response.text
+
+    def test_it_requires_authentication(self, client):
+        assert client.post("/chat/command", json={"name": "compact"}).status_code == 401
+
+
 class TestAgentTools:
     """What ``/tools`` answers with in the browser.
 

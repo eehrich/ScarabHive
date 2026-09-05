@@ -2786,10 +2786,51 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         registry.ensure_discovered(configured or list(default_skill_dirs()))
         return registry
 
+    def _chat_agent(request: Request, agent_name: Optional[str]):
+        """The agent a chat surface is talking to, or None.
+
+        Plugin commands are per AGENT: the list holds only what that agent's
+        own allowlist lets it dispatch, so every chat endpoint that touches
+        them has to know which agent is meant. A name that is not a registered
+        agent yields None rather than falling back to the default -- answering
+        for a different agent would list commands the named one may not run.
+        """
+        from .servers.agent.server import Agent as _Agent
+
+        if not agent_name:
+            entry = getattr(request.app.state, "agent", None)
+            return entry if isinstance(entry, _Agent) else None
+        registry = getattr(request.app.state, "mcp_registry", None) or _app_registry
+        try:
+            candidate = registry.get(agent_name) if registry is not None else None
+        except Exception as e:
+            logging.getLogger(__name__).debug("No agent '%s': %s", agent_name, e)
+            return None
+        return candidate if isinstance(candidate, _Agent) else None
+
+    def _plugin_commands_for(agent) -> list:
+        """What *agent* may run, empty for anything that cannot be asked."""
+        if agent is None:
+            return []
+        from agent_system.plugin_commands import collect_plugin_commands
+        try:
+            return collect_plugin_commands(agent)
+        except Exception as e:  # noqa: BLE001 - a broken plugin must not kill the chat
+            logging.getLogger(__name__).warning("Could not collect plugin commands: %s", e)
+            return []
+
     @app.get("/chat/commands")
-    async def chat_commands(surface: str = "web"):
-        """Commands and skills this surface offers, for help and autocomplete."""
+    async def chat_commands(request: Request, surface: str = "web",
+                            agent: Optional[str] = None):
+        """Commands and skills this surface offers, for help and autocomplete.
+
+        ``agent`` is not decoration: plugin commands differ per agent, so the
+        browser has to say which one it is talking to -- and ask again when
+        the selector changes. A caller that names none gets the entry agent's
+        list, the same agent /run would have used.
+        """
         from agent_system.chat_commands import commands_for
+        from agent_system.plugin_commands import spellings
 
         try:
             skills = [
@@ -2801,6 +2842,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logging.getLogger(__name__).warning("Could not list skills: %s", e)
             skills = []
 
+        plugin_commands = _plugin_commands_for(_chat_agent(request, agent))
         return {
             "commands": [
                 {"name": c.name, "aliases": list(c.aliases), "summary": c.summary,
@@ -2808,6 +2850,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 for c in commands_for(surface)
             ],
             "skills": skills,
+            # The SPELLING, not just the name: a plugin command whose name a
+            # built-in already owns is only reachable as "plugin:name", and
+            # offering the bare one would land on the built-in instead.
+            "plugin_commands": [
+                {"name": c.name, "qualified": c.qualified, "spelling": spelling,
+                 "summary": c.summary, "argument_hint": c.argument_hint,
+                 "kind": "plugin",
+                 "display": f"/{spelling}" + (f" {c.argument_hint}" if c.argument_hint else "")}
+                for spelling, c in zip(spellings(plugin_commands), plugin_commands)
+            ],
         }
 
     @app.post("/chat/resolve")
@@ -2818,6 +2870,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         caller needs: the command name, or the message to send to the agent.
         """
         from agent_system.chat_commands import resolve as resolve_line, suggest_command
+        from agent_system.plugin_commands import spellings
         from agent_system.skills import invoke
 
         body = await _parse_json_body(request)
@@ -2841,7 +2894,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logging.getLogger(__name__).warning("Could not list skills: %s", e)
             registry, skill_names = None, []
 
-        result = resolve_line(line, skill_names)
+        # The agent decides which plugin commands exist at all, so an
+        # unnamed one leaves "/compact" the unknown command it was before.
+        plugin_commands = _plugin_commands_for(
+            _chat_agent(request, (body or {}).get("agent_name")))
+
+        result = resolve_line(line, skill_names, plugin_commands)
         payload = {"kind": result.kind, "name": result.name, "payload": result.payload}
 
         if result.kind == "skill" and registry is not None:
@@ -2860,9 +2918,67 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         elif result.kind == "message":
             payload["text"] = result.payload
         elif result.kind == "unknown":
-            payload["suggestion"] = suggest_command(result.payload, skill_names)
+            # Plugin spellings compete for the typo hint too, or "/compac"
+            # would be told about skills only.
+            payload["suggestion"] = suggest_command(
+                result.payload, list(skill_names) + spellings(plugin_commands))
 
         return payload
+
+    @app.post("/chat/command")
+    async def chat_command(request: Request):
+        """Run a plugin command, the way the terminal runs it.
+
+        The caller names a COMMAND, never a tool. It is looked up in the list
+        this agent may run -- collect_plugin_commands filters by the agent's
+        own dispatch predicate -- and execution goes through
+        Agent.dispatch_tool_call, the same path with the same authorization,
+        runtime params and status channel the terminal uses. A command the
+        agent may not run does not exist here, so this is no second entry
+        point beside the tools: exactly as powerful as the allowlist permits.
+        """
+        from agent_system.chat_commands import match_plugin_command
+        from agent_system.plugin_commands import run_plugin_command
+
+        current_user = await _enforce_endpoint_security(request)
+        body = await _parse_json_body(request)
+        if body is not None and not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        body = body or {}
+
+        name = body.get("name") or ""
+        command_payload = body.get("payload") or ""
+        if not isinstance(name, str) or not isinstance(command_payload, str):
+            raise HTTPException(status_code=400,
+                                detail="'name' and 'payload' must be strings")
+        if len(command_payload) > MAX_CHAT_LINE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Payload too long ({len(command_payload)} chars, "
+                       f"limit {MAX_CHAT_LINE})")
+
+        # The command runs ON a session -- compaction rewrites it -- so the
+        # same ownership rule the other session-taking endpoints apply holds
+        # here: without it any authenticated user could hand in a foreign
+        # session id and have a tool act on it.
+        session_id = body.get("session_id")
+        if session_id:
+            await _verify_session_owner(str(session_id), current_user)
+
+        agent = _chat_agent(request, body.get("agent_name"))
+        if agent is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        match = match_plugin_command(name.lstrip("/"), _plugin_commands_for(agent))
+        if match is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"'{name}' is not a command this agent can run")
+
+        text = await run_plugin_command(
+            agent, match, command_payload,
+            session_id=session_id,
+            user_id=getattr(current_user, "username", None))
+        return {"name": match.qualified, "text": text}
 
     # ===========================
     # Hook Introspection Endpoints

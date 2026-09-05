@@ -156,6 +156,26 @@
     return await resp.json();
   }
 
+  async function postJSON(url, body) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      credentials: 'include',
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      let detail = resp.status + ' ' + resp.statusText;
+      try {
+        const answer = await resp.json();
+        if (answer && answer.detail) detail = answer.detail;
+      } catch (e) { /* not JSON -- keep the status line */ }
+      const error = new Error(detail);
+      error.status = resp.status;
+      throw error;
+    }
+    return await resp.json();
+  }
+
   function currentAgentName() {
     return (window.selectorModule && typeof window.selectorModule.getCurrentAgent === 'function')
       ? window.selectorModule.getCurrentAgent()
@@ -570,6 +590,29 @@
       }
     });
     addNote(container, lines.length ? lines.join('\n') : 'The last turn used no tools.');
+  }
+
+  /**
+   * Run a plugin command -- on the server, where the agent lives.
+   *
+   * The browser names the COMMAND, never a tool: the server looks it up in
+   * the list this agent may dispatch and runs it through the same path the
+   * terminal uses. No LLM turn, no tokens; the result is a note, like every
+   * other command's output.
+   */
+  async function runPluginCommand(name, payload) {
+    const container = chatContainer;
+    try {
+      const answer = await postJSON('/chat/command', {
+        name: name,
+        payload: payload || '',
+        agent_name: currentAgentName(),
+        session_id: currentSessionId,
+      });
+      addNote(container, answer.text || 'done');
+    } catch (e) {
+      addNote(container, '/' + name + ' failed: ' + ((e && e.message) || e));
+    }
   }
 
   /**
@@ -1933,6 +1976,12 @@
           // before the note appeared.
           clearInput(taskInput);
           await runChatCommand(resolved.name, resolved.payload);
+          submitting = false;
+          return;
+        }
+        if (resolved.kind === 'plugin') {
+          clearInput(taskInput);
+          await runPluginCommand(resolved.name, resolved.payload);
           submitting = false;
           return;
         }
