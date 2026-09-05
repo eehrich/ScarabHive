@@ -1,72 +1,36 @@
-#!/usr/bin/env python3
-"""CLI entrypoint for the duckduckgo_search plugin.
+"""CLI: run one DuckDuckGo search through the plugin, for a quick check.
 
-Provides a help/CLI surface so `python -m plugins.duckduckgo_search --help` works
-for tooling and tests.
+    python -m plugins.duckduckgo_search --query "godot texture filter"
 """
-
 from __future__ import annotations
 
-import asyncio
 import argparse
+import asyncio
+
+from agent_system.config.models import AgentSystemConfig, MCPConfig
+
 from .server import DuckDuckGoSearchServer
 
 
-async def async_main():
+async def _run(query: str, max_results: int) -> None:
+    server = DuckDuckGoSearchServer("duckduckgo_search", AgentSystemConfig(),
+                                    MCPConfig(type="duckduckgo_search", enabled=True))
+    # call_with_status opens the status scope the tool expects in ``_status``.
+    result = await server.call_with_status("duckduckgo_search_web_search",
+                                           {"query": query, "max_results": max_results})
+    if result.get("error"):
+        print(f"Error: {result['error']}")
+        return
+    for i, item in enumerate(result["results"], 1):
+        print(f"{i}. {item.get('title')}\n   {item.get('href')}\n   {item.get('body', '')}\n")
+
+
+def cli_main() -> None:
     parser = argparse.ArgumentParser(description="DuckDuckGo Search MCP Server")
-    parser.add_argument("--query", default="Python programming", help="Search query")
+    parser.add_argument("--query", required=True, help="Search query")
     parser.add_argument("--max-results", type=int, default=5, help="Maximum number of results")
-    parser.add_argument("--server", action="store_true", help="Run as HTTP server")
-    parser.add_argument("--port", type=int, default=9001, help="Server port")
     args = parser.parse_args()
-
-    # Create minimal config for CLI usage
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
-    system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(type="duckduckgo_search", enabled=True)
-    
-    server = DuckDuckGoSearchServer("duckduckgo_search", system_config, mcp_config)
-
-    if args.server:
-        print(f"Starting DuckDuckGo Search MCP Server on port {args.port}")
-        try:
-            # Import lazily because the test subprocess may not have the full package on sys.path
-            from agent_system.servers.http_server import serve_mcp_server
-        except Exception:
-            print("serve_mcp_server not available; cannot start HTTP server in this environment")
-            return
-
-        await serve_mcp_server(server, port=args.port)
-    else:
-        try:
-            from unittest.mock import AsyncMock
-            mock_status = AsyncMock()
-            result = await server.call("duckduckgo_search_web_search", {
-                "query": args.query, 
-                "max_results": args.max_results,
-                "_status": mock_status
-            })
-            print(f"DuckDuckGo search results for '{args.query}':")
-            if isinstance(result, dict) and "results" in result:
-                for i, item in enumerate(result["results"], 1):
-                    if isinstance(item, dict):
-                        title = item.get("title") or item.get("text") or "No title"
-                        url = item.get("url") or item.get("href") or "No URL"
-                        snippet = item.get("snippet") or item.get("text") or ""
-                        print(f"{i}. {title}")
-                        print(f"   {url}")
-                        if snippet:
-                            print(f"   {snippet}\n")
-                    else:
-                        print(f"{i}. {item}")
-            else:
-                print(result)
-        except Exception as e:
-            print(f"Error: {e}")
-
-
-def cli_main():
-    asyncio.run(async_main())
+    asyncio.run(_run(args.query, args.max_results))
 
 
 if __name__ == "__main__":

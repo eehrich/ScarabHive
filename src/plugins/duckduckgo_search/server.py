@@ -1,6 +1,15 @@
+"""DuckDuckGo web search through the ``ddgs`` package.
+
+``ddgs`` is the current name of what used to ship as ``duckduckgo-search``;
+the author (deedy5) renamed it at 9.x. The old package stopped following
+DuckDuckGo's markup and returned zero results without raising -- measured
+on 2026-09-05: 0/0/5 hits on three queries against 5/5/5 with ddgs 9.16.
+Silence, not an error, is why it went unnoticed for so long.
+"""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from typing import Any, TYPE_CHECKING
@@ -13,146 +22,91 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+MAX_ATTEMPTS = 3
+# ddgs's own sentinel for "every engine answered, none had a hit" -- as
+# opposed to "every engine failed", which arrives as the same exception type
+# carrying the engine's error.
+NO_RESULTS = "No results found"
+
 
 class DuckDuckGoSearchServer(SchemaBasedMCPServer):
-    """DuckDuckGo search server with caching and retry logic."""
-    
+    """One tool: ``web_search``. Cached per (query, max_results)."""
+
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
-        """
-        Modern constructor signature.
-        
-        Args:
-            name: Plugin instance name
-            system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration (cache_ttl, cache_enabled, etc.)
-        """
         super().__init__(name, system_config, mcp_config)
-        
-        # Initialize cache system 
-        # Search results typically change more frequently, so shorter TTL (15 minutes default)
-        cache_ttl = getattr(mcp_config, 'cache_ttl', 900)
-        self.cache = PluginCache(plugin_name="duckduckgo_search", default_ttl=cache_ttl)
-        self.cache_enabled = getattr(mcp_config, 'cache_enabled', True)
-    
-    def _create_cache_key(self, query: str, max_results: int) -> str:
-        """Create a cache key from search parameters."""
-        import json
-        cache_data = {
-            "query": query.strip().lower(),  # Normalize query
-            "max_results": max_results
-        }
-        return json.dumps(cache_data, sort_keys=True, separators=(',', ':'))
-    
+        self.cache = PluginCache(plugin_name="duckduckgo_search",
+                                 default_ttl=getattr(mcp_config, "cache_ttl", 900))
+        self.cache_enabled = getattr(mcp_config, "cache_enabled", True)
+
+    @staticmethod
+    def _cache_key(query: str, max_results: int) -> str:
+        return json.dumps({"query": query.strip().lower(), "max_results": max_results},
+                          sort_keys=True, separators=(",", ":"))
+
     async def web_search(self, params: dict[str, Any]) -> dict[str, Any]:
-        """
-        Perform web search using DuckDuckGo.
-        
-        Tool method - automatically called by generic dispatcher.
-        Method name matches tool name in schema.yaml.
-        """
-        query = params.get("query", "")
+        query = (params.get("query") or "").strip()
         max_results = int(params.get("max_results", 10))
-        ignore_cache = params.get("ignore_cache", False)
-        custom_cache_ttl = params.get("cache_ttl")
-        status = params["_status"]  # Status is mandatory from framework
-        
-        if not query.strip():
-            return {"engine": "duckduckgo", "query": query, "results": [], "package": "ddgs", "error": "Empty query"}
-        
-        # Create cache key and try to get cached result
-        cache_key = self._create_cache_key(query, max_results)
-        
-        if self.cache_enabled and not ignore_cache:
-            cached_result = await self.cache.get(cache_key)
-            if cached_result is not None:
-                # Subject and count, like the fresh path further down.
-                await status.end(
-                    f"{len(cached_result.get('results', []))} results (cached) "
-                    f"-- {query[:60]}",
-                    meta={"cache_hit": True, "results": len(cached_result.get("results", []))})
-                logger.debug(f"Cache hit for query: {query[:50]}...")
-                return cached_result
-            
+        status = params["_status"]
+
+        if not query:
+            return {"engine": "duckduckgo", "query": query, "results": [], "error": "Empty query"}
+
+        key = self._cache_key(query, max_results)
+        if self.cache_enabled and not params.get("ignore_cache", False):
+            cached = await self.cache.get(key)
+            if cached is not None:
+                await status.end(f"{len(cached['results'])} results (cached) -- {query[:60]}",
+                                 meta={"cache_hit": True, "results": len(cached["results"])})
+                return cached
+
         try:
-            # Note: The 'ddgs' package on PyPI was hijacked by another project at v9.x
-            # We now only use duckduckgo-search which provides the original DDGS class
-            from duckduckgo_search import DDGS
-            pkg = "duckduckgo_search"
+            from ddgs import DDGS
+            from ddgs.exceptions import DDGSException
         except ImportError as e:
-            raise RuntimeError("Install `duckduckgo-search` for duckduckgo_search server: pip install duckduckgo-search") from e
+            raise RuntimeError("Install `ddgs` for the duckduckgo_search plugin: pip install ddgs") from e
 
-        # Update status with search progress
-        await status.progress(f"🔍 Searching: {query}")
+        await status.progress(f"Searching: {query}")
 
-        logger.debug("DuckDuckGo search: %s (max_results=%d)", query, max_results)
-        results = []
-        
-        try:
-            # Retry logic for rate limiting and temporary failures
-            max_retries = 3
-            for attempt in range(max_retries + 1):
-                # Check for cancellation before each attempt
-                cancellation_token = params.get("_cancellation_token")
-                if cancellation_token and cancellation_token.is_cancelled:
-                    return {"error": "Search cancelled by user", "results": [], "cancelled": True}
-                
-                try:
-                    # Add delay before retry attempts (not before first attempt)
-                    if attempt > 0:
-                        delay = (2 ** attempt) + random.uniform(0, 1)  # Exponential backoff with jitter
-                        logger.debug("Search attempt %d failed, retrying in %.2f seconds", attempt, delay)
-                        await asyncio.sleep(delay)
-                    
-                    # Run sync ddgs call in thread pool to avoid blocking event loop
-                    def _search_sync() -> list:
-                        with DDGS() as ddgs:
-                            return list(ddgs.text(query, max_results=max_results))
-                    
-                    results = await asyncio.to_thread(_search_sync)
-                    break  # Success, exit retry loop
-                    
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    is_rate_limit = any(indicator in error_msg for indicator in [
-                        '429', 'rate limit', 'too many requests', 'throttle', 'blocked'
-                    ])
-                    
-                    if attempt < max_retries and (is_rate_limit or 'timeout' in error_msg or 'connection' in error_msg):
-                        logger.warning("DuckDuckGo search attempt %d failed: %s (will retry)", attempt + 1, str(e))
-                        continue
-                    else:
-                        # Final attempt or non-retryable error
-                        raise e
-            
-            logger.debug("DuckDuckGo search returned %d results", len(results))
-            
-            # Create result object
-            search_result = {"engine": "duckduckgo", "query": query, "results": results, "package": pkg}
-            
-            # Cache the successful result
-            if self.cache_enabled:
-                await self.cache.set(cache_key, search_result, ttl=custom_cache_ttl)
-                logger.debug(f"Cached search results for query: {query[:50]}...")
-            
-            # Update status with success
-            await status.end(f"Search completed: {query} ({len(results)} results)",
-                           meta={"results": len(results)})
-            
-            return search_result
-        
-        except Exception as e:
-            logger.warning("DuckDuckGo search failed for query '%s': %s", query, str(e))
-            
-            # Update status with error
-            await status.error(f"Search failed for query '{query}': {str(e)}", meta={"error": str(e)})
-            
-            return {
-                "engine": "duckduckgo",
-                "query": query,
-                "results": [],
-                "package": pkg,
-                "error": f"Search failed for query '{query}': {str(e)}",
-                "suggestion": "Try a different search query or use broader terms",
-            }
+        results: list[dict[str, Any]] = []
+        for attempt in range(MAX_ATTEMPTS):
+            token = params.get("_cancellation_token")
+            if token and token.is_cancelled:
+                return {"engine": "duckduckgo", "query": query, "results": [],
+                        "error": "Search cancelled by user", "cancelled": True}
+            try:
+                # The ddgs client is synchronous; keep it off the event loop.
+                results = await asyncio.to_thread(
+                    lambda: DDGS().text(query, max_results=max_results))
+                break
+            except DDGSException as e:
+                # ddgs raises instead of returning an empty list, and the SAME
+                # exception type carries two very different things: the
+                # sentinel "No results found." when every engine answered with
+                # nothing, and the last engine's own exception when they all
+                # failed. Only the first is an answer.
+                if NO_RESULTS in str(e):
+                    break
+                # RatelimitException and TimeoutException are subclasses and
+                # land here too; every one of these is worth another attempt.
+                if attempt == MAX_ATTEMPTS - 1:
+                    return await self._failed(status, query, e)
+                delay = 2 ** attempt + random.uniform(0, 1)
+                logger.warning("DuckDuckGo attempt %d failed (%s); retrying in %.1fs",
+                               attempt + 1, type(e).__name__, delay)
+                await asyncio.sleep(delay)
 
+        result = {"engine": "duckduckgo", "query": query, "results": results}
+        # An empty answer is not worth remembering: it is far more often a
+        # hiccup on DuckDuckGo's side than a fact about the query, and a
+        # cached "nothing" would repeat the hiccup for the cache lifetime.
+        if self.cache_enabled and results:
+            await self.cache.set(key, result, ttl=params.get("cache_ttl"))
+        await status.end(f"{len(results)} results -- {query[:60]}", meta={"results": len(results)})
+        return result
 
+    @staticmethod
+    async def _failed(status, query: str, exc: Exception) -> dict[str, Any]:
+        message = f"DuckDuckGo search failed for {query!r}: {type(exc).__name__}: {exc}"
+        logger.warning(message)
+        await status.error(message, meta={"error": str(exc)})
+        return {"engine": "duckduckgo", "query": query, "results": [], "error": message}
