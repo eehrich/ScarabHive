@@ -137,7 +137,7 @@
                 },
                 "agent_type": {
                   "type": "string",
-                  "description": "Agent type (e.g., 'web_research_agent')"
+                  "description": "Agent type (e.g., 'research_agent')"
                 },
                 "created_at": {
                   "type": "string",

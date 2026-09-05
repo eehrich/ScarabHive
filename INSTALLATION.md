@@ -92,9 +92,9 @@ config/
 ├── plugins.yaml             # Plugin configuration
 ├── mcp_servers.yaml         # External MCP servers
 └── agents/                  # Config-based agents (YAML files)
-    ├── meta_agent.yaml
-    ├── coding_agent.yaml
-    └── web_research_agent.yaml
+    ├── agents.yaml          # base agents (multi_turn_agent, skills_agent, chat_agent)
+    ├── sysadmin_agent.yaml
+    └── okf_agent.yaml
 ```
 
 ### LLM Provider Setup
@@ -238,55 +238,27 @@ plugins:
 
 Create custom agents in `config/agents/*.yaml` without writing code:
 
-**Example: `config/agents/research_agent.yaml`**
+**Example: the research agent, a config-only plugin** (`src/plugins/research/agents/research_agent.yaml`, picked up by the `../src/plugins*/*/agents/*.yaml` include)
 ```yaml
 plugins:
   servers:
     research_agent:
       type: basic_agent
       enabled: true
-      description: "Web research specialist"
-      
-      agent_config:
-        llm_profile: claude-sonnet
-        max_steps: 25
-        system_prompt: |
-          You are a web research specialist. Use search and scraping tools
-          to find comprehensive information on any topic.
-        
-        tools:
-          allowed:
-            - "web_scraper/*"
-            - "duckduckgo_search/*"
-            - "sequential_thinking/*"
-          blocked:
-            - "terminal/*"  # No terminal access
-      
-      metadata:
-        visibility: "both"  # or "ui", "tool"
-```
+      description: "Web research with cited sources"
 
-**Example: `config/agents/web_research_agent.yaml`**
-```yaml
-plugins:
-  servers:
-    web_research_agent:
-      type: basic_agent
-      enabled: true
-      description: "Web research specialist with search and scraping capabilities"
-      
       agent_config:
-        llm_profile: claude-sonnet
-        max_steps: 25
-        
+        llm_profile: [or-deepseek-flash, deepseek-chat]
+        max_steps: 40
+        system_template: "./prompts/research_agent.md"   # next to the YAML
+        skills:
+          always: ["web-research"]                       # from the plugin's skills/
         tools:
           allowed:
-            - "web_scraper/*"
+            - "tavily_search/*"
             - "duckduckgo_search/*"
-            - "sequential_thinking/*"
-          blocked:
-            - "terminal/*"  # No terminal access
-      
+            - "web_scraper/*"
+
       metadata:
         visibility: "both"  # or "ui", "tool"
 ```

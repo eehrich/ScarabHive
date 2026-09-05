@@ -95,7 +95,7 @@ class SubAgentManager:
 
         Args:
             parent_session_id: Parent coordinator session ID
-            agent_type: Type of agent to create (e.g., "web_research_agent")
+            agent_type: Type of agent to create (e.g., "research_agent")
             initial_message: Initial task/message for sub-agent
             instance_label: Optional human-readable label
             params: Optional tool call params with injected _user_id

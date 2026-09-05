@@ -64,7 +64,7 @@ def test_agent_server_override():
     assert agent.system_config.llm_system.models["test-model"].provider == "openai"
 
 
-def test_web_research_agent_server_override():
+def test_basic_agent_server_override():
     from agent_system.plugins.discovery import discover_all_plugins
     from pathlib import Path
     import pytest
@@ -72,7 +72,7 @@ def test_web_research_agent_server_override():
     # Test plugin discovery first
     src_plugins = Path.cwd() / "src" / "plugins"
     plugins = discover_all_plugins(dirs=[src_plugins] if src_plugins.exists() else None)
-    assert "web_research_agent" in plugins, "web_research_agent plugin must be present in repository for this test"
+    assert "basic_agent" in plugins, "basic_agent plugin must be present in repository for this test"
     
     cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
@@ -87,25 +87,25 @@ def test_web_research_agent_server_override():
         ),
         plugins=PluginsConfig(
             servers={
-                "web_research_agent": MCPConfig(type="web_research_agent", enabled=True, agent_config=AgentConfig())
+                "basic_agent": MCPConfig(type="basic_agent", enabled=True, agent_config=AgentConfig())
             }
         )
     )
     # Set custom attributes
-    cfg.plugins.servers["web_research_agent"].default_provider = "openai"
-    cfg.plugins.servers["web_research_agent"].model = "gpt-5-mini"
+    cfg.plugins.servers["basic_agent"].default_provider = "openai"
+    cfg.plugins.servers["basic_agent"].model = "gpt-5-mini"
 
     registry = MCPRegistry()
     try:
         bootstrap_servers(cfg, registry)
     except Exception as e:
-        pytest.fail(f"Failed to bootstrap web_research_agent: {e}")
+        pytest.fail(f"Failed to bootstrap basic_agent: {e}")
 
     # Check what servers are actually registered
     registered_servers = list(registry._servers.keys())
-    assert "web_research_agent" in registered_servers, f"web_research_agent not registered. Available servers: {registered_servers}"
+    assert "basic_agent" in registered_servers, f"basic_agent not registered. Available servers: {registered_servers}"
 
-    agent = registry.get("web_research_agent")
+    agent = registry.get("basic_agent")
     # Check custom attributes were passed through mcp_config
     assert agent.mcp_config.default_provider == "openai"
     assert agent.mcp_config.model == "gpt-5-mini"

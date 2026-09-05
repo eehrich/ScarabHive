@@ -7,7 +7,7 @@ plugins:
       enabled: true
       max_nesting_depth: 5
       allowed_agents:
-        - meta_web_research_agent
+        - research_agent
       hook_config:
         enabled: true
         inject_sub_agent_context:

@@ -57,7 +57,7 @@ Tool Usage Strategy:
   * Serialize dependent operations to maintain consistency
   * Keep commands atomic and verifiable
 - sysadmin_agent_manager: Delegate specialized research or complex analysis
-  * meta_web_research_agent: Documentation lookup, best practices research
+  * research_agent: documentation lookup, best-practice research with cited sources
 - todo: Track multi-step maintenance tasks and remediation plans
 - memory: short-lived, session-scoped reminders
 

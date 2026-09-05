@@ -33,7 +33,6 @@ IMPORT_TO_DIST = {
     "bs4": "beautifulsoup4", "dotenv": "python-dotenv",
     "dateutil": "python-dateutil", "fitz": "pymupdf",
     "tavily": "tavily-python", "ruamel": "ruamel.yaml",
-    "duckduckgo_search": "duckduckgo-search",
     # Coarse: `google` is a namespace shared by many dists (google-cloud-*,
     # google-auth). Today the only google import in any plugin is genai; a
     # plugin importing e.g. google.cloud would slip past this mapping and

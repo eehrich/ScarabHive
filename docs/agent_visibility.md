@@ -56,7 +56,7 @@ agents:
       category: "support"
 
   # Dual-purpose agent
-  web_research_agent:
+  research_agent:
     enabled: true
     description: "Web research agent with search capabilities"
     base_type: agent
@@ -89,8 +89,8 @@ agents:
 For plugin-based agents, add `visibility` as a top-level field in `plugin.yaml`:
 
 ```yaml
-# src/plugins/web_research_agent/plugin.yaml
-name: web_research_agent
+# src/plugins/<name>/plugin.yaml
+name: my_agent_plugin
 author: "Enrico Ehrich"
 version: 0.1.0
 description: "Specialized web research agent"
@@ -182,7 +182,7 @@ system_admin:
 
 ### 3. Dual-Purpose Agents (Both)
 
-**Example:** `web_research_agent`, `basic_agent`
+**Example:** `research_agent`, `basic_agent`
 
 These agents serve both purposes:
 - Visible in UI dropdown (users can chat)

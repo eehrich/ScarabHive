@@ -645,7 +645,7 @@ class Agent(MCPServer):
         2. plugin_registry (fallback for plugin adapters)
 
         Args:
-            server_name: Name of the server to find (e.g., 'basic_operations', 'meta_web_research_agent')
+            server_name: Name of the server to find (e.g., 'basic_operations', 'research_agent')
 
         Returns:
             The server instance or None if not found

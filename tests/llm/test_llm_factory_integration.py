@@ -82,7 +82,7 @@ class TestLLMFactoryIntegration:
         assert system_config.plugins and system_config.plugins.servers, "No MCP servers configured in system settings"
 
         # Test a few key servers
-        test_servers = ["basic_agent", "web_research_agent", "duckduckgo_search"]
+        test_servers = ["basic_agent", "research_agent", "duckduckgo_search"]
 
         for server_name in test_servers:
             if server_name not in system_config.plugins.servers:

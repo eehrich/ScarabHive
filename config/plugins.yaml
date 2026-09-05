@@ -92,7 +92,7 @@ plugins:
               enabled: true
 
       metadata:
-        visibility: "tool"  # Make available as tool for meta_agent
+        visibility: "tool"  # callable as a tool by other agents
 
 
 
@@ -767,6 +767,32 @@ plugins:
       default_max_results: 5
       default_search_depth: "basic"  # "basic" or "advanced" (2x credits)
 
+    # Web search without an account (ddgs package). The fallback when no
+    # Tavily key is set -- tavily_search then offers no tools at all.
+    duckduckgo_search:
+      type: duckduckgo_search
+      enabled: true
+      cache_ttl: 900
+
+    # Read a page as text, list its links, or download a file. Every URL and
+    # every redirect hop passes the SSRF guard (no internal hosts).
+    web_scraper:
+      type: web_scraper
+      enabled: true
+      proxies: []
+      cache_ttl: 1800
+      # Empty rotates through browser identities. A site that wants a
+      # descriptive agent with a contact address (Wikipedia answers a browser
+      # one with 403) needs one fixed string here, with a real address.
+      user_agent: ""
+      # Where `download` may write. Without a directory the tool is not
+      # offered. The workspace is where the harnesses build, so a downloaded
+      # spec or asset lands where the coder, gamedev and amiga agents can
+      # read it.
+      allowed_directories:
+        - data/workspace
+      max_download_mb: 100
+
     weather:
       type: weather
       enabled: true
@@ -879,7 +905,7 @@ plugins:
 
       allowed_agents:
         - financial_analyst_agent
-        - meta_web_research_agent
+        - research_agent
         - sysadmin_agent
         - comfyui_agent
         - chat_agent
