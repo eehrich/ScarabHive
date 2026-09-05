@@ -12,7 +12,10 @@ plugins:
   servers:
 
     research_agent:
-      type: basic_agent
+      # multi_turn_agent brings what a long read-heavy loop needs: the
+      # context_engineer tools and its trimming hook, a 200k window and
+      # multi_turn caching.
+      type: multi_turn_agent
       enabled: true
       description: "Web research with cited sources: searches, reads the pages that matter, cross-checks, answers with URLs"
 
@@ -26,10 +29,6 @@ plugins:
         # OpenRouter outage does not stop the chain.
         llm_profile: [or-deepseek-flash, deepseek-chat]
         llm_profile_advanced: []
-        llm_params:
-          "*":
-            context_window: 200000
-            prompt_cache_mode: multi_turn
 
         # Search, open three pages, page one long one, cross-check, write.
         max_steps: 40
@@ -47,19 +46,18 @@ plugins:
           on_demand: []
 
         tools:
+          # "+" on every entry = MERGE with what multi_turn_agent brings
+          # (context_engineer/*), instead of replacing it.
           allowed:
-            - "tavily_search/*"        # search + extract, when a key is set
-            - "duckduckgo_search/*"    # search without an account
-            - "web_scraper/*"          # read a page, list links, download a file
-            - "datetime/*"             # "as of when" matters for research
-            - "research_sam/*"         # fork itself for a WIDE question (agents/tools.yaml)
+            - "+tavily_search/*"       # search + extract, when a key is set
+            - "+duckduckgo_search/*"   # search without an account
+            - "+web_scraper/*"         # read a page, list links, download a file
+            - "+datetime/*"            # "as of when" matters for research
+            - "+research_sam/*"        # fork itself for a WIDE question (agents/tools.yaml)
 
         hooks:
           enabled: true
           overrides:
-            # Extracted pages are large; forty steps of them need trimming.
-            context_engineer.engineer_context:
-              enabled: true
             markdown_formatter.format_markdown_output:
               enabled: true
             # Shows the running sub-researchers, so the parent continues or

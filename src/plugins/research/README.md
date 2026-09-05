@@ -46,7 +46,7 @@ another coordinator.
 
 | | |
 |---|---|
-| `agents/research_agent.yaml` | `type: basic_agent`, chain `or-deepseek-flash` → `deepseek-chat`, 40 steps, visibility `both` |
+| `agents/research_agent.yaml` | `type: multi_turn_agent` (context engineering, 200k window), chain `or-deepseek-flash` → `deepseek-chat`, 40 steps, visibility `both` |
 | `agents/research_worker.yaml` | The branch for a wide question: same prompt, same skill, same reading tools, 25 steps, and no sub-agent manager |
 | `agents/prompts/research_agent.md` | Role, tool hints, output format. Short on purpose. Both agents render it; the branching section appears only for the one that can branch. |
 | `skills/web-research/SKILL.md` | The method: query design, source ranking, reading with `offset`, cross-checking, citing. Always in the prompt. |

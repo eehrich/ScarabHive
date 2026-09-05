@@ -115,6 +115,28 @@ def test_context_engineering_is_on_for_forty_steps_of_pages(agent):
     assert entry is not None
     enabled = entry.get("enabled") if isinstance(entry, dict) else getattr(entry, "enabled", None)
     assert agent.agent_config.hooks.enabled is True and enabled is True
+    # The hook trims what the loop already pulled in; the tools let the agent
+    # park and re-read a page on purpose. Both come from multi_turn_agent, and
+    # the tools only survive because every entry of `allowed` carries a "+".
+    for tool in ("context_engineer/context_engineer_list", "context_engineer/context_engineer_read",
+                 "context_engineer/context_engineer_store_fact", "context_engineer/context_engineer_compact"):
+        assert allows(agent, tool), tool
+
+
+def test_the_branch_runs_no_hook_that_has_nothing_to_do(config):
+    """A branch answers a coordinator and owns no manager.
+
+    Formatting for a screen and listing its own sub-agents are both a call per
+    step that cannot change its answer.
+    """
+    worker = get_mcp_config_by_name("research_worker", config)
+    overrides = getattr(worker.agent_config.hooks, "overrides", None) or {}
+    for hook in ("markdown_formatter.format_markdown_output",
+                 "research_sam.inject_sub_agent_context"):
+        entry = overrides.get(hook)
+        enabled = entry.get("enabled") if isinstance(entry, dict) else getattr(entry, "enabled", None)
+        assert enabled is False, f"{hook} still runs for a branch"
+    assert allows(worker, "context_engineer/context_engineer_read"),         "a branch reads long pages too -- removing the manager must not take this with it"
 
 
 def test_it_is_usable_from_the_ui_and_by_other_agents(agent):
