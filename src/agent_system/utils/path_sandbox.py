@@ -131,12 +131,17 @@ class PathSandbox:
                     f"Use an explicit path under: {self.describe_roots()}")
             full = (candidate if candidate.is_absolute() else self.base / candidate).resolve()
         except (OSError, ValueError) as exc:
-            # Catches more than a pattern list ever could: embedded null bytes
-            # (ValueError on every platform), plus reserved names and
+            # Embedded null bytes (ValueError on every platform) and
             # over-long paths on Windows. A separate null-byte check used to
             # live here and was measurably dead — the mutation "check removed"
             # stayed green because this branch produces the same refusal. Do
             # not add it back.
+            #
+            # NOT the Windows device names: measured 05.09.2026, `Path("CON")`
+            # and its siblings (PRN, AUX, COM1-9, LPT1-9) resolve without an
+            # error and land inside the roots, so a caller that needs them
+            # refused has to say so itself. `NUL` is the odd one out — it
+            # resolves to \\.\NUL, which then fails containment.
             raise PathSandboxDenied(f"Path cannot be resolved: {path} ({exc})") from exc
 
         if not any(full == root or root in full.parents for root in self.roots):

@@ -21,6 +21,7 @@ import random
 import re
 import socket
 import urllib.parse
+import uuid
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -74,8 +75,14 @@ _CHALLENGE_TITLES = ("just a moment", "attention required", "access denied",
                      "are you a robot", "verify you are human", "one more step")
 _CHALLENGE_MARKERS = ("cf-chl", "_cf_chl_opt", "challenge-platform", "captcha-delivery.com", "px-captcha")
 
-# Removed before text extraction: code, styling and page furniture.
-_NOISE_TAGS = ("script", "style", "noscript", "template", "svg", "iframe", "nav", "footer", "aside")
+# Removed before text extraction: code, styling and page furniture. NOT
+# `aside`: in HTML5 that means "tangentially related", which is where
+# documentation puts its note and warning callouts -- dropping it loses
+# content silently, and the reply still reads as a complete page.
+_NOISE_TAGS = ("script", "style", "noscript", "template", "svg", "iframe", "nav", "footer")
+# Stands in for a code block while the text is cleaned; the block comes back
+# verbatim afterwards. No page produces this by itself.
+_PRE_TOKEN = "␟"
 # Get a line break after these, so a paragraph is a paragraph and not one
 # word per inline tag.
 _BLOCK_TAGS = ("p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
@@ -90,6 +97,27 @@ class WebScraperSSRFError(Exception):
 
 class _DownloadTooLarge(Exception):
     pass
+
+
+class _TooManyRedirects(Exception):
+    """The chain never arrived anywhere."""
+
+
+def _number(params: dict[str, Any], key: str, default: float) -> float:
+    """A numeric argument, however the model spelled it.
+
+    The values reach this plugin from an LLM, so "8000", null and "lots" all
+    turn up. Raising here would bypass the tool's own error contract and the
+    status line with it, so an unusable value falls back to the default.
+    """
+    value = params.get(key, default)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logger.info("web_scraper: ignoring unusable %s=%r, using %s", key, value, default)
+        return default
 
 
 class WebScraperServer(SchemaBasedMCPServer):
@@ -157,7 +185,12 @@ class WebScraperServer(SchemaBasedMCPServer):
         if host.lower() in _BLOCKED_METADATA_HOSTS:
             raise WebScraperSSRFError(f"Blocked cloud-metadata host: {host}")
 
-        port = parsed.port or (443 if scheme == "https" else 80)
+        try:
+            port = parsed.port or (443 if scheme == "https" else 80)
+        except ValueError as e:
+            # urlparse defers this: `.port` is where "https://host:abc/" and
+            # an out-of-range number finally raise.
+            raise WebScraperSSRFError(f"Unusable port in URL: {e}")
         try:
             infos = await asyncio.get_running_loop().getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
         except socket.gaierror as e:
@@ -212,7 +245,11 @@ class WebScraperServer(SchemaBasedMCPServer):
             for hop in range(MAX_HOPS + 1):
                 await self._assert_url_safe(url)
                 resp = await client.get(url)
-                if resp.is_redirect and resp.headers.get("location") and hop < MAX_HOPS:
+                if resp.is_redirect and resp.headers.get("location"):
+                    if hop == MAX_HOPS:
+                        # Falling through here would hand the caller the last
+                        # 3xx stub as if it were the page.
+                        raise _TooManyRedirects(f"more than {MAX_HOPS} redirects from {target_url}")
                     url = urllib.parse.urljoin(url, resp.headers["location"])
                     continue
                 break
@@ -290,36 +327,59 @@ class WebScraperServer(SchemaBasedMCPServer):
                           "text": a.get_text(strip=True) or None, "rel": [r.lower() for r in rel]})
         tables = cls._extract_tables(soup)
         lists = cls._extract_lists(soup)
+
+        # Code blocks leave the pipeline before the whitespace pass and come
+        # back verbatim afterwards. Collapsing runs of spaces per line is
+        # right for prose and wrong for code: it strips the indentation, and
+        # a Python snippet from a documentation page arrives as something
+        # that no longer parses.
+        blocks: list[str] = []
+        for pre in soup.find_all("pre"):
+            pre.replace_with(f"{_PRE_TOKEN}{len(blocks)}{_PRE_TOKEN}")
+            blocks.append(pre.get_text())
+
         for tag in soup(_NOISE_TAGS):
             tag.decompose()
         for tag in soup.find_all(_BLOCK_TAGS):
             tag.append("\n")
         text = cls._clean_text(soup.get_text(" "))
+        for i, block in enumerate(blocks):
+            text = text.replace(f"{_PRE_TOKEN}{i}{_PRE_TOKEN}", "\n" + block.strip("\n") + "\n")
         return {"title": title, "text": text, "links": links, "tables": tables, "lists": lists}
 
     @staticmethod
     def _extract_tables(soup) -> list[dict[str, Any]]:
         tables = []
         for table in soup.find_all("table"):
-            rows = [[c.get_text(strip=True) for c in tr.find_all(["td", "th"])] for tr in table.find_all("tr")]
-            rows = [r for r in rows if any(r)]
-            if not rows:
+            trs = table.find_all("tr")
+            rows = [[c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])] for tr in trs]
+            keep = [(tr, r) for tr, r in zip(trs, rows) if any(r)]
+            if not keep:
                 continue
+            # A header is one that says so: a row inside <thead>, or a first
+            # row built from <th>. Taking the first row on faith turned a
+            # colspan title into the header and pushed the real one into the
+            # data, where nothing lines up with it any more.
+            first_tr, first_row = keep[0]
+            is_header = first_tr.find_parent("thead") is not None or bool(first_tr.find("th"))
             caption = table.find("caption")
-            tables.append({"caption": caption.get_text(strip=True) if caption else None,
-                           "headers": rows[0], "rows": rows[1:]})
+            tables.append({"caption": caption.get_text(" ", strip=True) if caption else None,
+                           "headers": first_row if is_header else [],
+                           "rows": [r for _, r in keep[1:]] if is_header else [r for _, r in keep]})
         return tables
 
     @staticmethod
     def _extract_lists(soup) -> list[dict[str, Any]]:
         lists = []
         for elem in soup.find_all(["ul", "ol", "dl"]):
+            # A separator, because an item that contains a nested list would
+            # otherwise arrive as one run-on word: "FruitsAppleBanana".
             if elem.name == "dl":
-                items = [{"term": dt.get_text(strip=True),
-                          "definition": (dd.get_text(strip=True) if (dd := dt.find_next_sibling("dd")) else "")}
+                items = [{"term": dt.get_text(" ", strip=True),
+                          "definition": (dd.get_text(" ", strip=True) if (dd := dt.find_next_sibling("dd")) else "")}
                          for dt in elem.find_all("dt")]
             else:
-                items = [li.get_text(strip=True) for li in elem.find_all("li", recursive=False)]
+                items = [li.get_text(" ", strip=True) for li in elem.find_all("li", recursive=False)]
             if items:
                 lists.append({"type": elem.name, "items": items})
         return lists
@@ -363,12 +423,12 @@ class WebScraperServer(SchemaBasedMCPServer):
             await status.progress(f"Fetching {url[:80]}")
             try:
                 html, code, final_url, content_type = await self._fetch_with_retry(
-                    url, self._user_agent(), float(params.get("timeout", 20)), params=params)
+                    url, self._user_agent(), _number(params, "timeout", 20), params=params)
             except WebScraperSSRFError as e:
                 logger.warning("web_scraper blocked SSRF redirect for %r: %s", url, e)
                 await status.error(f"Blocked redirect: {e}")
                 return {"url": url, "error": f"Blocked URL (SSRF protection): {e}"}
-            except httpx.HTTPError as e:
+            except (httpx.HTTPError, httpx.InvalidURL, _TooManyRedirects) as e:
                 await status.error(f"Fetch failed: {type(e).__name__} -- {url[:60]}")
                 return {"url": url, "error": f"Fetch failed: {type(e).__name__}: {e}"}
 
@@ -388,7 +448,9 @@ class WebScraperServer(SchemaBasedMCPServer):
             page = {"url": url, "final_url": final_url, "status_code": code,
                     "content_type": content_type, **self._extract(html, final_url)}
             if self.cache_enabled:
-                await self.cache.set(key, page, ttl=params.get("cache_ttl"))
+                # 0 (absent, or a value the model made up) means: the
+                # instance's configured lifetime.
+                await self.cache.set(key, page, ttl=int(_number(params, "cache_ttl", 0)) or None)
 
         code = page.get("status_code")
         where = f"{'(cached) ' if cached else ''}HTTP {code} -- {url[:60]}"
@@ -399,15 +461,15 @@ class WebScraperServer(SchemaBasedMCPServer):
             if params.get("only_same_domain", False):
                 domain = urllib.parse.urlparse(page["final_url"]).netloc
                 links = [l for l in links if urllib.parse.urlparse(l["abs_url"]).netloc == domain]
-            max_links = int(params.get("max_links", 0))
+            max_links = int(_number(params, "max_links", 0))
             if max_links > 0:
                 links = links[:max_links]
             await status.end(f"{len(links)} link(s) {where}", meta={"link_count": len(links)})
             return {"url": url, "final_url": page["final_url"], "status_code": code, "links": links}
 
         text = page["text"]
-        offset = max(0, int(params.get("offset", 0)))
-        max_chars = int(params.get("max_chars", 8000))
+        offset = max(0, int(_number(params, "offset", 0)))
+        max_chars = int(_number(params, "max_chars", 8000))
         piece = text[offset:offset + max_chars] if max_chars > 0 else text[offset:]
         truncated = offset + len(piece) < len(text)
         result = {"url": url, "final_url": page["final_url"], "status_code": code,
@@ -447,18 +509,21 @@ class WebScraperServer(SchemaBasedMCPServer):
             return {"url": url, "error": f"Blocked URL (SSRF protection): {e}"}
 
         limit = int(self.max_download_mb * 1024 * 1024)
-        part = target.with_name(target.name + ".part")
+        part = target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.part")
         digest = hashlib.sha256()
         written = 0
         await status.progress(f"Downloading {url[:80]}")
         try:
-            async with self._client(url, self._user_agent(), float(params.get("timeout", 60)),
+            async with self._client(url, self._user_agent(), _number(params, "timeout", 60),
                                     params.get("_session_id")) as client:
                 current = url
                 for hop in range(MAX_HOPS + 1):
                     await self._assert_url_safe(current)
                     async with client.stream("GET", current) as resp:
-                        if resp.is_redirect and resp.headers.get("location") and hop < MAX_HOPS:
+                        if resp.is_redirect and resp.headers.get("location"):
+                            if hop == MAX_HOPS:
+                                raise _TooManyRedirects(
+                                    f"more than {MAX_HOPS} redirects from {url}")
                             current = urllib.parse.urljoin(current, resp.headers["location"])
                             continue
                         if resp.status_code >= 400:
@@ -478,18 +543,24 @@ class WebScraperServer(SchemaBasedMCPServer):
                         content_type = (resp.headers.get("content-type") or "").split(";")[0].strip()
                         final_url, code = str(resp.url), resp.status_code
                         break
-                else:  # pragma: no cover - the loop always breaks or raises
-                    raise AssertionError("unreachable")
             os.replace(part, target)
         except WebScraperSSRFError as e:
             await status.error(f"Blocked redirect: {e}")
             return {"url": url, "error": f"Blocked URL (SSRF protection): {e}"}
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, _TooManyRedirects) as e:
             await status.error(f"Download failed: {type(e).__name__} -- {url[:60]}")
             return {"url": url, "error": f"Download failed: {type(e).__name__}: {e}"}
         except _DownloadTooLarge:
             await status.error(f"larger than {self.max_download_mb:g} MB -- {url[:60]}")
             return {"url": url, "error": f"Download exceeds max_download_mb ({self.max_download_mb:g} MB)"}
+        except httpx.InvalidURL as e:
+            await status.error(f"Unusable URL -- {url[:60]}")
+            return {"url": url, "error": f"Unusable URL: {e}"}
+        except OSError as e:
+            # mkdir onto an existing file, a name the filesystem refuses, a
+            # full disk. The bytes are gone either way; say so as a result.
+            await status.error(f"Cannot write {target.name}: {type(e).__name__}")
+            return {"url": url, "error": f"Cannot write {path}: {type(e).__name__}: {e}"}
         finally:
             if part.exists():
                 part.unlink()

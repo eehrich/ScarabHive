@@ -495,3 +495,142 @@ async def test_the_configured_user_agent_is_used_for_downloads_too(downloader, t
         await call(downloader, "web_scraper_download", url="https://example.com/f",
                    path=str(tmp_path / "dl" / "f.txt"))
     assert seen["ua"] == "ScarabHive-research/1.0 (contact@example.com)"
+
+
+# ── what an LLM actually sends ─────────────────────────────────────────────
+
+@pytest.mark.parametrize("bad", [
+    {"max_chars": "lots"}, {"max_chars": None}, {"offset": "nope"}, {"offset": None},
+    {"timeout": "soon"}, {"max_links": "all"}, {"cache_ttl": "an hour"},
+])
+async def test_an_unusable_number_falls_back_instead_of_raising(server, bad):
+    """These arrive from a model, so "8000", null and "lots" all turn up.
+    Raising here would bypass the tool's own error contract and its status
+    line; the page still has to come back."""
+    with mock_httpx():
+        result, status = await call(server, "web_scraper_page", url="https://example.com/", **bad)
+    assert result["title"] == "Copper (Amiga)"
+    assert result["total_chars"] > 0
+    status.end.assert_awaited_once()
+
+
+@pytest.mark.parametrize("url", ["https://example.com:abc/", "https://example.com:99999999/"])
+async def test_a_port_that_is_not_a_number_is_refused_as_a_result(server, url):
+    """urlparse defers this: `.port` is where it finally raises, inside the
+    SSRF guard, past every except clause the tool had."""
+    result, status = await call(server, "web_scraper_page", url=url)
+    assert "error" in result and "port" in result["error"].lower()
+    status.error.assert_awaited()
+
+
+async def test_an_endless_redirect_chain_is_an_error_not_the_last_stub(server):
+    """Falling out of the hop loop handed the caller the final 3xx response
+    as if it were the page -- with its body, which many redirect stubs have."""
+    resp = MagicMock()
+    resp.is_redirect = True
+    resp.headers = {"location": "/next", "content-type": "text/html"}
+    resp.status_code = 302
+    resp.text = "<html><title>Redirecting</title><body>Moved</body></html>"
+    resp.url = "https://example.com/loop"
+
+    async def fake_get(url, *a, **k):
+        return resp
+
+    client = AsyncMock()
+    client.get = fake_get
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with no_ssrf_check(), patch.object(httpx, "AsyncClient", return_value=client), \
+         patch("asyncio.sleep", new_callable=AsyncMock):
+        result, status = await call(server, "web_scraper_page", url="https://example.com/loop")
+    assert "TooManyRedirects" in result["error"]
+    assert "text" not in result
+    status.error.assert_awaited()
+
+
+async def test_two_downloads_of_the_same_path_do_not_share_a_staging_file(downloader, tmp_path):
+    """A deterministic `.part` name is one file for both: one loses its bytes,
+    the other trips over the open handle."""
+    import asyncio as _asyncio
+
+    async def body():
+        for _ in range(3):
+            await _asyncio.sleep(0)
+            yield b"z" * 10
+
+    def handler(request):
+        return httpx.Response(200, content=body(), headers={"content-type": "text/plain"})
+
+    target = tmp_path / "dl" / "same.bin"
+    with no_ssrf_check(), transport(handler):
+        results = await _asyncio.gather(
+            call(downloader, "web_scraper_download", url="https://example.com/a", path=str(target)),
+            call(downloader, "web_scraper_download", url="https://example.com/a", path=str(target),
+                 overwrite=True),
+            return_exceptions=True)
+    assert not any(isinstance(r, BaseException) for r in results), results
+    assert target.read_bytes() == b"z" * 30
+    assert not list((tmp_path / "dl").glob("*.part")), "a staging file survived"
+
+
+async def test_a_path_whose_parent_is_a_file_is_an_error_not_a_raise(downloader, tmp_path):
+    blocker = tmp_path / "dl" / "blocker"
+    blocker.parent.mkdir()
+    blocker.write_text("i am a file")
+    with no_ssrf_check(), transport(serve()):
+        result, status = await call(downloader, "web_scraper_download",
+                                    url="https://example.com/x", path=str(blocker / "nested" / "f.pdf"))
+    assert "Cannot write" in result["error"]
+    status.error.assert_awaited()
+
+
+# ── extraction fidelity ────────────────────────────────────────────────────
+
+async def test_an_aside_is_content_not_furniture(server):
+    """HTML5 `aside` means "tangentially related", which is where
+    documentation puts its note and warning callouts."""
+    html = ("<html><head><title>T</title></head><body>"
+            "<aside><h1>Important Notice</h1><p>The kernel panics on boot.</p></aside>"
+            "<p>Normal.</p></body></html>")
+    with mock_httpx(html=html):
+        result, _ = await call(server, "web_scraper_page", url="https://example.com/")
+    assert "The kernel panics on boot." in result["text"]
+    assert "Important Notice" in result["text"]
+
+
+async def test_a_code_block_keeps_its_indentation(server):
+    """Collapsing runs of spaces is right for prose and wrong for code: a
+    Python snippet from a documentation page arrived as something that no
+    longer parses -- and reading documentation is what this tool is for."""
+    html = ("<html><body><p>Example:</p><pre><code>def foo():\n"
+            "    if True:\n        return 1\n    return 2\n</code></pre></body></html>")
+    with mock_httpx(html=html):
+        result, _ = await call(server, "web_scraper_page", url="https://example.com/")
+    assert "def foo():\n    if True:\n        return 1\n    return 2" in result["text"]
+
+
+def test_a_nested_list_item_does_not_run_its_children_together(server):
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup("<ul><li>Fruits<ul><li>Apple</li><li>Banana</li></ul></li></ul>", "lxml")
+    outer = server._extract_lists(soup)[0]["items"][0]
+    assert "FruitsAppleBanana" not in outer
+    assert outer.split() == ["Fruits", "Apple", "Banana"]
+
+
+def test_a_header_row_has_to_say_it_is_one(server):
+    """Taking the first row on faith made a colspan title the header and
+    pushed the real one into the data, where nothing lines up any more."""
+    from bs4 import BeautifulSoup
+    titled = BeautifulSoup(
+        '<table><tr><td colspan="2">Merged Header</td></tr>'
+        "<tr><th>Name</th><th>Symbol</th></tr><tr><td>Hydrogen</td><td>H</td></tr></table>", "lxml")
+    table = server._extract_tables(titled)[0]
+    assert table["headers"] == []
+    assert ["Name", "Symbol"] in table["rows"] and ["Hydrogen", "H"] in table["rows"]
+
+    proper = BeautifulSoup(
+        "<table><thead><tr><td>Name</td><td>Symbol</td></tr></thead>"
+        "<tbody><tr><td>Hydrogen</td><td>H</td></tr></tbody></table>", "lxml")
+    assert server._extract_tables(proper)[0] == {
+        "caption": None, "headers": ["Name", "Symbol"], "rows": [["Hydrogen", "H"]]}
