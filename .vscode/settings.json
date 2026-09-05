@@ -15,8 +15,12 @@
       "config/config.yaml"
     ],
     "./schemas/plugins-config.schema.json": [
-      "config/plugins.yaml",
-      "config/agents/*.yaml"
+      "config/plugins.yaml"
+    ],
+    "./schemas/config-part.schema.json": [
+      "config/agents/*.yaml",
+      "config/mcp_servers.yaml",
+      "src/plugins*/*/agents/*.yaml"
     ]
   },
   "yaml.customTags": [

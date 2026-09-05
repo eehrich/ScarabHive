@@ -11,6 +11,19 @@ tote Keys leuchten direkt im Editor auf.
 | `llm-config.schema.json` | `config/llm.yaml` | `LLMSystemConfig` |
 | `main-config.schema.json` | `config/config.yaml` (vor Include-Merge) | `AgentSystemConfig` |
 | `plugins-config.schema.json` | `config/plugins.yaml` | `PluginsConfig` + `hooks/config.py::HooksConfig` |
+| `config-part.schema.json` | jede über `includes:` gezogene Datei: `config/agents/*.yaml`, `config/mcp_servers.yaml`, die ~85 `src/plugins*/*/agents/*.yaml` | `AgentSystemConfig`, auf die drei gemergten Sektionen beschränkt |
+
+Warum die Agent-Dateien nicht das Plugins-Schema bekommen: aus einer
+eingebundenen Datei hebt `settings.py` nur `llm_system`, `plugins` und
+`external_servers` heraus — alles andere fällt still weg. `hooks:` gehört
+dazu: `HooksConfig` liest es direkt aus `config/plugins.yaml` und aus keiner
+anderen Datei. Im Plugins-Schema wäre es erlaubt, in einer Agent-Datei wäre
+es tot.
+
+**Grenze:** `MCPConfig` ist `extra="allow"` (die plugin-eigenen Keys wie
+`max_nesting_depth` oder `allowed_agents` leben dort), deshalb bleibt ein
+Tippfehler direkt unter einem Server-Eintrag unbemerkt. Innerhalb von
+`agent_config:` greift die Strictness.
 
 Diese drei werden **generiert** — die Modelle in
 `src/agent_system/config/models.py` sind die einzige Quelle. Nach jeder

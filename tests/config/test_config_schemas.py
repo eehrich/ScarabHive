@@ -32,6 +32,7 @@ CONFIGS = {
     "llm-config.schema.json": ("config/llm.yaml", ("llm_system", "models")),
     "main-config.schema.json": ("config/config.yaml", ("network",)),
     "plugins-config.schema.json": ("config/plugins.yaml", ("plugins",)),
+    "config-part.schema.json": ("config/agents/agents.yaml", ("plugins",)),
 }
 
 
@@ -110,6 +111,43 @@ def test_vscode_yaml_mappings_point_at_real_files():
         for target in targets:
             assert list(REPO_ROOT.glob(target)), (
                 f"mapping target {target!r} matches no file")
+
+
+def test_every_config_part_the_editor_maps_validates():
+    """The agent files are where config is actually typed, and the editor now
+    validates all hundred of them. A schema that flags a VALID one is worse
+    than no schema: the squiggle gets ignored, and with it the real ones."""
+    settings = json.loads(
+        (REPO_ROOT / ".vscode" / "settings.json").read_text(encoding="utf-8"))
+    targets = settings["yaml.schemas"]["./schemas/config-part.schema.json"]
+    validator = Draft202012Validator(_schema_from_file("config-part.schema.json"))
+    checked, errors = 0, []
+    for target in targets:
+        for path in REPO_ROOT.glob(target):
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not data:
+                continue
+            checked += 1
+            errors += [f"{path.relative_to(REPO_ROOT)} -> "
+                       f"{'/'.join(map(str, e.absolute_path))}: {e.message}"
+                       for e in validator.iter_errors(data)]
+    assert checked > 50, f"fixture assertion: only {checked} part files found"
+    assert errors == [], "\n".join(errors[:10])
+
+
+def test_a_part_file_may_not_carry_a_section_the_loader_drops():
+    """settings.py lifts llm_system, plugins and external_servers out of an
+    included file and drops the rest silently. `hooks:` is the trap: valid in
+    config/plugins.yaml, which HooksConfig reads by path, and dead anywhere
+    else -- which is why a part gets its own schema instead of the plugins one.
+    """
+    data = yaml.safe_load(
+        (REPO_ROOT / "config/agents/agents.yaml").read_text(encoding="utf-8"))
+    data["hooks"] = {"enabled": True}
+    validator = Draft202012Validator(_schema_from_file("config-part.schema.json"))
+    assert list(validator.iter_errors(data)), (
+        "a hooks: section in an included part validated cleanly — the editor "
+        "would confirm a section nothing reads")
 
 
 def test_schema_registry_covers_all_derived_schema_files():

@@ -223,11 +223,53 @@ def build_plugins_schema() -> dict:
     }
 
 
+#: Sections settings.py lifts out of an included file. Everything else in a
+#: part is dropped without a word — `hooks:` included, which HooksConfig reads
+#: straight out of config/plugins.yaml and nowhere else.
+_MERGED_PART_SECTIONS = ("llm_system", "plugins", "external_servers")
+
+
+def build_config_part_schema() -> dict:
+    """Schema for an included config file (config/config.yaml -> ``includes:``).
+
+    That is where the agents live: config/agents/*.yaml and the 85 files under
+    src/plugins*/*/agents/. A part carries any of the three merged sections,
+    none of them required — an agent file has ``plugins:``, mcp_servers.yaml
+    has ``external_servers:``, llm_openrouter.yaml has ``llm_system:``.
+
+    Deliberately NOT the plugins schema: that one permits ``hooks:``, which
+    only config/plugins.yaml is read for. In a part it would look right and do
+    nothing.
+    """
+    from agent_system.config.models import AgentSystemConfig
+
+    schema = AgentSystemConfig.model_json_schema()
+    _forbid_unknown_keys(schema)
+    defs = _hoist_defs(schema)
+    _add_model_inheritance(schema, defs)
+
+    properties = {name: schema["properties"][name] for name in _MERGED_PART_SECTIONS}
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Config Part Schema",
+        "description": (
+            "JSON Schema for a config file pulled in by config/config.yaml's "
+            "includes: (agent configs, mcp_servers.yaml). Only llm_system, "
+            "plugins and external_servers are merged out of it. " + _GENERATED_NOTE
+        ),
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "$defs": defs,
+    }
+
+
 #: filename -> builder; the anti-drift test iterates this same registry.
 SCHEMAS: Dict[str, Callable[[], dict]] = {
     "llm-config.schema.json": build_llm_schema,
     "main-config.schema.json": build_main_schema,
     "plugins-config.schema.json": build_plugins_schema,
+    "config-part.schema.json": build_config_part_schema,
 }
 
 
