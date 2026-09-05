@@ -69,13 +69,34 @@ agent-cli run --image screenshot.png "What's in this image?"
 ### Options
 
 ```bash
---agent TEXT               Agent name to use (plugin or config-based)
---llm TEXT                LLM profile to use (overrides agent's default)
---image PATH              Path to image file for vision models
---max-steps INTEGER       Maximum reasoning steps (overrides agent config)
---no-status               Disable status event streaming
---raw                     Output raw JSON instead of human-readable
+--agent TEXT                    Agent name to use (plugin or config-based)
+--llm TEXT                      LLM profile to use (overrides agent's default)
+--llm-params KEY=VALUE ...      Override LLM parameters for this run, e.g.
+                                thinking_level=max max_tokens=16384
+--images PATH ... (--attach)    Image file(s) to attach
+--audio PATH ...                Audio file(s) to attach
+--text PATH ... (--files)       Text file(s) to attach
+--max-steps N                   Step budget for this run (overrides the
+                                agent's max_steps; this process only)
+--session ID                    Continue an existing session
+--session-title TEXT            Title for the new session
+--list-sessions                 List this user's sessions
+--vars KEY=VALUE ...            Template variables for the agent's prompt
 ```
+
+These are global and come BEFORE the subcommand:
+
+```bash
+--no-status                     Disable status event streaming
+--raw                           Output raw JSON instead of human-readable
+--color auto|always|never|ansi|html|text
+--config PATH                   Path to config
+```
+
+`--max-steps` changes the budget for THIS process only — nothing is written to
+the YAML, and the agent keeps its configured value everywhere else. Without
+the flag the budget comes from `max_steps` in the agent's YAML, as before.
+It works on `chat` too, which shares the resolved agent.
 
 ### Examples
 
@@ -86,12 +107,12 @@ agent-cli run "What time is it in Tokyo?"
 # Use specialized config agent
 agent-cli run code_reviewer "Review this PR: https://github.com/..."
 
-# Override settings for specific task
-agent-cli run --agent web_research_agent --llm think --max-steps 30 \
-  "Research the latest AI developments in 2025"
+# Override the agent and its model for one task
+agent-cli run --agent research_agent --llm or-gpt-full \
+  "Research the latest AI developments in 2026"
 
 # Vision task with image
-agent-cli run --image diagram.png "Explain this architecture diagram"
+agent-cli run --images diagram.png "Explain this architecture diagram"
 
 # Machine-readable output for scripting
 agent-cli run --raw "List top 3 tech stocks" | jq '.result'
@@ -153,8 +174,14 @@ parser — `/sessions`, `/resume`, `/tools`, `/costs`, `/history` and `/last`
 answer from the API (`/agents/<name>/tools`, `/api/sessions`, the usage
 tracker) instead of from the local agent. Two are terminal-only by nature:
 `/exit` (no terminal to leave) and `/attach` (the browser has its own upload
-button). Plugin commands are terminal-only for now — the browser reports them
-as unknown.
+button).
+
+Plugin commands work there as well, and stay per-agent: the browser asks
+`/chat/commands?agent=<name>` for the list and `POST /chat/command` runs one.
+Both resolve the command against what THAT agent may dispatch, so the browser
+names a command and never a tool — a command whose tool the agent may not call
+does not exist for it, exactly as in the terminal. Switching the agent in the
+selector re-fetches the list.
 
 **Multi-line input.** A plain Enter sends the message, so pasting a block
 needs one of:
@@ -315,12 +342,10 @@ agent-cli plugins list --format json | jq '.[] | select(.enabled)'
 |----------------------------|---------|--------------------------------------------------------------------------|---------|
 | basic_agent                | YES     | Basic agent plugin providing agent execution capabilities as MCP tools   | 1.0.0   |
 | ├─ basic_agent             | YES     |                                                                          |         |
-| ├─ meta_agent              | YES     | Meta Agent for orchestrating other agents and managing complex tasks     |         |
+| ├─ research_agent          | YES     | Web research with cited sources: searches, reads the pages that matt... |         |
 | ├─ financial_analyst_agent | YES     | Professional financial analyst for stock market analysis, fundamental... |         |
 | ├─ sysadmin_agent          | YES     | System Administrator who has ssh access to different servers             |         |
-| web_research_agent         | YES     | Specialized web research agent combining DuckDuckGo search with web s... | 0.1.0   |
-| ├─ web_research_agent      | YES     |                                                                          |         |
-| ├─ meta_web_research_agent | YES     | Meta Web Research Agent for advanced web scraping and research tasks     |         |
+| duckduckgo_search          | YES     | DuckDuckGo web search (ddgs package) -- search without an account        | 0.2.0   |
 | llm_router                 | YES     | Route requests to different LLM providers for specialized tasks or al... | 1.0.0   |
 | web_scraper                | YES     | Fetch and extract readable text and structured data (tables/forms/li... | 0.1.0   |
 ```
@@ -347,9 +372,9 @@ agent-cli plugins list --format json | jq '.[] | select(.enabled)'
         "description": ""
       },
       {
-        "instance_name": "meta_agent",
+        "instance_name": "research_agent",
         "enabled": true,
-        "description": "Meta Agent for orchestrating other agents..."
+        "description": "Web research with cited sources: searches, reads..."
       }
     ]
   }
@@ -680,8 +705,8 @@ Use command-line options to adjust behavior without changing config:
 # Quick task with faster model
 agent-cli run --llm turbo "Quick summary of..."
 
-# Complex task with more steps
-agent-cli run --max-steps 50 "Comprehensive research on..."
+# More thinking for one hard task
+agent-cli run --llm-params thinking_level=max "Comprehensive research on..."
 ```
 
 ### 3. Script with JSON Output

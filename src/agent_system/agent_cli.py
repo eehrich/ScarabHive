@@ -609,6 +609,9 @@ def main() -> None:
         p.add_argument("--llm-params", dest="llm_params", nargs="+", metavar="KEY=VALUE",
                        help="Override LLM parameters for this run (e.g. --llm-params thinking_level=max max_tokens=16384). "
                             "Values are auto-typed (int/float/bool/none); applies to the --llm profile or the agent's default profile.")
+        p.add_argument("--max-steps", dest="max_steps", type=int, metavar="N",
+                       help="Step budget for this run, overriding the agent's max_steps. "
+                            "Only for this process -- nothing is written to the YAML.")
         p.add_argument("--session", dest="session_id", help="Continue an existing session by ID")
         p.add_argument("--session-user", dest="session_user", default="cli_user", help="User ID for session storage (default: cli_user)")
         p.add_argument("--session-title", dest="session_title", help="Title for the new session (auto-generated from task if not provided)")
@@ -771,6 +774,12 @@ def main() -> None:
     if not getattr(args, "subcommand", None):
         parser.print_help()
         return
+
+    # Checked HERE, where arguments are checked -- not where the override is
+    # applied. That sits behind the bootstrap, and answering a typo with an
+    # error message fifteen seconds later is the wrong place to learn it.
+    if getattr(args, "max_steps", None) is not None and args.max_steps < 1:
+        parser.error("--max-steps must be at least 1")
 
     def vprint(msg: str) -> None:
         if args.verbose:
@@ -1375,6 +1384,19 @@ def main() -> None:
     if agent is None:
         agent = _build_entry_agent(entry_name, config, registry, session_service)
         vprint(f"[cli] created agent: {entry_name}")
+
+    # --max-steps: the budget for THIS process, not a config change.
+    #
+    # Copied onto the instance rather than threaded through the run: both
+    # readers take it from agent_config (server.py's run loop and the final
+    # answer), and the copy keeps the loaded config untouched. Safe here in a
+    # way it would not be in the API, where one agent instance serves every
+    # request -- which is why /run has no such override.
+    max_steps_override = getattr(args, "max_steps", None)
+    if max_steps_override is not None:
+        agent.agent_config = agent.agent_config.model_copy(
+            update={"max_steps": max_steps_override})
+        vprint(f"[cli] max_steps override: {max_steps_override}")
 
     # Process multimodal attachments (images, audio, text files)
     task_input: Union[str, ChatMessage] = args.task
