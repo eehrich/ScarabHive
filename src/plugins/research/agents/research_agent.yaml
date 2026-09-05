@@ -36,6 +36,12 @@ plugins:
 
         system_template: "./prompts/research_agent.md"
 
+        template_vars:
+          # Renders the branching section of the prompt. research_worker
+          # shares this file and leaves the flag unset, so it is never told
+          # to use a tool it does not have.
+          can_fork: true
+
         skills:
           always: ["web-research"]
           on_demand: []

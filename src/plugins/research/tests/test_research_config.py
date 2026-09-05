@@ -72,7 +72,10 @@ def test_the_prompt_is_a_file_next_to_the_agent(agent):
 def test_every_tool_the_prompt_names_is_one_the_agent_may_call(agent, config):
     """The prompt tells the agent which tool to search and read with. A name
     that does not render is an instruction to do the impossible."""
+    # The skill is appended to the prompt verbatim, so it instructs the model
+    # exactly as the template does and belongs in the same check.
     body = Path(agent.agent_config.system_template).read_text(encoding="utf-8")
+    body += (PLUGIN / "skills" / SKILL / "SKILL.md").read_text(encoding="utf-8")
     names = set(re.findall(r"\b([a-z_]+_(?:web_search|extract|page|download|manage_sub_agent))\b", body))
     assert names, "the prompt names no tool at all"
     servers = config.plugins.servers
@@ -118,16 +121,65 @@ def test_it_is_usable_from_the_ui_and_by_other_agents(agent):
     assert agent.metadata.visibility == "both"
 
 
-def test_it_can_fork_itself_for_a_wide_question_but_only_one_level_deep(agent, config):
-    """Parallel sub-researchers are for wide questions. The manager spawns
-    only this agent, and a fork cannot fork again -- otherwise one wide
-    question becomes a tree of searches."""
+def test_a_branch_cannot_branch_because_it_owns_no_manager(config):
+    """The property that bounds the cost, and the reason it is a tool list
+    and not a depth cap: `depth` is absolute over the whole session tree, so
+    no single cap can both allow research_agent to branch when it is itself a
+    sub-agent and stop a branch from branching when it is not."""
     sam = get_mcp_config_by_name("research_sam", config)
     assert sam is not None and sam.enabled
-    assert getattr(sam, "allowed_agents") == ["research_agent"]
-    assert getattr(sam, "max_nesting_depth") == 2
-    assert getattr(sam, "max_sub_agents_per_type") <= 4, "four parallel forks is the width cap"
-    assert allows(agent, "research_sam/research_sam_manage_sub_agent")
+    assert getattr(sam, "allowed_agents") == ["research_worker"]
+    assert getattr(sam, "max_sub_agents_per_type") <= 4, "four parallel branches is the width cap"
+
+    worker = get_mcp_config_by_name("research_worker", config)
+    assert worker is not None and worker.enabled
+    for pattern in worker.agent_config.tools.allowed:
+        assert "sam" not in pattern and "sub_agent" not in pattern, \
+            f"a branch must not reach a sub-agent manager, but it may call {pattern}"
+
+
+async def test_the_agent_can_still_branch_when_it_is_itself_a_sub_agent(config):
+    """Driven through the real SubAgentManager, because this is exactly what
+    a static config assertion cannot see: a research_agent spawned by another
+    coordinator starts at depth 2, and a manager capped at 2 would refuse its
+    every branch -- deterministically, for the invocation mode the README
+    advertises."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from plugins.sub_agent_manager.manager import SubAgentManager
+
+    sam = get_mcp_config_by_name("research_sam", config)
+    service = MagicMock()
+    service.session_manager = MagicMock()
+    service.session_manager.create_session = AsyncMock()
+    service.session_manager.load_session = AsyncMock(
+        return_value={"session_id": "nested", "depth": 2, "metadata": {}})
+    service.session_manager.save_session = AsyncMock()
+    service.session_manager.update_session_metadata = AsyncMock()
+    service.session_manager._session_id_exists_globally = MagicMock(return_value=False)
+
+    manager = SubAgentManager(service, MagicMock(),
+                              max_nesting_depth=int(getattr(sam, "max_nesting_depth")),
+                              max_sub_agents_per_type=int(getattr(sam, "max_sub_agents_per_type")))
+    sub_id = await manager.create_sub_session(
+        parent_session_id="nested", agent_type="research_worker",
+        initial_message="Does aiohttp support HTTP/2?")
+    assert sub_id.startswith("sub_research_worker_")
+
+
+def test_the_branch_is_told_to_branch_only_when_it_can(config):
+    """One prompt file serves both agents. The branching section may only
+    reach the one that has the tool -- an instruction to call something that
+    is not there costs a step and reads as a broken tool."""
+    for name, expected in (("research_agent", True), ("research_worker", False)):
+        cfg = get_mcp_config_by_name(name, config)
+        ctx = PromptContext(agent_name=name, agent_config=cfg.agent_config,
+                            system_config=config, available_tools=[], max_steps=10,
+                            current_step=0, agent_instance=object())
+        rendered, _ = PromptRenderer().render(ctx)
+        assert ("research_sam_manage_sub_agent" in rendered) is expected, name
+        assert "You are a web research agent" in rendered, name
+        assert "# Web research" in rendered, f"{name} lost the skill"
 
 
 # ── where it is spawned ───────────────────────────────────────────────────
@@ -152,7 +204,10 @@ def test_the_predecessors_are_gone_from_every_config_and_agent_prompt():
         if path.suffix in (".yaml", ".yml"):
             return [line.split("#", 1)[0] for line in text.splitlines()]
         if path.suffix == ".md":
-            return text.splitlines() if "prompts" in path.parts else []
+            # A SKILL.md reaches the model verbatim, exactly like a prompt.
+            # Only READMEs and design docs may tell the history.
+            model_facing = "prompts" in path.parts or path.name == "SKILL.md"
+            return text.splitlines() if model_facing else []
         return text.splitlines()
 
     hits = []

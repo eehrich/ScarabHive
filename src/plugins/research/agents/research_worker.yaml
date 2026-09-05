@@ -1,0 +1,25 @@
+# The branch of a wide question: research_agent minus its sub-agent manager.
+#
+# That subtraction is the whole design. A branch that cannot reach a manager
+# cannot start branches of its own, wherever in a session tree it runs. The
+# alternative -- capping research_sam's nesting depth -- cannot express it:
+# `depth` counts from the root of the whole tree, so a cap low enough to stop
+# a branch from branching also forbids research_agent's every branch as soon
+# as it is itself somebody's sub-agent.
+plugins:
+  servers:
+
+    research_worker:
+      type: research_agent
+      enabled: true
+      description: "One part of a wide research question: searches, reads, answers with sources"
+
+      agent_config:
+        max_steps: 25              # one part of a question, not the whole thing
+        tools:
+          allowed: ["!research_sam/*"]
+        template_vars:
+          can_fork: false          # drops the branching section of the prompt
+
+      metadata:
+        visibility: "tool"         # a role inside the harness, not a UI entry

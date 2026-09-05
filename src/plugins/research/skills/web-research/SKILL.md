@@ -71,20 +71,22 @@ find more credible and why. Do not average them into a claim nobody made.
 
 ## 6. Widen in parallel only when the question is wide
 
-Forking sub-researchers costs a full prompt per fork and a round of
-coordination. It pays when the question has **independent parts that each
-need their own searching**: "compare A, B and C on price, licence and
-maturity", "verify these four claims", "what do the Godot, Unity and Bevy docs
-each say about X". It does not pay for one fact, one page, or parts that
-depend on each other.
+This step applies only if a sub-researcher tool is listed for you. If none is,
+you are already one branch of a wider question: do your part and answer.
 
-When you fork:
-- One part per sub-researcher, phrased as a complete question with what
-  counts as an answer and the date that matters. It has none of your context.
-- Two to four forks. More is not wider, only slower to merge.
-- Create all with `blocking=false`, then a single `wait_all`, then merge:
-  their sources become your sources, attributed per part. Where two
-  sub-answers disagree, that is a finding to report, not to smooth over.
+Branching costs a full prompt per branch and a round of coordination. It pays
+when the question has **independent parts that each need their own
+searching**: "compare A, B and C on price, licence and maturity", "verify
+these four claims", "what do the Godot, Unity and Bevy docs each say about X".
+It does not pay for one fact, one page, or parts that depend on each other.
+
+When you branch:
+- One part per branch, phrased as a complete question with what counts as an
+  answer and the date that matters. It has none of your context.
+- Two to four branches. More is not wider, only slower to merge.
+- Start them all without blocking, then wait for them once, then merge: their
+  sources become your sources, attributed per part. Where two answers
+  disagree, that is a finding to report, not to smooth over.
 
 ## 7. Know when to stop
 

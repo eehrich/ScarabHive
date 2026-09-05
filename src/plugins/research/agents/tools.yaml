@@ -14,12 +14,17 @@ plugins:
       type: sub_agent_manager
       enabled: true
       description: "research: parallel sub-researchers for a question with independent parts"
-      # Two levels and no more: research_agent -> sub-researcher, and there it
-      # ends. A sub-researcher that could fork again would turn one wide
-      # question into a tree of searches nobody asked for.
-      max_nesting_depth: 2
-      # Each sub-researcher carries the full prompt and skill; four in
-      # parallel is the widest a question needs, and it caps the cost.
+      # It spawns research_worker, which owns no manager -- so a branch cannot
+      # branch again, and that holds by construction rather than by a counter.
+      #
+      # This depth is therefore only an outer bound, and it is the framework
+      # default on purpose: `depth` is absolute over the whole session tree,
+      # so a low cap here would forbid forking exactly when research_agent is
+      # ITSELF a sub-agent (it starts at depth 2 then) -- the case the README
+      # advertises.
+      max_nesting_depth: 5
+      # Each branch carries the full prompt and skill; four in parallel is the
+      # widest a question needs, and it caps the cost.
       max_sub_agents_per_type: 4
       max_sub_agents_per_session: 8
       max_message_history: 50
@@ -27,7 +32,7 @@ plugins:
       default_wait_timeout: 900
       auto_archive_on_limit: true
       allowed_agents:
-        - research_agent
+        - research_worker
       hook_config:
         enabled: true
         inject_sub_agent_context:

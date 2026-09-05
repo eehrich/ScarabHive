@@ -30,12 +30,25 @@ reading.
 `web_scraper_download` saves PDFs and other files into `data/workspace`,
 where the coder, gamedev and amiga harnesses can read them.
 
+## Wide questions
+
+For a question with independent parts — comparing three libraries, checking
+four claims — the agent starts one `research_worker` per part, waits for them
+all, and merges the answers with their sources. A single question is faster
+done directly, and the prompt says so.
+
+A worker has the same tools for searching and reading but no sub-agent
+manager, so a branch cannot branch again. That holds wherever the research
+agent itself is running: started from the UI, or spawned as a sub-agent by
+another coordinator.
+
 ## What lives here
 
 | | |
 |---|---|
 | `agents/research_agent.yaml` | `type: basic_agent`, chain `or-deepseek-flash` → `deepseek-chat`, 40 steps, visibility `both` |
-| `agents/prompts/research_agent.md` | Role, tool hints, output format. Short on purpose. |
+| `agents/research_worker.yaml` | The branch for a wide question: same prompt, same skill, same reading tools, 25 steps, and no sub-agent manager |
+| `agents/prompts/research_agent.md` | Role, tool hints, output format. Short on purpose. Both agents render it; the branching section appears only for the one that can branch. |
 | `skills/web-research/SKILL.md` | The method: query design, source ranking, reading with `offset`, cross-checking, citing. Always in the prompt. |
 | `tests/test_research_config.py` | The prompt is rendered and read back; the tool instances it names exist; it is registered where it is meant to be spawned. |
 
