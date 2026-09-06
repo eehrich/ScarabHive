@@ -13,9 +13,14 @@ reached in-process via ``Agent.call_tool``.
 Contract with that tool worth knowing:
 - ``status`` in ``error`` / ``limit_reached`` / ``cancelled`` is a failure.
 - A sub-agent that never answered comes back as CONTENT, not as an error:
-  ``result_text = "Error: ..."`` / ``"Cancelled: ..."``. We count those as
-  transport failures so an unhealthy run is visible, and let the retry
-  handle them (a transient network error is exactly what retry is for).
+  ``result_text = "Error: ..."`` / ``"Cancelled: ..."``, and the manager
+  labels that run ``status="completed"`` -- so the status check above waves
+  it through. We count those as transport failures so an unhealthy run is
+  visible, and REFUSE them at the transport seam: a failure is never a
+  result, for the text callers no less than for the JSON ones. ``call()``
+  retries the raised error, which is what a transient network fault wants;
+  the single-attempt text calls fail fast instead of persisting the
+  transport's complaint as content.
 """
 from __future__ import annotations
 
@@ -134,9 +139,9 @@ class AgentCaller:
         if instance_id:
             self.last_instance_id = instance_id
         text = self._result_text(result, agent_type)
-        # Counted here at the transport seam — not in call() — so that
+        # Rejected here at the transport seam — not in call() — so that
         # text-level users (call_text / the v4 wrappers) are covered too.
-        self._count_transport_failure(agent_type, text)
+        self._reject_transport_failure(agent_type, text)
         await self._note(f"✓ {agent_type} ({time.monotonic() - t0:.1f}s)")
         return text, instance_id
 
@@ -162,7 +167,7 @@ class AgentCaller:
             params["use_advanced_model"] = True
         result = await self._invoke(params, label=instance_id)
         text = self._result_text(result, instance_id)
-        self._count_transport_failure("follow_up", text)
+        self._reject_transport_failure("follow_up", text)
         return text
 
     # -- structured calls with retry --------------------------------------------
@@ -316,7 +321,37 @@ class AgentCaller:
             raise RuntimeError(f"Sub-agent {label} returned an empty result")
         return text
 
-    def _count_transport_failure(self, label: str, raw: str) -> None:
+    def _reject_transport_failure(self, label: str, raw: str) -> None:
+        """A sub-agent's own failure, handed back AS its answer -- count it,
+        log it, and REFUSE it. It is never a result.
+
+        The refusal is what makes ``_result_text``'s contract hold for text
+        callers too. ``_invoke`` reads ``status`` and treats it as a verdict
+        (error/limit_reached/cancelled raise), but the manager wraps a failed
+        run as ``status="completed"`` with the failure in ``result`` -- so the
+        status check waves it through and the caller receives the transport's
+        complaint as content.
+
+        ⚠️ The counting happens BEFORE the refusal on purpose, and whoever
+        teaches ``_invoke`` to judge from a new field has to keep it that way.
+        ``_invoke`` raises before ``_create`` ever reaches this function, so a
+        verdict that moves up there takes the counter with it -- and that
+        counter is the only number telling a clean run from one that survived
+        thirty network faults (writer_pipeline_v4/server.py reads it for the
+        run report; the night of 2026-08-06 is why it exists).
+
+        Measured, and the reason this raises instead of only counting: the
+        text callers persist what they get. ``phase_4_5_finalize`` writes it
+        to ``books.metadata["book_summary"]`` AND into the series state,
+        ``phase_3_prosa`` to ``chapters.metadata.$.summary`` -- and neither
+        path retries (``_call_sub_agent`` is a single attempt). One 429 and
+        "Error: Agent execution failed: ..." is a book's published summary,
+        which the next volume of the series then reads as its predecessor.
+
+        Raising here also puts the JSON and the text path back on the same
+        contract: ``parse_json_value`` already refuses the same prefix, so
+        without this the two disagreed about the identical string.
+        """
         if not raw.startswith(_FAILED_AS_CONTENT):
             return
         self.counters["transport_failures"] = self.counters.get("transport_failures", 0) + 1
@@ -324,9 +359,10 @@ class AgentCaller:
         self.counters[key] = self.counters.get(key, 0) + 1
         logger.warning(
             "Sub-agent %s did NOT answer (transport/lifecycle, not a format "
-            "problem): %r — retry follows. Run total: %d.",
+            "problem): %r. Run total: %d.",
             label, raw[:120], self.counters["transport_failures"],
         )
+        raise RuntimeError(f"Sub-agent {label} did not answer: {raw[:200].strip()}")
 
     async def _note(self, line: str) -> None:
         if self._progress is not None:
@@ -343,9 +379,12 @@ def parse_json_value(text: str) -> Any:
     Raises ``ValueError`` when nothing yields a dict or list.
     """
     # FIRST, before any parsing: the sub-agent's own failure, handed back AS
-    # its answer. ``_count_transport_failure`` recognises exactly this prefix
-    # on exactly this string (``_create`` passes one text to both) and logs
-    # "did NOT answer (transport/lifecycle, not a format problem)".
+    # its answer. Callers that come through ``AgentCaller`` no longer reach
+    # this -- ``_reject_transport_failure`` refuses the same prefix one layer
+    # earlier, at the transport seam. It stays because this function is
+    # public and parses whatever it is handed; the two refusing the identical
+    # string is what keeps them from drifting apart again, which is exactly
+    # what happened when only one of them did.
     #
     # This has to run before the brace-span and ``repair_json``, not after
     # them -- measured, because the first version of this guard sat at the end

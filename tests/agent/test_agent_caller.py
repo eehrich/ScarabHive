@@ -115,14 +115,22 @@ def test_failed_as_content_is_counted_and_retried() -> None:
 def test_text_level_calls_count_transport_failures_too() -> None:
     """The count lives at the transport seam (_create/follow_up_text), not
     in call(): text-level users — the v4 wrappers — must be covered, and a
-    failed continue counts under ``follow_up`` (it used to count nowhere)."""
+    failed continue counts under ``follow_up`` (it used to count nowhere).
+
+    Both seams now REFUSE the failure as well as counting it. The counting is
+    the half that has to survive the refusal: it is what tells an unhealthy
+    run from a quiet one afterwards, and what distinguishes "the book was
+    clean" from "the reviewer died".
+    """
     agent = FakeAgent([
         ok("Error: DNS lookup failed"),
         ok("Cancelled: run aborted"),
     ])
     c = caller(agent)
-    assert asyncio.run(c.call_text("x", "task")).startswith("Error: ")
-    assert asyncio.run(c.follow_up_text("inst-1", "again")).startswith("Cancelled: ")
+    with pytest.raises(RuntimeError, match="did not answer"):
+        asyncio.run(c.call_text("x", "task"))
+    with pytest.raises(RuntimeError, match="did not answer"):
+        asyncio.run(c.follow_up_text("inst-1", "again"))
     assert c.counters["transport_failures"] == 2
     assert c.counters["transport_failures:x"] == 1
     assert c.counters["transport_failures:follow_up"] == 1
@@ -281,6 +289,65 @@ class TestParseJsonValueRepairGuard:
 
     def test_bare_dict_free_array_still_valid_via_fast_path(self):
         assert parse_json_value("[1, 2, 3]") == [1, 2, 3]
+
+
+class TestAFailureIsNeverAResult:
+    """The transport seam refuses it, so no caller can persist it.
+
+    ``ok()`` is the production shape: the manager labels a failed run
+    ``status="completed"`` and puts the failure in ``result``, so the status
+    check waves it through. The text callers have no retry
+    (``_call_sub_agent`` is a single attempt) and write what they get --
+    ``phase_4_5_finalize`` into ``books.metadata["book_summary"]`` and the
+    series state, ``phase_3_prosa`` into ``chapters.metadata.$.summary``.
+    One 429 and the transport's complaint is a book's published summary.
+    """
+
+    FAILURE = "Error: Agent execution failed: Error code: 429 - {'error': {'x': 1}}"
+
+    @pytest.mark.asyncio
+    async def test_call_text_refuses_it_instead_of_returning_it(self):
+        agent = FakeAgent([ok(self.FAILURE)])
+
+        with pytest.raises(RuntimeError, match="did not answer"):
+            await caller(agent).call_text("v4_book_summarizer", "fasse zusammen")
+
+    @pytest.mark.asyncio
+    async def test_follow_up_text_refuses_it_too(self):
+        agent = FakeAgent([ok("{}"), ok(self.FAILURE)])
+        c = caller(agent)
+        await c.call_text("v4_x", "erst ein guter Lauf")
+
+        with pytest.raises(RuntimeError, match="did not answer"):
+            await c.follow_up_text("inst-1", "und jetzt weiter")
+
+    @pytest.mark.asyncio
+    async def test_the_structured_path_retries_it(self):
+        """``call()`` wraps the attempt, so the raise becomes a retry -- which
+        is what a transient network fault deserves. Second attempt answers."""
+        agent = FakeAgent([ok(self.FAILURE), ok('{"score": 1, "issues": []}')])
+
+        result = await caller(agent, retries=1).call("v4_x", "task", schema=Verdict)
+
+        assert result.score == 1
+        assert len(agent.calls) == 2, "the failure was not retried"
+
+    @pytest.mark.asyncio
+    async def test_a_real_answer_is_untouched(self):
+        """The guard is narrow: only the two markers, and only at the START.
+
+        The witness has to CONTAIN the marker without beginning with it, or
+        the boundary is untested -- an earlier version used "Error codes are
+        covered in chapter 3.", which has no colon at all, and the mutation
+        "match the marker anywhere" stayed green. A chapter summary quoting a
+        machine is the ordinary case, not a contrived one.
+        """
+        summary = 'Kapitel 3: Der Funk meldet "Error: Kein Signal", und Nele stutzt.'
+        agent = FakeAgent([ok(summary)])
+
+        text = await caller(agent).call_text("v4_chapter_summarizer", "task")
+
+        assert text == summary
 
 
 class TestATransportFailureIsNotAFormatProblem:
