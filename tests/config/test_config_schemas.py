@@ -150,6 +150,24 @@ def test_a_part_file_may_not_carry_a_section_the_loader_drops():
         "would confirm a section nothing reads")
 
 
+def test_a_server_entry_must_name_its_type():
+    """The one key that recovers half of what extra="allow" hides.
+
+    Plugin-specific keys (max_nesting_depth, allowed_agents, api_key) live
+    directly under a server entry, so MCPConfig cannot forbid unknown keys and
+    a typo there is invisible. `type` is the exception: every entry needs it,
+    so a misspelled `typ:` surfaces as the MISSING `type`.
+    """
+    data = yaml.safe_load(
+        (REPO_ROOT / "config/agents/agents.yaml").read_text(encoding="utf-8"))
+    entry = next(iter(data["plugins"]["servers"].values()))
+    entry["typ"] = entry.pop("type")
+    validator = Draft202012Validator(_schema_from_file("config-part.schema.json"))
+    assert list(validator.iter_errors(data)), (
+        "a misspelled `type` validated cleanly — the editor would confirm an "
+        "entry the loader cannot build")
+
+
 def test_schema_registry_covers_all_derived_schema_files():
     """Every *-config.schema.json in schemas/ that claims to be generated
     must be in the SCHEMAS registry (and thus under anti-drift)."""

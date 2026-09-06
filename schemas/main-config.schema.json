@@ -1572,7 +1572,10 @@
         }
       },
       "title": "MCPConfig",
-      "type": "object"
+      "type": "object",
+      "required": [
+        "type"
+      ]
     },
     "MCPServersConfig": {
       "description": "Configuration for external MCP servers (matches config/mcp_servers.yaml)",

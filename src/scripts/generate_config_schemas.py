@@ -90,6 +90,24 @@ def _allow_bare_skills_list(defs: dict) -> None:
             0, {"type": "array", "items": {"type": "string"}})
 
 
+def _require_server_type(defs: dict) -> None:
+    """A server entry must name its ``type``.
+
+    ``MCPConfig`` is ``extra="allow"`` — plugin-specific keys like
+    ``max_nesting_depth`` or ``allowed_agents`` live directly under a server
+    entry, so the editor cannot flag a typo there. Requiring the one key every
+    entry needs recovers half of that class: a misspelled ``typ:`` now shows up
+    as the MISSING ``type``. Measured before adding it — all 215 server entries
+    in config/ and src/plugins*/ carry it, so this costs no false positive.
+
+    The model keeps a default (``type`` is optional there for entries built in
+    code), which is why the schema says it and the model does not.
+    """
+    mcp = defs.get("MCPConfig")
+    if mcp is not None and "type" in mcp.get("properties", {}):
+        mcp["required"] = sorted(set(mcp.get("required") or []) | {"type"})
+
+
 def _add_model_inheritance(inner: dict, defs: dict) -> None:
     """Teach the schema about ``extends``.
 
@@ -147,6 +165,7 @@ def build_main_schema() -> dict:
     schema = AgentSystemConfig.model_json_schema()
     _forbid_unknown_keys(schema)
     defs = _hoist_defs(schema)
+    _require_server_type(defs)
     schema.update({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Main Configuration Schema",
@@ -173,6 +192,7 @@ def build_plugins_schema() -> dict:
     plugins_inner = PluginsConfig.model_json_schema()
     _forbid_unknown_keys(plugins_inner)
     defs = _hoist_defs(plugins_inner)
+    _require_server_type(defs)
 
     hook_override = {
         "type": "object",
@@ -247,6 +267,7 @@ def build_config_part_schema() -> dict:
     _forbid_unknown_keys(schema)
     defs = _hoist_defs(schema)
     _add_model_inheritance(schema, defs)
+    _require_server_type(defs)
 
     properties = {name: schema["properties"][name] for name in _MERGED_PART_SECTIONS}
     return {
