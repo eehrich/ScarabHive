@@ -48,6 +48,41 @@ def _in_test_cwd() -> bool:
     return "test" in str(Path.cwd()) and "PYTEST_CURRENT_TEST" in os.environ
 
 
+@dataclass(frozen=True)
+class ServerView:
+    """What a walker may ask about a server WITHOUT building it.
+
+    Every per-request walk over the registry -- the UI agent list, the tool
+    visibility filter that runs on every single request, the job manager --
+    asks the same three questions and answers them the same way: build the
+    server, isinstance it, read a flag. That is exactly what a lazy start
+    cannot afford, and it is also more than those walkers need.
+
+    The instance wins whenever there is one: its flags are what the process
+    actually serves. The declaration answers only for a server that has not
+    been built -- and only where it provably agrees, see ``Runtime.view``.
+
+    ``getattr(..., True)`` on a built server is verbatim what the two
+    converted walkers do (``tool_discovery._is_tool_visible`` and
+    ``GET /agents``): a plugin carrying no visibility flag at all is VISIBLE.
+    Agents always carry both flags (``Agent.__init__`` sets them False), so
+    that default only ever reaches non-agent plugins.
+
+    ⚠️ It is NOT the rule everywhere. ``sub_agent_manager/server.py`` reads
+    the same two flags with ``getattr(..., False)`` and skips only when BOTH
+    are false. A walker converted to this view without that in mind flips its
+    own default -- which is why that one is not converted here.
+    """
+
+    name: str
+    is_agent: bool
+    mcp_public: bool
+    mcp_tool_visible: bool
+    #: True when the answer came from an instance, False when from a
+    #: declaration. Provenance, so a test can tell the two paths apart.
+    built: bool
+
+
 @dataclass
 class ServerDecl:
     """What is known about a configured server before anything is built."""
@@ -141,6 +176,9 @@ class Runtime:
         self._decls: dict[str, ServerDecl] = {}
         self._plugins: dict[str, Callable[..., Any]] = {}
         self._declare_all()
+        # Bound registries answer describe()/built() from here; an
+        # unbound MCPRegistry keeps behaving exactly as it always did.
+        self.registry.bind(self)
 
     # ------------------------------------------------------------------
     # declarations
@@ -191,6 +229,58 @@ class Runtime:
     def describe(self, name: str) -> Optional[ServerDecl]:
         """What is known about a server without building it."""
         return self._decls.get(name)
+
+    def view(self, name: str) -> Optional[ServerView]:
+        """The walker-facing answer: from the instance if built, else from the
+        declaration -- and None whenever the declaration cannot answer.
+
+        None means "ask the instance", and every caller falls back to doing
+        exactly that. It is the only honest answer for a declaration whose
+        instance would disagree, and disagreement is the norm, not the corner
+        case: ``apply_to`` copies the visibility onto the instance ONLY for a
+        plugin factory (``materialize``: ``if decl.factory is not None``) and
+        returns early for anything that is not an ``Agent``. So
+
+          * a non-agent plugin (file_ops, terminal, todo, ...) never carries
+            the flags at all -- built it reads (True, True) through the
+            getattr defaults, while its declaration defaults to "private",
+            i.e. (False, False). Answering from the declaration would drop
+            every tool server out of every agent's tool list.
+          * a direct ``type: agent`` gets no ``apply_to`` either and keeps
+            ``Agent.__init__``'s (False, False), whatever its metadata says.
+          * a non-lazy plugin type may or may not build an Agent
+            (``writer_pipeline_v4`` does, ``writer_issues`` decides by
+            config) -- ``is_agent`` is not knowable without the constructor.
+
+        ``lazy`` is the one declaration that is provably safe: it is a plugin
+        type (so ``apply_to`` runs and the flags ARE the visibility mapping),
+        and ``materialize`` refuses to register a lazy type that builds
+        something other than an Agent. That is also exactly the set B5 defers
+        -- everything else is built at start, so its fallback finds an
+        instance.
+        """
+        instance = self.registry._servers.get(name)
+        if instance is not None:
+            from .servers.agent.server import Agent
+            return ServerView(
+                name=name,
+                is_agent=isinstance(instance, Agent),
+                mcp_public=bool(getattr(instance, "_mcp_public", True)),
+                mcp_tool_visible=bool(getattr(instance, "_mcp_tool_visible", True)),
+                built=True,
+            )
+
+        decl = self._decls.get(name)
+        if decl is None or not decl.lazy:
+            return None
+        visibility = decl.visibility
+        return ServerView(
+            name=name,
+            is_agent=True,
+            mcp_public=visibility in ("ui", "both"),
+            mcp_tool_visible=visibility in ("tool", "both"),
+            built=False,
+        )
 
     def validate(self) -> list[str]:
         """Config errors of LAZY declarations, found without an instance.

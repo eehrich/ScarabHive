@@ -11,6 +11,10 @@ from typing import List, Optional, Tuple, TYPE_CHECKING
 import logging
 
 from .tool_schema_builder import server_matches_patterns
+# Module level on purpose: inside _is_tool_visible it would sit in a
+# try/except that answers "invisible" -- a future import cycle would
+# then empty every agent's tool list in silence instead of failing loud.
+from ...runtime import ServerView
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentConfig
@@ -179,7 +183,33 @@ class ToolDiscoveryService:
         Returns:
             True if tool is visible, False otherwise
         """
+        # Inside the try, like everything else here: an invisible tool is the
+        # fail-safe answer this method has always given when it could not
+        # look, and the view must not be the one path that throws out of it.
         try:
+            # Asked through describe(), not get(): this runs for EVERY server
+            # on EVERY request, and building a server to read one boolean off
+            # it is the one thing a lazy start must not do. The view answers
+            # from the instance whenever there is one, so the result is
+            # identical.
+            #
+            # isinstance, not "is not None": the suite is full of registries
+            # that are Mock() objects, and a Mock answers describe() with a
+            # truthy Mock whose every attribute is truthy too. That would
+            # silently turn this filter into "everything is visible" and stop
+            # consulting the get() those tests steer.
+            view = self.registry.describe(tool_name)
+            if isinstance(view, ServerView):
+                if not view.mcp_tool_visible:
+                    logger.debug(
+                        f"Skipping agent '{tool_name}' in tool discovery "
+                        f"(not exposed as tool: _mcp_tool_visible=False)"
+                    )
+                    return False
+                return True
+
+            # Unbound registry, or a declaration that cannot answer for its
+            # instance: the instance is the only source. Verbatim the old path.
             server = self.registry.get(tool_name)
             if server and hasattr(server, '_mcp_tool_visible'):
                 visible = getattr(server, '_mcp_tool_visible', True)

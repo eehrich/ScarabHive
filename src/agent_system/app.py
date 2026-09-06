@@ -23,6 +23,10 @@ from fastapi.templating import Jinja2Templates
 
 from .api.endpoints import router as api_router
 from .mcp.base import MCPRegistry
+# Module level: inside list_agents it would sit in a try/except that
+# skips the server -- an import cycle would then empty the UI dropdown
+# in silence instead of failing loud at start.
+from .runtime import ServerView
 from .utils.logging import setup_logging
 from .mcp.status import get_status_metrics
 from .mcp.integration import initialize_mcp, shutdown_mcp
@@ -1262,6 +1266,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         try:
             for name in _app_registry.list():  # type: ignore[attr-defined]
                 try:
+                    # describe() first: it answers "is this an agent, is it
+                    # public" from the instance when there is one and from the
+                    # declaration otherwise -- no build to read two flags.
+                    #
+                    # isinstance, not "is not None": a Mock registry answers
+                    # describe() with a truthy Mock whose attributes are all
+                    # truthy, which would list every server as a public agent.
+                    view = _app_registry.describe(name)  # type: ignore[attr-defined]
+                    if isinstance(view, ServerView):
+                        if view.is_agent and view.mcp_public:
+                            agents.append(name)
+                        elif view.is_agent:
+                            logger.debug(f"Skipping agent '{name}' in UI list (_mcp_public=False)")
+                        continue
+
+                    # Unbound registry, or a declaration that cannot answer for
+                    # its instance: the instance is the only source.
                     srv = _app_registry.get(name)  # type: ignore[attr-defined]
                     from .servers.agent.server import Agent as _Agent
                     if isinstance(srv, _Agent):

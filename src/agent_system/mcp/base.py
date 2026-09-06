@@ -293,14 +293,60 @@ class MCPServer(ABC):
 
 
 class MCPRegistry:
+    """The built servers, and -- when bound to a Runtime -- what is declared.
+
+    Unbound it is the plain dict it always was; every test that builds one by
+    hand keeps its behaviour to the letter. Bound, it can answer questions
+    about servers that are DECLARED but not built, which is what lets the
+    per-request walkers stop constructing everything they look at.
+    """
+
     def __init__(self) -> None:
         self._servers: dict[str, MCPServer] = {}
+        self._runtime: Any = None
+
+    def bind(self, runtime: Any) -> None:
+        """Called by Runtime.__init__ for the registry it owns."""
+        self._runtime = runtime
 
     def register(self, name: str, server: MCPServer) -> None:
         self._servers[name] = server
 
     def get(self, name: str) -> MCPServer:
+        # Deliberately NOT materializing yet: the lazy build belongs to the
+        # stage that stops building at start (B5). Until then every declared
+        # server is built, and `resolve_longest_prefix` probes names that do
+        # not exist and relies on the KeyError.
         return self._servers[name]
 
+    def describe(self, name: str) -> Any:
+        """``ServerView`` for a walker, or None when unbound/unknown/unsafe.
+
+        None is the honest answer for an unbound registry: it knows nothing
+        beyond what it holds, and a caller must fall back to the instance.
+        ``Runtime.view`` returns None for the same reason whenever a
+        declaration cannot answer for its instance.
+        """
+        if self._runtime is None:
+            return None
+        return self._runtime.view(name)
+
     def list(self) -> list[str]:
+        """The BUILT servers -- unchanged, bound or not.
+
+        It is tempting to add the declared-but-unbuilt names here, and the
+        lazy start will need exactly that. It cannot come alone: SIX places
+        ask ``if name in registry.list()`` and then ``registry.get(name)``, so
+        a name that lists but does not get turns a clean "Unknown tool" into a
+        KeyError out of a tool call. ``list()`` and ``get()`` move together,
+        in the stage that stops building at start -- and all six move with
+        them. They are, in ``src/agent_system/``:
+
+            app.py (twice), agent_cli.py,
+            servers/agent/components/tool_execution.py (three times)
+
+        No line numbers on purpose, they rot. The whole set is
+        ``grep -rn "in .*registry\\.list()" src/agent_system/``, minus the
+        plain ``for name in registry.list()`` walks, which are safe.
+        """
         return list(self._servers.keys())
