@@ -18,6 +18,28 @@ from plugins.sub_agent_manager.manager import SubAgentManager
 
 logger = logging.getLogger(__name__)
 
+#: An aborted run comes back as TEXT ("Error: ..."/"Cancelled: ..."), while
+#: `status` said "completed" regardless -- so a failed reviewer read like a
+#: clean book, and every consumer had to re-derive the truth from the prefix.
+#: The outcome now travels in its OWN field, next to the lifecycle status.
+#:
+#: Deliberately not in `status` itself, though that is where it belongs: the
+#: caller (agent_caller._invoke) raises the moment `status` names a failure,
+#: and it raises BEFORE the transport-failure counter runs -- the counter that
+#: tells a run which survived thirty network errors from a clean one. Moving
+#: the verdict into `status` would silently switch that guard off. Counting
+#: comes before judging; until the caller counts first, the verdict lives here
+#: and `status` keeps meaning "the run is over".
+_ABORT_STATUS = (("Error:", "error"), ("Cancelled:", "cancelled"))
+
+
+def _outcome_status(result_text: str) -> str:
+    """Verdict for a finished run: 'completed' unless the text says otherwise."""
+    for prefix, status in _ABORT_STATUS:
+        if result_text.startswith(prefix):
+            return status
+    return "completed"
+
 
 def _without_status(params: dict) -> dict:
     """Params for an INTERNAL sub-step, so it cannot close our status scope.
@@ -803,7 +825,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     # -- the same predicate the retry gate above uses. The end
                     # line reported "Created ..." either way, so an aborted run
                     # was the green line that stayed in the WebUI.
-                    if result_text.startswith(("Error:", "Cancelled:")):
+                    if _outcome_status(result_text) != "completed":
                         await status.error(
                             f"Sub-agent {sub_session_id} ({agent_name}): "
                             f"{result_text[:70]}")
@@ -814,7 +836,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
                 return {
                     "instance_id": sub_session_id,
-                    "status": "completed",
+                    "status": "completed",          # lifecycle: the run is over
+                    "outcome": _outcome_status(result_text),  # verdict: how it ended
                     "result": result_text,
                     "message_count": 2,  # user + assistant
                     "agent_type": agent_name
@@ -1061,7 +1084,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 if status:
                     # Same as the create path: an aborted continuation must
                     # not leave a green line behind.
-                    if result_text.startswith(("Error:", "Cancelled:")):
+                    if _outcome_status(result_text) != "completed":
                         await status.error(
                             f"Sub-agent {instance_id} ({agent_type}): "
                             f"{result_text[:70]}")
@@ -1072,7 +1095,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
                 return {
                     "instance_id": instance_id,
-                    "status": "completed",
+                    "status": "completed",          # lifecycle: the run is over
+                    "outcome": _outcome_status(result_text),  # verdict: how it ended
                     "result": result_text,
                     "message_count": len(messages) + 2,  # existing + user + assistant
                     "agent_type": agent_type

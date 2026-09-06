@@ -101,11 +101,11 @@ def _closing(events):
     return closing[0]
 
 
-@pytest.mark.parametrize("event,expected", [
-    ({"type": "error", "message": "LLM refused the request"}, "LLM refused"),
-    ({"type": "cancelled", "reason": "operator stopped it"}, "operator stopped"),
+@pytest.mark.parametrize("event,expected,verdict", [
+    ({"type": "error", "message": "LLM refused the request"}, "LLM refused", "error"),
+    ({"type": "cancelled", "reason": "operator stopped it"}, "operator stopped", "cancelled"),
 ])
-async def test_an_aborted_run_closes_with_an_error(server, event, expected):
+async def test_an_aborted_run_closes_with_an_error(server, event, expected, verdict):
     _wire(server, [{"type": "start"}, event])
 
     result, events = await _create(server)
@@ -113,9 +113,12 @@ async def test_an_aborted_run_closes_with_an_error(server, event, expected):
     closing = _closing(events)
     assert closing.phase is StatusPhase.ERROR, closing.message
     assert expected in closing.message
-    # The result still reports the run as terminal -- 'completed' means
-    # finished here, and the poll/wait_all counters read it that way.
+    # ... and the answer says the same thing, in the field that carries the
+    # verdict. `status` keeps meaning "the run is over": the caller raises on
+    # a failing status, and it raises before the transport counter runs.
     assert result["status"] == "completed"
+    assert result["outcome"] == verdict
+    assert result["result"].startswith(("Error:", "Cancelled:"))
 
 
 async def test_a_successful_run_still_ends(server):
@@ -161,3 +164,55 @@ def test_internal_substeps_do_not_inherit_the_scope():
     assert "_status" not in stripped
     assert stripped == {"_session_id": "s1", "instance_id": "i1"}
     assert "_status" in params, "the caller's own params must stay intact"
+
+
+# --- the verdict a caller reads -------------------------------------------
+#
+# `status` is the lifecycle ("the run is over"), `outcome` is how it ended.
+# They are separate on purpose: agent_caller raises on a failing `status`, and
+# it raises BEFORE the transport-failure counter runs -- so putting the verdict
+# there would switch that counter off. These pin both halves.
+
+@pytest.mark.parametrize(
+    "result_text, expected",
+    [
+        ("Error: Agent execution failed: Error code: 429 - {'error': {...}}", "error"),
+        ("Cancelled: user stopped the run", "cancelled"),
+        ("Here is the answer.", "completed"),
+        # A sub-agent may legitimately WRITE about an error without failing.
+        ("The log shows Error: 429 in line 12.", "completed"),
+        ("", "completed"),
+    ],
+)
+def test_the_verdict_follows_the_text_the_caller_gets(result_text, expected):
+    from plugins.sub_agent_manager.server import _outcome_status
+    assert _outcome_status(result_text) == expected
+
+
+async def test_an_aborted_continuation_reports_the_same_verdict(server):
+    """Continue must not be the softer path: same text, same verdict.
+
+    Every other continue test mocks _handle_continue away, so this return
+    value had no cover at all -- a hardcoded "completed" here would have
+    survived a green suite.
+    """
+    _wire(server, [{"type": "start"}, {"type": "error", "message": "LLM refused it"}])
+    manager = server._get_manager(None, None)
+    manager._session_service.session_manager.load_session = AsyncMock(return_value={
+        "session_id": "sub_session_1",
+        "agent_name": "basic_agent",
+        "messages": [],
+        "metadata": {},
+        "parent_session": {"session_id": "parent_session"},  # ownership is checked
+    })
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "continue",
+        "instance_id": "sub_session_1",
+        "message": "carry on",
+        "_session_id": "parent_session",
+    })
+
+    assert result["status"] == "completed", result
+    assert result["outcome"] == "error", result
+    assert result["result"].startswith("Error:")

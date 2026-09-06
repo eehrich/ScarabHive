@@ -1442,7 +1442,8 @@ class TestMinResultLengthGuard:
             "_request_id": "req_005",
         })
 
-        assert result["status"] == "completed"
+        assert result["status"] == "completed"  # lifecycle: the run is over
+        assert result["outcome"] == "error"     # verdict: how it ended
         assert result["result"].startswith("Error:")
         assert call_count == 1
 
@@ -1466,7 +1467,8 @@ class TestMinResultLengthGuard:
             "_request_id": "req_006",
         })
 
-        assert result["status"] == "completed"
+        assert result["status"] == "completed"  # lifecycle: the run is over
+        assert result["outcome"] == "cancelled"  # verdict: how it ended
         assert result["result"].startswith("Cancelled:")
         assert call_count == 1
 
