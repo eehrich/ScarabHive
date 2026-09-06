@@ -16,6 +16,7 @@ Second finding covered here: handlers share ONE StatusScope per tool call, so
 """
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -216,3 +217,71 @@ async def test_an_aborted_continuation_reports_the_same_verdict(server):
     assert result["status"] == "completed", result
     assert result["outcome"] == "error", result
     assert result["result"].startswith("Error:")
+
+
+async def test_an_aborted_async_run_is_not_a_completed_job(server):
+    """`wait_all` counts `status in (failed, error)` for its "Failed: N" line.
+
+    A run that aborts with "Error: ..." as its ANSWER used to be filed as a
+    completed job -- only an exception marked one failed. A fan-out of dead
+    reviewers therefore reported "Completed: 4, Failed: 0".
+    """
+    _wire(server, [{"type": "start"}, {"type": "error", "message": "LLM refused it"}])
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "create",
+        "agent_type": "basic_agent",
+        "task": "do the thing",
+        "blocking": False,
+        "_session_id": "parent_session",
+    })
+    assert result["status"] == "running", result
+
+    job = {}
+    for _ in range(300):
+        async with server._async_jobs_lock:
+            job = dict(server._async_jobs.get("sub_session_1") or {})
+        if job.get("status") in ("completed", "failed", "cancelled"):
+            break
+        await asyncio.sleep(0.01)
+
+    assert job.get("status") == "failed", job
+    assert job.get("outcome") == "error", job
+    assert job.get("result", "").startswith("Error:"), job
+
+    # ... and it is not left ACTIVE in the parent's record either: the DB
+    # fallback below reads exactly that field once the job leaves memory.
+    manager = server._get_manager(None, None)
+    persisted = [c.kwargs.get("status")
+                 for c in manager.update_sub_session_metadata.call_args_list]
+    assert "failed" in persisted, persisted
+
+
+@pytest.mark.parametrize("persisted_status", ["failed", "cancelled"])
+async def test_a_poll_after_the_job_left_memory_still_says_it_failed(server, persisted_status):
+    """The DB fallback used to answer "completed" for everything it found.
+
+    An aborted run now persists a terminal status, and `list_sub_sessions`
+    keeps only active/interrupted -- so without the second look the same poll
+    would answer "not found", which reads like an instance that never existed.
+    """
+    _wire(server, [])
+    manager = server._get_manager(None, None)
+
+    async def list_sub_sessions(parent_session_id, include_completed=False, creator_plugin=None):
+        if not include_completed:
+            return []          # no longer among the active ones
+        return [{"instance_id": "sub_session_1", "agent_type": "basic_agent",
+                 "status": persisted_status,
+                 "error": "Error: Agent execution failed: 429"}]
+
+    manager.list_sub_sessions = list_sub_sessions
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "poll",
+        "instance_id": "sub_session_1",
+        "_session_id": "parent_session",
+    })
+
+    assert result["status"] == persisted_status, result
+    assert "429" in result["error"], result

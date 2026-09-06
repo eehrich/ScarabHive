@@ -1699,23 +1699,37 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     was_new_session=True
                 )
 
-                # Update metadata (ensure status is active for async jobs)
+                # A run whose ANSWER is "Error: ..."/"Cancelled: ..." did not
+                # complete -- it aborted and handed the transport's complaint
+                # back as content. Only an exception marked such a job failed
+                # until now, so `wait_all` counted it under "Completed: N,
+                # Failed: 0" and a fan-out of dead reviewers read as a clean
+                # one. The job status uses the vocabulary it already has.
+                outcome = _outcome_status(result_text)
+                job_status = {"error": "failed", "cancelled": "cancelled"}.get(
+                    outcome, "completed")
+
+                # Update metadata: a finished-but-aborted run is not active any
+                # more, the same way the exception path below records it.
                 await manager.update_sub_session_metadata(
                     parent_session_id=parent_session_id,
                     sub_session_id=instance_id,
                     last_used=datetime.now(UTC).isoformat(),
-                    status="active"  # Ensure active status for running async jobs
+                    status="active" if job_status == "completed" else job_status,
                 )
 
-                # Mark job as completed (keep in memory until polled once)
+                # Mark job as finished (keep in memory until polled once)
                 async with self._async_jobs_lock:
                     if instance_id in self._async_jobs:
-                        self._async_jobs[instance_id]["status"] = "completed"
+                        self._async_jobs[instance_id]["status"] = job_status
+                        self._async_jobs[instance_id]["outcome"] = outcome
                         self._async_jobs[instance_id]["result"] = result_text
                         self._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
                         self._async_jobs[instance_id]["_awaiting_poll"] = True  # Will be removed after poll
 
-                logger.info(f"Async execution completed for {instance_id}, awaiting result poll")
+                logger.info(
+                    f"Async execution finished for {instance_id} ({job_status}), "
+                    "awaiting result poll")
 
             finally:
                 # Release lock
@@ -1871,10 +1885,38 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                         "result": "Sub-agent execution completed (session persisted)",
                         "message": "Use 'info' operation to see conversation history"
                     }
-                else:
+
+                # Not among the active ones -- but a run that ABORTED persisted
+                # a terminal status, and list_sub_sessions keeps only
+                # active/interrupted. Without this second look such a poll
+                # answers "not found", which reads like an instance that never
+                # existed. Everything else keeps its old answer: the lookup
+                # widens only for the two statuses that mean "it ran and
+                # failed".
+                aborted = [
+                    s for s in await manager.list_sub_sessions(
+                        parent_session_id, include_completed=True,
+                        creator_plugin=self.name)
+                    if (s.get("instance_id") if isinstance(s, dict) else s.instance_id) == instance_id
+                    and (s.get("status") if isinstance(s, dict) else s.status) in ("failed", "cancelled")
+                ]
+                if aborted:
+                    sub_agent = aborted[0]
+                    job_status = sub_agent.get("status") if isinstance(sub_agent, dict) else sub_agent.status
                     if status:
-                        await status.error(f"Poll: {instance_id} not found")
-                    return {"status": "error", "error": f"Instance '{instance_id}' not found"}
+                        await status.error(f"Poll: {instance_id} {job_status}")
+                    return {
+                        "instance_id": instance_id,
+                        "status": job_status,
+                        "agent_type": sub_agent.get("agent_type") if isinstance(sub_agent, dict) else sub_agent.agent_type,
+                        "error": (sub_agent.get("error") if isinstance(sub_agent, dict)
+                                  else getattr(sub_agent, "error", None)) or f"Sub-agent {job_status}",
+                        "message": "Use 'info' operation to see conversation history",
+                    }
+
+                if status:
+                    await status.error(f"Poll: {instance_id} not found")
+                return {"status": "error", "error": f"Instance '{instance_id}' not found"}
             except RuntimeError:
                 # No registry available - can only check async tracking (already done above)
                 if status:
