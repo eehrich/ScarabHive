@@ -157,17 +157,34 @@ class FileSearchEngine:
             self._init_vector_store()
             # Clear existing semantic index (delete all documents)
             if self._vector_store:
+                # An index that cannot even be counted is unreadable — persisted
+                # by an older chromadb, say ('PersistentData' object has no
+                # attribute 'max_seq_id'). Dropping and recreating it IS the
+                # recovery. What must not happen is carrying on regardless: the
+                # rebuild then writes into a broken collection, and semantic
+                # search answers "found nothing" instead of "index is broken".
                 try:
                     count = self._vector_store.count(self._collection_name)
-                    if count > 0:
+                except Exception as e:
+                    logger.warning(
+                        f"FILE_OPS: semantic index '{self._collection_name}' is unreadable "
+                        f"({e}) — recreating it")
+                    count = None
+
+                if count is None or count > 0:
+                    if count:
                         logger.info(f"FILE_OPS: Clearing {count} existing documents from index...")
                         if status_callback:
                             await status_callback(f"Clearing {count} existing documents from index...")
-                        self._vector_store.delete_collection(self._collection_name)
-                        self._vector_store.get_or_create_collection(self._collection_name)
-                        logger.info(f"FILE_OPS: Cleared {count} existing documents from VectorStore")
-                except Exception as e:
-                    logger.warning(f"FILE_OPS: Failed to clear VectorStore collection: {e}")
+                    self._vector_store.delete_collection(self._collection_name)
+                    self._vector_store.get_or_create_collection(self._collection_name)
+                    try:
+                        self._vector_store.count(self._collection_name)
+                    except Exception as e:
+                        raise VectorStoreError(
+                            f"semantic index '{self._collection_name}' is unreadable and could "
+                            f"not be recreated: {e}") from e
+                    logger.info("FILE_OPS: Cleared existing documents from VectorStore")
         elif semantic_enabled and incremental:
             # For incremental: just init, don't clear
             self._init_vector_store()

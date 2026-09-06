@@ -12,6 +12,7 @@ All issues have been resolved.
 import pytest
 from unittest.mock import Mock
 from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.utils.vector_store import VectorStoreError
 from plugins.file_ops.server import FileOpsServer
 
 
@@ -119,11 +120,13 @@ async def test_grep_search_finds_short_tokens(workspace_config):
 
 @pytest.mark.slow
 @pytest.mark.asyncio
-async def test_semantic_search_indexes_root_files(workspace_config):
+async def test_semantic_search_indexes_root_files(workspace_config, tmp_path):
     """Test that semantic search includes root-level files."""
     system_config, mcp_config = workspace_config
     mcp_config.search["enable_semantic_search"] = True
-    mcp_config.search["chroma_db_path"] = "data/cache/test_semantic_root"
+    # tmp_path, not data/cache: a fixed path keeps the index BETWEEN runs, and
+    # one written by an older chromadb makes this test fail on a healthy tree.
+    mcp_config.search["chroma_db_path"] = str(tmp_path / "semantic_root")
     
     server = FileOpsServer("test", system_config, mcp_config)
     
@@ -157,11 +160,11 @@ async def test_semantic_search_indexes_root_files(workspace_config):
 
 @pytest.mark.slow
 @pytest.mark.asyncio
-async def test_chromadb_batch_size_handling(workspace_config):
+async def test_chromadb_batch_size_handling(workspace_config, tmp_path):
     """Test that large file sets don't exceed ChromaDB batch limits."""
     system_config, mcp_config = workspace_config
     mcp_config.search["enable_semantic_search"] = True
-    mcp_config.search["chroma_db_path"] = "data/cache/test_batch_limit"
+    mcp_config.search["chroma_db_path"] = str(tmp_path / "batch_limit")
     
     server = FileOpsServer("test", system_config, mcp_config)
     
@@ -197,3 +200,40 @@ async def test_file_search_finds_root_files(workspace_config):
     assert test_found, "Expected to find test files in tests/"
     
     await server.search_engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_semantic_index_raises_instead_of_filling_nothing(
+    workspace_config, tmp_path
+):
+    """An index chromadb can no longer read used to be swallowed with a warning.
+
+    The rebuild then carried on into a broken collection and left it empty, so
+    semantic search answered "found nothing" instead of "the index is broken" —
+    measured on a real stale store from 2026-05 that failed with
+    'PersistentData' object has no attribute 'max_seq_id'.
+    """
+    system_config, mcp_config = workspace_config
+    mcp_config.search["enable_semantic_search"] = True
+    mcp_config.search["chroma_db_path"] = str(tmp_path / "unreadable")
+    server = FileOpsServer("test", system_config, mcp_config)
+
+    class Unreadable:
+        backend = "chromadb"
+
+        def count(self, collection):
+            raise AttributeError("'PersistentData' object has no attribute 'max_seq_id'")
+
+        # VectorStore.delete_collection swallows its own errors, so a drop that
+        # does not help is exactly the case the rebuild has to notice itself.
+        def delete_collection(self, collection):
+            pass
+
+        def get_or_create_collection(self, collection):
+            pass
+
+    server.search_engine._vector_store = Unreadable()
+    server.search_engine._vector_store_initialized = True
+
+    with pytest.raises(VectorStoreError, match="unreadable"):
+        await server.search_engine.rebuild_index(incremental=False)
