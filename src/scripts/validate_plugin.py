@@ -27,7 +27,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from jsonschema import ValidationError, validate as json_validate
+# jsonschema is imported where it is used (_validate_manifest_schema), not here:
+# it is not in requirements/core.txt -- it arrives with a plugin's own deps --
+# and validate_all_tool_schemas.py imports this module only for PLUGIN_ROOTS.
+# A module-level import would make that script need a package it never calls.
 
 # Import config analyzer (only used with --extract-config)
 sys.path.insert(0, str(Path(__file__).parent))
@@ -95,7 +98,7 @@ class PluginValidator:
             return False
 
         # Validate the manifest against its JSON schema
-        self._validate_plugin_yaml_schema()
+        self._validate_manifest_schema()
 
         # Validate schema.yaml structure
         self._validate_schema_yaml_structure()
@@ -164,8 +167,8 @@ class PluginValidator:
     def _load_configs(self) -> bool:
         """Load and parse the plugin manifest + schema."""
         try:
-            # Load the plugin manifest (plugin.toml) via the shared loader
-            # fallback) via the shared loader — returns the [plugin] metadata.
+            # Load the plugin manifest through the shared loader, which
+            # returns the [plugin] table of plugin.toml.
             from agent_system.plugins.plugin_manifest import load_plugin_metadata
             self.manifest = load_plugin_metadata(self.plugin_path)
 
@@ -195,8 +198,10 @@ class PluginValidator:
             self.errors.append(f"Error loading configs: {e}")
             return False
 
-    def _validate_plugin_yaml_schema(self) -> None:
+    def _validate_manifest_schema(self) -> None:
         """Validate the manifest against its JSON schema."""
+        from jsonschema import ValidationError, validate as json_validate
+
         schema_path = self.schemas_dir / "plugin-config.schema.json"
 
         if not schema_path.exists():

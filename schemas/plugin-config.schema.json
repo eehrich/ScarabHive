@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/yourusername/AgentSystem/schemas/plugin-config.schema.json",
   "title": "Agent System Plugin Configuration Schema",
-  "description": "Schema for plugin.yaml files in the Agent System",
+  "description": "Schema for the [plugin] table of a plugin.toml manifest",
   "type": "object",
   "required": ["name", "version", "description", "requires"],
   "properties": {

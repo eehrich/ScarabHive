@@ -47,9 +47,10 @@ ist der Ort, an dem sie auffallen sollen. Modelle mit `extra="allow"`
 ## Handgepflegte Schemas (kein Modell dahinter)
 
 - **`plugin-config.schema.json`**: Format der Plugin-Manifeste — der
-  `[plugin]`-Tabelle in `plugin.toml` (73 im Baum) ebenso wie der Legacy-
-  `plugin.yaml` (0 im Baum), die `plugin_manifest.py` nur noch als Fallback
-  liest. Angewandt von `src/scripts/validate_plugin.py`; nirgends in
+  `[plugin]`-Tabelle in `plugin.toml` (73 im Baum). Der Legacy-`plugin.yaml`
+  ist seit `2181390d` (06.09.2026) restlos raus, auch aus
+  `plugin_manifest.py`.
+  Angewandt von `src/scripts/validate_plugin.py`; nirgends in
   `.vscode/settings.json` gemappt, im Editor wirkt es also nicht.
   ⚠️ `additionalProperties: false` — ein neuer Manifest-Schlüssel muss hier
   eingetragen werden, sonst weist der Validator das Plugin ab.

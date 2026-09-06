@@ -84,27 +84,38 @@ agents:
       category: "development"
 ```
 
-### Plugin Agents (plugin.yaml)
+### Plugin-Agents (plugin.toml)
 
-For plugin-based agents, add `visibility` as a top-level field in `plugin.yaml`:
+Bei einem Plugin steht `visibility` in der `[plugin]`-Tabelle seines
+Manifests — das ist die Tabelle, die `load_plugin_metadata` liefert und aus
+der `ServerDecl.visibility` liest ([runtime.py:129](../src/agent_system/runtime.py#L129)):
 
-```yaml
-# src/plugins/<name>/plugin.yaml
-name: my_agent_plugin
-author: "Enrico Ehrich"
-version: 0.1.0
-description: "Specialized web research agent"
-entrypoint: plugin:PLUGIN_FACTORY
-type:
-  - mcp-server
-category: tools
-visibility: both  # Optional: "ui", "tool", "both" (default), or "private"
+```toml
+# src/plugins/<name>/plugin.toml
+[plugin]
+name = "my_agent_plugin"
+author = "Enrico Ehrich"
+version = "0.1.0"
+description = "Specialized web research agent"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["mcp-server"]
+category = "tools"
+visibility = "both"  # "ui", "tool", "both" oder "private"
 ```
 
-**Behavior:**
-- If `visibility` is specified in `plugin.yaml`, it will be used
-- If omitted, defaults to `"both"` (backward compatible)
-- Works exactly like config-based agents
+**Reihenfolge** ([runtime.py:120-132](../src/agent_system/runtime.py#L120-L132)) —
+die erste Quelle, die etwas sagt, gewinnt:
+
+1. die Instanz-Metadaten (`metadata.visibility` beim Eintrag in
+   `config/plugins.yaml`),
+2. das Manifest,
+3. sonst **`private`** — nicht sichtbar, sicher per Default. Ein
+   Plugin-Agent, der nirgends eine Sichtbarkeit deklariert, taucht also
+   weder in der UI noch als Tool auf.
+
+⚠️ Gemessen am 06.09.2026: **kein** ausgeliefertes `plugin.toml` deklariert
+eine Sichtbarkeit, und in `config/plugins.yaml` tut es genau ein Eintrag. Wer
+sich auf einen großzügigen Default verlässt, verlässt sich auf nichts.
 
 ## Internal Implementation
 

@@ -23,8 +23,9 @@ plugin-specific keys) keep their permissiveness, pydantic emits
 ``additionalProperties: true`` for them explicitly.
 
 NOT derived (no Pydantic model behind them): ``plugin-config.schema.json``
-(legacy plugin.yaml manifests; the tree only carries plugin.toml today) and
-``session-schema.json`` (SessionManager works on plain dicts).
+(the ``[plugin]`` table of a plugin.toml manifest, applied by
+src/scripts/validate_plugin.py) and ``session-schema.json`` (SessionManager
+works on plain dicts).
 
 Run after every change to the config models:
 

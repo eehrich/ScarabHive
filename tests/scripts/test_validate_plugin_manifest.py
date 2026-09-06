@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import re
 import shutil
 import subprocess
@@ -166,6 +167,137 @@ class TestTheShapesTheRuntimeSupports:
         assert match, f"--all named no total:\n{output[-2000:]}"
         assert int(match.group(1)) > 60, f"--all only checked {match.group(1)}"
         assert result.returncode == 0, output[-2000:]
+
+    #: What ``validate_all_tool_schemas.py`` takes for a plugin: a directory one
+    #: level under a root carrying EITHER marker. Derived from the filesystem,
+    #: never from ``plugin_roots`` -- asking the same constant on both sides is
+    #: how the sibling test below stayed green through a wrong root list.
+    def _plugins_on_disk(self) -> set[Path]:
+        found = {
+            child.resolve()
+            for child in (REPO / "src").glob("*/*")
+            if child.is_dir()
+            and ((child / "schema.yaml").exists() or (child / "plugin.toml").exists())
+        }
+        assert len(found) > 60, f"fixture: only {len(found)} plugins on disk"
+        return found
+
+    def test_the_sibling_validator_walks_the_same_roots(self):
+        """``validate_all_tool_schemas.py`` kept its own copy of the root list.
+
+        That copy named two roots while this one named four, so 9 plugin
+        directories were out of reach -- the same drift, one script over. It
+        imports ``plugin_roots`` now; what this pins is WHICH directories come
+        back, not how many, so swapping a root for another of equal size is
+        red too.
+        """
+        from scripts.validate_all_tool_schemas import (
+            find_plugin_directories as collect,
+        )
+
+        found = {p.resolve() for p in collect(plugin_roots(REPO))}
+
+        assert found == self._plugins_on_disk(), {
+            "missed": sorted(p.name for p in self._plugins_on_disk() - found),
+            "invented": sorted(p.name for p in found - self._plugins_on_disk()),
+        }
+
+    def test_the_sibling_validator_reports_what_it_checked(self):
+        """The same script through argv, because that is how anyone runs it.
+
+        "Plugins validated: 64" reads like a complete sweep, and that is what
+        it printed while nine were unreachable. The number has to match the
+        tree, or it is decoration.
+        """
+        result = subprocess.run(
+            [sys.executable,
+             str(REPO / "src" / "scripts" / "validate_all_tool_schemas.py")],
+            capture_output=True, text=True, cwd=REPO, timeout=120,
+        )
+        output = result.stdout + result.stderr
+
+        match = re.search(r"Plugins validated:\s*(\d+)", output)
+        assert match, f"the validator named no count:\n{output[-2000:]}"
+        assert int(match.group(1)) == len(self._plugins_on_disk()), output[-2000:]
+        assert result.returncode == 0, output[-2000:]
+
+    def test_a_tool_behind_a_template_flag_is_still_validated(self):
+        """One render is one branch, and a branch can hold whole tools.
+
+        tavily_search declares ``tools: []`` without an API key and two tools
+        with one; web_scraper hides ``download_file`` the same way. Rendered
+        once, those three sit in no document any check ever sees -- while the
+        regex this replaced kept both branches at once and made the file
+        unparseable instead. Neither is a check.
+        """
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        from scripts.validate_all_tool_schemas import ToolSchemaValidator
+
+        plugin = REPO / "src" / "plugins" / "tavily_search"
+        one_branch = load_schema_from_dir(plugin, {"name": plugin.name})
+        assert not (one_branch.get("tools") or []), (
+            "fixture: this schema no longer hides its tools behind a flag -- "
+            "the test would pass without rendering the other branch at all")
+
+        validator = ToolSchemaValidator()
+
+        assert validator.validate_plugin(plugin), validator.errors
+        assert len(validator.all_schemas) >= 2, "the hidden branch was never rendered"
+
+        # The other end of the same mechanism: where a plugin variable sits
+        # INSIDE a tool, the two renders describe the same tool in different
+        # words. Keyed by content instead of by name, six plugins' tools were
+        # counted twice (170 reported for 164 in the tree).
+        second = ToolSchemaValidator()
+        subject = REPO / "src" / "plugins" / "basic_agent"
+        renders = [
+            {(t.get("function") or {}).get("name") or t.get("name"):
+             json.dumps(t, sort_keys=True, default=str)
+             for t in ((doc or {}).get("tools") or [])}
+            for doc in ToolSchemaValidator()._render(subject)
+        ]
+        assert len(renders) == 2, "fixture: this schema takes no plugin variables"
+        assert any(renders[0][n] != renders[1][n]
+                   for n in set(renders[0]) & set(renders[1])), (
+            "fixture: both renders describe every tool identically -- the "
+            "duplicate this guards against could not arise here")
+
+        assert second.validate_plugin(subject), second.errors
+        names = [(t.get("function") or {}).get("name") or t.get("name")
+                 for _, t, _ in second.all_schemas]
+
+        assert len(names) == len(set(names)), names
+
+    def test_a_schema_the_stand_in_cannot_serve_is_not_called_broken(self, tmp_path):
+        """The stand-in has ONE shape, and a schema may want another.
+
+        Here the flag guards a loop over pairs, which the filled-in list cannot
+        provide -- the second render dies. The plugin's own default render still
+        has to stand: reporting a healthy schema as unparseable is exactly the
+        false alarm this change removed from tavily_search, and re-earning it
+        one level up would be no progress.
+        """
+        from scripts.validate_all_tool_schemas import ToolSchemaValidator
+
+        plugin = tmp_path / "probe"
+        plugin.mkdir()
+        (plugin / "schema.yaml").write_text(
+            "tools:\n"
+            "  - type: function\n"
+            "    function:\n"
+            '      name: "{{ name }}_probe"\n'
+            '      description: "{% if pairs %}{% for k, v in pairs %}{{ k }}'
+            '{% endfor %}{% endif %}"\n'
+            "      parameters:\n"
+            "        type: object\n",
+            encoding="utf-8")
+
+        validator = ToolSchemaValidator()
+
+        assert validator.validate_plugin(plugin), validator.errors
+        assert len(validator.all_schemas) == 1, validator.all_schemas
+        assert [n for n in validator.one_state if n.startswith("probe")], \
+            f"the failed second render was not reported: {validator.one_state}"
 
     def test_a_library_plugin_needs_no_entrypoint_module(self):
         """`coder`, `amiga`, `research`, `writer_publish`: agents, skills and
