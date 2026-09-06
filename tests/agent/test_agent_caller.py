@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -280,3 +281,95 @@ class TestParseJsonValueRepairGuard:
 
     def test_bare_dict_free_array_still_valid_via_fast_path(self):
         assert parse_json_value("[1, 2, 3]") == [1, 2, 3]
+
+
+class TestATransportFailureIsNotAFormatProblem:
+    """A sub-agent that never answered hands its failure back AS its answer.
+
+    Measured on the server, book 77 (2026-09-04 21:21:45): a model burned
+    131_072 output tokens, 131_070 of them on reasoning, and produced nothing.
+    ``_count_transport_failure`` logged "did NOT answer (transport/lifecycle,
+    NOT a format problem)" -- and one millisecond later the parser logged
+    "JSON parse failed after all strategies". What reached the pipeline, and
+    the operator reading it, was "Could not parse JSON from sub-agent": the
+    wrong end of the problem.
+    """
+
+    #: verbatim from logs/api.log, the whole message -- an earlier version of
+    #: this witness quoted only its first sentence and still called itself
+    #: verbatim
+    REAL = ("Error: LLM hit its output token limit without producing any content "
+            "(finish_reason=length, completion_tokens=131072, of which "
+            "reasoning=131070). The model exhausted its budget before answering "
+            "— lower the thinking/reasoning level, raise max_tokens, or use "
+            "a different model.")
+
+    #: The reason the guard is the FIRST thing the parser does. Every one of
+    #: these carries a brace span, so ``repair_json`` used to return the
+    #: provider's error body as if the sub-agent had answered it -- and the
+    #: caller's ``parsed.get("issues", [])`` then read "0 findings" with no
+    #: exception and no retry. Sources: sub_agent_manager/server.py wraps the
+    #: agent's message, servers/agent/server.py stringifies the provider
+    #: exception, and provider SDKs stringify with their JSON body.
+    ERROR_BODIES_THAT_USED_TO_PARSE = [
+        "Error: Agent execution failed: Error code: 429 - "
+        "{'error': {'message': 'Rate limit', 'type': 'rate_limit_error'}}",
+        'Error: LLM call failed after 3 retries: {"type": "overloaded_error"}',
+        'Cancelled: [{"issue": 1}]',
+    ]
+
+    def test_the_message_names_the_cause_not_the_json(self):
+        with pytest.raises(ValueError) as excinfo:
+            parse_json_value(self.REAL)
+
+        message = str(excinfo.value)
+        assert "did not answer" in message, message
+        assert "token limit" in message, "the cause itself has to survive into the message"
+        assert "parse JSON" not in message, message
+
+    def test_it_does_not_log_a_parse_failure(self, caplog):
+        """The misleading half: a warning that contradicts the one two
+        functions up, in the same millisecond."""
+        with caplog.at_level(logging.WARNING, logger="agent_system.core.agent_caller"):
+            with pytest.raises(ValueError):
+                parse_json_value(self.REAL)
+
+        assert not [r for r in caplog.records if "JSON parse failed" in r.getMessage()],             [r.getMessage() for r in caplog.records]
+
+    def test_a_real_parse_failure_still_says_so(self):
+        """The other way, or the branch above would swallow the case it is
+        named after. Text that is simply not JSON keeps its own message."""
+        with pytest.raises(ValueError, match="Could not parse JSON"):
+            parse_json_value("the reviewer thought about it and gave up")
+
+    @pytest.mark.parametrize("body", ERROR_BODIES_THAT_USED_TO_PARSE)
+    def test_an_error_body_is_never_read_as_an_answer(self, body):
+        """The placement test, and the one that measures the real damage.
+
+        Move the guard back behind the parse attempts and every one of these
+        comes out as a dict again -- silently, because a transport failure
+        that PARSES raises nothing, retries nothing, and reads downstream as
+        an empty finding list. The version of this guard that sat at the end
+        of the function caught only the brace-free minority.
+        """
+        with pytest.raises(ValueError, match="did not answer"):
+            parse_json_value(body)
+
+    @pytest.mark.parametrize("answer,expected", [
+        ('{"a": 1}', {"a": 1}),
+        ('```json\n{"b": 2}\n```', {"b": 2}),
+        ("Here it is: {\"c\": 3}, done.", {"c": 3}),
+        ('[{"d": 4}]', [{"d": 4}]),
+    ])
+    def test_an_early_return_must_not_swallow_a_real_answer(self, answer, expected):
+        """The other direction. The guard is now the first thing the parser
+        does, so it has to be narrow: only the two markers the sub-agent
+        manager itself prepends, nothing that merely mentions an error."""
+        assert parse_json_value(answer) == expected
+
+    def test_an_answer_that_only_talks_about_errors_still_parses(self):
+        """A reviewer reporting on errors is not a failed reviewer -- the
+        marker has to be at the START, not anywhere in the text."""
+        assert parse_json_value('{"issues": ["Error: the ship sank twice"]}') == {
+            "issues": ["Error: the ship sank twice"]
+        }

@@ -338,10 +338,33 @@ class AgentCaller:
 def parse_json_value(text: str) -> Any:
     """Parse the JSON value (object or array) out of a sub-agent's text.
 
-    Order: fences stripped → strict ``json.loads`` → HTML-escaped guard →
-    first ``{…}`` span → ``repair_json``. Raises ``ValueError`` when nothing
-    yields a dict or list.
+    Order: the sub-agent's own failure → fences stripped → strict
+    ``json.loads`` → HTML-escaped guard → first ``{…}`` span → ``repair_json``.
+    Raises ``ValueError`` when nothing yields a dict or list.
     """
+    # FIRST, before any parsing: the sub-agent's own failure, handed back AS
+    # its answer. ``_count_transport_failure`` recognises exactly this prefix
+    # on exactly this string (``_create`` passes one text to both) and logs
+    # "did NOT answer (transport/lifecycle, not a format problem)".
+    #
+    # This has to run before the brace-span and ``repair_json``, not after
+    # them -- measured, because the first version of this guard sat at the end
+    # and never fired for the common case:
+    #
+    #   Error: Agent execution failed: Error code: 429 - {'error': {...}}
+    #     -> repair_json returns {'error': {...}}
+    #     -> the caller's parsed.get("issues", []) yields []
+    #     -> "0 findings", no exception, no retry: a failed review reads as a
+    #        clean book.
+    #
+    # Any brace in a provider's error body is enough. Parsing it would be
+    # parsing the transport's complaint as the agent's answer, so nothing
+    # carrying this prefix is offered to the parser at all -- callers that can
+    # still salvage the text get it unchanged from their own except-branch
+    # (``pipeline_agent._parse_json_result`` -> markdown replacement table).
+    if text.startswith(_FAILED_AS_CONTENT):
+        raise ValueError(f"Sub-agent did not answer: {text[:200].strip()}")
+
     text = strip_markdown_fences(text)
     try:
         return json.loads(text)
