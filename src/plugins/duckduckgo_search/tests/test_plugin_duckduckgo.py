@@ -1,4 +1,5 @@
 """duckduckgo_search: the ddgs client is patched, nothing reaches the network."""
+import sys
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -151,3 +152,12 @@ async def test_every_engine_failing_is_retried_not_reported_as_zero_hits(server)
 def test_factory_builds_a_named_server(mock_system_config, mock_mcp_config):
     from plugins.duckduckgo_search.plugin import PLUGIN_FACTORY
     assert PLUGIN_FACTORY("custom_ddg", mock_system_config, mock_mcp_config).name == "custom_ddg"
+
+
+async def test_a_missing_package_is_an_error_not_zero_hits(server, monkeypatch):
+    """The predecessor package answered an unusable install with an EMPTY list
+    and no exception -- a search that finds nothing looks like a search that
+    ran. A missing package must therefore never come back as a result."""
+    monkeypatch.setitem(sys.modules, "ddgs", None)  # `from ddgs import ...` raises
+    with pytest.raises(RuntimeError, match="pip install ddgs"):
+        await server.call("web_search", {"query": "test", "_status": AsyncMock()})
