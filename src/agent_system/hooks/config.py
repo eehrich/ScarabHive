@@ -84,7 +84,7 @@ class HooksConfig:
         
         Args:
             hook_name: Name of the hook
-            metadata: Hook metadata from plugin.yaml
+            metadata: Hook metadata from plugin.toml
             
         Returns:
             Updated metadata with global overrides applied

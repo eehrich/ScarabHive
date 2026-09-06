@@ -24,7 +24,7 @@ def test_cli_plugins_info_raw_json(monkeypatch, tmp_path, capsys):
     plugin_dir = pdir / "raw_example"
     plugin_dir.mkdir()
     (plugin_dir / "plugin.py").write_text('PLUGIN_NAME = "raw_example"\nPLUGIN_FACTORY = lambda name, config, ssl_verify=True: None\n')
-    (plugin_dir / "plugin.yaml").write_text('description: "Raw plugin"\nversion: "0.0"\n')
+    (plugin_dir / "plugin.toml").write_text('[plugin]\ndescription = "Raw plugin"\nversion = "0.0"\n')
 
     cfg = _make_cfg(pdir)
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)

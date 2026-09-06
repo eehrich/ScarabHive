@@ -438,7 +438,7 @@ class PluginMCPRegistry:
                     f"Plugin type '{plugin_type}' (server '{server_name}') is enabled "
                     f"in config but not found in discovered plugins. "
                     f"Available plugins: {list(self.plugin_factories.keys())}. "
-                    f"Check plugin.yaml 'name' field matches the config 'type'."
+                    f"Check plugin.toml [plugin] 'name' matches the config 'type'."
                 )
                 continue
 

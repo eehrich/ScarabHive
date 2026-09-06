@@ -21,7 +21,6 @@ def _repo_yaml_files() -> list[Path]:
     files = set(REPO.glob("config/**/*.yaml"))
     for pkg in ("plugins", "plugins_writer", "plugins_llm"):
         files.update((SRC / pkg).rglob("schema.yaml"))
-        files.update((SRC / pkg).rglob("plugin.yaml"))
     return sorted(files)
 
 

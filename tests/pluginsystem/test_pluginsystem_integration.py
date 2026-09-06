@@ -206,13 +206,13 @@ class TestPluginDiscoveryIntegration:
 
         plugins = discover_all_plugins([temp_workspace / "plugins"])
 
-        # Only check metadata for plugins that carry a manifest. The manifest is
-        # plugin.toml (with legacy plugin.yaml as fallback); some plugins (e.g.
-        # MCP servers) may only have schema.yaml and carry no metadata.
+        # Only check metadata for plugins that carry a manifest (plugin.toml);
+        # some plugins (e.g. MCP servers) may only have schema.yaml and carry
+        # no metadata.
         plugins_with_metadata = {}
         for plugin_name, factory in plugins.items():
             plugin_dir = temp_workspace / "plugins" / plugin_name
-            if (plugin_dir / "plugin.toml").exists() or (plugin_dir / "plugin.yaml").exists():
+            if (plugin_dir / "plugin.toml").exists():
                 plugins_with_metadata[plugin_name] = factory
 
         # Ensure at least some plugins have metadata

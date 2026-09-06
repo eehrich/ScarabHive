@@ -40,8 +40,8 @@ def _register_shared_modules(path: Path, pkg_name: str) -> None:
             continue
         
         # Skip if it is a plugin, not a shared module. Recognized the same
-        # way the loader does: plugin.py OR a plugin manifest (plugin.toml/
-        # plugin.yaml). Plugins with entrypoint = "server:..." (audio_ops,
+        # way the loader does: plugin.py OR a plugin.toml. Plugins with
+        # entrypoint = "server:..." (audio_ops,
         # comfyui, ...) have no plugin.py and were misclassified as shared
         # modules -- every one of their *.py files got imported eagerly,
         # regardless of whether the plugin was even enabled.
@@ -171,7 +171,7 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         if not d.is_dir():
             continue
         
-        # Load the plugin manifest (plugin.toml preferred, plugin.yaml fallback)
+        # Load the plugin manifest (plugin.toml)
         # once — reused below for the entrypoint AND the attached _plugin_metadata.
         metadata = load_plugin_metadata(d)
         entrypoint_module = "plugin"
@@ -324,7 +324,7 @@ def discover_entrypoint_plugins(group: str = "agent_system.mcp_plugins") -> Dict
                 name = getattr(ep, "name", None) or getattr(factory, "__name__", None)
                 # Try to attach plugin metadata from the package where the
                 # entry-point factory is defined. This allows packaged
-                # plugins to include a `plugin.yaml` alongside their code.
+                # plugins to include a `plugin.toml` alongside their code.
                 metadata_obj = None
                 try:
                     mod_name = getattr(factory, "__module__", None)
@@ -443,7 +443,7 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
         logger.warning(f"Error discovering entrypoint plugins from group '{group}': {e}", exc_info=True)
 
     # Ensure metadata: for factories missing `_plugin_metadata`, try to load
-    # a `plugin.yaml` from the configured filesystem plugin directories (if
+    # a `plugin.toml` from the configured filesystem plugin directories (if
     # any were provided). This avoids hardcoding repository-level paths.
     if source_dirs:
         try:
@@ -482,7 +482,7 @@ async def register_plugin_hooks(
     Args:
         plugin_name: Name of the plugin
         plugin_instance: Instantiated plugin server (should implement PluginHook for hook-enabled plugins)
-        metadata: Plugin metadata from plugin.yaml (optional, will use _plugin_metadata attribute if not provided)
+        metadata: Plugin metadata from plugin.toml (optional, will use _plugin_metadata attribute if not provided)
         registry: Hook registry to use (optional, will use global registry if not provided)
         hooks_config: Global hooks configuration (optional, will load from config/plugins.yaml if not provided)
         instance_hook_config: The server INSTANCE's ``hook_config`` mapping from

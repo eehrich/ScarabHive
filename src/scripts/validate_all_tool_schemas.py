@@ -212,8 +212,8 @@ def find_plugin_directories(base_dirs: list[Path]) -> list[Path]:
 
         for item in base_dir.iterdir():
             if item.is_dir():
-                # Check if it's a plugin (has schema.yaml or plugin.yaml)
-                if (item / "schema.yaml").exists() or (item / "plugin.yaml").exists():
+                # Check if it's a plugin (has schema.yaml or plugin.toml)
+                if (item / "schema.yaml").exists() or (item / "plugin.toml").exists():
                     plugin_dirs.append(item)
 
     return plugin_dirs

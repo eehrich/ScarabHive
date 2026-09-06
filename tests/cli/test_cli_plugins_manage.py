@@ -60,7 +60,7 @@ def test_cli_plugins_search(monkeypatch, tmp_path, capsys):
     plugin_dir = pdir / "search_example"
     plugin_dir.mkdir()
     (plugin_dir / "plugin.py").write_text('PLUGIN_NAME = "search_example"\nPLUGIN_FACTORY = lambda name, config, ssl_verify=True: None\n')
-    (plugin_dir / "plugin.yaml").write_text('description: "Searchable plugin"\nversion: "0.0"\n')
+    (plugin_dir / "plugin.toml").write_text('[plugin]\ndescription = "Searchable plugin"\nversion = "0.0"\n')
 
     from agent_system.config.models import AgentSystemConfig, PluginsConfig, LLMSystemConfig, LLMModelConfig
     cfg = AgentSystemConfig(

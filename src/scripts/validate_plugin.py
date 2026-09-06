@@ -3,7 +3,7 @@
 Plugin Validation Script
 
 Validates plugin conformity by checking:
-- plugin.yaml structure and required fields
+- plugin.toml structure and required fields
 - schema.yaml structure and tool definitions
 - File structure and required files
 - Schema compliance with JSON schemas
@@ -15,7 +15,7 @@ Usage:
     python src/scripts/validate_plugin.py <plugin_path>
     python src/scripts/validate_plugin.py --all
     python src/scripts/validate_plugin.py --plugin basic_operations
-    python src/scripts/validate_plugin.py --all --fix
+    python src/scripts/validate_plugin.py --all --merge-config
 """
 
 import argparse
@@ -43,6 +43,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+#: A plugin is a directory carrying this. ONE definition, because the last
+#: time the two places disagreed, ``_check_file_structure`` was fixed and
+#: ``find_plugin_directories`` was not: ``--all`` then found 0 of 64 plugins
+#: and exited 0, so the pre-commit hook, the CI step and the make target all
+#: passed on an empty list.
+MANIFEST_NAME = "plugin.toml"
+
+#: Every root that actually holds plugins. Measured 2026-09-06: 52 + 12 + 2 + 7
+#: manifests. ``--all`` and ``--plugin`` used to name only the first two, so
+#: plugins_trading and plugins_llm were unreachable by either.
+PLUGIN_ROOTS = ("plugins", "plugins_writer", "plugins_trading", "plugins_llm")
+
+
+def has_manifest(path: Path) -> bool:
+    """Does this directory look like a plugin?"""
+    return (path / MANIFEST_NAME).exists()
+
+
+def plugin_roots(project_root: Path) -> list[Path]:
+    """The plugin roots under a checkout, in a fixed order."""
+    return [project_root / "src" / name for name in PLUGIN_ROOTS]
+
 
 class PluginValidator:
     """Validates plugin conformity against system requirements."""
@@ -52,7 +74,7 @@ class PluginValidator:
         self.schemas_dir = schemas_dir
         self.errors: list[str] = []
         self.warnings: list[str] = []
-        self.plugin_yaml: dict[str, Any] | None = None
+        self.manifest: dict[str, Any] | None = None
         self.schema_yaml: dict[str, Any] | None = None
 
     def validate(self) -> bool:
@@ -72,7 +94,7 @@ class PluginValidator:
         if not self._load_configs():
             return False
 
-        # Validate plugin.yaml against JSON schema
+        # Validate the manifest against its JSON schema
         self._validate_plugin_yaml_schema()
 
         # Validate schema.yaml structure
@@ -103,7 +125,7 @@ class PluginValidator:
 
     def declared_types(self) -> list[str]:
         """The manifest's `type` list, old string form converted."""
-        declared = (self.plugin_yaml or {}).get("type", ["mcp-server"])
+        declared = (self.manifest or {}).get("type", ["mcp-server"])
         if isinstance(declared, str):
             return self._convert_old_type_format(declared)
         return list(declared or [])
@@ -113,21 +135,19 @@ class PluginValidator:
 
     def _check_file_structure(self) -> bool:
         """Check that required files exist."""
-        # plugin.toml preferred, plugin.yaml as the legacy fallback -- the same
-        # order load_plugin_metadata uses two methods below. Demanding
-        # plugin.yaml here made this validator refuse EVERY plugin in the tree
-        # at its first check: measured 2026-09-05, 73 plugin.toml and 0
-        # plugin.yaml, so nothing behind this line had run in a long time.
-        if not any((self.plugin_path / name).exists()
-                   for name in ("plugin.toml", "plugin.yaml")):
-            self.errors.append("Missing required file: plugin.toml (or legacy plugin.yaml)")
+        # Demanding plugin.yaml here made this validator refuse EVERY plugin
+        # in the tree at its first check: measured 2026-09-05, 73 plugin.toml
+        # and 0 plugin.yaml, so nothing behind this line had run in a long
+        # time. plugin.yaml is gone, not deprecated -- there is no fallback.
+        if not has_manifest(self.plugin_path):
+            self.errors.append(f"Missing required file: {MANIFEST_NAME}")
             return False
 
         # The manifest decides what else has to be there -- so read it first.
         # (_load_configs runs after this method and does it again; here we only
         # need the type, and a manifest that cannot be read is reported there.)
         from agent_system.plugins.plugin_manifest import load_plugin_metadata
-        self.plugin_yaml = load_plugin_metadata(self.plugin_path)
+        self.manifest = load_plugin_metadata(self.plugin_path)
 
         if not (self.plugin_path / "schema.yaml").exists() and not self._is_codeless():
             self.warnings.append(
@@ -144,10 +164,10 @@ class PluginValidator:
     def _load_configs(self) -> bool:
         """Load and parse the plugin manifest + schema."""
         try:
-            # Load the plugin manifest (plugin.toml preferred, plugin.yaml
+            # Load the plugin manifest (plugin.toml) via the shared loader
             # fallback) via the shared loader — returns the [plugin] metadata.
             from agent_system.plugins.plugin_manifest import load_plugin_metadata
-            self.plugin_yaml = load_plugin_metadata(self.plugin_path)
+            self.manifest = load_plugin_metadata(self.plugin_path)
 
             # Render schema.yaml through the RUNTIME's loader, not through a
             # regex. Stripping `{% ... %}` leaves BOTH branches of a
@@ -176,7 +196,7 @@ class PluginValidator:
             return False
 
     def _validate_plugin_yaml_schema(self) -> None:
-        """Validate plugin.yaml against JSON schema."""
+        """Validate the manifest against its JSON schema."""
         schema_path = self.schemas_dir / "plugin-config.schema.json"
 
         if not schema_path.exists():
@@ -196,15 +216,15 @@ class PluginValidator:
                 # Ensure it's just a string type
                 schema["properties"]["category"]["type"] = "string"
 
-            json_validate(instance=self.plugin_yaml, schema=schema)
-            logger.debug("plugin.yaml passed JSON schema validation")
+            json_validate(instance=self.manifest, schema=schema)
+            logger.debug("plugin.toml passed JSON schema validation")
 
         except ValidationError as e:
             self.errors.append(
-                f"plugin.yaml schema validation failed: {e.message} at {list(e.path)}"
+                f"plugin.toml schema validation failed: {e.message} at {list(e.path)}"
             )
         except Exception as e:
-            self.errors.append(f"Error validating plugin.yaml schema: {e}")
+            self.errors.append(f"Error validating plugin.toml schema: {e}")
 
     def _validate_schema_yaml_structure(self) -> None:
         """Validate schema.yaml structure and required fields."""
@@ -212,7 +232,7 @@ class PluginValidator:
             return  # schema.yaml is optional
 
         # Check for tools section (if MCP plugin)
-        plugin_types = self.plugin_yaml.get("type", ["mcp-server"])
+        plugin_types = self.manifest.get("type", ["mcp-server"])
 
         # Handle both old string format and new list format for backward compatibility
         if isinstance(plugin_types, str):
@@ -548,11 +568,11 @@ class PluginValidator:
                     )
 
     def _cross_validate_configs(self) -> None:
-        """Cross-validate plugin.yaml and schema.yaml."""
-        if not self.plugin_yaml or not self.schema_yaml:
+        """Cross-validate plugin.toml and schema.yaml."""
+        if not self.manifest or not self.schema_yaml:
             return
 
-        plugin_types = self.plugin_yaml.get("type", ["mcp-server"])
+        plugin_types = self.manifest.get("type", ["mcp-server"])
 
         # Handle both old string format and new list format
         if isinstance(plugin_types, str):
@@ -621,23 +641,23 @@ class PluginValidator:
 
     def _validate_hooks(self) -> None:
         """Validate hook configuration consistency."""
-        if not self.plugin_yaml:
+        if not self.manifest:
             return
 
-        # Check if plugin.yaml declares hooks
-        plugin_hooks = self.plugin_yaml.get("hooks", [])
+        # Check if the manifest declares hooks
+        plugin_hooks = self.manifest.get("hooks", [])
 
         if plugin_hooks:
             self.warnings.append(
-                "plugin.yaml contains 'hooks' section - hooks should be defined in schema.yaml"
+                "plugin.toml contains a hooks section - hooks belong in schema.yaml"
             )
 
     def _validate_entrypoint(self) -> None:
         """Validate entrypoint module and factory."""
-        if not self.plugin_yaml:
+        if not self.manifest:
             return
 
-        entrypoint = self.plugin_yaml.get("entrypoint")
+        entrypoint = self.manifest.get("entrypoint")
         if not entrypoint:
             if not self._is_codeless():
                 self.errors.append("Missing 'entrypoint' in the manifest")
@@ -705,122 +725,6 @@ class PluginValidator:
         print()
         return False
 
-    def apply_fixes(self) -> bool:
-        """
-        Apply automatic fixes to plugin.yaml based on code analysis.
-
-        Returns:
-            True if fixes were applied successfully
-        """
-        if not self.auto_fix:
-            return False
-
-        plugin_name = self.plugin_path.name
-        plugin_yaml_path = self.plugin_path / "plugin.yaml"
-
-        try:
-            # Analyze plugin code to extract config parameters
-            logger.debug(f"Analyzing {plugin_name} for config parameters...")
-            discovered_config = analyze_plugin(self.plugin_path)
-
-            if not discovered_config:
-                logger.debug(f"No config parameters found for {plugin_name}")
-                return False
-
-            # Convert flat keys with dots to nested structure
-            structured_config = self._structure_config(discovered_config)
-
-            # Reload current plugin.yaml
-            with open(plugin_yaml_path, encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-
-            # Check if config needs updating
-            current_config = data.get("config", {})
-
-            # Only update if config is empty or missing parameters
-            needs_update = False
-            if not current_config or current_config == {}:
-                needs_update = True
-            else:
-                # Check if any discovered params are missing
-                for key in discovered_config.keys():
-                    if key not in current_config:
-                        needs_update = True
-                        break
-
-            if needs_update:
-                data["config"] = structured_config
-
-                # Write back
-                with open(plugin_yaml_path, "w", encoding="utf-8") as f:
-                    yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
-                param_count = self._count_params(structured_config)
-                self.fixes_applied.append(
-                    f"Updated config with {param_count} parameter(s) from code analysis"
-                )
-                logger.info(f"Applied config fix for {plugin_name}")
-                return True
-
-        except Exception as e:
-            logger.error(f"Failed to apply fixes: {e}")
-            return False
-
-        return False
-
-    def _structure_config(self, flat_config: dict) -> dict:
-        """
-        Convert flat config with dot-notation keys to nested structure.
-
-        Example:
-            {'security.audit_log': True, 'machines': []}
-            -> {'security': {'audit_log': True}, 'machines': []}
-
-        If both 'security.audit_log' and 'audit_log' exist, prefer the nested version.
-        """
-        structured = {}
-        nested_keys = set()  # Track which keys have nested versions (e.g., 'audit_log' has 'security.audit_log')
-
-        # First pass: identify which keys have nested versions
-        for key in flat_config.keys():
-            if '.' in key:
-                # e.g., 'security.audit_log' -> add 'audit_log' to nested_keys
-                parts = key.split('.')
-                for i in range(1, len(parts) + 1):
-                    child_key = '.'.join(parts[i:])
-                    if child_key:  # Don't add empty string
-                        nested_keys.add(child_key)
-
-        # Second pass: build structure
-        for key, value in flat_config.items():
-            if '.' in key:
-                # Nested key like 'security.audit_log'
-                parts = key.split('.')
-                parent = parts[0]
-                child = '.'.join(parts[1:])
-
-                if parent not in structured:
-                    structured[parent] = {}
-
-                # Recursively handle deeper nesting
-                if '.' in child:
-                    # e.g., 'a.b.c' -> structured['a']['b']['c']
-                    current = structured[parent]
-                    child_parts = child.split('.')
-                    for part in child_parts[:-1]:
-                        if part not in current:
-                            current[part] = {}
-                        current = current[part]
-                    current[child_parts[-1]] = value
-                else:
-                    structured[parent][child] = value
-            else:
-                # Flat key - only add if there's no nested version of this key
-                if key not in nested_keys:
-                    structured[key] = value
-
-        return structured
-
     def _count_params(self, config: dict) -> int:
         """Count total parameters in config."""
         count = 0
@@ -842,7 +746,7 @@ def find_plugin_directories(base_dirs: list[Path]) -> list[Path]:
             continue
 
         for item in base_dir.iterdir():
-            if item.is_dir() and (item / "plugin.yaml").exists():
+            if item.is_dir() and has_manifest(item):
                 plugin_dirs.append(item)
 
     return plugin_dirs
@@ -861,7 +765,7 @@ def main():
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Validate all plugins in src/plugins/ and src/plugins_writer/"
+        help="Validate every plugin under the roots in PLUGIN_ROOTS"
     )
     parser.add_argument(
         "--plugin",
@@ -904,19 +808,12 @@ def main():
 
     if args.all:
         # Validate all plugins
-        base_dirs = [
-            project_root / "src" / "plugins",
-            project_root / "src" / "plugins_writer"
-        ]
-        plugins_to_validate = find_plugin_directories(base_dirs)
+        plugins_to_validate = find_plugin_directories(plugin_roots(project_root))
 
     elif args.plugin:
         # Validate specific plugin by name
         plugin_name = args.plugin
-        possible_locations = [
-            project_root / "src" / "plugins" / plugin_name,
-            project_root / "src" / "plugins_writer" / plugin_name
-        ]
+        possible_locations = [root / plugin_name for root in plugin_roots(project_root)]
 
         for location in possible_locations:
             if location.exists():

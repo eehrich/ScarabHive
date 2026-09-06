@@ -13,12 +13,19 @@ from __future__ import annotations
 
 import contextlib
 import io
+import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from scripts.validate_plugin import PluginValidator
+from scripts.validate_plugin import (
+    PluginValidator,
+    find_plugin_directories,
+    plugin_roots,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 SCHEMAS = REPO / "schemas"
@@ -101,17 +108,64 @@ class TestTheShapesTheRuntimeSupports:
         enum. None of them were broken plugins.
 
         Measured 2026-09-05: 73 plugins, 0.9 s.
+
+        The list comes from the SHIPPED collection path, not from a scan this
+        test writes itself. The hand-rolled version was why this guard could
+        not see that ``find_plugin_directories`` still demanded ``plugin.yaml``
+        long after ``_check_file_structure`` had stopped: the sweep was green
+        on 73 plugins while ``--all`` was finding 0.
         """
-        roots = [REPO / "src" / d for d in
-                 ("plugins", "plugins_writer", "plugins_trading", "plugins_llm")]
-        plugins = [p for root in roots if root.is_dir()
-                   for p in sorted(root.iterdir())
-                   if p.is_dir() and (p / "plugin.toml").exists()]
+        plugins = find_plugin_directories(plugin_roots(REPO))
 
         assert len(plugins) > 60, f"only {len(plugins)} plugins found -- wrong roots?"
         broken = {p.name: _validate(p).errors for p in plugins if _validate(p).errors}
 
         assert broken == {}, broken
+
+    def test_the_collection_path_finds_every_manifest_in_the_tree(self):
+        """What the sweep above stands on, checked against the filesystem.
+
+        Two things drifted apart here before: WHICH file marks a plugin
+        (``plugin.toml`` won, the collector still asked for ``plugin.yaml``),
+        and WHICH roots are searched (``--all`` named two of four, so
+        plugins_trading and plugins_llm were unreachable).
+        """
+        found = {p.resolve() for p in find_plugin_directories(plugin_roots(REPO))}
+        # The other side is derived from the FILESYSTEM, never from
+        # ``plugin_roots`` -- the first version of this test asked the same
+        # constant on both sides, so dropping two roots shrank both and the
+        # mutation stayed green. Anything under src/ holding a plugin.toml is
+        # a plugin, whatever its parent is called.
+        on_disk = {
+            manifest.parent.resolve()
+            for manifest in (REPO / "src").glob("*/*/plugin.toml")
+        }
+
+        assert found == on_disk, {
+            "missed": sorted(p.name for p in on_disk - found),
+            "invented": sorted(p.name for p in found - on_disk),
+        }
+        assert len(on_disk) > 60, f"fixture: only {len(on_disk)} plugins on disk"
+
+    def test_the_all_flag_reports_what_it_checked(self):
+        """The production path, end to end, through argv.
+
+        ``--all`` is the documented collective form -- pre-commit hook, CI
+        step and make target all call it. It printed nothing and exited 0
+        while checking zero plugins, which is the exact failure this whole
+        file exists to prevent, one function deeper. A count in the output is
+        what tells "all green" from "nothing looked at".
+        """
+        result = subprocess.run(
+            [sys.executable, str(REPO / "src" / "scripts" / "validate_plugin.py"), "--all"],
+            capture_output=True, text=True, cwd=REPO, timeout=900,
+        )
+        output = result.stdout + result.stderr
+
+        match = re.search(r"Total:\s*(\d+)\s+plugins", output)
+        assert match, f"--all named no total:\n{output[-2000:]}"
+        assert int(match.group(1)) > 60, f"--all only checked {match.group(1)}"
+        assert result.returncode == 0, output[-2000:]
 
     def test_a_library_plugin_needs_no_entrypoint_module(self):
         """`coder`, `amiga`, `research`, `writer_publish`: agents, skills and

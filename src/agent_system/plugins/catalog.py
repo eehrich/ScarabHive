@@ -53,7 +53,7 @@ class PluginCatalog:
         return self._types
 
     def manifest(self, typ: str) -> dict | None:
-        """The plugin.toml/plugin.yaml contents of a type, or None."""
+        """The plugin.toml contents of a type, or None."""
         self.types()
         return self._manifests.get(typ)
 

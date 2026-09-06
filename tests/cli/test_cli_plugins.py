@@ -15,8 +15,8 @@ def test_cli_plugins_list(monkeypatch, tmp_path, capsys):
     plugin_file.write_text(
         'PLUGIN_NAME = "cli_test_example"\nPLUGIN_FACTORY = lambda name, config, ssl_verify=True: None\n'
     )
-    meta_file = plugin_dir / "plugin.yaml"
-    meta_file.write_text('description: "Example plugin"\nversion: "0.1"\n')
+    meta_file = plugin_dir / "plugin.toml"
+    meta_file.write_text('[plugin]\ndescription = "Example plugin"\nversion = "0.1"\n')
 
     # Use new AgentSystemConfig structure
     from agent_system.config.models import (
