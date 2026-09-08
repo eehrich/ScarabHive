@@ -171,8 +171,22 @@ llm_system:
       extends: openrouter-claude-sonnet
       max_tokens: 0
 
+    openrouter-claude-opus:
+      extends: openrouter-claude
+      model: ~anthropic/claude-opus-latest
 
+    openrouter-claude-opus-unlimited:
+      extends: openrouter-claude-opus
+      max_tokens: 0
 
+    openrouter-claude-fable:
+      extends: openrouter-claude
+      model: ~anthropic/claude-fable-latest
+
+    openrouter-claude-fable-unlimited:
+      extends: openrouter-claude-fable  
+      max_tokens: 0
+      
     #
     # Deepseek Models
     #

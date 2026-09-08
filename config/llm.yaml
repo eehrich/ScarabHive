@@ -174,7 +174,7 @@ llm_system:
 
     claude-fable-5:
       extends: claude-opus-5-thinking
-      model: claude-fable-5
+      model: claude-fable-5-1
       thinking_budget: null
       include_thoughts: false
 
