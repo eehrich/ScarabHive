@@ -101,6 +101,14 @@ llm_system:
       capabilities:
         image_input: true
 
+    openrouter-gpt-astra:
+      extends: openrouter-gpt
+      model: openai/gpt-6-astra
+
+    openrouter-gpt-astra-unlimited:
+      extends: openrouter-gpt-astra
+      max_tokens: 0
+
     openrouter-gpt-sol:
       extends: openrouter-gpt
       model: openai/gpt-5.6-sol
@@ -354,13 +362,13 @@ llm_system:
       max_steps: 500
 
     or-gpt-pro:
-      model_ref: openrouter-gpt-sol
-      description: "OpenRouter GPT Sol - Flagship model"
+      model_ref: openrouter-gpt-astra
+      description: "OpenRouter GPT-Astra - Flagship model"
       max_steps: 500
 
     or-gpt-pro-unlimited:
-      model_ref: openrouter-gpt-sol-unlimited
-      description: "OpenRouter GPT-Sol - No output token limit"
+      model_ref: openrouter-gpt-astra-unlimited
+      description: "OpenRouter GPT-Astra - No output token limit"
       max_steps: 500
 
     or-gpt-full:
