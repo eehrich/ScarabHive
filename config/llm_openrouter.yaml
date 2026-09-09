@@ -68,7 +68,7 @@ llm_system:
 
     openrouter-gemini-flash:
       extends: openrouter-gemini
-      model: google/gemini-3.7-flash
+      model: ~google/gemini-flash-latest
       thinking_level: medium
 
     openrouter-gemini-flash-minimal:
