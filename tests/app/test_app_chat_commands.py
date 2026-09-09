@@ -435,3 +435,275 @@ class TestAgentTools:
 
     def test_it_requires_authentication(self, client):
         assert client.get("/agents/whoever/tools").status_code == 401
+
+
+@pytest.fixture
+def vars_session(client):
+    """A session id nobody else uses, wiped again afterwards.
+
+    The tracker hangs off the app's agent singleton and outlives a single
+    test, so a leftover variable would surface as another test's mysterious
+    extra entry.
+    """
+    import uuid
+
+    sid = f"vars-{uuid.uuid4().hex[:8]}"
+    yield sid
+    tracker = getattr(getattr(client.app.state, "agent", None), "_session_tracker", None)
+    if tracker is not None:
+        # delete_session, not clear_session_template_vars: the ownership test
+        # also leaves METADATA behind, and a stray owner would make the next
+        # test's session belong to somebody else.
+        tracker.delete_session(sid)
+
+
+class TestVarsEndpoint:
+    """``/chat/vars`` -- the browser's half of ``/vars``.
+
+    The variables are the ones ``--vars`` fills and the agent server reads per
+    turn, so what these pin is that the web surface writes to the SAME place
+    the terminal does, through the SAME parser.
+    """
+
+    def _set(self, client, headers, sid, payload):
+        return client.post("/chat/vars",
+                           json={"session_id": sid, "payload": payload},
+                           headers=headers)
+
+    def test_a_fresh_session_has_no_variables(self, client, auth_headers, vars_session):
+        response = client.get(f"/chat/vars?session_id={vars_session}", headers=auth_headers)
+        assert response.status_code == 200
+        assert response.json()["vars"] == {}
+
+    def test_setting_shows_up_in_the_listing(self, client, auth_headers, vars_session):
+        posted = self._set(client, auth_headers, vars_session, "lang=de book_id=7")
+        assert posted.status_code == 200
+        assert posted.json()["changed"] is True
+
+        listed = client.get(f"/chat/vars?session_id={vars_session}",
+                            headers=auth_headers).json()
+        assert listed["vars"] == {"lang": "de", "book_id": "7"}
+
+    def test_it_writes_where_the_next_turn_reads(self, client, auth_headers, vars_session):
+        """Not the session file: the agent's tracker is what prompt rendering
+        consults, so a value written anywhere else would show in the panel and
+        never reach the model."""
+        self._set(client, auth_headers, vars_session, "lang=de")
+        tracker = client.app.state.agent._session_tracker
+        assert tracker.get_session_template_vars(vars_session) == {"lang": "de"}
+
+    def _listed(self, client, headers, sid):
+        """Read the variables BACK from the server.
+
+        Not the POST's own echo: that is the value the endpoint computed, and
+        asserting on it proves only that the arithmetic was right. Removal has
+        to be verified where it must actually have happened -- the tracker
+        merges on write, so a missing clear leaves the old key in place while
+        the echo looks perfect.
+        """
+        return client.get(f"/chat/vars?session_id={sid}", headers=headers).json()["vars"]
+
+    def test_unset_removes_only_the_named_one(self, client, auth_headers, vars_session):
+        self._set(client, auth_headers, vars_session, "lang=de keep=yes")
+        self._set(client, auth_headers, vars_session, "unset lang")
+        assert self._listed(client, auth_headers, vars_session) == {"keep": "yes"}
+
+    def test_clear_empties_the_session(self, client, auth_headers, vars_session):
+        self._set(client, auth_headers, vars_session, "lang=de keep=yes")
+        self._set(client, auth_headers, vars_session, "clear")
+        assert self._listed(client, auth_headers, vars_session) == {}
+
+    def test_a_foreign_session_is_refused(self, client, auth_headers, vars_session):
+        """Ownership, not just authentication. These endpoints address the
+        shared in-memory tracker by session id alone, so without the check any
+        logged-in user could read and rewrite someone else's variables."""
+        client.app.state.agent._session_tracker.set_session_metadata(
+            vars_session, {"user_id": "somebody-else"})
+
+        read = client.get(f"/chat/vars?session_id={vars_session}", headers=auth_headers)
+        written = self._set(client, auth_headers, vars_session, "lang=de")
+
+        assert read.status_code == 403
+        assert written.status_code == 403
+
+    def test_a_refused_line_leaves_the_old_values_alone(self, client, auth_headers,
+                                                        vars_session):
+        """The dangerous failure: reporting an error AND having eaten the
+        variables that were already set."""
+        self._set(client, auth_headers, vars_session, "lang=de")
+        refused = self._set(client, auth_headers, vars_session, "oops").json()
+
+        assert refused["errors"] and refused["changed"] is False
+        assert refused["vars"] == {"lang": "de"}
+        still = client.get(f"/chat/vars?session_id={vars_session}",
+                           headers=auth_headers).json()
+        assert still["vars"] == {"lang": "de"}
+
+    def test_the_grammar_is_the_terminals(self, client, auth_headers, vars_session):
+        """A second, browser-only splitter would make the same line mean two
+        things depending on where it was typed."""
+        after = self._set(client, auth_headers, vars_session,
+                          'greeting="hallo welt"').json()
+        assert after["vars"] == {"greeting": "hallo welt"}
+
+    def test_session_id_is_required(self, client, auth_headers):
+        assert client.get("/chat/vars", headers=auth_headers).status_code == 400
+        assert client.post("/chat/vars", json={"payload": "a=1"},
+                           headers=auth_headers).status_code == 400
+
+    def test_an_overlong_payload_is_refused(self, client, auth_headers, vars_session):
+        response = self._set(client, auth_headers, vars_session, "a=" + "x" * 100_001)
+        assert response.status_code == 413
+
+    def test_it_requires_authentication(self, client, vars_session):
+        assert client.get(f"/chat/vars?session_id={vars_session}").status_code == 401
+        assert client.post("/chat/vars",
+                           json={"session_id": vars_session, "payload": "a=1"}).status_code == 401
+
+    def _named_agent(self, client):
+        """A registered agent that is NOT the default one.
+
+        The ownership hole only shows there: every agent carries its own
+        SessionTracker (measured: 122 registered, none sharing the default's),
+        so a check against the default tracker looked at an object that never
+        holds the metadata of a session running on another agent.
+        """
+        from agent_system.servers.agent.server import Agent
+
+        registry = client.app.state.mcp_registry
+        default = client.app.state.agent
+        for name in registry.list():
+            try:
+                candidate = registry.get(name)
+            except Exception:
+                continue
+            if isinstance(candidate, Agent) and candidate is not default:
+                return name, candidate
+        pytest.skip("fixture: no second agent registered")
+
+    def test_a_foreign_session_on_a_named_agent_is_refused(self, client, auth_headers,
+                                                           vars_session):
+        """The version of the ownership test that actually bites.
+
+        Setting the metadata on the DEFAULT tracker tests the one path where
+        check and write happen to touch the same object. With `agent_name` the
+        write goes to that agent's tracker, and the check has to follow it
+        there -- otherwise a logged-in user reads and overwrites someone
+        else's session variables with a 200.
+        """
+        name, agent = self._named_agent(client)
+        agent._session_tracker.set_session_metadata(vars_session,
+                                                    {"user_id": "somebody-else"})
+        agent._session_tracker.set_session_template_vars(vars_session,
+                                                         {"secret": "geheim"})
+        try:
+            read = client.get(
+                f"/chat/vars?session_id={vars_session}&agent_name={name}",
+                headers=auth_headers)
+            written = client.post(
+                "/chat/vars",
+                json={"session_id": vars_session, "agent_name": name,
+                      "payload": "secret=pwned"},
+                headers=auth_headers)
+
+            assert read.status_code == 403
+            assert written.status_code == 403
+            assert agent._session_tracker.get_session_template_vars(
+                vars_session) == {"secret": "geheim"}
+        finally:
+            agent._session_tracker.delete_session(vars_session)
+
+    def test_an_unknown_agent_is_a_404_not_a_crash(self, client, auth_headers,
+                                                   vars_session):
+        """The browser always sends agent_name when an agent is selected, so
+        this arm is the production path -- and it was unexecuted."""
+        assert client.get(
+            f"/chat/vars?session_id={vars_session}&agent_name=gibt_es_nicht",
+            headers=auth_headers).status_code == 404
+        assert client.post(
+            "/chat/vars",
+            json={"session_id": vars_session, "agent_name": "gibt_es_nicht",
+                  "payload": "a=1"},
+            headers=auth_headers).status_code == 404
+
+    def test_a_quoted_value_is_read_back_from_the_store(self, client, auth_headers,
+                                                        vars_session):
+        """Was asserted on the POST's own echo, which is the value the endpoint
+        computed -- a store that mangled it would have stayed green."""
+        self._set(client, auth_headers, vars_session, 'greeting="hallo welt"')
+        assert self._listed(client, auth_headers,
+                            vars_session) == {"greeting": "hallo welt"}
+
+    def test_a_bare_listing_reports_no_change(self, client, auth_headers, vars_session):
+        """`changed` gates the "in effect from your next message" note, and an
+        empty payload must not take the write path at all."""
+        response = client.post("/chat/vars",
+                               json={"session_id": vars_session, "payload": ""},
+                               headers=auth_headers).json()
+        assert response["changed"] is False
+
+    def test_a_removal_reaches_the_session_file(self, client, auth_headers,
+                                                vars_session, tmp_path, monkeypatch):
+        """The web half of the persistence fix.
+
+        Only the storage ROOT is redirected -- everything else is the real
+        path: the real endpoint, the real SessionManager, the real file. The
+        suite must not write into the project's own data/sessions.
+        """
+        import types
+
+        from agent_system import app as app_module
+        from agent_system.services.session_manager import SessionManager
+
+        manager = SessionManager(storage_path=str(tmp_path))
+        asyncio_run = __import__("asyncio").run
+        asyncio_run(manager.create_session(user_id="admin", session_id=vars_session))
+        monkeypatch.setattr(app_module, "_session_service",
+                            types.SimpleNamespace(session_manager=manager))
+
+        self._set(client, auth_headers, vars_session, "lang=de keep=yes")
+        removed = self._set(client, auth_headers, vars_session, "unset lang").json()
+
+        assert removed["persisted"] is True, "the endpoint never wrote to disk"
+        on_disk = asyncio_run(manager.load_session("admin", vars_session))["context_vars"]
+        assert on_disk == {"keep": "yes"}, f"removal did not reach disk: {on_disk}"
+
+    def test_an_unset_on_a_session_not_yet_loaded_keeps_the_other_values(
+            self, client, auth_headers, vars_session, tmp_path, monkeypatch):
+        """The hazard the REPLACE write created.
+
+        A session opened in the browser is not in the tracker until a turn
+        runs. Computing from that empty tracker and then persisting the result
+        as a replacement would wipe every variable the file holds. So the
+        persisted set has to be part of the base.
+        """
+        import types
+
+        from agent_system import app as app_module
+        from agent_system.services.session_manager import SessionManager
+
+        asyncio_run = __import__("asyncio").run
+        manager = SessionManager(storage_path=str(tmp_path))
+        session = asyncio_run(manager.create_session(user_id="admin",
+                                                     session_id=vars_session))
+        session["context_vars"] = {"lang": "de", "book_id": "7", "gone": "x"}
+        asyncio_run(manager.save_session(session))
+        monkeypatch.setattr(app_module, "_session_service",
+                            types.SimpleNamespace(session_manager=manager))
+
+        # Nothing in the tracker for this session -- exactly the opened-old-
+        # session case.
+        assert client.app.state.agent._session_tracker.get_session_template_vars(
+            vars_session) == {}
+
+        listed = client.get(f"/chat/vars?session_id={vars_session}",
+                            headers=auth_headers).json()["vars"]
+        removed = self._set(client, auth_headers, vars_session, "unset gone").json()
+
+        assert listed == {"lang": "de", "book_id": "7", "gone": "x"}, \
+            "the listing ignored the persisted variables"
+        assert removed["vars"] == {"lang": "de", "book_id": "7"}
+        on_disk = asyncio_run(manager.load_session("admin",
+                                                   vars_session))["context_vars"]
+        assert on_disk == {"lang": "de", "book_id": "7"}, \
+            f"the other variables were wiped: {on_disk}"

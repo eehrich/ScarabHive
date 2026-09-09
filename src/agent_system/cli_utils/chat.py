@@ -599,11 +599,14 @@ async def run_chat_turn(
 from agent_system.chat_commands import (  # noqa: E402
     CLI as _CLI_SURFACE,
     PluginCommand,
+    apply_vars,
     commands_for,
     group_tools_by_server,
     looks_like_command as _looks_like_command,
     parse_chat_command,
+    parse_vars,
     resolve as resolve_chat_input,
+    store_vars,
     suggest_command,
 )
 from agent_system.plugin_commands import (  # noqa: E402
@@ -1635,6 +1638,64 @@ async def _poll_typed_input(reader: _KeyReader, renderer: ChatRenderer,
         logger.debug("Type-ahead poller stopped", exc_info=True)
 
 
+async def _handle_vars(ctx: _ChatContext, renderer: ChatRenderer, payload: str) -> None:
+    """List, set, unset or clear the template variables of THIS session.
+
+    The same variables ``--vars`` fills at startup. The agent server reads them
+    once per turn and lets them override the agent config, so a change here
+    lands on the NEXT message -- never on the turn already running.
+
+    Session-scoped on purpose: ``/new`` re-applies the command line's --vars,
+    not these. A variable typed into one conversation has no business following
+    the person into the next one.
+
+    A line with ANY bad entry is refused whole. Applying the good half of
+    ``/vars lang=de 8ball=x`` would leave the person guessing which half took.
+    """
+    tracker = getattr(ctx.agent, "_session_tracker", None)
+    if tracker is None:
+        print("This agent keeps no session variables.")
+        return
+
+    request = parse_vars(payload)
+    if request.errors:
+        for problem in request.errors:
+            renderer.println(f"  {problem}", color="33")
+        renderer.println("Nothing changed. Usage: /vars [KEY=VALUE ...] | "
+                         "/vars unset KEY | /vars clear", color="90")
+        renderer.commit()
+        return
+
+    current = dict(tracker.get_session_template_vars(ctx.session_id) or {})
+    if not request.is_query:
+        current = apply_vars(current, request)
+        try:
+            await store_vars(tracker, ctx.session_manager,
+                             ctx.session_user, ctx.session_id, current)
+        except Exception as e:
+            # Say it. A removal that only happened in memory comes back on the
+            # next /resume, and a silent failure here looks exactly like
+            # success until then.
+            logger.debug("Persisting session vars failed", exc_info=True)
+            renderer.println(f"  warning: not saved to disk ({e})", color="33")
+
+    if not current:
+        renderer.println("No session variables set.", color="90")
+    else:
+        renderer.println(f"Session variables ({ctx.session_id}):", color="34")
+        width = max(len(key) for key in current)
+        for key in sorted(current):
+            # A far longer limit than /tools uses for descriptions: the point
+            # of this command is to SEE the value, so cutting it at 60 would
+            # defeat it. The cap only exists because a plugin may park a large
+            # JSON blob in a session variable.
+            renderer.println(f"  {key:<{width}}  {_one_line(current[key], 200)}",
+                             color="90")
+    if not request.is_query:
+        renderer.println("  (takes effect on the agent's next step)", color="90")
+    renderer.commit()
+
+
 def _handle_attach(ctx: _ChatContext, payload: str) -> None:
     """Queue one file for the next message, list the queue, or clear it.
 
@@ -1991,6 +2052,9 @@ def run_chat_loop(
                     print("Usage: /resume <session-id>   (/sessions lists them)")
                 elif loop.run_until_complete(_resume_session(ctx, payload)):
                     print(f"Resumed session: {ctx.session_id}")
+                continue
+            if command == "vars":
+                loop.run_until_complete(_handle_vars(ctx, renderer, payload))
                 continue
             if command == "tools":
                 loop.run_until_complete(_show_tools(ctx, renderer, payload))

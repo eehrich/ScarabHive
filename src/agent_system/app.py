@@ -2429,22 +2429,33 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             "message": "Request not found or already completed",
         }
 
-    async def _verify_session_owner(sid: str, current_user: Any) -> None:
+    async def _verify_session_owner(sid: str, current_user: Any,
+                                    tracker: Any = None) -> None:
         """Raise 403 if the authenticated user does not own the session.
 
         These legacy endpoints act on the shared in-memory session tracker keyed
         only by session_id, so without this any authenticated user could
         read/mutate another user's session (IDOR). No-op when auth is disabled
         (current_user is None -> single-user mode) or no owner is recorded.
+
+        *tracker* is the one the CALLER is about to act on. It matters: every
+        registered agent carries its own SessionTracker (measured: 122 agents,
+        none sharing the default's), so checking the default agent's tracker
+        while writing another agent's found no owner for a session that has
+        one -- and a not-yet-persisted session has no owner on disk either, so
+        the check passed for anybody. Callers that pass nothing keep the old
+        behaviour of asking the entry agent.
         """
         from fastapi import HTTPException
         if current_user is None:
             return
+        if tracker is None:
+            tracker = getattr(agent, "_session_tracker", None)
         owner = None
         # In-memory session metadata first (covers sessions not yet persisted),
         # then the persisted owner on disk.
         try:
-            meta = agent._session_tracker.get_session_metadata(sid)
+            meta = tracker.get_session_metadata(sid)
             if meta:
                 owner = meta.get("user_id")
         except Exception:
@@ -2945,6 +2956,118 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 result.payload, list(skill_names) + spellings(plugin_commands))
 
         return payload
+
+    def _vars_tracker(request: Request, agent_name: Optional[str]):
+        """The session tracker of the agent a chat surface is talking to.
+
+        Template variables live on the AGENT's tracker, not in the session
+        file: that is what ``server.py`` reads per turn and hands to the prompt
+        strategy, and what ``session_service`` later syncs into the persisted
+        ``context_vars``. Writing anywhere else would show a changed value in
+        the panel while the next turn still rendered the old one.
+        """
+        agent = _chat_agent(request, agent_name)
+        return getattr(agent, "_session_tracker", None) if agent is not None else None
+
+    async def _effective_vars(tracker: Any, user_id: str, session_id: str) -> dict:
+        """What the next turn will really see: persisted, then runtime on top.
+
+        The tracker alone is not the answer on this surface. A session opened
+        in the browser is not loaded into the tracker until a turn runs, so
+        reading only the tracker reported "no variables" for a session whose
+        file is full of them -- and, far worse since the write became a
+        REPLACE, an `unset` computed from that empty base would have persisted
+        an empty set and wiped the rest.
+
+        Same merge order as GET /api/sessions/{id} (see api/session_endpoints
+        _live_merge_vars), so the panel and this command cannot disagree. The
+        terminal needs no such fallback: its tracker is seeded from the session
+        at startup and on /resume.
+        """
+        merged: dict = {}
+        manager = getattr(_session_service, "session_manager", None)
+        if manager is not None and user_id:
+            try:
+                stored = (await manager.load_session(user_id, session_id)) or {}
+                if isinstance(stored.get("context_vars"), dict):
+                    merged.update(stored["context_vars"])
+            except Exception:
+                # No file yet, or not readable: the tracker is then the only
+                # truth there is, which is the normal case for a new session.
+                logging.getLogger(__name__).debug(
+                    "No persisted context_vars for %s", session_id, exc_info=True)
+        if tracker is not None:
+            merged.update(tracker.get_session_template_vars(session_id) or {})
+        return merged
+
+    @app.get("/chat/vars")
+    async def chat_vars(request: Request):
+        """Template variables of one session, as the next turn will see them."""
+        current_user = await _enforce_endpoint_security(request)
+        session_id = (request.query_params.get("session_id") or "").strip()
+        if not session_id:
+            raise HTTPException(status_code=400, detail="'session_id' is required")
+
+        # Tracker FIRST, then the ownership check against that same tracker:
+        # each agent has its own, so verifying against the default one asked
+        # the wrong object and found no owner.
+        tracker = _vars_tracker(request, request.query_params.get("agent_name"))
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="No such agent")
+        await _verify_session_owner(session_id, current_user, tracker)
+        owner = current_user.username if current_user else "anonymous"
+        return {"session_id": session_id,
+                "vars": await _effective_vars(tracker, owner, session_id)}
+
+    @app.post("/chat/vars")
+    async def chat_vars_update(request: Request):
+        """Set, unset or clear a session's template variables.
+
+        The BODY carries the raw rest of the ``/vars`` line, not a parsed dict:
+        the grammar is then read by the same ``parse_vars`` the terminal uses,
+        so ``/vars greeting="hallo welt"`` cannot come to mean two different
+        things depending on which surface it was typed into.
+        """
+        from agent_system.chat_commands import apply_vars, parse_vars, store_vars
+
+        current_user = await _enforce_endpoint_security(request)
+        body = await _parse_json_body(request)
+        if body is not None and not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        body = body or {}
+
+        session_id = str(body.get("session_id") or "").strip()
+        if not session_id:
+            raise HTTPException(status_code=400, detail="'session_id' is required")
+        payload = body.get("payload") or ""
+        if not isinstance(payload, str):
+            raise HTTPException(status_code=400, detail="'payload' must be a string")
+        if len(payload) > MAX_CHAT_LINE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Payload too long ({len(payload)} chars, limit {MAX_CHAT_LINE})")
+        tracker = _vars_tracker(request, body.get("agent_name"))
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="No such agent")
+        await _verify_session_owner(session_id, current_user, tracker)
+
+        parsed = parse_vars(payload)
+        owner = current_user.username if current_user else "anonymous"
+        # The persisted set has to be in the base, or an unset computed from an
+        # empty tracker would persist an empty set over a full file.
+        current = await _effective_vars(tracker, owner, session_id)
+        if parsed.errors:
+            # Refused whole, like the terminal: half-applying a line leaves the
+            # person guessing which half took.
+            return {"session_id": session_id, "vars": current,
+                    "errors": list(parsed.errors), "changed": False}
+        persisted = False
+        if not parsed.is_query:
+            current = apply_vars(current, parsed)
+            manager = getattr(_session_service, "session_manager", None)
+            persisted = await store_vars(tracker, manager, owner, session_id, current)
+        return {"session_id": session_id, "vars": current, "errors": [],
+                "changed": not parsed.is_query, "persisted": persisted}
 
     @app.post("/chat/command")
     async def chat_command(request: Request):

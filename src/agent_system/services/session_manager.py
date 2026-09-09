@@ -906,6 +906,49 @@ class SessionManager:
             
             logger.debug("Updated metadata for session %s: keys=%s", session_id, list(metadata_updates.keys()))
 
+    async def replace_session_context_vars(
+        self,
+        user_id: str,
+        session_id: str,
+        context_vars: Dict[str, Any],
+    ) -> bool:
+        """Atomically REPLACE a session's persisted context_vars.
+
+        Replace, not merge -- and that is the whole point. Everything else in
+        this system only ever adds variables (agent defaults, ``--vars``,
+        plugins), so ``save_session`` syncs the runtime set with ``update()``.
+        The ``/vars`` command is the first writer that can REMOVE one, and a
+        merge cannot express removal: the key stays on disk, the next
+        ``load_and_restore_session`` merges it back into the tracker, and the
+        variable the person just deleted is rendered into the prompt again.
+        Persisting the resulting set here is what makes the removal stick.
+
+        Returns False when the session has no file yet -- the common case for
+        a conversation whose first turn has not been saved. Nothing is lost:
+        the runtime set is written by the next ``save_session``, and with an
+        empty file to merge into, merging and replacing are the same thing.
+
+        Raises SessionPermissionError if *user_id* does not own the session.
+        """
+        session_lock = await self._get_session_lock(session_id)
+        async with session_lock:
+            path = self._get_session_path(user_id, session_id)
+            if not path.exists():
+                return False
+
+            session_data = await self._read_session_file_async(path)
+            if session_data.get("user_id") != user_id:
+                raise SessionPermissionError(
+                    f"User {user_id} doesn't own session {session_id}")
+
+            session_data["context_vars"] = dict(context_vars)
+            session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            await self._atomic_write_async(path, session_data)
+            self._cache[session_id] = (session_data, time.time())
+            logger.debug("Replaced context_vars for session %s: keys=%s",
+                         session_id, sorted(context_vars))
+            return True
+
     async def delete_session(self, user_id: str, session_id: str, create_backup: bool = True) -> None:
         """Delete a session.
         

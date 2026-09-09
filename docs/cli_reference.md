@@ -155,6 +155,7 @@ global `--color` and `--no-status`.
 | `/session` | Show the current session and the command that resumes it |
 | `/sessions` | List the 10 most recent sessions |
 | `/resume <id>` | Continue an earlier session without leaving the chat |
+| `/vars [KEY=VALUE ...]` | Template variables of this session — bare lists them, `unset KEY` removes one, `clear` empties. The same variables `--vars` fills. A change reaches the agent on its next step and is written to the session file at once, so a removal survives `/resume` |
 | `/tools [filter]` | Tools the agent really has, grouped by server (optionally filtered) |
 | `/skills` | Skill bundles it loads, `always` vs `on_demand` |
 | `/costs` | Session cost so far **including sub-agents** (needs `context_usage_tracker`) |
@@ -170,9 +171,15 @@ the conversation on the spot. Two plugins claiming the same name are both
 reachable as `/<plugin>:<command>`. See `docs/plugin_commands_design.md`.
 
 **In the browser** the same commands run, from the same catalogue and the same
-parser — `/sessions`, `/resume`, `/tools`, `/costs`, `/history` and `/last`
-answer from the API (`/agents/<name>/tools`, `/api/sessions`, the usage
-tracker) instead of from the local agent. Two are terminal-only by nature:
+parser — `/sessions`, `/resume`, `/tools`, `/costs`, `/history`, `/last` and
+`/vars` answer from the API (`/agents/<name>/tools`, `/api/sessions`,
+`/chat/vars`, the usage tracker) instead of from the local agent. `/vars`
+sends the line as typed, so the grammar is read by the same parser the
+terminal uses; it needs a session, which in the browser exists from the first
+message on. It reads the persisted variables merged with the live ones — the
+browser can open a session the running process has never loaded, and listing
+only the live half would report "none" for a session whose file is full, then
+overwrite it. Two are terminal-only by nature:
 `/exit` (no terminal to leave) and `/attach` (the browser has its own upload
 button).
 

@@ -14,7 +14,9 @@ from agent_system.chat_commands import (
     CLI,
     UNKNOWN_SERVER,
     WEB,
+    apply_vars,
     commands_for,
+    parse_vars,
     group_tools_by_server,
     looks_like_command,
     parse_chat_command,
@@ -424,3 +426,132 @@ class TestToolGrouping:
 
         assert [server for server, _ in groups] == ["alpha", "zeta"]
         assert [t["name"] for t in dict(groups)["zeta"]] == ["zeta_one", "zeta_two"]
+
+
+class TestVars:
+    """The ``/vars`` grammar, which both surfaces read through this parser.
+
+    Three of these pin bugs the first implementation really had: a quoted
+    value fell apart, a Windows path lost its backslashes, and a line with
+    errors reported itself as a harmless query.
+    """
+
+    def test_vars_is_offered_on_both_surfaces(self):
+        for surface in (CLI, WEB):
+            assert "vars" in {c.name for c in commands_for(surface)}
+
+    def test_a_bare_line_only_asks(self):
+        request = parse_vars("")
+        assert request.is_query
+        assert not request.assign and not request.unset and not request.clear
+
+    def test_assignments_read_like_the_command_line_flag(self):
+        request = parse_vars("lang=German user_name=Alice")
+        assert dict(request.assign) == {"lang": "German", "user_name": "Alice"}
+        assert not request.errors
+
+    def test_a_quoted_value_keeps_its_spaces(self):
+        """shlex in non-POSIX mode split this into 'greeting="hallo' + 'welt"'."""
+        request = parse_vars('greeting="hallo welt" lang=de')
+        assert dict(request.assign) == {"greeting": "hallo welt", "lang": "de"}
+        assert not request.errors
+
+    def test_a_windows_path_keeps_its_backslashes(self):
+        r"""POSIX shlex would eat these and store C:tmpx.
+
+        The repo is Windows-primary, so a silently mangled path is the more
+        likely damage of the two -- and the escape character is switched off
+        precisely to prevent it.
+        """
+        request = parse_vars(r"path=C:\tmp\x")
+        assert dict(request.assign) == {"path": r"C:\tmp\x"}
+
+    def test_an_empty_value_is_a_value_not_a_removal(self):
+        """KEY= sets the empty string; removal has its own word."""
+        request = parse_vars("note=")
+        assert dict(request.assign) == {"note": ""}
+        assert not request.unset
+
+    def test_an_unbalanced_quote_is_refused_not_stored(self):
+        request = parse_vars('broken="unbalanced')
+        assert request.errors
+        assert not request.assign
+
+    @pytest.mark.parametrize("bad", ["8ball=x", "my-var=1", "=lonely"])
+    def test_a_name_jinja_cannot_address_is_refused(self, bad):
+        """`{{ my-var }}` is a subtraction: accepting the name would store a
+        variable that never renders."""
+        request = parse_vars(bad)
+        assert request.errors, f"{bad} should not be accepted"
+        assert not request.assign
+
+    def test_a_word_without_an_equals_sign_is_refused(self):
+        request = parse_vars("oops")
+        assert request.errors and not request.assign
+
+    def test_clear_with_arguments_clears_nothing(self):
+        """Destructive and ambiguous: refuse instead of guessing."""
+        request = parse_vars("clear junk")
+        assert request.clear is False
+        assert request.errors
+
+    def test_clear_on_its_own_clears(self):
+        assert parse_vars("clear").clear is True
+
+    def test_unset_needs_a_name(self):
+        request = parse_vars("unset")
+        assert request.errors and not request.unset
+
+    def test_a_line_with_errors_is_not_a_query(self):
+        """A caller that checks is_query first must not answer a typo with a
+        listing, as though nothing had been wrong with the line."""
+        assert parse_vars("oops").is_query is False
+        assert parse_vars("clear junk").is_query is False
+
+    def test_a_hash_is_part_of_the_value_not_a_comment(self):
+        """shlex treats '#' as a comment by default. The first version cleared
+        `escape` but not `commenters`, so `color=#ff0000` stored the EMPTY
+        string with no error, and everything after a '#' was dropped. Hex
+        colours, URL fragments and issue numbers are ordinary values, and
+        `--vars` (a plain partition on argv) keeps them."""
+        request = parse_vars("color=#ff0000 issue=#42")
+        assert dict(request.assign) == {"color": "#ff0000", "issue": "#42"}
+        assert not request.errors
+
+    def test_a_hash_does_not_swallow_the_rest_of_the_line(self):
+        request = parse_vars("a=1 b=#x c=3")
+        assert dict(request.assign) == {"a": "1", "b": "#x", "c": "3"}
+
+    def test_only_the_first_equals_separates(self):
+        """Otherwise a URL or a base64 value cannot be stored: the key would
+        be everything up to the LAST '=' and get refused as a bad name."""
+        request = parse_vars("url=http://x/?a=b&c=d")
+        assert dict(request.assign) == {"url": "http://x/?a=b&c=d"}
+
+    def test_unset_takes_more_than_one_name(self):
+        assert parse_vars("unset a b").unset == ("a", "b")
+
+    def test_apply_refuses_a_request_that_carries_errors(self):
+        """`unset a 8b` is refused as a line -- but the valid half must not be
+        applied anyway. Both surfaces check errors first, so this pins the
+        guard in the shared function where a third caller cannot miss it."""
+        assert apply_vars({"a": "1"}, parse_vars("unset a 8b")) == {"a": "1"}
+        assert apply_vars({"a": "1"}, parse_vars("clear junk")) == {"a": "1"}
+
+    def test_apply_sets_unsets_and_clears(self):
+        current = {"a": "1", "b": "2"}
+        assert apply_vars(current, parse_vars("b=3 c=4")) == {"a": "1", "b": "3", "c": "4"}
+        assert apply_vars(current, parse_vars("unset a")) == {"b": "2"}
+        assert apply_vars(current, parse_vars("clear")) == {}
+
+    def test_apply_leaves_the_input_alone(self):
+        """The tracker hands out its INTERNAL dict for a known session and a
+        throwaway {} for an unknown one -- an in-place edit would work for the
+        first case and silently do nothing for the second."""
+        current = {"a": "1"}
+        result = apply_vars(current, parse_vars("b=2"))
+        assert current == {"a": "1"}
+        assert result is not current
+
+    def test_unsetting_something_absent_is_not_an_error(self):
+        assert apply_vars({"a": "1"}, parse_vars("unset gone")) == {"a": "1"}

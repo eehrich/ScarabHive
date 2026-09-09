@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import difflib
 import re
+import shlex
 from dataclasses import dataclass
-from typing import Iterable, Literal, Optional, Sequence
+from typing import Any, Iterable, Literal, Mapping, Optional, Sequence
 
 #: Surfaces a command can appear on. The web UI has no terminal to leave, so
 #: `/exit` is not offered there -- claiming otherwise would be a dead entry.
@@ -59,6 +60,15 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("session", ("/session",), "show the current session and how to resume it"),
     ChatCommand("sessions", ("/sessions",), "list recent sessions"),
     ChatCommand("resume", ("/resume",), "continue an earlier session", usage="/resume <id>"),
+    # No "/var" alias, though /cost and /hist set that precedent: "/var" is
+    # also the head of a path a sysadmin agent gets typed at, and the short
+    # form buys nothing the long one does not already give.
+    # `usage` stays short: both help renderers pad EVERY row to the longest
+    # display string, so spelling the full grammar here widened the whole
+    # table by 16 columns and pushed it past 80. The summary carries the rest.
+    ChatCommand("vars", ("/vars",),
+                "session variables: list, KEY=VALUE sets, 'unset KEY', 'clear'",
+                usage="/vars [KEY=VALUE ...]"),
     ChatCommand("tools", ("/tools",), "tools this agent really has (not what it claims)",
                 usage="/tools [filter]"),
     ChatCommand("skills", ("/skills",), "skills you can run, and what this agent loads"),
@@ -277,6 +287,182 @@ def looks_like_command(text: str) -> bool:
         # line looks like "/word ..." is hidden by /history and /last.
         return False
     return stripped.split(" ")[0].lower() in _COMMAND_ALIASES
+
+
+# A template variable, as Jinja can actually address it. Hyphens are rejected
+# on purpose: `{{ my-var }}` is a subtraction, so a variable named that way
+# would be accepted here and then never render -- the kind of silent nothing
+# that costs an hour to find. _NAME above is deliberately NOT reused; it allows
+# hyphens because command words may have them.
+_VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+@dataclass(frozen=True)
+class VarsRequest:
+    """What a ``/vars`` line asks for, once read.
+
+    A request with nothing in it is a QUESTION -- bare ``/vars`` lists. That
+    keeps the common case free of a subcommand nobody would remember.
+    """
+
+    assign: Mapping[str, str]
+    unset: tuple[str, ...]
+    clear: bool
+    errors: tuple[str, ...]
+
+    @property
+    def is_query(self) -> bool:
+        """Whether this only asks, so a surface can skip the write path.
+
+        A line with errors is NOT a query -- it is a refusal. Saying otherwise
+        would let a caller that checks this first answer a typo with a listing,
+        as if nothing had been wrong with it.
+        """
+        return not (self.assign or self.unset or self.clear or self.errors)
+
+
+def _split_assignments(text: str) -> list[str]:
+    """Split a ``/vars`` line into tokens: quotes group, backslashes survive.
+
+    Neither ``shlex`` default does both. POSIX mode groups ``greeting="a b"``
+    correctly but eats backslashes, so a Windows value arrives as ``C:tmpx``;
+    non-POSIX mode keeps the backslashes but only groups when a token STARTS
+    with a quote, so ``greeting="a b"`` silently becomes two tokens and the
+    second is reported as junk. Both were measured, not assumed.
+
+    So: POSIX quoting with the escape character switched off. Raises
+    ``ValueError`` on an unbalanced quote, which is a real answer -- the
+    non-POSIX split accepted ``x="unbalanced`` and stored the quote.
+
+    ``commenters`` has to go the same way, and forgetting it cost more than
+    the escapes would have: shlex treats ``#`` as a comment by default, so
+    ``color=#ff0000`` parsed to an EMPTY value with no error at all, and
+    ``a=1 #x b=2`` silently dropped ``b``. Hex colours, URL fragments and
+    issue numbers are ordinary values, and ``--vars`` (a plain partition on
+    argv) keeps them -- the two spellings have to mean the same thing.
+    """
+    lexer = shlex.shlex(text, posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def parse_vars(payload: str) -> VarsRequest:
+    """Read the rest of a ``/vars`` line into a request.
+
+    The grammar is the one ``--vars`` already taught: whitespace-separated
+    ``KEY=VALUE``. Two words are reserved as the first token, ``clear`` and
+    ``unset``, because "empty this" and "remove one" have no spelling in
+    KEY=VALUE form -- ``KEY=`` sets an empty string, which is a different
+    thing and occasionally what someone means.
+
+    Never raises: a malformed line comes back as ``errors`` for the surface to
+    print, because a chat command that traps the REPL is worse than a bad line.
+    """
+    text = payload.strip()
+    if not text:
+        return VarsRequest({}, (), False, ())
+    try:
+        tokens = _split_assignments(text)
+    except ValueError as exc:
+        return VarsRequest({}, (), False, (f"could not read the line: {exc}",))
+    if not tokens:
+        return VarsRequest({}, (), False, ())
+
+    head = tokens[0].lower()
+    if head == "clear":
+        extra = " ".join(tokens[1:])
+        errors = (f"/vars clear takes no arguments (got {extra})",) if extra else ()
+        return VarsRequest({}, (), not errors, errors)
+    if head == "unset":
+        names: list[str] = []
+        errors_list: list[str] = []
+        for token in tokens[1:]:
+            if _VAR_NAME.match(token):
+                names.append(token)
+            else:
+                errors_list.append(f"not a variable name: {token}")
+        if not names and not errors_list:
+            errors_list.append("/vars unset needs at least one name")
+        return VarsRequest({}, tuple(names), False, tuple(errors_list))
+
+    assign: dict[str, str] = {}
+    errors_list = []
+    for token in tokens:
+        key, sep, value = token.partition("=")
+        if not sep:
+            errors_list.append(f"expected KEY=VALUE, got: {token}")
+            continue
+        name = key.strip()
+        if not _VAR_NAME.match(name):
+            errors_list.append(
+                f"not a usable variable name: {name or '(empty)'} "
+                f"-- letters, digits and _ only, not starting with a digit")
+            continue
+        assign[name] = value
+    return VarsRequest(assign, (), False, tuple(errors_list))
+
+
+def apply_vars(current: Mapping[str, Any], request: VarsRequest) -> dict[str, Any]:
+    """The variables a session should hold after *request*, as a NEW dict.
+
+    Pure on purpose: both surfaces read their variables from the same session
+    tracker and write them back the same way, so the only part worth sharing is
+    this one -- and it can be tested without an agent, a session or a browser.
+
+    Returning a fresh dict rather than mutating matters: the tracker hands out
+    its internal dict for a known session but a throwaway ``{}`` for an unknown
+    one, so an in-place edit would silently do nothing for the second case.
+
+    A request carrying errors changes NOTHING. Both surfaces check that before
+    calling, but the guard belongs here: half-applying a refused line is the
+    one outcome nobody could explain, and a third caller should not have to
+    know that.
+    """
+    if request.errors:
+        return dict(current)
+    if request.clear:
+        return {}
+    result = dict(current)
+    for name in request.unset:
+        result.pop(name, None)
+    result.update(request.assign)
+    return result
+
+
+async def store_vars(tracker: Any, session_manager: Any, user_id: str,
+                     session_id: str, new_vars: Mapping[str, Any]) -> bool:
+    """Write *new_vars* as the session's complete variable set. Returns whether
+    it also reached disk.
+
+    This is execution rather than knowledge, which the rest of this module
+    avoids -- but the two surfaces do the identical thing here, and the two
+    halves are exactly where they drifted apart when written twice:
+
+    * The tracker is CLEARED before it is set. ``set_session_template_vars``
+      only ever ``update()``s, so without the clear a removal leaves the old
+      value in place while the caller's own return value looks right.
+    * The persisted ``context_vars`` are REPLACED. Everything else in the
+      system only adds variables, so the runtime->disk sync in
+      ``session_service`` merges; a merge cannot express a removal, and on the
+      web every message reloads the session from disk, which merged the
+      deleted variable straight back in.
+
+    Nothing is swallowed: a permission error or a broken write propagates, so
+    the surface can say the change did not stick instead of showing a listing
+    that only exists in memory.
+    """
+    tracker.clear_session_template_vars(session_id)
+    if new_vars:
+        tracker.set_session_template_vars(session_id, dict(new_vars))
+    if session_manager is None or not user_id:
+        return False
+    # Called by name, not through getattr(..., None): a renamed method would
+    # otherwise turn persistence off silently and every test would stay green,
+    # which is exactly the failure this round was fixing.
+    return bool(await session_manager.replace_session_context_vars(
+        user_id, session_id, dict(new_vars)))
 
 
 #: What a tool is filed under when no registered server claims its name.

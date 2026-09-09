@@ -427,6 +427,52 @@
     }
   }
 
+  /**
+   * List, set, unset or clear the template variables of this session.
+   *
+   * The line is NOT parsed here: it goes to the server as typed, so the
+   * grammar stays the one the terminal uses. A read is a GET and a change is
+   * a POST -- the same split the rest of the API keeps.
+   */
+  async function cmdVars(container, payload) {
+    const rest = (payload || '').trim();
+    if (!currentSessionId) {
+      addNote(container, 'No session yet -- variables live on one. ' +
+        (rest ? 'Send a message first, then set them.'
+              : 'It is created with your first message.'));
+      return;
+    }
+    const agent = currentAgentName();
+    const data = rest
+      ? await postJSON('/chat/vars', {
+          session_id: currentSessionId, agent_name: agent || null, payload: rest })
+      : await getJSON('/chat/vars?session_id=' + encodeURIComponent(currentSessionId) +
+          (agent ? '&agent_name=' + encodeURIComponent(agent) : ''));
+
+    if (data.errors && data.errors.length) {
+      addNote(container, data.errors.map(function (e) { return '  ' + e; }).join('\n') +
+        '\nNothing changed. Usage: /vars [KEY=VALUE ...] | /vars unset KEY | /vars clear');
+      return;
+    }
+    const vars = data.vars || {};
+    const names = Object.keys(vars).sort();
+    const width = names.reduce(function (w, n) { return Math.max(w, n.length); }, 0);
+    const lines = names.length
+      ? ['Session variables (' + data.session_id + '):'].concat(
+          names.map(function (n) {
+            // 200, not the 60 /tools uses for descriptions: the point here is
+            // to see the value. The cap only guards against a plugin parking a
+            // large blob in a session variable -- and no String() around the
+            // value, because oneLine JSON-stringifies non-strings exactly like
+            // the terminal's _one_line. Pre-stringifying turned that blob into
+            // "[object Object]", 15 characters the cap could never trim.
+            return '  ' + n.padEnd(width) + '  ' + oneLine(vars[n], 200);
+          }))
+      : ['No session variables set.'];
+    if (data.changed) lines.push('  (takes effect on the next step the agent makes)');
+    addNote(container, lines.join('\n'));
+  }
+
   async function cmdTools(container, payload) {
     const agent = currentAgentName();
     if (!agent) {
@@ -657,6 +703,7 @@
     const handlers = {
       sessions: function () { return cmdSessions(container); },
       resume: function () { return cmdResume(container, payload); },
+      vars: function () { return cmdVars(container, payload); },
       tools: function () { return cmdTools(container, payload); },
       costs: function () { return cmdCosts(container); },
       history: function () { return cmdHistory(container, payload); },

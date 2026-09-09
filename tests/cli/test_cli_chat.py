@@ -21,6 +21,7 @@ from agent_system.cli_utils.chat import (
     _accumulate_usage,
     _format_usage,
     _read_input,
+    _handle_vars,
     _show_history,
     _show_costs,
     _show_skills,
@@ -1835,3 +1836,124 @@ class TestToolGrouping:
         r, out = _renderer(width=200)
         await _show_tools(self._ctx_with_servers(tools, ["andere"]), r, "")
         assert "(unknown server)" in out.getvalue()
+
+
+class TestVarsCommand:
+    """``/vars`` in the terminal, against the REAL session tracker.
+
+    A fake store would prove the handler talks to itself. The tracker's own
+    behaviour is the point: ``set_session_template_vars`` MERGES, so removing
+    a variable needs a clear first -- with a stub that merely records calls,
+    the missing clear looks like a pass.
+    """
+
+    @staticmethod
+    def _ctx_with_tracker():
+        from agent_system.servers.agent.components.session_tracking import SessionTracker
+
+        agent = _ToolAgent([], [])
+        agent._session_tracker = SessionTracker()
+        return _tool_ctx(agent), agent._session_tracker
+
+    def test_it_lists_what_the_tracker_holds(self):
+        ctx, tracker = self._ctx_with_tracker()
+        tracker.set_session_template_vars("s", {"lang": "de"})
+        r, out = _renderer(width=200)
+        asyncio.run(_handle_vars(ctx, r, ""))
+        assert "lang" in out.getvalue() and "de" in out.getvalue()
+
+    def test_setting_reaches_the_tracker(self):
+        """Where the next turn reads it -- server.py hands exactly this dict
+        to the prompt strategy."""
+        ctx, tracker = self._ctx_with_tracker()
+        r, _out = _renderer(width=200)
+        asyncio.run(_handle_vars(ctx, r, "lang=de book_id=7"))
+        assert tracker.get_session_template_vars("s") == {"lang": "de", "book_id": "7"}
+
+    def test_unset_really_removes_it(self):
+        """The tracker only ever updates, so without a clear first the old
+        value survives an unset -- invisibly, because the printed listing is
+        computed and looks right either way."""
+        ctx, tracker = self._ctx_with_tracker()
+        r, _out = _renderer(width=200)
+        asyncio.run(_handle_vars(ctx, r, "lang=de keep=yes"))
+        asyncio.run(_handle_vars(ctx, r, "unset lang"))
+        assert tracker.get_session_template_vars("s") == {"keep": "yes"}
+
+    def test_clear_empties_the_tracker(self):
+        ctx, tracker = self._ctx_with_tracker()
+        r, _out = _renderer(width=200)
+        asyncio.run(_handle_vars(ctx, r, "lang=de"))
+        asyncio.run(_handle_vars(ctx, r, "clear"))
+        assert tracker.get_session_template_vars("s") == {}
+
+    def test_a_refused_line_leaves_the_values_alone(self):
+        ctx, tracker = self._ctx_with_tracker()
+        r, out = _renderer(width=200)
+        asyncio.run(_handle_vars(ctx, r, "lang=de"))
+        asyncio.run(_handle_vars(ctx, r, "8ball=x"))
+        assert tracker.get_session_template_vars("s") == {"lang": "de"}
+        assert "Nothing changed" in out.getvalue()
+
+    def test_an_agent_without_a_tracker_says_so(self, capsys):
+        r, _out = _renderer(width=200)
+        asyncio.run(_handle_vars(_tool_ctx(_ToolAgent([], [])), r, "lang=de"))
+        assert "no session variables" in capsys.readouterr().out.lower()
+
+    def test_a_removal_reaches_the_session_file(self, tmp_path):
+        """The review finding this whole round exists for.
+
+        Everything else in the system only ADDS variables, so the
+        runtime->disk sync in session_service merges. A merge cannot express a
+        removal: the key stayed on disk and the next load merged it straight
+        back into the tracker, so `/vars unset` came undone at the next
+        message on the web and at the next `/resume` in the terminal.
+
+        Real SessionManager, real file, read back from disk -- a recording
+        stub would have been green for the whole broken version.
+        """
+        from agent_system.services.session_manager import SessionManager
+
+        manager = SessionManager(storage_path=str(tmp_path))
+        session = asyncio.run(manager.create_session(user_id="u", session_id="s"))
+        assert session["session_id"] == "s", "fixture: session id not honoured"
+
+        ctx, tracker = self._ctx_with_tracker()
+        ctx.session_manager = manager
+        r, _out = _renderer(width=200)
+        asyncio.run(_handle_vars(ctx, r, "lang=de keep=yes"))
+        asyncio.run(_handle_vars(ctx, r, "unset lang"))
+
+        on_disk = asyncio.run(manager.load_session("u", "s"))["context_vars"]
+        assert on_disk == {"keep": "yes"}, f"removal did not reach disk: {on_disk}"
+
+    def test_clear_reaches_the_session_file_too(self, tmp_path):
+        """The emptier case: the sync skips entirely when the runtime set is
+        empty (`if runtime_vars:`), so a clear used to persist nothing at all
+        and every variable came back on the next load."""
+        from agent_system.services.session_manager import SessionManager
+
+        manager = SessionManager(storage_path=str(tmp_path))
+        asyncio.run(manager.create_session(user_id="u", session_id="s"))
+
+        ctx, _tracker = self._ctx_with_tracker()
+        ctx.session_manager = manager
+        r, _out = _renderer(width=200)
+        asyncio.run(_handle_vars(ctx, r, "lang=de"))
+        asyncio.run(_handle_vars(ctx, r, "clear"))
+
+        assert asyncio.run(manager.load_session("u", "s"))["context_vars"] == {}
+
+    def test_a_session_without_a_file_yet_is_not_an_error(self, tmp_path):
+        """A conversation whose first turn has not been saved has no file. The
+        variables still have to take effect in memory; the next save_session
+        writes them out."""
+        from agent_system.services.session_manager import SessionManager
+
+        ctx, tracker = self._ctx_with_tracker()
+        ctx.session_manager = SessionManager(storage_path=str(tmp_path))
+        r, out = _renderer(width=200)
+        asyncio.run(_handle_vars(ctx, r, "lang=de"))
+
+        assert tracker.get_session_template_vars("s") == {"lang": "de"}
+        assert "warning" not in out.getvalue().lower()
