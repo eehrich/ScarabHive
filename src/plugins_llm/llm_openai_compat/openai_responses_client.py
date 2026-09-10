@@ -423,7 +423,25 @@ class OpenAIResponsesClient(LLMClient):
                 verbatim = None if _get(msg, "rd_orphaned") \
                     else self._extract_verbatim_items(msg)
                 if verbatim is not None:
-                    items.extend(verbatim)
+                    # The block keeps the model's RAW arguments string, while
+                    # tool_calls on the same message carry the copy
+                    # history_safe_tool_calls repaired. Replaying the raw one
+                    # got every later request rejected ("function.arguments
+                    # must be valid JSON") until a fallback model rebuilt the
+                    # turn from tool_calls. Resolving here, at replay, also
+                    # heals sessions persisted before this fix.
+                    safe_args = {
+                        tc.get("id"): tc["function"]["arguments"]
+                        for tc in (_get(msg, "tool_calls") or [])
+                        if isinstance(tc, dict)
+                        and isinstance((tc.get("function") or {}).get("arguments"), str)
+                    }
+                    for item in verbatim:
+                        if isinstance(item, dict) and item.get("type") == "function_call":
+                            args = safe_args.get(item.get("call_id") or item.get("id"))
+                            if args is not None and args != item.get("arguments"):
+                                item = {**item, "arguments": args}
+                        items.append(item)
                     continue
                 # Foreign/legacy assistant turn: reconstruct without artifacts.
                 if content:

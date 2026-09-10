@@ -176,6 +176,26 @@ class TestMessagesToInput:
         items = c._messages_to_input([ChatMessage(**assistant)])
         assert items == SAMPLE_OUTPUT
 
+    def test_verbatim_replay_takes_arguments_from_tool_calls(self):
+        """The block keeps the model's RAW arguments, tool_calls the copy
+        history_safe_tool_calls repaired. The raw string used to be replayed:
+        every later request came back invalid_prompt until a fallback model
+        rebuilt the turn from tool_calls (server, 2026-09-10)."""
+        c = _client()
+        broken = '{"doc": "synopsis", "content": "abc"'
+        repaired = '{"doc": "synopsis", "content": "abc"}'
+        output = [
+            {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "X"},
+            {"type": "function_call", "id": "fc_1", "call_id": "call_1",
+             "name": "f", "arguments": broken},
+        ]
+        assistant = c._format_response({"output": output})["assistant"]
+        assistant["tool_calls"][0]["function"]["arguments"] = repaired
+        items = c._messages_to_input([ChatMessage(**assistant)])
+        assert [i["type"] for i in items] == ["reasoning", "function_call"]  # still verbatim
+        assert items[1]["arguments"] == repaired
+        assert output[1]["arguments"] == broken  # stored block untouched
+
     def test_foreign_history_reconstructed_without_artifacts(self):
         """Chat-Route-Sessions (openai-responses-v1-Blöcke) und Gemini-Blöcke
         werden ignoriert — Kette startet frisch, calls/content bleiben."""
