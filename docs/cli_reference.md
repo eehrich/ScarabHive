@@ -196,7 +196,12 @@ selector re-fetches the list.
 Datensatz, und ein blankes `--session <id>` liest es zurück — die gleiche
 Unterhaltung läuft also mit dem Agenten und dem Modell weiter, mit dem sie
 begonnen wurde, statt mit den Config-Defaults. `--agent` und `--llm` schlagen
-das weiterhin. Zwei Einschränkungen mit Grund: ein gespeichertes Profil wird
+das weiterhin. **`agent-run` verhält sich identisch**, und das ist kein
+Komfort, sondern Notwendigkeit: beide Einstiegspunkte *schreiben* denselben
+Datensatz, und solange sie die Frage verschieden beantwortet haben, hat jeder
+`agent-run`-Aufruf gelöscht, was `agent-cli` dort hinterlegt hatte. Die
+Entscheidung liegt deshalb an genau einer Stelle
+(`cli_utils/session_defaults.py`). Zwei Einschränkungen mit Grund: ein gespeichertes Profil wird
 nur übernommen, wenn auch der Agent der gespeicherte ist (ein Profil, das für
 einen anderen Agenten gewählt wurde, gehört nicht in dessen Kette), und wenn
 es ohnehin der Default des Agenten ist, passiert nichts — ein zweiter Client

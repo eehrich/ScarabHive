@@ -10,10 +10,10 @@ from __future__ import annotations
 import pytest
 from types import SimpleNamespace
 
-from agent_system.agent_cli import (
+from agent_system.agent_cli import stored_session_settings
+from agent_system.cli_utils.session_defaults import (
     choose_agent_name,
     choose_llm_profile,
-    stored_session_settings,
     usable_session_defaults,
 )
 from agent_system.services.session_manager import SessionManager

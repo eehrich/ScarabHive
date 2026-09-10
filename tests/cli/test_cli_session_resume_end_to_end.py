@@ -103,6 +103,7 @@ def cli_env(tmp_path, monkeypatch):
             agent_name=STORED_AGENT, llm_profile=STORED_PROFILE))
     finally:
         loop.close()
+    manager.clear_cache()
 
     return SimpleNamespace(config=config, saved=saved, manager=manager)
 
@@ -127,6 +128,17 @@ class TestBareResume:
         # choice survived exactly one resume.
         _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1"])
         assert cli_env.saved.get("llm_profile") == STORED_PROFILE
+
+    def test_an_agent_the_config_no_longer_defines_is_ignored(self, cli_env,
+                                                              monkeypatch):
+        # 707 of 2914 cli_user sessions name an agent that no longer exists.
+        # Handing that name on reaches a gate that can only abort -- the run
+        # would die over a name the user never typed.
+        del cli_env.config.plugins.servers[STORED_AGENT]
+
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1"])
+
+        assert cli_env.saved.get("agent_name") == "config_default_agent"
 
     def test_an_explicit_agent_still_wins(self, cli_env, monkeypatch):
         _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1",

@@ -25,6 +25,12 @@ from .config.settings import load_settings
 from .mcp.status import status_bus
 from .servers.agent.server import Agent
 from .services.session_manager import SessionPermissionError
+from .cli_utils.session_defaults import (
+    choose_agent_name,
+    choose_llm_profile,
+    profile_for_record,
+    session_defaults,
+)
 from .cli_utils.common import (
     set_color_mode,
     status_subscriber,
@@ -190,9 +196,22 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         logger.info("Initializing system...")
         registry, session_service = await initialize_system(config)
 
-        # Get agent name from argument or use default
-        if agent_name is None:
-            agent_name = config.default_agent
+        # What this session was started with, when one is being continued.
+        # Same rules as agent-cli (cli_utils.session_defaults) on purpose: the
+        # two entry points share a session, and answering "which agent, which
+        # model" differently made every agent-run overwrite what agent-cli had
+        # stored there.
+        # getattr, not a dot: initialize_system returns session_service=None on
+        # its degraded path ("Continue with minimal registry - agent can still
+        # work"), and reaching through it here would raise BEFORE the agent is
+        # built -- turning a run that used to answer into an exit 1. The None
+        # lands on the guard in load_session_settings.
+        stored_agent, stored_llm = await session_defaults(
+            getattr(session_service, "session_manager", None),
+            session_user, session_id, config)
+
+        # Get agent name from argument, from the session, or use the default
+        agent_name = choose_agent_name(agent_name, stored_agent, config.default_agent)
         logger.info(f"Using agent: {agent_name}")
 
         # Create and initialize agent
@@ -239,6 +258,12 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             agent._session_tracker.set_session_messages(actual_session_id, [])
             was_new_session = True
 
+        # Continue on the model the session was started with (see
+        # choose_llm_profile for what that does and does not outrank).
+        llm_profile = choose_llm_profile(
+            llm_profile, stored_llm, stored_agent, agent_name,
+            agent.agent_config.default_llm_profile)
+
         # Create LLM override if profile specified
         llm_override = None
         llm_profile_info = None
@@ -274,7 +299,8 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
 
         # Set session metadata for tool execution context (AFTER LLM override logic)
         # This ensures user_id is available when tools are called
-        effective_llm_profile = llm_profile or agent.agent_config.default_llm_profile
+        effective_llm_profile = profile_for_record(
+            llm_profile, agent.agent_config.default_llm_profile)
         agent._session_tracker.set_session_metadata(actual_session_id, {
             "user_id": session_user,
             "agent_name": agent.name,
@@ -384,8 +410,9 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             try:
                 # Use the actual agent name that was requested (from parameter or config.default_agent)
                 # instead of agent.agent_name which may not exist or be "default"
-                agent_name_used = agent_name  # Already determined from args or config.default_agent at line 172-174
-                llm_profile_used = llm_profile or agent.agent_config.default_llm_profile
+                agent_name_used = agent_name  # From the argument, the session, or the default
+                llm_profile_used = profile_for_record(
+                    llm_profile, agent.agent_config.default_llm_profile)
 
                 # Save the session
                 success = await session_service.save_session(

@@ -41,6 +41,13 @@ from .cli_utils.common import (
     render_with_rich
 )
 from .cli_utils.commands.hooks import handle_hooks_command
+from .cli_utils.session_defaults import (
+    choose_agent_name,
+    choose_llm_profile,
+    load_session_settings,
+    profile_for_record,
+    usable_session_defaults,
+)
 
 
 def _literal_strings(annotation: Any) -> frozenset:
@@ -466,96 +473,8 @@ def run_async(coro: Any) -> Any:
 
 def stored_session_settings(session_manager: Any, session_user: str,
                             session_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """The agent and LLM profile a session was started with, or (None, None).
-
-    Every session record carries both. Reading them back is what lets a bare
-    ``--session <id>`` continue a conversation the way it was begun; without
-    it the CLI fell back to the config defaults, so the same conversation
-    silently went on with a different agent on a different model.
-
-    A session that cannot be read is not an error here -- ``--session`` also
-    NAMES a new session. The load further down reports a real problem with
-    the message that belongs to it.
-    """
-    if not session_id or session_manager is None:
-        return None, None
-    try:
-        data = run_async(session_manager.load_session(session_user, session_id))
-    except Exception:
-        logger.debug("No stored settings for session %s", session_id, exc_info=True)
-        return None, None
-    if not isinstance(data, dict):
-        return None, None
-    return (data.get("agent_name") or None), (data.get("llm_profile") or None)
-
-
-def usable_session_defaults(stored_agent: Optional[str], stored_llm: Optional[str],
-                            config: Any) -> tuple[Optional[str], Optional[str]]:
-    """Drop stored values the current configuration no longer knows.
-
-    A session record is a memory, not an instruction. Sessions outlive the
-    config that made them -- agents get renamed or removed, profiles get
-    retired (measured on this repo: 707 of 2914 cli_user sessions name an
-    agent that no longer exists) -- and the gates further down were written
-    for names a PERSON typed, so they abort. Turning "continue this
-    conversation" into a hard exit over a name the user never mentioned would
-    be a worse bug than the one this whole feature fixes.
-
-    An explicitly typed --agent/--llm is untouched by this: it still has to
-    exist, and still aborts loudly when it does not.
-    """
-    agent = stored_agent
-    if agent:
-        raw = config.plugins.servers.get(agent) if getattr(config, "plugins", None) else None
-        # The RAW entry, the same gate _build_entry_agent uses: the merged
-        # config gives every tool server an agent_config.
-        if not raw or not getattr(raw, "agent_config", None):
-            logger.info("Session names agent '%s', which this config does not "
-                        "define -- falling back to the default", agent)
-            agent = None
-
-    profile = stored_llm
-    if profile:
-        llm_system = getattr(config, "llm_system", None)
-        profiles = getattr(llm_system, "profiles", None) or {}
-        if profile not in profiles:
-            logger.info("Session names LLM profile '%s', which llm.yaml no "
-                        "longer defines -- falling back to the agent's own",
-                        profile)
-            profile = None
-
-    return agent, profile
-
-
-def choose_agent_name(override: Optional[str], stored: Optional[str],
-                      default: str) -> str:
-    """Which agent runs: what was asked for, what the session used, the default.
-
-    The stored name only outranks the CONFIG DEFAULT, never an explicit
-    --agent. Without it, continuing a session with a bare --session handed the
-    conversation to whatever agent the config happens to name today.
-    """
-    return override or stored or default
-
-
-def choose_llm_profile(override: Optional[str], stored_llm: Optional[str],
-                       stored_agent: Optional[str], entry_name: str,
-                       agent_default: Optional[str]) -> Optional[str]:
-    """Which LLM profile to force, or None to leave the agent on its own.
-
-    Three conditions before a stored profile is used, and each one has a
-    reason. An explicit --llm wins. The agent must be the one the profile was
-    stored for -- a profile picked for another agent has no business being
-    forced onto this one. And a profile that IS the agent's default is not an
-    override at all; returning it would build a second client for nothing.
-    """
-    if override:
-        return override
-    if not stored_llm or entry_name != stored_agent:
-        return None
-    if stored_llm == agent_default:
-        return None
-    return stored_llm
+    """load_session_settings on the CLI's own loop (see cli_utils.session_defaults)."""
+    return run_async(load_session_settings(session_manager, session_user, session_id))
 
 
 def close_cli_loop() -> None:
@@ -2087,7 +2006,8 @@ def main() -> None:
     # Set session metadata for tool execution context (enables _user_id, _agent injection)
     if hasattr(agent, '_session_tracker'):
         # Determine effective LLM profile (override or agent default)
-        effective_llm_profile = llm_profile_override or agent.agent_config.default_llm_profile
+        effective_llm_profile = profile_for_record(
+            llm_profile_override, agent.agent_config.default_llm_profile)
 
         agent._session_tracker.set_session_metadata(actual_session_id, {
             "user_id": session_user,
@@ -2117,7 +2037,8 @@ def main() -> None:
                 session_user=session_user,
                 session_id=actual_session_id,
                 was_new_session=was_new_session,
-                llm_profile=llm_profile_override or agent.agent_config.default_llm_profile,
+                llm_profile=profile_for_record(
+                    llm_profile_override, agent.agent_config.default_llm_profile),
                 llm_override=llm_override,
                 llm_profile_info=llm_profile_info,
                 show_status=show_status,
@@ -2156,7 +2077,8 @@ def main() -> None:
                 # here wrote the agent's default over the session's own choice
                 # on every bare --session resume -- the choice then survived
                 # exactly one continuation.
-                llm_profile_used = llm_profile_override or agent.agent_config.default_llm_profile
+                llm_profile_used = profile_for_record(
+                    llm_profile_override, agent.agent_config.default_llm_profile)
 
                 # Save the session
                 success = await session_service.save_session(
