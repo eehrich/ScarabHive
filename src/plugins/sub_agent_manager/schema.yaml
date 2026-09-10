@@ -189,6 +189,8 @@ config:
   max_sub_agents_per_type: 3
   default_wait_timeout: 3600  # Default timeout in seconds for wait/wait_all operations (1 hour)
   auto_archive_on_limit: false  # If true, auto-archive oldest sub-agent when limit is reached
+  allow_advanced_model: true  # false = the caller's use_advanced_model is ignored (logged) for every spawn/continue
+  advanced_create_only_agents: []  # agent types whose use_advanced_model counts on `create` only; a continue on them runs the normal chain
   allowed_agents:
     - basic_agent
     - research_agent

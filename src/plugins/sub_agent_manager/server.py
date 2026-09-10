@@ -126,6 +126,18 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         # False = Flag wird ignoriert (mit Log); Default True = Bestand.
         self.allow_advanced_model = bool(getattr(mcp_config, 'allow_advanced_model', True))
 
+        # Same class of guard, one notch finer: for these agent types the
+        # caller's use_advanced_model is honoured on `create` only; a
+        # `continue` on them always runs the normal chain. Built for the v6
+        # idea writers, whose advanced chain is the premium model: the
+        # moderator's prompt legitimately asks for advanced continues
+        # (synthesis, stuck), and each of those would be a premium call over
+        # a 100k+ context. Empty by default = existing behaviour.
+        raw_create_only = getattr(mcp_config, 'advanced_create_only_agents', None)
+        self.advanced_create_only_agents = (
+            set(raw_create_only) if isinstance(raw_create_only, (list, tuple, set)) else set()
+        )
+
         # Phase-based agent filtering (affects both tool schema and create validation)
         # Config is at top-level (same as allowed_agents), not inside hook_config
         phase_config = getattr(mcp_config, 'phase_filtering', {}) or {}
@@ -187,6 +199,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         _upd("info_max_limit", int(getattr(mcp_config, 'info_max_limit', 200)))
         _upd("info_default_max_chars", int(getattr(mcp_config, 'info_default_max_chars', 4000)))
 
+        raw_create_only = getattr(mcp_config, 'advanced_create_only_agents', None)
+        _upd("advanced_create_only_agents",
+             set(raw_create_only) if isinstance(raw_create_only, (list, tuple, set)) else set())
+
         phase_config = getattr(mcp_config, 'phase_filtering', {}) or {}
         _upd("phase_filtering_enabled", phase_config.get('enabled', False))
         _upd("phase_variable", phase_config.get('phase_variable', 'workflow_phase'))
@@ -214,6 +230,20 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 "[%s] use_advanced_model angefordert, aber per Config "
                 "unterdrückt (allow_advanced_model=false) — Standard-Profil.",
                 self.name,
+            )
+            return False
+        return requested
+
+    def _continue_use_advanced(self, agent_type: str, requested: bool) -> bool:
+        """Second half of the guard, applied on `continue` once the instance's
+        agent type is known: types listed in ``advanced_create_only_agents``
+        get the advanced chain on their first call only. Suppression is
+        logged, never silent."""
+        if requested and agent_type in self.advanced_create_only_agents:
+            logger.info(
+                "[%s] use_advanced_model on continue of '%s' suppressed "
+                "(advanced_create_only_agents) — normal chain.",
+                self.name, agent_type,
             )
             return False
         return requested
@@ -916,6 +946,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             agent = registry.get(agent_type)
             if not agent:
                 raise ValueError(f"Agent type '{agent_type}' not found")
+            use_advanced_model = self._continue_use_advanced(agent_type, use_advanced_model)
 
             # Reactivate archived sub-agent BEFORE execution starts
             # This ensures the sub-agent shows as "active" during execution

@@ -1557,3 +1557,120 @@ class TestAllowAdvancedModelGate:
     def test_server_default_is_true(self, server):
         # Bestehende Instanzen ohne Config-Eintrag verhalten sich unveraendert.
         assert server.allow_advanced_model is True
+
+
+class TestAdvancedCreateOnlyAgents:
+    """advanced_create_only_agents: for listed agent types the caller's
+    use_advanced_model counts on `create` only. Built for the v6 idea writers,
+    whose advanced chain is the premium model - the moderator's prompt asks
+    for advanced continues (synthesis, stuck), and each would be a premium
+    call over a 100k+ context. Unlisted types keep today's behaviour."""
+
+    def _gate(self, listed, agent_type, requested):
+        from types import SimpleNamespace
+        stub = SimpleNamespace(advanced_create_only_agents=set(listed), name="test_sam")
+        return SubAgentManagerServer._continue_use_advanced(stub, agent_type, requested)
+
+    def test_gate_suppresses_only_listed_types(self):
+        assert self._gate({"gated_agent"}, "gated_agent", True) is False
+        assert self._gate({"gated_agent"}, "other_agent", True) is True
+        assert self._gate({"gated_agent"}, "gated_agent", False) is False
+        assert self._gate(set(), "gated_agent", True) is True
+
+    def test_server_reads_config_and_defaults_to_empty(self, server, mock_config):
+        # Instances without the key behave as before.
+        assert server.advanced_create_only_agents == set()
+        cfg = Mock(spec=MCPConfig)
+        cfg.max_sub_agents_per_session = 10
+        cfg.max_nesting_depth = 5
+        cfg.max_sub_agents_per_type = 3
+        cfg.allowed_agents = ["*"]
+        cfg.blocked_agents = []
+        cfg.advanced_create_only_agents = ["gated_agent", "other_gated"]
+        gated = SubAgentManagerServer(name="sam", system_config=mock_config, mcp_config=cfg)
+        assert gated.advanced_create_only_agents == {"gated_agent", "other_gated"}
+
+    async def _run_continue(self, server, agent_type, requested):
+        """Drive a real continue through the public entrypoint; only the
+        boundaries (registry, session store, manager) are mocked. Returns the
+        use_advanced_model that reached the agent's run_events.
+
+        Same wiring as TestLLMProfileSelection in
+        test_plugin_sub_agent_manager_llm_profiles.py - notably session_service
+        is an AsyncMock for save_session: a plain Mock makes the handler raise
+        inside its own except block, and then the run looks green while only
+        the first half of the path ever executed."""
+        captured = {}
+
+        async def run_events(*args, **kwargs):
+            captured.update(kwargs)
+            yield {"type": "final", "summary": "continued"}
+
+        agent = Mock()
+        agent.agent_config.default_llm_profile = "normal"
+        agent._session_tracker = Mock()
+        agent.run_events = run_events
+        registry = Mock()
+        registry.get = Mock(return_value=agent)
+
+        session_service = Mock()
+        session_service.save_session = AsyncMock()
+        session_service.session_manager = Mock()
+        session_service.session_manager.load_session = AsyncMock(return_value={
+            "agent_name": agent_type,
+            "parent_session": {"session_id": "parent1"},
+        })
+
+        manager = Mock()
+        manager._extract_user_id = Mock(return_value="u1")
+        manager._session_service = session_service
+        manager.update_sub_session_metadata = AsyncMock()
+        manager.refresh_sub_context_vars = AsyncMock(return_value={})
+        manager.update_sub_agent_activity = AsyncMock()
+
+        server._extract_registry = Mock(return_value=registry)
+        server._extract_session_service = Mock(return_value=session_service)
+        server._get_manager = Mock(return_value=manager)
+
+        result = await server.manage_sub_agent({
+            "operation": "continue",
+            "instance_id": "sub_1", "message": "go on",
+            "use_advanced_model": requested,
+            "_session_id": "parent1", "_agent": Mock(), "_request_id": "req1",
+        })
+        # Without this the test would pass on a handler that died early: the
+        # except branch returns before run_events and captured stays empty.
+        assert result["status"] == "completed", "handler did not finish: %r" % (result,)
+        assert "use_advanced_model" in captured, "run_events never reached - fixture broken"
+        return captured["use_advanced_model"]
+
+    @pytest.mark.asyncio
+    async def test_continue_path_suppresses_for_listed_type(self, server):
+        server.advanced_create_only_agents = {"gated_agent"}
+        assert await self._run_continue(server, "gated_agent", True) is False
+
+    @pytest.mark.asyncio
+    async def test_continue_path_keeps_flag_for_unlisted_type(self, server):
+        server.advanced_create_only_agents = {"gated_agent"}
+        assert await self._run_continue(server, "other_agent", True) is True
+
+    @pytest.mark.asyncio
+    async def test_hot_reload_applies_the_list(self, server, mock_config):
+        """The whole point of the key is to be tunable without a restart:
+        editing the list and running `agent-cli reload` has to change the
+        gate, and the reload has to report it as a change."""
+        assert await self._run_continue(server, "gated_agent", True) is True
+
+        cfg = Mock(spec=MCPConfig)
+        cfg.max_sub_agents_per_session = 10
+        cfg.max_nesting_depth = 5
+        cfg.max_sub_agents_per_type = 3
+        cfg.allowed_agents = ["*"]
+        cfg.blocked_agents = []
+        cfg.advanced_create_only_agents = ["gated_agent"]
+        changes = server.reload_config(cfg)
+
+        assert "advanced_create_only_agents" in changes, \
+            "reload did not report the change: %r" % (sorted(changes),)
+        assert server.advanced_create_only_agents == {"gated_agent"}
+        assert await self._run_continue(server, "gated_agent", True) is False

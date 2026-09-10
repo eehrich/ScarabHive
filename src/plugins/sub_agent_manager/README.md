@@ -103,6 +103,14 @@ validation, so it is a gate and not just a hint.
 argument. A suppressed request is logged, not silently rerouted, and the
 sub-agent runs on its normal profile chain.
 
+`advanced_create_only_agents` is the same veto one notch finer: for the agent
+types listed there, `use_advanced_model` is honoured on `create` only — a
+`continue` on such an instance always runs the normal chain, logged like
+above. Built for sub-agents whose advanced chain is a premium model: the
+caller's prompt may legitimately ask for advanced continues (synthesis,
+stuck), and each of those would be a premium call over the whole accumulated
+context. Unlisted types keep the plain `allow_advanced_model` behaviour.
+
 ## Reading a transcript
 
 `info` returns the **tail** by default — the most recent messages, which is
