@@ -393,7 +393,7 @@ def _drive_repl(monkeypatch, lines, agent, loop=None, seen_loops=None):
     need."""
     turns = []
 
-    def _fake_turn(loop, ctx, task, renderer):
+    def _fake_turn(loop, ctx, task, renderer, editor=None):
         if seen_loops is not None:
             seen_loops.append(loop)
         turns.append(task)
@@ -411,6 +411,13 @@ def _drive_repl(monkeypatch, lines, agent, loop=None, seen_loops=None):
             raise EOFError
 
     monkeypatch.setattr(builtins, "input", fake_input)
+    # Feeding builtins.input is only enough while the REPL reads through it.
+    # On a real terminal it builds a prompt_toolkit editor instead and would
+    # block on the console -- green under pytest (stdin is not a tty), hanging
+    # under `pytest -s`. Force the input() path so the driver means the same
+    # thing wherever it runs.
+    monkeypatch.setattr("agent_system.cli_utils.chat._build_prompt_editor",
+                        lambda seed: None)
     agent.llm = SimpleNamespace(model="m")
     run_chat_loop(
         agent=agent, entry_name="a", session_service=None, session_user="u",

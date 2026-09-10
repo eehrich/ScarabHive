@@ -162,6 +162,7 @@ global `--color` and `--no-status`.
 | `/history [n]` | Last `n` exchanges (default 6); tool traffic condensed to one line each |
 | `/last` | The last turn's tool calls and results in full, formatted |
 | `/help`, `/h`, `/?` | List the commands |
+| ↑ / ↓ | Walk the input history; Ctrl-R searches it |
 | Ctrl-C | Cancel the **running turn**; twice at the prompt exits |
 
 Plugins add their own, listed under *Plugin commands* in `/help` — but only
@@ -189,6 +190,29 @@ Both resolve the command against what THAT agent may dispatch, so the browser
 names a command and never a tool — a command whose tool the agent may not call
 does not exist for it, exactly as in the terminal. Switching the agent in the
 selector re-fetches the list.
+
+**Eingabe-History.** Pfeil hoch holt zurück, was in *dieser Session* gefragt
+wurde. Sie wird nirgends zusätzlich gespeichert: die Session selbst ist das
+Protokoll, ihre User-Nachrichten sind die History. `/resume` und `/new`
+tauschen sie deshalb mit aus, und beide Oberflächen zeigen dieselbe.
+
+Zwei Dinge stehen bewusst nicht drin. **Slash-Kommandos** laufen im REPL und
+erreichen die Session nie — sie sind bis zum Prozessende abrufbar, danach
+weg. Und **sehr lange Nachrichten** (über 2000 Zeichen) werden übersprungen:
+ein `/skill`-Aufruf landet als vollständig *ausgepackter* Skill-Text in der
+Session, und niemand will 30 kB SKILL.md über seinem Prompt haben. Eine
+Nachricht, die mit `//` abgeschickt wurde, kommt auch wieder mit `//` zurück
+— sonst würde Enter darauf das Kommando *ausführen* statt es zu senden.
+
+Im Browser ist das Eingabefeld mehrzeilig, dort gehören die Pfeiltasten
+zuerst dem Cursor: sie greifen erst dann auf die History zu, wenn der Cursor
+sich nicht mehr bewegen *kann* — also am obersten bzw. untersten Rand des
+Textes. Nach einem Rückruf steht der Cursor am **Anfang**, damit weiteres
+Zurückblättern einen Tastendruck pro Schritt kostet; der erste Pfeil runter
+gehört deshalb noch dem Cursor, erst der zweite geht wieder vorwärts. Nichts
+geht dabei verloren: ein angefangener Entwurf kommt zurück, und was man in
+einen zurückgeholten Eintrag hineinschreibt, bleibt beim Weiterblättern
+erhalten. Escape bricht ab und stellt den Entwurf wieder her.
 
 **Multi-line input.** A plain Enter sends the message, so pasting a block
 needs one of:

@@ -268,6 +268,28 @@ def suggest_command(word: str, extra: Iterable[str] = ()) -> Optional[str]:
     return matches[0] if matches else None
 
 
+def needs_escape(text: str) -> bool:
+    """Whether a stored message has to be re-escaped before it is offered back.
+
+    A message sent as "//compact" is stored as "/compact". Handed to a prompt
+    raw it would RUN the command instead of being sent again, so the input
+    history puts the escape back.
+
+    This is the exact inverse of the unescape in parse_chat_command, and it
+    has to stay that way: escaping a head that would NOT be unescaped there
+    delivers the extra slash to the agent. "/3d drucker" and a bare "/" are
+    messages on both paths and must be left alone.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("/") or stripped.startswith("//"):
+        return False
+    if "\n" in stripped:
+        return False  # multi-line is always a message, never a command
+    head = stripped.split()
+    return bool(head and (_COMMAND_WORD.match(head[0])
+                          or _QUALIFIED_WORD.match(head[0])))
+
+
 def looks_like_command(text: str) -> bool:
     """Whether a stored user message is really a slash command.
 

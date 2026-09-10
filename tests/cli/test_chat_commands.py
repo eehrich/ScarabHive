@@ -19,6 +19,7 @@ from agent_system.chat_commands import (
     parse_vars,
     group_tools_by_server,
     looks_like_command,
+    needs_escape,
     parse_chat_command,
     resolve,
     suggest_command,
@@ -383,6 +384,40 @@ class TestTheDoubleSlashEscape:
         """Counter-check: the leftovers this filter exists for must still go."""
         assert looks_like_command("/sessions") is True
         assert looks_like_command("/hist") is True
+
+
+class TestTheEscapeIsTheInverseOfTheUnescape:
+    """``needs_escape`` decides what the input history hands back.
+
+    Its only correctness condition is that it is the exact inverse of the
+    unescape above: a message the history escapes must be unescaped again on
+    the way in, or the agent receives one slash more than it was sent -- and
+    one it does NOT escape must not be re-read as a command.
+    """
+
+    @pytest.mark.parametrize("stored", [
+        "/help", "/compact now", "/plug:cmd", "/unbekannt bitte", "/?",
+        "/etc",
+    ])
+    def test_an_escaped_message_round_trips_byte_for_byte(self, stored):
+        assert needs_escape(stored) is True
+        assert parse_chat_command("/" + stored) == (None, stored)
+
+    @pytest.mark.parametrize("stored", [
+        "/3d drucker bauen",        # head is not command-word shaped
+        "/2fa aktivieren",
+        "/-x",
+        "/",
+        "/etc/nginx/nginx.conf lesen",
+        "nur text",
+        "/erste zeile\nzweite",     # multi-line is always a message
+    ])
+    def test_what_needs_no_escape_already_survives_as_it_stands(self, stored):
+        # These reach the agent unchanged when handed back RAW, so escaping
+        # them would be the corruption: the "//" strip does not fire for a
+        # head like "/3d", and the extra slash would go through.
+        assert needs_escape(stored) is False
+        assert parse_chat_command(stored) == (None, stored)
 
 
 class TestToolGrouping:

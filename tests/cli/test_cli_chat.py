@@ -9,13 +9,20 @@ import builtins
 import io
 import json
 import logging
+import pathlib
 import sys
+import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 
 from agent_system.cli_utils.chat import (
     _ASCII_SYMBOLS,
     _KeyReader,
+    _PromptEditor,
+    _build_prompt_editor,
+    _history_seed,
     _poll_typed_input,
     ChatRenderer,
     _accumulate_usage,
@@ -882,6 +889,410 @@ class TestMultilineInput:
         assert _read_input("> ") == "abc"
 
 
+@pytest.fixture
+def pt_prompt(tmp_path, monkeypatch):
+    """A real prompt_toolkit prompt, driven by keystrokes over a pipe.
+
+    The readers are the production ones (_build_line_readers), only the
+    terminal underneath is swapped -- create_app_session redirects whatever
+    is built inside it to the pipe and a DummyOutput.
+    """
+    pipe_input = pytest.importorskip("prompt_toolkit.input").create_pipe_input
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.output import DummyOutput
+
+    monkeypatch.chdir(tmp_path)
+    with pipe_input() as pipe:
+        with create_app_session(input=pipe, output=DummyOutput()):
+            yield pipe
+
+
+def _press_when_ready(session_holder, pipe, text, timeout=5.0):
+    """Send keys once the prompt is up AND its history has been loaded.
+
+    prompt_toolkit loads history in a background task, so keys sent in the
+    same breath as the prompt call arrive before there is anything to recall
+    -- a race in the harness, not in the product (a person needs tenths of a
+    second to reach the arrow key). Gating on the loaded working lines makes
+    the test deterministic instead of sleep-dependent.
+    """
+    session = session_holder["session"]
+
+    def wait_for(predicate, deadline):
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def run():
+        deadline = time.monotonic() + timeout
+        # BOTH conditions, in this order. Waiting only for the loaded history
+        # was wrong and flaky (3 of 5 runs): the previous prompt leaves its
+        # accepted line in the working lines, so that test is already true
+        # before the next prompt starts -- the key then sat in the pipe and
+        # was read before there was anything to recall.
+        running = wait_for(lambda: session.app.is_running, deadline)
+        # `_working_lines` is private, but it is the only place that says the
+        # async history load has arrived. It gates timing; the assertion is
+        # on the returned string.
+        loaded = running and wait_for(
+            lambda: len(session.default_buffer._working_lines) > 1, deadline)
+        # A silent timeout would still send the key and then blame the
+        # product for a harness problem.
+        session_holder["gate"] = "open" if loaded else "timeout"
+        pipe.send_text(text)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
+class TestPromptHistory:
+    """Arrow-up at the prompt recalls what was typed before, like any shell.
+
+    stdlib readline cannot provide this on Windows (importing it activates
+    pyreadline3 and breaks input() outright), which is why the prompt runs on
+    prompt_toolkit.
+    """
+
+    def _recall(self, pt_prompt, editor, keys="\x1b[A\n"):
+        """Press arrow-up once the prompt is up, and return what came back."""
+        holder = {"session": editor._session}
+        _press_when_ready(holder, pt_prompt, keys)
+        recalled = editor.read("> ")
+        assert holder.get("gate") == "open", "history never loaded -- harness"
+        return recalled
+
+    def test_arrow_up_recalls_the_previous_line(self, pt_prompt):
+        editor = _build_prompt_editor([])
+        assert editor is not None, "no prompt_toolkit editor -- test is vacuous"
+
+        pt_prompt.send_text("erste frage\n")
+        assert editor.read("> ") == "erste frage"
+
+        assert self._recall(pt_prompt, editor) == "erste frage"
+
+    def test_a_resumed_session_starts_with_its_own_messages(self, pt_prompt):
+        # What _history_seed hands over on resume. Two presses on purpose:
+        # reaching PAST the freshly typed line to the seeded one is what
+        # proves both share the session's history. One press would also pass
+        # against the private history prompt_toolkit builds for itself.
+        editor = _build_prompt_editor(["frage von gestern"])
+        pt_prompt.send_text("frage von heute\n")
+        assert editor.read("> ") == "frage von heute"
+
+        assert self._recall(pt_prompt, editor, "\x1b[A\x1b[A\n") == "frage von gestern"
+
+    def test_reseeding_drops_the_previous_session_entries(self, pt_prompt):
+        # What /new and /resume do: the session changes underneath the prompt,
+        # and the history has to change with it. Keeping the old entries would
+        # offer the abandoned conversation above the new transcript.
+        editor = _build_prompt_editor(["aus session A"])
+        editor.reseed(["aus session B"])
+
+        assert self._recall(pt_prompt, editor) == "aus session B"
+        assert self._recall(pt_prompt, editor, "\x1b[A\x1b[A\n") == "aus session B", \
+            "session A's entry was still reachable"
+
+    def test_a_turn_that_bypassed_the_prompt_is_still_recallable(self, pt_prompt):
+        # An initial_task or a line typed ahead during a turn never passes
+        # session.prompt(), so nothing would add it on its own.
+        editor = _build_prompt_editor([])
+        editor.remember("aus der warteschlange")
+
+        assert self._recall(pt_prompt, editor) == "aus der warteschlange"
+
+    def test_pasted_continuation_lines_stay_out_of_the_history(self, pt_prompt):
+        editor = _build_prompt_editor([])
+        pt_prompt.send_text('"""\nzeile a\nzeile b"""\n')
+
+        text = _read_input("> ", read_line=editor.read,
+                           read_cont=editor.read_continuation)
+        assert text == "zeile a\nzeile b", "fixture did not exercise the fence"
+
+        # Only the line typed AT the prompt is history -- the fence opener.
+        # Reading the continuation through the same session would make the
+        # pasted lines the newest entries instead.
+        assert self._recall(pt_prompt, editor) == '"""'
+
+
+class _RecordingEditor:
+    """Stand-in for _PromptEditor that records what the REPL asks of it."""
+
+    def __init__(self, lines):
+        self._lines = iter(lines)
+        self.seeds = []
+        self.remembered = []
+
+    def read(self, prompt):
+        try:
+            return next(self._lines)
+        except StopIteration:
+            raise EOFError
+
+    def read_continuation(self, prompt):
+        return self.read(prompt)
+
+    def reseed(self, seed):
+        self.seeds.append(list(seed))
+
+    def remember(self, text):
+        self.remembered.append(text)
+
+
+class TestReplKeepsTheHistoryOnTheLiveSession:
+    """The editor is built once; the session under it is not.
+
+    Without this wiring the prompt keeps offering the session that was open at
+    process start, while the transcript on screen belongs to another one --
+    and docs/cli_reference.md promises the opposite.
+    """
+
+    @staticmethod
+    def _message(text):
+        return SimpleNamespace(role="user", content=text)
+
+    def _drive(self, monkeypatch, lines, initial_task=None, turn_probe=None,
+               editor=None):
+        import agent_system.cli_utils.chat as chat
+
+        editor = editor or _RecordingEditor(lines)
+        # Session-aware on purpose: a tracker that answers the same for every
+        # id makes every seed [] , and then "reseed was called" passes even if
+        # it is called BEFORE the session id changes -- which is the bug.
+        messages = {"s1": [self._message("frage aus s1")],
+                    "s2": [self._message("frage aus s2")]}
+        tracker = SimpleNamespace(
+            get_session_messages=lambda sid: messages.get(sid, []),
+            set_session_messages=lambda sid, msgs: messages.setdefault(sid, []),
+            get_session_template_vars=lambda sid: {},
+            set_session_template_vars=lambda sid, values: None,
+            set_session_metadata=lambda sid, meta: None,
+        )
+        agent = SimpleNamespace(_session_tracker=tracker, agent_config=None,
+                                llm=SimpleNamespace(model="m"))
+
+        monkeypatch.setattr(chat, "_build_prompt_editor", lambda seed: editor)
+        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
+        monkeypatch.setattr(chat, "_available_skills", lambda ctx: [])
+        monkeypatch.setattr(
+            chat, "_execute_turn",
+            turn_probe or (lambda loop, ctx, task, renderer, editor=None: {}))
+        async def _saved(ctx):
+            return True
+
+        monkeypatch.setattr(chat, "_save_session", _saved)
+        monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: True, raising=False)
+
+        async def _resumed(ctx, session_id):
+            ctx.session_id = session_id
+            return True
+
+        monkeypatch.setattr(chat, "_resume_session", _resumed)
+
+        loop = asyncio.new_event_loop()
+        try:
+            chat.run_chat_loop(
+                agent=agent, entry_name="a", session_service=None,
+                session_user="u", session_id="s1", was_new_session=False,
+                llm_profile="p", show_status=False, loop=loop,
+                initial_task=initial_task)
+        finally:
+            loop.close()
+        return editor
+
+    def test_resume_points_the_history_at_the_new_session(self, monkeypatch):
+        editor = self._drive(monkeypatch, ["/resume s2"])
+        # The CONTENT is the assertion: reseeding with s1's messages, or
+        # reseeding before the session id moves, both leave the prompt on the
+        # abandoned conversation while the transcript shows the new one.
+        assert editor.seeds == [["frage aus s2"]]
+
+    def test_new_points_the_history_at_the_fresh_session(self, monkeypatch):
+        editor = self._drive(monkeypatch, ["/new"])
+        assert editor.seeds == [[]], "the abandoned session's messages survived"
+
+    def test_an_initial_task_becomes_a_history_entry(self, monkeypatch):
+        # It is a turn like any other, but it never passes the prompt.
+        editor = self._drive(monkeypatch, [], initial_task="aus der kommandozeile")
+        assert editor.remembered == ["aus der kommandozeile"]
+
+    def test_the_turn_still_finds_a_current_event_loop(self, monkeypatch):
+        # prompt_toolkit runs its own asyncio.run() per prompt, which leaves
+        # the thread WITHOUT a current event loop (measured). Nothing in the
+        # REPL notices -- it always names its loop -- but a library called
+        # during the turn may call asyncio.get_event_loop() and used to find
+        # one. The editor here reproduces that by clearing it.
+        class _ClearingEditor(_RecordingEditor):
+            def read(self, prompt):
+                text = super().read(prompt)
+                asyncio.set_event_loop(None)
+                return text
+
+        seen = []
+
+        def _probe(loop, ctx, task, renderer, editor=None):
+            try:
+                seen.append(asyncio.get_event_loop() is loop)
+            except RuntimeError:
+                seen.append(False)
+            return {}
+
+        self._drive(monkeypatch, ["eine frage"], turn_probe=_probe,
+                    editor=_ClearingEditor(["eine frage"]))
+        assert seen == [True], "the turn ran without a current event loop"
+
+    def test_a_redirected_stdout_keeps_the_plain_reader(self, monkeypatch):
+        # `agent-cli chat > log.txt`: stdin is still a terminal, so a gate on
+        # stdin alone would build the editor -- which puts the tty in raw mode
+        # with echo off and then draws into the file. The terminal goes silent.
+        import agent_system.cli_utils.chat as chat
+
+        built = []
+        monkeypatch.setattr(chat, "_build_prompt_editor",
+                            lambda seed: built.append(seed))
+        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
+        monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: False, raising=False)
+        monkeypatch.setattr(builtins, "input", _feed([]))
+
+        tracker = SimpleNamespace(get_session_messages=lambda sid: [])
+        agent = SimpleNamespace(_session_tracker=tracker, agent_config=None,
+                                llm=SimpleNamespace(model="m"))
+        loop = asyncio.new_event_loop()
+        try:
+            chat.run_chat_loop(
+                agent=agent, entry_name="a", session_service=None,
+                session_user="u", session_id="s1", was_new_session=False,
+                llm_profile="p", show_status=False, loop=loop)
+        finally:
+            loop.close()
+        assert built == [], "built a full-screen editor into a redirected stdout"
+
+
+class TestPromptEditorWiring:
+    """What the editor hands to the prompt sessions it builds."""
+
+    def test_the_continuation_prompt_shares_the_key_bindings(self):
+        # Ctrl-Z means end-of-input on Windows, and the "... " prompt is
+        # exactly where a person reaches for it -- to get out of a fence they
+        # opened by accident. Bindings on the first line only would leave them
+        # inserting a literal \x1a there instead.
+        built = []
+
+        class _Session:
+            def __init__(self, **kwargs):
+                built.append(kwargs)
+
+        class _History:
+            def append_string(self, text):
+                pass
+
+        _PromptEditor(_Session, _History, ["alt"], key_bindings="BINDINGS")
+
+        assert len(built) == 2, "expected a main and a continuation session"
+        assert [k.get("key_bindings") for k in built] == ["BINDINGS", "BINDINGS"]
+
+
+class TestRecalledMultilineInput:
+    """A recalled message arrives whole; it must not be re-parsed as typing."""
+
+    def test_a_recalled_fenced_message_is_not_read_again(self):
+        # The editor hands back the WHOLE message on one arrow-up. Running it
+        # through the fence rules would strip the leading `"""` and wait at
+        # the continuation prompt for an end that is already in the string --
+        # which looks like a hang. `_feed` supplies no further lines, so a
+        # second read would raise EOFError or truncate.
+        recalled = '"""\nmove.w d0,d1\nrts\n"""'
+        assert _read_input("> ", read_line=lambda _: recalled) == recalled
+
+    def test_a_recalled_message_ending_in_a_backslash_is_not_continued(self):
+        recalled = "erste zeile\nzweite endet auf \\"
+        assert _read_input("> ", read_line=lambda _: recalled) == recalled
+
+
+class TestHistorySeed:
+    """The prompt history is the session's user messages, not a second store."""
+
+    class _Message:
+        def __init__(self, role, content):
+            self.role = role
+            self.content = content
+
+    def _ctx(self, messages):
+        tracker = type("T", (), {"get_session_messages": lambda self, sid: messages})()
+        agent = type("A", (), {"_session_tracker": tracker})()
+        return type("C", (), {"agent": agent, "session_id": "s1"})()
+
+    def test_only_user_messages_in_order(self):
+        ctx = self._ctx([
+            self._Message("user", "erste"),
+            self._Message("assistant", "antwort"),
+            self._Message("tool", "ergebnis"),
+            self._Message("user", "zweite"),
+        ])
+        assert _history_seed(ctx) == ["erste", "zweite"]
+
+    def test_blank_and_repeated_messages_drop_out(self):
+        ctx = self._ctx([
+            self._Message("user", "   "),
+            self._Message("user", "gleich"),
+            self._Message("user", "gleich"),
+            self._Message("user", "anders"),
+        ])
+        assert _history_seed(ctx) == ["gleich", "anders"]
+
+    def test_multimodal_content_becomes_its_text(self):
+        ctx = self._ctx([
+            self._Message("user", [{"type": "text", "text": "beschreibe das"},
+                                    {"type": "image_url"}]),
+        ])
+        assert _history_seed(ctx) == ["beschreibe das [image_url]"]
+
+    def test_an_expanded_skill_body_is_too_long_to_recall(self):
+        # A /skill invocation stores the EXPANDED skill body as the user
+        # message. Recalled, it would paste a whole SKILL.md over the prompt.
+        ctx = self._ctx([
+            self._Message("user", "kurz genug"),
+            self._Message("user", "x" * 5000),
+        ])
+        assert _history_seed(ctx) == ["kurz genug"]
+
+    def test_an_escaped_command_comes_back_escaped(self):
+        # "//compact" reaches the session as "/compact". Handed to the prompt
+        # raw, Enter would RUN the command instead of re-sending the message.
+        ctx = self._ctx([self._Message("user", "/compact")])
+        assert _history_seed(ctx) == ["//compact"]
+
+    def test_a_path_that_only_looks_like_a_command_is_untouched(self):
+        ctx = self._ctx([self._Message("user", "/etc/nginx/nginx.conf lesen")])
+        assert _history_seed(ctx) == ["/etc/nginx/nginx.conf lesen"]
+
+    def test_a_qualified_plugin_command_comes_back_escaped(self):
+        ctx = self._ctx([self._Message("user", "/context_engineer:compact")])
+        assert _history_seed(ctx) == ["//context_engineer:compact"]
+
+    @pytest.mark.parametrize("text", [
+        "/3d drucker bauen",   # head is not command-word shaped: a message
+        "/2fa aktivieren",
+        "/",                   # nothing to escape at all
+        "/-x",
+    ])
+    def test_a_head_that_is_not_a_command_word_keeps_its_slash(self, text):
+        # Escaping these would be worse than not escaping them: the "//"
+        # unescape does not fire for such a head, so the agent would receive
+        # the message one slash longer than it was sent.
+        ctx = self._ctx([self._Message("user", text)])
+        assert _history_seed(ctx) == [text]
+
+
+def _session_of(reader):
+    """The PromptSession a reader closure holds (for the timing gate only)."""
+    return reader.__closure__[0].cell_contents
+
+
 class TestLoggingSilence:
     def test_stdout_handler_is_muted_and_restored(self):
         """Console log lines land in the same stream as the live region but are
@@ -1544,6 +1955,41 @@ class TestTypeAheadPoller:
         assert agent.injected == [("req-1", "mach lieber X")]
         assert "mach lieber X" in out.getvalue()
         assert "queued" in out.getvalue()
+
+    async def test_an_injected_line_reaches_the_input_history(self):
+        """It became part of the conversation without passing the prompt, so
+        nothing else would record it -- arrow-up would skip straight over the
+        message the person most recently sent."""
+        agent = _InjectAgent()
+        reader = _ScriptedReader([("mach lieber X", "")])
+        r, _ = _renderer(width=200)
+        editor = _RecordingEditor([])
+        state = {"request_id": "req-1", "editor": editor}
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), state))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert agent.injected, "fixture delivered nothing -- test is vacuous"
+        assert editor.remembered == ["mach lieber X"]
+
+    async def test_a_line_that_was_not_delivered_is_not_remembered(self):
+        # No request to take it: it goes back to the prompt queue, and the
+        # prompt path records it. Recording it here as well would double it.
+        agent = _InjectAgent()
+        reader = _ScriptedReader([("spaeter dann", "")])
+        r, _ = _renderer(width=200)
+        editor = _RecordingEditor([])
+        state = {"editor": editor}
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), state))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert state.get("typed_queue") == ["spaeter dann"], "fixture did not queue"
+        assert editor.remembered == []
 
     async def test_line_without_a_running_request_is_kept_for_next_turn(self):
         """No request_id yet (or already finished): the typed text must not be

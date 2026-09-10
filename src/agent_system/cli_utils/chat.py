@@ -22,7 +22,7 @@ import shutil
 import sys
 import time
 import unicodedata
-from typing import Any, Optional, Sequence, TextIO
+from typing import Any, Callable, Optional, Sequence, TextIO
 
 from ..llm.pricing import normalize_usage, resolve_call_cost
 from .common import (
@@ -603,6 +603,7 @@ from agent_system.chat_commands import (  # noqa: E402
     commands_for,
     group_tools_by_server,
     looks_like_command as _looks_like_command,
+    needs_escape as _needs_escape,
     parse_chat_command,
     parse_vars,
     resolve as resolve_chat_input,
@@ -813,26 +814,195 @@ def _restore_logging(silenced: list[tuple[Any, int]]) -> None:
             logger.debug("Could not restore log handler level", exc_info=True)
 
 
-def _read_input(prompt: str, cont_prompt: str = "... ", echo: bool = False) -> str:
+#: A stored message longer than this is not a thing anyone wants back in a
+#: one-line prompt. It is also how a /skill invocation looks in the session:
+#: the EXPANDED skill body is what gets stored, 6-33 KB of it, so the first
+#: arrow-up would paste a whole SKILL.md over the prompt.
+_HISTORY_MAX_CHARS = 2000
+
+
+def _history_seed(ctx: "_ChatContext") -> list[str]:
+    """The prompt history of a session: its own user messages, oldest first.
+
+    Nothing is stored for this. The session already IS the record of what was
+    asked, so resuming one brings its history back, and no second copy can
+    drift away from the transcript. The gap that leaves is slash commands:
+    they are REPL-level and never enter the session, so they live in the
+    history only until the process ends.
+    """
+    seed: list[str] = []
+    for message in _session_messages(ctx):
+        if getattr(message, "role", None) != "user":
+            continue
+        text = _message_text(message).strip()
+        # Consecutive repeats add nothing but distance to the older entries.
+        if not text or (seed and seed[-1] == text):
+            continue
+        if len(text) > _HISTORY_MAX_CHARS:
+            continue
+        # "//compact" is stored as "/compact"; recalled raw it would RUN the
+        # command instead of re-sending the message. needs_escape lives beside
+        # the unescape it inverts -- a wider rule here would hand the agent a
+        # message one slash longer than the one it was sent.
+        if _needs_escape(text):
+            text = "/" + text
+        seed.append(text)
+    return seed
+
+
+def _posix_readline_fallback() -> None:
+    """Stdlib line editing when prompt_toolkit is not available.
+
+    POSIX only, and that restriction is the point: on Windows importing
+    readline activates pyreadline3, which replaces input()'s console
+    handling with its own raw-mode loop -- every key prints a space, Enter
+    and Ctrl-C go dead. No arrow keys is a nuisance; no prompt is an outage.
+    """
+    if os.name == "nt":
+        return
+    try:
+        import readline  # noqa: F401
+    except ImportError:
+        pass
+
+
+class _PromptEditor:
+    """The prompt's line editor, with the session's history behind it.
+
+    An object rather than two closures because the history is not static:
+    ``/new`` and ``/resume`` swap the session underneath the REPL, and turns
+    that never pass through the prompt (an ``initial_task``, a line typed
+    ahead during a turn) still belong in it.
+
+    Two prompt sessions on purpose: the continuation lines of a fenced paste
+    get the same editor but NOT the history. Otherwise pasting twenty lines
+    of a stack trace buries the last twenty things actually typed.
+    """
+
+    def __init__(self, prompt_session_cls: Any, history_cls: Any,
+                 seed: Sequence[str], key_bindings: Any = None) -> None:
+        self._prompt_session_cls = prompt_session_cls
+        self._history_cls = history_cls
+        self._key_bindings = key_bindings
+        # Same bindings as the main prompt: Ctrl-Z has to mean end-of-input at
+        # the "... " prompt too, which is exactly where a person reaches for it
+        # to get out of a fence they opened by accident.
+        self._continuation = prompt_session_cls(
+            history=history_cls(), key_bindings=key_bindings)
+        self.reseed(seed)
+
+    def reseed(self, seed: Sequence[str]) -> None:
+        """Point the history at a different session's messages.
+
+        A fresh prompt session, not just a fresh history object: the editor's
+        buffer builds its working lines from the history it was constructed
+        with, so replacing the entries alone would leave the old ones
+        reachable.
+        """
+        self._history = self._history_cls()
+        for entry in seed:
+            self._history.append_string(entry)
+        self._session = self._prompt_session_cls(
+            history=self._history, key_bindings=self._key_bindings)
+
+    def remember(self, text: str) -> None:
+        """Record a turn that never passed through the prompt."""
+        stripped = (text or "").strip()
+        if stripped:
+            self._history.append_string(stripped)
+
+    def read(self, prompt: str) -> str:
+        return self._session.prompt(prompt)
+
+    def read_continuation(self, prompt: str) -> str:
+        return self._continuation.prompt(prompt)
+
+
+def _build_prompt_editor(seed: Sequence[str]) -> Optional[_PromptEditor]:
+    """Line editing with an arrow-up history, or None to stay on input().
+
+    Arrow-up recalling the previous message is what every shell and every
+    peer CLI does, and stdlib readline cannot deliver it here: on Windows
+    importing it activates pyreadline3, whose raw-mode loop replaces
+    input()'s console handling -- the "every key prints a space, Enter and
+    Ctrl-C dead" trap. prompt_toolkit drives the console itself on both
+    platforms and raises the same KeyboardInterrupt/EOFError at the prompt
+    that the REPL already handles, so Ctrl-C keeps its meaning.
+    """
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.history import InMemoryHistory
+    except ImportError:
+        logger.debug("prompt_toolkit missing; prompt falls back to input()")
+        _posix_readline_fallback()
+        return None
+    try:
+        return _PromptEditor(PromptSession, InMemoryHistory, seed,
+                             key_bindings=_prompt_key_bindings())
+    except Exception:
+        # No console to drive (MSYS, a stray pipe) is no reason to lose the
+        # prompt -- input() still reads lines, just without the arrow keys.
+        logger.debug("Could not start prompt_toolkit", exc_info=True)
+        _posix_readline_fallback()
+        return None
+
+
+def _prompt_key_bindings() -> Any:
+    """Restore Ctrl-Z's old meaning on Windows: end of input.
+
+    input() read Ctrl-Z as EOF there, and the REPL leaves on EOF. An editor
+    inserts the raw \\x1a instead, which survives .strip() and would be sent
+    to the agent as a message -- a billed turn for a keystroke that used to
+    quit. POSIX keeps prompt_toolkit's default (a literal character; the
+    terminal's own SIGTSTP never reaches the editor).
+    """
+    if os.name != "nt":
+        return None
+    from prompt_toolkit.key_binding import KeyBindings
+
+    bindings = KeyBindings()
+
+    @bindings.add("c-z")
+    def _(event: Any) -> None:
+        event.app.exit(exception=EOFError)
+
+    return bindings
+
+
+def _read_input(prompt: str, cont_prompt: str = "... ", echo: bool = False,
+                read_line: Optional[Callable[[str], str]] = None,
+                read_cont: Optional[Callable[[str], str]] = None) -> str:
     """Read one message, which may span several lines.
 
     Pasting a stack trace or a code block used to fire ONE TURN PER LINE:
     line 1 started a task and the rest sat in the console buffer, launching
     back to back afterwards. Two ways out, both familiar from peer CLIs:
     a triple-quote fence around a block, and a trailing backslash.
+
+    ``read_line``/``read_cont`` inject the editing frontend
+    (_build_line_readers). Both fall back to ``input`` -- resolved per call,
+    not captured at import, so patching builtins.input still works.
     """
     def _next() -> Optional[str]:
         try:
-            line = input(cont_prompt)
+            line = (read_cont or read_line or input)(cont_prompt)
         except EOFError:
             return None
         if echo:
             print(line)
         return line
 
-    first = input(prompt)
+    first = (read_line or input)(prompt)
     if echo:
         print(first)
+
+    if "\n" in first:
+        # Already a whole message: a recalled multi-line entry, or a bracketed
+        # paste the editor delivered in one piece. Running it through the rules
+        # below would let its own leading fence or trailing backslash drop the
+        # REPL into the continuation prompt, waiting for an end that is already
+        # in the string -- which reads as a hang.
+        return first
 
     stripped = first.strip()
     if stripped.startswith(_FENCE):
@@ -1617,6 +1787,11 @@ async def _poll_typed_input(reader: _KeyReader, renderer: ChatRenderer,
                     except Exception:
                         logger.debug("append_user_message failed", exc_info=True)
                 if delivered:
+                    # It became part of the conversation without ever passing
+                    # the prompt, so nothing else would put it in the history.
+                    editor = state.get("editor")
+                    if editor is not None:
+                        editor.remember(submitted)
                     renderer.println(f"» {submitted}", color="36")
                     renderer.println("  (queued -- the agent picks it up at its "
                                      "next step)", color="90")
@@ -1775,9 +1950,15 @@ def _task_with_attachments(ctx: _ChatContext, task: str,
 
 
 def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
-                  task: str, renderer: ChatRenderer) -> dict:
-    """One turn on the persistent loop, with two-stage Ctrl-C handling."""
-    state: dict[str, Any] = {}
+                  task: str, renderer: ChatRenderer,
+                  editor: Optional["_PromptEditor"] = None) -> dict:
+    """One turn on the persistent loop, with two-stage Ctrl-C handling.
+
+    ``editor`` travels in the turn state so that a line typed AHEAD, which is
+    delivered to the running agent instead of going through the prompt, still
+    reaches the input history.
+    """
+    state: dict[str, Any] = {"editor": editor}
     turn = loop.create_task(run_chat_turn(
         ctx.agent, task, ctx.session_id, renderer,
         show_status=ctx.show_status,
@@ -1937,16 +2118,20 @@ def run_chat_loop(
     prompt = "❯ " if unicode_ok else "> "
     cont_prompt = "… " if unicode_ok else "... "
 
-    # POSIX line editing + in-process history. NOT on Windows: importing
-    # readline there activates pyreadline3 when installed, which replaces
-    # input()'s console handling with its own raw-mode loop -- the "every key
-    # prints a space, Enter/Ctrl-C dead" trap. The Windows console host
-    # provides line editing and history natively.
-    if os.name != "nt":
-        try:
-            import readline  # noqa: F401
-        except ImportError:
-            pass
+    # Line editing and the session's own arrow-up history (see
+    # _build_prompt_editor). BOTH ends must be a terminal, not just stdin:
+    # with stdout redirected the editor still puts the tty in raw mode with
+    # echo off and then draws into the file, so `agent-cli chat > log.txt`
+    # would go silent on a terminal that no longer echoes. Redirected either
+    # way, plain input() is the right reader and the echo path below is what
+    # rebuilds the transcript.
+    try:
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    except Exception:
+        interactive = False
+    editor = _build_prompt_editor(_history_seed(ctx)) if interactive else None
+    read_line = editor.read if editor else None
+    read_cont = editor.read_continuation if editor else None
 
     # Known-good input mode, restored before every prompt: child shells
     # (terminal.execute -> MSYS bash) switch the console's INPUT mode too,
@@ -1980,11 +2165,24 @@ def run_chat_loop(
             if pending:
                 task = pending.pop(0)
                 print(f"{prompt}{task}")  # keep the transcript complete
+                # An initial_task or a line typed ahead during a turn is a
+                # turn like any other, but it never passed the prompt, so the
+                # editor would not have seen it.
+                if editor:
+                    editor.remember(task)
             else:
                 restore_console_input_mode(input_mode)
                 try:
                     task = _read_input(prompt, cont_prompt=cont_prompt,
-                                       echo=not sys.stdin.isatty())
+                                       echo=not interactive,
+                                       read_line=read_line,
+                                       read_cont=read_cont)
+                    # The editor runs its own asyncio.run() per prompt, and
+                    # that leaves the thread with NO current event loop --
+                    # measured: asyncio.get_event_loop() then raises. The REPL
+                    # itself always names the loop, but a library called
+                    # during the turn need not, and it used to find one.
+                    asyncio.set_event_loop(loop)
                 except EOFError:
                     print()
                     break
@@ -2038,6 +2236,11 @@ def run_chat_loop(
             if command == "new":
                 ctx.session_id = _init_fresh_session(ctx)
                 ctx.was_new_session = True
+                # The history belongs to the session, so it changes with it --
+                # otherwise the fresh prompt keeps offering the abandoned
+                # conversation while the transcript shows the new one.
+                if editor:
+                    editor.reseed(_history_seed(ctx))
                 print(f"New session: {ctx.session_id}")
                 continue
             if command == "session":
@@ -2051,6 +2254,8 @@ def run_chat_loop(
                 if not payload:
                     print("Usage: /resume <session-id>   (/sessions lists them)")
                 elif loop.run_until_complete(_resume_session(ctx, payload)):
+                    if editor:
+                        editor.reseed(_history_seed(ctx))
                     print(f"Resumed session: {ctx.session_id}")
                 continue
             if command == "vars":
@@ -2092,7 +2297,7 @@ def run_chat_loop(
                     continue
 
             started = time.monotonic()
-            result = _execute_turn(loop, ctx, task, renderer)
+            result = _execute_turn(loop, ctx, task, renderer, editor)
 
             # Lines the user SUBMITTED during the turn but that never reached
             # the agent become the next tasks, in order -- they pressed Enter
