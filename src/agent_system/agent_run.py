@@ -31,6 +31,7 @@ from .cli_utils.session_defaults import (
     profile_for_record,
     session_defaults,
 )
+from .cli_utils.attachments import sort_attachments
 from .cli_utils.session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 from .cli_utils.common import (
     set_color_mode,
@@ -139,8 +140,7 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
 async def main_async(request: str, agent_name: str | None = None, llm_profile: str | None = None, show_status: bool = True,
                      session_id: str | None = None, session_user: str = "cli_user",
                      list_sessions: str | None = None, session_title: str | None = None,
-                     image_paths: list[str] | None = None, audio_paths: list[str] | None = None,
-                     text_file_paths: list[str] | None = None) -> None:
+                     attachments: list[str] | None = None) -> None:
     """Async main function to run agent request with session support.
 
     Args:
@@ -153,9 +153,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         list_sessions: Count of sessions to list instead of running (0 = all,
             "" for the default); None runs the request
         session_title: Title for new session (optional)
-        image_paths: List of image file paths to attach (optional)
-        audio_paths: List of audio file paths to attach (optional)
-        text_file_paths: List of text file paths to attach (optional)
+        attachments: Files to attach; the kind of each is detected, not declared
     """
     try:
         # Handle --list-sessions flag (needs session_manager only)
@@ -302,6 +300,13 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         from typing import Union
         task_input: Union[str, ChatMessage] = request
         
+        sorted_attachments, attachment_problems = sort_attachments(attachments or [])
+        if attachment_problems:
+            raise ValueError("; ".join(attachment_problems))
+        image_paths = sorted_attachments["image"]
+        audio_paths = sorted_attachments["audio"]
+        text_file_paths = sorted_attachments["text"]
+
         if image_paths or audio_paths or text_file_paths:
             attachment_counts = []
             if image_paths:
@@ -345,19 +350,22 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
 
                 logger.info("Created multimodal message")
 
+            # sys.exit(1), not return: these printed to stderr and left with
+            # 0, so publish_pipeline and the writer runners read a failed run
+            # as a successful one with empty output.
             except ImageProcessingError as e:
                 print(f"Error processing image: {e}", file=sys.stderr)
-                return
+                sys.exit(1)
             except AudioProcessingError as e:
                 print(f"Error processing audio: {e}", file=sys.stderr)
-                return
+                sys.exit(1)
             except TextFileProcessingError as e:
                 print(f"Error processing text file: {e}", file=sys.stderr)
-                return
+                sys.exit(1)
             except Exception as e:
                 print(f"Error processing attachments: {e}", file=sys.stderr)
                 logger.exception("Unexpected error in multimodal processing")
-                return
+                sys.exit(1)
 
         # Subscribe to status events if enabled
         status_queue = None
@@ -557,28 +565,29 @@ Examples:
         help="Title for the new session (auto-generated from request if not provided)"
     )
 
+    # One flag for every kind of file, like `/attach` in the chat: the kind is
+    # read from the file, not from which flag was typed (cli_utils.attachments).
+    # The three old flags still work for anyone's shell history but are out of
+    # the help; they land in the same list and are sorted the same way.
     parser.add_argument(
-        "--images", "--attach",
-        dest="images",
+        "--attach",
+        dest="attachments",
         nargs="+",
         metavar="PATH",
-        help="Path(s) to image file(s) to attach to the request"
+        action="extend",
+        default=None,
+        help="File(s) to attach to the request -- images, audio or text; "
+             "the kind is detected per file"
     )
 
     parser.add_argument(
-        "--audio",
-        dest="audio",
+        "--images", "--audio", "--text", "--files",
+        dest="attachments",
         nargs="+",
         metavar="PATH",
-        help="Path(s) to audio file(s) to attach to the request (mp3, wav, ogg, etc.)"
-    )
-
-    parser.add_argument(
-        "--text", "--files",
-        dest="text_files",
-        nargs="+",
-        metavar="PATH",
-        help="Path(s) to text file(s) to attach to the request (txt, md, py, json, etc.)"
+        action="extend",
+        default=None,
+        help=argparse.SUPPRESS
     )
 
     args = parser.parse_args()
@@ -618,9 +627,7 @@ Examples:
             session_user=getattr(args, "session_user", "cli_user"),
             list_sessions=getattr(args, "list_sessions", None),
             session_title=getattr(args, "session_title", None),
-            image_paths=getattr(args, "images", None),
-            audio_paths=getattr(args, "audio", None),
-            text_file_paths=getattr(args, "text_files", None)
+            attachments=getattr(args, "attachments", None)
         ))
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

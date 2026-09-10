@@ -36,7 +36,15 @@ class TextFileProcessingError(Exception):
 
 
 # Supported file types
-SUPPORTED_IMAGE_FORMATS = {'jpeg', 'jpg', 'png', 'gif', 'webp', 'bmp', 'tiff'}
+#
+# The image set carries the other spellings of formats it already names --
+# jfif and jpe are JPEG, tif is TIFF. Only detect_file_type reads this set;
+# validate_image_file never looks at the extension, it opens the file with
+# PIL. So a `screenshot.jfif` (what Chrome's "save image as" produces) built
+# a perfectly good `data:image/jpeg` message while the detector called it
+# unknown, and `scan.tiff` was an image where `scan.tif` was not.
+SUPPORTED_IMAGE_FORMATS = {'jpeg', 'jpg', 'jfif', 'jpe', 'png', 'gif', 'webp',
+                           'bmp', 'tiff', 'tif'}
 SUPPORTED_AUDIO_FORMATS = {'mp3', 'wav', 'ogg', 'flac', 'm4a', 'webm', 'aac'}
 SUPPORTED_TEXT_EXTENSIONS = {
     '.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm',

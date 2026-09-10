@@ -525,6 +525,24 @@ class TestAttachCommand:
         target.write_bytes(self.PNG)
         return target
 
+    @staticmethod
+    def _wav(tmp_path):
+        """A real, minimal WAV -- the validator opens it, a stub would not do."""
+        import wave
+
+        target = tmp_path / "ton.wav"
+        with wave.open(str(target), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(8000)
+            handle.writeframes(b"\x00\x00" * 8)
+        return target
+
+    def _text(self, tmp_path):
+        target = tmp_path / "notiz.md"
+        target.write_text("die geheime zahl ist 47", encoding="utf-8")
+        return target
+
     def test_attached_file_rides_on_the_next_message_then_queue_clears(
             self, monkeypatch, tmp_path):
         agent = _agent()
@@ -541,12 +559,54 @@ class TestAttachCommand:
         assert first.content[0].text == "build this"
         assert second == "and this", "queue must be empty again after sending"
 
+    @pytest.mark.parametrize("maker,part_type,label", [
+        ("_png", "image_url", "image"),
+        ("_text", "text_file", "text"),
+        ("_wav", "audio", "audio"),
+    ])
+    def test_every_kind_reaches_the_message_in_its_own_bucket(
+            self, monkeypatch, tmp_path, capsys, maker, part_type, label):
+        """One bucket per kind, and the confirmation names the kind.
+
+        Only the image bucket was pinned: the audio and text arguments of the
+        builder call could both be replaced by None and the whole suite stayed
+        green (measured), and so could the kind in the /attach line.
+        """
+        agent = _agent()
+        target = getattr(self, maker)(tmp_path)
+
+        turns = _drive_repl(monkeypatch, [f"/attach {target}", "sieh dir das an"],
+                            agent)
+
+        assert f"[{label}]" in capsys.readouterr().out, (
+            "the /attach confirmation names the wrong kind")
+        (message,) = turns
+        assert [getattr(c, "type", None) for c in message.content] == [
+            "text", part_type]
+
     def test_a_missing_file_is_refused_at_attach_time(self, monkeypatch,
                                                       tmp_path, capsys):
         agent = _agent()
         turns = _drive_repl(monkeypatch,
                             [f"/attach {tmp_path / 'nope.png'}", "hi"], agent)
         assert turns == ["hi"], "nothing may ride along"
+        assert "Not a file" in capsys.readouterr().out
+
+    def test_a_tilde_name_that_is_no_home_does_not_kill_the_session(
+            self, monkeypatch, capsys):
+        """`~$notes.md` is the lock file Word leaves next to a document.
+
+        Path.expanduser() RAISES for a ~name it cannot resolve, and nothing
+        catches around the /attach dispatch -- the whole chat died on a file
+        name. The condition (USERNAME != profile directory) is forced here,
+        because on a machine where they match the bug is invisible.
+        """
+        monkeypatch.setenv("USERNAME", "jemand_ganz_anderes")
+        agent = _agent()
+
+        turns = _drive_repl(monkeypatch, ["/attach ~$notes.md", "hi"], agent)
+
+        assert turns == ["hi"], "the session did not survive the attach"
         assert "Not a file" in capsys.readouterr().out
 
     def test_clear_empties_the_queue(self, monkeypatch, tmp_path):

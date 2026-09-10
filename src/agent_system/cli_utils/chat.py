@@ -34,6 +34,7 @@ from .common import (
     snapshot_console_input_mode,
     supports_color,
 )
+from .attachments import sort_attachments
 from .session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 
 logger = logging.getLogger(__name__)
@@ -1952,18 +1953,19 @@ def _handle_attach(ctx: _ChatContext, payload: str) -> None:
         ctx.attachments.clear()
         print("Attachments cleared.")
         return
+    # The same sorter the command line uses: it answers "can this be sent and
+    # as what" once, for both surfaces. The hand-written copy that stood here
+    # called Path.expanduser(), which RAISES for a ~name it cannot resolve --
+    # `/attach ~$notes.md`, the lock file Word leaves next to a document, took
+    # the whole chat session down, because nothing catches around the dispatch.
     from pathlib import Path as _Path
-    target = _Path(payload).expanduser()
-    if not target.is_file():
-        print(f"Not a file: {target}")
+    kinds, problems = sort_attachments([payload])
+    if problems:
+        print(problems[0])
         return
-    kind = detect_file_type(target)
-    if kind == "unknown":
-        print(f"Unsupported file type: {target.suffix or '(no extension)'} "
-              f"-- images, audio and text files work.")
-        return
-    ctx.attachments.append(str(target))
-    print(f"Attached ({len(ctx.attachments)}): {target.name} [{kind}] "
+    kind, path = next((k, p) for k, group in kinds.items() for p in group)
+    ctx.attachments.append(path)
+    print(f"Attached ({len(ctx.attachments)}): {_Path(path).name} [{kind}] "
           f"-- sent with the next message.")
 
 
@@ -1976,12 +1978,15 @@ def _task_with_attachments(ctx: _ChatContext, task: str,
     it is cleared only when the message actually goes out.
     """
     from ..llm.capabilities import ensure_model_supports
-    from ..utils.multimodal_processor import (
-        create_multimodal_message_extended, detect_file_type)
+    from ..utils.multimodal_processor import create_multimodal_message_extended
 
-    kinds: dict[str, list[str]] = {"image": [], "audio": [], "text": []}
-    for path in ctx.attachments:
-        kinds.setdefault(detect_file_type(path), []).append(path)
+    # /attach already refused what cannot be sent, so a problem here means the
+    # file changed under us since it was queued -- say which one, keep the rest.
+    kinds, problems = sort_attachments(ctx.attachments)
+    for problem in problems:
+        print(f"Not sent: {problem}")
+    if problems:
+        return None
 
     # Same rule as the HTTP API's capability_model_name: the per-request
     # override wins over the agent's default. Inlined -- importing app.py

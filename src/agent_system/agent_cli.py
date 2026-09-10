@@ -48,6 +48,7 @@ from .cli_utils.session_defaults import (
     profile_for_record,
     usable_session_defaults,
 )
+from .cli_utils.attachments import sort_attachments
 from .cli_utils.session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 
 
@@ -641,12 +642,27 @@ def main() -> None:
         p.add_argument("--vars", "--template-vars", dest="template_vars", nargs="+", metavar="KEY=VALUE",
                        help="Template variables for prompt rendering (e.g. --vars lang=German user_name=Alice)")
 
+    def _add_attachment_args(p: argparse.ArgumentParser) -> None:
+        """One flag for every kind of file, like `/attach` in the chat.
+
+        The kind is read from the file, not from which flag was typed -- see
+        cli_utils.attachments. The three old flags still work for anyone's
+        shell history but are out of the help; they land in the same list and
+        are sorted the same way, so `--images notes.txt` now sends a text file
+        instead of base64-encoding it as a picture.
+        """
+        p.add_argument("--attach", dest="attachments", nargs="+", metavar="PATH",
+                       action="extend", default=None,
+                       help="File(s) to attach to the task -- images, audio or "
+                            "text; the kind is detected per file")
+        p.add_argument("--images", "--audio", "--text", "--files",
+                       dest="attachments", nargs="+", metavar="PATH",
+                       action="extend", default=None, help=argparse.SUPPRESS)
+
     # run subcommand (default behavior)
     run_parser = subparsers.add_parser("run", help="Run an agent task (default)")
     run_parser.add_argument("task", nargs="?", default="What can you do?", help="Task to run")
-    run_parser.add_argument("--images", "--attach", dest="images", nargs="+", metavar="PATH", help="Path(s) to image file(s) to attach to the task")
-    run_parser.add_argument("--audio", dest="audio", nargs="+", metavar="PATH", help="Path(s) to audio file(s) to attach to the task (mp3, wav, ogg, etc.)")
-    run_parser.add_argument("--text", "--files", dest="text_files", nargs="+", metavar="PATH", help="Path(s) to text file(s) to attach to the task (txt, md, py, json, etc.)")
+    _add_attachment_args(run_parser)
     _add_agent_session_args(run_parser)
 
     # chat subcommand: interactive REPL that keeps the session across turns
@@ -1433,12 +1449,19 @@ def main() -> None:
             update={"max_steps": max_steps_override})
         vprint(f"[cli] max_steps override: {max_steps_override}")
 
-    # Process multimodal attachments (images, audio, text files)
+    # Process multimodal attachments -- the kind comes from the file, not from
+    # which flag was typed (cli_utils.attachments), same as /attach in the chat.
     task_input: Union[str, ChatMessage] = args.task
-    has_images = getattr(args, "images", None)
-    has_audio = getattr(args, "audio", None)
-    has_text_files = getattr(args, "text_files", None)
-    
+    sorted_attachments, attachment_problems = sort_attachments(
+        getattr(args, "attachments", None) or [])
+    for problem in attachment_problems:
+        print(f"Error: {problem}", file=sys.stderr)
+    if attachment_problems:
+        sys.exit(1)
+    has_images = sorted_attachments["image"]
+    has_audio = sorted_attachments["audio"]
+    has_text_files = sorted_attachments["text"]
+
     if has_images or has_audio or has_text_files:
         attachment_counts = []
         if has_images:
@@ -1482,23 +1505,28 @@ def main() -> None:
 
             vprint("[cli] created multimodal message")
 
+        # sys.exit(1), not return: these printed to stderr and left with 0,
+        # so a caller that checks the exit code -- the writer runners do --
+        # read a failed run as a successful one with empty output. A missing
+        # file already exits 1 a few lines up; a corrupt one has no business
+        # exiting differently.
         except ImageProcessingError as e:
             print(f"Error processing image: {e}", file=sys.stderr)
-            return
+            sys.exit(1)
         except AudioProcessingError as e:
             print(f"Error processing audio: {e}", file=sys.stderr)
-            return
+            sys.exit(1)
         except TextFileProcessingError as e:
             print(f"Error processing text file: {e}", file=sys.stderr)
-            return
+            sys.exit(1)
         except ImportError as e:
             print(f"Error: Multimodal processing requires Pillow: {e}", file=sys.stderr)
             print("Install with: pip install Pillow", file=sys.stderr)
-            return
+            sys.exit(1)
         except Exception as e:
             print(f"Error processing attachments: {e}", file=sys.stderr)
             logger.exception("Unexpected error in multimodal processing")
-            return
+            sys.exit(1)
 
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)

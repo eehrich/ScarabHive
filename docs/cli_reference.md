@@ -62,8 +62,9 @@ agent-cli run financial_analyst "Analyze AAPL stock"
 # Override LLM profile
 agent-cli run --llm turbo "Fast question about Python"
 
-# Multimodal with image
-agent-cli run --image screenshot.png "What's in this image?"
+# Multimodal: the task comes FIRST -- --attach takes every path that
+# follows it, so a task behind the flag is read as a file name
+agent-cli run "What's in this image?" --attach screenshot.png
 ```
 
 ### Options
@@ -73,9 +74,10 @@ agent-cli run --image screenshot.png "What's in this image?"
 --llm TEXT                      LLM profile to use (overrides agent's default)
 --llm-params KEY=VALUE ...      Override LLM parameters for this run, e.g.
                                 thinking_level=max max_tokens=16384
---images PATH ... (--attach)    Image file(s) to attach
---audio PATH ...                Audio file(s) to attach
---text PATH ... (--files)       Text file(s) to attach
+--attach PATH ...               File(s) to attach -- images, audio or text;
+                                the kind is read from the file, like /attach
+                                in the chat (--images/--audio/--text still
+                                work and are sorted the same way)
 --max-steps N                   Step budget for this run (overrides the
                                 agent's max_steps; this process only)
 --session ID                    Continue an existing session
@@ -114,8 +116,8 @@ agent-cli run code_reviewer "Review this PR: https://github.com/..."
 agent-cli run --agent research_agent --llm or-gpt-full \
   "Research the latest AI developments in 2026"
 
-# Vision task with image
-agent-cli run --images diagram.png "Explain this architecture diagram"
+# Vision task with image (task first -- see above)
+agent-cli run "Explain this architecture diagram" --attach diagram.png
 
 # Machine-readable output for scripting
 agent-cli run --raw "List top 3 tech stocks" | jq '.result'
