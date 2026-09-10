@@ -464,6 +464,100 @@ def run_async(coro: Any) -> Any:
     return get_cli_loop().run_until_complete(coro)
 
 
+def stored_session_settings(session_manager: Any, session_user: str,
+                            session_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """The agent and LLM profile a session was started with, or (None, None).
+
+    Every session record carries both. Reading them back is what lets a bare
+    ``--session <id>`` continue a conversation the way it was begun; without
+    it the CLI fell back to the config defaults, so the same conversation
+    silently went on with a different agent on a different model.
+
+    A session that cannot be read is not an error here -- ``--session`` also
+    NAMES a new session. The load further down reports a real problem with
+    the message that belongs to it.
+    """
+    if not session_id or session_manager is None:
+        return None, None
+    try:
+        data = run_async(session_manager.load_session(session_user, session_id))
+    except Exception:
+        logger.debug("No stored settings for session %s", session_id, exc_info=True)
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    return (data.get("agent_name") or None), (data.get("llm_profile") or None)
+
+
+def usable_session_defaults(stored_agent: Optional[str], stored_llm: Optional[str],
+                            config: Any) -> tuple[Optional[str], Optional[str]]:
+    """Drop stored values the current configuration no longer knows.
+
+    A session record is a memory, not an instruction. Sessions outlive the
+    config that made them -- agents get renamed or removed, profiles get
+    retired (measured on this repo: 707 of 2914 cli_user sessions name an
+    agent that no longer exists) -- and the gates further down were written
+    for names a PERSON typed, so they abort. Turning "continue this
+    conversation" into a hard exit over a name the user never mentioned would
+    be a worse bug than the one this whole feature fixes.
+
+    An explicitly typed --agent/--llm is untouched by this: it still has to
+    exist, and still aborts loudly when it does not.
+    """
+    agent = stored_agent
+    if agent:
+        raw = config.plugins.servers.get(agent) if getattr(config, "plugins", None) else None
+        # The RAW entry, the same gate _build_entry_agent uses: the merged
+        # config gives every tool server an agent_config.
+        if not raw or not getattr(raw, "agent_config", None):
+            logger.info("Session names agent '%s', which this config does not "
+                        "define -- falling back to the default", agent)
+            agent = None
+
+    profile = stored_llm
+    if profile:
+        llm_system = getattr(config, "llm_system", None)
+        profiles = getattr(llm_system, "profiles", None) or {}
+        if profile not in profiles:
+            logger.info("Session names LLM profile '%s', which llm.yaml no "
+                        "longer defines -- falling back to the agent's own",
+                        profile)
+            profile = None
+
+    return agent, profile
+
+
+def choose_agent_name(override: Optional[str], stored: Optional[str],
+                      default: str) -> str:
+    """Which agent runs: what was asked for, what the session used, the default.
+
+    The stored name only outranks the CONFIG DEFAULT, never an explicit
+    --agent. Without it, continuing a session with a bare --session handed the
+    conversation to whatever agent the config happens to name today.
+    """
+    return override or stored or default
+
+
+def choose_llm_profile(override: Optional[str], stored_llm: Optional[str],
+                       stored_agent: Optional[str], entry_name: str,
+                       agent_default: Optional[str]) -> Optional[str]:
+    """Which LLM profile to force, or None to leave the agent on its own.
+
+    Three conditions before a stored profile is used, and each one has a
+    reason. An explicit --llm wins. The agent must be the one the profile was
+    stored for -- a profile picked for another agent has no business being
+    forced onto this one. And a profile that IS the agent's default is not an
+    override at all; returning it would build a second client for nothing.
+    """
+    if override:
+        return override
+    if not stored_llm or entry_name != stored_agent:
+        return None
+    if stored_llm == agent_default:
+        return None
+    return stored_llm
+
+
 def close_cli_loop() -> None:
     """Tear down the CLI loop: cancel leftovers, close async generators, close.
 
@@ -1356,8 +1450,21 @@ def main() -> None:
     # Note: SessionManager, SessionService, and dependency injection
     # are now handled by InitializationService.initialize_for_cli() above
 
+    # What this session was started with, when one is being continued. An
+    # explicit --agent/--llm still wins; the stored values only replace the
+    # config defaults, which are the wrong answer for a session that was
+    # begun with something else.
+    stored_agent, stored_llm = usable_session_defaults(
+        *stored_session_settings(
+            session_manager, getattr(args, "session_user", "cli_user"),
+            getattr(args, "session_id", None)),
+        config)
+
     # Determine CLI agent name from config (can be overridden with --agent)
-    entry_name = getattr(args, "agent_override", None) or config.default_agent
+    entry_name = choose_agent_name(
+        getattr(args, "agent_override", None), stored_agent, config.default_agent)
+    if stored_agent and entry_name == stored_agent:
+        vprint(f"[cli] continuing session with its own agent: {entry_name}")
 
     # Get or create the agent
     from .servers.agent.server import Agent as _Agent
@@ -1918,7 +2025,15 @@ def main() -> None:
     # Create LLM override if --llm and/or --llm-params was specified
     llm_override = None
     llm_profile_info = None
-    llm_profile_override = getattr(args, "llm_profile_override", None)
+    # Continue on the model the session was started with (see
+    # choose_llm_profile for what that does and does not outrank).
+    requested_profile = getattr(args, "llm_profile_override", None)
+    llm_profile_override = choose_llm_profile(
+        requested_profile, stored_llm, stored_agent, entry_name,
+        agent.agent_config.default_llm_profile)
+    if llm_profile_override and not requested_profile:
+        vprint(f"[cli] continuing session with its own LLM profile: "
+               f"{llm_profile_override}")
     try:
         llm_params_override = parse_llm_params_args(getattr(args, "llm_params", None))
     except ValueError as e:
@@ -2036,7 +2151,12 @@ def main() -> None:
                 # Use the actual agent name that was requested (entry_name from args)
                 # instead of agent.agent_name which may not exist or be "default"
                 agent_name_used = entry_name  # The agent name determined from args.agent_override or config.default_agent
-                llm_profile_used = getattr(args, "llm_profile_override", None) or agent.agent_config.default_llm_profile
+                # The profile actually USED, not the raw flag: session_service
+                # overwrites the record unconditionally, so reading the flag
+                # here wrote the agent's default over the session's own choice
+                # on every bare --session resume -- the choice then survived
+                # exactly one continuation.
+                llm_profile_used = llm_profile_override or agent.agent_config.default_llm_profile
 
                 # Save the session
                 success = await session_service.save_session(

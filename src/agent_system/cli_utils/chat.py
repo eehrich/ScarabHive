@@ -15,6 +15,7 @@ Two pieces live here:
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 import os
@@ -518,7 +519,7 @@ async def run_chat_turn(
                 # multi-step turn reports the whole turn, not just the last call.
                 call_usage = ev.get("usage")
                 _accumulate_usage(result["usage"], call_usage,
-                                  *_call_pricing_key(agent))
+                                  *_call_pricing_key(agent, llm_override))
                 # Only a call that REPORTED usage becomes the reference. The
                 # server emits thinking_complete without it (server.py: the
                 # empty-assistant branch, and both `if usage` guards), and
@@ -543,7 +544,7 @@ async def run_chat_turn(
                 final_usage = ev.get("usage")
                 if final_usage is not None and final_usage != last_call_usage:
                     _accumulate_usage(result["usage"], final_usage,
-                                      *_call_pricing_key(agent))
+                                      *_call_pricing_key(agent, llm_override))
                     last_call_usage = final_usage
             elif t == "error":
                 message = str(ev.get("message") or "unknown error")
@@ -1126,13 +1127,18 @@ def _resume_hint(ctx: "_ChatContext", session_id: str) -> str:
     return " ".join(parts)
 
 
-def _call_pricing_key(agent: Any) -> tuple[Optional[str], bool]:
+def _call_pricing_key(agent: Any, override: Any = None) -> tuple[Optional[str], bool]:
     """(model, is_batch) of the client that just ran -- read per call.
 
     Pricing the whole session with one model was wrong as soon as a fallback
     switched profiles or a step used a different client.
+
+    The override comes first, and that is not cosmetic: --llm and /model hand
+    the turn a different client while ``agent.llm`` stays the agent's own, so
+    reading the agent alone quoted the price of the model that did NOT run.
+    Same rule as _ChatContext.pricing_key.
     """
-    client = getattr(agent, "llm", None)
+    client = override or getattr(agent, "llm", None)
     model = getattr(client, "model", None)
     provider = getattr(client, "batch_provider", None)
     # isinstance-str guard mirrors the usage tracker: a bare mock must not look
@@ -1525,6 +1531,67 @@ def _show_costs(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
     renderer.commit()
     if estimated:
         print("  ~ = estimated from config/llm_pricing.yaml, not provider billing")
+
+
+def _switch_model(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> None:
+    """Show or change the LLM profile this chat runs on.
+
+    The switch is the same one ``--llm`` performs, applied to the live
+    context: the next turn reads ctx.llm_override, and the choice goes into
+    the session metadata so continuing the session later starts on it again
+    (agent_cli.stored_session_settings reads it back).
+    """
+    system_config = getattr(ctx.agent, "system_config", None)
+    llm_system = getattr(system_config, "llm_system", None)
+    profiles = dict(getattr(llm_system, "profiles", None) or {})
+    wanted = payload.strip()
+
+    if not wanted:
+        print(f"LLM: {ctx.llm_label()}")
+        if not profiles:
+            print("  (no profiles configured)")
+            return
+        current = ctx.llm_profile
+        for name in sorted(profiles):
+            marker = "*" if name == current else " "
+            description = getattr(profiles[name], "description", "") or ""
+            print(f" {marker} {name:32} {_one_line(description, 60)}")
+        print("  /model <profile> switches; it applies to the next message.")
+        return
+
+    if wanted not in profiles:
+        close = difflib.get_close_matches(wanted, sorted(profiles), n=1, cutoff=0.6)
+        print(f"Unknown LLM profile: {wanted}"
+              + (f"   Did you mean {close[0]}?" if close else ""))
+        print("  /model lists them.")
+        return
+
+    try:
+        from ..llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
+        from ..config.models import AgentConfig
+
+        client = create_llm_from_profile(config=system_config, llm_profile=wanted)
+        resolved = resolve_llm_config_for_agent(system_config, AgentConfig(llm_profile=wanted))
+    except Exception as e:
+        # The old client is still good; a failed switch must not end the chat.
+        logger.error("Could not switch LLM profile to %s: %s", wanted, e, exc_info=True)
+        print(f"Could not switch to '{wanted}': {e}")
+        print(f"Staying on {ctx.llm_label()}.")
+        return
+
+    ctx.llm_override = client
+    ctx.llm_profile = wanted
+    ctx.llm_profile_info = f"{wanted}:{resolved.spec.provider}/{resolved.spec.model}"
+    tracker = getattr(ctx.agent, "_session_tracker", None)
+    if tracker is not None:
+        # Same three keys the bootstrap writes; the turn loop reads them for
+        # tool context, and the session record is what a later resume reads.
+        tracker.set_session_metadata(ctx.session_id, {
+            "user_id": ctx.session_user,
+            "agent_name": ctx.entry_name,
+            "llm_profile": wanted,
+        })
+    print(f"LLM: {ctx.llm_profile_info}   (from the next message on)")
 
 
 async def _show_tools(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> None:
@@ -2260,6 +2327,9 @@ def run_chat_loop(
                 continue
             if command == "vars":
                 loop.run_until_complete(_handle_vars(ctx, renderer, payload))
+                continue
+            if command == "model":
+                _switch_model(ctx, renderer, payload)
                 continue
             if command == "tools":
                 loop.run_until_complete(_show_tools(ctx, renderer, payload))

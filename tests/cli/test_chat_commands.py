@@ -52,8 +52,9 @@ class TestCatalogue:
         web = {c.name for c in commands_for(WEB)}
         assert web < cli
         # attach takes paths on the server's own disk -- meaningless in a
-        # browser tab, which has the multipart upload instead.
-        assert cli - web == {"exit", "attach"}
+        # browser tab, which has the multipart upload instead. model switches
+        # the LLM of the running chat, which the browser does not offer.
+        assert cli - web == {"exit", "attach", "model"}
 
 
 class TestParsing:

@@ -69,6 +69,11 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("vars", ("/vars",),
                 "session variables: list, KEY=VALUE sets, 'unset KEY', 'clear'",
                 usage="/vars [KEY=VALUE ...]"),
+    # Terminal-only: the browser has no LLM picker to keep in step with, and a
+    # command that silently disagrees with a selector is worse than no command.
+    ChatCommand("model", ("/model", "/llm"),
+                "LLM of this session: bare lists, a name switches",
+                usage="/model [profile]", surfaces=(CLI,)),
     ChatCommand("tools", ("/tools",), "tools this agent really has (not what it claims)",
                 usage="/tools [filter]"),
     ChatCommand("skills", ("/skills",), "skills you can run, and what this agent loads"),

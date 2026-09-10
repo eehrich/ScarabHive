@@ -6,6 +6,12 @@ from agent_system import agent_cli as cli
 class DummyAgent:
     def __init__(self, *args, events=None, **kwargs):
         # Accept the Agent constructor signature (name, system_config, mcp_config, registry)
+        # The real AgentConfig, not a stand-in: the CLI reads
+        # agent_config.default_llm_profile to decide whether a stored session
+        # profile is an override at all, and a fake without it hides that.
+        from agent_system.config.models import AgentConfig
+
+        self.agent_config = AgentConfig()
         self._events = events or [
             {"type": "final", "summary": "done"},
             {"type": "end"},

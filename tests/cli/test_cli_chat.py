@@ -26,6 +26,7 @@ from agent_system.cli_utils.chat import (
     _poll_typed_input,
     ChatRenderer,
     _accumulate_usage,
+    _call_pricing_key,
     _format_usage,
     _read_input,
     _handle_vars,
@@ -33,6 +34,7 @@ from agent_system.cli_utils.chat import (
     _show_costs,
     _show_skills,
     _show_tools,
+    _switch_model,
     _show_last,
     _restore_logging,
     _silence_stdout_logging,
@@ -1041,6 +1043,67 @@ class _RecordingEditor:
         self.remembered.append(text)
 
 
+def drive_chat_repl(monkeypatch, lines, initial_task=None, turn_probe=None,
+                    editor=None):
+    """Run the real run_chat_loop over *lines* against fakes, return the editor.
+
+    Module level so that anything touching the REPL's own dispatch can use it,
+    not only the history tests -- a command wired into the loop and tested
+    only through its handler is a command nobody has ever seen dispatched.
+    """
+    import agent_system.cli_utils.chat as chat
+
+    editor = editor or _RecordingEditor(lines)
+    # Session-aware on purpose: a tracker that answers the same for every
+    # id makes every seed [] , and then "reseed was called" passes even if
+    # it is called BEFORE the session id changes -- which is the bug.
+    messages = {"s1": [_user_message("frage aus s1")],
+                "s2": [_user_message("frage aus s2")]}
+    tracker = SimpleNamespace(
+        get_session_messages=lambda sid: messages.get(sid, []),
+        set_session_messages=lambda sid, msgs: messages.setdefault(sid, []),
+        get_session_template_vars=lambda sid: {},
+        set_session_template_vars=lambda sid, values: None,
+        set_session_metadata=lambda sid, meta: None,
+    )
+    agent = SimpleNamespace(_session_tracker=tracker, agent_config=None,
+                            llm=SimpleNamespace(model="m"))
+
+    monkeypatch.setattr(chat, "_build_prompt_editor", lambda seed: editor)
+    monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
+    monkeypatch.setattr(chat, "_available_skills", lambda ctx: [])
+    monkeypatch.setattr(
+        chat, "_execute_turn",
+        turn_probe or (lambda loop, ctx, task, renderer, editor=None: {}))
+    async def _saved(ctx):
+        return True
+
+    monkeypatch.setattr(chat, "_save_session", _saved)
+    monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: True, raising=False)
+
+    async def _resumed(ctx, session_id):
+        ctx.session_id = session_id
+        return True
+
+    monkeypatch.setattr(chat, "_resume_session", _resumed)
+
+    loop = asyncio.new_event_loop()
+    try:
+        chat.run_chat_loop(
+            agent=agent, entry_name="a", session_service=None,
+            session_user="u", session_id="s1", was_new_session=False,
+            llm_profile="p", show_status=False, loop=loop,
+            initial_task=initial_task)
+    finally:
+        loop.close()
+    return editor
+
+
+def _user_message(text):
+    return SimpleNamespace(role="user", content=text)
+
+
 class TestReplKeepsTheHistoryOnTheLiveSession:
     """The editor is built once; the session under it is not.
 
@@ -1049,59 +1112,8 @@ class TestReplKeepsTheHistoryOnTheLiveSession:
     and docs/cli_reference.md promises the opposite.
     """
 
-    @staticmethod
-    def _message(text):
-        return SimpleNamespace(role="user", content=text)
-
-    def _drive(self, monkeypatch, lines, initial_task=None, turn_probe=None,
-               editor=None):
-        import agent_system.cli_utils.chat as chat
-
-        editor = editor or _RecordingEditor(lines)
-        # Session-aware on purpose: a tracker that answers the same for every
-        # id makes every seed [] , and then "reseed was called" passes even if
-        # it is called BEFORE the session id changes -- which is the bug.
-        messages = {"s1": [self._message("frage aus s1")],
-                    "s2": [self._message("frage aus s2")]}
-        tracker = SimpleNamespace(
-            get_session_messages=lambda sid: messages.get(sid, []),
-            set_session_messages=lambda sid, msgs: messages.setdefault(sid, []),
-            get_session_template_vars=lambda sid: {},
-            set_session_template_vars=lambda sid, values: None,
-            set_session_metadata=lambda sid, meta: None,
-        )
-        agent = SimpleNamespace(_session_tracker=tracker, agent_config=None,
-                                llm=SimpleNamespace(model="m"))
-
-        monkeypatch.setattr(chat, "_build_prompt_editor", lambda seed: editor)
-        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
-        monkeypatch.setattr(chat, "_available_skills", lambda ctx: [])
-        monkeypatch.setattr(
-            chat, "_execute_turn",
-            turn_probe or (lambda loop, ctx, task, renderer, editor=None: {}))
-        async def _saved(ctx):
-            return True
-
-        monkeypatch.setattr(chat, "_save_session", _saved)
-        monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True, raising=False)
-        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: True, raising=False)
-
-        async def _resumed(ctx, session_id):
-            ctx.session_id = session_id
-            return True
-
-        monkeypatch.setattr(chat, "_resume_session", _resumed)
-
-        loop = asyncio.new_event_loop()
-        try:
-            chat.run_chat_loop(
-                agent=agent, entry_name="a", session_service=None,
-                session_user="u", session_id="s1", was_new_session=False,
-                llm_profile="p", show_status=False, loop=loop,
-                initial_task=initial_task)
-        finally:
-            loop.close()
-        return editor
+    def _drive(self, monkeypatch, lines, **kwargs):
+        return drive_chat_repl(monkeypatch, lines, **kwargs)
 
     def test_resume_points_the_history_at_the_new_session(self, monkeypatch):
         editor = self._drive(monkeypatch, ["/resume s2"])
@@ -1170,6 +1182,144 @@ class TestReplKeepsTheHistoryOnTheLiveSession:
         finally:
             loop.close()
         assert built == [], "built a full-screen editor into a redirected stdout"
+
+
+class TestCallPricingKey:
+    """Which client the turn is priced with.
+
+    --llm and /model hand the turn a different client while agent.llm stays
+    the agent's own, so reading the agent alone quoted the price of the model
+    that did not run -- cheap model, expensive bill, or the reverse.
+    """
+
+    def test_the_override_is_priced_not_the_agents_own_client(self):
+        agent = SimpleNamespace(llm=SimpleNamespace(model="agent-model"))
+        override = SimpleNamespace(model="switched-model")
+        assert _call_pricing_key(agent, override)[0] == "switched-model"
+
+    def test_without_an_override_the_agents_client_is_priced(self):
+        agent = SimpleNamespace(llm=SimpleNamespace(model="agent-model"))
+        assert _call_pricing_key(agent)[0] == "agent-model"
+
+    def test_the_batch_flag_comes_from_the_same_client(self):
+        agent = SimpleNamespace(llm=SimpleNamespace(model="a", batch_provider="x"))
+        override = SimpleNamespace(model="b")
+        assert _call_pricing_key(agent, override) == ("b", False)
+
+
+class TestSwitchModel:
+    """/model changes the LLM of the running chat.
+
+    The switch has to reach three places: the next turn (ctx.llm_override),
+    the banner and cost lines (ctx.llm_profile / llm_profile_info), and the
+    session record -- which is what agent_cli reads back when the session is
+    continued later.
+    """
+
+    def _ctx(self, current="profile_a"):
+        profiles = {
+            "profile_a": SimpleNamespace(description="the cheap one"),
+            "profile_b": SimpleNamespace(description="the good one"),
+        }
+        tracker = SimpleNamespace(metadata={})
+        tracker.set_session_metadata = lambda sid, meta: tracker.metadata.update(
+            {sid: meta})
+        agent = SimpleNamespace(
+            system_config=SimpleNamespace(
+                llm_system=SimpleNamespace(profiles=profiles)),
+            _session_tracker=tracker,
+            llm=SimpleNamespace(model="m"))
+        ctx = SimpleNamespace(
+            agent=agent, entry_name="a", session_id="s1", session_user="u",
+            llm_profile=current, llm_override=None, llm_profile_info=None,
+            llm_label=lambda: current)
+        return ctx, tracker
+
+    def _patch_factory(self, monkeypatch, raises=None):
+        import agent_system.llm.factory as factory
+
+        def _create(config, llm_profile, llm_params=None):
+            if raises:
+                raise raises
+            return SimpleNamespace(model="model-of-" + llm_profile)
+
+        monkeypatch.setattr(factory, "create_llm_from_profile", _create)
+        monkeypatch.setattr(
+            factory, "resolve_llm_config_for_agent",
+            lambda config, agent_config: SimpleNamespace(
+                spec=SimpleNamespace(provider="prov", model="model-x")))
+
+    def test_a_bare_call_lists_the_profiles_and_marks_the_current_one(self, capsys):
+        ctx, _ = self._ctx()
+        _switch_model(ctx, ChatRenderer(ansi=False), "")
+        out = capsys.readouterr().out
+        assert "profile_a" in out and "profile_b" in out
+        assert "the good one" in out, "descriptions were dropped"
+        current_line = [ln for ln in out.splitlines() if "profile_a" in ln and "*" in ln]
+        assert current_line, out
+
+    def test_switching_reaches_the_turn_the_banner_and_the_session(
+            self, monkeypatch, capsys):
+        self._patch_factory(monkeypatch)
+        ctx, tracker = self._ctx()
+
+        _switch_model(ctx, ChatRenderer(ansi=False), "profile_b")
+
+        assert ctx.llm_profile == "profile_b"
+        assert getattr(ctx.llm_override, "model", None) == "model-of-profile_b"
+        assert ctx.llm_profile_info == "profile_b:prov/model-x"
+        assert tracker.metadata["s1"]["llm_profile"] == "profile_b"
+        assert "profile_b" in capsys.readouterr().out
+
+    def test_an_unknown_profile_changes_nothing(self, monkeypatch, capsys):
+        self._patch_factory(monkeypatch)
+        ctx, tracker = self._ctx()
+
+        _switch_model(ctx, ChatRenderer(ansi=False), "profile_x")
+
+        assert ctx.llm_profile == "profile_a"
+        assert ctx.llm_override is None
+        assert tracker.metadata == {}
+        assert "Unknown LLM profile" in capsys.readouterr().out
+
+    def test_a_typo_gets_a_suggestion(self, monkeypatch, capsys):
+        self._patch_factory(monkeypatch)
+        ctx, _ = self._ctx()
+        # NOT a prefix of a real profile: "profile_bb" would echo back inside
+        # the "Unknown LLM profile: ..." line and the assertion would hold
+        # with the suggestion deleted.
+        _switch_model(ctx, ChatRenderer(ansi=False), "profle_b")
+        assert "Did you mean profile_b?" in capsys.readouterr().out
+
+    def test_the_repl_dispatches_the_command(self, monkeypatch):
+        """The handler is tested above; this is the wiring into the loop.
+
+        Measured with coverage: the dispatch branch was executed by no test at
+        all, so /model could have been unreachable and every test above would
+        still have been green."""
+        import agent_system.cli_utils.chat as chat
+
+        seen = []
+        monkeypatch.setattr(chat, "_switch_model",
+                            lambda ctx, renderer, payload: seen.append(payload))
+        drive_chat_repl(monkeypatch, ["/model profile_b", "/llm"])
+
+        assert seen == ["profile_b", ""], "the alias or the branch is missing"
+
+    def test_a_failing_switch_keeps_the_old_client(self, monkeypatch, capsys):
+        """Building the new client is the part that can fail (a bad key, an
+        unreachable endpoint). Losing the working one over it would end the
+        chat for a typo."""
+        self._patch_factory(monkeypatch, raises=RuntimeError("no api key"))
+        ctx, tracker = self._ctx()
+        ctx.llm_override = SimpleNamespace(model="the-old-one")
+
+        _switch_model(ctx, ChatRenderer(ansi=False), "profile_b")
+
+        assert ctx.llm_profile == "profile_a"
+        assert ctx.llm_override.model == "the-old-one"
+        assert tracker.metadata == {}
+        assert "no api key" in capsys.readouterr().out
 
 
 class TestPromptEditorWiring:

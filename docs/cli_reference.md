@@ -156,6 +156,7 @@ global `--color` and `--no-status`.
 | `/sessions` | List the 10 most recent sessions |
 | `/resume <id>` | Continue an earlier session without leaving the chat |
 | `/vars [KEY=VALUE ...]` | Template variables of this session — bare lists them, `unset KEY` removes one, `clear` empties. The same variables `--vars` fills. A change reaches the agent on its next step and is written to the session file at once, so a removal survives `/resume` |
+| `/model [profile]`, `/llm` | LLM dieser Session — ohne Argument listet es die Profile und markiert das laufende, mit Argument wird gewechselt. Gilt ab der nächsten Nachricht und wird in die Session geschrieben, ein späteres `--session <id>` startet also darauf |
 | `/tools [filter]` | Tools the agent really has, grouped by server (optionally filtered) |
 | `/skills` | Skill bundles it loads, `always` vs `on_demand` |
 | `/costs` | Session cost so far **including sub-agents** (needs `context_usage_tracker`) |
@@ -190,6 +191,16 @@ Both resolve the command against what THAT agent may dispatch, so the browser
 names a command and never a tool — a command whose tool the agent may not call
 does not exist for it, exactly as in the terminal. Switching the agent in the
 selector re-fetches the list.
+
+**Eine Session bringt ihren Agenten und ihr LLM mit.** Beides steht in ihrem
+Datensatz, und ein blankes `--session <id>` liest es zurück — die gleiche
+Unterhaltung läuft also mit dem Agenten und dem Modell weiter, mit dem sie
+begonnen wurde, statt mit den Config-Defaults. `--agent` und `--llm` schlagen
+das weiterhin. Zwei Einschränkungen mit Grund: ein gespeichertes Profil wird
+nur übernommen, wenn auch der Agent der gespeicherte ist (ein Profil, das für
+einen anderen Agenten gewählt wurde, gehört nicht in dessen Kette), und wenn
+es ohnehin der Default des Agenten ist, passiert nichts — ein zweiter Client
+für denselben Wert wäre reine Arbeit.
 
 **Eingabe-History.** Pfeil hoch holt zurück, was in *dieser Session* gefragt
 wurde. Sie wird nirgends zusätzlich gespeichert: die Session selbst ist das
