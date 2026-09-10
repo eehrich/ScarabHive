@@ -381,19 +381,32 @@
   // The commands themselves
   // ---------------------------------------------------------------------
 
-  async function cmdSessions(container) {
+  async function cmdSessions(container, payload) {
+    // The count is advertised by the shared command catalogue, which both
+    // surfaces render -- so it has to mean the same here as in agent-cli:
+    // a number, 0 for all, anything else the usage line (as /history does).
+    const raw = (payload || '').trim();
+    if (raw && !/^\+?\d+$/.test(raw)) {
+      addNote(container, 'Usage: /sessions [count]   (got: ' + raw + ')');
+      return;
+    }
+    const limit = raw ? parseInt(raw, 10) : 20;
     const sessions = await getJSON('/api/sessions');
     if (!sessions.length) {
       addNote(container, 'No sessions yet.');
       return;
     }
-    const lines = sessions.slice(0, 10).map(function (s) {
+    const shown = limit <= 0 ? sessions : sessions.slice(0, limit);
+    const lines = shown.map(function (s) {
       const marker = s.session_id === currentSessionId ? '*' : ' ';
       const count = String(s.message_count || 0).padStart(4);
       return ' ' + marker + ' ' + s.session_id + '  ' + count + ' msg  ' +
         (s.agent_name || '?') + '  ' + oneLine(s.title || 'Untitled', 48);
     });
-    addNote(container, 'Recent sessions:\n' + lines.join('\n') +
+    const rest = sessions.length - shown.length;
+    addNote(container, 'Sessions (' + shown.length + ' of ' + sessions.length + '):\n' +
+      lines.join('\n') +
+      (rest > 0 ? '\n   ... ' + rest + ' more -- /sessions <count>, /sessions 0 for all' : '') +
       '\nUse /resume <id> to continue one.');
   }
 
@@ -701,7 +714,7 @@
     }
 
     const handlers = {
-      sessions: function () { return cmdSessions(container); },
+      sessions: function () { return cmdSessions(container, payload); },
       resume: function () { return cmdResume(container, payload); },
       vars: function () { return cmdVars(container, payload); },
       tools: function () { return cmdTools(container, payload); },
@@ -2599,6 +2612,11 @@
   chatModule.addStatusEvent = addStatusEvent;
   chatModule.toggleTreeNode = toggleTreeNode;
   chatModule.cleanup = cleanup;
+  // The command grammar is shared with the terminal (chat_commands.py), and
+  // this surface renders what that catalogue advertises -- so what the browser
+  // DOES with an argument has to be measurable from outside. Without this the
+  // only way in is a submit event, which needs the whole page.
+  chatModule.runCommand = runChatCommand;
   
   // attach to global
   global.chatModule = chatModule;

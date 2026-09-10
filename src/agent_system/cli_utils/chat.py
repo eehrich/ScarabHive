@@ -34,6 +34,7 @@ from .common import (
     snapshot_console_input_mode,
     supports_color,
 )
+from .session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -1754,28 +1755,21 @@ def _run_plugin_command(loop: asyncio.AbstractEventLoop, ctx: "_ChatContext",
         print(f"\n(/{match.name} cancelled)", file=sys.stderr)
 
 
-async def _list_sessions(ctx: _ChatContext) -> None:
-    """Show the most recent sessions of this user."""
-    if ctx.session_manager is None:
-        print("Session listing is unavailable.")
+async def _list_sessions(ctx: _ChatContext, payload: str = "") -> None:
+    """Show this user's own sessions -- `/sessions [count]`, 0 for all."""
+    limit, complaint = parse_limit(payload, DEFAULT_LIMIT)
+    if complaint:
+        # Same voice as /history next door: a discarded argument that still
+        # prints a plausible listing is indistinguishable from a honoured one.
+        print(f"Usage: /sessions [count]   (got: {complaint})")
         return
-    try:
-        sessions = await ctx.session_manager.list_sessions(ctx.session_user)
-    except Exception as e:
-        logger.error("Failed to list sessions: %s", e, exc_info=True)
-        print(f"Could not list sessions: {e}")
-        return
-    if not sessions:
-        print(f"No sessions for user '{ctx.session_user}'.")
-        return
-    print(f"Recent sessions for '{ctx.session_user}':")
-    for entry in sessions[:10]:
-        sid = entry.get("session_id", "?")
-        marker = "*" if sid == ctx.session_id else " "
-        title = (entry.get("title") or "Untitled")[:48]
-        count = entry.get("message_count", len(entry.get("messages", []) or []))
-        print(f" {marker} {sid}  {count:>4} msg  {entry.get('agent_name', '?')}  {title}")
-    print("Use /resume <id> to continue one.")
+    await print_sessions(
+        ctx.session_manager, ctx.session_user,
+        limit=limit,
+        current_session_id=ctx.session_id,
+        more_hint="/sessions <count>, /sessions 0 for all",
+        footer="Use /resume <id> to continue one.",
+    )
 
 
 async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
@@ -2315,7 +2309,7 @@ def run_chat_loop(
                 print(f"Resume with: {_resume_hint(ctx, ctx.session_id)}")
                 continue
             if command == "sessions":
-                loop.run_until_complete(_list_sessions(ctx))
+                loop.run_until_complete(_list_sessions(ctx, payload))
                 continue
             if command == "resume":
                 if not payload:

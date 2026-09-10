@@ -31,6 +31,7 @@ from .cli_utils.session_defaults import (
     profile_for_record,
     session_defaults,
 )
+from .cli_utils.session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 from .cli_utils.common import (
     set_color_mode,
     status_subscriber,
@@ -137,7 +138,7 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
 
 async def main_async(request: str, agent_name: str | None = None, llm_profile: str | None = None, show_status: bool = True,
                      session_id: str | None = None, session_user: str = "cli_user",
-                     list_sessions: bool = False, session_title: str | None = None,
+                     list_sessions: str | None = None, session_title: str | None = None,
                      image_paths: list[str] | None = None, audio_paths: list[str] | None = None,
                      text_file_paths: list[str] | None = None) -> None:
     """Async main function to run agent request with session support.
@@ -149,7 +150,8 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         show_status: Whether to display status messages
         session_id: Session ID to continue (optional)
         session_user: User ID for session storage
-        list_sessions: List all sessions for user
+        list_sessions: Count of sessions to list instead of running (0 = all,
+            "" for the default); None runs the request
         session_title: Title for new session (optional)
         image_paths: List of image file paths to attach (optional)
         audio_paths: List of audio file paths to attach (optional)
@@ -157,34 +159,23 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
     """
     try:
         # Handle --list-sessions flag (needs session_manager only)
-        if list_sessions:
+        if list_sessions is not None:
             from pathlib import Path as PathLib
             from .services.session_manager import SessionManager
 
             storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
             session_manager = SessionManager(storage_path=str(storage_path))
 
-            sessions = await session_manager.list_sessions(session_user)
-
-            if not sessions:
-                print(f"No sessions found for user '{session_user}'")
-                return
-
-            print(f"\nSessions for user '{session_user}':")
-            print("-" * 80)
-            for sess in sessions:
-                sess_id = sess.get("session_id", "unknown")
-                title = sess.get("title", "Untitled")
-                agent = sess.get("agent_name", "unknown")
-                llm = sess.get("llm_profile", "unknown")
-                created = sess.get("created_at", "unknown")
-                msg_count = sess.get("message_count", len(sess.get("messages", [])))  # Use message_count from metadata
-
-                print(f"ID: {sess_id}")
-                print(f"  Title: {title}")
-                print(f"  Agent: {agent}, LLM: {llm}")
-                print(f"  Messages: {msg_count}, Created: {created}")
-                print()
+            limit, complaint = parse_limit(list_sessions)
+            if complaint:
+                print(f"Ignoring '{complaint}': --list-sessions takes a count.")
+            await print_sessions(
+                session_manager, session_user,
+                limit=limit,
+                current_session_id=session_id,
+                more_hint="--list-sessions <count>, --list-sessions 0 for all",
+                footer="Continue one with: --session <id>",
+            )
             return
 
         # Load configuration
@@ -545,11 +536,19 @@ Examples:
         help="User ID for session storage (default: cli_user)"
     )
 
+    # nargs="?" without type=int on purpose: argparse fills an optional's slot
+    # from the next token BEFORE converting it, so `--list-sessions "what is
+    # going on"` would die on int() instead of listing -- which is what the
+    # store_true version did. parse_limit sorts the count from the text after.
     parser.add_argument(
         "--list-sessions",
         dest="list_sessions",
-        action="store_true",
-        help="List all sessions for the current user"
+        nargs="?",
+        const="",
+        default=None,
+        metavar="COUNT",
+        help=f"List this user's sessions, one line each (default {DEFAULT_LIMIT}, 0 = all). "
+             "Sub-agent sessions are not listed."
     )
 
     parser.add_argument(
@@ -585,7 +584,7 @@ Examples:
     args = parser.parse_args()
 
     # Validate that either --list-sessions or request is provided
-    if not args.list_sessions and not args.request:
+    if args.list_sessions is None and not args.request:
         parser.error("Either 'request' or --list-sessions must be provided")
 
     # Set color mode globally
@@ -617,7 +616,7 @@ Examples:
             show_status=show_status,
             session_id=getattr(args, "session_id", None),
             session_user=getattr(args, "session_user", "cli_user"),
-            list_sessions=getattr(args, "list_sessions", False),
+            list_sessions=getattr(args, "list_sessions", None),
             session_title=getattr(args, "session_title", None),
             image_paths=getattr(args, "images", None),
             audio_paths=getattr(args, "audio", None),

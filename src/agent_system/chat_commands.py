@@ -58,7 +58,8 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
                 usage="/exit, /quit, /q", surfaces=(CLI,)),
     ChatCommand("new", ("/new",), "start a fresh session (current one stays saved)"),
     ChatCommand("session", ("/session",), "show the current session and how to resume it"),
-    ChatCommand("sessions", ("/sessions",), "list recent sessions"),
+    ChatCommand("sessions", ("/sessions",), "list recent sessions (0 = all)",
+                usage="/sessions [count]"),
     ChatCommand("resume", ("/resume",), "continue an earlier session", usage="/resume <id>"),
     # No "/var" alias, though /cost and /hist set that precedent: "/var" is
     # also the head of a path a sysadmin agent gets typed at, and the short

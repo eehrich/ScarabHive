@@ -80,7 +80,10 @@ agent-cli run --image screenshot.png "What's in this image?"
                                 agent's max_steps; this process only)
 --session ID                    Continue an existing session
 --session-title TEXT            Title for the new session
---list-sessions                 List this user's sessions
+--list-sessions [COUNT]         List this user's sessions, one line each
+                                (default 20, 0 = all; no sub-agent sessions).
+                                A task that follows the flag is ignored, as
+                                before -- the listing runs and nothing else
 --vars KEY=VALUE ...            Template variables for the agent's prompt
 ```
 
@@ -153,7 +156,7 @@ global `--color` and `--no-status`.
 | `/exit`, `/quit`, `/q`, `/bye` | End the chat (Ctrl-D / Ctrl-Z+Enter work too) |
 | `/new` | Start a fresh session (the current one stays saved) |
 | `/session` | Show the current session and the command that resumes it |
-| `/sessions` | List the 10 most recent sessions |
+| `/sessions [count]` | List this user's sessions, one line each (default 20, `0` = all). Sub-agent sessions are left out — they outnumber the real ones ten to one |
 | `/resume <id>` | Continue an earlier session without leaving the chat |
 | `/vars [KEY=VALUE ...]` | Template variables of this session — bare lists them, `unset KEY` removes one, `clear` empties. The same variables `--vars` fills. A change reaches the agent on its next step and is written to the session file at once, so a removal survives `/resume` |
 | `/model [profile]`, `/llm` | LLM dieser Session — ohne Argument listet es die Profile und markiert das laufende, mit Argument wird gewechselt. Gilt ab der nächsten Nachricht und wird in die Session geschrieben, ein späteres `--session <id>` startet also darauf |

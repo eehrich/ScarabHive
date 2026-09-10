@@ -146,3 +146,72 @@ class TestBareResume:
         assert cli_env.saved.get("agent_name") == "config_default_agent"
         # And the stored profile is NOT forced onto the other agent.
         assert cli_env.saved.get("llm_profile") == AGENT_DEFAULT_PROFILE
+
+
+class TestListSessions:
+    """`--list-sessions [COUNT]` through main(), against the sessions on disk.
+
+    It used to print four lines plus a blank per session over the merged index
+    -- for cli_user that is 2915 top-level sessions and 31086 sub-sessions.
+    """
+
+    @staticmethod
+    def _seed_more(manager, count):
+        loop = asyncio.new_event_loop()
+        try:
+            for i in range(count):
+                loop.run_until_complete(manager.create_session(
+                    user_id="cli_user", session_id=f"extra{i}",
+                    agent_name=STORED_AGENT, llm_profile=STORED_PROFILE))
+        finally:
+            loop.close()
+        manager.clear_cache()
+
+    def test_one_line_per_session_and_the_agent_never_runs(
+            self, cli_env, monkeypatch, capsys):
+        self._seed_more(cli_env.manager, 2)
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "--list-sessions"])
+
+        out = capsys.readouterr().out
+        assert "Sessions for 'cli_user' (3 of 3):" in out
+        assert len([l for l in out.splitlines() if l.startswith("  ")]) == 3, out
+        assert not cli_env.saved, "the run continued past the listing"
+
+    def test_a_count_caps_the_listing(self, cli_env, monkeypatch, capsys):
+        self._seed_more(cli_env.manager, 2)
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "--list-sessions", "1"])
+
+        out = capsys.readouterr().out
+        assert "Sessions for 'cli_user' (1 of 3):" in out
+        assert "... 2 more" in out
+
+    def test_zero_is_a_count_not_an_off_switch(self, cli_env, monkeypatch, capsys):
+        # The flag carries a number now, so every truthiness check on it is a
+        # trap: `--list-sessions 0` means all of them, not "no listing".
+        self._seed_more(cli_env.manager, 2)
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "--list-sessions", "0"])
+
+        out = capsys.readouterr().out
+        assert "Sessions for 'cli_user' (3 of 3):" in out
+        assert not cli_env.saved, "0 was read as 'no listing' and the run went on"
+
+    def test_a_task_after_the_flag_still_lists(self, cli_env, monkeypatch, capsys):
+        # argparse binds the next token to the optional BEFORE converting it,
+        # so with type=int this exited 2 on int("weiter") -- where the
+        # store_true version printed the listing and ignored the task.
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "--list-sessions", "weiter"])
+
+        out = capsys.readouterr().out
+        assert "Ignoring 'weiter': --list-sessions takes a count." in out
+        assert "Sessions for 'cli_user' (1 of 1):" in out
+        assert not cli_env.saved, "the task ran anyway"
+
+    def test_the_session_being_continued_is_marked_and_the_footer_is_there(
+            self, cli_env, monkeypatch, capsys):
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "--list-sessions",
+                           "--session", "s1"])
+
+        out = capsys.readouterr().out
+        marked = [l for l in out.splitlines() if l.startswith(" *")]
+        assert len(marked) == 1 and " s1 " in marked[0], out
+        assert "Continue one with: --session <id>" in out

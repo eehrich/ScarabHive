@@ -1207,6 +1207,60 @@ class TestCallPricingKey:
         assert _call_pricing_key(agent, override) == ("b", False)
 
 
+class TestSessionsCommand:
+    """`/sessions [count]` -- the count has to survive the REPL's dispatch.
+
+    Driven through the real loop: a handler that reads a payload the dispatch
+    never passes it is a command nobody has ever seen used.
+    """
+
+    def _dispatch(self, monkeypatch, line):
+        import agent_system.cli_utils.chat as chat
+
+        seen = {}
+
+        async def fake_print(manager, user_id, **kwargs):
+            seen.update(kwargs)
+            seen["user_id"] = user_id
+
+        monkeypatch.setattr(chat, "print_sessions", fake_print)
+        drive_chat_repl(monkeypatch, [line])
+        return seen
+
+    def test_a_bare_call_uses_the_default_count(self, monkeypatch):
+        from agent_system.cli_utils.session_listing import DEFAULT_LIMIT
+        assert self._dispatch(monkeypatch, "/sessions")["limit"] == DEFAULT_LIMIT
+
+    def test_a_typed_count_reaches_the_listing(self, monkeypatch):
+        assert self._dispatch(monkeypatch, "/sessions 5")["limit"] == 5
+
+    def test_zero_means_all(self, monkeypatch):
+        assert self._dispatch(monkeypatch, "/sessions 0")["limit"] == 0
+
+    def test_the_running_session_is_handed_over_as_the_marked_one(self, monkeypatch):
+        seen = self._dispatch(monkeypatch, "/sessions")
+        assert seen["current_session_id"] == "s1"
+        assert seen["user_id"] == "u"
+
+    def test_the_footer_and_the_hint_reach_the_listing(self, monkeypatch):
+        seen = self._dispatch(monkeypatch, "/sessions")
+        assert seen["footer"] == "Use /resume <id> to continue one."
+        assert "/sessions 0 for all" in seen["more_hint"]
+
+    def test_a_count_that_is_not_a_count_gets_the_usage_line(self, monkeypatch,
+                                                             capsys):
+        # /history next door does exactly this. Listing the default instead
+        # looks identical to a honoured count -- the header says "(20 of N)"
+        # either way.
+        seen = self._dispatch(monkeypatch, "/sessions 2o")
+        assert not seen, "the listing ran with a discarded argument"
+        assert "Usage: /sessions [count]   (got: 2o)" in capsys.readouterr().out
+
+    def test_a_negative_count_is_not_read_as_all_of_them(self, monkeypatch):
+        seen = self._dispatch(monkeypatch, "/sessions -1")
+        assert not seen, "-1 listed something instead of asking what was meant"
+
+
 class TestSwitchModel:
     """/model changes the LLM of the running chat.
 

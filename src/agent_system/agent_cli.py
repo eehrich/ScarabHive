@@ -48,6 +48,7 @@ from .cli_utils.session_defaults import (
     profile_for_record,
     usable_session_defaults,
 )
+from .cli_utils.session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 
 
 def _literal_strings(annotation: Any) -> frozenset:
@@ -628,7 +629,15 @@ def main() -> None:
         p.add_argument("--session", dest="session_id", help="Continue an existing session by ID")
         p.add_argument("--session-user", dest="session_user", default="cli_user", help="User ID for session storage (default: cli_user)")
         p.add_argument("--session-title", dest="session_title", help="Title for the new session (auto-generated from task if not provided)")
-        p.add_argument("--list-sessions", dest="list_sessions", action="store_true", help="List all sessions for the current user")
+        # nargs="?" without type=int on purpose: argparse fills an optional's
+        # slot from the next token BEFORE converting it, so `--list-sessions
+        # "write me a poem"` would die on int() instead of listing -- which is
+        # what the store_true version did. parse_limit sorts the count from the
+        # task text afterwards.
+        p.add_argument("--list-sessions", dest="list_sessions", nargs="?",
+                       const="", default=None, metavar="COUNT",
+                       help=f"List this user's sessions, one line each (default {DEFAULT_LIMIT}, 0 = all). "
+                            "Sub-agent sessions are not listed.")
         p.add_argument("--vars", "--template-vars", dest="template_vars", nargs="+", metavar="KEY=VALUE",
                        help="Template variables for prompt rendering (e.g. --vars lang=German user_name=Alice)")
 
@@ -1500,7 +1509,7 @@ def main() -> None:
     # Initialize session management
     session_id = getattr(args, "session_id", None)
     session_user = getattr(args, "session_user", "cli_user")
-    list_sessions = getattr(args, "list_sessions", False)
+    list_sessions = getattr(args, "list_sessions", None)
 
     # Generate or use provided session ID
     from .utils.id import short_id
@@ -1518,35 +1527,19 @@ def main() -> None:
         was_new_session = False  # Track if we're creating a new session
 
         # Handle --list-sessions flag
-        if list_sessions:
+        if list_sessions is not None:
             vprint(f"[cli] listing sessions for user: {session_user}")
-            try:
-                sessions = await session_manager.list_sessions(session_user)
-
-                if not sessions:
-                    print(f"No sessions found for user '{session_user}'")
-                    return False, was_new_session  # Signal to exit
-
-                print(f"\nSessions for user '{session_user}':")
-                print("-" * 80)
-                for sess in sessions:
-                    sess_id = sess.get("session_id", "unknown")
-                    title = sess.get("title", "Untitled")
-                    agent_name = sess.get("agent_name", "unknown")
-                    llm_profile = sess.get("llm_profile", "unknown")
-                    created = sess.get("created_at", "unknown")
-                    msg_count = sess.get("message_count", len(sess.get("messages", [])))  # Use message_count from metadata
-
-                    print(f"ID: {sess_id}")
-                    print(f"  Title: {title}")
-                    print(f"  Agent: {agent_name}, LLM: {llm_profile}")
-                    print(f"  Messages: {msg_count}, Created: {created}")
-                    print()
-                return False, was_new_session  # Signal to exit
-            except Exception as e:
-                logger.error(f"Failed to list sessions: {e}", exc_info=True)
-                print(f"Error listing sessions: {e}", file=sys.stderr)
-                return False, was_new_session  # Signal to exit
+            limit, complaint = parse_limit(list_sessions)
+            if complaint:
+                print(f"Ignoring '{complaint}': --list-sessions takes a count.")
+            await print_sessions(
+                session_manager, session_user,
+                limit=limit,
+                current_session_id=session_id,
+                more_hint="--list-sessions <count>, --list-sessions 0 for all",
+                footer="Continue one with: --session <id>",
+            )
+            return False, was_new_session  # Signal to exit
 
         # Load existing session if --session provided
         session_exists = False
