@@ -453,7 +453,8 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 print_agent_response(formatted_summary, content_format)
             else:
                 import json
-                print(json.dumps(result, indent=2, ensure_ascii=False))
+                # default=str: a non-JSON tool value must not fail a finished run.
+                print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
 
     except ValueError as e:
         # User-friendly error for common issues (agent not found, etc.)

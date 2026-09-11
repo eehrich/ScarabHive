@@ -2237,12 +2237,14 @@ def main() -> None:
         if getattr(args, "verbose", False):
             print("")
             print(_colorize("Raw result JSON:", "35") if _supports_color() else "Raw result JSON:")
-            print(json.dumps(res, indent=2, ensure_ascii=False))
+            print(json.dumps(res, indent=2, ensure_ascii=False, default=str))
 
     # If raw requested, print JSON and exit. Ensure output is flushed so
     # test harnesses and non-interactive environments capture it.
     if getattr(args, "raw", False):
-        print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
+        # default=str: a tool value that is not plain JSON (a set, a date) must
+        # not turn a finished run into exit 1 at the very last print.
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=str), flush=True)
     else:
         # Skip summary in pretty print since it was already printed during streaming
         _pretty_print_result(result, show_mcp=show_mcp, agent_instance=agent, session_id_val=actual_session_id, skip_summary=True)

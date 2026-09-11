@@ -574,3 +574,57 @@ class TestNoAttachmentErrorLeavesWithZero:
             assert isinstance(last, ast.Raise) or exits_non_zero, (
                 f"{module}:{last.lineno} an attachment error leaves with the "
                 f"exit code of a successful run")
+
+
+class TestAFinishedRunAlwaysPrintsItsResult:
+    """A tool value that is not plain JSON must not end a finished run with exit 1.
+
+    Live run 2026-09-11: a tool_script failure report carried a set. The story
+    was already written when agent-cli died in json.dumps of its --verbose
+    output, and the runner saw exit 1. This class only reuses the
+    two-entry-point harness above; it has nothing to do with attachments.
+    """
+
+    SET_RESULT = {"status": "error", "variables": {"seen": {"B01"}}}
+
+    @classmethod
+    def _agent_returning_a_set(cls, monkeypatch):
+        class _SetResultAgent(_DummyAgent):
+            async def run_events(self, task, **kwargs):
+                _sent.append(task)
+                # Call before result, as the real agent emits them: the --raw
+                # collector only attaches a result to its preceding call.
+                yield {"type": "mcp_call", "step": 1, "server": "pipe",
+                       "action": "pipe", "params": {}}
+                yield {"type": "mcp_result", "step": 1, "server": "pipe",
+                       "action": "pipe", "result": cls.SET_RESULT}
+                yield {"type": "final", "summary": "done"}
+                yield {"type": "end"}
+
+        monkeypatch.setattr("agent_system.servers.agent.server.Agent", _SetResultAgent)
+        monkeypatch.setattr("agent_system.agent_cli.Agent", _SetResultAgent)
+
+    @pytest.mark.parametrize("flag", ["--raw", "--verbose"])
+    def test_agent_cli(self, booted, monkeypatch, capsys, flag):
+        self._agent_returning_a_set(monkeypatch)
+        monkeypatch.setattr("sys.argv", ["agent-cli", flag, "run", "was steht da"])
+
+        cli.main()
+
+        assert booted.sent, "the agent was never called -- nothing measured"
+        assert "B01" in capsys.readouterr().out
+
+    def test_agent_run(self, booted, monkeypatch, capsys):
+        async def fake_request(agent, request, session_id, llm_override=None,
+                               llm_profile_info=None):
+            _sent.append(request)
+            # No summary: agent-run then prints the whole result as JSON.
+            return {"summary": "", "calls": [{"result": self.SET_RESULT}]}
+
+        monkeypatch.setattr(agent_run, "run_agent_request", fake_request)
+        monkeypatch.setattr("sys.argv", ["agent-run", "was steht da"])
+
+        agent_run.main()
+
+        assert booted.sent, "the agent was never called -- nothing measured"
+        assert "B01" in capsys.readouterr().out

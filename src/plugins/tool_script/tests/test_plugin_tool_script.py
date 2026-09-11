@@ -284,6 +284,49 @@ class TestErrorContract:
         assert "call_tool" not in res["variables"]  # seeded names excluded
 
     @pytest.mark.asyncio
+    async def test_failure_report_survives_the_tool_message(self, agent):
+        # Live run 2026-09-11: a small set passed the snapshot's
+        # json.dumps(default=str) check but was stored raw, so tool_execution's
+        # json.dumps of the whole result raised, and the model saw "Object of
+        # type set is not JSON serializable" instead of its own NameError.
+        server = make_server()
+        res = await run(server, agent, 'seen = {"B01", "B02"}\nkeynum')
+        assert res["status"] == "error"
+        assert "seen" in res["variables"], "no set in the snapshot -- nothing measured"
+        message = json.dumps(res, ensure_ascii=False)  # what tool_execution sends
+        assert "keynum" in json.loads(message)["error"]
+
+    @pytest.mark.asyncio
+    async def test_plain_json_values_reach_the_report_untouched(self, agent):
+        # Only a value that needs default=str is round-tripped: a round-trip of
+        # plain JSON merges an int and a str key into one entry.
+        server = make_server()
+        res = await run(server, agent, 'd = {1: "a", "1": "b"}\nkeynum')
+        assert res["status"] == "error"
+        message = json.dumps(res, ensure_ascii=False)
+        assert '"1": "a"' in message and '"1": "b"' in message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("last_line,named", [
+        ("keynum", "keynum"),
+        ("result = x", "result"),
+    ], ids=["script-error", "result-value"])
+    async def test_a_deeply_nested_value_does_not_take_the_report_with_it(
+            self, agent, last_line, named):
+        # json.dumps raises RecursionError on it, which neither check caught:
+        # it escaped run_script and the model got the recursion message
+        # instead of its own error.
+        server = make_server()
+        res = await run(server, agent, (
+            "x = []\n"
+            "for i in range(5000):\n"
+            "    x = [x]\n" + last_line))
+        assert res["status"] == "error"
+        assert named in res["error"]
+        assert "not serializable" in res["variables"]["x"]
+        json.dumps(res, ensure_ascii=False)
+
+    @pytest.mark.asyncio
     async def test_syntax_error_reported_with_line(self, agent):
         server = make_server()
         res = await run(server, agent, 'x = (1\nresult = 2')

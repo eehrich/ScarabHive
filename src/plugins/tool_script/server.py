@@ -493,11 +493,22 @@ class ToolScriptServer(SchemaBasedMCPServer):
                 continue
             try:
                 text = json.dumps(value, ensure_ascii=False, default=str)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, RecursionError):
+                # RecursionError: a deeply nested value must not take the whole
+                # failure report -- and the model's own error -- with it.
                 snapshot[key] = f"<{type(value).__name__} — not serializable>"
                 continue
             if len(text) <= _SNAPSHOT_VALUE_LIMIT:
-                snapshot[key] = value
+                try:
+                    json.dumps(value, ensure_ascii=False)
+                    snapshot[key] = value
+                except (TypeError, ValueError):
+                    # Only a value that needed default=str (a set, a date) is
+                    # round-tripped: stored raw it broke the json.dumps of the
+                    # whole tool result downstream, and the model got "not JSON
+                    # serializable" instead of its own error. Plain JSON stays as
+                    # it is -- a round-trip would merge an int and a str key.
+                    snapshot[key] = json.loads(text)
             else:
                 snapshot[key] = (f"<{type(value).__name__}, {len(text)} chars "
                                  f"— omitted>")
@@ -546,7 +557,7 @@ class ToolScriptServer(SchemaBasedMCPServer):
             result_value = None
         try:
             result_text = json.dumps(result_value, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             return self._failure(
                 ctx, executor,
                 "The script's `result` value is not JSON-serializable.", None)
