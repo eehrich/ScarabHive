@@ -1449,6 +1449,89 @@ def main() -> None:
             update={"max_steps": max_steps_override})
         vprint(f"[cli] max_steps override: {max_steps_override}")
 
+    # --list-sessions reads the session store and leaves. It comes before the
+    # LLM override and the attachments and needs neither: a profile that
+    # cannot be built (a missing key, a typo) must not hide the listing.
+    list_sessions = getattr(args, "list_sessions", None)
+    if list_sessions is not None:
+        session_user = getattr(args, "session_user", "cli_user")
+        vprint(f"[cli] listing sessions for user: {session_user}")
+        limit, complaint = parse_limit(list_sessions)
+        if complaint:
+            print(f"Ignoring '{complaint}': --list-sessions takes a count.")
+        run_async(print_sessions(
+            session_manager, session_user,
+            limit=limit,
+            current_session_id=getattr(args, "session_id", None),
+            more_hint="--list-sessions <count>, --list-sessions 0 for all",
+            footer="Continue one with: --session <id>",
+        ))
+        return
+
+    # The LLM override (--llm and/or --llm-params) is built before the
+    # attachments: the capability check must see the model this run will
+    # actually use, and a bad profile stops the run before a session exists.
+    llm_override = None
+    llm_profile_info = None
+    # Continue on the model the session was started with (see
+    # choose_llm_profile for what that does and does not outrank).
+    requested_profile = getattr(args, "llm_profile_override", None)
+    llm_profile_override = choose_llm_profile(
+        requested_profile, stored_llm, stored_agent, entry_name,
+        agent.agent_config.default_llm_profile)
+    if llm_profile_override and not requested_profile:
+        vprint(f"[cli] continuing session with its own LLM profile: "
+               f"{llm_profile_override}")
+    try:
+        llm_params_override = parse_llm_params_args(getattr(args, "llm_params", None))
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return
+
+    if llm_profile_override or llm_params_override:
+        # --llm-params without --llm: apply them to the agent's default profile.
+        effective_profile = (
+            llm_profile_override or agent.agent_config.default_llm_profile
+        )
+        if config.llm_system and config.llm_system.profiles:
+            if effective_profile not in config.llm_system.profiles:
+                available_profiles = sorted(config.llm_system.profiles.keys())
+                error_msg = f"ERROR: LLM profile '{effective_profile}' not found in configuration."
+                if available_profiles:
+                    error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
+                print(error_msg, file=sys.stderr)
+                return
+
+            try:
+                # Use factory function that properly handles batch mode
+                from .llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
+                from .config.models import AgentConfig
+
+                llm_override = create_llm_from_profile(
+                    config=config,
+                    llm_profile=effective_profile,
+                    llm_params=llm_params_override,
+                )
+
+                # Get profile info for logging
+                temp_agent_config = AgentConfig(llm_profile=effective_profile)
+                resolved = resolve_llm_config_for_agent(config, temp_agent_config)
+                model = resolved.spec.model
+                provider = resolved.spec.provider
+                llm_profile_info = f"{effective_profile}:{provider}/{model}"
+                if llm_params_override:
+                    _params_str = ",".join(
+                        f"{k}={v}" for k, v in llm_params_override.items()
+                    )
+                    llm_profile_info += f" +params({_params_str})"
+
+                logger.info(f"Using LLM override: {llm_profile_info}")
+                vprint(f"[cli] Using LLM profile: {llm_profile_info}")
+            except Exception as e:
+                logger.error(f"Failed to create LLM override: {e}", exc_info=True)
+                print(f"ERROR: Failed to apply LLM profile '{effective_profile}': {str(e)}", file=sys.stderr)
+                return
+
     # Process multimodal attachments -- the kind comes from the file, not from
     # which flag was typed (cli_utils.attachments), same as /attach in the chat.
     task_input: Union[str, ChatMessage] = args.task
@@ -1472,10 +1555,12 @@ def main() -> None:
             attachment_counts.append(f"{len(has_text_files)} text file(s)")
         vprint(f"[cli] processing attachments: {', '.join(attachment_counts)}")
 
-        # Same check the HTTP API does. Without it the picture went to whatever
-        # model the chain picked, and the complaint came back from the provider.
-        from .llm.capabilities import ensure_model_supports
-        model_name = getattr(getattr(agent, "llm", None), "model", None)
+        # Same check the HTTP API does, against the model this run will use:
+        # the --llm override wins over the agent's default. Without it the
+        # picture went to whatever model the chain picked, and the complaint
+        # came back from the provider.
+        from .llm.capabilities import capability_model_name, ensure_model_supports
+        model_name = capability_model_name(llm_override, agent)
         problem = ensure_model_supports(
             model_name, images=len(has_images or []), audio=len(has_audio or []))
         if problem:
@@ -1531,13 +1616,9 @@ def main() -> None:
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)
 
-    # Extract LLM profile override early (needed in session operations)
-    llm_profile_override = getattr(args, "llm_profile_override", None)
-
     # Initialize session management
     session_id = getattr(args, "session_id", None)
     session_user = getattr(args, "session_user", "cli_user")
-    list_sessions = getattr(args, "list_sessions", None)
 
     # Generate or use provided session ID
     from .utils.id import short_id
@@ -1553,21 +1634,6 @@ def main() -> None:
     async def handle_session_operations():
         nonlocal actual_session_id
         was_new_session = False  # Track if we're creating a new session
-
-        # Handle --list-sessions flag
-        if list_sessions is not None:
-            vprint(f"[cli] listing sessions for user: {session_user}")
-            limit, complaint = parse_limit(list_sessions)
-            if complaint:
-                print(f"Ignoring '{complaint}': --list-sessions takes a count.")
-            await print_sessions(
-                session_manager, session_user,
-                limit=limit,
-                current_session_id=session_id,
-                more_hint="--list-sessions <count>, --list-sessions 0 for all",
-                footer="Continue one with: --session <id>",
-            )
-            return False, was_new_session  # Signal to exit
 
         # Load existing session if --session provided
         session_exists = False
@@ -1961,68 +2027,6 @@ def main() -> None:
     # Execute with new status-aware streaming
     show_mcp = getattr(args, "show_mcp", False)
     show_status = not getattr(args, "no_status", False)
-
-    # Create LLM override if --llm and/or --llm-params was specified
-    llm_override = None
-    llm_profile_info = None
-    # Continue on the model the session was started with (see
-    # choose_llm_profile for what that does and does not outrank).
-    requested_profile = getattr(args, "llm_profile_override", None)
-    llm_profile_override = choose_llm_profile(
-        requested_profile, stored_llm, stored_agent, entry_name,
-        agent.agent_config.default_llm_profile)
-    if llm_profile_override and not requested_profile:
-        vprint(f"[cli] continuing session with its own LLM profile: "
-               f"{llm_profile_override}")
-    try:
-        llm_params_override = parse_llm_params_args(getattr(args, "llm_params", None))
-    except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return
-
-    if llm_profile_override or llm_params_override:
-        # --llm-params ohne --llm: auf das Default-Profil des Agenten anwenden.
-        effective_profile = (
-            llm_profile_override or agent.agent_config.default_llm_profile
-        )
-        if config.llm_system and config.llm_system.profiles:
-            if effective_profile not in config.llm_system.profiles:
-                available_profiles = sorted(config.llm_system.profiles.keys())
-                error_msg = f"ERROR: LLM profile '{effective_profile}' not found in configuration."
-                if available_profiles:
-                    error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
-                print(error_msg, file=sys.stderr)
-                return
-
-            try:
-                # Use factory function that properly handles batch mode
-                from .llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
-                from .config.models import AgentConfig
-
-                llm_override = create_llm_from_profile(
-                    config=config,
-                    llm_profile=effective_profile,
-                    llm_params=llm_params_override,
-                )
-
-                # Get profile info for logging
-                temp_agent_config = AgentConfig(llm_profile=effective_profile)
-                resolved = resolve_llm_config_for_agent(config, temp_agent_config)
-                model = resolved.spec.model
-                provider = resolved.spec.provider
-                llm_profile_info = f"{effective_profile}:{provider}/{model}"
-                if llm_params_override:
-                    _params_str = ",".join(
-                        f"{k}={v}" for k, v in llm_params_override.items()
-                    )
-                    llm_profile_info += f" +params({_params_str})"
-
-                logger.info(f"Using LLM override: {llm_profile_info}")
-                vprint(f"[cli] Using LLM profile: {llm_profile_info}")
-            except Exception as e:
-                logger.error(f"Failed to create LLM override: {e}", exc_info=True)
-                print(f"ERROR: Failed to apply LLM profile '{effective_profile}': {str(e)}", file=sys.stderr)
-                return
 
     # Set session metadata for tool execution context (enables _user_id, _agent injection)
     if hasattr(agent, '_session_tracker'):

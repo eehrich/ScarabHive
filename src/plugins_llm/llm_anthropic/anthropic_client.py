@@ -688,19 +688,18 @@ class AnthropicAsyncClient(LLMClient):
                         # Handle content block stop
                         elif event_type == "content_block_stop":
                             if current_tool_call_id and current_tool_name:
-                                # Parse accumulated tool input
-                                try:
-                                    args = json.loads(current_tool_input) if current_tool_input else {}
-                                except json.JSONDecodeError:
-                                    repaired = repair_json(current_tool_input)
-                                    args = repaired if repaired is not None and isinstance(repaired, dict) else {}
+                                # The input as the model sent it. Not repaired here:
+                                # tool_execution rejects malformed arguments and the
+                                # model sends the call again -- a repaired guess ran as
+                                # if it were the call, and input nothing could repair
+                                # ran with {} (2026-09-11).
                                 
                                 tool_call = {
                                     "id": current_tool_call_id,
                                     "type": "function",
                                     "function": {
                                         "name": current_tool_name,
-                                        "arguments": json.dumps(args)
+                                        "arguments": current_tool_input or "{}"
                                     }
                                 }
                                 accumulated_tool_calls[current_tool_call_id] = tool_call

@@ -231,12 +231,9 @@ async def lifespan(app: FastAPI):
         logger.info("FastAPI application shutdown complete")
 
 
-def capability_model_name(llm_override: Any, selected_agent: Any) -> Optional[str]:
-    """The model the attachments will actually reach: the per-request override
-    wins over the agent's default."""
-    if llm_override is not None and getattr(llm_override, "model", None):
-        return llm_override.model
-    return getattr(getattr(selected_agent, "llm", None), "model", None)
+# Lives in llm.capabilities so the command-line entry points share it without
+# importing FastAPI; imported here for this module and its tests.
+from .llm.capabilities import capability_model_name  # noqa: E402,F401
 
 
 # Module level templates and static path setup

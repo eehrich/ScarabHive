@@ -233,14 +233,13 @@ class TestStreamingToolExecution:
 
 
 class TestMalformedToolArguments:
-    """Regression tests for repair_json returning non-dict values.
+    """Tool arguments that are JSON, but not an object.
 
-    When an LLM (e.g., DeepSeek-chat) emits malformed tool arguments, the
-    json-repair library can return list/str/number instead of a dict. The
-    downstream code calls params.get(...) which would crash with AttributeError.
+    Arguments can read as a list, a string or a number instead of a dict. The
+    downstream code calls params.get(...), which crashed with AttributeError.
 
     Triggering case observed in production: v5b_synopsis_moderator posting a
-    ~15KB synopsis as tool argument; repair_json returned a list.
+    ~15KB synopsis as tool argument, which was read as a list.
     """
 
     @pytest.mark.asyncio
@@ -248,8 +247,7 @@ class TestMalformedToolArguments:
         """[{...}] → {...} — LLM accidentally wrapped args in a single-item list."""
         manager, forwarder = manager_with_streaming
 
-        # Malformed JSON that repair_json returns as a list with one dict
-        # (simulates LLM wrapping args in brackets)
+        # A single object wrapped in a list (the LLM put brackets around the args)
         raw = '[{"key": "value"}]'
         tool_calls = [{
             "id": "call_1",
@@ -308,10 +306,10 @@ class TestMalformedToolArguments:
 
     @pytest.mark.asyncio
     async def test_bare_string_args_return_parse_error(self, manager_with_streaming):
-        """Bare string after repair → parse failure, not crash."""
+        """A bare JSON string → parse failure, not crash."""
         manager, forwarder = manager_with_streaming
 
-        # Malformed: just a bare string (repair_json might return the string)
+        # Valid JSON, but a string instead of an object
         raw = '"just a string"'
         tool_calls = [{
             "id": "call_1",
@@ -334,3 +332,83 @@ class TestMalformedToolArguments:
         # Must complete with error message, not crash with AttributeError
         assert len(tool_messages) == 1
         assert tool_messages[0].role == "tool"
+
+
+async def _messages_of(manager, forwarder, raw_arguments, request_id):
+    tool_calls = [{"id": "call_1", "function": {"name": "test_tool", "arguments": raw_arguments}}]
+    async for item in manager.execute_tools_streaming(
+        tool_calls=tool_calls,
+        tool_name_mapping={"test_tool": "test_tool"},
+        available_tools=["test_tool"],
+        step=1,
+        request_id=request_id,
+        status_forwarder=forwarder,
+    ):
+        if item["type"] == "complete":
+            return item["messages"]
+    return []
+
+
+class TestMalformedArgumentsAreRejectedNotRepaired:
+    """Arguments that are not valid JSON go back to the model; the tool never runs.
+
+    2026-09-11: json-repair read a spliced token stream ("... und erkenn" +
+    "idas Schuld ...", "background": "...") as one string, the write went
+    through with status ok, and the garbage stood in the story document.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", [
+        '{"doc": "synopsis", "data": {"background": "und erkenn"idas Schuld", "age": 3}}',
+        '{"doc": "synopsis", "data": {"background": "cut off',
+    ], ids=["spliced-string", "cut-off"])
+    async def test_the_tool_is_not_called_and_the_model_gets_a_parse_error(
+            self, manager_with_streaming, mock_registry, raw):
+        import json as _json
+        from agent_system.utils.json_utils import repair_json
+        assert isinstance(repair_json(raw), dict), (
+            "json-repair cannot make a dict of this -- the old code refused it "
+            "as well, so the test would measure nothing")
+        manager, forwarder = manager_with_streaming
+
+        tool_messages = await _messages_of(manager, forwarder, raw, "reject_test")
+
+        mock_registry.get.return_value.call_with_status.assert_not_awaited()
+        assert len(tool_messages) == 1
+        assert _json.loads(tool_messages[0].content)["type"] == "JSONParseError"
+
+    @pytest.mark.asyncio
+    async def test_a_line_break_inside_a_string_is_read_not_rejected(
+            self, manager_with_streaming, mock_registry):
+        # Not strict JSON, but nothing to guess: the value is the text with its
+        # line break. Rejecting it would send a usable call back to the model.
+        import json as _json
+        raw = '{"text": "line1\nline2"}'
+        with pytest.raises(_json.JSONDecodeError):
+            _json.loads(raw)  # fixture assurance: really not strict JSON
+        call = mock_registry.get.return_value.call_with_status = AsyncMock(
+            return_value={"status": "ok"})
+        manager, forwarder = manager_with_streaming
+
+        await _messages_of(manager, forwarder, raw, "line_break_test")
+
+        call.assert_awaited_once()
+        assert call.await_args.args[1]["text"] == "line1\nline2"
+
+
+class TestAToolResultAlwaysReachesTheModel:
+    """A plugin's return value is turned into text for the model, whatever it holds."""
+
+    @pytest.mark.asyncio
+    async def test_a_set_in_the_result_arrives_as_text(self, manager_with_streaming, mock_registry):
+        # json.dumps without default raised on the set, and the model got
+        # "invocation failed: Object of type set is not JSON serializable"
+        # instead of the result (tool_script failure report, 2026-09-11).
+        mock_registry.get.return_value.call_with_status = AsyncMock(
+            return_value={"status": "ok", "seen": {"B01"}})
+        manager, forwarder = manager_with_streaming
+
+        tool_messages = await _messages_of(manager, forwarder, '{"x": 1}', "set_result_test")
+
+        assert len(tool_messages) == 1
+        assert "B01" in tool_messages[0].content

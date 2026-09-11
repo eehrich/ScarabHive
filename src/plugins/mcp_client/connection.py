@@ -585,7 +585,9 @@ def _structured(result: Any) -> Any:
     if structured is not None:
         return structured
     if hasattr(result, "model_dump"):
-        return result.model_dump(exclude_none=True)
+        # mode="json": a resource block carries its URL as a pydantic AnyUrl,
+        # which the tool message's json.dumps cannot serialize.
+        return result.model_dump(mode="json", exclude_none=True)
     return result
 
 

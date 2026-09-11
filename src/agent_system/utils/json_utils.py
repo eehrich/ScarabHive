@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import json_repair as _json_repair_lib
 
@@ -169,28 +169,50 @@ def safe_serialize(obj: Any) -> str:
             return json.dumps({"error": f"Unserializable object of type {type(obj).__name__}"}, ensure_ascii=False)
 
 
+def parse_tool_arguments(raw: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Read a model's tool-call arguments -- the one reading execution and
+    history share.
+
+    Returns ``(arguments, "")``, or ``(None, problem)`` for a call that must
+    not run. Nothing is repaired: json-repair makes SOMETHING of any text, and
+    a call that ran on its guess wrote a spliced token stream into a story
+    document with status ok (2026-09-11). Two readings guess nothing and stay:
+    a control character inside a string is taken literally (``strict=False``),
+    and a single object wrapped in a list is unwrapped.
+    """
+    try:
+        value = json.loads(raw, strict=False)
+    except json.JSONDecodeError as exc:
+        return None, str(exc)
+    if isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict):
+        value = value[0]
+    if not isinstance(value, dict):
+        return None, "the arguments are valid JSON but not an object"
+    return value, ""
+
+
 def history_safe_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Copy tool calls so stored chat history always carries valid arguments JSON.
 
-    tool_execution repairs malformed ``function.arguments`` for the execution
-    itself, but the assistant message used to keep the raw string. Providers
-    that validate history server-side then reject EVERY later request of the
-    session ("Assistant tool call function.arguments must be valid JSON") --
-    a poisoned session survives model fallback and burns to max steps
-    (observed with v6 agents, 2026-09-01).
+    The assistant message used to keep the raw ``function.arguments`` string.
+    Providers that validate history server-side then reject EVERY later
+    request of the session ("Assistant tool call function.arguments must be
+    valid JSON") -- a poisoned session survives model fallback and burns to
+    max steps (observed with v6 agents, 2026-09-01).
 
-    Shape guard: only DICT-shaped repairs survive. repair_json turns common
-    defects (concatenated objects, truncated list-wraps) into LISTS -- valid
-    JSON, but Anthropic/Gemini put the parsed value into ``tool_use.input`` /
-    ``functionCall.args``, which must be an object; a stored list would poison
-    those providers instead. A single-dict list is unwrapped exactly like
-    tool_execution does for the execution itself; everything else degrades to
-    ``{}`` -- the paired JSONParseError tool message already tells the model.
+    History stores what execution ran on, read by the same
+    parse_tool_arguments: the arguments as sent when they are a JSON object,
+    re-serialized when they needed its lenient reading, and ``{}`` for a call
+    execution rejected -- the paired JSONParseError tool message tells the
+    model. Never a repaired guess: next to the error it looks like a good
+    call, the model could send it again, and the garbage the rejection
+    stopped would run after all. Only objects are stored, because
+    Anthropic/Gemini put the parsed value into ``tool_use.input`` /
+    ``functionCall.args``.
 
     Returns copies only where a fix is needed; the original objects stay
-    untouched on purpose, because the execution path must still error an
-    irreparable call back to the model instead of running it with defaulted
-    arguments.
+    untouched on purpose, because the execution path must see the raw string
+    to reject the call.
     """
     safe: List[Dict[str, Any]] = []
     for tc in tool_calls:
@@ -211,23 +233,19 @@ def history_safe_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, 
             if not raw.strip():
                 fixed = "{}"
             else:
-                try:
-                    json.loads(raw)
-                except json.JSONDecodeError:
-                    repaired = repair_json(raw)
-                    if (isinstance(repaired, list) and len(repaired) == 1
-                            and isinstance(repaired[0], dict)):
-                        repaired = repaired[0]
-                    if isinstance(repaired, dict):
-                        fixed = json.dumps(repaired, ensure_ascii=False)
-                    else:
-                        fixed = "{}"
+                arguments, problem = parse_tool_arguments(raw)
+                if arguments is None:
+                    fixed = "{}"
                     logger.warning(
-                        "Tool call arguments were not valid JSON (len=%d) -- "
-                        "history stores the %s version",
-                        len(raw),
-                        "repaired" if fixed != "{}" else "emptied",
-                    )
+                        "Tool call arguments were rejected (%s, len=%d) -- "
+                        "history stores {}", problem, len(raw))
+                else:
+                    try:
+                        as_sent = isinstance(json.loads(raw), dict)
+                    except json.JSONDecodeError:
+                        as_sent = False  # a control character inside a string
+                    if not as_sent:
+                        fixed = json.dumps(arguments, ensure_ascii=False)
         if fixed is not None:
             safe.append({**tc, "function": {**func, "arguments": fixed}})
         else:

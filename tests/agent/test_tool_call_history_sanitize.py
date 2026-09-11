@@ -1,16 +1,20 @@
 """Stored tool calls must always carry valid, DICT-shaped arguments JSON.
 
-tool_execution repairs malformed ``function.arguments`` for the execution
-itself, but the assistant message kept the raw string. Providers that
+tool_execution rejects a call whose ``function.arguments`` are not valid
+JSON, but the assistant message kept the raw string. Providers that
 validate history server-side (OpenRouter Responses API) then reject EVERY
 later request of the session ("Assistant tool call function.arguments must
 be valid JSON") — the poisoned session survives model fallback and burns to
 max steps. Observed live with v6 agents on 2026-09-01 (21 cases, sessions
 dead for a whole afternoon).
 
-Shape matters as much as validity: repair_json turns common defects into
-LISTS — valid JSON that would poison Anthropic/Gemini instead, because
-``tool_use.input`` / ``functionCall.args`` must be an object.
+Shape matters as much as validity: a JSON list or string would poison
+Anthropic/Gemini instead, because ``tool_use.input`` /
+``functionCall.args`` must be an object.
+
+And history stores what execution ran on: a call execution rejected is
+stored as ``{}``, never as json-repair's guess -- the model could send the
+guess again, and the garbage the rejection stopped would run after all.
 
 Three layers under test: the sanitizer itself, the production wiring of a
 live loop (second LLM request), and the session-load path (a session
@@ -35,7 +39,7 @@ from agent_system.config.models import (
 from agent_system.llm.models import ChatMessage
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.agent.server import Agent
-from agent_system.utils.json_utils import history_safe_tool_calls
+from agent_system.utils.json_utils import history_safe_tool_calls, repair_json
 
 
 def _tc(arguments, call_id="t1"):
@@ -56,19 +60,41 @@ class TestSanitizer:
         out = history_safe_tool_calls([_tc(raw)])
         json.loads(out[0]["function"]["arguments"])  # must not raise
 
-    def test_repaired_list_shape_does_not_survive(self):
-        """repair_json('{"a":1}{"b":2}') returns a LIST — valid JSON, but
-        Anthropic/Gemini put the parsed value into tool_use.input /
-        functionCall.args, which must be an object. Storing the list would
-        poison those providers instead of curing the session."""
-        out = history_safe_tool_calls([_tc('{"a":1}{"b":2}')])
-        assert isinstance(json.loads(out[0]["function"]["arguments"]), dict)
+    @pytest.mark.parametrize("raw", [
+        '{"doc": "synopsis", "data": {"background": "und erkenn"idas Schuld", "age": 3}}',
+        '{"doc": "synopsis", "data": {"background": "cut off',
+        '[{"path": "x.md"}',
+        '{"a":1}{"b":2}',
+    ], ids=["spliced-string", "cut-off", "truncated-list-wrap", "concatenated"])
+    def test_a_rejected_call_is_stored_empty_not_as_the_repaired_guess(self, raw):
+        """Execution rejects these; history must not show a call that looks
+        fine next to the error. The model could send the guess again as it
+        stands, and the garbage the rejection stopped would run one turn
+        later."""
+        assert repair_json(raw), "json-repair makes nothing of this -- the test would measure nothing"
+        out = history_safe_tool_calls([_tc(raw)])
+        assert out[0]["function"]["arguments"] == "{}"
 
-    def test_truncated_list_wrap_is_unwrapped_like_execution(self):
-        """'[{"path": "x.md"}' repairs to [{'path': 'x.md'}] — the same
-        single-dict unwrap tool_execution applies for the execution."""
-        out = history_safe_tool_calls([_tc('[{"path": "x.md"}')])
+    def test_a_list_wrapped_object_is_stored_unwrapped(self):
+        """'[{"path": "x.md"}]' runs as {"path": "x.md"}; stored as the list,
+        it would poison Anthropic/Gemini, whose tool input must be an object."""
+        out = history_safe_tool_calls([_tc('[{"path": "x.md"}]')])
         assert json.loads(out[0]["function"]["arguments"]) == {"path": "x.md"}
+
+    @pytest.mark.parametrize("raw", ['"just a string"', "[1, 2]", "null"])
+    def test_json_that_is_not_an_object_is_stored_empty(self, raw):
+        out = history_safe_tool_calls([_tc(raw)])
+        assert out[0]["function"]["arguments"] == "{}"
+
+    def test_a_line_break_inside_a_string_is_stored_as_valid_json(self):
+        """A literal line break inside a string is not strict JSON, but its
+        value is unambiguous: execution runs the call, and history stores it
+        re-serialized -- providers validate strictly."""
+        raw = '{"text": "line1\nline2"}'
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(raw)  # fixture assurance: really not strict JSON
+        out = history_safe_tool_calls([_tc(raw)])
+        assert json.loads(out[0]["function"]["arguments"]) == {"text": "line1\nline2"}
 
     def test_empty_arguments_become_empty_object(self):
         out = history_safe_tool_calls([_tc("")])
@@ -88,8 +114,8 @@ class TestSanitizer:
         assert out[0]["function"]["arguments"] == "{}"
 
     def test_original_objects_are_not_mutated(self):
-        """The execution path reads the ORIGINAL list — an irreparable call
-        must still error back to the model, not run with defaulted args."""
+        """The execution path reads the ORIGINAL list -- a malformed call must
+        still be rejected there, not run with the {} history stores."""
         tc = _tc('{"a": 1,, "b": }')
         before = copy.deepcopy(tc)
         history_safe_tool_calls([tc])

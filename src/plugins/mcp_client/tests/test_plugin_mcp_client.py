@@ -9,6 +9,7 @@ Mocks would have kept saying yes.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import types
 from pathlib import Path
@@ -322,6 +323,21 @@ class TestCalls:
         assert _first_text(result) == "first"
         assert _first_text(SimpleNamespace(content=[])) is None
         assert _first_text(SimpleNamespace(content=None)) is None
+
+    @pytest.mark.asyncio
+    async def test_a_result_without_text_survives_json_dumps(self):
+        """A resource block is not text, so the result goes out as the server's
+        structure. A plain pydantic dump kept its URL as an AnyUrl object, the
+        tool message's json.dumps raised, and the model got "invocation failed"
+        instead of the result."""
+        conn = ServerConnection("probe", make_config(), timeout=6.0)
+        await conn.start()
+        try:
+            payload = await conn.call_tool("resource_only", {})
+        finally:
+            await conn.stop()
+
+        assert "file:///probe/notes.txt" in json.dumps(payload)
 
 
 class TestPerServerTimeout:

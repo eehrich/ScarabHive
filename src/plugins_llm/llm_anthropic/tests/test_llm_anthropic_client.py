@@ -335,6 +335,60 @@ class TestAnthropicClientStreaming:
         assert any(c.get("type") == "final" for c in chunks)
 
 
+class TestAnthropicToolInputIsNotRepaired:
+    """The stream hands tool input on as the model sent it.
+
+    It used to parse the input and repair what did not parse: a repaired guess
+    ran as if it were the call, and input nothing could repair ran with {}
+    without an error. tool_execution rejects malformed arguments and the model
+    sends the call again -- but only if they reach it unchanged.
+    """
+
+    @pytest.mark.asyncio
+    async def test_malformed_tool_input_reaches_the_caller_as_sent(self, anthropic_client):
+        from agent_system.utils.json_utils import repair_json
+
+        raw = '{"doc": "synopsis", "data": {"background": "cut off'
+        assert isinstance(repair_json(raw), dict), (
+            "json-repair makes nothing of this -- the test would measure nothing")
+
+        start = MagicMock()
+        start.type = "content_block_start"
+        start.content_block = MagicMock()
+        start.content_block.type = "tool_use"
+        start.content_block.id = "toolu_1"
+        start.content_block.name = "write_doc"
+        delta = MagicMock()
+        delta.type = "content_block_delta"
+        delta.delta = MagicMock()
+        delta.delta.type = "input_json_delta"
+        delta.delta.partial_json = raw
+        stop = MagicMock()
+        stop.type = "content_block_stop"
+
+        final_message = MagicMock()
+        final_message.usage.input_tokens = 10
+        final_message.usage.output_tokens = 5
+
+        async def events():
+            for event in (start, delta, stop):
+                yield event
+
+        stream = MagicMock()
+        stream.__aenter__ = AsyncMock(return_value=stream)
+        stream.__aexit__ = AsyncMock(return_value=None)
+        stream.__aiter__ = lambda self: events()
+        stream.get_final_message = AsyncMock(return_value=final_message)
+        anthropic_client._client.messages.stream = MagicMock(return_value=stream)
+
+        chunks = [chunk async for chunk in anthropic_client.chat_tools_streaming(
+            [ChatMessage(role="user", content="Hi")], [])]
+
+        final = next(chunk for chunk in chunks if chunk.get("type") == "final")
+        (call,) = final["assistant"]["tool_calls"]
+        assert call["function"]["arguments"] == raw
+
+
 class TestAnthropicClientSchemaClean:
     """Test JSON schema cleaning."""
 

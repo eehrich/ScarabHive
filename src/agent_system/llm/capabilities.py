@@ -110,6 +110,14 @@ def init_capabilities_registry(config_path: Optional[str | Path] = None) -> None
     _registry_loaded = True
 
 
+def capability_model_name(llm_override: object, agent: object) -> Optional[str]:
+    """The model the attachments will actually reach: the per-request override
+    wins over the agent's default. One rule for the HTTP API, the chat and
+    both command-line entry points."""
+    model = getattr(llm_override, "model", None)
+    return model or getattr(getattr(agent, "llm", None), "model", None)
+
+
 def ensure_model_supports(model_name: Optional[str], *, images: int = 0,
                           audio: int = 0, video: int = 0) -> Optional[str]:
     """Check a model against the attachments it is about to receive.

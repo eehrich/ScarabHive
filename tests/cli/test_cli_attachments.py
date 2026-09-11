@@ -166,7 +166,7 @@ def booted(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_run, "create_agent", fake_create_agent)
     monkeypatch.setattr(agent_run, "run_agent_request", fake_request)
     monkeypatch.setattr(service, "save_session", fake_save)
-    return SimpleNamespace(sent=_sent)
+    return SimpleNamespace(sent=_sent, config=config)
 
 
 def _text_of(message) -> str:
@@ -628,3 +628,70 @@ class TestAFinishedRunAlwaysPrintsItsResult:
 
         assert booted.sent, "the agent was never called -- nothing measured"
         assert "B01" in capsys.readouterr().out
+
+
+class TestTheCapabilityCheckSeesTheModelTheRunUses:
+    """--llm decides the model, so it decides whether an attachment may go.
+
+    agent-cli built the --llm override about 500 lines after the capability
+    check, and agent-run built it in time but still asked the agent: both
+    measured `--llm <profile> --attach pic.png` against the agent's default
+    model -- refused although the chosen model takes images, let through
+    although it does not.
+    """
+
+    CHOSEN = "x-chosen"
+
+    @pytest.fixture
+    def chosen_profile(self, booted, monkeypatch):
+        booted.config.llm_system.models[self.CHOSEN] = LLMModelConfig(
+            provider="openai", model=self.CHOSEN)
+        booted.config.llm_system.profiles["chosen"] = LLMProfile(model_ref=self.CHOSEN)
+        # The override client is built for real; building it needs a key to exist.
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key-never-sent")
+        return booted
+
+    @staticmethod
+    def _only_this_model_takes_images(monkeypatch, model_that_can):
+        import agent_system.llm.capabilities as caps
+        checked = []
+
+        def fake(model, **counts):
+            checked.append(model)
+            return None if model == model_that_can else f"model {model} cannot take images"
+
+        monkeypatch.setattr(caps, "ensure_model_supports", fake)
+        return checked
+
+    @staticmethod
+    def _run(entry, png, monkeypatch):
+        argv = ([entry, "--raw", "run", "was siehst du", "--llm", "chosen", "--attach", str(png)]
+                if entry == "agent-cli"
+                else [entry, "was siehst du", "--llm", "chosen", "--attach", str(png)])
+        monkeypatch.setattr("sys.argv", argv)
+        (cli.main if entry == "agent-cli" else agent_run.main)()
+
+    @pytest.mark.parametrize("entry", ["agent-cli", "agent-run"])
+    def test_a_chosen_model_that_takes_images_lets_the_picture_through(
+            self, chosen_profile, monkeypatch, tmp_path, entry):
+        checked = self._only_this_model_takes_images(monkeypatch, self.CHOSEN)
+        png = TestEveryBucketReachesTheBuilder._png(tmp_path)
+
+        self._run(entry, png, monkeypatch)
+
+        assert checked == [self.CHOSEN]
+        assert chosen_profile.sent, "refused against the agent's default model"
+
+    @pytest.mark.parametrize("entry", ["agent-cli", "agent-run"])
+    def test_a_chosen_model_without_images_refuses_the_picture(
+            self, chosen_profile, monkeypatch, tmp_path, entry):
+        # Only the agent's default model ("m") takes images here.
+        checked = self._only_this_model_takes_images(monkeypatch, "m")
+        png = TestEveryBucketReachesTheBuilder._png(tmp_path)
+
+        with pytest.raises(SystemExit) as leaving:
+            self._run(entry, png, monkeypatch)
+
+        assert leaving.value.code == 1
+        assert checked == [self.CHOSEN]
+        assert not chosen_profile.sent, "sent although the chosen model cannot take images"

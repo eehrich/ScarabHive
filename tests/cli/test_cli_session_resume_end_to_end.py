@@ -177,6 +177,17 @@ class TestListSessions:
         assert len([l for l in out.splitlines() if l.startswith("  ")]) == 3, out
         assert not cli_env.saved, "the run continued past the listing"
 
+    def test_a_profile_that_cannot_be_built_does_not_hide_the_listing(
+            self, cli_env, monkeypatch, capsys):
+        # The LLM override is built before the attachments; the listing needs
+        # neither and must not stop on a profile that fails.
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "--list-sessions",
+                           "--llm", "no_such_profile"])
+
+        captured = capsys.readouterr()
+        assert "Sessions for 'cli_user'" in captured.out, captured.err
+        assert not cli_env.saved, "the run continued past the listing"
+
     def test_a_count_caps_the_listing(self, cli_env, monkeypatch, capsys):
         self._seed_more(cli_env.manager, 2)
         _run(monkeypatch, ["agent-cli", "--raw", "run", "--list-sessions", "1"])

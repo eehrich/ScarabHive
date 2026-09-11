@@ -1977,7 +1977,7 @@ def _task_with_attachments(ctx: _ChatContext, task: str,
     can fix the problem (switch profile, drop a file) without re-attaching;
     it is cleared only when the message actually goes out.
     """
-    from ..llm.capabilities import ensure_model_supports
+    from ..llm.capabilities import capability_model_name, ensure_model_supports
     from ..utils.multimodal_processor import create_multimodal_message_extended
 
     # /attach already refused what cannot be sent, so a problem here means the
@@ -1988,13 +1988,11 @@ def _task_with_attachments(ctx: _ChatContext, task: str,
     if problems:
         return None
 
-    # Same rule as the HTTP API's capability_model_name: the per-request
-    # override wins over the agent's default. Inlined -- importing app.py
-    # here would drag FastAPI into the CLI.
-    model = getattr(ctx.llm_override, "model", None) or getattr(
-        getattr(ctx.agent, "llm", None), "model", None)
+    # The per-request override wins over the agent's default -- one rule for
+    # the HTTP API, the chat and both command-line entry points.
     problem = ensure_model_supports(
-        model, images=len(kinds["image"]), audio=len(kinds["audio"]))
+        capability_model_name(ctx.llm_override, ctx.agent),
+        images=len(kinds["image"]), audio=len(kinds["audio"]))
     if problem:
         print(f"Not sent: {problem}")
         print(renderer._colored(f"(kept text: {task})", "90"))

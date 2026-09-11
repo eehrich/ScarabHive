@@ -22,7 +22,7 @@ from .server_resolution import resolve_longest_prefix
 from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ....mcp.integration import get_mcp_integration
-from ....utils.json_utils import repair_json
+from ....utils.json_utils import parse_tool_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -217,54 +217,23 @@ class ToolExecutionManager:
 
             tool_name = tool_name_mapping.get(openai_tool_name, openai_tool_name)
 
-            # Parse arguments
+            # Parse arguments -- the reading history stores as well
+            # (utils.json_utils.parse_tool_arguments). Malformed arguments are
+            # rejected, not repaired, and the model sends the call again.
             params: Dict[str, Any] = {}
-            json_parse_failed = False
+            parse_problem = ""
             if isinstance(raw_args, str) and raw_args:
-                try:
-                    params = json.loads(raw_args)
-                except json.JSONDecodeError:
-                    # Attempt repair using json-repair library
-                    repaired = repair_json(raw_args)
-                    if repaired is not None:
-                        params = repaired
-                        logger.info(
-                            "Repaired malformed tool arguments for %s (raw length: %d)",
-                            tool_name, len(raw_args),
-                        )
-                    else:
-                        json_parse_failed = True
-                        logger.warning(
-                            "Failed to parse/repair tool arguments for %s: %s",
-                            tool_name, raw_args[:500],
-                        )
+                parsed, parse_problem = parse_tool_arguments(raw_args)
+                if parsed is None:
+                    logger.warning(
+                        "Rejected tool call %s: %s (length %d)",
+                        tool_name, parse_problem, len(raw_args),
+                    )
+                else:
+                    params = parsed
             elif isinstance(raw_args, dict):
                 params = raw_args
-
-            # Defensive: both json.loads and repair_json can return non-dict values
-            # (list/str/number) if the LLM wrapped args in [...] or emitted a bare value.
-            # Downstream code assumes params is a dict (params.get(...)), so normalise:
-            # - [{...}] → {...}   (LLM wrapped a single dict in a list — common mistake)
-            # - anything else → treat as parse failure so the LLM gets a clear error back
-            if not json_parse_failed and not isinstance(params, dict):
-                if (
-                    isinstance(params, list)
-                    and len(params) == 1
-                    and isinstance(params[0], dict)
-                ):
-                    logger.info(
-                        "Unwrapped list-wrapped tool arguments for %s ([{...}] → {...})",
-                        tool_name,
-                    )
-                    params = params[0]
-                else:
-                    logger.warning(
-                        "Tool arguments for %s parsed as %s, expected dict — "
-                        "treating as parse failure",
-                        tool_name, type(params).__name__,
-                    )
-                    json_parse_failed = True
-                    params = {}
+            json_parse_failed = bool(parse_problem)
 
             # SECURITY: runtime params (_session_id, _agent, _request_id, ...) are
             # injected by the framework and identify the CALLER. An LLM must never
@@ -286,10 +255,11 @@ class ToolExecutionManager:
                 tool_call_id = tc.get("id") or f"parse-error-{int(time.time()*1000)}"
                 error_content = json.dumps({
                     "error": (
-                        f"Invalid JSON in tool arguments for '{tool_name}'. "
-                        "The JSON could not be parsed even after repair attempts. "
-                        "Common issues: missing brackets/braces, unquoted keys, "
-                        "truncated output. Please regenerate the tool call with valid JSON."
+                        f"Invalid tool arguments for '{tool_name}': {parse_problem}. "
+                        "The call was NOT executed. Send it again with the arguments "
+                        "as one valid JSON object. Common causes: an unescaped double "
+                        "quote inside a string value, or output cut off before the "
+                        "JSON ended."
                     ),
                     "type": "JSONParseError",
                 })
@@ -804,7 +774,9 @@ class ToolExecutionManager:
 
             # Create tool result message with optional multimodal content
             tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
-            tool_msg_content = sanitize_json_content(json.dumps(tool_result, ensure_ascii=False))
+            # default=str: a plugin may hand back a set or a date; the model gets
+            # it as text instead of "invocation failed: not JSON serializable".
+            tool_msg_content = sanitize_json_content(json.dumps(tool_result, ensure_ascii=False, default=str))
             message = ChatMessage(
                 role="tool",
                 tool_call_id=tool_call_id,

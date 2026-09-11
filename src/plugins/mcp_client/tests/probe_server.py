@@ -59,5 +59,15 @@ def captioned_picture() -> list:
     return ["a red pixel", Image(data=_TINY_PNG, format="png")]
 
 
+@mcp.tool()
+def resource_only():
+    """Only an embedded resource, no text block: the result goes out as the
+    server's structure, URL field included."""
+    from mcp.types import EmbeddedResource, TextResourceContents
+
+    return [EmbeddedResource(type="resource", resource=TextResourceContents(
+        uri="file:///probe/notes.txt", mimeType="text/plain", text="a note"))]
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
