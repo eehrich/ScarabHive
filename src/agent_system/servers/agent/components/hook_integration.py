@@ -133,7 +133,14 @@ class HookIntegrationManager:
         agent_ref = self.agent
         registry = self.registry
         hook_filter = self.is_hook_enabled
-        
+
+        def _session_of(request_id: str) -> str:
+            # The agent already maps every running request to its session.
+            tracker = getattr(agent_ref, '_session_tracker', None)
+            if tracker is None or not request_id:
+                return ''
+            return tracker.get_session_for_request(request_id) or ''
+
         async def _on_pre_request(info: Dict[str, Any]) -> None:
             """Callback invoked by LLM client before API request."""
             try:
@@ -143,7 +150,7 @@ class HookIntegrationManager:
                 context = HookContext(
                     hook_type=HookType.PRE_LLM_REQUEST,
                     request_id=req_id,
-                    session_id='',
+                    session_id=_session_of(req_id),
                     agent=agent_ref,
                     agent_name=agent_ref.name if agent_ref else '',
                     llm_request_payload=info.get("payload"),
@@ -167,7 +174,7 @@ class HookIntegrationManager:
                 context = HookContext(
                     hook_type=HookType.POST_LLM_RESPONSE,
                     request_id=req_id,
-                    session_id='',
+                    session_id=_session_of(req_id),
                     agent=agent_ref,
                     agent_name=agent_ref.name if agent_ref else '',
                     llm_response_data=info.get("response_data"),
