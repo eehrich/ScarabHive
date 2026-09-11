@@ -3,7 +3,8 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import logging
 
-from .dependencies import get_agent_optional
+from .. import __version__
+from .dependencies import get_agent_optional, get_config_optional
 
 # Create an APIRouter instead of a full FastAPI app
 router = APIRouter()
@@ -133,10 +134,10 @@ async def health_check():
     return {"status": "ok", "service": "agent-system-api"}
 
 @router.get("/api/version")
-async def get_version():
-    """Get API version information."""
+async def get_version(config=Depends(get_config_optional)):
+    """Version information: the framework version config.yaml declares."""
     return {
-        "version": "1.0.0",
+        "version": config.version if config else __version__,
         "api_version": "v1",
         "service": "agent-system"
     }
