@@ -456,6 +456,7 @@ class TestMessageSequence:
                 thinking_blocks=[{"type": "thinking", "thinking": "t1",
                                   "signature": "s1"}],
                 thinking_model="claude-opus-5",
+                served_by="Google",
             ),
             ChatMessage(
                 role="assistant", content="B",
@@ -464,6 +465,7 @@ class TestMessageSequence:
                 thinking_blocks=[{"type": "thinking", "thinking": "t2",
                                   "signature": "s2"}],
                 thinking_model="claude-opus-5",
+                served_by="Google AI Studio",
             ),
         ]
 
@@ -475,6 +477,20 @@ class TestMessageSequence:
         assert [rd["data"] for rd in merged.reasoning_details] == ["sig-1", "sig-2"]
         assert [tb["signature"] for tb in merged.thinking_blocks] == ["s2"]
         assert merged.thinking_model == "claude-opus-5"
+        # The later turn's backend holds the cache; the provider pin follows it.
+        assert merged.served_by == "Google AI Studio"
+
+    def test_merge_keeps_the_earlier_backend_when_the_later_turn_names_none(self):
+        messages = [
+            ChatMessage(role="user", content="Think"),
+            ChatMessage(role="assistant", content="A", served_by="backend-a"),
+            ChatMessage(role="assistant", content="B"),
+        ]
+
+        result = InternalMessageValidator().validate_and_repair(messages, "test")
+
+        assert len(result.repaired_messages) == 2
+        assert result.repaired_messages[1].served_by == "backend-a"
 
     def test_merge_thinking_blocks_from_different_models_keeps_newer(self):
         """Signatures are model-bound: merging blocks from two different

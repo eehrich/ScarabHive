@@ -597,6 +597,9 @@ class InternalMessageValidator:
                                     or getattr(second_msg, 'rd_orphaned', None)),
                     "thinking_blocks": merged_tb,
                     "thinking_model": merged_tm if merged_tb else None,
+                    # The later turn's backend is the one holding the cache.
+                    "served_by": (getattr(second_msg, 'served_by', None)
+                                  or getattr(first_msg, 'served_by', None)),
                 })
                 
                 # Mark second message for removal

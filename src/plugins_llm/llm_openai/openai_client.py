@@ -122,6 +122,7 @@ class OpenAIAsyncClient(LLMClient):
                     d = m.model_dump(exclude_none=True, mode='json')
                     d.pop('injected_by', None)  # Internal hook metadata
                     d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
+                    d.pop('served_by', None)  # OpenRouter backend provenance, never sent
                     # Normalize content for OpenAI API
                     if isinstance(d.get('content'), list):
                         d['content'] = openai_utils.normalize_content_list(d['content'])
@@ -348,6 +349,7 @@ class OpenAIAsyncClient(LLMClient):
                 # Remove multimodal_content from serialized dict - it's processed separately
                 d.pop('multimodal_content', None)
                 d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
+                d.pop('served_by', None)  # OpenRouter backend provenance, never sent
 
                 # Filter out audio content from user messages - OpenAI Chat Completions
                 # Normalize content for OpenAI API
@@ -762,6 +764,7 @@ class OpenAIAsyncClient(LLMClient):
                 d.pop('multimodal_content', None)
                 d.pop('injected_by', None)
                 d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
+                d.pop('served_by', None)  # OpenRouter backend provenance, never sent
                 
                 # Normalize content for OpenAI API
                 if isinstance(d.get('content'), list):

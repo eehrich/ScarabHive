@@ -33,10 +33,18 @@ landet in jedem `post_llm_response`-Hook ein Feld `routing`:
 
 Damit ist zum ersten Mal nachvollziehbar, ob `provider_routing.order`
 gehalten hat. **Der Client urteilt darüber nicht selbst:** die Config nennt
-Gateway-Slugs (`google-vertex`), die Metadaten Anzeigenamen (`Google`), und
-die beiden lassen sich nicht nach einer Regel aufeinander abbilden — ein
+Gateway-Slugs, die Metadaten Anzeigenamen, und übersetzen kann nur die
+Anbieterliste des Gateways (`GET /api/v1/providers`, `name` → `slug`) — ein
 naiver Vergleich schlüge ausgerechnet bei den härtesten Pins Fehlalarm.
 Gemeldet, nicht gerichtet.
+
+**Anbieter-Pin:** Jeder Assistant-Turn merkt sich als `served_by`, welches
+Backend geliefert hat. Der nächste Request desselben Laufs stellt die
+passenden Einträge von `provider_routing.order` nach vorn. Die Liste wird nur
+umsortiert, nie gekürzt oder erweitert, der Fallback auf die übrigen Einträge
+bleibt also. Den Slug zum Anzeigenamen liefert die Anbieterliste; im Code
+steht kein Anbietername. Ein Profil ohne `order` bekommt keinen Pin, ein
+Aufruf ohne vorherigen Assistant-Turn auch nicht.
 
 ### `session_id`: Cache-Lokalität ohne harten Pin
 

@@ -11,6 +11,7 @@ import logging
 import random
 import re
 import socket
+import time
 from typing import Any, Optional
 from dataclasses import dataclass
 
@@ -60,10 +61,10 @@ def openrouter_routing_info(response_data: dict) -> Optional[dict]:
     route also has a plain top-level ``provider``, used here as a fallback).
 
     Deliberately NOT a verdict on whether ``provider_routing.order`` held:
-    the config names gateway SLUGS (``google-vertex``) while the metadata
-    reports DISPLAY names (``Google``), and the two do not map by any rule we
-    could derive — a naive comparison would cry wolf on exactly the entries
-    that are pinned hardest. Reported, not judged.
+    the config names gateway SLUGS while the metadata reports DISPLAY names,
+    and only the gateway's provider list translates between them (see
+    routing_pinned_to_last_backend) — a naive comparison would cry wolf on
+    exactly the entries that are pinned hardest. Reported, not judged.
     """
     meta = response_data.get("openrouter_metadata")
     if not isinstance(meta, dict):
@@ -71,10 +72,14 @@ def openrouter_routing_info(response_data: dict) -> Optional[dict]:
         return {"selected": fallback} if isinstance(fallback, str) else None
     endpoints = meta.get("endpoints") or {}
     available = [e for e in (endpoints.get("available") or []) if isinstance(e, dict)]
-    selected = [e.get("provider") for e in available if e.get("selected")]
+    # Names only: "selected" becomes ChatMessage.served_by, a str field, after
+    # the model has answered -- a malformed record must not fail that turn.
+    selected = [e.get("provider") for e in available
+                if e.get("selected") and isinstance(e.get("provider"), str)]
+    fallback = response_data.get("provider")
     info = {
         "selected": (selected[0] if selected
-                     else response_data.get("provider")),
+                     else fallback if isinstance(fallback, str) else None),
         "available": [e.get("provider") for e in available],
         "attempt": meta.get("attempt"),
         "strategy": meta.get("strategy"),
@@ -87,6 +92,87 @@ def openrouter_routing_info(response_data: dict) -> Optional[dict]:
     # Information. `attempt: 0` waere eine — deshalb kein Falsy-Test.
     return {k: v for k, v in info.items()
             if v is not None and v != []} or None
+
+
+# Display name -> routing slug, as the gateway publishes it (GET /providers).
+# Process-wide on purpose: it is the gateway's catalogue, not run state.
+_provider_slugs: dict[str, str] = {}
+_provider_slugs_loaded_at = float("-inf")
+
+
+async def _provider_slug(base_url: str, name: str, verify: Any) -> Optional[str]:
+    """Routing slug for a backend display name, from OpenRouter's own list.
+
+    Reloaded when a name is missing (a new backend, or a failed load), at most
+    every ten minutes: a gateway without the list must not cost every request
+    a timeout. Until it loads, nothing is pinned. ``verify`` is the calling
+    client's TLS setting: behind an intercepting proxy the default would fail.
+    """
+    global _provider_slugs_loaded_at
+    if name not in _provider_slugs and time.monotonic() - _provider_slugs_loaded_at > 600:
+        try:
+            async with httpx.AsyncClient(timeout=10, verify=verify) as client:
+                response = await client.get(f"{base_url.rstrip('/')}/providers")
+                response.raise_for_status()
+                # Entry by entry: one malformed record must not cost the rest.
+                _provider_slugs.update(
+                    {p["name"]: p["slug"] for p in response.json()["data"]
+                     if isinstance(p, dict) and isinstance(p.get("name"), str)
+                     and isinstance(p.get("slug"), str)})
+        except Exception as exc:
+            logger.warning("OpenRouter provider list unavailable, no provider pin: %r", exc)
+        # Stamped after the attempt, not before: requests arriving during a
+        # load fetch too instead of going out unpinned, and a cancelled load
+        # leaves no stamp that would block the retry for ten minutes.
+        _provider_slugs_loaded_at = time.monotonic()
+    return _provider_slugs.get(name)
+
+
+async def routing_pinned_to_last_backend(provider_routing: Optional[dict],
+                                         messages: list,
+                                         base_url: str,
+                                         verify: Any) -> Optional[dict]:
+    """provider_routing with the backend of the latest recorded turn in front.
+
+    That backend holds the run's prompt cache, and it is the only one that can
+    verify the encrypted reasoning the next request replays. Measured
+    2026-09-11 with two backends configured for one model: the first refused
+    102 of 102 histories whose last turn the second had served and accepted
+    135 of 135 of its own -- every later turn of such a run paid a 400 and
+    lost the cache.
+
+    Reordered only, never narrowed or widened: the other configured backends
+    stay behind it, so an outage of the pinned one still falls through to
+    them, and a backend the configuration does not list is not added. Derived
+    from the history (``served_by`` on the assistant messages) on every
+    request and never kept on a client -- one client serves every parallel
+    session of an agent type.
+
+    The metadata names the backend by display name, ``order`` takes slugs; the
+    gateway's provider list translates. A configured entry matches by its
+    slug before the first "/" and keeps its suffix (``<slug>/fp8``).
+    """
+    order = provider_routing.get("order") if isinstance(provider_routing, dict) else None
+    if not isinstance(order, list):
+        return provider_routing
+    served = None
+    for msg in reversed(messages):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        if role != "assistant":
+            continue
+        value = msg.get("served_by") if isinstance(msg, dict) else getattr(msg, "served_by", None)
+        if isinstance(value, str) and value:
+            served = value
+            break
+    if served is None:
+        return provider_routing
+    slug = await _provider_slug(base_url, served, verify)
+    front = [entry for entry in order
+             if isinstance(entry, str) and entry.split("/")[0] == slug]
+    if not front or order[:len(front)] == front:
+        return provider_routing
+    return {**provider_routing,
+            "order": front + [entry for entry in order if entry not in front]}
 
 
 @dataclass
@@ -950,7 +1036,8 @@ class HTTPXOpenAIClient(LLMClient):
         # Provider routing (OpenRouter): bias toward a sticky backend so the
         # implicit prompt cache stays warm. Only honored by OpenRouter.
         if self.provider_routing and self._is_openrouter:
-            payload["provider"] = self.provider_routing
+            payload["provider"] = await routing_pinned_to_last_backend(
+                self.provider_routing, messages, self.base_url, self._verify)
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
@@ -1500,7 +1587,8 @@ class HTTPXOpenAIClient(LLMClient):
         # Provider routing (OpenRouter): bias toward a sticky backend so the
         # implicit prompt cache stays warm. Only honored by OpenRouter.
         if self.provider_routing and self._is_openrouter:
-            payload["provider"] = self.provider_routing
+            payload["provider"] = await routing_pinned_to_last_backend(
+                self.provider_routing, messages, self.base_url, self._verify)
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
@@ -1811,6 +1899,8 @@ class HTTPXOpenAIClient(LLMClient):
                                             accumulated_reasoning_details[idx]
                                             for idx in sorted(accumulated_reasoning_details.keys())
                                         ]
+                                    if accumulated_routing and accumulated_routing.get("selected"):
+                                        assistant["served_by"] = accumulated_routing["selected"]
 
                                     final_result = {"assistant": assistant}
 
@@ -1978,6 +2068,8 @@ class HTTPXOpenAIClient(LLMClient):
                                                 accumulated_reasoning_details[idx]
                                                 for idx in sorted(accumulated_reasoning_details.keys())
                                             ]
+                                        if accumulated_routing and accumulated_routing.get("selected"):
+                                            assistant["served_by"] = accumulated_routing["selected"]
                                         final_result = {"assistant": assistant}
                                         if accumulated_usage:
                                             final_result["usage"] = accumulated_usage
@@ -2062,6 +2154,8 @@ class HTTPXOpenAIClient(LLMClient):
                                     accumulated_reasoning_details[idx]
                                     for idx in sorted(accumulated_reasoning_details.keys())
                                 ]
+                            if accumulated_routing and accumulated_routing.get("selected"):
+                                assistant["served_by"] = accumulated_routing["selected"]
                             final_result = {"assistant": assistant}
                             if accumulated_usage:
                                 final_result["usage"] = accumulated_usage
@@ -2655,6 +2749,12 @@ class HTTPXOpenAIClient(LLMClient):
             reasoning_details = message.get("reasoning_details")
             if reasoning_details:
                 assistant["reasoning_details"] = reasoning_details
+
+            # Which backend answered: the next request of this run goes back
+            # to it (routing_pinned_to_last_backend).
+            served_by = (openrouter_routing_info(response_data) or {}).get("selected")
+            if served_by:
+                assistant["served_by"] = served_by
 
             # Track usage if available
             usage = response_data.get("usage", {})

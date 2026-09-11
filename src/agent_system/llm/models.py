@@ -205,6 +205,15 @@ class ChatMessage(BaseModel):
     # ignores them silently but still bills them as input, so replay is
     # skipped on mismatch (fallback chains DO move messages between models).
     thinking_model: Optional[str] = None
+    # OpenRouter backend that served this turn (display name from
+    # openrouter_metadata). The next request of the
+    # run puts that backend first in provider.order: it holds the prompt cache
+    # and is the only one that can verify the replayed encrypted reasoning
+    # (llm_openai_compat.httpx_client.routing_pinned_to_last_backend). Never
+    # sent to a provider. A model switch needs no reset: the pin only reorders
+    # the NEW model's own backend list, so a stale name matches nothing or
+    # picks among backends that model may use anyway.
+    served_by: Optional[str] = None
     # Hook injection tracking: identifies which plugin injected this message.
     # Used by injection hooks to find and replace their previous injections
     # instead of fragile content-based matching.

@@ -2568,6 +2568,8 @@ class Agent(MCPServer):
                 # survive on the message.
                 thinking_blocks=assistant.get("thinking_blocks"),
                 thinking_model=assistant.get("thinking_model"),
+                # OpenRouter backend of this turn: the next request pins to it.
+                served_by=assistant.get("served_by"),
                 timestamp=datetime.now(timezone.utc)
             )
             messages.append(assistant_msg)
@@ -3075,9 +3077,16 @@ class Agent(MCPServer):
 
             if final_content:
                 # Append final assistant message to conversation history
-                assistant_msg = ChatMessage(role="assistant", content=final_content or "", timestamp=datetime.now(timezone.utc))
+                assistant_msg = ChatMessage(
+                    role="assistant", content=final_content or "",
+                    # OpenRouter backend of this turn: the next request pins to it.
+                    served_by=final_assistant.get("served_by"),
+                    timestamp=datetime.now(timezone.utc))
                 messages.append(assistant_msg)
-                context.messages.append(assistant_msg)  # Also append to context.messages
+                # By now both names usually point to the same list; appending to
+                # each put the final answer into the history twice.
+                if context.messages is not messages:
+                    context.messages.append(assistant_msg)
                 results["summary"] = final_content
                 # Update tracked messages and emit final event
                 self._set_live_messages(session_id, messages.copy())

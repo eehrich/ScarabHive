@@ -89,7 +89,11 @@ from agent_system.llm.cache_key import (
     strip_cache_breakpoints,
 )
 from plugins_llm.llm_common.schema_sanitize import sanitize_schema_for_gemini
-from .httpx_client import HTTPXTimeoutConfig, openrouter_routing_info
+from .httpx_client import (
+    HTTPXTimeoutConfig,
+    openrouter_routing_info,
+    routing_pinned_to_last_backend,
+)
 from plugins_llm.llm_common.openai_utils import convert_audio_to_input_audio
 from agent_system.utils.reasoning_artifacts import strip_all_reasoning_artifacts
 
@@ -797,6 +801,11 @@ class OpenAIResponsesClient(LLMClient):
                 "model": self.model,
                 "items": output,
             }]
+        # Which backend answered: the next request of this run goes back to
+        # it (routing_pinned_to_last_backend).
+        served_by = (openrouter_routing_info(response_data) or {}).get("selected")
+        if served_by:
+            assistant["served_by"] = served_by
 
         status = response_data.get("status")
         incomplete = response_data.get("incomplete_details")
@@ -889,7 +898,21 @@ class OpenAIResponsesClient(LLMClient):
 
     async def _request(self, messages: list, tools: Optional[list],
                        cancellation_token=None, status_scope=None) -> dict:
-        payload = self._build_payload(messages, tools)
+        # Resolved once: the reasoning-artifact heals below rebuild the
+        # payload, and the rebuilt request must keep the pin. OpenRouter only,
+        # like the httpx route: another endpoint is never asked for the list.
+        provider = (await routing_pinned_to_last_backend(
+            self.provider_routing, messages, self.base_url,
+            httpx_verify(self.ssl_verify))
+            if self._is_openrouter else self.provider_routing)
+
+        def build_payload() -> dict:
+            payload = self._build_payload(messages, tools)
+            if provider:
+                payload["provider"] = provider
+            return payload
+
+        payload = build_payload()
         url = f"{self.base_url}/responses"
         _enc_retried = False
         # Muss VOR der Schleife stehen: gesetzt wird es nur in den 429-Zweigen,
@@ -1005,7 +1028,7 @@ class OpenAIResponsesClient(LLMClient):
                             and self._is_reasoning_artifact_rejection(body_text)):
                         _enc_retried = True
                         n = strip_all_reasoning_artifacts(messages)
-                        payload = self._build_payload(messages, tools)
+                        payload = build_payload()
                         if _tier_dropped:
                             payload.pop("service_tier", None)
                         logger.warning(
@@ -1080,7 +1103,7 @@ class OpenAIResponsesClient(LLMClient):
                         self._is_reasoning_artifact_rejection(json.dumps(body_err, ensure_ascii=False)):
                     _enc_retried = True
                     n = strip_all_reasoning_artifacts(messages)
-                    payload = self._build_payload(messages, tools)
+                    payload = build_payload()
                     if _tier_dropped:
                         payload.pop("service_tier", None)
                     logger.warning(
