@@ -269,3 +269,13 @@ class TestNormalizeMessages:
         result = openai_utils.normalize_messages(messages)
         
         assert result[0]["tool_calls"] == [{"id": "123", "type": "function"}]
+
+    def test_drops_bookkeeping_and_unset_fields(self):
+        """A dumped ChatMessage carries fields no API accepts."""
+        messages = [{"role": "assistant", "content": "Response", "tool_calls": None,
+                     "timestamp": "2026-09-11T00:00:00Z", "served_by": "DeepInfra"},
+                    {"role": "tool", "content": "result", "tool_call_id": "call_1",
+                     "name": "lookup", "served_by": None}]
+        assert openai_utils.normalize_messages(messages) == [
+            {"role": "assistant", "content": "Response"},
+            {"role": "tool", "content": "result", "tool_call_id": "call_1", "name": "lookup"}]

@@ -221,6 +221,10 @@ def normalize_message_content(
     return ""
 
 
+#: Message fields of the Chat Completions API.
+CHAT_MESSAGE_FIELDS = frozenset({"role", "content", "name", "tool_calls", "tool_call_id"})
+
+
 def normalize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Normalize a list of messages for OpenAI API.
     
@@ -230,11 +234,15 @@ def normalize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         messages: List of message dicts
         
     Returns:
-        List of messages with normalized content
+        List of messages with API fields only and normalized content
     """
     result = []
     for msg in messages:
-        msg_copy = dict(msg)
+        # API fields only: batch_client dumps the whole ChatMessage, so
+        # bookkeeping (timestamp, served_by, thinking_blocks, ...) and unset
+        # fields (None) would otherwise go into the request body.
+        msg_copy = {k: v for k, v in msg.items()
+                    if k in CHAT_MESSAGE_FIELDS and v is not None}
         content = msg_copy.get("content")
         
         if isinstance(content, list):
