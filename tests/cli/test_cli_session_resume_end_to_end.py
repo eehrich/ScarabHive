@@ -9,6 +9,8 @@ every bare resume. Both are invisible to a test that only calls the helpers.
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -105,12 +107,39 @@ def cli_env(tmp_path, monkeypatch):
         loop.close()
     manager.clear_cache()
 
-    return SimpleNamespace(config=config, saved=saved, manager=manager)
+    return SimpleNamespace(config=config, saved=saved, manager=manager, service=service)
 
 
 def _run(monkeypatch, argv):
     monkeypatch.setattr("sys.argv", argv)
     cli.main()
+
+
+HOLDER = """
+import sys, time
+from agent_system.core.session_presence import SessionPresence
+print(SessionPresence(sys.argv[1]).hold(sys.argv[2], sys.argv[3], "other_agent"), flush=True)
+time.sleep(120)
+"""
+
+
+@pytest.fixture
+def other_process():
+    """A second process with the session in hand -- a woken run, or a chat."""
+    processes = []
+
+    def hold(root, session_id, user_id="cli_user"):
+        process = subprocess.Popen(
+            [sys.executable, "-c", HOLDER, str(root), session_id, user_id],
+            stdout=subprocess.PIPE, text=True)
+        processes.append(process)
+        assert process.stdout.readline().strip() == "True", "the other process could not hold it"
+        return process
+
+    yield hold
+    for process in processes:
+        process.kill()
+        process.wait()
 
 
 class TestBareResume:
@@ -146,6 +175,176 @@ class TestBareResume:
         assert cli_env.saved.get("agent_name") == "config_default_agent"
         # And the stored profile is NOT forced onto the other agent.
         assert cli_env.saved.get("llm_profile") == AGENT_DEFAULT_PROFILE
+
+
+class TestSessionPresence:
+    """core/session_presence.py through the real main()."""
+
+    def test_the_wake_command_continues_the_session_of_its_user_on_its_agent_and_profile(
+            self, cli_env, monkeypatch):
+        from agent_system.core.session_presence import wake_command
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(cli_env.manager.create_session(
+                user_id="other_user", session_id="s9",
+                agent_name=STORED_AGENT, llm_profile=STORED_PROFILE))
+        finally:
+            loop.close()
+        cli_env.manager.clear_cache()
+
+        command = wake_command("s9", "other_user")
+        _run(monkeypatch, ["agent-cli", *command[command.index("--raw"):]])
+
+        assert cli_env.saved.get("session_id") == "s9"
+        assert cli_env.saved.get("user_id") == "other_user"
+        assert cli_env.saved.get("agent_name") == STORED_AGENT
+        assert cli_env.saved.get("llm_profile") == STORED_PROFILE
+
+    def test_a_run_holds_its_session_through_the_save_after_it(self, cli_env, monkeypatch, tmp_path):
+        from agent_system.config.models import SessionPresenceConfig
+        from agent_system.core.session_presence import presence_for
+
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path / "sessions"))
+        cli_env.config.session_presence = SessionPresenceConfig(enabled=True)
+        presence = presence_for(cli_env.config)
+        at_save = []
+
+        async def save(**kwargs):
+            at_save.append(presence.get("s1", "cli_user")["status"])
+            return True
+
+        monkeypatch.setattr(cli_env.service, "save_session", save)
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1"])
+
+        assert at_save == ["running"], "the session was let go before the save after the run"
+        assert presence.get("s1", "cli_user")["status"] == "idle"
+
+    def _presence_on(self, cli_env, monkeypatch, tmp_path):
+        """Presence on, over the store this CLI writes its sessions to."""
+        from agent_system.config.models import SessionPresenceConfig
+
+        sessions = tmp_path / "sessions"
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(sessions))
+        cli_env.config.session_presence = SessionPresenceConfig(enabled=True)
+        return sessions
+
+    def test_the_session_is_held_before_it_is_loaded(self, cli_env, monkeypatch, tmp_path):
+        # The other way round the copy in memory can already be one run behind
+        # when it is written back: whoever holds it may be saving right now.
+        from agent_system.core.session_presence import presence_for
+
+        self._presence_on(cli_env, monkeypatch, tmp_path)
+        presence = presence_for(cli_env.config)
+        at_load = []
+        load = cli_env.service.load_and_restore_session
+
+        async def recording_load(agent, user_id, session_id):
+            at_load.append((presence.get(session_id, user_id) or {}).get("status"))
+            return await load(agent, user_id, session_id)
+
+        monkeypatch.setattr(cli_env.service, "load_and_restore_session", recording_load)
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1"])
+
+        assert at_load == ["running"], "the session was loaded before it was held"
+
+    def test_a_session_another_process_runs_is_refused(
+            self, cli_env, monkeypatch, tmp_path, other_process, capsys):
+        sessions = self._presence_on(cli_env, monkeypatch, tmp_path)
+        other_process(sessions, "s1")
+
+        with pytest.raises(SystemExit) as refused:
+            _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1"])
+
+        assert refused.value.code == 1
+        assert "another process" in capsys.readouterr().err
+        assert cli_env.saved == {}, "it ran the session anyway"
+
+    def test_force_runs_it_anyway(self, cli_env, monkeypatch, tmp_path, other_process):
+        sessions = self._presence_on(cli_env, monkeypatch, tmp_path)
+        other_process(sessions, "s1")
+
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1", "--force"])
+
+        assert cli_env.saved.get("session_id") == "s1"
+
+    def _wake(self, monkeypatch, session_id="s1", user_id="cli_user"):
+        from agent_system.core.session_presence import wake_command
+
+        command = wake_command(session_id, user_id)
+        _run(monkeypatch, ["agent-cli", *command[command.index("--raw"):]])
+
+    def test_a_woken_run_steps_aside_for_the_process_that_has_the_session(
+            self, cli_env, monkeypatch, tmp_path, other_process, capsys):
+        sessions = self._presence_on(cli_env, monkeypatch, tmp_path)
+        other_process(sessions, "s1")
+
+        self._wake(monkeypatch)  # no exit code: nobody typed this run
+
+        assert cli_env.saved == {}
+        assert "Error" not in capsys.readouterr().err
+
+    @staticmethod
+    def _records_the_shutdown(monkeypatch):
+        """What main() shuts down before it returns. MCP is up from the
+        bootstrap on: a return without this leaks the stdio child process of
+        every server until the interpreter exits, and stepping aside is the
+        normal end of a woken run, not a rare one."""
+        shut = []
+
+        async def batch():
+            shut.append("batch")
+
+        async def mcp():
+            shut.append("mcp")
+
+        monkeypatch.setattr(cli, "shutdown_batch_system", batch)
+        monkeypatch.setattr(cli, "shutdown_mcp", mcp)
+        return shut
+
+    def test_stepping_aside_for_the_holder_still_shuts_the_runtime_down(
+            self, cli_env, monkeypatch, tmp_path, other_process):
+        sessions = self._presence_on(cli_env, monkeypatch, tmp_path)
+        other_process(sessions, "s1")
+        shut = self._records_the_shutdown(monkeypatch)
+
+        self._wake(monkeypatch)
+
+        assert shut == ["batch", "mcp"]
+
+    def test_a_woken_run_without_input_still_shuts_the_runtime_down(
+            self, cli_env, monkeypatch, tmp_path):
+        self._presence_on(cli_env, monkeypatch, tmp_path)
+        shut = self._records_the_shutdown(monkeypatch)
+
+        self._wake(monkeypatch)  # no marker: a run in between handed it over
+
+        assert shut == ["batch", "mcp"]
+
+    def test_a_woken_run_whose_input_was_taken_does_not_start(
+            self, cli_env, monkeypatch, tmp_path):
+        self._presence_on(cli_env, monkeypatch, tmp_path)
+
+        self._wake(monkeypatch)  # no marker: a run in between handed it over
+
+        assert cli_env.saved == {}
+
+    def test_a_woken_run_with_input_waiting_continues_the_session(
+            self, cli_env, monkeypatch, tmp_path):
+        from agent_system.core import session_presence as sp
+
+        sessions = self._presence_on(cli_env, monkeypatch, tmp_path)
+        (sessions / "cli_user").mkdir(parents=True, exist_ok=True)
+        (sessions / "cli_user" / "s1.pending").touch()
+        # The dummy agent never reaches an LLM call, so the marker is still
+        # there when this run lets go -- and letting go with input waiting wakes
+        # the session. A test that means to wake replaces spawn_wake itself;
+        # the suite-wide guard would otherwise start a real agent-cli.
+        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: (0, 0.0))
+
+        self._wake(monkeypatch)
+
+        assert cli_env.saved.get("session_id") == "s1"
 
 
 class TestListSessions:

@@ -102,7 +102,15 @@ def run_env(tmp_path, monkeypatch):
     # than a fact.
     manager.clear_cache()
 
-    return SimpleNamespace(seen=seen, config=config)
+    return SimpleNamespace(seen=seen, config=config, service=service)
+
+
+HOLDER = """
+import sys, time
+from agent_system.core.session_presence import SessionPresence
+print(SessionPresence(sys.argv[1]).hold(sys.argv[2], sys.argv[3], "other_agent"), flush=True)
+time.sleep(120)
+"""
 
 
 def _run(**kwargs):
@@ -183,3 +191,73 @@ class TestDegradedBootstrap:
 
         assert run_env.seen["agents"] == ["config_default_agent"], (
             "the degraded path never reached the agent")
+
+
+class TestSessionPresence:
+    def test_the_run_holds_its_session_through_the_save_after_it(self, run_env, monkeypatch, tmp_path):
+        from agent_system.config.models import SessionPresenceConfig
+        from agent_system.core.session_presence import presence_for
+
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path / "sessions"))
+        run_env.config.session_presence = SessionPresenceConfig(enabled=True)
+        presence = presence_for(run_env.config)
+        at_save = []
+
+        async def save(**kwargs):
+            at_save.append(presence.get("s1", "cli_user")["status"])
+            return True
+
+        monkeypatch.setattr(run_env.service, "save_session", save)
+        _run(session_id="s1")
+
+        assert at_save == ["running"], "the session was let go before the save after the run"
+        assert presence.get("s1", "cli_user")["status"] == "idle"
+
+    def test_the_session_is_held_before_it_is_loaded(self, run_env, monkeypatch, tmp_path):
+        from agent_system.config.models import SessionPresenceConfig
+        from agent_system.core.session_presence import presence_for
+
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path / "sessions"))
+        run_env.config.session_presence = SessionPresenceConfig(enabled=True)
+        presence = presence_for(run_env.config)
+        at_load = []
+        load = run_env.service.load_and_restore_session
+
+        async def recording_load(agent, user_id, session_id):
+            at_load.append((presence.get(session_id, user_id) or {}).get("status"))
+            return await load(agent, user_id, session_id)
+
+        monkeypatch.setattr(run_env.service, "load_and_restore_session", recording_load)
+        _run(session_id="s1")
+
+        assert at_load == ["running"], "the session was loaded before it was held"
+
+    def test_a_session_another_process_runs_is_refused_and_force_runs_it(
+            self, run_env, monkeypatch, tmp_path, capsys):
+        import subprocess
+        import sys
+
+        from agent_system.config.models import SessionPresenceConfig
+
+        sessions = tmp_path / "sessions"
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(sessions))
+        run_env.config.session_presence = SessionPresenceConfig(enabled=True)
+        holder = subprocess.Popen(
+            [sys.executable, "-c", HOLDER, str(sessions), "s1", "cli_user"],
+            stdout=subprocess.PIPE, text=True)
+        try:
+            assert holder.stdout.readline().strip() == "True", "the other process could not hold it"
+
+            with pytest.raises(SystemExit) as refused:
+                _run(session_id="s1")
+
+            assert refused.value.code == 1
+            assert "another process" in capsys.readouterr().err
+            assert run_env.seen["saved"] == {}, "it ran the session anyway"
+
+            _run(session_id="s1", force=True)
+
+            assert run_env.seen["saved"].get("session_id") == "s1"
+        finally:
+            holder.kill()
+            holder.wait()

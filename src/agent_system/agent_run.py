@@ -140,7 +140,7 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
 async def main_async(request: str, agent_name: str | None = None, llm_profile: str | None = None, show_status: bool = True,
                      session_id: str | None = None, session_user: str = "cli_user",
                      list_sessions: str | None = None, session_title: str | None = None,
-                     attachments: list[str] | None = None) -> None:
+                     attachments: list[str] | None = None, force: bool = False) -> None:
     """Async main function to run agent request with session support.
 
     Args:
@@ -154,7 +154,9 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             "" for the default); None runs the request
         session_title: Title for new session (optional)
         attachments: Files to attach; the kind of each is detected, not declared
+        force: Run the session even though another process holds it
     """
+    presence = None
     try:
         # Handle --list-sessions flag (needs session_manager only)
         if list_sessions is not None:
@@ -210,6 +212,23 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         # Generate or use provided session ID
         from .utils.id import short_id
         actual_session_id = session_id or short_id()
+
+        # Session presence (core/session_presence.py): the session is held
+        # BEFORE it is loaded -- a run that reads the file first can be
+        # overtaken by the process holding it and would write its own copy back
+        # over that run. Held through the save after the run (see the finally).
+        from .core.session_presence import SessionBusy, presence_for
+        presence = presence_for(config)
+        if presence:
+            try:
+                presence.hold(actual_session_id, session_user, agent_name)
+            except SessionBusy as busy:
+                if not force:
+                    print(f"Error: {busy}.", file=sys.stderr)
+                    print("Wait for it to finish, or pass --force if its lock is a leftover.",
+                          file=sys.stderr)
+                    sys.exit(1)
+                print(f"Warning: {busy}; running it anyway (--force).", file=sys.stderr)
 
         # Load existing session if --session provided, otherwise initialize empty
         session_exists = False
@@ -466,6 +485,8 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         traceback.print_exc()
         sys.exit(1)
     finally:
+        if presence:
+            presence.release(actual_session_id, session_user)
         # Shutdown batch queue manager if it was started
         await shutdown_batch_system()
 
@@ -566,6 +587,13 @@ Examples:
         help="Title for the new session (auto-generated from request if not provided)"
     )
 
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run the session even though another process holds it "
+             "(for a lock left behind by a process that hangs)"
+    )
+
     # One flag for every kind of file, like `/attach` in the chat: the kind is
     # read from the file, not from which flag was typed (cli_utils.attachments).
     # The three old flags still work for anyone's shell history but are out of
@@ -628,7 +656,8 @@ Examples:
             session_user=getattr(args, "session_user", "cli_user"),
             list_sessions=getattr(args, "list_sessions", None),
             session_title=getattr(args, "session_title", None),
-            attachments=getattr(args, "attachments", None)
+            attachments=getattr(args, "attachments", None),
+            force=getattr(args, "force", False)
         ))
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

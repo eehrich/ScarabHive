@@ -564,6 +564,51 @@ async def test_cache_functionality(session_manager):
 
 
 @pytest.mark.asyncio
+async def test_a_file_another_process_wrote_is_not_served_from_the_cache(temp_storage):
+    # A run woken by session presence continues a session a long-lived API
+    # process has cached; the API's next request must see what that run wrote.
+    api = SessionManager(storage_path=temp_storage)
+    session = await api.create_session(user_id="user1")
+    await api.load_session("user1", session["session_id"])
+    await asyncio.sleep(0.05)  # file times on Windows advance in ~16 ms steps
+
+    woken = SessionManager(storage_path=temp_storage)
+    written = await woken.load_session("user1", session["session_id"])
+    written["messages"].append({"role": "user", "content": "from the woken run"})
+    await woken.save_session(written)
+
+    loaded = await api.load_session("user1", session["session_id"])
+
+    assert loaded["messages"] == written["messages"]
+
+
+@pytest.mark.asyncio
+async def test_changed_on_disk_only_reports_what_another_process_wrote(temp_storage):
+    # What the API asks before it re-reads a session for an append: its own
+    # writes are not a change, or a run whose newest messages are still only in
+    # memory would be sent back to the older file for them.
+    api = SessionManager(storage_path=temp_storage)
+    session = await api.create_session(user_id="user1")
+    sid = session["session_id"]
+
+    other = SessionManager(storage_path=temp_storage)
+    assert other.changed_on_disk("user1", sid) is None, "a file it never read is not an answer"
+
+    session["messages"].append({"role": "user", "content": "from this process"})
+    await api.save_session(session)
+    await asyncio.sleep(0.05)  # file times on Windows advance in ~16 ms steps
+
+    assert api.changed_on_disk("user1", sid) is False
+
+    woken = SessionManager(storage_path=temp_storage)
+    written = await woken.load_session("user1", sid)
+    written["messages"].append({"role": "user", "content": "from the woken run"})
+    await woken.save_session(written)
+
+    assert api.changed_on_disk("user1", sid) is True
+
+
+@pytest.mark.asyncio
 async def test_clear_cache(session_manager):
     """Test clearing the cache."""
     session = await session_manager.create_session(user_id="user1")

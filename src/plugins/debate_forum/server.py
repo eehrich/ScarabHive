@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
+from agent_system.core.session_presence import presence_for
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 if TYPE_CHECKING:
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
 from .database import DebateForumDB
 
 logger = logging.getLogger(__name__)
+
+PRESENCE_OFF = "Session presence is off (session_presence.enabled in config.yaml)"
 
 
 class DebateForumServer(SchemaBasedMCPServer):
@@ -360,3 +363,55 @@ class DebateForumServer(SchemaBasedMCPServer):
             await status.end(f"Message #{message_id} {action}")
 
         return {"status": action, "message_id": message_id}
+
+    # ── Tools: direct messages between sessions ───────────────
+    # Who runs where and waking idle sessions are core (core/session_presence.py);
+    # the forum keeps the conversation and hands it over (hooks.py).
+
+    async def list_sessions(self, params: dict[str, Any]) -> dict[str, Any]:
+        presence = presence_for(self.system_config)
+        if presence is None:
+            return {"error": PRESENCE_OFF}
+        sessions = presence.list_for_user(
+            _caller_user(params), exclude=params.get("_session_id") or "")
+        status = params.get("_status")
+        if status:
+            await status.end(f"Listed {len(sessions)} session(s)")
+        return {"sessions": sessions}
+
+    async def send_message(self, params: dict[str, Any]) -> dict[str, Any]:
+        presence = presence_for(self.system_config)
+        if presence is None:
+            return {"error": PRESENCE_OFF}
+        sender = params.get("_session_id")
+        to = str(params.get("to") or "").strip()
+        content = str(params.get("message") or "").strip()
+        if not sender:
+            return {"error": "send_message writes from one session to another; this call has none"}
+        if not to or not content:
+            return {"error": "to and message are required"}
+        user_id = _caller_user(params)
+        target = presence.get(to, user_id)
+        if not target or to == sender:
+            return {"error": f"No session '{to}' to message (see list_sessions)"}
+
+        posted = self.db.post_direct(
+            sender, params.get("_agent_name") or "", to, target["agent"], content)
+        state, note = presence.notify(to, user_id)
+
+        status = params.get("_status")
+        if status:
+            await status.end(f"Message #{posted['message_id']} to {to}: {state}")
+        result = {"status": state, "message_id": posted["message_id"]}
+        if note:
+            result["note"] = note
+        return result
+
+
+def _caller_user(params: dict[str, Any]) -> str:
+    """The calling session's user, as the agent loop injected it."""
+    if params.get("_user_id"):
+        return params["_user_id"]
+    from agent_system.core.request_context import get_request_user
+
+    return get_request_user(params.get("_request_id") or "")

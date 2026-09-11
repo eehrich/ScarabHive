@@ -40,6 +40,9 @@
     "vision": {
       "$ref": "#/$defs/VisionConfig"
     },
+    "session_presence": {
+      "$ref": "#/$defs/SessionPresenceConfig"
+    },
     "network": {
       "$ref": "#/$defs/NetworkConfig"
     },
@@ -2035,6 +2038,24 @@
         }
       },
       "title": "RemoteMCPConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "SessionPresenceConfig": {
+      "description": "Which sessions run right now, and waking idle ones (core/session_presence.py).",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "max_wake_depth": {
+          "default": 3,
+          "title": "Max Wake Depth",
+          "type": "integer"
+        }
+      },
+      "title": "SessionPresenceConfig",
       "type": "object",
       "additionalProperties": false
     },

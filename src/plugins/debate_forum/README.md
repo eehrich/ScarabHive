@@ -12,8 +12,8 @@ because it lives in SQLite rather than in anyone's message list.
 
 | Surface | Name |
 |---|---|
-| Tools | `create_group`, `list_groups`, `create_channel`, `list_channels`, `rename_channel`, `post_message`, `get_thread`, `pin_message`, `conclude`, `reopen_channel` |
-| Hook | `inject_debate_context` (`pre_llm_call`, off by default) |
+| Tools | `create_group`, `list_groups`, `create_channel`, `list_channels`, `rename_channel`, `post_message`, `get_thread`, `pin_message`, `conclude`, `reopen_channel`, `list_sessions`, `send_message` |
+| Hooks | `inject_debate_context` (`pre_llm_call`, off by default); `deliver_direct_messages` (`pre_llm_call`, on); `mark_direct_messages_delivered` (`session_end`, on) |
 | Web | `/` panel plus a read/write JSON API under `/api/` |
 
 ## Data model
@@ -53,6 +53,30 @@ needs no sliding window of its own.
 Flow: a moderator sets the context var `debate_channel_id`, spawned sub-agents
 inherit it, and the hook then knows which channel each participant is in.
 
+## Direct messages between sessions
+
+`list_sessions` and `send_message` let an agent message another session of
+the same user, like Claude Code's ListAgents/SendMessage. Which session runs
+in which process, and waking an idle one, belong to the core
+(`agent_system/core/session_presence.py`, on with `session_presence.enabled`
+in `config/config.yaml`); the forum keeps the conversation and hands it over.
+
+* **Delivery.** A message is a post in the pair's channel (group "Direct
+  messages", so the web panel shows every conversation) with its recipient in
+  `to_session`. `deliver_direct_messages` appends it to the recipient's next
+  request, and `mark_direct_messages_delivered` writes `delivered_at` once that
+  request's conversation is saved — a run that dies in between, or whose save
+  never happened, hands the message to the session's next run rather than
+  losing it, at the price of a message the recipient may see twice. The answer
+  to a message lives in that conversation, so an unsaved run leaves nothing
+  behind that the message was ever read.
+* **Waking.** A session that runs reads the message on its next step. One
+  nobody holds is started with `agent-cli run --session <id>`, on its stored
+  agent and profile. `agent-cli chat` holds the session it has open, so there
+  the message waits for the next turn. Sub-agents' sessions are neither listed
+  nor woken: the run that spawned them hands them their input. The rules, the
+  wake chain limit among them, live in the core module.
+
 ## Configuration
 
 ```yaml
@@ -71,7 +95,8 @@ later reader.
 
 ## Tests
 
-`tests/test_plugin_debate_forum.py`, `tests/test_plugin_debate_forum_hooks.py`.
+`tests/test_plugin_debate_forum.py`, `tests/test_plugin_debate_forum_hooks.py`,
+`tests/test_plugin_debate_forum_direct.py`.
 
 ## License
 

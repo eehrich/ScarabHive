@@ -548,7 +548,8 @@ class HookIntegrationManager:
         self,
         session_id: str,
         request_id: str,
-        messages: Optional[List[ChatMessage]] = None
+        messages: Optional[List[ChatMessage]] = None,
+        persisted: bool = False
     ) -> None:
         """
         Execute session-end hooks.
@@ -557,6 +558,10 @@ class HookIntegrationManager:
             session_id: Session identifier
             request_id: Request identifier
             messages: Optional final messages
+            persisted: Whether this request's conversation reached the session
+                file. A hook that counts what the request carried as delivered
+                may only do so when it did -- what an unsaved run was told is
+                gone with it. False unless the caller knows better.
         """
         if not self.is_enabled():
             return
@@ -568,6 +573,7 @@ class HookIntegrationManager:
             agent=self.agent,
             agent_name=self.agent.name,
             messages=messages,
+            metadata={"persisted": persisted},
         )
         
         await self.registry.execute_hooks(

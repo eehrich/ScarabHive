@@ -717,6 +717,28 @@ class SessionManager:
             del self._cache[oldest]
             logger.debug(f"SessionManager: Evicted cache entry {oldest} (LRU)")
 
+    def _written_since(self, user_id: str, session_id: str, since: float) -> bool:
+        """Whether the session file changed on disk after ``since``."""
+        try:
+            return self._get_session_path(user_id, session_id).stat().st_mtime > since
+        except (OSError, ValueError):
+            return False
+
+    def changed_on_disk(self, user_id: str, session_id: str) -> Optional[bool]:
+        """Whether the file holds something this manager has not seen -- another
+        process continued the session.
+
+        Its own loads and saves both stamp the cache, so they are not a change:
+        a caller that has newer messages in memory than on disk (between a run
+        and its save) must not be sent back to the file for them. None where
+        there is no stamp: the cache is bounded (TTL and LRU), so a session
+        missing from it is not an answer either way.
+        """
+        cached = self._cache.get(session_id)
+        if cached is None:
+            return None
+        return self._written_since(user_id, session_id, cached[1])
+
     async def load_session(self, user_id: str, session_id: str, bypass_cache: bool = False) -> Dict[str, Any]:
         """Load a session.
         
@@ -735,7 +757,10 @@ class SessionManager:
         # Check cache first (unless bypassing)
         if not bypass_cache and session_id in self._cache:
             cached_data, cached_time = self._cache[session_id]
-            if time.time() - cached_time < self._cache_ttl:
+            # Another process may have written the file since -- a woken
+            # agent-cli run continuing a session this API process has cached.
+            if (time.time() - cached_time < self._cache_ttl
+                    and not self._written_since(user_id, session_id, cached_time)):
                 # Verify ownership
                 if cached_data["user_id"] != user_id:
                     raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")

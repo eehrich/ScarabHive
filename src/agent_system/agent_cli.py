@@ -21,6 +21,7 @@ except Exception:
 
 from .config.settings import get_mcp_config_by_name, load_settings
 from .config.models import AgentSystemConfig
+from .core.session_presence import SessionBusy, presence_for
 from .llm.models import ChatMessage
 from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
@@ -630,6 +631,12 @@ def main() -> None:
         p.add_argument("--session", dest="session_id", help="Continue an existing session by ID")
         p.add_argument("--session-user", dest="session_user", default="cli_user", help="User ID for session storage (default: cli_user)")
         p.add_argument("--session-title", dest="session_title", help="Title for the new session (auto-generated from task if not provided)")
+        p.add_argument("--force", dest="force", action="store_true",
+                       help="Run the session even though another process holds it "
+                            "(for a lock left behind by a process that hangs)")
+        # Set by the wake command (core/session_presence.wake_command): nobody
+        # typed this run, so it steps aside quietly where a person gets an error.
+        p.add_argument("--woken", dest="woken", action="store_true", help=argparse.SUPPRESS)
         # nargs="?" without type=int on purpose: argparse fills an optional's
         # slot from the next token BEFORE converting it, so `--list-sessions
         # "write me a poem"` would die on int() instead of listing -- which is
@@ -1704,9 +1711,59 @@ def main() -> None:
 
         return True, was_new_session  # Continue with task execution
 
+    def shut_down_runtime() -> None:
+        """Batch system and MCP, however this run ends. MCP is up from the
+        bootstrap on: returning without this leaks stdio child processes and
+        aiohttp sessions until the interpreter exits."""
+        try:
+            run_async(shutdown_batch_system())
+            vprint("[cli] batch queue manager shut down")
+            logger.info("Batch queue manager shut down successfully")
+        except Exception as e:
+            logger.warning("Failed to shutdown batch queue manager: %s", e)
+        try:
+            run_async(shutdown_mcp())
+            vprint("[cli] MCP integration shut down")
+            logger.info("MCP integration shut down successfully")
+        except Exception as e:
+            logger.warning("Failed to shutdown MCP integration: %s", e)
+
+    # Session presence (core/session_presence.py): the session is held BEFORE
+    # it is loaded. A run that reads the file first can be overtaken by the
+    # process that holds it, and would then write its own copy over that run.
+    # Chat takes the hold over and lets go of it itself (run_chat_loop).
+    is_chat = args.subcommand == "chat"
+    woken = getattr(args, "woken", False)
+    presence = presence_for(config)
+    if presence:
+        try:
+            presence.hold(actual_session_id, session_user, entry_name)
+        except SessionBusy as busy:
+            if woken:
+                logger.info("%s; that process hands the waiting input over itself", busy)
+                shut_down_runtime()
+                return
+            if not getattr(args, "force", False):
+                print(f"Error: {busy}.", file=sys.stderr)
+                print("Wait for it to finish, or pass --force if its lock is a leftover.",
+                      file=sys.stderr)
+                sys.exit(1)
+            print(f"Warning: {busy}; running it anyway (--force).", file=sys.stderr)
+        else:
+            if woken and not presence.pending(actual_session_id, session_user):
+                # A run in between took the input with it; waking the session
+                # for nothing would cost an LLM call and say nothing.
+                logger.info("Woken run of %s: the input was taken already", actual_session_id)
+                presence.release(actual_session_id, session_user)
+                shut_down_runtime()
+                return
+
     # Run session operations
     should_continue, was_new_session = run_async(handle_session_operations())
     if not should_continue:
+        if presence and not is_chat:
+            presence.release(actual_session_id, session_user)
+        shut_down_runtime()
         return
 
     async def _stream_and_run_with_status(
@@ -2045,8 +2102,6 @@ def main() -> None:
     # Inside the same try/finally as the one-shot path so MCP and the batch
     # system get shut down the same way -- returning early leaked stdio child
     # processes and aiohttp sessions until interpreter exit.
-    is_chat = args.subcommand == "chat"
-
     try:
         if is_chat:
             from .cli_utils.chat import run_chat_loop
@@ -2137,21 +2192,11 @@ def main() -> None:
             run_async(save_session_after_task())
 
     finally:
-        # Shutdown batch queue manager first
-        try:
-            run_async(shutdown_batch_system())
-            vprint("[cli] batch queue manager shut down")
-            logger.info("Batch queue manager shut down successfully")
-        except Exception as e:
-            logger.warning("Failed to shutdown batch queue manager: %s", e)
-        
-        # Ensure MCP integration is properly shut down to close aiohttp sessions
-        try:
-            run_async(shutdown_mcp())
-            vprint("[cli] MCP integration shut down")
-            logger.info("MCP integration shut down successfully")
-        except Exception as e:
-            logger.warning("Failed to shutdown MCP integration: %s", e)
+        # Chat lets go of the session it has open itself: after /new or
+        # /resume that is no longer the one this run started with.
+        if presence and not is_chat:
+            presence.release(actual_session_id, session_user)
+        shut_down_runtime()
 
     # Human-readable final output
     def _pretty_print_result(res: dict, show_mcp: bool = False, agent_instance=None, session_id_val: str = "unknown", skip_summary: bool = False) -> None:

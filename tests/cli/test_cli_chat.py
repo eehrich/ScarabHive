@@ -2607,3 +2607,62 @@ class TestVarsCommand:
 
         assert tracker.get_session_template_vars("s") == {"lang": "de"}
         assert "warning" not in out.getvalue().lower()
+
+
+class TestChatHoldsTheOpenSession:
+    """Session presence (core/session_presence.py): chat keeps the conversation
+    in memory between turns, so it holds the session it has open -- and lets go
+    of one it leaves."""
+
+    def test_it_follows_new_resume_and_the_exit(self, monkeypatch, tmp_path):
+        import agent_system.cli_utils.chat as chat
+        from agent_system.core.session_presence import SessionPresence
+
+        store = SessionPresence(tmp_path)
+        monkeypatch.setattr(chat, "presence_for", lambda config: store)
+        # The caller hands the session over held (agent_cli holds it before it
+        # is loaded); the REPL takes that hold with it from here.
+        store.hold("s1", "u", "a")
+        turns = []
+
+        def probe(loop, ctx, task, renderer, editor=None):
+            running = sorted(sid for sid in {"s1", "s2", ctx.session_id}
+                             if (store.get(sid, "u") or {}).get("status") == "running")
+            turns.append((ctx.session_id, running))
+            return {}
+
+        drive_chat_repl(monkeypatch, ["frage", "/new", "frage", "/resume s2", "frage"],
+                        turn_probe=probe)
+
+        (first, ran_first), (fresh, ran_fresh), (resumed, ran_resumed) = turns
+        assert (first, ran_first) == ("s1", ["s1"])
+        assert fresh not in ("s1", "s2") and ran_fresh == [fresh]
+        assert (resumed, ran_resumed) == ("s2", ["s2"])
+        assert store.list_for_user("u") == [], "chat still holds a session after it exited"
+
+    def test_it_does_not_resume_a_session_another_process_runs(self, monkeypatch, tmp_path):
+        import agent_system.cli_utils.chat as chat
+        from agent_system.core.session_presence import SessionBusy, SessionPresence
+
+        store = SessionPresence(tmp_path)
+        monkeypatch.setattr(chat, "presence_for", lambda config: store)
+        store.hold("s1", "u", "a")
+        taken = store.hold
+
+        def hold(session_id, user_id, agent_name):
+            if session_id == "s2":
+                raise SessionBusy("s2", "other_agent")
+            return taken(session_id, user_id, agent_name)
+
+        monkeypatch.setattr(store, "hold", hold)
+        turns = []
+
+        def probe(loop, ctx, task, renderer, editor=None):
+            turns.append((ctx.session_id, (store.get("s1", "u") or {}).get("status")))
+            return {}
+
+        drive_chat_repl(monkeypatch, ["/resume s2", "frage"], turn_probe=probe)
+
+        # The load is what the hold comes before: a refused resume must leave
+        # the chat where it is, with the session it has open still in hand.
+        assert turns == [("s1", "running")]

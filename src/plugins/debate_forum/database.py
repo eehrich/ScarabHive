@@ -14,6 +14,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+DIRECT_GROUP = "Direct messages"
+
 
 class DebateForumDB:
     """SQLite-backed storage for debate forum data.
@@ -48,6 +50,23 @@ class DebateForumDB:
             conn.execute("ALTER TABLE channels ADD COLUMN group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL")
             conn.commit()
             logger.info("Migrated channels table: added 'group_id' column")
+
+    @staticmethod
+    def _migrate_direct_columns(conn: sqlite3.Connection) -> None:
+        """Direct messages: a recipient and a delivery mark per message, a pair key per channel."""
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        if "to_session" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN to_session TEXT")
+        if "delivered_at" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN delivered_at TEXT")
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(channels)").fetchall()}
+        if "direct_key" not in cols:
+            conn.execute("ALTER TABLE channels ADD COLUMN direct_key TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_to_session "
+                     "ON messages(to_session, delivered_at)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_direct_key "
+                     "ON channels(direct_key)")
+        conn.commit()
 
     def _get_conn(self) -> sqlite3.Connection:
         """Get thread-local database connection."""
@@ -109,6 +128,7 @@ class DebateForumDB:
         # Migrations
         self._migrate_pinned_column(conn)
         self._migrate_group_id_column(conn)
+        self._migrate_direct_columns(conn)
 
     # ── Channel CRUD ──────────────────────────────────────────
 
@@ -412,6 +432,59 @@ class DebateForumDB:
             (channel_id,),
         ).fetchall()
         return [self._row_to_message(r) for r in rows]
+
+    # ── Direct messages between sessions ──────────────────────
+    # A direct message is a post in the pair's channel, grouped under
+    # DIRECT_GROUP so the web panel shows it, with its recipient in to_session;
+    # agent_role carries the sender's session id.
+
+    def post_direct(self, from_session: str, from_agent: str, to_session: str,
+                    to_agent: str, content: str) -> dict[str, Any]:
+        key = "|".join(sorted((from_session, to_session)))
+        conn = self._get_conn()
+        row = conn.execute("SELECT id FROM channels WHERE direct_key = ?", (key,)).fetchone()
+        if row is None:
+            group = conn.execute(
+                "SELECT id FROM groups WHERE name = ? ORDER BY id LIMIT 1", (DIRECT_GROUP,)
+            ).fetchone()
+            group_id = group[0] if group else conn.execute(
+                "INSERT INTO groups (name) VALUES (?)", (DIRECT_GROUP,)).lastrowid
+            conn.execute(
+                "INSERT OR IGNORE INTO channels (group_id, name, topic, direct_key) "
+                "VALUES (?, ?, 'Direct messages', ?)",
+                (group_id, " ↔ ".join(f"{agent} {sid[:8]}".strip() for agent, sid in
+                                      ((from_agent, from_session), (to_agent, to_session))), key),
+            )
+            row = conn.execute("SELECT id FROM channels WHERE direct_key = ?", (key,)).fetchone()
+        cur = conn.execute(
+            "INSERT INTO messages (channel_id, agent_name, agent_role, content, to_session) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (row[0], from_agent, from_session, content, to_session),
+        )
+        conn.execute("UPDATE channels SET updated_at = datetime('now') WHERE id = ?", (row[0],))
+        conn.commit()
+        return {"message_id": cur.lastrowid, "channel_id": row[0]}
+
+    def undelivered(self, session_id: str) -> list[dict[str, Any]]:
+        """Direct messages the session has not been told about."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM messages WHERE to_session = ? AND delivered_at IS NULL ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_message(r) for r in rows]
+
+    def mark_delivered(self, message_ids: list[int]) -> None:
+        """Delivered, once the request that carried them is over: marking them
+        as they are read would lose them if that run never finished."""
+        if not message_ids:
+            return
+        conn = self._get_conn()
+        conn.executemany(
+            "UPDATE messages SET delivered_at = datetime('now') WHERE id = ?",
+            [(mid,) for mid in message_ids],
+        )
+        conn.commit()
 
     # ── Stats ─────────────────────────────────────────────────
 

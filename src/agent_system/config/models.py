@@ -1003,6 +1003,12 @@ class StatusConfig(BaseModel):
     llm_heartbeat_interval: float = 5.0  # Interval for heartbeat events during LLM calls (seconds)
 
 
+class SessionPresenceConfig(BaseModel):
+    """Which sessions run right now, and waking idle ones (core/session_presence.py)."""
+    enabled: bool = False  # Lock files next to the session files in data/sessions
+    max_wake_depth: int = 3  # A run woken this deep in a chain wakes nobody; 0 = never wake
+
+
 class VisionConfig(BaseModel):
     """Vision/image processing configuration"""
     image_warn_size_mb: float = 10.0  # Warn when images exceed this size (MB)
@@ -1204,6 +1210,7 @@ class AgentSystemConfig(BaseModel):
     context: ContextConfig = Field(default_factory=ContextConfig)
     status: StatusConfig = Field(default_factory=StatusConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
+    session_presence: SessionPresenceConfig = Field(default_factory=SessionPresenceConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     default_agent: str = "basic_agent"
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

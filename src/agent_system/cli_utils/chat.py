@@ -36,6 +36,7 @@ from .common import (
 )
 from .attachments import sort_attachments
 from .session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
+from ..core.session_presence import SessionBusy, presence_for
 
 logger = logging.getLogger(__name__)
 
@@ -1121,6 +1122,31 @@ def _init_fresh_session(ctx: _ChatContext) -> str:
     return new_id
 
 
+def _hold_session(ctx: "_ChatContext", session_id: str) -> bool:
+    """Session presence (core/session_presence.py): chat holds the session it
+    has open. The conversation stays in memory between turns, so no woken run
+    may take the session up meanwhile; its input waits for the next turn.
+
+    The new session is taken before the old one is let go, and False -- with
+    nothing taken and nothing let go -- means another process runs it."""
+    presence = presence_for(getattr(ctx.agent, "system_config", None))
+    if presence is None:
+        return True
+    try:
+        presence.hold(session_id, ctx.session_user, ctx.entry_name)
+    except SessionBusy as busy:
+        print(f"{busy}. Nothing changed here.")
+        return False
+    return True
+
+
+def _release_session(ctx: "_ChatContext", session_id: Optional[str]) -> None:
+    """Let go of a session the chat left; input that came in for it wakes it."""
+    presence = presence_for(getattr(ctx.agent, "system_config", None))
+    if presence is not None and session_id:
+        presence.release(session_id, ctx.session_user)
+
+
 def _resume_hint(ctx: "_ChatContext", session_id: str) -> str:
     """The exact command that brings this session back."""
     parts = ["agent-cli chat", f"--session {session_id}", f"--agent {ctx.entry_name}"]
@@ -2167,7 +2193,11 @@ def run_chat_loop(
     hands over its shared bootstrap loop, because the external MCP connections
     made there only make progress while THAT loop runs. Without ``loop`` the
     REPL creates and, at the end, tears down a private one (standalone use and
-    the tests)."""
+    the tests).
+
+    ``session_id`` comes in held by the caller (session presence,
+    core/session_presence.py) and the REPL takes that over: it holds what /new
+    and /resume switch to, and lets go of the open session at the end."""
     ctx = _ChatContext(
         agent=agent, entry_name=entry_name, session_service=session_service,
         session_user=session_user, session_id=session_id,
@@ -2298,8 +2328,11 @@ def run_chat_loop(
             if command == "exit":
                 break
             if command == "new":
+                previous = ctx.session_id
                 ctx.session_id = _init_fresh_session(ctx)
                 ctx.was_new_session = True
+                _hold_session(ctx, ctx.session_id)
+                _release_session(ctx, previous)
                 # The history belongs to the session, so it changes with it --
                 # otherwise the fresh prompt keeps offering the abandoned
                 # conversation while the transcript shows the new one.
@@ -2315,12 +2348,18 @@ def run_chat_loop(
                 loop.run_until_complete(_list_sessions(ctx, payload))
                 continue
             if command == "resume":
+                previous = ctx.session_id
                 if not payload:
                     print("Usage: /resume <session-id>   (/sessions lists them)")
+                elif not _hold_session(ctx, payload):
+                    pass  # another process runs it: the chat stays where it is
                 elif loop.run_until_complete(_resume_session(ctx, payload)):
+                    _release_session(ctx, previous)
                     if editor:
                         editor.reseed(_history_seed(ctx))
                     print(f"Resumed session: {ctx.session_id}")
+                else:
+                    _release_session(ctx, payload)  # it was taken for the load
                 continue
             if command == "vars":
                 loop.run_until_complete(_handle_vars(ctx, renderer, payload))
@@ -2417,6 +2456,7 @@ def run_chat_loop(
                 ctx.last_saved = ctx.session_id
                 ctx.was_new_session = False
     finally:
+        _release_session(ctx, ctx.session_id)
         _restore_logging(silenced)
         if ctx.total_usage:
             print(renderer._colored(

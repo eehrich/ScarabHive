@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 from ...config.models import AgentSystemConfig, MCPConfig
 from ...core.cancellation import get_cancellation_manager, CancellationToken
+from ...core.session_presence import SessionBusy, presence_for
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
 from ...utils.json_utils import history_safe_tool_calls
@@ -271,6 +272,9 @@ class Agent(MCPServer):
         # Centralized internal tool-call counter (used to generate per-tool suffixes)
         self._internal_tool_counter = 0
         self._internal_tool_counter_lock = asyncio.Lock()
+
+        # Session presence: request id -> the session it holds (_presence_step)
+        self._presence_holds: dict[str, tuple] = {}
 
         # Cache for list_tools() to avoid creating new MCPTool objects on every call
         self._list_tools_cache: list | None = None
@@ -581,18 +585,20 @@ class Agent(MCPServer):
             self._fallback_activated_at = time.time()
         return fallback_llm
 
-    async def _save_session_to_disk(self, session_id: str) -> None:
+    async def _save_session_to_disk(self, session_id: str) -> bool:
         """Persist a session to disk via SessionService (no-op without service
         or metadata). Shared by the turn-persistence helper and the
-        compacted-messages branch in _finalize_request."""
+        compacted-messages branch in _finalize_request. Returns whether the
+        session file was written: what a request carried only counts as
+        delivered once it is (see _finalize_request)."""
         if not self._session_service:
             logger.debug("No session_service available, skipping disk save")
-            return
+            return False
         session_meta = self._session_tracker.get_session_metadata(session_id)
         if not session_meta:
             logger.warning(f"No session metadata found for {session_id}, skipping disk save")
-            return
-        await self._session_service.save_session(
+            return False
+        written = await self._session_service.save_session(
             agent=self,
             user_id=session_meta.get("user_id", "anonymous"),
             session_id=session_id,
@@ -601,15 +607,18 @@ class Agent(MCPServer):
             was_new_session=False  # Always update for intermediate/final saves
         )
         logger.debug(f"Saved session {session_id} to disk")
+        return bool(written)
 
     async def _persist_conversation(self, session_id: str, messages: List[ChatMessage],
-                                    *, to_disk: bool, note: str) -> None:
+                                    *, to_disk: bool, note: str) -> bool:
         """Persist the conversation (non-system messages) to the in-memory
         tracker and optionally to disk — THE single implementation of the
         'filter system → set_session_messages → save_session' sequence that was
         copied at three points of the request lifecycle (after LLM response,
         after a completed tool turn, at request finalization). Never raises:
-        persistence failures must not kill a running request."""
+        persistence failures must not kill a running request -- it returns
+        whether the session file was written instead, for callers that must not
+        promise what the disk did not take."""
         from .components.hook_integration import is_compaction_system_message
         try:
             # System messages are rebuilt from config each turn and must not be
@@ -624,9 +633,10 @@ class Agent(MCPServer):
             self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
             logger.debug(f"Persisted session {session_id} ({note}) with {len(conversation_msgs)} messages")
             if to_disk:
-                await self._save_session_to_disk(session_id)
+                return await self._save_session_to_disk(session_id)
         except Exception as e:
             logger.warning(f"Failed to persist session {session_id} ({note}): {e}", exc_info=True)
+        return False
 
     async def next_internal_tool_request_id(self, base_request_id: str) -> str:
         """Return the next internal tool request id with a 3-digit suffix.
@@ -1616,6 +1626,56 @@ class Agent(MCPServer):
             session_id=session_id
         )
 
+    def _presence_hold(self, session_id: str, request_id: str) -> None:
+        """Session presence (core/session_presence.py): the request holds its
+        session for as long as it runs -- from its start, not from its first
+        LLM call. A client that disconnects while the run is still setting
+        itself up lets go of the endpoint's hold, and the session would look
+        idle while it runs on: a direct message would wake a second run of it."""
+        presence = presence_for(self.system_config)
+        if presence is None or not session_id or request_id in self._presence_holds:
+            return
+        try:
+            metadata = self._session_tracker.get_session_metadata(session_id) or {}
+            user_id = metadata.get("user_id")
+            if not user_id:
+                from ...core.request_context import get_request_user
+                user_id = get_request_user(request_id)
+            held = None
+            try:
+                if presence.hold(session_id, user_id, self.name):
+                    held = (presence, session_id, user_id)
+            except SessionBusy as busy:
+                # Forced past the refusal at the entry point. The input waiting
+                # belongs to the process that holds the session.
+                logger.warning("%s; this request runs it unheld", busy)
+            self._presence_holds[request_id] = held
+        except Exception as e:
+            logger.warning("Session presence: holding %s failed: %s", session_id, e)
+
+    def _presence_step(self, session_id: str, request_id: str) -> None:
+        """Every LLM call takes the input waiting for the session -- the pre-LLM
+        hooks hand it over -- as long as this request holds the session."""
+        self._presence_hold(session_id, request_id)
+        held = self._presence_holds.get(request_id)
+        if not held:
+            return
+        presence, sid, user_id = held
+        try:
+            presence.take_pending(sid, user_id)
+        except Exception as e:
+            logger.warning("Session presence: step of %s failed: %s", session_id, e)
+
+    def _presence_release(self, request_id: str) -> None:
+        held = self._presence_holds.pop(request_id, None)
+        if held is None:
+            return
+        presence, session_id, user_id = held
+        try:
+            presence.release(session_id, user_id)
+        except Exception as e:
+            logger.warning("Session presence: releasing %s failed: %s", session_id, e)
+
     async def _finalize_request(
         self,
         request_id: str,
@@ -1662,14 +1722,6 @@ class Agent(MCPServer):
             except Exception as e:
                 logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
 
-        # Execute session end hooks
-        try:
-            await self._hook_manager.execute_session_end_hooks(
-                session_id, request_id, messages=messages
-            )
-        except Exception as e:
-            logger.warning(f"Session end hooks failed: {e}", exc_info=True)
-
         # Clean up cancellation token
         cancellation_manager = get_cancellation_manager()
         cancellation_manager.unregister_request(request_id)
@@ -1701,6 +1753,7 @@ class Agent(MCPServer):
             logger.debug("Released session lock for %s (request %s)", sid, request_id)
 
         # Persist session messages and keep the request->session mapping for a while
+        persisted = False
         if sid and messages:
             try:
                 # Check if ANY tool modified the session messages during this request
@@ -1718,16 +1771,30 @@ class Agent(MCPServer):
                     self._session_tracker.clear_compacted_messages(sid)
                     # Save to disk even if no SSE client is connected
                     # (e.g., browser disconnected during background job execution)
-                    await self._save_session_to_disk(sid)
+                    persisted = await self._save_session_to_disk(sid)
                 else:
                     # Normal case: persist the request's conversation messages
-                    await self._persist_conversation(
+                    persisted = await self._persist_conversation(
                         sid, messages, to_disk=True, note="at end of request")
 
                 # Keep the request->session mapping (don't pop it immediately)
                 # This allows append requests that arrive shortly after completion to find the session
             except Exception as e:
                 logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
+
+        # Session end hooks AFTER the save, and told whether it happened. A hook
+        # that counts what the request carried as delivered -- debate_forum does
+        # that for direct messages -- would otherwise count it while the
+        # conversation is still only in memory: a save that fails or is
+        # cancelled would take the message with it and nothing would re-deliver
+        # it. They read the conversation, none of them writes it, so running
+        # them after the save changes nothing else.
+        try:
+            await self._hook_manager.execute_session_end_hooks(
+                session_id, request_id, messages=messages, persisted=persisted
+            )
+        except Exception as e:
+            logger.warning(f"Session end hooks failed: {e}", exc_info=True)
 
         # NOTE: no MCP shutdown here. The integration is process-wide state;
         # tearing it down at the end of EVERY request broke bootstrap-only
@@ -2134,6 +2201,9 @@ class Agent(MCPServer):
 
             # Emit thinking event before LLM call (for UI step display)
             yield {"type": "thinking", "step": step + 1}
+
+            # Before the hooks: the input they hand over needs no wake at the end.
+            self._presence_step(session_id, request_id)
 
             # Execute pre-LLM hooks with real-time status streaming
             # NOTE: Hooks execute synchronously from this generator's perspective,
@@ -3212,6 +3282,13 @@ class Agent(MCPServer):
         async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
                    status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
             try:
+                # Session presence: held from here on, not from the first LLM
+                # call -- whoever lets go of the endpoint's hold meanwhile (a
+                # client that disconnects) would leave the session looking idle
+                # while this run has it, and a direct message would wake a
+                # second run of it.
+                self._presence_hold(session_id, request_id)
+
                 # Phase 1: Initialize request and build conversation context
                 try:
                     context = await self._initialize_request_and_conversation(
@@ -3297,16 +3374,24 @@ class Agent(MCPServer):
             finally:
                 # Phase 3: Finalize and cleanup
                 # Note: This runs even if generator is closed early, but we can't yield in that case
-                await self._finalize_request(
-                    request_id=request_id,
-                    session_id=session_id,
-                    status_coordinator=status_coordinator,
-                    status_worker=status_worker,
-                    context=context,
-                    messages=messages if messages else (context.messages if context else None),
-                    results=results,
-                    step=step
-                )
+                try:
+                    await self._finalize_request(
+                        request_id=request_id,
+                        session_id=session_id,
+                        status_coordinator=status_coordinator,
+                        status_worker=status_worker,
+                        context=context,
+                        messages=messages if messages else (context.messages if context else None),
+                        results=results,
+                        step=step
+                    )
+                finally:
+                    # Session presence: after the save, so input still waiting
+                    # wakes the session and the woken run finds the whole
+                    # conversation on disk -- and in a finally, because a
+                    # cancelled save (client gone) must not leave the session
+                    # looking like it still runs.
+                    self._presence_release(request_id)
 
             # Yield final status events and end marker
             # These won't execute if generator was closed early (GeneratorExit), which is fine

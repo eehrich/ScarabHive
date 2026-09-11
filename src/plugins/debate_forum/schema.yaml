@@ -10,6 +10,23 @@ hooks:
       after: ["context_optimization"]
       before: ["message_validation"]
 
+  - name: deliver_direct_messages
+    type: pre_llm_call
+    enabled: true
+    timeout: 5.0
+    description: "Hand the session the direct messages sent to it"
+    category: "prompt_injection"
+    order:
+      after: ["context_optimization"]
+      before: ["message_validation"]
+
+  - name: mark_direct_messages_delivered
+    type: session_end
+    enabled: true
+    timeout: 5.0
+    description: "Direct messages count as delivered once the conversation that carried them is saved"
+    category: "cleanup"
+
 # Tool definitions for debate_forum plugin
 tools:
   - type: function
@@ -213,6 +230,31 @@ tools:
             type: boolean
             description: "true to pin, false to unpin (default: true)"
         required: [message_id]
+
+  - type: function
+    function:
+      name: "{{ name }}_list_sessions"
+      description: "List your other sessions that run right now. Sub-agents' sessions are not listed."
+      parameters:
+        type: object
+        properties: {}
+
+  - type: function
+    function:
+      name: "{{ name }}_send_message"
+      description: >
+        Send a direct message to another session. A running session reads it
+        on its next step; an idle one is started to read it. Status "queued"
+        means it waits there for that session's next run.
+      parameters:
+        type: object
+        properties:
+          to:
+            type: string
+            description: "session_id: from list_sessions, or the from_session of a message you got"
+          message:
+            type: string
+        required: [to, message]
 
 # Web UI configuration
 web_ui:

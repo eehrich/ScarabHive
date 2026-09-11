@@ -35,6 +35,7 @@ from .llm.batch.initialization import init_batch_system, shutdown_batch_system, 
 # Import services
 from .services import ConfigService, MCPService, ToolService, AgentService
 from .services.session_manager import SessionManager, SessionPermissionError
+from .core.session_presence import SessionBusy, presence_for
 from .services.background_job_manager import (
     BackgroundJob,
     BackgroundJobManager,
@@ -597,6 +598,86 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         would make one app answer with another app's config.
         """
         return getattr(app.state, "config", None) or config
+
+    async def _claim_session(target_agent: Any, sid: Optional[str], user_id: str,
+                             force: bool) -> tuple[Optional[str], Optional[str]]:
+        """Take a stored session for a run of this process, and bring the copy
+        in memory up to date. Returns (refusal, held): the refusal goes to the
+        client, ``held`` names what _let_go has to release afterwards.
+
+        Session presence (core/session_presence.py) refuses a session another
+        process runs -- both would write the conversation and the last save
+        would win; ``force`` runs it anyway, for the lock of a process that
+        hangs. The session is loaded before this (ownership, metadata), so
+        whatever another process wrote in between is read again here.
+        """
+        held = None
+        if not sid:
+            return None, None
+        presence = presence_for(getattr(target_agent, "system_config", None))
+        if presence is not None:
+            try:
+                if presence.hold(sid, user_id, target_agent.name):
+                    held = sid
+            except SessionBusy as busy:
+                if not force:
+                    return f"{busy}. Send force=true if its lock is a leftover.", None
+                logging.getLogger(__name__).warning("%s; running it anyway (force=true)", busy)
+        try:
+            await _bring_the_copy_up_to_date(target_agent, user_id, sid)
+        except BaseException:
+            # The hold belongs to this function until it hands it back, and
+            # nothing else would let it go: in this process it would outlive the
+            # request and refuse every later run of that session.
+            _let_go(target_agent, held, user_id)
+            raise
+        return None, held
+
+    async def _bring_the_copy_up_to_date(target_agent: Any, user_id: str, sid: str) -> None:
+        """Re-read a session another process continued while this one had it
+        loaded but not yet held.
+
+        SessionManager says whether the file moved since this process last read
+        or wrote it. Where it has no stamp -- its cache is bounded -- the longer
+        conversation wins: re-reading unasked undoes a run of this process whose
+        save is still to come, and that run's answer is nowhere else.
+        """
+        if not _session_service:
+            return
+        manager = _session_service.session_manager
+        changed = manager.changed_on_disk(user_id, sid)
+        if changed is None:
+            tracker = getattr(target_agent, "_session_tracker", None)
+            in_memory = len(tracker.get_session_messages(sid) or []) if tracker else 0
+            try:
+                stored = await manager.load_session(user_id, sid)
+            except Exception:
+                # No readable session there; a permission error comes back out
+                # of load_and_restore_session below, where it belongs.
+                stored = {}
+            changed = len(stored.get("messages") or []) >= in_memory
+        if changed:
+            await _session_service.load_and_restore_session(target_agent, user_id, sid)
+
+    def _hold_fresh_session(target_agent: Any, sid: str, user_id: str) -> Optional[str]:
+        """Hold a session the running request just created: nothing to re-read
+        (its conversation lives in this process) and no one to refuse."""
+        presence = presence_for(getattr(target_agent, "system_config", None))
+        if presence is None:
+            return None
+        try:
+            return sid if presence.hold(sid, user_id, target_agent.name) else None
+        except SessionBusy as busy:
+            logging.getLogger(__name__).warning("%s; this run keeps it unheld", busy)
+            return None
+
+    def _let_go(target_agent: Any, sid: Optional[str], user_id: str) -> None:
+        """Let go of a held session; input that came in for it wakes it."""
+        if not sid:
+            return
+        presence = presence_for(getattr(target_agent, "system_config", None))
+        if presence is not None:
+            presence.release(sid, user_id)
 
     # Initialize security enforcer (always created, respects auth.enabled)
     from .auth.enforcement import EndpointSecurityEnforcer, AnonymousUser
@@ -1522,7 +1603,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         traceparent: Optional[str] = Header(default=None),
         session_id: Optional[str] = Query(default=None),
         agent_name: Optional[str] = Query(default=None),
-        llm_profile: Optional[str] = Query(default=None)
+        llm_profile: Optional[str] = Query(default=None),
+        force: bool = Query(default=False)
     ):
         """Run agent with optional multimodal input (text + images).
 
@@ -1580,6 +1662,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     llm_profile = body.get('llm_profile')
                 if 'request_id' in body:
                     client_request_id = body.get('request_id')
+                # Session presence: run a session another process holds anyway
+                force = force or bool(body.get('force'))
 
         # multipart/form-data: parse form and files
         elif content_type.startswith('multipart/form-data'):
@@ -1607,6 +1691,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 llm_profile = form.get('llm_profile')
             if 'request_id' in form:
                 client_request_id = form.get('request_id')
+            force = force or str(form.get('force') or "").lower() in ("1", "true", "yes")
             # Collect UploadFile instances - use getlist() for repeated fields
             if hasattr(form, 'getlist'):
                 files_list = form.getlist('files')
@@ -1695,6 +1780,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # all validations and right before the try whose finally releases
             # it. Registered earlier, every 4xx above leaked the entry.
             register_request_user(request_id, user_id)
+            # Session presence (core/session_presence.py): held through the save
+            # after the run, so no woken run has its turn overwritten.
+            refusal, held = await _claim_session(selected_agent, session_id, user_id, force)
+            if refusal:
+                release_request_user_tree(request_id)
+                raise HTTPException(status_code=409, detail=refusal)
 
             try:
                 # Pass LLM override to collect_final_result
@@ -1735,6 +1826,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 return result
             finally:
+                _let_go(selected_agent, held, user_id)
                 # Cleanup: release request + derived sub-request ids (tool
                 # suffixes, sub-agents) from the ownership map
                 release_request_user_tree(request_id)
@@ -1836,6 +1928,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # Track if this is a new session
                 was_new_session = (session_id is None) or (not session_exists)
                 actual_session_id = session_id
+                # Session presence (core/session_presence.py): held before the
+                # run through the save after it; a session this run creates
+                # comes with the start event.
+                refusal, held = await _claim_session(
+                    selected_agent, actual_session_id, user_id, force)
+                if refusal:
+                    yield "event: error\n"
+                    yield f"data: {json.dumps({'type': 'error', 'message': refusal}, ensure_ascii=False)}\n\n"
+                    return
 
                 try:
                     async for event in selected_agent.run_events(multimodal_msg, request_id=request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
@@ -1844,6 +1945,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         # Capture session_id from start event (created on first call)
                         if event_type == "start" and event.get("session_id"):
                             actual_session_id = event["session_id"]
+                            if not held:
+                                held = _hold_fresh_session(
+                                    selected_agent, actual_session_id, user_id)
 
                         # CRITICAL: Always set/update session metadata (even for existing sessions)
                         # This ensures user_id is available for tool execution AND respects llm_profile overrides
@@ -1886,6 +1990,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             was_new_session
                         )
 
+                    _let_go(selected_agent, held, user_id)
                     # Cleanup: release request + derived sub-request ids
                     release_request_user_tree(request_id)
 
@@ -1931,6 +2036,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         agent_name: Optional[str] = None,
         llm_profile: Optional[str] = None,
         request_id: Optional[str] = None,
+        force: bool = False,
     ):
         """Shared implementation for GET/POST /events endpoints.
 
@@ -2117,6 +2223,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             import asyncio as _asyncio
             CancelledError = _asyncio.CancelledError
             
+            # Session presence (core/session_presence.py): held before the job
+            # starts through the save after it; a session the job creates comes
+            # with the start event.
+            refusal, held = await _claim_session(
+                selected_agent, actual_session_id, user_id, force)
+            if refusal:
+                yield f"data: {json.dumps({'type': 'error', 'request_id': request_id, 'error': refusal}, ensure_ascii=False)}\n\n"
+                return
+
             # Create new background job (reconnects use the fast path above)
             async def agent_runner():
                 """Run the agent and yield events"""
@@ -2146,7 +2261,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     "already running under it", request_id,
                 )
                 yield f"data: {json.dumps({'type': 'error', 'request_id': request_id, 'error': 'request_id is already running — reconnect instead of starting a second run'}, ensure_ascii=False)}\n\n"
+                _let_go(selected_agent, held, user_id)  # no job of ours runs it
                 return
+            except BaseException:
+                # Nothing of ours runs the session, and the finally below that
+                # would let it go is not entered yet: in this process a hold
+                # nobody releases refuses every later run of that session.
+                _let_go(selected_agent, held, user_id)
+                raise
             # Store task description for reconnect
             job.task_description = task
 
@@ -2183,6 +2305,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # Track session_id from start event
                     if ev.get("type") == "start" and ev.get("session_id"):
                         actual_session_id = ev["session_id"]
+                        if not held:
+                            held = _hold_fresh_session(
+                                selected_agent, actual_session_id, user_id)
                         # Store in job for reconnect support
                         job.actual_session_id = actual_session_id
                     
@@ -2246,6 +2371,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             was_new_session
                         )
 
+                _let_go(selected_agent, held, user_id)
+
                 # Cleanup: release ownership only if job is done (a running
                 # job's stream may reconnect and must keep its mapping)
                 if job.status != JobStatus.RUNNING:
@@ -2266,6 +2393,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         agent_name: Optional[str] = Query(default=None),
         llm_profile: Optional[str] = Query(default=None),
         request_id: Optional[str] = Query(default=None),
+        force: bool = Query(default=False),
     ):
         """Stream agent events for a task (GET).
 
@@ -2289,6 +2417,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             agent_name=effective_agent_name,
             llm_profile=llm_profile,
             request_id=request_id,
+            force=force,
         )
 
     @app.post("/events")
@@ -2318,6 +2447,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             agent_name=body.get("agent_name") or body.get("agent"),
             llm_profile=body.get("llm_profile"),
             request_id=body.get("request_id"),
+            force=bool(body.get("force")),
         )
 
     @app.get("/api/requests/{request_id}/status")
@@ -2471,6 +2601,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         request: Request,
         session_id: Optional[str] = Query(default=None),
         fallback: str = Query(default="session"),
+        force: bool = Query(default=False),
     ):
         """Append a user message to an existing active request or session.
 
@@ -2500,32 +2631,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not content:
             raise HTTPException(status_code=400, detail="Missing 'content' in body")
 
-        async def _persist_session(sid: str, owner_agent: Any) -> None:
-            """Helper to persist session to disk after append."""
-            if _session_service:
-                metadata = owner_agent._session_tracker.get_session_metadata(sid)
-                agent_name_for_session = metadata.get("agent_name", owner_agent.name) if metadata else owner_agent.name
-                llm_profile_for_session = metadata.get("llm_profile", owner_agent.agent_config.default_llm_profile) if metadata else owner_agent.agent_config.default_llm_profile
-                await _session_service.save_session(
-                    owner_agent,
-                    user_id,
-                    sid,
-                    agent_name_for_session,
-                    llm_profile_for_session,
-                    was_new_session=False
-                )
-                logger.debug("Session %s persisted to disk after append", sid)
-
         if session_id:
             # Ownership check before mutating someone else's session (IDOR).
             await _verify_session_owner(session_id, current_user)
             # Append directly to persisted session using agent method
             logger.debug("Appending to session %s: %.120s", session_id, content)
-            success = await agent.append_to_session(session_id, content)
-            if not success:
+            if not await _append_and_persist(agent, session_id, content, user_id, force):
                 raise HTTPException(status_code=404, detail="Session not found")
-            # Persist to disk
-            await _persist_session(session_id, agent)
             return {"status": "appended", "session_id": session_id}
 
         # Mid-run appends must reach the agent instance that owns the run:
@@ -2559,13 +2671,41 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         sid = target_agent._session_tracker.get_session_for_request(request_id)
         if sid:
             logger.debug("Request %s already finished; appending to session %s", request_id, sid)
-            success = await target_agent.append_to_session(sid, content)
-            if success:
-                # Persist to disk
-                await _persist_session(sid, target_agent)
+            if await _append_and_persist(target_agent, sid, content, user_id, force):
                 return {"status": "appended", "session_id": sid}
 
         raise HTTPException(status_code=404, detail="Request not found or already completed")
+
+    async def _append_and_persist(owner_agent: Any, sid: str, content: str, user_id: str,
+                                  force: bool = False) -> bool:
+        """Append a user message to a session no request of this process runs, and save it.
+
+        The session is held for the append (session presence,
+        core/session_presence.py), and its copy in memory is re-read only when
+        another process wrote the file -- a run woken by a direct message
+        continues the session from disk, while re-reading unasked would undo
+        what a run of this process has not saved yet.
+        """
+        refusal, held = await _claim_session(owner_agent, sid, user_id, force)
+        if refusal:
+            raise HTTPException(status_code=409, detail=refusal)
+        try:
+            if not await owner_agent.append_to_session(sid, content):
+                return False
+            if _session_service:
+                metadata = owner_agent._session_tracker.get_session_metadata(sid) or {}
+                await _session_service.save_session(
+                    owner_agent,
+                    user_id,
+                    sid,
+                    metadata.get("agent_name", owner_agent.name),
+                    metadata.get("llm_profile", owner_agent.agent_config.default_llm_profile),
+                    was_new_session=False
+                )
+                logging.getLogger(__name__).debug("Session %s persisted to disk after append", sid)
+            return True
+        finally:
+            _let_go(owner_agent, held, user_id)
 
     @app.post("/sessions")
     async def create_session():
@@ -2576,7 +2716,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         return {"session_id": sid}
 
     @app.post("/sessions/{session_id}/append")
-    async def append_to_session_endpoint(session_id: str, request: Request):
+    async def append_to_session_endpoint(session_id: str, request: Request,
+                                         force: bool = Query(default=False)):
         """Append a user message directly to a session (no active request required).
         
         This endpoint adds a user message to an existing session and persists it to disk.
@@ -2600,27 +2741,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Ownership check before mutating someone else's session (IDOR).
             await _verify_session_owner(session_id, current_user)
 
-            # First, append to in-memory session
-            success = await agent.append_to_session(session_id, content)
-            if not success:
+            if not await _append_and_persist(agent, session_id, content, user_id, force):
                 raise HTTPException(status_code=404, detail="Session not found")
-
-            # Persist the session to disk
-            if _session_service:
-                # Get session metadata to determine agent_name and llm_profile
-                metadata = agent._session_tracker.get_session_metadata(session_id)
-                agent_name_for_session = metadata.get("agent_name", agent.name) if metadata else agent.name
-                llm_profile_for_session = metadata.get("llm_profile", agent.agent_config.default_llm_profile) if metadata else agent.agent_config.default_llm_profile
-                
-                await _session_service.save_session(
-                    agent,
-                    user_id,
-                    session_id,
-                    agent_name_for_session,
-                    llm_profile_for_session,
-                    was_new_session=False
-                )
-                logger.debug("Session %s persisted to disk after append", session_id)
 
             return {"status": "appended", "session_id": session_id}
         except HTTPException:

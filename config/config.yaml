@@ -3,7 +3,7 @@
 # ================================
 
 name: "ScarabHive"
-version: "0.6.0"
+version: "0.6.1"
 description: "ScarabHive - Flexible AI Agent Framework with plugin support"
 
 # all included configs
@@ -34,6 +34,10 @@ status: # type StatusConfig
 vision: # type VisionConfig
   image_warn_size_mb: 10.0  # Warn when images exceed this size (MB)
   image_max_size_mb: null  # Maximum allowed image size (MB), null = no limit
+
+# Which sessions run right now; lets direct messages wake idle sessions
+session_presence: # type SessionPresenceConfig
+  enabled: true
 
 # Network settings
 network:

@@ -262,6 +262,41 @@ def set_test_server_port():
     # No teardown required; environment variable will be discarded after tests
 
 
+class WokeForReal(BaseException):
+    """Not an Exception on purpose: session_presence.notify() catches Exception
+    and turns a failed wake into a queued message. A guard that is an Exception
+    is swallowed there -- the test goes green and measures nothing."""
+
+
+@pytest.fixture(autouse=True)
+def never_wake_a_session_for_real():
+    """Session presence (agent_system/core/session_presence.py) wakes an idle
+    session by STARTING agent-cli -- a real run, with real LLM calls and real
+    money. A test that reaches that path by accident has to fail, not spend.
+
+    Tests that mean to wake replace spawn_wake themselves; their patch wins for
+    as long as they run, and this puts the refusal back afterwards.
+    """
+    try:
+        from agent_system.core import session_presence
+    except Exception:  # the module is not part of every checkout state
+        yield
+        return
+
+    original = session_presence.spawn_wake
+
+    def refuse(session_id, user_id, depth):
+        raise WokeForReal(
+            f"a test tried to wake session {session_id} for real -- spawn_wake "
+            "starts agent-cli. Replace spawn_wake in the test.")
+
+    session_presence.spawn_wake = refuse
+    try:
+        yield
+    finally:
+        session_presence.spawn_wake = original
+
+
 @pytest.fixture(autouse=True)
 def cleanup_unclosed_resources():
     """Function-scoped fixture that attempts to close any lingering

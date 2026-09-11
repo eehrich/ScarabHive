@@ -21,6 +21,9 @@ Flow:
 2. Sub-agents inherit it when spawned
 3. This hook injects pinned context (system) and new posts (user)
 4. Old post batches stay in the conversation and get optimised automatically
+
+Direct messages between sessions (deliver_direct_messages) need no channel
+var; who runs where and waking idle sessions are core/session_presence.py.
 """
 from __future__ import annotations
 
@@ -37,14 +40,22 @@ logger = logging.getLogger(__name__)
 
 INJECTION_MARKER = "inject_debate_context"
 INJECTION_MARKER_POSTS = "debate_forum_posts"
+INJECTION_MARKER_DIRECT = "debate_forum_direct"
 
 
 class DebateForumHooks(SchemaBasedPluginHook):
     """Hook plugin for debate forum context injection."""
 
-    def __init__(self, plugin_dir: Path, db: "DebateForumDB", plugin_config: dict | None = None):
+    def __init__(self, plugin_dir: Path, db: "DebateForumDB", plugin_config: dict | None = None,
+                 tool_prefix: str = "debate_forum"):
         super().__init__(plugin_dir)
         self.db = db
+        # The plugin instance name: its tools are <name>_send_message, and a
+        # text that names a tool the agent does not have is worse than no hint.
+        self.tool_prefix = tool_prefix
+        # request_id -> the direct messages that request carries, until it ends
+        # (mark_direct_messages_delivered)
+        self._handed_over: dict[str, list[int]] = {}
         # Merge config from plugins.yaml over schema defaults
         if plugin_config:
             self._config.update(plugin_config)
@@ -181,6 +192,53 @@ class DebateForumHooks(SchemaBasedPluginHook):
             logger.error(f"[DebateForumHook] Failed: {e}", exc_info=True)
             return HookResult(success=True, modified=False, context=context)
 
+    async def deliver_direct_messages(self, context: HookContext) -> HookResult:
+        """Hand the session the direct messages sent to it, appended to the request."""
+        if not context.session_id or context.messages is None:
+            return HookResult(success=True, modified=False, context=context)
+        try:
+            handed = self._handed_over.get(context.request_id, [])
+            direct = [m for m in self.db.undelivered(context.session_id)
+                      if m["id"] not in handed]
+            if not direct:
+                return HookResult(success=True, modified=False, context=context)
+
+            from agent_system.llm.models import ChatMessage
+
+            context.messages.append(ChatMessage(
+                role="user", content=self._format_direct(direct),
+                injected_by=INJECTION_MARKER_DIRECT,
+            ))
+            # Still undelivered in the store: only the end of this request says
+            # they reached the session. Until then every further step of the
+            # same request would read them again, hence the list.
+            self._handed_over[context.request_id] = handed + [m["id"] for m in direct]
+            logger.info("[DebateForumHook] Delivered %d direct message(s) to session %s",
+                        len(direct), context.session_id)
+            return HookResult(success=True, modified=True, context=context)
+        except Exception as e:
+            logger.error("[DebateForumHook] Direct messages failed: %s", e, exc_info=True)
+            return HookResult(success=True, modified=False, context=context)
+
+    async def mark_direct_messages_delivered(self, context: HookContext) -> HookResult:
+        """The request is over and its conversation is saved, so what it carried
+        counts as delivered. A run that died before this, or whose save never
+        happened, hands its messages to the session's next run instead of losing
+        them: what it was told is only in the answer it never wrote."""
+        handed = self._handed_over.pop(context.request_id, None)
+        if handed and not (context.metadata or {}).get("persisted"):
+            logger.info("[DebateForumHook] Session %s was not saved; its %d direct "
+                        "message(s) stay undelivered for its next run",
+                        context.session_id, len(handed))
+            return HookResult(success=True, modified=False, context=context)
+        if handed:
+            try:
+                self.db.mark_delivered(handed)
+            except Exception as e:
+                logger.error("[DebateForumHook] Could not mark direct messages delivered: %s",
+                             e, exc_info=True)
+        return HookResult(success=True, modified=False, context=context)
+
     def _get_channel_id(self, context: HookContext) -> int | None:
         """Extract debate_channel_id from session context_vars."""
         try:
@@ -272,6 +330,18 @@ class DebateForumHooks(SchemaBasedPluginHook):
             after_system = len(messages)
         return after_system
 
+    def _format_direct(self, messages: list[dict[str, Any]]) -> str:
+        """The messages as the session sees them, with the tool that answers."""
+        parts = [f"[Direct messages -- reply with {self.tool_prefix}_send_message "
+                 "to the from_session]"]
+        for msg in messages:
+            parts.append(
+                f'<message from_session="{msg["agent_role"]}" from_agent="{msg["agent_name"]}">\n'
+                f'{msg["content"].strip()}\n'
+                f"</message>"
+            )
+        return "\n".join(parts)
+
     @staticmethod
     def _find_last_user_position(messages: list) -> int:
         """Find position of the last user message (to insert new posts before it)."""
@@ -280,3 +350,5 @@ class DebateForumHooks(SchemaBasedPluginHook):
             if role == "user":
                 return i
         return len(messages)
+
+

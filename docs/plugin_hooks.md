@@ -227,6 +227,12 @@ async def on_session_start(self, context: HookContext) -> HookResult:
 **Use Cases:** Cleanup, statistics, logging
 **Can Modify:** Cleanup operations, final statistics
 
+**When:** after the request's conversation has been written to the session
+file, not before. `context.metadata["persisted"]` says whether that write
+happened -- a hook that counts what the request carried as done (debate_forum
+marks direct messages delivered there) may only do so when it did: persisting
+never raises, so a failed or cancelled save is silent otherwise.
+
 ```python
 async def on_session_end(self, context: HookContext) -> HookResult:
     """Executed at session end.
