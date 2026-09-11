@@ -19,6 +19,28 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Message fields a snapshot always keeps whole. Everything else a message
+# carries is stored too, cut to a preview when long (see _compact).
+_WHOLE_FIELDS = frozenset({'content', 'tool_calls'})
+
+
+def _compact(value: Any, limit: int) -> Any:
+    """Copy of a JSON-shaped value with every string longer than ``limit`` cut
+    to a preview that names its full length; ``limit`` 0 keeps everything.
+
+    Snapshots repeat the whole history on every call of a run, so an opaque
+    blob (encrypted reasoning, base64 media) would be stored many times over.
+    """
+    if isinstance(value, str):
+        if limit and len(value) > limit:
+            return f"{value[:limit]}... [{len(value)} chars]"
+        return value
+    if isinstance(value, dict):
+        return {key: _compact(item, limit) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_compact(item, limit) for item in value]
+    return value
+
 
 class MessageDebuggerPlugin(SchemaBasedPluginHook):
     """Schema-based plugin for capturing and debugging LLM messages.
@@ -62,6 +84,7 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
         self.capture_llm_requests = bool(config.get('capture_llm_requests', True))
         self.include_tool_calls = bool(config.get('include_tool_calls', True))
         self.include_token_estimates = bool(config.get('include_token_estimates', True))
+        self.max_field_chars = int(config.get('max_field_chars', 500))
         self.max_history = int(config.get('max_history_entries', 100))
         self.auto_cleanup_threshold = int(config.get('auto_cleanup_threshold', 150))
         
@@ -184,7 +207,9 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
                 'request_id': context.request_id or '',
                 'session_id': context.session_id or '',
                 'step': context.step,
-                'llm_response': (dict(context.llm_response)
+                # Compacted here, on the loop: _compact copies, so the writer
+                # thread never reads a dict the agent is still changing.
+                'llm_response': (_compact(context.llm_response, self.max_field_chars)
                                  if snapshot_type == 'post_llm' and context.llm_response
                                  else None),
                 'context_window': (context.llm.context_window
@@ -232,49 +257,28 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
                 msg_tokens = estimate_token_count([msg])
                 total_tokens += msg_tokens
 
+            # Every field the message carries, not a hand-picked list: a field
+            # added to ChatMessage shows up here and in the panel untouched.
             msg_info: Dict[str, Any] = {
+                key: value if key in _WHOLE_FIELDS else _compact(value, self.max_field_chars)
+                for key, value in msg.model_dump(mode='json', exclude_none=True).items()
+            }
+            if not self.include_tool_calls:
+                msg_info.pop('tool_calls', None)
+                msg_info.pop('tool_call_id', None)
+            msg_info.update({
                 'index': idx,
-                'role': msg.role,
-                'content': str(msg.content) if msg.content else None,
                 'content_length': len(str(msg.content)) if msg.content else 0,
                 'estimated_tokens': msg_tokens if self.include_token_estimates else None,
-            }
-
+            })
             if self.include_tool_calls:
-                if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                    tool_calls_info = []
-                    for tc in msg.tool_calls:
-                        tool_calls_info.append({
-                            'id': tc.get('id'),
-                            'type': tc.get('type'),
-                            'function': {
-                                'name': tc.get('function', {}).get('name'),
-                                'arguments': tc.get('function', {}).get('arguments'),
-                            }
-                        })
-                    msg_info['tool_calls'] = tool_calls_info
-                    msg_info['tool_call_count'] = len(tool_calls_info)
-                else:
-                    msg_info['tool_calls'] = None
-                    msg_info['tool_call_count'] = 0
-
-                if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
-                    msg_info['tool_call_id'] = msg.tool_call_id
-                    msg_info['is_tool_result'] = True
-                else:
-                    msg_info['tool_call_id'] = None
-                    msg_info['is_tool_result'] = False
+                msg_info['tool_call_count'] = len(msg.tool_calls or [])
+                msg_info['is_tool_result'] = bool(msg.tool_call_id)
 
             message_data.append(msg_info)
 
-        llm_response = None
-        lr = ctx.get('llm_response')
-        if snapshot_type == 'post_llm' and lr:
-            llm_response = {
-                'model': lr.get('model'),
-                'usage': lr.get('usage'),
-                'finish_reason': lr.get('finish_reason'),
-            }
+        # The whole response, already compacted on the loop (_capture_turn).
+        llm_response = ctx.get('llm_response') if snapshot_type == 'post_llm' else None
 
         timestamp_ms = time.time() * 1000
 

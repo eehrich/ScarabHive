@@ -83,6 +83,12 @@ config:
     type: boolean
     default: true
     description: "Calculate and include token estimates for each message"
+
+  max_field_chars:
+    type: integer
+    default: 500
+    description: "Turn snapshots store every field of every message. content and tool_calls stay whole; any other string longer than this is cut to a preview that names its full length (encrypted reasoning and base64 media would otherwise repeat in every snapshot of a run). 0 keeps everything."
+    minimum: 0
   
   auto_cleanup_threshold:
     type: integer

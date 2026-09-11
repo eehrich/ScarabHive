@@ -615,10 +615,21 @@ button.icon-only.danger:hover { background: #6e2626; }
 
 .msg-meta {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     margin-top: 4px;
     font-size: 11px;
     color: #858585;
+}
+
+.msg-extra {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #858585;
+}
+
+.msg-extra summary {
+    cursor: pointer;
 }
 
 .tool-call-block {

@@ -228,7 +228,10 @@ const debugger_ = {
                 html += `<div class="detail-section"><h3>Messages (${msgs.length})</h3>`;
                 msgs.forEach(m => {
                     const role = m.role || 'unknown';
-                    const fullContent = m.content || '';
+                    // Multimodal content is a list of parts, not a string.
+                    const fullContent = typeof m.content === 'string'
+                        ? m.content
+                        : (m.content ? JSON.stringify(m.content, null, 2) : '');
 
                     // Build content HTML — try JSON formatting for tool results
                     let contentHtml = '';
@@ -245,8 +248,20 @@ const debugger_ = {
 
                     // Store full (non-truncated) copy data in JS Map to avoid HTML attribute issues
                     const copyId = this.copyDataCounter++;
-                    const msgData = JSON.stringify({role, content: fullContent, tool_calls: m.tool_calls});
+                    const msgData = JSON.stringify(m);
                     this.copyDataStore.set(copyId, msgData);
+
+                    // Every other field the snapshot carries (served_by, thinking_model,
+                    // reasoning_details, ...) is rendered generically: a new ChatMessage
+                    // field needs no change here. Values become badges, objects fold out.
+                    const shown = new Set(['index', 'role', 'content', 'content_length', 'estimated_tokens',
+                                           'tool_calls', 'tool_call_count', 'tool_call_id', 'is_tool_result']);
+                    const extras = Object.entries(m).filter(([k, v]) => !shown.has(k) && v !== null && v !== undefined);
+                    const extraBadges = extras.filter(([, v]) => typeof v !== 'object')
+                        .map(([k, v]) => `<span class="msg-field">${this.esc(k)}: ${this.esc(String(v))}</span>`).join('');
+                    const extraBlocks = extras.filter(([, v]) => typeof v === 'object')
+                        .map(([k, v]) => `<details class="msg-extra"><summary>${this.esc(k)}</summary>${this.formatJson(v)}</details>`).join('');
+
                     html += `<div class="msg-item ${role}" data-copy-id="${copyId}">
                         <div class="msg-role">
                             <span>${role}</span>
@@ -257,7 +272,9 @@ const debugger_ = {
                             ${m.estimated_tokens ? `<span>${m.estimated_tokens} tokens</span>` : ''}
                             ${m.content_length ? `<span>${m.content_length} chars</span>` : ''}
                             ${m.is_tool_result ? '<span>Tool Result</span>' : ''}
-                        </div>`;
+                            ${extraBadges}
+                        </div>
+                        ${extraBlocks}`;
                     if (m.tool_calls && m.tool_calls.length > 0) {
                         m.tool_calls.forEach(tc => {
                             const args = tc.function?.arguments || '';

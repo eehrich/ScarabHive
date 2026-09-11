@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent_system.hooks import HookContext
 from agent_system.llm.models import ChatMessage
@@ -373,6 +374,87 @@ class TestMessageDebuggerHooks:
 
         tool_result_msg = next(m for m in messages if m.get("is_tool_result"))
         assert tool_result_msg["tool_call_id"] == "call_123"
+
+    @pytest.mark.asyncio
+    async def test_capture_keeps_every_message_field(self, hooks_plugin, db):
+        """No hand-picked field list: whatever a message carries is in the snapshot,
+        including a field ChatMessage does not have yet."""
+        class FutureMessage(ChatMessage):
+            brand_new_field: str = "added later"
+
+        blob, long_text = "x" * 5000, "y" * 5000
+        context = HookContext(
+            hook_type="pre_llm_call", request_id="req_1", session_id="sess_1",
+            agent_name="test_agent",
+            messages=[
+                ChatMessage(role="user", content=long_text),
+                ChatMessage(role="assistant", content="ok", served_by="Google AI Studio",
+                            thinking_model="some-model", rd_orphaned=False,
+                            reasoning_details=[{"type": "reasoning.encrypted", "data": blob}]),
+                FutureMessage(role="user", content="next"),
+            ],
+        )
+        await hooks_plugin.debugger_capture_pre_llm(context)
+
+        assert db.flush(timeout=3)
+        user, assistant, future = db.get_turn(db.get_turns()[0]["id"])["messages_json"]
+        assert user["content"] == long_text  # content stays whole
+        assert "reasoning_content" not in user  # unset fields are not stored
+        assert assistant["served_by"] == "Google AI Studio"
+        assert assistant["thinking_model"] == "some-model"
+        assert assistant["rd_orphaned"] is False
+        data = assistant["reasoning_details"][0]["data"]
+        assert data.startswith("x" * 500) and data.endswith("[5000 chars]")
+        assert len(data) < 600  # an opaque blob is cut to a preview
+        assert future["brand_new_field"] == "added later"
+
+    @pytest.mark.asyncio
+    async def test_max_field_chars_zero_keeps_everything(self, plugin_dir, db):
+        from plugins.message_debugger.hooks import MessageDebuggerPlugin
+        plugin = MessageDebuggerPlugin(
+            plugin_dir, db=db, mcp_config=SimpleNamespace(config={"max_field_chars": 0}))
+        blob = "x" * 5000
+        context = HookContext(
+            hook_type="pre_llm_call", request_id="r", session_id="s", agent_name="a",
+            messages=[ChatMessage(role="assistant", content="ok",
+                                  reasoning_details=[{"data": blob}])],
+        )
+        await plugin.debugger_capture_pre_llm(context)
+
+        assert db.flush(timeout=3)
+        (message,) = db.get_turn(db.get_turns()[0]["id"])["messages_json"]
+        assert message["reasoning_details"][0]["data"] == blob
+
+    @pytest.mark.asyncio
+    async def test_post_llm_stores_the_whole_response_compacted(self, hooks_plugin, sample_messages, db):
+        context = HookContext(
+            hook_type="post_llm_call", request_id="r", session_id="s", agent_name="a",
+            messages=sample_messages,
+            llm_response={"model": "m", "usage": {"prompt_tokens": 10},
+                          "assistant": {"served_by": "DeepInfra", "content": "z" * 5000}},
+        )
+        await hooks_plugin.debugger_capture_post_llm(context)
+
+        assert db.flush(timeout=3)
+        stored = db.get_turns()[0]["llm_response_json"]
+        assert stored["usage"] == {"prompt_tokens": 10}
+        assert stored["assistant"]["served_by"] == "DeepInfra"
+        assert stored["assistant"]["content"].endswith("[5000 chars]")
+
+    @pytest.mark.asyncio
+    async def test_tool_call_details_can_be_left_out(self, plugin_dir, sample_messages_with_tools, db):
+        from plugins.message_debugger.hooks import MessageDebuggerPlugin
+        plugin = MessageDebuggerPlugin(
+            plugin_dir, db=db, mcp_config=SimpleNamespace(config={"include_tool_calls": False}))
+        context = HookContext(
+            hook_type="pre_llm_call", request_id="r", session_id="s", agent_name="a",
+            messages=sample_messages_with_tools,
+        )
+        await plugin.debugger_capture_pre_llm(context)
+
+        assert db.flush(timeout=3)
+        messages = db.get_turn(db.get_turns()[0]["id"])["messages_json"]
+        assert not any({"tool_calls", "tool_call_id", "tool_call_count"} & set(m) for m in messages)
 
     @pytest.mark.asyncio
     async def test_token_estimation(self, hooks_plugin, sample_messages, db):
@@ -758,6 +840,8 @@ class TestMessageDebuggerIntegration:
             llm_response_data={"id": "chatcmpl-abc", "choices": [{"message": {"content": "response"}}]},
         )
         await hybrid_plugin.hooks_plugin.debugger_capture_post_response(resp_context)
+        # Captures are fire-and-forget: drain the writer before reading via the API.
+        assert hybrid_plugin._db.flush(timeout=3)
 
         # Verify via API
         from fastapi import FastAPI

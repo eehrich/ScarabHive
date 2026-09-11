@@ -26,6 +26,7 @@ config:
   capture_enabled: true              # Enable/disable capturing
   include_tool_calls: true           # Include tool call details
   include_token_estimates: true      # Calculate token estimates
+  max_field_chars: 500               # Preview length for long non-content fields (0 = keep all)
   auto_cleanup_threshold: 150        # Auto-cleanup when exceeded
 ```
 
@@ -85,14 +86,18 @@ Each captured snapshot includes:
 - **Total Tokens**: Estimated token count for all messages
 - **Context Window**: LLM context window size
 
-Each message includes:
+Each message includes every field it carries (role, content, tool calls,
+served_by, reasoning_details, ...), so a field added to `ChatMessage` shows up
+in snapshot and panel without changes to this plugin. `content` and
+`tool_calls` are kept whole; any other string longer than `max_field_chars` is
+stored as a preview that names its full length, because every snapshot repeats
+the whole history. The snapshot adds:
 
 - **Index**: Position in conversation
-- **Role**: user, assistant, system, or tool
-- **Content**: Message content (with preview limit)
-- **Estimated Tokens**: Token count for this message
-- **Tool Calls**: Detailed tool call information (if any)
-- **Tool Result**: Flag indicating if this is a tool result
+- **Content Length / Estimated Tokens**: Size of this message
+- **Tool Call Count / Tool Result**: Tool summary (with `include_tool_calls`)
+
+A post-LLM snapshot stores the whole LLM response the same way.
 
 ## Development
 
