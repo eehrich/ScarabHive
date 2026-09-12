@@ -41,6 +41,7 @@ from .components.request_manager import AgentRequestManager
 from .components.server_resolution import resolve_registry_server, resolve_longest_prefix
 from .prompt_strategies import PromptRenderer, PromptContext
 from .loop_detection import ToolCallLoopDetector
+from .reasoning_loop import ReasoningLoopDetector, ReasoningLoopError
 from .escalation import StuckEscalator
 from .tool_discovery import ToolDiscoveryService
 from .tool_schema_builder import ToolSchemaBuilder, server_matches_patterns
@@ -321,6 +322,16 @@ class Agent(MCPServer):
         # Each request creates its own ToolCallLoopDetector to prevent
         # cross-request contamination when the Agent singleton handles
         # concurrent requests or sequential requests on the same session.
+        # Reasoning loop detection, stored the same way — but the detector is
+        # created per LLM CALL, not per request: its state is the thinking of
+        # one call, and a retry has to start from an empty window.
+        reasoning_config = self.agent_config.reasoning_loop if self.agent_config else None
+        self._reasoning_loop_config = {
+            "enabled": reasoning_config.enabled if reasoning_config else True,
+            "repetition_threshold": (reasoning_config.repetition_threshold
+                                     if reasoning_config else 0.5),
+        }
+
         loop_config = self.agent_config.loop_detection if self.agent_config else None
         if loop_config and loop_config.enabled:
             self._loop_detection_config = {
@@ -351,8 +362,9 @@ class Agent(MCPServer):
     #:   - llm_profile / advanced_llm_profile / llm_params / fallback_chain:
     #:     ``self.llm`` was built from these at startup.
     #:   - tools: the tool schemas are wired into the MCP integration at startup.
-    #:   - loop_detection / timeouts: read once into derived objects
-    #:     (``_loop_detection_config``, ``self.timeouts``).
+    #:   - loop_detection / reasoning_loop / timeouts: read once into derived
+    #:     objects (``_loop_detection_config``, ``_reasoning_loop_config``,
+    #:     ``self.timeouts``).
     #: Those still need a restart, and saying so beats pretending otherwise.
     _RELOADABLE_AGENT_FIELDS = (
         "max_steps",
@@ -1838,7 +1850,8 @@ class Agent(MCPServer):
         cancellation_token: CancellationToken,
         step: int,
         yield_pending_status_fn,
-        status_scope: Optional[StatusScope] = None
+        status_scope: Optional[StatusScope] = None,
+        watch_reasoning: bool = True,
     ):
         """Call LLM with streaming support and interleaved status events.
 
@@ -1866,9 +1879,17 @@ class Agent(MCPServer):
             final_assistant = None
             final_usage = None  # Store usage data from final chunk
             final_finish_reason = None  # "length", "content_filter", ...
+            # One detector per CALL: it holds this call's thinking, and a
+            # retry must start from an empty window.
+            reasoning_detector = ReasoningLoopDetector(
+                **{**self._reasoning_loop_config,
+                   # Off for the retry the detector itself asked for: watching
+                   # the second attempt too would mean a second abort policy,
+                   # and there is nothing sensible left to do after it.
+                   "enabled": self._reasoning_loop_config["enabled"] and watch_reasoning})
 
             async for chunk in llm.chat_tools_streaming(
-                messages, tools_schema, 
+                messages, tools_schema,
                 cancellation_token=cancellation_token,
                 status_scope=status_scope
             ):
@@ -1877,7 +1898,24 @@ class Agent(MCPServer):
                 if chunk_type == "thinking_delta":
                     # Gemini reasoning/thinking tokens (not content)
                     yield {"type": "reasoning_delta", "step": step + 1, "delta": chunk["delta"]}
-                    
+
+                    # Watch the thinking for a loop. What arrives here is
+                    # whatever the client calls a thinking delta: raw
+                    # reasoning for most models, and for the OpenAI family a
+                    # SUMMARY of it — the threshold was calibrated on raw
+                    # reasoning, so for those models this guards the
+                    # degenerate case rather than measuring a known shape.
+                    loop_reason = reasoning_detector.record(chunk["delta"])
+                    if loop_reason:
+                        logger.warning(
+                            "[%s] Aborting the call: %s (model=%s, %d characters "
+                            "of thinking so far)",
+                            self.name, loop_reason, getattr(llm, "model", "?"),
+                            reasoning_detector.characters_seen)
+                        raise ReasoningLoopError(
+                            loop_reason,
+                            characters=reasoning_detector.characters_seen)
+
                     # Check status events after each token (zero overhead)
                     for status_event in yield_pending_status_fn():
                         yield status_event
@@ -2316,8 +2354,15 @@ class Agent(MCPServer):
                         f"chain: {fallback_profiles}"
                     )
             
+            # WHICH client was told to try again after its thinking looped —
+            # not merely THAT one was. A fallback switch later in this step
+            # replaces current_llm, and the new model has earned no exemption:
+            # comparing the client re-arms the watchdog by itself, where a
+            # plain flag would leave an innocent model unwatched.
+            reasoning_loop_llm = None
             while True:  # Retry loop for fallbacks (rate limits + upstream errors)
                 pending_thinking_complete = None
+                _llm_call_started = asyncio.get_event_loop().time()
                 try:
                     async for event in self._call_llm_with_streaming(
                         llm=current_llm,
@@ -2326,7 +2371,8 @@ class Agent(MCPServer):
                         cancellation_token=main_token,
                         step=step,
                         yield_pending_status_fn=yield_pending_status_events,
-                        status_scope=status_worker
+                        status_scope=status_worker,
+                        watch_reasoning=current_llm is not reasoning_loop_llm
                     ):
                         event_type = event.get("type")
 
@@ -2411,6 +2457,72 @@ class Agent(MCPServer):
                         yield pending_thinking_complete
                     break
                     
+                except ReasoningLoopError as e:
+                    # The model walked into a circle inside its own thinking.
+                    # Nothing is wrong with the provider, the model or the
+                    # request — the sampling was unlucky — so this is the one
+                    # recovery here that does NOT switch profiles: a profile
+                    # switch would punish a healthy model for one bad roll.
+                    #
+                    # The exemption belongs to the CLIENT, not to the step: the
+                    # retry runs unwatched, but a fallback switch afterwards
+                    # brings a different client, and that one is watched again
+                    # — it can abort here too, in the same step. What bounds
+                    # this is the fallback chain, which is finite and shrinks
+                    # with every switch; no client is ever watched twice.
+                    reasoning_loop_llm = current_llm
+                    logger.warning(
+                        "[%s] Reasoning loop after %d characters of thinking "
+                        "(%s) — retrying the same model once: %s",
+                        self.name, e.characters, e.reason,
+                        getattr(current_llm, "model", "?"))
+                    await status_worker.progress(
+                        "Thinking went in circles, retrying once",
+                        meta={"step": step + 1, "reasoning_characters": e.characters})
+
+                    # The aborted attempt WAS produced, so it must leave a
+                    # trace. The client's own post-response notification sits
+                    # after the stream, which this abort never reaches, so
+                    # without this the message debugger keeps a request with
+                    # no response — and every later recalibration of the
+                    # threshold reads that same database and would be blind to
+                    # exactly the calls this guard aborted.
+                    #
+                    # What it can and cannot say: the reasoning characters and
+                    # the score are known and travel in response_data, so a
+                    # later measurement can use these rows. The TOKENS are not
+                    # — usage arrives with the completed response, which this
+                    # call never produced — so the cost report still misses
+                    # what the abort spent. Naming that beats implying the
+                    # entry closes it.
+                    #
+                    # Reaching into the client's notifier is a deliberate
+                    # layer crossing: there is no public equivalent, and an
+                    # entry carrying "error" is the shape it already uses for
+                    # its own failed attempts, which is why it skips the
+                    # latency stash and leaves cost attribution untouched.
+                    notify = getattr(current_llm, "_notify_post_response", None)
+                    if notify is not None:
+                        await notify({
+                            # Most clients name themselves in their own
+                            # notifications but carry no _PROVIDER attribute;
+                            # the class name keeps the row attributable
+                            # instead of filing it under "unknown".
+                            "provider": (getattr(current_llm, "_PROVIDER", None)
+                                         or type(current_llm).__name__),
+                            "model": getattr(current_llm, "model", "?"),
+                            "url": "", "is_streaming": True,
+                            "duration_ms": (asyncio.get_event_loop().time()
+                                            - _llm_call_started) * 1000,
+                            "error": f"reasoning loop aborted: {e.reason}",
+                            "finish_reason": "reasoning_loop_aborted",
+                            "response_data": {"reasoning_loop": {
+                                "characters": e.characters,
+                                "reason": e.reason,
+                            }},
+                        })
+                    continue
+
                 except (LLMRateLimitError, LLMQuotaExhaustedError) as e:
                     is_quota_exhausted = isinstance(e, LLMQuotaExhaustedError)
                     

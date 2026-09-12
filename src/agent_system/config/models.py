@@ -426,6 +426,27 @@ class LoopDetectionConfig(BaseModel):
     auto_unblock_after_steps: int = 3  # Unblock tools after N steps
 
 
+class ReasoningLoopConfig(BaseModel):
+    """Configuration for reasoning loop detection.
+
+    Catches a model that is stuck inside its own THINKING and keeps paying
+    for it — measured: one run spent 65.535 reasoning tokens over 20 minutes
+    repeating a single sentence. The run loop aborts such a call and retries
+    the same model once.
+
+    Only the two knobs worth turning live here. The measurement geometry
+    (window size, check interval, compared piece length) stays in
+    ``servers/agent/reasoning_loop.py``: those three were calibrated TOGETHER
+    with the threshold, so changing one here would quietly make the threshold
+    mean something else.
+    """
+    enabled: bool = True  # Enable/disable reasoning loop detection
+    # Measured over 4.916 stored runs: the worst healthy window scored 0.19,
+    # the two stuck runs 0.90 and 0.95. Anything in 0.30..0.60 caught both
+    # with zero false alarms, so this sits in the middle of an empty gap.
+    repetition_threshold: float = 0.5
+
+
 # Nicht per agent_config.llm_params ueberschreibbar: diese Felder definieren
 # die IDENTITAET des Modells (dafuer gibt es llm_profile / llm.yaml).
 LLM_PARAMS_PROTECTED_FIELDS = frozenset({
@@ -558,6 +579,11 @@ class AgentConfig(BaseModel):
     template_vars: Optional[Dict[str, Any]] = None  # Custom variables for Jinja2 template rendering
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)  # Timeout configuration for deadlock prevention
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig)  # Tool call loop detection
+    # Reasoning loop detection: a model stuck inside its own thinking. Works
+    # on the streaming path only, and reads whatever the client reports as a
+    # thinking delta — raw reasoning for most models, a summary of it for the
+    # OpenAI family.
+    reasoning_loop: ReasoningLoopConfig = Field(default_factory=ReasoningLoopConfig)
     # Auto-escalate to the advanced model (llm_profile_advanced[0]) when the run
     # loop observes the agent is stuck (loop detector, or repeated all-error tool
     # steps). Time-boxed + budget-capped; needs a non-empty llm_profile_advanced

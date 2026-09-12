@@ -236,6 +236,9 @@
         "loop_detection": {
           "$ref": "#/$defs/LoopDetectionConfig"
         },
+        "reasoning_loop": {
+          "$ref": "#/$defs/ReasoningLoopConfig"
+        },
         "auto_escalate_on_stuck": {
           "default": false,
           "title": "Auto Escalate On Stuck",
@@ -457,6 +460,24 @@
       "required": [
         "type"
       ]
+    },
+    "ReasoningLoopConfig": {
+      "description": "Configuration for reasoning loop detection.\n\nCatches a model that is stuck inside its own THINKING and keeps paying\nfor it — measured: one run spent 65.535 reasoning tokens over 20 minutes\nrepeating a single sentence. The run loop aborts such a call and retries\nthe same model once.\n\nOnly the two knobs worth turning live here. The measurement geometry\n(window size, check interval, compared piece length) stays in\n``servers/agent/reasoning_loop.py``: those three were calibrated TOGETHER\nwith the threshold, so changing one here would quietly make the threshold\nmean something else.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "repetition_threshold": {
+          "default": 0.5,
+          "title": "Repetition Threshold",
+          "type": "number"
+        }
+      },
+      "title": "ReasoningLoopConfig",
+      "type": "object",
+      "additionalProperties": false
     },
     "SkillsConfig": {
       "description": "Which packaged skills an agent gets (see docs/skills_design.md).\n\n``always`` skills are appended to the system prompt at render time — the\nagent HAS the knowledge, it does not have to ask for it. Deterministic and\ncache-friendly (part of the stable prefix).\n\nAccepts a bare list as shorthand, so both forms work::\n\n    skills: [\"house-style\"]              # == always: [\"house-style\"]\n    skills:\n      always: [\"house-style\"]\n\n``on_demand`` skills are NOT put in the prompt — only a one-line index of\nthem is, so the agent knows they exist and can pull the body (and any\nbundled ``reference/`` files) with the ``skills`` plugin's tools. Use it for\nmaterial that is large and only occasionally needed; anything the agent\nneeds most of the time belongs in ``always``, where it cannot be forgotten.",
