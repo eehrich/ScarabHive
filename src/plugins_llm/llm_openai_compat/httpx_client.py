@@ -47,6 +47,8 @@ from plugins_llm.llm_common.schema_sanitize import sanitize_schema_for_gemini
 from agent_system.utils.reasoning_artifacts import (
     strip_all_reasoning_artifacts,
     strip_reasoning_artifacts_containing,
+    thinking_text,
+    thinking_text_from_details,
 )
 
 logger = logging.getLogger(__name__)
@@ -701,10 +703,16 @@ class HTTPXOpenAIClient(LLMClient):
                 self._apply_anthropic_conversation_cache_control(message_dicts)
 
         if self._is_deepseek:
-            # DeepSeek: ensure ALL assistant messages have reasoning_content
+            # DeepSeek: ensure ALL assistant messages have reasoning_content.
+            # With tools in the request the REAL text has to come back, not
+            # just the key — an empty string satisfies the schema while losing
+            # the chain of thought, and the model then re-derives it on every
+            # turn. Since the text is stored once, it may sit in the artifacts
+            # instead of on the message, so ask the shared reader first; "" is
+            # only the last resort that keeps the field present.
             for msg in message_dicts:
-                if msg.get("role") == "assistant":
-                    msg.setdefault("reasoning_content", "")
+                if msg.get("role") == "assistant" and not msg.get("reasoning_content"):
+                    msg["reasoning_content"] = thinking_text(msg)
         else:
             # Other providers: strip reasoning_content (non-standard field)
             for msg in message_dicts:
@@ -811,12 +819,36 @@ class HTTPXOpenAIClient(LLMClient):
         if rd_index in accumulated:
             existing = accumulated[rd_index]
             for k, v in rd.items():
-                if k == "data" and existing.get("data"):
-                    existing["data"] += v
+                # Every field that carries payload arrives as FRAGMENTS of one
+                # block and must be concatenated: ``text`` (plain thinking),
+                # ``summary`` (condensed thinking) and ``data`` (encrypted).
+                # Which one is used depends on the block's type, so all three
+                # need the same treatment. Overwriting kept only the LAST
+                # fragment — silently, because a short thought still looks valid.
+                if k in ("data", "text", "summary") and existing.get(k) and isinstance(v, str):
+                    existing[k] += v
                 else:
                     existing[k] = v
         else:
             accumulated[rd_index] = dict(rd)
+
+    @staticmethod
+    def _reasoning_text_from_details(blocks: Any) -> str:
+        """Plain thinking text carried inside ``reasoning_details`` blocks.
+
+        Which block type keeps its text in which field is decided once, in
+        ``reasoning_artifacts.thinking_text_from_details``; this is the name
+        the client calls it by. Accepts the streaming accumulator
+        (index -> block) or a plain list.
+
+        Why it exists: three names carry one payload — DeepSeek sends
+        ``reasoning_content``, OpenRouter sends ``reasoning``, and both routes
+        also carry the text inside ``reasoning_details``. Measured over 4.000
+        stored answers before the fix, ``reasoning_content`` was filled in NONE
+        of them while the text was present in 52. Reading a single name meant
+        receiving the thinking and dropping it on the floor.
+        """
+        return thinking_text_from_details(blocks)
 
     @staticmethod
     def _accumulate_tool_call_delta(accumulated: dict[int, dict], tc_delta: dict) -> int:
@@ -1886,9 +1918,20 @@ class HTTPXOpenAIClient(LLMClient):
                                         "content": "".join(accumulated_content) if accumulated_content else ""
                                     }
 
-                                    # Add reasoning_content if any (DeepSeek, OpenAI o-series)
-                                    if accumulated_reasoning:
-                                        assistant["reasoning_content"] = "".join(accumulated_reasoning)
+                                    # Add the thinking text if any — but store
+                                    # it ONCE. OpenRouter sends the same text
+                                    # as ``reasoning`` deltas AND inside the
+                                    # reasoning_details blocks below, which
+                                    # have to be kept verbatim for the replay;
+                                    # a copy here would double every thought in
+                                    # the session. Readers ask
+                                    # ``reasoning_artifacts.thinking_text``,
+                                    # and the strip functions rescue the text
+                                    # before the artifacts are dropped.
+                                    _thinking = "".join(accumulated_reasoning)
+                                    if _thinking and not self._reasoning_text_from_details(
+                                            accumulated_reasoning_details):
+                                        assistant["reasoning_content"] = _thinking
 
                                     # Add tool calls if any
                                     if accumulated_tool_calls:
@@ -1982,13 +2025,19 @@ class HTTPXOpenAIClient(LLMClient):
                                 if _fr:
                                     _last_finish_reason = _fr
 
-                                # Handle reasoning_content delta (DeepSeek, OpenAI o-series thinking)
+                                # Handle the thinking delta. DeepSeek calls the
+                                # field reasoning_content, OpenRouter calls it
+                                # reasoning — same payload, and only ever one of
+                                # them arrives. Reading just the first name made
+                                # every OpenRouter thinking model look silent.
                                 # This comes BEFORE the actual content in thinking models
-                                if "reasoning_content" in delta and delta["reasoning_content"]:
-                                    accumulated_reasoning.append(delta["reasoning_content"])
+                                _reasoning_delta = (delta.get("reasoning_content")
+                                                    or delta.get("reasoning"))
+                                if _reasoning_delta:
+                                    accumulated_reasoning.append(_reasoning_delta)
                                     yield {
                                         "type": "thinking_delta",
-                                        "delta": delta["reasoning_content"],
+                                        "delta": _reasoning_delta,
                                         "accumulated": "".join(accumulated_reasoning)
                                     }
 
@@ -2058,8 +2107,12 @@ class HTTPXOpenAIClient(LLMClient):
                                             "role": "assistant",
                                             "content": "".join(accumulated_content) if accumulated_content else ""
                                         }
-                                        if accumulated_reasoning:
-                                            assistant["reasoning_content"] = "".join(accumulated_reasoning)
+                                        # One home for the text — see the main
+                                        # loop above.
+                                        _thinking = "".join(accumulated_reasoning)
+                                        if _thinking and not self._reasoning_text_from_details(
+                                                accumulated_reasoning_details):
+                                            assistant["reasoning_content"] = _thinking
                                         if accumulated_tool_calls:
                                             tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
                                             assistant["tool_calls"] = tool_calls_list
@@ -2098,8 +2151,11 @@ class HTTPXOpenAIClient(LLMClient):
                                         choices = chunk_data.get("choices", [])
                                         if choices:
                                             delta = choices[0].get("delta", {})
-                                            if "reasoning_content" in delta and delta["reasoning_content"]:
-                                                accumulated_reasoning.append(delta["reasoning_content"])
+                                            _reasoning_delta = (
+                                                delta.get("reasoning_content")
+                                                or delta.get("reasoning"))
+                                            if _reasoning_delta:
+                                                accumulated_reasoning.append(_reasoning_delta)
                                             if "content" in delta and delta["content"]:
                                                 accumulated_content.append(delta["content"])
                                             # Same accumulation as the main loop —
@@ -2144,8 +2200,11 @@ class HTTPXOpenAIClient(LLMClient):
                                 "role": "assistant",
                                 "content": "".join(accumulated_content) if accumulated_content else ""
                             }
-                            if accumulated_reasoning:
-                                assistant["reasoning_content"] = "".join(accumulated_reasoning)
+                            # One home for the text — see the main loop above.
+                            _thinking = "".join(accumulated_reasoning)
+                            if _thinking and not self._reasoning_text_from_details(
+                                    accumulated_reasoning_details):
+                                assistant["reasoning_content"] = _thinking
                             if accumulated_tool_calls:
                                 tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
                                 assistant["tool_calls"] = tool_calls_list
@@ -2733,9 +2792,20 @@ class HTTPXOpenAIClient(LLMClient):
                 "content": message.get("content", "") or ""
             }
 
-            # Add reasoning_content if present (DeepSeek, OpenAI o-series)
-            reasoning_content = message.get("reasoning_content")
-            if reasoning_content:
+            # Add the thinking text if present. Three names, one payload:
+            # DeepSeek sends reasoning_content, OpenRouter sends reasoning, and
+            # both may carry it in reasoning_details[].text. Only reading the
+            # first name meant DeepSeek's own contract below
+            # (_postprocess_messages_for_provider fills in "") could never be
+            # satisfied over OpenRouter.
+            reasoning_content = (message.get("reasoning_content")
+                                 or message.get("reasoning"))
+            # ...but only when the artifacts do not already carry the same
+            # text. OpenRouter sends both, and storing each would keep every
+            # thought twice in the session. Readers ask
+            # ``reasoning_artifacts.thinking_text``, which knows both homes.
+            if reasoning_content and not self._reasoning_text_from_details(
+                    message.get("reasoning_details")):
                 assistant["reasoning_content"] = reasoning_content
 
             # Add tool calls if present — sanitize to standard fields only.

@@ -123,6 +123,11 @@ class OpenAIAsyncClient(LLMClient):
                     d.pop('injected_by', None)  # Internal hook metadata
                     d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
                     d.pop('served_by', None)  # OpenRouter backend provenance, never sent
+                    # Kept for us, not for the API: reasoning_content is a
+                    # DeepSeek extension and unknown here. Every sibling client
+                    # drops it before the request; this one now produces it, so
+                    # it has to drop it too.
+                    d.pop('reasoning_content', None)
                     # Normalize content for OpenAI API
                     if isinstance(d.get('content'), list):
                         d['content'] = openai_utils.normalize_content_list(d['content'])
@@ -350,6 +355,8 @@ class OpenAIAsyncClient(LLMClient):
                 d.pop('multimodal_content', None)
                 d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
                 d.pop('served_by', None)  # OpenRouter backend provenance, never sent
+                # Kept for us, not for the API — see chat() above.
+                d.pop('reasoning_content', None)
 
                 # Filter out audio content from user messages - OpenAI Chat Completions
                 # Normalize content for OpenAI API
@@ -540,6 +547,16 @@ class OpenAIAsyncClient(LLMClient):
                         "function": {"name": name, "arguments": arguments},
                     })
                 out["tool_calls"] = out_calls
+
+            # The thinking, under whichever name the provider used. Reading
+            # neither meant the non-streaming path never kept any reasoning at
+            # all. Only real strings count — see the streaming path.
+            thinking = next(
+                (value for value in (getattr(message, "reasoning_content", None),
+                                     getattr(message, "reasoning", None))
+                 if isinstance(value, str) and value.strip()), None)
+            if thinking:
+                out["reasoning_content"] = thinking
 
             result = {"assistant": out}
             logger.debug("OpenAI response has usage attr: %s", hasattr(resp, 'usage'))
@@ -835,6 +852,7 @@ class OpenAIAsyncClient(LLMClient):
 
                 # Accumulated state
                 accumulated_content = []
+                accumulated_reasoning = []  # the model's thinking, if it sends any
                 accumulated_tool_calls = {}
                 accumulated_usage = None  # usage information from final chunk
 
@@ -887,11 +905,24 @@ class OpenAIAsyncClient(LLMClient):
                     if not delta:
                         continue
 
-                    # Handle reasoning/thinking delta (Gemini thinking tokens)
-                    if hasattr(delta, 'reasoning') and delta.reasoning:
+                    # Handle the thinking delta. Two names carry one payload —
+                    # DeepSeek calls it reasoning_content, OpenRouter calls it
+                    # reasoning — and only one of them ever arrives. The text
+                    # used to be streamed live and then dropped: nothing kept
+                    # it, so no session, no debugger row and no later turn saw
+                    # what the model had thought.
+                    #
+                    # Only real strings count: on a mock every attribute exists
+                    # and is truthy, which would make this read its own noise.
+                    _reasoning_delta = next(
+                        (value for value in (getattr(delta, 'reasoning_content', None),
+                                             getattr(delta, 'reasoning', None))
+                         if isinstance(value, str) and value), None)
+                    if _reasoning_delta:
+                        accumulated_reasoning.append(_reasoning_delta)
                         yield {
                             "type": "thinking_delta",
-                            "delta": delta.reasoning
+                            "delta": _reasoning_delta
                         }
 
                     # Handle content delta
@@ -942,6 +973,11 @@ class OpenAIAsyncClient(LLMClient):
 
                 # Build final message
                 assistant = {"role": "assistant", "content": "".join(accumulated_content) if accumulated_content else None}
+
+                # This client keeps no reasoning_details, so the message is the
+                # only home the thinking has here — no second copy to avoid.
+                if accumulated_reasoning:
+                    assistant["reasoning_content"] = "".join(accumulated_reasoning)
 
                 if accumulated_tool_calls:
                     tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]

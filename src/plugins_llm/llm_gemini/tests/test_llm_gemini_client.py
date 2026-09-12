@@ -919,8 +919,12 @@ class TestGeminiClientStreaming:
 
             final_events = [e for e in events if e["type"] == "final"]
             assert len(final_events) == 1
-            # Only non-thought content is stored in assistant response (thoughts are streamed only)
+            # The answer carries only non-thought content...
             assert final_events[0]["assistant"]["content"] == "Hi"
+            # ...and the thinking is KEPT on the message. It used to be
+            # collected for the live view and then discarded, so Gemini runs
+            # persisted no reasoning at all.
+            assert final_events[0]["assistant"]["reasoning_content"] == "Thinking..."
 
     @pytest.mark.asyncio
     async def test_streaming_payload_includes_thinking_config_when_enabled(self):
@@ -1170,6 +1174,48 @@ class TestGeminiClientNonStreaming:
             assert result["assistant"]["content"] == "Hello there!"
             assert result["usage"]["prompt_tokens"] == 5
             assert result["usage"]["completion_tokens"] == 3
+
+    @pytest.mark.asyncio
+    async def test_chat_tools_thought_parts_do_not_pollute_the_answer(self, gemini_client):
+        """A marked thinking part belongs in reasoning_content, not in the reply.
+
+        The streaming path always separated the two, and so does the SDK
+        client — this loop took EVERY text part, so a thinking model's
+        reasoning was served to the reader as part of the answer.
+        """
+        messages = [ChatMessage(role="user", content="Hello")]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(return_value={
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"text": "Let me think about this first.", "thought": True},
+                        {"text": "Hello there!"},
+                    ]
+                }
+            }],
+            "usageMetadata": {
+                "prompt_token_count": 5,
+                "candidates_token_count": 3,
+                "total_token_count": 8,
+            },
+        })
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client.post = AsyncMock(return_value=mock_response)
+
+            mock_client_class.return_value = mock_client
+
+            result = await gemini_client.chat_tools(messages, [])
+
+            assert result["assistant"]["content"] == "Hello there!"
+            assert result["assistant"]["reasoning_content"] == \
+                "Let me think about this first."
 
     @pytest.mark.asyncio
     async def test_chat_tools_function_call(self, gemini_client):

@@ -363,7 +363,6 @@ class GeminiClient(LLMClient):
                                         accumulated_content.append(text_delta)
                                         chunk_has_progress = True  # Non-thought content = progress
                                     
-                                    logger.debug(f"Gemini text delta: {len(text_delta)} chars (thought={is_thought})")
                                     
                                     # Stream everything live (thoughts + content combined for display)
                                     all_text = "".join(accumulated_thoughts) + "".join(accumulated_content)
@@ -507,6 +506,13 @@ class GeminiClient(LLMClient):
                             "role": "assistant",
                             "content": "".join(accumulated_content) if accumulated_content else ""
                         }
+
+                        # The thoughts were collected for the live view only and
+                        # then dropped, so Gemini runs persisted no thinking at
+                        # all. They belong on the message like every other
+                        # provider's.
+                        if accumulated_thoughts:
+                            assistant["reasoning_content"] = "".join(accumulated_thoughts)
 
                         if accumulated_tool_calls:
                             assistant["tool_calls"] = list(accumulated_tool_calls.values())
@@ -810,13 +816,22 @@ class GeminiClient(LLMClient):
                     assistant = {"role": "assistant", "content": ""}
                     tool_calls = []
                     text_parts = []
+                    thought_parts = []
                     # For parallel function calls: track first thought_signature
                     first_thought_signature = None
 
                     for part in parts:
                         if "text" in part:
-                            text_parts.append(part["text"])
-                        
+                            # Thinking parts are marked and must NOT go into the
+                            # answer: unlike the streaming path (and unlike the
+                            # SDK client) this loop took every text part, so a
+                            # thinking model's reasoning ended up inside the
+                            # reply the user reads.
+                            if part.get("thought"):
+                                thought_parts.append(part["text"])
+                            else:
+                                text_parts.append(part["text"])
+
                         if "functionCall" in part:
                             func_call = part["functionCall"]
                             func_name = func_call.get("name", "")
@@ -859,6 +874,8 @@ class GeminiClient(LLMClient):
                             tool_calls.append(tool_call)
 
                     assistant["content"] = "".join(text_parts)
+                    if thought_parts:
+                        assistant["reasoning_content"] = "".join(thought_parts)
                     if tool_calls:
                         assistant["tool_calls"] = tool_calls
 

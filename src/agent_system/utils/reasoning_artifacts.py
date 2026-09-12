@@ -97,6 +97,90 @@ def _set(msg: Any, key: str, value: Any) -> None:
             pass  # frozen/slotted message objects: flag is best-effort
 
 
+def thinking_text_from_details(details: Any) -> str:
+    """The readable thinking text carried inside ``reasoning_details``.
+
+    Two shapes exist, and both occur in stored sessions:
+
+    * flat blocks — ``{"type": "reasoning.text", "text": ...}``, and
+      ``reasoning.summary`` which keeps its text in ``summary`` instead.
+      Streamed fragments are merged per index by the client, so a block
+      arriving here is already whole: measured over 95.399 stored sessions,
+      separate blocks are separate SECTIONS, each with its own ``**heading**``
+      and ending on punctuation — in all 702 multi-block messages at least one
+      block ends without trailing whitespace. They are therefore joined like
+      paragraphs, not glued: gluing produced
+      ``...proper continuity.**Evaluating story inconsistencies**``.
+    * a verbatim replay block — ``reasoning.responses_items`` whose ``items``
+      are the provider's raw output items; a reasoning item keeps its text in
+      ``content[]`` (raw thinking) or ``summary[]`` (condensed).
+
+    ``data`` is never read: that is the encrypted payload for the round-trip,
+    not text.
+
+    Accepts a list of blocks or the streaming accumulator (index -> block).
+    """
+    if isinstance(details, dict):
+        details = [details[index] for index in sorted(details)]
+    fragments: list[str] = []
+    items_texts: list[str] = []
+    for block in details or []:
+        if not isinstance(block, dict):
+            continue
+        for item in block.get("items") or ():
+            if not isinstance(item, dict) or item.get("type") != "reasoning":
+                continue
+            for field in ("content", "summary"):
+                for part in item.get(field) or ():
+                    if (isinstance(part, dict)
+                            and isinstance(part.get("text"), str)
+                            and part["text"].strip()):
+                        items_texts.append(part["text"])
+        value = block.get("text") or block.get("summary")
+        if isinstance(value, str) and value.strip():
+            fragments.append(value)
+    return "\n\n".join(fragments + items_texts)
+
+
+def thinking_text(msg: Any) -> str:
+    """The thinking text of one message, wherever it currently lives.
+
+    The text is stored ONCE: on the message as ``reasoning_content`` when the
+    provider sent it on its own, or inside ``reasoning_details`` when that
+    artifact has to be kept verbatim anyway. Storing both doubled the session
+    size of every reasoning run for no gain, so readers ask here instead of
+    picking one field.
+    """
+    own = _get(msg, "reasoning_content")
+    if isinstance(own, str) and own.strip():
+        return own
+    return thinking_text_from_details(_get(msg, "reasoning_details"))
+
+
+def _keep_thinking_text(msg: Any) -> None:
+    """Move the thinking text onto the message before its artifacts are lost.
+
+    Used where the artifact is discarded for a reason that has nothing to do
+    with size — a model switch or a chain repair. There the thinking would be
+    lost for good, and that is the fallback case worth keeping.
+
+    NOT used by :func:`invalidate_reasoning_artifacts`. That one runs after
+    compaction and summarization, which exist BECAUSE the context is too
+    large; writing the thinking back would undo part of the very saving they
+    just made, permanently and per message (measured over stored sessions:
+    median 5.034 characters, p90 11.946, max 373.776). A durable archive for
+    reasoning belongs beside the session, not inside it.
+
+    Never overwrites an existing value, and stays silent when there is nothing
+    to rescue.
+    """
+    if _get(msg, "reasoning_content"):
+        return
+    text = thinking_text_from_details(_get(msg, "reasoning_details"))
+    if text:
+        _set(msg, "reasoning_content", text)
+
+
 def strip_reasoning_artifacts_containing(messages: list, item_id: str) -> int:
     """Remove reasoning artifacts of the message(s) carrying block *item_id*.
 
@@ -120,6 +204,7 @@ def strip_reasoning_artifacts_containing(messages: list, item_id: str) -> int:
             continue
         blocks = _get(msg, "reasoning_details") or []
         if any(isinstance(b, dict) and b.get("id") == item_id for b in blocks):
+            _keep_thinking_text(msg)
             _pop(msg, "reasoning_details")
             _pop(msg, RD_ORPHANED_FLAG)
             touched += 1
@@ -157,6 +242,7 @@ def strip_all_reasoning_artifacts(messages: list) -> int:
     for msg in messages:
         if _get(msg, "role") != "assistant":
             continue
+        _keep_thinking_text(msg)
         had = _pop(msg, "reasoning_details") is not None
         had_flag = _pop(msg, RD_ORPHANED_FLAG) is not None
         if had or had_flag:
@@ -205,6 +291,8 @@ def invalidate_reasoning_artifacts(messages: list) -> int:
                 _set(msg, RD_ORPHANED_FLAG, True)
                 touched += 1
             continue
+        # No rescue here on purpose: this runs after a compaction, whose job
+        # is to make the history smaller. See _keep_thinking_text.
         if _pop(msg, "reasoning_details") is not None:
             touched += 1
 

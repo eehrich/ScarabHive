@@ -2,6 +2,7 @@
 
 import pytest
 import httpx
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from plugins_llm.llm_openai.openai_client import OpenAIAsyncClient
 from agent_system.llm.models import ChatMessage
@@ -341,6 +342,32 @@ class TestOpenAIClientMessageMapping:
         assert sent_message["role"] == "assistant"
         assert sent_message["tool_calls"] == tool_calls
 
+    @pytest.mark.asyncio
+    async def test_thinking_is_kept_for_us_but_never_sent(self, openai_client):
+        """``reasoning_content`` is a DeepSeek extension, unknown to this API.
+
+        Every sibling client drops it before the request; this one only
+        started producing it, so it has to drop it too.
+        """
+        client, mock_instance = openai_client
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = None
+
+        mock_chat = MagicMock()
+        mock_chat.completions = MagicMock()
+        mock_chat.completions.create = AsyncMock(return_value=mock_response)
+        mock_instance.chat = mock_chat
+
+        await client.chat([ChatMessage(role="assistant", content="done",
+                                       reasoning_content="why I did it")])
+
+        sent = mock_chat.completions.create.call_args[1]["messages"]
+        assert sent[0]["content"] == "done"        # the message still travels
+        assert "reasoning_content" not in sent[0]  # its thinking does not
+
 
 class TestOpenAIClientCancellation:
     """Test cancellation support."""
@@ -431,11 +458,58 @@ class TestOpenAIClientGeminiStreaming:
         content_deltas = [e for e in events if e.get("type") == "content_delta"]
         assert len(content_deltas) == 1
         assert content_deltas[0]["delta"] == "The answer is 42"
-        
+
         # Verify final event
         final_event = [e for e in events if e.get("type") == "final"][0]
         assert final_event["assistant"]["content"] == "The answer is 42"
         assert "usage" in final_event
+
+    @pytest.mark.asyncio
+    async def test_streamed_thinking_reaches_the_final_message(self, openai_client):
+        """The thinking was shown live and then thrown away.
+
+        Nothing kept it: no session, no debugger row, no later turn ever saw
+        what the model had thought, although the provider had delivered it.
+
+        Parts are SimpleNamespace, never MagicMock: on a MagicMock every
+        attribute exists and is truthy, so the reader would pick up its own
+        noise instead of the provider's field.
+        """
+        client, mock_instance = openai_client
+
+        def chunk(reasoning=None, content=None):
+            delta = SimpleNamespace(reasoning=reasoning, reasoning_content=None,
+                                    content=content, tool_calls=None)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(delta=delta, finish_reason=None)],
+                usage=None)
+
+        chunks = [chunk(reasoning="Let me think..."),
+                  chunk(reasoning=" carefully"),
+                  chunk(content="42")]
+
+        async def mock_stream():
+            for one in chunks:
+                yield one
+
+        mock_stream_obj = MagicMock()
+        mock_stream_obj.__aiter__ = lambda self: mock_stream()
+        mock_chat = MagicMock()
+        mock_chat.completions = MagicMock()
+        mock_chat.completions.create = AsyncMock(return_value=mock_stream_obj)
+        mock_instance.chat = mock_chat
+
+        events = []
+        async for event in client.chat_tools_streaming(
+                [ChatMessage(role="user", content="Test")], []):
+            events.append(event)
+
+        carrying = [e for e in events if isinstance(e.get("assistant"), dict)]
+        assert carrying, f"no final message in {[e.get('type') for e in events]}"
+        assert carrying[-1]["assistant"]["reasoning_content"] == \
+            "Let me think... carefully"
+        # ...and the thinking stays out of the answer.
+        assert carrying[-1]["assistant"]["content"] == "42"
 
 
 class TestOpenAIClientRetryExhaustion:

@@ -101,8 +101,11 @@ def _estimate_message_tokens(msg_dict: Dict[str, Any]) -> int:
             tc_str = json.dumps(tc) if isinstance(tc, dict) else str(tc)
             tokens += len(tc_str) // 4
     
-    # Reasoning content (if present)
-    reasoning = msg_dict.get('reasoning_content')
+    # Reasoning content (if present). It sits either on the message or inside
+    # the reasoning artifacts — one home at a time, so ask the shared reader
+    # rather than one field name.
+    from agent_system.utils.reasoning_artifacts import thinking_text
+    reasoning = thinking_text(msg_dict)
     if reasoning:
         tokens += len(reasoning) // 4
     

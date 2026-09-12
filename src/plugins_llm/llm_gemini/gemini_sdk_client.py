@@ -858,7 +858,6 @@ class GeminiSDKClient(LLMClient):
                             text = part.text if hasattr(part, 'text') else ""
                             if text:
                                 accumulated_thoughts.append(text)
-                                logger.debug(f"[GeminiSDK] Thought delta: {len(text)} chars")
                                 
                                 # Check for repetitive loop pattern in thoughts
                                 loop_result = loop_detector.check_for_loop(text)
@@ -1092,7 +1091,13 @@ class GeminiSDKClient(LLMClient):
                     "role": "assistant",
                     "content": "".join(accumulated_content) if accumulated_content else ""
                 }
-                
+
+                # The thoughts were collected for the live view only and then
+                # dropped, so Gemini runs persisted no thinking at all. They
+                # belong on the message like every other provider's.
+                if accumulated_thoughts:
+                    assistant["reasoning_content"] = "".join(accumulated_thoughts)
+
                 if accumulated_tool_calls:
                     assistant["tool_calls"] = list(accumulated_tool_calls.values())
                 
@@ -1379,14 +1384,20 @@ class GeminiSDKClient(LLMClient):
                 assistant = {"role": "assistant", "content": ""}
                 tool_calls = []
                 text_parts = []
+                thought_parts = []
                 # For parallel function calls: track first thought_signature
                 first_thought_signature = None
                 
                 for part in candidate.content.parts:
                     # Handle text
                     if hasattr(part, 'text') and part.text:
-                        # Skip thought parts for content
-                        if not (hasattr(part, 'thought') and part.thought):
+                        # Thinking belongs in reasoning_content, answer text in
+                        # content. Skipping thought parts outright threw the
+                        # model's thinking away entirely: it reached no session,
+                        # no debugger row and no later turn.
+                        if hasattr(part, 'thought') and part.thought:
+                            thought_parts.append(part.text)
+                        else:
                             text_parts.append(part.text)
                     
                     # Handle function calls
@@ -1428,6 +1439,8 @@ class GeminiSDKClient(LLMClient):
                         tool_calls.append(tool_call)
                 
                 assistant["content"] = "".join(text_parts)
+                if thought_parts:
+                    assistant["reasoning_content"] = "".join(thought_parts)
                 if tool_calls:
                     assistant["tool_calls"] = tool_calls
                 

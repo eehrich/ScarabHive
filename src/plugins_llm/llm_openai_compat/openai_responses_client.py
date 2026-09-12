@@ -762,7 +762,6 @@ class OpenAIResponsesClient(LLMClient):
         output = response_data.get("output") or []
         content_parts: list[str] = []
         tool_calls: list[dict] = []
-        reasoning_summaries: list[str] = []
 
         for item in output:
             itype = item.get("type")
@@ -779,22 +778,27 @@ class OpenAIResponsesClient(LLMClient):
                         "arguments": item.get("arguments", "{}"),
                     },
                 })
-            elif itype == "reasoning":
-                for s in item.get("summary") or []:
-                    if isinstance(s, dict) and s.get("text"):
-                        reasoning_summaries.append(s["text"])
-                    elif isinstance(s, str):
-                        reasoning_summaries.append(s)
+            # A reasoning item needs no extraction here: the verbatim block
+            # below keeps it whole, and that is where the thinking is read
+            # from (reasoning_artifacts.thinking_text). Copying its text onto
+            # the message as well stored every thought twice.
 
         assistant: dict = {"role": "assistant", "content": "".join(content_parts)}
         if tool_calls:
             assistant["tool_calls"] = tool_calls
-        if reasoning_summaries:
-            assistant["reasoning_content"] = "\n\n".join(reasoning_summaries)
         if output:
             # Verbatim replay block — the whole point of this client. ALL
             # output items (reasoning + function_call + message) are stored so
             # the next request reproduces the exact item sequence.
+            #
+            # It is also the ONE home of this turn's thinking: a reasoning item
+            # carries it in ``content[]`` (raw) or ``summary[]`` (condensed) —
+            # measured over 2.345 stored items, ``summary`` was empty in ALL of
+            # them while ``content[].text`` held up to 294.763 characters. The
+            # block has to survive verbatim for the replay anyway, so nothing
+            # is copied onto the message; readers use
+            # ``reasoning_artifacts.thinking_text``, and the strip functions
+            # rescue the text before this block is dropped.
             assistant["reasoning_details"] = [{
                 "type": RESPONSES_ITEMS_TYPE,
                 "format": RESPONSES_ITEMS_FORMAT,

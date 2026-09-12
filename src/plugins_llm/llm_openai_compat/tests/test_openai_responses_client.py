@@ -135,7 +135,11 @@ class TestFormatResponse:
         blocks = a["reasoning_details"]
         assert len(blocks) == 1 and blocks[0]["format"] == RESPONSES_ITEMS_FORMAT
         assert blocks[0]["items"] == SAMPLE_OUTPUT
-        assert a["reasoning_content"] == "thinking about it"
+        # The thinking is NOT copied onto the message: the verbatim items above
+        # already carry it, and keeping both stored every thought twice.
+        from agent_system.utils.reasoning_artifacts import thinking_text
+        assert "reasoning_content" not in a
+        assert thinking_text(a) == "thinking about it"
         assert result["usage"]["prompt_tokens"] == 100
         assert result["usage"]["completion_tokens"] == 20
 
