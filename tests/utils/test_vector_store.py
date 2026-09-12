@@ -274,6 +274,60 @@ class TestVectorStoreMetadata:
             assert metadata.get("author") == "test"
             assert metadata.get("year") == "2024"
 
+    def test_list_entries_returns_the_metadata_with_each_id(self, store):
+        """Deciding whether an entry is stale needs its metadata, not only its id."""
+        store.add(
+            collection="test_collection",
+            ids=["doc1", "doc2"],
+            documents=["Hello world", "Goodbye world"],
+            metadatas=[{"content_hash": "aaa"}, {"content_hash": "bbb"}],
+        )
+
+        entries = {e["id"]: e["metadata"] for e in store.list_entries("test_collection")}
+
+        assert set(entries) == {"doc1", "doc2"}
+        assert entries["doc1"]["content_hash"] == "aaa"
+        assert entries["doc2"]["content_hash"] == "bbb"
+
+    def test_list_entries_reads_the_sqlite_fallback_too(self):
+        """The fallback has its own SQL, and nothing here normally runs it."""
+        import agent_system.utils.vector_store as module
+
+        original = module.get_vector_backend
+        module.get_vector_backend = lambda: "sqlite-vec"
+        tmpdir_obj = create_temp_dir()
+        try:
+            store = VectorStore(persist_path=tmpdir_obj.name)
+            assert store.backend == "sqlite-vec"
+            store.add(
+                collection="fallback_collection",
+                ids=["doc1"],
+                documents=["Hello world"],
+                metadatas=[{"content_hash": "aaa"}],
+            )
+
+            assert store.list_entries("fallback_collection") == [
+                {"id": "doc1", "metadata": {"content_hash": "aaa"}},
+            ]
+        finally:
+            module.get_vector_backend = original
+            try:
+                store.close()
+            except Exception:
+                pass
+            gc.collect()
+            tmpdir_obj.cleanup()
+
+    def test_list_entries_without_metadata_yields_an_empty_dict(self, store):
+        """An entry stored without metadata must not break the caller's lookup."""
+        store.add(
+            collection="test_collection",
+            ids=["doc1"],
+            documents=["Hello world"],
+        )
+
+        assert store.list_entries("test_collection") == [{"id": "doc1", "metadata": {}}]
+
 
 class TestVectorStoreConcurrency:
     """The lock must serialize concurrent access to the single sqlite connection."""

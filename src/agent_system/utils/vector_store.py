@@ -440,6 +440,44 @@ class VectorStore:
         return [r[0] for r in rows]
 
     @_synchronized
+    def list_entries(self, collection: str) -> List[Dict[str, Any]]:
+        """All ids of a collection together with the metadata stored with them.
+
+        ``list_ids`` answers WHAT is indexed, never in which state. Deciding
+        whether an entry is still current — a content hash, a version — needs
+        the metadata back, and reading it through the store keeps that
+        decision off the two backends: ChromaDB returns it from ``get``,
+        sqlite-vec keeps it as JSON in ``meta_<collection>``.
+
+        Returns one dict per entry with ``id`` and ``metadata`` (an empty dict
+        when none was stored). A missing collection yields an empty list, just
+        as in ``list_ids``: "nothing indexed yet" is a state, not an error.
+        """
+        if self._backend == "chromadb":
+            try:
+                coll = self._get_chromadb_collection(collection)
+                got = coll.get(include=["metadatas"])
+                ids = list(got.get("ids") or [])
+                metadatas = list(got.get("metadatas") or [])
+                return [
+                    {"id": item_id,
+                     "metadata": dict(metadatas[i]) if i < len(metadatas) and metadatas[i] else {}}
+                    for i, item_id in enumerate(ids)
+                ]
+            except Exception as e:
+                logger.debug("list_entries(%s): %s", collection, e)
+                return []
+        import json
+        self._ensure_sqlite_vec_table(collection)
+        rows = self._get_sqlite_conn().execute(
+            f"SELECT item_id, metadata FROM meta_{collection}"
+        ).fetchall()
+        return [
+            {"id": r[0], "metadata": json.loads(r[1]) if r[1] else {}}
+            for r in rows
+        ]
+
+    @_synchronized
     def count(self, collection: str) -> int:
         """Get the number of documents in a collection."""
         if self._backend == "chromadb":
