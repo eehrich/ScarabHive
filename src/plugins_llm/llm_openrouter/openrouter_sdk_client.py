@@ -114,6 +114,13 @@ class OpenRouterSDKClient(OpenAIResponsesClient):
 
     _PROVIDER = "openrouter_sdk"
 
+    #: No event stream on this route. The sibling's reader speaks to httpx
+    #: directly, so streaming here would travel past the very transport this
+    #: class exists to exercise — and the A/B comparison would silently stop
+    #: comparing. Models configured for this provider keep the ``chat_tools``
+    #: path regardless of ``capabilities.streaming``.
+    _STREAMS_SSE = False
+
     #: Warned-about payload keys, per class: the cause is a config or a
     #: payload-builder change, both global. One line is the point.
     _unmapped_reported: set = set()

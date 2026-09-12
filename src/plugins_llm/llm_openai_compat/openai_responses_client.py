@@ -203,10 +203,13 @@ def _audio_to_input_audio(part: dict) -> Optional[dict]:
 class OpenAIResponsesClient(LLMClient):
     """Async client for the OpenAI Responses API via OpenRouter (stateless).
 
-    Non-streaming by design: configure models with ``capabilities.streaming:
-    false`` (like the Gemini models) so the agent server takes the
-    ``chat_tools`` path. ``chat_tools_streaming`` exists as a thin conformant
-    wrapper that emits a single ``final`` chunk.
+    Streams when the model's ``capabilities.streaming`` allows it, and takes
+    the ``chat_tools`` path otherwise — same rule as the sibling clients. Both
+    paths share ONE request loop (``_request_events``): the retry, the
+    flex-tier drop and the reasoning-artifact healing are the same code, and
+    the final result comes from ``_format_response`` in both cases, so the
+    verbatim item replay, the backend pin and the truncation guard do not
+    depend on which path ran.
     """
 
     #: Name this client reports to the hook consumers (message debugger, cost
@@ -873,14 +876,113 @@ class OpenAIResponsesClient(LLMClient):
             return False
         return str(body_err.get("code", "")).lower() in _TRANSIENT_BODY_ERROR_CODES
 
-    async def _notify_error(self, url: str, duration_ms: float, error_msg: str) -> None:
+    async def _notify_error(self, url: str, duration_ms: float, error_msg: str,
+                            is_streaming: bool = False) -> None:
         """Post-response notification for terminal failures — keeps the
         message debugger seeing failed requests, like the sibling clients."""
         await self._notify_post_response({
             "provider": self._PROVIDER, "model": self.model, "url": url,
-            "is_streaming": False, "duration_ms": duration_ms,
+            "is_streaming": is_streaming, "duration_ms": duration_ms,
             "error": error_msg, "timestamp_ms": _time.time() * 1000,
         })
+
+    async def _consume_stream(self, response: httpx.Response, cancellation_token):
+        """Read one server-sent event stream; yield deltas, end with the body.
+
+        Yields ``("delta", chunk)`` for every token the gateway sends and
+        finally ``("body", response_data)`` — the object carried by whichever
+        terminal event ended the run. THREE events end one: ``completed``,
+        ``incomplete`` (the output cap was reached) and ``failed``. Each
+        carries the SAME shape the non-streaming route returns as its body,
+        ``openrouter_metadata`` and the output items with their encrypted
+        reasoning included, so the caller can hand it to ``_format_response``
+        and nothing downstream can tell which path ran.
+
+        Measured against the live gateway 2026-09-12: a run capped at 16
+        tokens ends with ``response.incomplete`` carrying ``status:
+        "incomplete"``, ``incomplete_details.reason: "max_output_tokens"``,
+        output, usage and metadata. Reading only ``completed`` would turn that
+        into a missing body — and a deterministic cap would be regenerated
+        until the retries ran out, with the truncation guard never seeing it.
+
+        A stream that ends without any terminal event yields ``None`` as the
+        body: the caller retries it like an unreadable body rather than
+        inventing a result out of the deltas it happens to have seen.
+        """
+        accumulated = []
+        body = None
+        buffer = b""
+        # Bytes, not lines. httpx' line decoder splits like ``str.splitlines()``
+        # — which also cuts at U+2028, U+2029 and U+0085. SSE ends a line at
+        # CR/LF only, and JSON allows those characters RAW inside a string, so
+        # one of them in the prose would slice an event in half and cost the
+        # whole answer. The sibling client reads bytes for the same reason.
+        # Splitting on b"\n" can never cut a multi-byte character in half, so
+        # every line decodes on its own.
+        async for raw in response.aiter_bytes():
+            if cancellation_token and cancellation_token.is_cancelled:
+                raise asyncio.CancelledError("Request cancelled by user")
+            buffer += raw
+            while b"\n" in buffer:
+                raw_line, buffer = buffer.split(b"\n", 1)
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                # Only ``data:`` lines carry events. That also drops the
+                # gateway's keep-alive comments (": "), which is why a silent
+                # call never runs into the read timeout — and why no separate
+                # comment check is needed here: a mutation removing one proved
+                # it redundant.
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    yield "body", body
+                    return
+                try:
+                    event = json.loads(data)
+                except json.JSONDecodeError:
+                    logger.debug("Responses stream: unparsable event %r", data[:200])
+                    continue
+                kind = event.get("type")
+                if kind == "response.output_text.delta":
+                    delta = event.get("delta") or ""
+                    accumulated.append(delta)
+                    yield "delta", {"type": "content_delta", "delta": delta,
+                                    "accumulated": "".join(accumulated)}
+                elif kind in ("response.reasoning_text.delta",
+                              "response.reasoning_summary_text.delta"):
+                    # The thinking channel, under both its names: models that
+                    # expose raw reasoning use the first (measured: five of
+                    # them before the first answer token), while the OpenAI
+                    # family only ever emits a SUMMARY of its thinking, under
+                    # the second. The agent server forwards either as
+                    # ``reasoning_delta`` — the only live view of a run's
+                    # reasoning.
+                    yield "delta", {"type": "thinking_delta",
+                                    "delta": event.get("delta") or ""}
+                elif kind == "response.function_call_arguments.delta":
+                    yield "delta", {
+                        "type": "tool_call_delta",
+                        "index": event.get("output_index", 0),
+                        "delta": {"function": {"arguments": event.get("delta") or ""}},
+                    }
+                elif kind in ("response.completed", "response.incomplete",
+                              "response.failed"):
+                    body = event.get("response")
+                elif kind == "error" or (kind is None and event.get("error")):
+                    # Upstream failure mid-stream: hand it over in the body
+                    # shape the loop already knows how to read.
+                    body = {"error": event.get("error") or event}
+        yield "body", body
+
+    async def _request(self, messages: list, tools: Optional[list],
+                       cancellation_token=None, status_scope=None) -> dict:
+        """The non-streaming result: the shared loop, consumed to its end."""
+        result: dict = {}
+        async for chunk in self._request_events(
+                messages, tools, cancellation_token, status_scope, stream=False):
+            if chunk.get("type") == "final":
+                result = {key: value for key, value in chunk.items() if key != "type"}
+        return result
 
     async def _post(self, client: httpx.AsyncClient, url: str,
                     payload: dict) -> httpx.Response:
@@ -896,8 +998,29 @@ class OpenAIResponsesClient(LLMClient):
         """
         return await client.post(url, json=payload, headers=self._headers())
 
-    async def _request(self, messages: list, tools: Optional[list],
-                       cancellation_token=None, status_scope=None) -> dict:
+    def _stream(self, client: httpx.AsyncClient, url: str, payload: dict):
+        """The streaming twin of ``_post`` — an async context manager.
+
+        Its own seam on purpose: without it the streaming path would reach
+        past every substitute installed for ``_post``. That is not theory —
+        the first version of this client had no such seam, and a unit test
+        that swapped the transport went out to the real gateway and came back
+        with a 401.
+        """
+        return client.stream("POST", url, json=payload, headers=self._headers())
+
+    async def _request_events(self, messages: list, tools: Optional[list],
+                              cancellation_token=None, status_scope=None,
+                              stream: bool = False):
+        """The ONE request loop, as an event generator.
+
+        With ``stream=True`` it yields ``content_delta`` / ``thinking_delta`` /
+        ``tool_call_delta`` chunks while the answer arrives; either way it ends
+        with exactly one ``final`` chunk carrying what ``_format_response``
+        produced. Both paths share the retries, the flex-tier drop and the
+        reasoning-artifact healing — a second copy of that logic is how the two
+        routes would drift apart.
+        """
         # Resolved once: the reasoning-artifact heals below rebuild the
         # payload, and the rebuilt request must keep the pin. OpenRouter only,
         # like the httpx route: another endpoint is never asked for the list.
@@ -937,14 +1060,49 @@ class OpenAIResponsesClient(LLMClient):
                 if cancellation_token and cancellation_token.is_cancelled:
                     raise asyncio.CancelledError("Request cancelled by user")
 
+                # What actually travels. The loop mutates ``payload`` (the tier
+                # drop pops a key), so the stream flag is added per attempt
+                # instead of being baked into the payload builder.
+                sent_payload = {**payload, "stream": True} if stream else payload
+
                 _request_start = _time.time()
                 await self._notify_pre_request({
                     "provider": self._PROVIDER, "model": self.model, "url": url,
-                    "is_streaming": False, "payload": payload,
+                    "is_streaming": stream, "payload": sent_payload,
                     "timestamp_ms": _request_start * 1000,
                 })
+                response_data = None
+                body_text = ""
+                streamed = False
+                partial_text = ""
                 try:
-                    response = await self._post(client, url, payload)
+                    if stream:
+                        async with self._stream(client, url, sent_payload) as response:
+                            if (response.status_code >= 400 or "event-stream"
+                                    not in response.headers.get("content-type", "")):
+                                # Nothing to read event by event: either an
+                                # error status, or the gateway answered the
+                                # stream request with a plain JSON body — which
+                                # is how it proxies upstream errors on
+                                # /responses (see the body-error branch below).
+                                # Both are small, so pull the body in before
+                                # leaving the context and let the branches below
+                                # read it exactly as on the non-streaming path.
+                                await response.aread()
+                                body_text = response.text or ""
+                            else:
+                                streamed = True
+                                async for kind, item in self._consume_stream(
+                                        response, cancellation_token):
+                                    if kind == "delta":
+                                        if item["type"] == "content_delta":
+                                            partial_text = item["accumulated"]
+                                        yield item
+                                    else:
+                                        response_data = item
+                    else:
+                        response = await self._post(client, url, payload)
+                        body_text = response.text or ""
                 except (httpx.TimeoutException, httpx.TransportError) as e:
                     if attempt < self.max_retries:
                         backoff = self.retry_backoff * (2 ** attempt)
@@ -953,18 +1111,17 @@ class OpenAIResponsesClient(LLMClient):
                             f"retry {attempt + 1}/{self.max_retries} in {backoff:.0f}s: {self.model}"
                         )
                         await self._notify_retry(
-                            self._PROVIDER, self.model, url, False,
+                            self._PROVIDER, self.model, url, stream,
                             f"transport: {type(e).__name__}", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(backoff, cancellation_token)
                         attempt += 1
                         continue
                     await self._notify_error(
                         url, (_time.time() - _request_start) * 1000,
-                        f"transport exhausted: {type(e).__name__}: {e}")
+                        f"transport exhausted: {type(e).__name__}: {e}", stream)
                     raise
 
                 duration_ms = (_time.time() - _request_start) * 1000
-                body_text = response.text or ""
 
                 if response.status_code == 429:
                     # Flex-tier fallback (parity with the httpx route): flex
@@ -979,7 +1136,7 @@ class OpenAIResponsesClient(LLMClient):
                             f"HTTP 429 on flex tier — dropping service_tier and "
                             f"retrying at standard tier: {self.model}")
                         await self._notify_retry(
-                            self._PROVIDER, self.model, url, False,
+                            self._PROVIDER, self.model, url, stream,
                             "429 flex->standard tier drop", attempt, self.max_retries + 1)
                         continue
                     retry_after = None
@@ -987,7 +1144,7 @@ class OpenAIResponsesClient(LLMClient):
                         retry_after = float(response.headers.get("retry-after", ""))
                     except (TypeError, ValueError):
                         pass
-                    await self._notify_error(url, duration_ms, f"HTTP 429: {body_text[:200]}")
+                    await self._notify_error(url, duration_ms, f"HTTP 429: {body_text[:200]}", stream)
                     if "quota" in body_text.lower() or "exhausted" in body_text.lower():
                         raise LLMQuotaExhaustedError(
                             f"Quota exhausted: {body_text[:200]}",
@@ -1003,12 +1160,14 @@ class OpenAIResponsesClient(LLMClient):
                             f"Responses request {response.status_code}, "
                             f"retry {attempt + 1}/{self.max_retries} in {backoff:.0f}s: {self.model}")
                         await self._notify_retry(
-                            self._PROVIDER, self.model, url, False,
+                            self._PROVIDER, self.model, url, stream,
                             f"HTTP {response.status_code}", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(backoff, cancellation_token)
                         attempt += 1
                         continue
-                    await self._notify_error(url, duration_ms, f"HTTP {response.status_code}: {body_text[:300]}")
+                    await self._notify_error(
+                        url, duration_ms,
+                        f"HTTP {response.status_code}: {body_text[:300]}", stream)
                     raise LLMServerError(
                         f"HTTP {response.status_code}: {body_text[:300]}",
                         provider=self._PROVIDER, model=self.model,
@@ -1036,28 +1195,69 @@ class OpenAIResponsesClient(LLMClient):
                             "%d message(s) (defective reasoning item). model=%s detail=%r",
                             response.status_code, n, self.model, body_text[:500])
                         await self._notify_retry(
-                            self._PROVIDER, self.model, url, False,
+                            self._PROVIDER, self.model, url, stream,
                             f"http-{response.status_code} reasoning-items strip",
                             attempt, self.max_retries + 1)
                         continue
                     error_msg = f"HTTP {response.status_code}: {body_text[:300]}"
                     logger.error(f"Responses request failed: {error_msg}")
-                    await self._notify_error(url, duration_ms, error_msg)
+                    await self._notify_error(url, duration_ms, error_msg, stream)
                     raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
-                try:
-                    response_data = response.json()
-                except json.JSONDecodeError:
+                if response_data is None and streamed:
+                    # The stream ended without ``response.completed``. Whatever
+                    # deltas arrived are NOT a result: the items, the usage and
+                    # the backend all live in that final object, so this is
+                    # retried like an unreadable body rather than assembled
+                    # from fragments.
                     if attempt < self.max_retries:
                         logger.warning(
-                            f"Responses body JSON decode failed (len={len(body_text)}), "
-                            f"retry {attempt + 1}/{self.max_retries}: {self.model}")
+                            "Responses stream ended without a completed event, "
+                            "retry %d/%d: %s", attempt + 1, self.max_retries, self.model)
+                        await self._notify_retry(
+                            self._PROVIDER, self.model, url, stream,
+                            "stream ended without completed event",
+                            attempt, self.max_retries + 1)
                         await self._cancellable_sleep(self.retry_backoff, cancellation_token)
                         attempt += 1
                         continue
-                    await self._notify_error(
-                        url, duration_ms, f"JSON decode failed (len={len(body_text)})")
-                    raise
+                    # Retries spent. Deliberately NOT an error: the agent
+                    # server spells out why in its own incomplete_stream
+                    # branch — an error here switches the fallback profile
+                    # persistently and ends a run that has no fallback chain,
+                    # far too heavy a hammer for a dropped connection. The
+                    # sibling client hands over what arrived under exactly
+                    # this flag; this one does the same, so that decision
+                    # stays in one place instead of two.
+                    logger.warning(
+                        "Responses stream ended without a terminal event, "
+                        "handing over %d char(s) as incomplete: %s",
+                        len(partial_text), self.model)
+                    await self._notify_post_response({
+                        "provider": self._PROVIDER, "model": self.model, "url": url,
+                        "is_streaming": True, "duration_ms": duration_ms,
+                        "finish_reason": "incomplete_stream",
+                        "timestamp_ms": _time.time() * 1000,
+                    })
+                    yield {"type": "final",
+                           "assistant": {"role": "assistant", "content": partial_text},
+                           "finish_reason": "incomplete_stream"}
+                    return
+
+                if response_data is None:
+                    try:
+                        response_data = response.json()
+                    except json.JSONDecodeError:
+                        if attempt < self.max_retries:
+                            logger.warning(
+                                f"Responses body JSON decode failed (len={len(body_text)}), "
+                                f"retry {attempt + 1}/{self.max_retries}: {self.model}")
+                            await self._cancellable_sleep(self.retry_backoff, cancellation_token)
+                            attempt += 1
+                            continue
+                        await self._notify_error(
+                            url, duration_ms, f"JSON decode failed (len={len(body_text)})", stream)
+                        raise
 
                 # Body-level error inside an HTTP 200 (OpenRouter proxies
                 # upstream errors this way on /responses too). Two cases are
@@ -1083,7 +1283,7 @@ class OpenAIResponsesClient(LLMClient):
                                 f"Body rate-limit on flex tier — dropping "
                                 f"service_tier, retrying at standard: {self.model}")
                             await self._notify_retry(
-                                self._PROVIDER, self.model, url, False,
+                                self._PROVIDER, self.model, url, stream,
                                 "body-429 flex->standard tier drop",
                                 attempt, self.max_retries + 1)
                             continue
@@ -1092,7 +1292,7 @@ class OpenAIResponsesClient(LLMClient):
                             f"Responses body rate-limit, retry {attempt + 1}/"
                             f"{self.max_retries} in {backoff:.0f}s: {self.model}")
                         await self._notify_retry(
-                            self._PROVIDER, self.model, url, False,
+                            self._PROVIDER, self.model, url, stream,
                             "body rate-limit", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(backoff, cancellation_token)
                         attempt += 1
@@ -1111,7 +1311,7 @@ class OpenAIResponsesClient(LLMClient):
                         "from %d message(s) (defective reasoning item). model=%s detail=%r",
                         n, self.model, str(body_err)[:500])
                     await self._notify_retry(
-                        self._PROVIDER, self.model, url, False,
+                        self._PROVIDER, self.model, url, stream,
                         "body-error reasoning-items strip", attempt, self.max_retries + 1)
                     continue
 
@@ -1128,7 +1328,7 @@ class OpenAIResponsesClient(LLMClient):
                         attempt + 1, self.max_retries, backoff, self.model,
                         str(body_err)[:200])
                     await self._notify_retry(
-                        self._PROVIDER, self.model, url, False,
+                        self._PROVIDER, self.model, url, stream,
                         "body server-error", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(backoff, cancellation_token)
                     attempt += 1
@@ -1139,7 +1339,7 @@ class OpenAIResponsesClient(LLMClient):
                     logger.debug("Routing %s: %s", self.model, routing)
                 await self._notify_post_response({
                     "provider": self._PROVIDER, "model": self.model, "url": url,
-                    "is_streaming": False, "duration_ms": duration_ms,
+                    "is_streaming": stream, "duration_ms": duration_ms,
                     "response_data": response_data,
                     # Own key, not just buried in response_data: the message
                     # debugger and any cost/routing audit read the flat
@@ -1152,7 +1352,8 @@ class OpenAIResponsesClient(LLMClient):
                     "usage": self._map_usage(response_data.get("usage")),
                     "timestamp_ms": _time.time() * 1000,
                 })
-                return self._format_response(response_data)
+                yield {"type": "final", **self._format_response(response_data)}
+                return
 
         raise LLMServerError(  # pragma: no cover — loop always returns/raises
             "Responses request retries exhausted",
@@ -1161,6 +1362,31 @@ class OpenAIResponsesClient(LLMClient):
     # ------------------------------------------------------------------
     # LLMClient interface
     # ------------------------------------------------------------------
+
+    #: Whether this class reads the gateway's event stream itself. A subclass
+    #: that swaps the transport seam (``_post``) does NOT inherit a working
+    #: reader — the reader speaks to httpx directly, so streaming there would
+    #: silently bypass that transport. Such a subclass sets this to False and
+    #: keeps the non-streaming path.
+    _STREAMS_SSE = True
+
+    def supports_streaming(self) -> bool:
+        """Streaming unless the model's capabilities disable it.
+
+        Same rule as every sibling client (httpx, openai, ollama, gemini,
+        anthropic): the configuration decides, not the class. Measured
+        2026-09-12 against the gateway's ``/responses``: reasoning arrives as
+        ``response.reasoning_text.delta`` events long before the first answer
+        token — which is what makes watching a run's thinking possible.
+        """
+        if not self._STREAMS_SSE:
+            return False
+        if self.capabilities is not None:
+            if isinstance(self.capabilities, dict):
+                return self.capabilities.get("streaming", True)
+            if hasattr(self.capabilities, "streaming"):
+                return self.capabilities.streaming
+        return True
 
     async def chat(self, messages: list[ChatMessage], cancellation_token=None, status_scope=None) -> str:
         result = await self._request(messages, None, cancellation_token, status_scope)
@@ -1172,22 +1398,20 @@ class OpenAIResponsesClient(LLMClient):
 
     async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict],
                                    cancellation_token=None, status_scope=None):
-        """Non-streaming wrapper: one ``final`` chunk with the full result.
+        """Token deltas as they arrive — or one ``final`` chunk if this model
+        does not stream.
 
-        Configure Responses models with ``capabilities.streaming: false`` so
-        the server prefers ``chat_tools``; this wrapper keeps things working
-        if the streaming path is taken anyway.
+        ``supports_streaming`` decides, so a model configured with
+        ``capabilities.streaming: false``, and the SDK subclass whose transport
+        the reader would bypass, keep the complete-result behaviour the agent
+        server saw before. The final chunk is the same object either way: it
+        carries the assistant, the usage and the ``finish_reason`` that the
+        server's truncation and content-filter guards read.
         """
-        result = await self._request(messages, tools, cancellation_token, status_scope)
-        chunk = {"type": "final", "assistant": result.get("assistant", {})}
-        if "usage" in result:
-            chunk["usage"] = result["usage"]
-        # The streaming assembler reads the truncation off the chunk, not off
-        # the result — dropping it here would leave the guards dead on this
-        # path even though _format_response set it.
-        if "finish_reason" in result:
-            chunk["finish_reason"] = result["finish_reason"]
-        yield chunk
+        async for chunk in self._request_events(
+                messages, tools, cancellation_token, status_scope,
+                stream=self.supports_streaming()):
+            yield chunk
 
     async def close(self) -> None:  # per-request AsyncClient — nothing to close
         return None

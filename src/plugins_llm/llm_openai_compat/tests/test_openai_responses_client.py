@@ -51,6 +51,30 @@ def _multimodal_client(**kw):
     return _client(**kw)
 
 
+def _drive_non_streaming(body: dict, **client_kw) -> list[dict]:
+    """``chat_tools_streaming`` over a model that does NOT stream.
+
+    The TRANSPORT is swapped, not the method under test: the request loop,
+    ``_format_response`` and the final-chunk assembly all really run.
+    """
+    import asyncio
+
+    import httpx
+
+    client = _client(**client_kw)
+    client.supports_streaming = lambda: False
+
+    async def _fake_post(_client, _url, _payload):
+        return httpx.Response(200, json=body)
+
+    client._post = _fake_post
+
+    async def _collect():
+        return [chunk async for chunk in client.chat_tools_streaming([], [])]
+
+    return asyncio.run(_collect())
+
+
 SAMPLE_OUTPUT = [
     {"type": "reasoning", "id": "rs_abc", "status": "completed",
      "encrypted_content": "BLOB", "format": "openai-responses-api",
@@ -780,43 +804,299 @@ class TestTruncationReachesTheCaller:
 
         Setting it only on the result would leave the guards dead on this
         path — the mutation that removes the chunk line stays green
-        without this test.
+        without this test. Driven through the real loop (the transport is
+        swapped, not the method under test), so a wrapper that stops passing
+        the truncation on fails here.
         """
-        import asyncio
-
-        c = _client()
-
-        async def _fake_request(*a, **kw):
-            return {
-                "assistant": {"role": "assistant", "content": "half a sen"},
-                "usage": {"total_tokens": 5},
-                "finish_reason": "length",
-            }
-
-        c._request = _fake_request
-
-        async def _collect():
-            return [chunk async for chunk in c.chat_tools_streaming([], [])]
-
-        chunks = asyncio.run(_collect())
+        chunks = _drive_non_streaming({
+            "output": SAMPLE_OUTPUT,
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+        })
         assert len(chunks) == 1, "fixture produced no final chunk"
         assert chunks[0]["finish_reason"] == "length"
 
     def test_streaming_chunk_stays_clean_when_complete(self):
-        import asyncio
-
-        c = _client()
-
-        async def _fake_request(*a, **kw):
-            return {"assistant": {"role": "assistant", "content": "done"}}
-
-        c._request = _fake_request
-
-        async def _collect():
-            return [chunk async for chunk in c.chat_tools_streaming([], [])]
-
-        chunks = asyncio.run(_collect())
+        chunks = _drive_non_streaming({"output": SAMPLE_OUTPUT, "status": "completed"})
         assert "finish_reason" not in chunks[0]
+        assert chunks[0]["assistant"]["tool_calls"], "a complete answer lost its tool calls"
+
+
+class _FakeStream:
+    """A scripted event stream behind the client's ``_stream`` seam."""
+
+    def __init__(self, lines, status_code: int = 200, text: str = "",
+                 content_type: str = "text/event-stream",
+                 byte_chunks: list | None = None):
+        self._lines = list(lines)
+        # Hand-cut network chunks, for tests about the framing itself.
+        self._byte_chunks = byte_chunks
+        self.status_code = status_code
+        # The real gateway answers a stream request with this content type;
+        # anything else means there is no stream to read line by line.
+        self.headers: dict = {"content-type": content_type}
+        self.text = text
+        self.request = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def aiter_bytes(self):
+        """Raw bytes — one line per chunk, or the test's own cuts. The reader
+        does its own framing, exactly as it must against the real socket."""
+        if self._byte_chunks is not None:
+            for chunk in self._byte_chunks:
+                yield chunk
+            return
+        for line in self._lines:
+            yield (line + "\n").encode("utf-8")
+
+    async def aiter_lines(self):
+        """What httpx hands a reader that asks for LINES: its decoder splits
+        like ``str.splitlines()`` — also at U+2028, U+2029 and U+0085, which
+        SSE does not treat as line ends and JSON allows raw inside a string.
+
+        Kept faithful on purpose. Going back to ``aiter_lines()`` must fail a
+        test here rather than a book in production.
+        """
+        for line in self._lines:
+            for piece in line.splitlines():
+                yield piece
+
+    async def aread(self):
+        return self.text.encode()
+
+    def json(self):
+        import json
+
+        return json.loads(self.text)
+
+
+def _sse(*events) -> list[str]:
+    import json
+
+    # ensure_ascii=False like the real gateway: it sends UTF-8 on the wire and
+    # does not escape non-ASCII, which is what makes the framing matter.
+    return [f"data: {json.dumps(event, ensure_ascii=False)}" for event in events] + \
+        ["data: [DONE]"]
+
+
+#: What the gateway sends last. Measured 2026-09-12: the object inside
+#: ``response.completed`` has the same shape as the non-streaming body.
+_COMPLETED = {
+    "type": "response.completed",
+    "response": {
+        "status": "completed",
+        "output": SAMPLE_OUTPUT,
+        "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+        "openrouter_metadata": {
+            "endpoints": {"available": [{"provider": "DeepInfra", "selected": True}]}},
+    },
+}
+
+
+#: How a run that reaches the output cap ends. Measured 2026-09-12 against the
+#: live gateway with a 16-token cap: ``response.incomplete``, carrying the
+#: reason, the partial output and the usage — an ordinary body, not a broken
+#: stream.
+_INCOMPLETE = {
+    "type": "response.incomplete",
+    "response": {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": SAMPLE_OUTPUT,
+        "usage": {"input_tokens": 10, "output_tokens": 16, "total_tokens": 26},
+    },
+}
+
+
+def _stream_chunks(lines, stream_kw: dict | None = None, **client_kw) -> list[dict]:
+    import asyncio
+
+    client = _client(**client_kw)
+    client._stream = lambda *a, **kw: _FakeStream(lines, **(stream_kw or {}))
+
+    async def _collect():
+        return [chunk async for chunk in client.chat_tools_streaming([], [])]
+
+    return asyncio.run(_collect())
+
+
+class TestTheEventStream:
+    """What the client makes of the gateway's server-sent events."""
+
+    def test_thinking_arrives_as_its_own_chunk_before_the_answer(self):
+        chunks = _stream_chunks(_sse(
+            {"type": "response.reasoning_text.delta", "delta": "wei"},
+            {"type": "response.reasoning_text.delta", "delta": "l"},
+            {"type": "response.output_text.delta", "delta": "Der "},
+            {"type": "response.output_text.delta", "delta": "Himmel"},
+            _COMPLETED,
+        ))
+        kinds = [chunk["type"] for chunk in chunks]
+        assert kinds == ["thinking_delta", "thinking_delta",
+                         "content_delta", "content_delta", "final"]
+        assert [c["delta"] for c in chunks[:2]] == ["wei", "l"]
+        # The agent server forwards accumulated text, not just the delta.
+        assert chunks[3]["accumulated"] == "Der Himmel"
+
+    def test_the_final_chunk_carries_what_the_non_streaming_path_returns(self):
+        chunks = _stream_chunks(_sse(_COMPLETED))
+        final = chunks[-1]
+        assert final["type"] == "final"
+        assistant = final["assistant"]
+        # Verbatim replay block, backend pin and usage all come off the same
+        # object — that is why the stream is read into _format_response.
+        assert assistant["reasoning_details"][0]["items"] == SAMPLE_OUTPUT
+        assert assistant["served_by"] == "DeepInfra"
+        assert assistant["tool_calls"], "tool calls lost on the streaming path"
+        assert final["usage"]["prompt_tokens"] == 10
+
+    def test_tool_call_arguments_are_forwarded_while_they_arrive(self):
+        chunks = _stream_chunks(_sse(
+            {"type": "response.function_call_arguments.delta",
+             "output_index": 1, "delta": '{"city":'},
+            {"type": "response.function_call_arguments.delta",
+             "output_index": 1, "delta": ' "Hamburg"}'},
+            _COMPLETED,
+        ))
+        deltas = [c for c in chunks if c["type"] == "tool_call_delta"]
+        assert [d["delta"]["function"]["arguments"] for d in deltas] == \
+            ['{"city":', ' "Hamburg"}']
+        assert deltas[0]["index"] == 1
+
+    def test_a_capped_run_ends_the_stream_and_keeps_its_answer(self):
+        """``response.completed`` is not the only way a run ends.
+
+        Measured 2026-09-12: a request capped at 16 output tokens ends with
+        ``response.incomplete``. Accepting only ``completed`` turned that into
+        a missing body — so a DETERMINISTIC cap was regenerated until the
+        retries ran out and then raised, while the truncation guard, which
+        exists for exactly this case, never saw a finish_reason.
+        """
+        chunks = _stream_chunks(_sse(
+            {"type": "response.output_text.delta", "delta": "Das Meer"},
+            _INCOMPLETE,
+        ), max_retries=0)
+        final = chunks[-1]
+        assert final["type"] == "final"
+        assert final["finish_reason"] == "length"
+        assert final["assistant"]["tool_calls"], "the partial answer was dropped"
+
+    def test_a_failed_run_ends_the_stream_with_its_error(self):
+        """The third terminal event. Its error sits inside the response
+        object, so it reaches the caller as an upstream error instead of
+        looking like a stream that broke off."""
+        chunks = _stream_chunks(_sse({
+            "type": "response.failed",
+            "response": {"status": "failed",
+                         "error": {"code": "invalid_request",
+                                   "message": "bad tool schema"}},
+        }), max_retries=0)
+        assert chunks[-1]["assistant"]["error"]["message"] == "bad tool schema"
+
+    def test_a_json_body_is_not_read_as_a_stream(self):
+        """The gateway proxies upstream errors as a plain JSON body — also
+        when the request asked for a stream.
+
+        Read line by line, such a body has no ``data:`` lines at all: every
+        line is skipped, nothing terminal arrives, and a deterministic error
+        looks like a broken stream. The body-error handling (rate-limit
+        retry, reasoning-artifact healing, the error the caller can act on)
+        would never run.
+        """
+        import json
+
+        body = json.dumps({"error": {"code": "invalid_request",
+                                     "message": "no endpoints found"}})
+        chunks = _stream_chunks([], stream_kw={"text": body,
+                                               "content_type": "application/json"},
+                                max_retries=0)
+        assert chunks[-1]["assistant"]["error"]["message"] == "no endpoints found"
+
+    def test_a_stream_that_stops_early_is_handed_over_flagged_not_raised(self):
+        """A dropped connection is not worth an exception.
+
+        Retries come first; this is what is left when they are spent. Raising
+        instead would switch the agent server's fallback profile persistently
+        and end a run that has no fallback chain — its own comment calls that
+        far too heavy for what is usually a network hiccup, and the sibling
+        client hands the partial answer over under exactly this flag.
+        """
+        chunks = _stream_chunks(
+            _sse({"type": "response.output_text.delta", "delta": "halb"})[:-1],
+            max_retries=0)
+        final = chunks[-1]
+        assert final["type"] == "final"
+        assert final["finish_reason"] == "incomplete_stream"
+        assert final["assistant"]["content"] == "halb"
+
+    def test_an_event_split_across_two_packets_is_reassembled(self):
+        """The network cuts where it likes, not at line ends."""
+        line = _sse(_COMPLETED)[0] + "\n"
+        raw = line.encode("utf-8")
+        cut = len(raw) // 2
+        chunks = _stream_chunks([], stream_kw={"byte_chunks": [raw[:cut], raw[cut:]]})
+        assert chunks[-1]["assistant"]["tool_calls"], "the split event was lost"
+
+    def test_a_line_separator_in_the_prose_does_not_cut_the_event(self):
+        """U+2028 is a line end to ``str.splitlines()`` but not to SSE, and
+        JSON carries it raw inside a string. Read line-wise, one of them in
+        the answer slices the event in half — the delta vanishes, or the whole
+        body does."""
+        chunks = _stream_chunks(_sse(
+            {"type": "response.output_text.delta", "delta": "erst dann"},
+            _COMPLETED,
+        ))
+        deltas = [c for c in chunks if c["type"] == "content_delta"]
+        assert [d["delta"] for d in deltas] == ["erst dann"]
+
+    def test_the_openai_family_thinking_channel_is_read_too(self):
+        """Those models never emit raw reasoning, only a summary of it — under
+        an event name of its own. Missing it leaves them with no live view of
+        their thinking at all."""
+        chunks = _stream_chunks(_sse(
+            {"type": "response.reasoning_summary_text.delta", "delta": "Ich prüfe"},
+            _COMPLETED,
+        ))
+        assert chunks[0]["type"] == "thinking_delta"
+        assert chunks[0]["delta"] == "Ich prüfe"
+
+    def test_only_data_lines_are_events(self):
+        """The gateway holds a silent call open with ': ' lines — that is why
+        no read timeout ever fires on a 40-minute call.
+
+        The smuggled line is the point: a reader without the ``data:`` check
+        slices five characters off every line and believes whatever is left,
+        so a line that merely LOOKS like a field would become a token.
+        """
+        import json
+
+        smuggled = json.dumps({"type": "response.output_text.delta", "delta": "X"})
+        lines = [": ", "", ": OPENROUTER PROCESSING",
+                 f"evt: {smuggled}",
+                 f"data: {json.dumps(_COMPLETED)}", "data: [DONE]"]
+        chunks = _stream_chunks(lines)
+        assert [c["type"] for c in chunks] == ["final"]
+
+
+class TestWhoStreams:
+    def test_capabilities_decide(self):
+        assert _client().supports_streaming() is True
+        assert _client(capabilities={"streaming": False}).supports_streaming() is False
+        assert _client(capabilities=ModelCapabilities(streaming=False)).supports_streaming() is False
+
+    def test_a_transport_swapping_subclass_does_not_stream(self):
+        """The reader talks to httpx directly, so a subclass that swaps the
+        transport must keep the non-streaming path — otherwise its transport is
+        silently bypassed."""
+        class _SdkLike(OpenAIResponsesClient):
+            _STREAMS_SSE = False
+
+        assert _SdkLike(model="m", api_key="k").supports_streaming() is False
 
 
 if __name__ == "__main__":

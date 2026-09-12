@@ -426,3 +426,35 @@ class TestTheRegistryFindsIt:
             assert registry.get_provider("openrouter_sdk") is not None
         finally:
             registry.reset_for_tests()
+
+
+class TestThisRouteDoesNotStream:
+    """The sibling reads the gateway's event stream with httpx directly.
+
+    This class exists to send the request through the SDK instead, so it must
+    keep the non-streaming path no matter what the model's capabilities say —
+    otherwise the request would travel past the very transport under test and
+    the A/B comparison would silently stop comparing.
+    """
+
+    def test_streaming_stays_off_even_when_capabilities_allow_it(self):
+        client = OpenRouterSDKClient(
+            model="deepseek/deepseek-v4-flash", api_key="k",
+            base_url="https://openrouter.ai/api/v1",
+            capabilities={"streaming": True})
+
+        assert client.supports_streaming() is False
+
+    def test_the_sibling_with_the_same_capabilities_does_stream(self):
+        """Guards the comparison itself: if the sibling stopped streaming, the
+        assertion above would pass for the wrong reason."""
+        from plugins_llm.llm_openai_compat.openai_responses_client import (
+            OpenAIResponsesClient,
+        )
+
+        sibling = OpenAIResponsesClient(
+            model="deepseek/deepseek-v4-flash", api_key="k",
+            base_url="https://openrouter.ai/api/v1",
+            capabilities={"streaming": True})
+
+        assert sibling.supports_streaming() is True
