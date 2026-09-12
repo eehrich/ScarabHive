@@ -48,6 +48,22 @@ SUMMARY of their thinking, which the Responses client forwards under the same
 chunk type. Summary prose is a different shape of text from raw reasoning, and
 the calibration below was measured on raw reasoning — so for those models this
 is a guard against the degenerate case, not a calibrated instrument.
+
+WHERE IT IS ARMED AND BLIND
+===========================
+Some clients emit no ``thinking_delta`` at all, so nothing reaches this
+detector and it can never fire:
+
+  * Both Gemini clients stream thoughts as ``content_delta`` — deliberately,
+    and pinned by ``test_streaming_thought_parts_stream_as_content_delta``.
+  * ``BatchLLMClient.supports_streaming()`` is False, so batch runs take the
+    polling path, which sees no deltas.
+
+Silence on those paths is NOT evidence that the thinking was healthy, and the
+comment at the call site calling these "Gemini reasoning/thinking tokens" is
+wrong. Feeding ``content_delta`` in instead would mean measuring answer prose
+with a threshold calibrated on reasoning — a different instrument, not a
+wider one.
 """
 
 from __future__ import annotations
