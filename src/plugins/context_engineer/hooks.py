@@ -826,7 +826,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     current_tokens,
                     force=force,
                     trigger_event=trigger_event,
-                    session_id=session_id
+                    session_id=session_id,
+                    manual=is_manual,
                 )
             finally:
                 self._active_compactions.discard(session_id)
