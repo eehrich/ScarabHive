@@ -326,6 +326,22 @@ minimax/minimax-m3:
   output: 2.40
   cached_input: 0.12
 
+# GLM Flash via OpenRouter, latest-Alias. Ohne provider_routing haengt der Satz
+# am Anbieter: abgerechnet meist 0.15/0.50/0.03 (eingetragen) oder
+# 0.1124/0.3745/0.0225, vereinzelt hoeher; der Listenpreis 0.075/0.25 wurde
+# nie berechnet (66 Aufrufe, Stand 2026-09-13).
+"~z-ai/glm-flash-latest":
+  input: 0.15
+  output: 0.50
+  cached_input: 0.03
+
+# DeepSeek V4.1 Flash via OpenRouter, Preis von DeepInfra (erster Anbieter in
+# order; Fireworks 0.22/0.66/0.007). Stand 2026-09-13.
+deepseek/deepseek-v4.1-flash:
+  input: 0.20
+  output: 0.60
+  cached_input: 0.006
+
 # Zhipu GLM via OpenRouter
 # Source: https://openrouter.ai/z-ai/glm-5.2
 z-ai/glm-5.2:

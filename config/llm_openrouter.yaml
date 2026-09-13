@@ -298,6 +298,26 @@ llm_system:
       extends: openrouter-glm
       max_tokens: 0
 
+    # Benchmark-Kandidaten fuer den Kapitel-Scorer (13.09.2026, siehe
+    # writer_pipeline_v4/docs/v4_issue_codes_uebersicht.md).
+    openrouter-glm-flash:
+      extends: openrouter-base
+      model: ~z-ai/glm-flash-latest
+      # openrouter-base setzt 16384 — die laengsten Scorer-Laeufe kamen auf 15.3k
+      max_tokens: 0
+
+    # V4.1 Flash ist teurer als V4; gepinnt auf die zwei guenstigen Anbieter.
+    # KEIN quantizations-Filter: Fireworks nennt keine Quantisierung und
+    # fiele sonst heraus.
+    openrouter-deepseek-flash-41:
+      extends: openrouter-deepseek
+      model: deepseek/deepseek-v4.1-flash
+      provider_routing:
+        order:
+        - deepinfra
+        - fireworks
+        allow_fallbacks: false
+
     openrouter-kimi-k3:
       extends: openrouter-base
       model: moonshotai/kimi-k3
@@ -423,6 +443,16 @@ llm_system:
     or-glm-unlimited:
       model_ref: openrouter-glm-unlimited
       description: "OpenRouter GLM - No output token limit"
+      max_steps: 500
+
+    or-glm-flash:
+      model_ref: openrouter-glm-flash
+      description: "OpenRouter GLM Flash (latest)"
+      max_steps: 500
+
+    or-deepseek-flash-41:
+      model_ref: openrouter-deepseek-flash-41
+      description: "OpenRouter DeepSeek V4.1 Flash (deepinfra/fireworks)"
       max_steps: 500
 
     or-kimi-k3:
