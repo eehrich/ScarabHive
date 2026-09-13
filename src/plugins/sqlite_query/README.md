@@ -60,9 +60,12 @@ mcp-sqlite-query --database data/writer/books.db \
     --sql "SELECT status, COUNT(*) FROM books GROUP BY status" --json
 ```
 
-Registered as a console script in `pyproject.toml`. It builds the server with
-mocked configs, so it needs no running API — handy for the same queries
-`.claude/skills/writer/references/messen.md` documents.
+Registered as a console script in `pyproject.toml` (also `python -m
+plugins.sqlite_query`). It builds the plugin in-process and calls its tool, so
+it needs no running API — handy for the same queries
+`.claude/skills/writer/references/messen.md` documents. A failed statement
+exits 1; a name miss prints the plugin's `did_you_mean` and the known tables or
+columns.
 
 ## Tests
 

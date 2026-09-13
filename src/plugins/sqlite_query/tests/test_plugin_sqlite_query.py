@@ -1,6 +1,8 @@
 """
 Tests for sqlite_query plugin - simple SQL execution for debugging.
 """
+import json
+
 import pytest
 from pathlib import Path
 import tempfile
@@ -286,3 +288,68 @@ class TestNameMissRecovery:
         assert res["status"] == "error"
         assert "did_you_mean" not in res
         assert "tables" not in res
+
+
+class TestCommandLine:
+    """``mcp-sqlite-query`` imported the MCP SDK and called methods the server
+    never had, so the installed command crashed on start. It now runs the
+    tool through the plugin like the other plugin CLIs."""
+
+    def _run(self, capsys, *argv):
+        from plugins.sqlite_query.__main__ import cli_main
+
+        with pytest.raises(SystemExit) as exit_info:
+            cli_main(list(argv))
+        return exit_info.value.code, capsys.readouterr()
+
+    def test_a_query_prints_its_rows(self, capsys, test_db):
+        code, out = self._run(capsys, "--database", test_db,
+                              "--sql", "SELECT title FROM books ORDER BY id")
+
+        assert code == 0, out.err
+        assert "Found 3 rows" in out.out
+        assert "Book 2" in out.out
+
+    def test_a_failing_statement_exits_non_zero(self, capsys, test_db):
+        code, out = self._run(capsys, "-d", test_db, "-s", "SELECT nope FROM books")
+
+        assert code == 1
+        assert "no such column" in out.err
+
+    def test_json_output_carries_the_error_and_the_exit_code(self, capsys, test_db):
+        code, out = self._run(capsys, "-d", test_db, "-s", "SELEC 1", "--json")
+
+        assert code == 1
+        assert json.loads(out.out)["status"] == "error"
+
+    def test_the_installed_entry_point_resolves(self):
+        import importlib
+        import tomllib
+
+        repo = Path(__file__).resolve().parents[4]
+        target = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))[
+            "project"]["scripts"]["mcp-sqlite-query"]
+        module, func = target.split(":")
+
+        assert callable(getattr(importlib.import_module(module), func))
+
+    def test_a_name_miss_prints_the_suggestion(self, capsys, test_db):
+        code, out = self._run(capsys, "-d", test_db, "-s", "SELECT tittle FROM books")
+
+        assert code == 1
+        assert "Did you mean: title" in out.err
+
+    def test_blob_and_null_survive_both_outputs(self, capsys, test_db):
+        conn = sqlite3.connect(test_db)  # `with` commits but does not close
+        conn.execute("CREATE TABLE blobs (b BLOB, n TEXT)")
+        conn.execute("INSERT INTO blobs VALUES (x'00ff', NULL)")
+        conn.commit()
+        conn.close()
+
+        code, out = self._run(capsys, "-d", test_db, "-s", "SELECT b, n FROM blobs", "--json")
+        assert code == 0, out.err
+        assert json.loads(out.out)["row_count"] == 1
+
+        code, out = self._run(capsys, "-d", test_db, "-s", "SELECT b, n FROM blobs")
+        assert code == 0, out.err
+        assert "NULL" in out.out
