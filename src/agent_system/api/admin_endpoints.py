@@ -235,16 +235,19 @@ async def update_user(
         Updated user
     
     Raises:
-        HTTPException: If user not found
+        HTTPException: If user not found, or 400 if the email belongs to another user
     """
-    updated_user = db.update_user(user_id, update_data)
-    
+    try:
+        updated_user = db.update_user(user_id, update_data)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
     if not updated_user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"User with ID {user_id} not found"
         )
-    
+
     logger.info(f"Admin {admin_user.username} updated user ID {user_id}")
     
     return User(

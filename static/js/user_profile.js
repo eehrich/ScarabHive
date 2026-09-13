@@ -210,8 +210,8 @@ window.AgentSystem.UserProfile = {
           alert('New passwords do not match');
           return;
         }
-        if (data.new_password.length < 6) {
-          alert('Password must be at least 6 characters');
+        if (data.new_password.length < 8) {
+          alert('Password must be at least 8 characters');
           return;
         }
       }
@@ -220,7 +220,10 @@ window.AgentSystem.UserProfile = {
       const updateData = {};
       if (data.email) updateData.email = data.email;
       if (data.full_name) updateData.full_name = data.full_name;
-      if (data.new_password) updateData.password = data.new_password;
+      if (data.new_password) {
+        updateData.password = data.new_password;
+        updateData.current_password = data.current_password;
+      }
 
       const response = await window.authManager.authFetch('/auth/me', {
         method: 'PATCH',

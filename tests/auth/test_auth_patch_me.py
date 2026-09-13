@@ -105,9 +105,9 @@ def test_patch_me_update_password(client, test_user):
     response = client.patch(
         "/auth/me",
         headers={"Authorization": f"Bearer {token}"},
-        json={"password": "newpassword123"}
+        json={"password": "newpassword123", "current_password": "password123"}
     )
-    
+
     assert response.status_code == 200
     
     # Login with new password should work
@@ -158,6 +158,37 @@ def test_patch_me_multiple_fields(client, test_user):
     data = response.json()
     assert data["email"] == "updated@example.com"
     assert data["full_name"] == "Updated Name"
+
+
+def _token(client):
+    return client.post("/auth/login", json={
+        "username": "testuser", "password": "password123"}).json()["access_token"]
+
+
+@pytest.mark.parametrize("field, value", [("role", "admin"), ("is_active", False)])
+def test_patch_me_cannot_change_role_or_active_state(client, test_user, temp_db, field, value):
+    """Any logged-in user could PATCH themselves to admin: the endpoint took
+    the admin UserUpdate schema and wrote role straight to the database."""
+    response = client.patch("/auth/me", headers={"Authorization": f"Bearer {_token(client)}"},
+                            json={field: value})
+
+    assert response.status_code == 422
+    stored = temp_db.get_user_by_id(test_user.id)
+    assert stored.role == UserRole.USER
+    assert stored.is_active is True
+
+
+def test_patch_me_password_needs_the_current_one(client, test_user):
+    headers = {"Authorization": f"Bearer {_token(client)}"}
+
+    missing = client.patch("/auth/me", headers=headers, json={"password": "newpassword123"})
+    wrong = client.patch("/auth/me", headers=headers,
+                         json={"password": "newpassword123", "current_password": "nope-nope"})
+
+    assert missing.status_code == 400
+    assert wrong.status_code == 403
+    assert client.post("/auth/login", json={
+        "username": "testuser", "password": "password123"}).status_code == 200
 
 
 if __name__ == "__main__":

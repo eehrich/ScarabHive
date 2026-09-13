@@ -193,10 +193,9 @@ class UserManagementWebEndpoints(PluginWebInterface):
         """Create a new user (admin only)"""
         self._check_admin_permission(request)
         try:
-            from agent_system.auth.database import UserDatabase
             from agent_system.auth.models import UserRole, UserCreate
-            
-            db = UserDatabase()
+
+            db = self._get_user_database()
             
             try:
                 user_role = UserRole(user_data.role.lower())
@@ -275,10 +274,9 @@ class UserManagementWebEndpoints(PluginWebInterface):
         """Update user details (admin only)"""
         self._check_admin_permission(request)
         try:
-            from agent_system.auth.database import UserDatabase
             from agent_system.auth.models import UserRole, UserUpdate
-            
-            db = UserDatabase()
+
+            db = self._get_user_database()
             user = db.get_user_by_id(user_id)
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")

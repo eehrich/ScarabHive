@@ -16,6 +16,9 @@ from pydantic import BaseModel
 from agent_system.auth.models import (
     User,
     UserCreate,
+    UserRegister,
+    UserRole,
+    UserSelfUpdate,
     UserUpdate,
     Token,
     LoginRequest,
@@ -24,7 +27,7 @@ from agent_system.auth.models import (
     PasswordReset,
     APIKeyResponse,
 )
-from agent_system.auth.database import get_db, UserDatabase, create_user
+from agent_system.auth.database import get_db, UserDatabase
 # Module import on purpose: the expiry values are rebound by
 # set_jwt_config() at startup. A from-import copies the value at import
 # time, so tokens were issued with the module DEFAULTS (7d/30d) instead of
@@ -50,24 +53,21 @@ class MessageResponse(BaseModel):
 
 @router.post("/register", response_model=User, status_code=status.HTTP_201_CREATED)
 async def register(
-    user_data: UserCreate,
+    user_data: UserRegister,
     db: UserDatabase = Depends(get_db),
 ) -> User:
     """
-    Register a new user.
+    Register a new user -- always a plain, active ``user``.
 
-    Args:
-        user_data: User registration data
-        db: Database instance
-
-    Returns:
-        Created user (without password)
+    Reachable without login, so the caller chooses nothing about its own
+    privileges: role and is_active are not part of the request (422).
 
     Raises:
         HTTPException: If username or email already exists
     """
     try:
-        user_in_db = create_user(user_data)
+        user_in_db = db.create_user(UserCreate(
+            **user_data.model_dump(), role=UserRole.USER, is_active=True))
         logger.info(f"User registered: {user_in_db.username}")
 
         # Convert to User (remove sensitive data)
@@ -305,32 +305,20 @@ async def get_current_user_info(
 
 @router.patch("/me", response_model=User)
 async def update_current_user(
-    user_update: UserUpdate,
+    user_update: UserSelfUpdate,
     current_user: User = Depends(get_current_active_user),
     db: UserDatabase = Depends(get_db),
 ) -> User:
     """
-    Update current user information.
+    Update the current user's email, full name or password.
 
-    Users can update their own email, full_name, and password.
-    Only admins can change role or is_active status.
-
-    Args:
-        user_update: User update data
-        current_user: Current authenticated user
-        db: Database instance
-
-    Returns:
-        Updated user data
+    Role and is_active are not accepted here (422) -- that is the admin
+    endpoints' job. Changing the password requires ``current_password``.
 
     Raises:
-        HTTPException: If update fails or unauthorized
+        HTTPException: 403 on a wrong current password, 400 if it is missing.
     """
-    # Users can only update their own email, full_name, and password
-    # Role and is_active changes are restricted to admins (could be enforced in admin endpoints)
-
     try:
-        # Get the current user from database to update
         user_in_db = db.get_user_by_id(current_user.id)
         if not user_in_db:
             raise HTTPException(
@@ -338,8 +326,23 @@ async def update_current_user(
                 detail="User not found"
             )
 
-        # Update user
-        updated_user = db.update_user(current_user.id, user_update)
+        if user_update.password is not None:
+            if not user_update.current_password:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="current_password is required to change the password"
+                )
+            if not verify_password(user_update.current_password, user_in_db.hashed_password):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Current password is incorrect"
+                )
+
+        updated_user = db.update_user(current_user.id, UserUpdate(
+            email=user_update.email,
+            full_name=user_update.full_name,
+            password=user_update.password,
+        ))
         if not updated_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -361,6 +364,8 @@ async def update_current_user(
             last_login=updated_user.last_login,
         )
 
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

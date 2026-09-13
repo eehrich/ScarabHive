@@ -33,6 +33,20 @@ class UserCreate(UserBase):
     password: str = Field(..., min_length=8)
 
 
+class UserRegister(BaseModel):
+    """Self-registration (POST /auth/register, reachable without login).
+
+    No role and no active flag: the server creates a plain active user.
+    Sending either is rejected, so nobody registers themselves as admin.
+    """
+    model_config = {"extra": "forbid"}
+
+    username: str = Field(..., min_length=3, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
+    email: EmailStr
+    full_name: Optional[str] = None
+    password: str = Field(..., min_length=8)
+
+
 class UserUpdate(BaseModel):
     """Schema for user updates (all fields optional)."""
     email: Optional[EmailStr] = None
@@ -40,6 +54,21 @@ class UserUpdate(BaseModel):
     is_active: Optional[bool] = None
     role: Optional[UserRole] = None
     password: Optional[str] = Field(None, min_length=8)
+
+
+class UserSelfUpdate(BaseModel):
+    """What a user may change on their own account (PATCH /auth/me).
+
+    Role and active state are an admin's decision: sending them is rejected,
+    not ignored, so a client never believes it changed them. A new password
+    needs the current one, checked on the server.
+    """
+    model_config = {"extra": "forbid"}
+
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = None
+    password: Optional[str] = Field(None, min_length=8)
+    current_password: Optional[str] = None
 
 
 class User(UserBase):

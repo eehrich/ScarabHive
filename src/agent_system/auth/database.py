@@ -190,6 +190,11 @@ class UserDatabase:
         
         updates = {}
         if update.email is not None:
+            # Same check as create_user: the UNIQUE constraint would otherwise
+            # surface as an IntegrityError -- a 500 instead of a clear 400.
+            owner = self.get_user_by_email(update.email)
+            if owner and owner.id != user_id:
+                raise ValueError(f"Email '{update.email}' already exists")
             updates["email"] = update.email
         if update.full_name is not None:
             updates["full_name"] = update.full_name
@@ -338,11 +343,6 @@ def setup_database(db_path: Optional[Path] = None) -> UserDatabase:
 
 
 # Convenience functions
-def create_user(user: UserCreate) -> UserInDB:
-    """Create a new user."""
-    return get_db().create_user(user)
-
-
 def get_user_by_username(username: str) -> Optional[UserInDB]:
     """Get user by username."""
     return get_db().get_user_by_username(username)
