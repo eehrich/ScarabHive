@@ -39,7 +39,7 @@ class TestEventBasedMediaCompaction:
         # Configure for event-based media compaction
         impl.layer1_threshold = 60000  # High threshold to ensure we're below it
         impl.compact_media_after_user_message = True  # Enable event-based compaction
-        impl.min_time_between = 0.0  # Disable rate limiting for tests
+        impl.min_tokens_between_compactions = 0  # No hysteresis in these tests
         
         return impl
     

@@ -154,14 +154,12 @@ tools:
     function:
       name: "{{ name }}_compact"
       description: |
-        Compact the conversation now, regardless of how full the context is.
-        Use this to proactively reduce token usage before context gets too large.
-
-        Runs regardless of how full the context is. Below the automatic limits
-        it applies reversible optimizations only, nothing leaves the conversation:
-        - Store large tool results externally with references (the newest stay)
-        - Move attached files into the same store
-        - Evict inline media (saved to disk first, restorable with read)
+        Compact the conversation if it has outgrown the automatic limits.
+        The same rules as the automatic compaction before every step apply, so
+        below those limits this changes nothing; there is no need to call it
+        ahead of time. Above them it stores large tool results and attached
+        files externally with references (the newest stay) and evicts inline
+        media (saved to disk first, restorable with read).
       parameters:
         type: object
         properties: {}
@@ -329,14 +327,14 @@ config:
     minimum: 0
     description: "How far below max_messages a prune goes. 0 trims to exactly the limit, which puts the next step over it again — a prompt-cache break on EVERY step. 50 buys ~50 quiet steps per break."
 
-  # Cache-Hysterese: Mindestabstand zwischen prefix-brechenden Kompaktionen
+  # Cache-Hysterese: Mindest-Wachstum zwischen prefix-brechenden Kompaktionen
   # (jede History-Mutation bricht das Provider-Prompt-Caching komplett —
   # selten und tief kuerzen, docs/prompt_cache_design.md par. 3.5)
-  min_time_between_compactions:
-    type: number
-    default: 120.0
+  min_tokens_between_compactions:
+    type: integer
+    default: 20000
     minimum: 0
-    description: "Minimum seconds between compaction runs per session (anti-thrash; each run breaks the prompt-cache prefix)"
+    description: "Tokens the context must grow after a compaction before the message-rewriting layers (P, 1, 2, 3) run again, unless a deeper layer has become due since. Not for /compact or the byte limit; media passes are not held. Per agent overridable."
 
   # Compaction Strategy
 

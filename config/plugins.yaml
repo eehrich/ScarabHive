@@ -994,7 +994,7 @@ plugins:
         layer2_threshold: 170000  # Start semi-reversible compaction (archival with summaries)
         layer3_threshold: 200000  # Start irreversible compaction (drop old messages)
         target_tokens: 70000      # Target token count after compaction (Low-Watermark, grosser Hub)
-        min_time_between_compactions: 300  # s — verhindert Kompaktions-Dauerlauf dicht ueber der Schwelle
+        min_tokens_between_compactions: 20000  # Wachstum seit der letzten Kompaktion — verhindert Kompaktions-Dauerlauf dicht ueber der Schwelle
 
         store_media_before_compaction: true  # Aktiviert MediaStore
         media_store_ttl_seconds: 604800      # 7 Tage

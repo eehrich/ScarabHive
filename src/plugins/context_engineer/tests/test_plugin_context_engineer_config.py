@@ -52,7 +52,6 @@ def _effective(srv: ContextEngineerServer, session: str = "probe") -> dict:
     parts = srv._hooks_impl._get_session_components(session)
     cfg = parts["strategy"].config
     values = {f.name: getattr(cfg, f.name) for f in fields(CompactionConfig)}
-    values["min_time_between_compactions"] = srv._hooks_impl.min_time_between
     values["enable_semantic_search"] = srv._hooks_impl.enable_semantic_search
     values["core_memory_max_tokens"] = parts["core_memory"].max_tokens
     values["session_ttl_seconds"] = srv._hooks_impl._session_ttl_seconds
@@ -118,7 +117,6 @@ class TestShippedConfigArrives:
         probe = {
             "session_ttl_seconds": 1234,
             "max_tracked_sessions": 7,
-            "min_time_between_compactions": 42.0,
             "enable_semantic_search": False,
             "core_memory_max_tokens": 4321,
             "session_data_ttl_days": 3,

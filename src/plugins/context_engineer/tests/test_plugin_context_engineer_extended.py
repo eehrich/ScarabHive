@@ -403,7 +403,10 @@ class TestMediaBytesTracking:
     async def test_media_bytes_saved_for_multimodal_content(self, strategy_components, tmp_path):
         """Test that media_bytes_saved is tracked when compacting multimodal_content."""
         strategy = strategy_components["strategy"]
-        
+        # Byte accounting is under test, not recency: the only tool result is
+        # also the newest, whose media Layer 1 keeps by default.
+        strategy.config.tool_result_keep_last = 0
+
         # Create a test audio file - must be LARGE (>200KB to exceed 5K tokens)
         audio_file = tmp_path / "test_audio.mp3"
         audio_file.write_bytes(b"x" * (500 * 1024))  # 500KB file

@@ -129,10 +129,13 @@ class CoreMemory:
         # Check for duplicates (same content)
         for existing in self.facts:
             if existing.content.strip().lower() == content.strip().lower():
-                # Update importance if higher
+                # Update importance if higher — and keep it: without the save
+                # the raise lived only until the process ended.
                 if importance > existing.importance:
                     existing.importance = importance
                     logger.debug(f"Updated importance for existing fact: {content[:50]}...")
+                    if self.storage_path:
+                        await self._save()
                 return True
         
         # Create new fact
@@ -142,24 +145,47 @@ class CoreMemory:
             importance=importance
         )
         
-        # Estimate tokens for this fact
-        fact_tokens = estimate_content_tokens(self._format_fact(fact))
-        
-        # Enforce token limit by evicting low-importance facts
-        while self._current_tokens + fact_tokens > self.max_tokens and self.facts:
-            evicted = self._evict_lowest_importance()
-            if evicted is None:
-                # Can't evict anything (shouldn't happen, but safety check)
-                logger.warning(f"Cannot add fact - memory full and cannot evict: {content[:50]}...")
-                return False
-        
+        # Make room only at the expense of facts that are not MORE important,
+        # least important and then oldest first — and decide before evicting
+        # anything. The loop this replaces evicted the least important EXISTING
+        # fact whatever the new one was worth, and ran until the list was empty:
+        # a 0.05 fact pushed out a 0.95 one, and a fact larger than the whole
+        # budget wiped every fact and was then added anyway. Equal importance
+        # must still rotate: the tool stores at 0.5 by default, and a memory
+        # full of 0.5 facts would otherwise refuse every new one.
+        # Counted fact by fact (_fact_tokens), the same way everywhere. The
+        # rendered section is no stable measure: the estimator scores a whole
+        # text by one content type, so removing the last fact that mentions
+        # "from " or "class " re-scored all the others, and one short fact
+        # evicted 51 facts where 2 were enough.
+        overflow = self._current_tokens + self._fact_tokens(fact) - self.max_tokens
+        victims: list[Fact] = []
+        freed = 0
+        # sorted() is stable and self.facts is in insertion order: oldest first.
+        for candidate in sorted((f for f in self.facts if f.importance <= importance),
+                                key=lambda f: f.importance):
+            if freed >= overflow:
+                break
+            victims.append(candidate)
+            freed += self._fact_tokens(candidate)
+        if freed < overflow:
+            logger.warning(
+                f"Cannot add fact - core memory is full of more important facts: "
+                f"{content[:50]}...")
+            return False
+        for victim in victims:
+            self.facts.remove(victim)
+            logger.debug(
+                f"Evicted fact for a more important one: '{victim.content[:50]}...' "
+                f"(importance={victim.importance:.2f})")
+
         # Add the fact
         self.facts.append(fact)
-        self._current_tokens += fact_tokens
-        
+        self._recalculate_tokens()
+
         logger.debug(
             f"Added fact to core memory: category={category}, importance={importance:.2f}, "
-            f"tokens={fact_tokens}, total={self._current_tokens}/{self.max_tokens}"
+            f"total={self._current_tokens}/{self.max_tokens}"
         )
         
         # Persist if storage configured
@@ -286,42 +312,29 @@ class CoreMemory:
         """
         return list(set(f.category for f in self.facts))
     
+    def fits_alone(self, content: str, category: str = "facts") -> bool:
+        """Whether this fact would fit if every other fact made room."""
+        fact = Fact(content=content.strip(), importance=1.0,
+                    category=category if category in self.CATEGORIES else "facts")
+        return self._fact_tokens(fact) <= self.max_tokens
+
     def _format_fact(self, fact: Fact) -> str:
         """Format a single fact for token counting."""
         return f"- {fact.content}"
-    
-    def _evict_lowest_importance(self) -> Fact | None:
-        """Evict the lowest importance fact.
-        
-        Returns:
-            The evicted fact, or None if no facts to evict
-        """
-        if not self.facts:
-            return None
-        
-        # Find lowest importance fact
-        lowest = min(self.facts, key=lambda f: f.importance)
-        self.facts.remove(lowest)
-        
-        # Recalculate tokens
-        self._recalculate_tokens()
-        
-        logger.debug(
-            f"Evicted lowest importance fact: '{lowest.content[:50]}...' "
-            f"(importance={lowest.importance:.2f})"
-        )
-        
-        return lowest
-    
+
+    def _fact_tokens(self, fact: Fact) -> int:
+        """What one fact costs against the budget — the one measure add_fact,
+        eviction, fits_alone and the running total all use."""
+        return estimate_content_tokens(self._format_fact(fact))
+
     def _recalculate_tokens(self) -> None:
-        """Recalculate total token count."""
-        if not self.facts:
-            self._current_tokens = 0
-            return
-        
-        # Include header/footer in count
-        full_section = self.to_system_prompt_section()
-        self._current_tokens = estimate_content_tokens(full_section)
+        """Recalculate total token count.
+
+        The sum of the facts, not an estimate of the rendered section: add_fact
+        added line estimates, this counted the section, and the two scales
+        (prose vs structured data) let the total drift up to 38 % apart.
+        """
+        self._current_tokens = sum(self._fact_tokens(fact) for fact in self.facts)
     
     def _save_sync(self) -> None:
         """Save to storage path - sync version for thread pool."""

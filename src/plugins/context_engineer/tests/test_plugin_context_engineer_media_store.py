@@ -90,16 +90,31 @@ class TestMediaStore:
         data = base64.b64encode(b"OLD_DATA").decode()
         path = media_store.store(data, "audio/mp3", "session1")
         
-        # Manually set old timestamp
+        # Idle for 2 hours: stored and last used back then
         for hash_key in media_store._metadata:
-            media_store._metadata[hash_key]["created_at"] = time.time() - 7200  # 2 hours ago
+            media_store._metadata[hash_key]["created_at"] = time.time() - 7200
+            media_store._metadata[hash_key]["last_accessed"] = time.time() - 7200
         media_store._save_metadata()
-        
+
         # Run cleanup
         removed = media_store.cleanup()
-        
+
         assert removed == 1
         assert not Path(path).exists()
+
+    def test_storing_the_same_bytes_again_keeps_the_file(self, media_store):
+        """A dedup hit hands the existing path to a new hint; the file must live."""
+        import time
+
+        data = base64.b64encode(b"REUSED_DATA").decode()
+        path = media_store.store(data, "audio/mp3", "session1")
+        for hash_key in media_store._metadata:
+            media_store._metadata[hash_key]["created_at"] = time.time() - 7200
+            media_store._metadata[hash_key]["last_accessed"] = time.time() - 7200
+
+        assert media_store.store(data, "audio/mp3", "session1") == path
+        assert media_store.cleanup() == 0
+        assert Path(path).exists()
     
     def test_cleanup_enforces_max_files(self, media_store):
         """Test that cleanup enforces max_files limit."""

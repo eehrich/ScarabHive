@@ -291,6 +291,28 @@ def test_sweep_uses_file_mtimes_not_only_the_directory(plugin):
     assert d.exists()
 
 
+def test_sweep_counts_recent_media_as_activity(plugin):
+    """Media lives one level deeper and moves no marker the sweep used to read.
+
+    Mutation: drop media/metadata.json from _SESSION_MARKERS → a session whose
+    databases are old but which stored media an hour ago is deleted, and the
+    files its hints name are gone.
+    """
+    base = plugin._storage_base
+    base.mkdir(parents=True)
+    d = _session_dir(base, "media_only_lately", marker="archive.db")
+    (d / "media").mkdir()
+    (d / "media" / "metadata.json").write_text("{}")
+    # Backdate the directory and its direct entries — creating media/ moved the
+    # session directory's own mtime, which would keep it alive by itself.
+    _age(d, 3)
+    now = time.time()
+    os.utime(d / "media" / "metadata.json", (now, now))  # stored media just now
+
+    assert plugin._sweep_stale_session_dirs() == 0
+    assert d.exists()
+
+
 def test_sweep_drops_the_swept_sessions_vectors(plugin):
     """Rows and vectors leave together — one criterion for both.
 

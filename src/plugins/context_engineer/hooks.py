@@ -7,13 +7,15 @@ layered compaction strategies to optimize context usage.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import shutil
 import threading
 import time
-from dataclasses import fields
+from collections import OrderedDict
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,7 @@ from agent_system.mcp.status import StatusScope, status_bus
 from .archival_memory import ARCHIVAL_COLLECTION, ArchivalMemory
 from .compaction import (
     PLUGIN_LEVEL_KEYS,
+    TOOL_RESULTS_SECTION,
     CompactionConfig,
     LayeredCompactionStrategy,
     _coerce,
@@ -39,6 +42,85 @@ from .paging import (
 from .tool_result_store import ToolResultStore
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _HysteresisMark:
+    """Where the last run of a rewriting layer left a session.
+
+    ``tokens`` is the base growth is measured from. It stays None until the
+    next call measures the compacted context, and a smaller reading lowers it.
+    Taking it from the run itself mixed two scales: the hook measures the
+    provider's prompt tokens where it can, the run reports original minus
+    ESTIMATED savings — off by 30 % of the context on a provider that counts
+    30 % more, enough to release the hold on the very next call. And a base
+    that never came down (the context shrank through context_summarizer, or an
+    inline image the estimate counts at 250k tokens was evicted) held every
+    layer until the context was back above the old base.
+
+    ``level`` is the deepest layer that was due when that run started
+    (_due_level). A deeper one becoming due is new work, not a repeat, and
+    passes the hold.
+
+    ``stale_readings`` counts readings that could not set the base because the
+    provider count was stale. A stale reading happens at most once per LLM call
+    — each call records fresh usage — so a second one in a row means nothing is
+    recorded any more, and the estimate becomes the base: without one, growth
+    counts as zero and a level-3 mark would hold every layer for good. Such a
+    base is ``provisional``: it is on the estimate's scale, so the next whole
+    reading replaces it instead of being measured against it — a provider that
+    counts 30 % more would otherwise release the hold with no growth at all.
+    """
+
+    level: int
+    tokens: int | None = None
+    stale_readings: int = 0
+    provisional: bool = False
+
+
+@dataclass
+class _ShownBlock:
+    """The restoration block a session's prompt carries, and what followed it.
+
+    ``conversation_length`` and ``head`` describe the conversation this hook
+    handed on last time (_conversation_probe). An incoming conversation that is
+    shorter, or starts differently, was rewritten after this hook — by
+    context_summarizer, typically.
+    """
+
+    text: str
+    conversation_length: int
+    head: bytes
+
+
+#: Marks and shown blocks kept per plugin instance, oldest dropped first. Not
+#: tied to the session components: those are evicted after two idle hours or
+#: beyond max_tracked_sessions, and a coordinator waiting on a large fan-out
+#: lost its mark that way and compacted again on its next call.
+_MAX_HYSTERESIS_MARKS = 10_000
+
+
+def _conversation_probe(messages: list[dict[str, Any]]) -> tuple[int, bytes]:
+    """Length of the non-system part, and a digest of its first message.
+
+    A digest, not the text: the first message of an upload session carries the
+    image as base64, and a verbatim copy of it stayed in _shown_blocks for up to
+    _MAX_HYSTERESIS_MARKS sessions.
+    """
+    conversation = [m for m in messages if m.get("role") != "system"]
+    if not conversation:
+        return 0, b""
+    first = conversation[0]
+    head = f"{first.get('role')}:{first.get('content')}".encode("utf-8", "replace")
+    return len(conversation), hashlib.blake2b(head, digest_size=16).digest()
+
+
+def _due_level(tokens: int, cfg: CompactionConfig) -> int:
+    """The deepest layer whose threshold ``tokens`` has reached, 0 for none."""
+    return max((level for level, threshold in ((1, cfg.layer1_threshold),
+                                               (2, cfg.layer2_threshold),
+                                               (3, cfg.layer3_threshold))
+                if tokens >= threshold), default=0)
 
 # ---------------------------------------------------------------------------
 # Shared vector store
@@ -59,7 +141,10 @@ _SHARED_VECTORS_DIRNAME = "_shared_vectors"
 # A directory under the storage base is a session directory iff it holds one
 # of these. The TTL sweep deletes nothing else — not the shared vector
 # directory, not history.json, not whatever another plugin may drop there.
-_SESSION_MARKERS = ("archive.db", "tool_results.db", "core_memory.json")
+# media/metadata.json is rewritten on every store and every reuse. Without it a
+# session that only evicted media in the last days looked idle by its database
+# timestamps, and the sweep deleted files a live hint still pointed at.
+_SESSION_MARKERS = ("archive.db", "tool_results.db", "core_memory.json", "media/metadata.json")
 # A directory is renamed to <session_id> + this before rmtree. The rename is
 # atomic, so a session coming alive meanwhile gets a fresh directory instead
 # of writing into one being torn down — and a sweep stopped mid-rmtree (the
@@ -286,7 +371,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         self.history_callback = history_callback
         
         # Session tracking (with TTL to prevent memory leak)
-        self._last_compaction_time: dict[str, float] = {}
+        # Per session: the reference point of the hysteresis (_HysteresisMark).
+        self._hysteresis_marks: OrderedDict[str, _HysteresisMark] = OrderedDict()
+        # Per session: the restoration block its prompt carries (_ShownBlock).
+        self._shown_blocks: OrderedDict[str, _ShownBlock] = OrderedDict()
         self._session_components: dict[str, dict[str, Any]] = {}
         # Sessions with an in-flight compaction. Their stores (tool_store /
         # archival_memory) must NOT be closed by eviction while a compaction
@@ -304,7 +392,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             f"ContextEngineerPlugin initialized: "
             f"thresholds=L1:{self.layer1_threshold}/L2:{self.layer2_threshold}/"
             f"L3:{self.layer3_threshold}, target={self.target_tokens}, "
-            f"min_time_between={self.min_time_between}s, "
+            f"min_tokens_between={self.min_tokens_between_compactions}, "
             f"deduplicate_media={self.deduplicate_media}, "
             f"compact_media_after_user_message={self.compact_media_after_user_message}, "
             f"compact_media_after_final_response={self.compact_media_after_final_response}, "
@@ -358,7 +446,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # real data/context_engineer and swept 18,000 local session
         # directories before this default was 0.
         self._session_data_ttl_days = int(merged.get("session_data_ttl_days", 0))
-        self.min_time_between = float(merged.get("min_time_between_compactions", 120.0))
         self.enable_semantic_search = bool(merged.get("enable_semantic_search", False))
         self.core_memory_max_tokens = int(merged.get("core_memory_max_tokens", 2000))
         self._storage_base = Path(merged.get("storage_path", "data/context_engineer"))
@@ -387,14 +474,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             evict_count = len(self._session_components) - self._max_tracked_sessions
             for sid, _ in sorted_sessions[:evict_count]:
                 self.cleanup_session(sid)
-        
-        # Also cleanup _last_compaction_time
-        stale_compaction = [
-            sid for sid, ts in self._last_compaction_time.items()
-            if (current_time - ts) > self._session_ttl_seconds
-        ]
-        for sid in stale_compaction:
-            del self._last_compaction_time[sid]
 
     # ------------------------------------------------------------------
     # Session data TTL
@@ -561,6 +640,13 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             )
             return False
 
+    def _compaction_config(self, overrides: dict[str, Any]) -> CompactionConfig:
+        """Plugin values with an agent's overrides on top, by field name."""
+        return compaction_config_from({
+            **{f.name: getattr(self, f.name) for f in fields(CompactionConfig)},
+            **{k: v for k, v in overrides.items() if k not in PLUGIN_LEVEL_KEYS},
+        })
+
     def _get_session_components(self, session_id: str,
                                 overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         """Get or create session-scoped components.
@@ -569,16 +655,25 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             session_id: Session identifier
             overrides: Optional per-agent overrides for CompactionConfig fields.
                 Sourced from ``context.hook_config`` in ``engineer_context``.
-                Applied only on first creation of session components — caching
-                means later calls with different overrides are ignored.
+                A caller without them (stats panel, a tool) keeps what is
+                there; a caller with different ones replaces the compaction
+                config. The stores keep the settings they were created with.
 
         Returns:
             Dict with tool_store, core_memory, archival_memory
         """
         if session_id in self._session_components:
-            # Update last accessed time
-            self._session_components[session_id]["last_accessed"] = time.time()
-            return self._session_components[session_id]
+            components = self._session_components[session_id]
+            components["last_accessed"] = time.time()
+            # Whoever creates the components first used to fix their config for
+            # good. The WebUI panel's stats poll and the /compact tool arrive
+            # without the agent's hooks.overrides, so after an API restart with
+            # the panel open, an agent's own thresholds were silently replaced
+            # by the plugin defaults. The hook always brings them; apply them.
+            if overrides and overrides != components.get("overrides"):
+                components["strategy"].config = self._compaction_config(overrides)
+                components["overrides"] = dict(overrides)
+            return components
 
         ov = overrides or {}
         if session_id not in self._session_components:
@@ -635,11 +730,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 # any field its author had not thought to include, and three of
                 # them (store_media_before_compaction, media_store_ttl_seconds,
                 # media_store_max_files) were not even wired to `_o`.
-                compaction_config = compaction_config_from({
-                    **{f.name: getattr(self, f.name) for f in fields(CompactionConfig)},
-                    **{k: v for k, v in ov.items()
-                       if k not in PLUGIN_LEVEL_KEYS},
-                })
+                compaction_config = self._compaction_config(ov)
             
                 logger.info(
                     f"[ContextEngineer] Created CompactionConfig for session {session_id}: "
@@ -662,6 +753,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "archival_memory": archival_memory,
                     "media_store": media_store,
                     "strategy": strategy,
+                    "overrides": dict(ov),
                     "last_accessed": time.time()
                 }
             
@@ -709,26 +801,49 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             
             # Per-agent overrides via hooks.overrides[context_engineer.engineer_context]
             # in agent YAML — relax compaction thresholds for media-heavy agents
-            # without changing the plugin-wide default. Applied at session-component
-            # creation only (subsequent overrides ignored due to caching).
+            # without changing the plugin-wide default.
             hook_overrides = context.hook_config if context.hook_config else None
 
             # Get session components (needed for token/byte estimation and compaction)
             components = self._get_session_components(session_id, overrides=hook_overrides)
             strategy: LayeredCompactionStrategy = components["strategy"]
-            
+            # Every decision below reads the SESSION's config. Reading the
+            # plugin-level attributes here ignored an agent's own thresholds at
+            # the gate, before the strategy that honours them was ever asked.
+            cfg = strategy.config
+
             # Get actual or estimated token usage (prefer actual from usage_tracker)
-            current_tokens = self._get_actual_or_estimated_tokens(context, messages_as_dicts, strategy)
-            
+            current_tokens, reading_is_whole = self._read_tokens(context, messages_as_dicts, strategy)
+
+            # The hysteresis base follows every measurement, including the calls
+            # the threshold gate below turns away: taken only on a call that
+            # passed the gate, the first reading after a compaction would be the
+            # one that crosses the threshold again, and it would hold exactly
+            # the compaction that is due. Except readings of part of the picture:
+            # stale provider counts (see _read_tokens), and the compact tool's,
+            # which leaves the system prompt out — lowered to that, the next
+            # call's reading was released by the prompt's size alone.
+            mark = self._hysteresis_marks.get(session_id)
+            if mark is not None and not (context.metadata or {}).get("partial_view"):
+                if reading_is_whole:
+                    if mark.tokens is None or mark.provisional or current_tokens < mark.tokens:
+                        mark.tokens = current_tokens
+                        mark.provisional = False
+                elif mark.tokens is None:
+                    mark.stale_readings += 1
+                    if mark.stale_readings >= 2:
+                        mark.tokens = current_tokens
+                        mark.provisional = True
+
             # Estimate request bytes using strategy's method (for Gemini 100MB limit check)
             request_bytes = strategy._estimate_request_bytes(messages_as_dicts)
-            bytes_exceeded = request_bytes > self.max_request_bytes
-            
+            bytes_exceeded = request_bytes > cfg.max_request_bytes
+
             if bytes_exceeded:
                 logger.warning(
                     f"[ContextEngineer] Session {session_id}: Request size "
                     f"{request_bytes / (1024*1024):.1f}MB exceeds "
-                    f"{self.max_request_bytes / (1024*1024):.0f}MB limit - forcing compaction"
+                    f"{cfg.max_request_bytes / (1024*1024):.0f}MB limit - forcing compaction"
                 )
             
             # Check if compaction needed
@@ -746,7 +861,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             
             # Check if event-based media compaction should run even below threshold
             event_media_compaction_needed = False
-            if trigger_event == "user_message" and self.compact_media_after_user_message:
+            if trigger_event == "user_message" and cfg.compact_media_after_user_message:
                 event_media_compaction_needed = True
                 logger.debug(
                     f"[ContextEngineer] Session {session_id}: Event-based media compaction "
@@ -754,15 +869,15 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 )
             
             # Check if always-compact-media is enabled (must run even below threshold)
-            always_compact_media_enabled = self.always_compact_media_keep_last > 0
-            
-            # Skip only if: not manual, below token threshold, below byte limit, 
+            always_compact_media_enabled = cfg.always_compact_media_keep_last > 0
+
+            # Skip only if: not manual, below token threshold, below byte limit,
             # AND no event-based media compaction, AND always_compact_media disabled
-            if not is_manual and current_tokens < self.layer1_threshold and not bytes_exceeded and not event_media_compaction_needed and not always_compact_media_enabled:
+            if not is_manual and current_tokens < cfg.layer1_threshold and not bytes_exceeded and not event_media_compaction_needed and not always_compact_media_enabled:
                 logger.debug(
                     f"[ContextEngineer] Session {session_id}: "
-                    f"{current_tokens} tokens < {self.layer1_threshold} threshold, "
-                    f"{request_bytes / (1024*1024):.1f}MB < {self.max_request_bytes / (1024*1024):.0f}MB limit, "
+                    f"{current_tokens} tokens < {cfg.layer1_threshold} threshold, "
+                    f"{request_bytes / (1024*1024):.1f}MB < {cfg.max_request_bytes / (1024*1024):.0f}MB limit, "
                     f"no event-based media compaction needed, skipping"
                 )
                 
@@ -774,36 +889,44 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     metadata={
                         "reason": "below_threshold",
                         "current_tokens": current_tokens,
-                        "threshold": self.layer1_threshold,
+                        "threshold": cfg.layer1_threshold,
                         "request_bytes": request_bytes,
-                        "max_request_bytes": self.max_request_bytes
+                        "max_request_bytes": cfg.max_request_bytes
                     }
                 )
-            
-            # Rate limiting - but NOT if bytes exceeded (must compact to avoid API errors!)
-            # Also NOT if event-based media compaction or always_compact_media is needed
-            current_time = time.monotonic()
-            last_compaction = self._last_compaction_time.get(session_id)
-            
-            if not is_manual and not bytes_exceeded and not event_media_compaction_needed and not always_compact_media_enabled and last_compaction:
-                time_since = current_time - last_compaction
-                if time_since < self.min_time_between:
-                    logger.info(
-                        f"[ContextEngineer] Session {session_id}: Rate limited - "
-                        f"{time_since:.1f}s since last compaction "
-                        f"(min: {self.min_time_between}s)"
-                    )
-                    return HookResult(
-                        success=True,
-                        modified=False,
-                        context=context,
-                        metadata={
-                            "reason": "rate_limited",
-                            "time_since_last": time_since,
-                            "min_time_between": self.min_time_between
-                        }
-                    )
-            
+
+            # Hysteresis (min_tokens_between_compactions): after a run of the
+            # layers that rewrite messages, the next waits until the context has
+            # grown by that many tokens — unless a deeper layer has become due
+            # since. Never for a manual run or the byte limit. The media passes
+            # are not held: they used to bypass the old time limit ENTIRELY —
+            # and took the token layers along, so with always_compact_media on
+            # (production) the limit never held at all.
+            growth = None
+            held = False
+            if mark is not None:
+                # No base yet (only partial readings since the run): no growth.
+                growth = 0 if mark.tokens is None else current_tokens - mark.tokens
+                held = (not is_manual and not bytes_exceeded
+                        and growth < cfg.min_tokens_between_compactions
+                        and _due_level(current_tokens, cfg) <= mark.level)
+            if held and not event_media_compaction_needed and not always_compact_media_enabled:
+                logger.debug(
+                    f"[ContextEngineer] Session {session_id}: held by hysteresis - "
+                    f"{growth} tokens since the last compaction "
+                    f"(min: {cfg.min_tokens_between_compactions})"
+                )
+                return HookResult(
+                    success=True,
+                    modified=False,
+                    context=context,
+                    metadata={
+                        "reason": "hysteresis",
+                        "tokens_since_last": growth,
+                        "min_tokens_between_compactions": cfg.min_tokens_between_compactions,
+                    }
+                )
+
             # Force compaction if manually triggered, byte limit exceeded, event-based media compaction needed,
             # OR always_compact_media enabled
             # Byte limit MUST be enforced to avoid API errors (Gemini 100MB limit)
@@ -828,12 +951,21 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     trigger_event=trigger_event,
                     session_id=session_id,
                     manual=is_manual,
+                    rewrite_layers=not held,
                 )
             finally:
                 self._active_compactions.discard(session_id)
 
-            # Update rate limit tracker
-            self._last_compaction_time[session_id] = current_time
+            # Only a run of a rewriting layer sets the mark — also one that
+            # found nothing to take: that is exactly the run which would
+            # otherwise repeat on every call. A media-only pass must not, or it
+            # would hold the token layers back for good.
+            if any(layer in (1, 2, 3, "P") for layer in result.layers_applied):
+                self._hysteresis_marks[session_id] = _HysteresisMark(
+                    level=_due_level(current_tokens, cfg))
+                self._hysteresis_marks.move_to_end(session_id)
+                while len(self._hysteresis_marks) > _MAX_HYSTERESIS_MARKS:
+                    self._hysteresis_marks.popitem(last=False)
 
             # Determine whether anything was actually compacted. Gates both the
             # START/END status messages and the web UI history entry.
@@ -851,10 +983,19 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Emit START/END status only when the run actually changed the
             # context - suppress the noise for no-op runs.
             if something_compacted:
+                # A child of the request id, as context_summarizer does. With
+                # the session id the per-request forwarder dropped the line:
+                # it passes only the request's own id and its "_…" children,
+                # so API and WebUI clients never saw it.
+                status_id = context.request_id or session_id
+                if context.request_id and context.agent is not None and hasattr(
+                        context.agent, "next_internal_tool_request_id"):
+                    status_id = await context.agent.next_internal_tool_request_id(
+                        context.request_id)
                 async with StatusScope(
                     status_bus,
                     "context_engineer",
-                    session_id,
+                    status_id,
                     start_msg=f"Engineering context: {current_tokens} tokens (target: {self.target_tokens}){' [MANUAL]' if is_manual else ''}",
                 ) as scope:
                     await asyncio.sleep(0.01)  # Allow START message to be delivered
@@ -903,6 +1044,9 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "messages_pruned": result.messages_pruned,  # Pre-Layer P
                     "media_deduplicated": result.media_deduplicated,
                     "media_compacted_after_event": result.media_compacted_after_event,
+                    # The panel reads it, and with always_compact_media on it is
+                    # the main media path — missing here, the panel showed 0.
+                    "media_always_compacted": result.media_always_compacted,
                     "media_bytes_saved": result.media_bytes_saved
                 })
                 
@@ -921,9 +1065,40 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 for msg in modified_messages
             ]
             
-            # Inject restoration context (info about how to retrieve stored data)
+            # Inject restoration context (info about how to retrieve stored data).
+            # The block sits right behind the system prompt and lists the
+            # core-memory facts; changed on every call it differs, each
+            # store_fact rewrote the front of the conversation and re-billed all
+            # of it. So the session keeps the block it was shown until the
+            # content it describes is gone from the conversation or the front is
+            # rewritten anyway: messages left or were archived (a stored fact may
+            # have left with its store_fact call), someone else rewrote the
+            # conversation since the last call, or the first tool results were
+            # stored — their placeholder names no way back, the section does.
+            # Until then a new fact is still in the context, in its store_fact call.
+            # A rewrite by a hook that runs after this one (context_summarizer) is
+            # seen one call late, so the new block costs a break of its own — on
+            # the summarized, short conversation. Accepted rather than have the
+            # summarizer reach into this plugin to swap the block in its own call.
             strategy: LayeredCompactionStrategy = components["strategy"]
-            restoration_context = await strategy.get_restoration_context()
+            fresh_block = await strategy.get_restoration_context()
+            shown = self._shown_blocks.get(session_id)
+            incoming_length, incoming_head = _conversation_probe(messages_as_dicts)
+            if shown is None or (fresh_block != shown.text and (
+                    result.messages_dropped or result.messages_pruned or result.messages_archived
+                    or incoming_length < shown.conversation_length
+                    or incoming_head != shown.head
+                    or (result.tool_results_stored
+                        and TOOL_RESULTS_SECTION in fresh_block
+                        and TOOL_RESULTS_SECTION not in shown.text))):
+                restoration_context = fresh_block
+            else:
+                restoration_context = shown.text
+            self._shown_blocks[session_id] = _ShownBlock(
+                restoration_context, *_conversation_probe(result.modified_messages))
+            self._shown_blocks.move_to_end(session_id)
+            while len(self._shown_blocks) > _MAX_HYSTERESIS_MARKS:
+                self._shown_blocks.popitem(last=False)
             
             # Vorherige Injektion ENTFERNEN, bevor neu eingefuegt wird
             # (Konvention wie debate_forum: ueber `injected_by` markiert).
@@ -944,8 +1119,14 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 if getattr(msg, "injected_by", None) == _RESTORATION_MARKER:
                     new_messages.pop(i)
                     continue
+                # The legacy copies were system messages, and only those match
+                # by content. Matching every role deleted whatever merely
+                # CONTAINED the header — a tool result of an agent reading this
+                # very file, or a user quoting it — before the LLM call, and the
+                # conversation was persisted without it.
                 content = getattr(msg, "content", None)
-                if isinstance(content, str) and _RESTORATION_HEADER in content:
+                if (getattr(msg, "role", None) == "system" and isinstance(content, str)
+                        and _RESTORATION_HEADER in content):
                     new_messages.pop(i)
 
             if restoration_context:
@@ -974,6 +1155,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 agent=context.agent,
                 agent_name=context.agent_name,
                 messages=new_messages,
+                # Carried on: the next pre-LLM hook (context_summarizer) reads
+                # the per-request schema from here, and without it fell back
+                # to the agent's shared, racy _current_tools_schema.
+                tools_schema=context.tools_schema,
                 llm_response=context.llm_response,
                 tool_call=context.tool_call,
                 tool_result=context.tool_result,
@@ -998,7 +1183,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # method filters system messages correctly (keeping archived_ref types).
             # The explicit set_compacted_messages() call below is kept for backwards compatibility
             # and as a safety net, but is no longer strictly required.
-            if context.agent and hasattr(context.agent, '_session_tracker'):
+            # Only when something changed. The compact tool reaches this with the
+            # agent attached, and a staged history makes the agent rebuild its
+            # list after the tool as [system prompt] + staged + tool messages —
+            # dropping every other leading system message, a prompt rewrite for a
+            # run that compacted nothing.
+            if something_compacted and context.agent and hasattr(context.agent, '_session_tracker'):
                 # Filter out the ORIGINAL system message (agent's system prompt)
                 # for persistence — it is rebuilt each turn from config. The
                 # system messages that ARE compacted conversation must stay.
@@ -1032,6 +1222,9 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 modified=True,  # Always True when we made changes
                 context=modified_context,
                 metadata={
+                    # modified is True on every run that got this far; this says
+                    # whether the messages actually changed.
+                    "compacted": something_compacted,
                     "original_tokens": result.original_tokens,
                     "final_tokens": result.final_tokens,
                     "tokens_saved": result.tokens_saved,
@@ -1056,12 +1249,27 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             )
     
     def _get_actual_or_estimated_tokens(
-        self, 
-        context: HookContext, 
+        self,
+        context: HookContext,
         messages: list[dict[str, Any]],
         strategy: LayeredCompactionStrategy
     ) -> int:
+        """The token count alone; see _read_tokens."""
+        return self._read_tokens(context, messages, strategy)[0]
+
+    def _read_tokens(
+        self,
+        context: HookContext,
+        messages: list[dict[str, Any]],
+        strategy: LayeredCompactionStrategy
+    ) -> tuple[int, bool]:
         """Get actual token count from last LLM response or estimate from messages.
+
+        The second value says whether the reading may move the hysteresis base:
+        not when the session HAS provider counts but they are stale. Such a
+        reading is the estimate alone, and the next fresh one is on the
+        provider's scale again — measured against a base taken from the stale
+        one, the growth jumped by the gap between the two scales.
 
         Uses the MAXIMUM of:
         1. Actual prompt_tokens from last LLM response (via context_usage_tracker)
@@ -1076,21 +1284,26 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             strategy: Compaction strategy for token estimation
 
         Returns:
-            Maximum of actual or estimated token count
+            Maximum of actual or estimated token count, and whether it may move
+            the hysteresis base
         """
+        stale = False
         estimated_tokens = strategy._estimate_messages_tokens(messages)
 
         # Include tool definition tokens in estimation (they consume context window)
-        if context.agent and hasattr(context.agent, '_current_tools_schema'):
+        # The per-request schema first; the agent attribute is shared by all of
+        # its sessions and only a fallback for callers that build a bare context.
+        tools_schema = context.tools_schema
+        if tools_schema is None and context.agent and hasattr(context.agent, '_current_tools_schema'):
             tools_schema = context.agent._current_tools_schema
-            if tools_schema and isinstance(tools_schema, list):
-                from agent_system.llm.token_utils import estimate_tools_token_count
-                tool_tokens = estimate_tools_token_count(tools_schema)
-                estimated_tokens += tool_tokens
-                logger.debug(
-                    f"[ContextEngineer] Added {tool_tokens} tool definition tokens "
-                    f"({len(tools_schema)} tools)"
-                )
+        if tools_schema and isinstance(tools_schema, list):
+            from agent_system.llm.token_utils import estimate_tools_token_count
+            tool_tokens = estimate_tools_token_count(tools_schema)
+            estimated_tokens += tool_tokens
+            logger.debug(
+                f"[ContextEngineer] Added {tool_tokens} tool definition tokens "
+                f"({len(tools_schema)} tools)"
+            )
 
         actual_tokens = 0
 
@@ -1116,6 +1329,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                             # Check if data is stale (context was optimized since last LLM call)
                             # Stale data doesn't reflect current message list, so ignore it
                             if latest.get('is_stale'):
+                                stale = True
                                 logger.debug(
                                     f"[ContextEngineer] Ignoring stale usage_tracker data for session "
                                     f"{context.session_id} (context was already optimized)"
@@ -1138,7 +1352,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 f"actual={actual_tokens}, estimated={estimated_tokens}, using={max_tokens}"
             )
 
-        return max_tokens
+        return max_tokens, not stale
     
     def _invalidate_usage_tracker_session(
         self, 
@@ -1192,7 +1406,20 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         core_memory: CoreMemory = components["core_memory"]
         
         fact_id = await core_memory.add_fact(fact, category=category, importance=importance)
-        
+        if not fact_id:
+            # add_fact refuses rather than push out more important facts. Said
+            # as success, the agent believed a fact was kept that is nowhere.
+            too_large = not core_memory.fits_alone(fact, category)
+            return {
+                "success": False,
+                "error": (f"This fact alone is larger than core memory ({core_memory.max_tokens} "
+                          f"tokens); store a shorter summary of it." if too_large else
+                          "Core memory is full of more important facts; this one was "
+                          "not stored. Use a higher importance if it matters more."),
+                "importance": importance,
+                "total_facts": len(core_memory.facts),
+            }
+
         return {
             "success": True,
             "fact_id": fact_id,
@@ -1353,11 +1580,13 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # Aggregate media compaction stats from history for this session
         media_deduplicated = 0
         media_compacted = 0
+        media_always_compacted = 0
         if self.stats_history:
             for event in self.stats_history:
                 if event.get("session_id") == session_id:
                     media_deduplicated += event.get("media_deduplicated", 0)
                     media_compacted += event.get("media_compacted_after_event", 0)
+                    media_always_compacted += event.get("media_always_compacted", 0)
         
         return {
             "tool_results": tool_store.get_stats(),
@@ -1369,7 +1598,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             },
             "archival_memory": archival.get_stats(),
             "media_deduplicated": media_deduplicated,
-            "media_compacted": media_compacted
+            "media_compacted": media_compacted,
+            "media_always_compacted": media_always_compacted,
         }
     
     def cleanup_session(self, session_id: str) -> None:
@@ -1388,7 +1618,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 components["tool_store"].close()
             
             del self._session_components[session_id]
-            
+            # The hysteresis mark stays (see _MAX_HYSTERESIS_MARKS).
+
             logger.debug(f"Cleaned up session components for {session_id}")
 
     # ------------------------------------------------------------------

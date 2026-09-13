@@ -33,6 +33,41 @@ ARCHIVAL_COLLECTION = "archival_memory"
 logger = logging.getLogger(__name__)
 
 
+def _message_text(message: dict[str, Any]) -> str:
+    """Everything of a message that can be stored as text — what read(arch_…) returns.
+
+    The archive keeps only this text, and a message that leaves the conversation
+    through Layer 3 or Pre-Layer P exists nowhere else. Reading only the "text"
+    of list parts lost attached files (a text_file part carries "content") and
+    plain string parts; keeping only the tool NAMES lost the arguments — for a
+    write_file call, the whole file.
+    """
+    content = message.get("content")
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                if part.get("type") == "text_file":
+                    parts.append(f"[File: {part.get('name') or 'file'}]\n{part.get('content') or ''}")
+                elif isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+        text = " ".join(parts)
+    else:
+        text = content if isinstance(content, str) else ""
+    calls = []
+    for call in message.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function") or {}
+        arguments = function.get("arguments") or ""
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments, ensure_ascii=False, default=str)
+        calls.append(f"[Tool call {function.get('name') or 'unknown'}] {arguments}".rstrip())
+    return "\n".join(filter(None, [text, *calls]))
+
+
 def _synchronized(method):
     """Serialize a store method on the instance's reentrant lock.
 
@@ -270,19 +305,11 @@ class ArchivalMemory:
         
         # Extract message fields
         role = message.get("role", "unknown")
-        content = message.get("content", "")
-        if isinstance(content, list):
-            # Handle multi-part content
-            content = " ".join(
-                part.get("text", "") for part in content if isinstance(part, dict)
-            )
-        elif content is None:
-            # An assistant message that only makes tool calls carries
-            # content=None. The column is NOT NULL, so this used to raise
-            # IntegrityError and take Layer 2's whole archiving loop with it —
-            # the same shape trap as tool_calls=None two lines below.
-            content = ""
-        
+        # Never None: the column is NOT NULL, and an assistant message that only
+        # makes tool calls carries content=None — that used to raise
+        # IntegrityError and take Layer 2's whole archiving loop with it.
+        content = _message_text(message)
+
         # Generate summary if not provided
         if not summary:
             summary = self._generate_summary(message)
@@ -406,13 +433,7 @@ class ArchivalMemory:
             now = stamps[position]
             entry_id = f"arch_{uuid.uuid4().hex[:12]}"
             role = message.get("role", "unknown")
-            content = message.get("content", "")
-            if isinstance(content, list):
-                content = " ".join(
-                    part.get("text", "") for part in content if isinstance(part, dict)
-                )
-            elif content is None:
-                content = ""
+            content = _message_text(message)
             summary = self._generate_summary(message)
 
             metadata: dict[str, Any] = {}
@@ -828,13 +849,8 @@ class ArchivalMemory:
             Brief summary string
         """
         role = message.get("role", "unknown")
-        content = message.get("content", "")
-        
-        if isinstance(content, list):
-            content = " ".join(
-                part.get("text", "") for part in content if isinstance(part, dict)
-            )
-        
+        content = _message_text(message)
+
         # Handle tool calls. Same shape trap as in store(): the key is present
         # with value None far more often than it holds a list, so an ``in`` test
         # both raises here AND used to produce the empty "called tools: ".

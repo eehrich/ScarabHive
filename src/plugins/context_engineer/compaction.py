@@ -24,6 +24,7 @@ with minimum information loss.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -35,6 +36,9 @@ from typing import Any, Iterator, NamedTuple
 from agent_system.utils.multimodal_tool_content import extract_inline_media
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 from agent_system.llm.token_utils import (
+    TOKENS_PER_AUDIO_SECOND,
+    TOKENS_PER_IMAGE,
+    TOKENS_PER_VIDEO_SECOND,
     estimate_content_tokens,
     estimate_inline_data_tokens,
     estimate_token_count,
@@ -89,7 +93,17 @@ class CompactionConfig:
     # step for one message of savings. With headroom the same break buys
     # roughly `headroom` quiet steps.
     max_messages_headroom: int = 50
-    
+
+    # Hysteresis for the layers that rewrite messages (P, 1, 2, 3): once one
+    # ran, the next run waits until the context has grown by this many tokens.
+    # Every run breaks the provider prompt cache from the first changed message
+    # on. The watermarks (a layer threshold down to target_tokens) are the
+    # hysteresis whenever a compaction gets below the threshold; this covers the
+    # case where it cannot, which otherwise compacts on every call. Tokens, not
+    # time or turns: the same agent is three times slower on another provider,
+    # and a turn is a user message — a whole agent run is one.
+    min_tokens_between_compactions: int = 20000
+
     # Media deduplication settings
     deduplicate_media: bool = True  # Auto-compact older duplicate media (by file hash)
     
@@ -115,7 +129,6 @@ class CompactionConfig:
 PLUGIN_LEVEL_KEYS = frozenset({
     "session_ttl_seconds",
     "max_tracked_sessions",
-    "min_time_between_compactions",
     "enable_semantic_search",
     "core_memory_max_tokens",
     "storage_path",
@@ -199,7 +212,16 @@ class CompactionResult:
     
     # Modified messages
     modified_messages: list[dict[str, Any]] = field(default_factory=list)
-    
+
+    # Message estimate taken right before the first layer that rewrites
+    # messages (see _take_baseline), and the media savings booked until then.
+    estimated_before: int | None = None
+    saved_before_baseline: int = 0
+
+    # What the list looked like when compact() started (see _message_shape):
+    # _finalize compares against it to find the first message a pass changed.
+    shapes_before: list[tuple] | None = field(default=None, repr=False)
+
     @property
     def reduction_percent(self) -> float:
         """Calculate reduction percentage."""
@@ -246,6 +268,11 @@ def _is_retrieval_result(message: dict[str, Any]) -> bool:
 #: Marker of the placeholder Layer 1 leaves where a tool result was externalised.
 TOOL_RESULT_REF_TYPE = "tool_result_ref"
 
+#: Heading of the restoration-block section that explains those placeholders.
+#: The placeholder itself names no way back, so the hook shows the section as
+#: soon as the first one exists (hooks.py, restoration block).
+TOOL_RESULTS_SECTION = "## Tool Results"
+
 #: Marker of the single breadcrumb Pre-Layer P leaves after removing messages.
 #: Without it a bulk removal is invisible to the agent, which is the "kein
 #: stiller Drift" invariant applied to the context: a self-healing step nobody
@@ -285,6 +312,88 @@ _MEDIA_SUBJECTS = {"image": "Image", "image_url": "Image",
 #: Named rather than spelled out four times, because it is the one value whose
 #: appearance means "someone forgot" and not "someone chose".
 _SHARED_SESSION_ID = "default"
+
+
+def _message_shape(msg: dict[str, Any]) -> tuple:
+    """The objects a pass replaces when it rewrites a message.
+
+    References, compared by identity: the passes swap a message dict, reassign
+    its content, or replace/delete items of its content and media lists — all
+    visible here without serializing anything, which matters because compact()
+    runs on every LLM call. Holding the references also keeps a freed object's
+    id from being reused by its replacement.
+    """
+    if not isinstance(msg, dict):
+        return (msg, None, None, None, None)
+    content = msg.get("content")
+    media = msg.get("multimodal_content")
+    return (msg, content, tuple(content) if isinstance(content, list) else None,
+            media, tuple(media) if isinstance(media, list) else None)
+
+
+def _inline_payload(item: dict[str, Any]) -> tuple[int, str] | None:
+    """Length of an inline base64 payload and its mime type, without decoding it.
+
+    The shapes are those of extract_inline_media; that one decodes, and this
+    runs on every call for every media item still in the conversation.
+    """
+    for container, data_key, mime_key in (("source", "data", "media_type"),
+                                          ("inline_data", "data", "mime_type")):
+        box = item.get(container)
+        if isinstance(box, dict) and box.get(data_key):
+            return len(box[data_key]), str(box.get(mime_key) or "")
+    for key in ("image_url", "audio_url", "video_url"):
+        url = item.get(key)
+        if isinstance(url, dict):
+            url = url.get("url")
+        if isinstance(url, str) and ";base64," in url:
+            head, payload = url.split(";base64,", 1)
+            return len(payload), head[5:] if head.startswith("data:") else key[:5] + "/"
+    return None
+
+
+def _media_tokens(item: dict[str, Any]) -> int:
+    """What a media item costs in the prompt — an inline payload as much as a file.
+
+    estimate_inline_data_tokens charges inline images and video 0.25 tokens per
+    base64 character: a 750 KB screenshot 256k tokens, while the same bytes as a
+    file count a few hundred (estimate_file_tokens: 258 per 300 KB tile). The
+    provider sees the same picture either way. With that number an upload held
+    an agent run above Layer 3 for good: every release of the hysteresis ran the
+    cut and trimmed the front of the conversation again. So the inline payload
+    is counted by the file rules, from its decoded size.
+    """
+    if not isinstance(item, dict) or item.get("path") or item.get("duration_seconds") is not None:
+        return estimate_inline_data_tokens(item)
+    payload = _inline_payload(item)
+    if payload is None:
+        return estimate_inline_data_tokens(item)
+    length, mime = payload
+    raw_bytes = length * 3 // 4
+    kind = str(item.get("type") or "")
+    if kind == "audio" or mime.startswith("audio"):
+        return int(raw_bytes / (16 * 1024) * TOKENS_PER_AUDIO_SECOND)
+    if kind == "video" or mime.startswith("video"):
+        return int(raw_bytes / (100 * 1024) * TOKENS_PER_VIDEO_SECOND)
+    return TOKENS_PER_IMAGE * max(1, raw_bytes // (300 * 1024))
+
+
+def _first_changed_index(before: list[tuple], messages: list[dict[str, Any]]) -> int | None:
+    """Position of the first message that differs from its shape in ``before``."""
+    for i, (old, msg) in enumerate(zip(before, messages)):
+        new = _message_shape(msg)
+        if old[0] is not new[0] or old[1] is not new[1] or old[3] is not new[3]:
+            return i
+        for old_items, new_items in ((old[2], new[2]), (old[4], new[4])):
+            if (old_items is None) != (new_items is None):
+                return i
+            if old_items is not None and (
+                    len(old_items) != len(new_items)
+                    or any(a is not b for a, b in zip(old_items, new_items))):
+                return i
+    if len(before) != len(messages):
+        return min(len(before), len(messages))
+    return None
 
 
 class _MediaPick(NamedTuple):
@@ -497,38 +606,6 @@ class LayeredCompactionStrategy:
         
         return total_bytes
     
-    def _build_tool_call_map(self, messages: list[dict[str, Any]]) -> dict[str, list[int]]:
-        """Build map of tool_call_id to related message indices.
-        
-        Returns dict mapping tool_call_id to list of [assistant_idx, tool_result_idx]
-        This ensures tool calls and results are always handled together.
-        """
-        tool_map: dict[str, list[int]] = {}
-        
-        for i, msg in enumerate(messages):
-            role = msg.get("role")
-            
-            # Track assistant messages with tool_calls
-            if role == "assistant":
-                tool_calls = msg.get("tool_calls", [])
-                if tool_calls:
-                    for tc in tool_calls:
-                        tc_id = tc.get("id")
-                        if tc_id:
-                            if tc_id not in tool_map:
-                                tool_map[tc_id] = []
-                            tool_map[tc_id].append(i)
-            
-            # Track tool results
-            elif role == "tool":
-                tc_id = msg.get("tool_call_id")
-                if tc_id:
-                    if tc_id not in tool_map:
-                        tool_map[tc_id] = []
-                    tool_map[tc_id].append(i)
-        
-        return tool_map
-
     def _is_protected(self, msg: dict[str, Any]) -> bool:
         """Messages no layer may remove or archive. One rule, every layer.
 
@@ -552,6 +629,7 @@ class LayeredCompactionStrategy:
         trigger_event: str | None = None,
         session_id: str = "default",
         manual: bool = False,
+        rewrite_layers: bool = True,
     ) -> CompactionResult:
         """Apply layered compaction to messages.
 
@@ -563,6 +641,8 @@ class LayeredCompactionStrategy:
                 runs whatever the token count; what it takes is still decided
                 by its own rules (keep_last, min_size). Layers 2 and 3 keep
                 their thresholds.
+            rewrite_layers: False holds back the layers that rewrite messages
+                (P, 1, 2, 3) — the hook's hysteresis. The media passes still run.
             trigger_event: Optional event that triggered compaction:
                 - 'user_message': New user message arrived
                 - 'final_response': Agent sent final response
@@ -584,7 +664,8 @@ class LayeredCompactionStrategy:
             tokens_saved=0,
             modified_messages=messages.copy()
         )
-        
+        result.shapes_before = [_message_shape(m) for m in result.modified_messages]
+
         # Check byte size - Gemini has 100MB limit, force compaction if exceeded
         request_bytes = self._estimate_request_bytes(messages)
         bytes_exceeded = request_bytes > self.config.max_request_bytes
@@ -634,13 +715,15 @@ class LayeredCompactionStrategy:
         
         # Pre-Layer P: Prune by message count - runs FIRST if message limit exceeded
         # This is independent of token thresholds - too many messages waste API overhead
-        if self.config.max_messages > 0 and len(result.modified_messages) > self.config.max_messages:
+        if (rewrite_layers and self.config.max_messages > 0
+                and len(result.modified_messages) > self.config.max_messages):
             await self._prune_by_message_count(result)
             if result.messages_pruned > 0:
                 result.layers_applied.append("P")
-                # Recalculate tokens after pruning
+                # Recalculate tokens after pruning — on the caller's scale, as
+                # the Layer 2/3 gates below read it (see _scale_offset).
                 result.final_tokens = self._estimate_messages_tokens(result.modified_messages)
-                current_tokens = result.final_tokens
+                current_tokens = result.final_tokens + self._scale_offset(result)
         
         # Pre-Layer M: Always compact media (keep last N) - runs regardless of token count
         # This is the most aggressive media compaction, runs first if enabled
@@ -672,6 +755,9 @@ class LayeredCompactionStrategy:
             if "B" not in result.layers_applied:
                 result.layers_applied.append("B")
         
+        if not rewrite_layers:
+            return self._finalize(result)
+
         # Apply layers progressively based on TOKEN thresholds
         # Layer 1/2/3 should ONLY run based on token thresholds
         # The 'force' flag is used to enter compact() even when below threshold,
@@ -686,7 +772,11 @@ class LayeredCompactionStrategy:
         # and below their thresholds that is not what /compact is for.
         layer1_needed = manual or current_tokens >= self.config.layer1_threshold or bytes_exceeded
         if layer1_needed:
-            await self._apply_layer1(result)
+            # Measured again: the media passes above may already have brought the
+            # request under the limit, and then the newest media stays.
+            await self._apply_layer1(result, bytes_exceeded=bytes_exceeded and (
+                self._estimate_request_bytes(result.modified_messages)
+                > self.config.max_request_bytes))
             result.layers_applied.append(1)
 
             # Check both token AND byte targets
@@ -695,8 +785,16 @@ class LayeredCompactionStrategy:
                 final_bytes <= self.config.target_request_bytes):
                 return self._finalize(result)
 
+        # Layers 2 and 3 read their thresholds on the hook's scale. After Layer 1
+        # final_tokens is an estimate of the messages alone, while the hook
+        # decided on max(provider count, estimate + tool definitions) and the
+        # hysteresis records the deepest layer due on that scale: a reading of
+        # 200,085 over an estimate below 200,000 marked Layer 3 as done without
+        # running it, and held it back for another min_tokens_between_compactions.
+        offset = self._scale_offset(result)
+
         # Layer 2: Only apply if above threshold (turn-based archival)
-        if result.final_tokens >= self.config.layer2_threshold:
+        if result.final_tokens + offset >= self.config.layer2_threshold:
             await self._apply_layer2(result)
             result.layers_applied.append(2)
 
@@ -704,7 +802,7 @@ class LayeredCompactionStrategy:
                 return self._finalize(result)
 
         # Layer 3: Only apply if above threshold (turn-based dropping)
-        if result.final_tokens >= self.config.layer3_threshold:
+        if result.final_tokens + offset >= self.config.layer3_threshold:
             await self._apply_layer3(result)
             result.layers_applied.append(3)
         
@@ -895,7 +993,9 @@ class LayeredCompactionStrategy:
                 messages[msg_idx]["content"][item_idx] = {"type": "text", "text": hint}
 
             evicted += 1
-            result.tokens_saved += estimate_inline_data_tokens(item)
+            # On the scale of _estimate_messages_tokens, or the savings and the
+            # estimate would disagree by the base64 overcount of every item.
+            result.tokens_saved += _media_tokens(item)
             if count_bytes:
                 result.media_bytes_saved += self._estimate_item_bytes(item)
             logger.debug("Evicted media: %s", hint)
@@ -923,6 +1023,16 @@ class LayeredCompactionStrategy:
 
         Nothing is written to disk here, and that is deliberate: the payload is
         still in the conversation a few messages further down.
+
+        The newest stays although the older copy would be the cache-friendly
+        one: evicting the newer writes the hint at the end, while evicting the
+        older rewrites the prompt from that message on. Keeping the older was
+        built and measured wrong twice. Layer 1 keeps media only on the newest
+        tool results and in the last user message, so in the same run it took
+        the older copy too and neither was left. And a path item is identified
+        by its path, not its bytes: a tool that renders again to the same file
+        had its new render hidden behind "shown earlier" — while the old slot,
+        read from disk at call time, carried the new bytes anyway.
         """
         if not self.config.deduplicate_media:
             return
@@ -1305,7 +1415,7 @@ class LayeredCompactionStrategy:
                             f"[{subject} removed - not recoverable. Ask for it "
                             f"again if you still need it.]"),
                     )})
-                    result.tokens_saved += inline_tokens
+                    result.tokens_saved += _media_tokens(item)
                     result.media_compacted_after_event += 1
                     result.media_bytes_saved += item_bytes
                     logger.debug(
@@ -1387,7 +1497,7 @@ class LayeredCompactionStrategy:
         
         return compacted, tokens_saved
     
-    async def _apply_layer1(self, result: CompactionResult) -> None:
+    async def _apply_layer1(self, result: CompactionResult, bytes_exceeded: bool = False) -> None:
         """Layer 1: Reversible compaction.
 
         - Store tool outputs with references (auto-archives large results > max_size)
@@ -1395,6 +1505,7 @@ class LayeredCompactionStrategy:
         - Evict inline media, storing it to disk first
         """
         logger.debug("Applying Layer 1: Reversible compaction")
+        self._take_baseline(result)
 
         messages = result.modified_messages
 
@@ -1403,20 +1514,36 @@ class LayeredCompactionStrategy:
 
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
-            
-            # Process multimodal_content from ANY message (file paths that will be base64-encoded)
-            # This is crucial for tool responses with audio/image files
+            is_tool = msg.get("role") == "tool"
+            if is_tool:
+                tool_results_seen += 1
+
+            # Process multimodal_content (file paths that will be base64-encoded
+            # at call time) — but not on the newest tool results, and not on a
+            # retrieval answer. Those were evicted too: a media file the agent
+            # had just loaded, or had just restored with read(), was gone before
+            # the model ever saw it, so it loaded it again — every call while
+            # the layer fired. Still over the byte limit after the media passes,
+            # nothing is kept: Pre-Layer B never touches the last messages, so a
+            # large file in the newest result stayed in every request and each
+            # one went out over the provider's cap. Only this layer can take it.
             mm_content = msg.get("multimodal_content")
-            if mm_content and isinstance(mm_content, list):
+            keep_media = not bytes_exceeded and is_tool and (
+                tool_results_seen <= self.config.tool_result_keep_last
+                or _is_retrieval_result(msg))
+            if mm_content and isinstance(mm_content, list) and not keep_media:
                 compacted_mm, mm_tokens_saved = await self._compact_multimodal_content_items(mm_content, result, msg)
                 if mm_tokens_saved > 0:
                     messages[i] = {**msg, "multimodal_content": compacted_mm}
                     result.tokens_saved += mm_tokens_saved
-            
-            # Process tool results
-            if msg.get("role") == "tool":
-                tool_results_seen += 1
+                    # Everything below builds on messages[i]. Spreading the old
+                    # msg there put the ORIGINAL multimodal_content back: the
+                    # media stayed in the request while the counters and the
+                    # hint said it was gone.
+                    msg = messages[i]
 
+            # Process tool results
+            if is_tool:
                 # Already a pointer — re-archiving it stores a pointer to a
                 # pointer and gains nothing, the content is long gone from
                 # this message. Layer 2 has this exact guard (see the comment
@@ -1529,20 +1656,21 @@ class LayeredCompactionStrategy:
         - Ensures tool_calls and tool_results are archived together
         """
         logger.debug("Applying Layer 2: Semi-reversible compaction")
-        
+        self._take_baseline(result)
+
         messages = result.modified_messages
-        
-        # Build tool_call mapping to keep pairs together
-        tool_map = self._build_tool_call_map(messages)
-        
+
+        # Tool calls and their results are archived together
+        groups = self._tool_call_groups(messages)
+
         # Find turn boundaries (user messages)
         user_indices = [
             i for i, msg in enumerate(messages) if msg.get("role") == "user"
         ]
-        
+
         # Calculate turn number for each message
         current_turn = len(user_indices)
-        
+
         # Collect indices to archive (including tool_call pairs)
         indices_to_archive = set()
         
@@ -1575,29 +1703,23 @@ class LayeredCompactionStrategy:
             turns_old = current_turn - message_turn
 
             if turns_old >= self.config.archive_after_turns:
-                indices_to_archive.add(i)
-                
-                # If this is a tool call or result, add related messages
-                if role == "assistant" and msg.get("tool_calls"):
-                    for tc in msg.get("tool_calls", []):
-                        tc_id = tc.get("id")
-                        if tc_id and tc_id in tool_map:
-                            indices_to_archive.update(tool_map[tc_id])
-                
-                elif role == "tool":
-                    tc_id = msg.get("tool_call_id")
-                    if tc_id and tc_id in tool_map:
-                        indices_to_archive.update(tool_map[tc_id])
-        
+                indices_to_archive.update(groups.get(i, (i,)))
+
         # Drop placeholders that entered through the tool-pair expansion above:
         # that branch adds indices directly, so the per-message guard never sees
         # them. Measured after guarding only the loop, 13 of 57 entries in a live
         # session were still pointers — all of them halves of a tool pair.
+        # Retrieval answers stay too, as in Layer 1 and the archive path: their
+        # body was just pulled OUT of storage, and putting it back is the loop
+        # _archive_pruned describes.
         indices_to_archive = {i for i in indices_to_archive
-                              if _ref_type(messages[i]) is None}
+                              if _ref_type(messages[i]) is None
+                              and not _is_retrieval_result(messages[i])}
 
-        # Archive collected messages
-        for i in indices_to_archive:
+        # Archive collected messages — in conversation order: the archive
+        # timestamps each row as it is written, and the history listing follows
+        # them. A set iterates in hash order once the indices outgrow its table.
+        for i in sorted(indices_to_archive):
             msg = messages[i]
             original_role = msg.get("role", "system")
             # Wrap sync SQLite operation in thread pool
@@ -1651,24 +1773,23 @@ class LayeredCompactionStrategy:
         the view here is still reachable through the retrieval tools.
         """
         logger.debug("Applying Layer 3: dropping old messages")
-        
+        self._take_baseline(result)
+
         messages = result.modified_messages
-        
-        # Build tool_call mapping to keep pairs together
-        tool_map = self._build_tool_call_map(messages)
-        
+
+        # Tool calls and their results leave together
+        groups = self._tool_call_groups(messages)
+
         # Find turn boundaries
         user_indices = [
             i for i, msg in enumerate(messages) if msg.get("role") == "user"
         ]
         current_turn = len(user_indices)
-        
+
         # Collect indices to remove (including tool_call pairs)
         indices_to_remove = set()
-        
-        for i, msg in enumerate(messages):
-            role = msg.get("role")
 
+        for i, msg in enumerate(messages):
             if self._is_protected(msg):
                 continue
 
@@ -1677,22 +1798,12 @@ class LayeredCompactionStrategy:
             turns_old = current_turn - message_turn
 
             if turns_old >= self.config.drop_after_turns:
-                indices_to_remove.add(i)
-                
-                # If this is a tool call or result, add related messages
-                if role == "assistant" and msg.get("tool_calls"):
-                    for tc in msg.get("tool_calls", []):
-                        tc_id = tc.get("id")
-                        if tc_id and tc_id in tool_map:
-                            indices_to_remove.update(tool_map[tc_id])
-                
-                elif role == "tool":
-                    tc_id = msg.get("tool_call_id")
-                    if tc_id and tc_id in tool_map:
-                        indices_to_remove.update(tool_map[tc_id])
-        
+                indices_to_remove.update(groups.get(i, (i,)))
+
+        indices_to_remove |= self._select_down_to_target(messages, groups, indices_to_remove)
+
         result.messages_dropped = await self._archive_then_remove(
-            messages, indices_to_remove, "Layer 3"
+            result, indices_to_remove, "Layer 3"
         )
 
         # The summaries on the remaining archive references STAY. This pass used
@@ -1713,6 +1824,66 @@ class LayeredCompactionStrategy:
 
         # Note: max_messages limit is now handled by Pre-Layer P at the start of compact()
         # This ensures message count is limited even when token thresholds aren't reached
+
+    def _select_down_to_target(
+        self,
+        messages: list[dict[str, Any]],
+        groups: dict[int, frozenset[int]],
+        selected: set[int],
+    ) -> set[int]:
+        """More of the oldest messages, until what stays is at target_tokens.
+
+        Age alone cut shallow, and shallow cuts are what the prompt cache cannot
+        afford (docs/prompt_cache_design.md par. 3.5: rarely and deep). An agent
+        run is ONE user turn, so nothing was ever old enough: Layer 3 removed
+        nothing and the context grew without bound above every threshold. A chat
+        above the threshold lost the one or two turns that had just aged out —
+        and every such run rewrote the front of the conversation and re-billed
+        the whole prompt, a few calls apart (measured: 225k tokens every 9 calls).
+
+        What stays: system messages and anything else _is_protected keeps, the
+        first user message (the task) and the last one (the API needs it), and
+        the working tail — the newest tool_result_keep_last tool-call units or
+        messages, the same window Layer 1 leaves inline. Units leave whole.
+
+        The estimate counts inline media by what it costs (_media_tokens): at
+        0.25 tokens per base64 character an uploaded image in the protected
+        last user message "weighed" 256k tokens, and the cut emptied a 40-turn
+        chat of 38k real tokens down to five messages on the upload call.
+        """
+        estimate = self._estimate_messages_tokens
+        excess = estimate(messages) - self.config.target_tokens
+        if selected:
+            excess -= estimate([messages[i] for i in sorted(selected)])
+        if excess <= 0:
+            return set()
+
+        protected = {i for i, msg in enumerate(messages) if self._is_protected(msg)}
+        user_indices = [i for i, msg in enumerate(messages) if msg.get("role") == "user"]
+        if user_indices:
+            protected.update((user_indices[0], user_indices[-1]))
+
+        tail_start = len(messages)
+        units = 0
+        i = len(messages) - 1
+        while i >= 0 and units < max(1, self.config.tool_result_keep_last):
+            if i not in protected:
+                tail_start = min(groups.get(i, (i,)))
+                units += 1
+            i = min(tail_start, i) - 1
+
+        chosen: set[int] = set()
+        for i in range(tail_start):
+            if excess <= 0:
+                break
+            if i in protected or i in selected or i in chosen:
+                continue
+            unit = groups.get(i, (i,))
+            if any(j in protected or j >= tail_start for j in unit):
+                continue
+            chosen.update(unit)
+            excess -= estimate([messages[j] for j in sorted(unit)])
+        return chosen
 
     async def _prune_by_message_count(self, result: CompactionResult) -> None:
         """Pre-Layer P: Prune oldest messages to enforce max_messages limit.
@@ -1766,9 +1937,7 @@ class LayeredCompactionStrategy:
             f"Pre-Layer P: {len(messages)} messages exceeds limit of {max_msgs}, "
             f"pruning ~{excess} oldest down to {target}"
         )
-
-        # Build tool_call mapping to keep pairs together
-        tool_map = self._build_tool_call_map(messages)
+        self._take_baseline(result)
 
         protected = {i for i, msg in enumerate(messages)
                      if self._is_protected(msg)}
@@ -1785,11 +1954,11 @@ class LayeredCompactionStrategy:
             protected.add(user_indices[0])
 
         indices_to_remove = self._select_prune_candidates(
-            messages, tool_map, protected, excess
+            messages, protected, excess
         )
 
         pruned_count = await self._archive_then_remove(
-            messages, indices_to_remove, "Pre-Layer P"
+            result, indices_to_remove, "Pre-Layer P"
         )
 
         result.messages_pruned = pruned_count
@@ -1813,7 +1982,6 @@ class LayeredCompactionStrategy:
     def _select_prune_candidates(
         self,
         messages: list[dict[str, Any]],
-        tool_map: dict[str, list[int]],
         protected: set[int],
         excess: int
     ) -> set[int]:
@@ -1838,7 +2006,7 @@ class LayeredCompactionStrategy:
             rank = 0 if ref == TOOL_RESULT_REF_TYPE else 1 if ref else 2
             return (rank, i)
 
-        groups = self._tool_call_groups(messages, tool_map)
+        groups = self._tool_call_groups(messages)
 
         indices_to_remove: set[int] = set()
         for i in sorted(window, key=cost):
@@ -1869,16 +2037,16 @@ class LayeredCompactionStrategy:
     @staticmethod
     def _tool_call_groups(
         messages: list[dict[str, Any]],
-        tool_map: dict[str, list[int]]
     ) -> dict[int, frozenset[int]]:
         """Map each index to the tool-call unit it belongs to.
 
         An assistant with parallel tool_calls plus ALL of its results is one
         indivisible unit: half a pair is a 400 from every provider, and the
         broken list is then persisted and re-sent on every following step.
+        Every layer that moves or removes messages takes its units from here.
 
         Indices with no tool involvement are absent — callers treat that as a
-        group of one. tool_map holds only assistant/tool indices, so a group can
+        group of one. Groups hold only assistant/tool indices, so a group can
         never contain a protected system or user message.
         """
         # Union-find, NOT one set per assistant. A per-assistant dict is
@@ -1903,17 +2071,27 @@ class LayeredCompactionStrategy:
             if root_a != root_b:
                 parent[root_a] = root_b
 
+        # A result belongs to the most recent assistant that issued its id —
+        # by position, not by id alone. Linking every message that shares an id
+        # merged the colliding turns into one unit: Layer 3 then dragged a young
+        # assistant out with an old one and left that assistant's other result
+        # behind as a tool message without its call.
+        issued_by: dict[str, int] = {}
         for i, msg in enumerate(messages):
-            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            role = msg.get("role")
+            if role == "tool":
+                owner = issued_by.get(msg.get("tool_call_id") or "")
+                if owner is not None:
+                    union(owner, i)
+                continue
+            if role != "assistant" or not msg.get("tool_calls"):
                 continue
             find(i)  # an assistant with tool_calls is always its own component
-            linked = False
-            for tc in msg.get("tool_calls", []):
-                tc_id = tc.get("id")
-                for j in tool_map.get(tc_id, ()) if tc_id else ():
-                    union(i, j)
-                    linked = True
-            if not linked:
+            ids = [tc.get("id") for tc in msg.get("tool_calls") or []
+                   if isinstance(tc, dict) and tc.get("id")]
+            for tc_id in ids:
+                issued_by[tc_id] = i
+            if not ids:
                 # tool_calls without usable ids: nothing links the results to
                 # this message, so both halves would be free to move apart.
                 # Absorb the contiguous run of tool messages that follows —
@@ -1936,7 +2114,7 @@ class LayeredCompactionStrategy:
 
     async def _archive_then_remove(
         self,
-        messages: list[dict[str, Any]],
+        result: CompactionResult,
         indices_to_remove: set[int],
         caller: str,
     ) -> int:
@@ -1956,23 +2134,42 @@ class LayeredCompactionStrategy:
         """
         if not indices_to_remove:
             return 0
+        messages = result.modified_messages
 
         snapshot = list(messages)
         selected = [messages[i] for i in sorted(indices_to_remove)]
 
+        # The archive holds text only. Media still inline in a message that is
+        # about to leave would go nowhere: Pre-Layer P runs before every other
+        # media pass, and Layer 3 meets whatever Layer 1 left inline. Save it to
+        # disk first; the hint with its path is text and is archived with it.
+        # On COPIES: eviction rewrites a message in place, and when the archive
+        # write fails the messages stay in the conversation — with their media,
+        # not with a hint claiming it was archived.
+        leaving = CompactionResult(original_tokens=0, final_tokens=0, tokens_saved=0,
+                                   modified_messages=copy.deepcopy(selected))
+        picks = [
+            _MediaPick(msg_idx, item_idx, item, in_mm, self._media_subject(item),
+                       "- archived with its message.")
+            for msg_idx, item_idx, item, in_mm in self._iter_media(leaving.modified_messages)
+        ]
+        if picks:
+            await self._evict_media(leaving, picks, store=True)
+
         # Placeholders are skipped inside: their body is already in a store, and
         # archiving a pointer would only produce a pointer to a pointer.
-        if not await self._archive_pruned(selected):
+        if not await self._archive_pruned(leaving.modified_messages):
             logger.warning(
                 f"{caller}: skipping the removal of {len(selected)} messages — "
                 f"the archive write failed and dropping them would destroy them"
             )
             return 0
+        result.media_bytes_saved += leaving.media_bytes_saved
 
         for idx in sorted(indices_to_remove, reverse=True):
             del messages[idx]
 
-        # Note: _ensure_valid_message_sequence rebuilds tool_map internally at
+        # Note: _ensure_valid_message_sequence rebuilds the tool-call units at
         # each iteration, since indices move as it deletes.
         extra = self._ensure_valid_message_sequence(messages, caller)
 
@@ -1986,9 +2183,21 @@ class LayeredCompactionStrategy:
             # request valid at all, and that cannot be undone. Archive what we
             # can and say so if it fails.
             already = {id(m) for m in selected}
-            if not await self._archive_pruned(
-                [m for m in removed if id(m) not in already]
-            ):
+            extra_messages = [m for m in removed if id(m) not in already]
+            # Their media needs a disk copy as much as the selection's did.
+            # They are out of the list already, so the eviction works on a
+            # list of their own; the dicts are the same objects that get archived.
+            loose = CompactionResult(original_tokens=0, final_tokens=0, tokens_saved=0,
+                                     modified_messages=extra_messages)
+            loose_picks = [
+                _MediaPick(msg_idx, item_idx, item, in_mm, self._media_subject(item),
+                           "- archived with its message.")
+                for msg_idx, item_idx, item, in_mm in self._iter_media(extra_messages)
+            ]
+            if loose_picks:
+                await self._evict_media(loose, loose_picks, store=True)
+                result.media_bytes_saved += loose.media_bytes_saved
+            if not await self._archive_pruned(extra_messages):
                 logger.error(
                     f"{caller}: {extra} messages removed by the sequence fix "
                     f"could not be archived and are lost"
@@ -2126,7 +2335,7 @@ class LayeredCompactionStrategy:
         message must remain for a valid API request. If only one user message is
         left and it's not at the start, we add a minimal fallback user message.
         
-        Note: This method rebuilds tool_map at each iteration since indices change after deletions.
+        Note: This method rebuilds the tool-call units at each iteration since indices change after deletions.
         
         Args:
             messages: List of messages (modified in place)
@@ -2138,9 +2347,9 @@ class LayeredCompactionStrategy:
         extra_removed = 0
         
         while messages:
-            # CRITICAL: Rebuild tool_map at each iteration because indices change after deletions
-            tool_map = self._build_tool_call_map(messages)
-            
+            # Rebuilt each iteration: indices move after deletions
+            groups = self._tool_call_groups(messages)
+
             first_non_system_idx = None
             for i, msg in enumerate(messages):
                 if msg.get("role") != "system":
@@ -2174,22 +2383,11 @@ class LayeredCompactionStrategy:
                 messages.insert(insert_idx, fallback_msg)
                 break
             
-            # First non-system message is not user - need to remove it and related tool messages
-            role = first_msg.get("role")
+            # First non-system message is not user: it goes, with the rest of
+            # its tool-call unit (an assistant's results, a result's assistant).
             indices_to_remove: set[int] = {first_non_system_idx}
-            
-            if role == "assistant" and first_msg.get("tool_calls"):
-                # Remove this assistant message AND all its tool responses
-                for tc in first_msg.get("tool_calls", []):
-                    tc_id = tc.get("id")
-                    if tc_id and tc_id in tool_map:
-                        indices_to_remove.update(tool_map[tc_id])
-            elif role == "tool":
-                # Remove this tool response AND its parent assistant message
-                tc_id = first_msg.get("tool_call_id")
-                if tc_id and tc_id in tool_map:
-                    indices_to_remove.update(tool_map[tc_id])
-            
+            indices_to_remove.update(groups.get(first_non_system_idx, ()))
+
             # Remove these messages
             for idx in sorted(indices_to_remove, reverse=True):
                 if idx < len(messages):
@@ -2223,17 +2421,29 @@ class LayeredCompactionStrategy:
             messages.insert(insert_idx, fallback_msg)
         
         return extra_removed
-        
-        return extra_removed
 
     def _estimate_messages_tokens(self, messages: list[dict[str, Any]]) -> int:
         """Estimate total tokens in messages, aligned with LLM token estimation.
 
         Uses the same estimation path as context_summarizer to avoid drift,
         while skipping media items marked as compacted since they won't be
-        encoded at LLM call time.
+        encoded at LLM call time. Inline media payloads are taken out of that
+        path and counted by _media_tokens instead.
         """
         sanitized_messages: list[dict[str, Any]] = []
+        media_tokens = 0
+
+        def keep(part: Any) -> bool:
+            nonlocal media_tokens
+            if not isinstance(part, dict):
+                return True
+            if part.get("compacted"):
+                return False
+            if (not part.get("path") and part.get("type") in _MEDIA_TYPES
+                    and _inline_payload(part) is not None):
+                media_tokens += _media_tokens(part)
+                return False
+            return True
 
         for msg in messages:
             if not isinstance(msg, dict):
@@ -2241,32 +2451,54 @@ class LayeredCompactionStrategy:
                 continue
 
             msg_copy = dict(msg)
-
-            # Remove compacted multimodal_content items (they are placeholders only)
-            mm_content = msg_copy.get("multimodal_content")
-            if isinstance(mm_content, list):
-                msg_copy["multimodal_content"] = [
-                    item
-                    for item in mm_content
-                    if not (isinstance(item, dict) and item.get("compacted"))
-                ]
-
-            # Remove compacted content parts if any were inserted as placeholders
-            content = msg_copy.get("content")
-            if isinstance(content, list):
-                msg_copy["content"] = [
-                    part
-                    for part in content
-                    if not (isinstance(part, dict) and part.get("compacted"))
-                ]
+            # Placeholders marked compacted leave; inline media is counted apart.
+            for key in ("multimodal_content", "content"):
+                parts = msg_copy.get(key)
+                if isinstance(parts, list):
+                    msg_copy[key] = [part for part in parts if keep(part)]
 
             sanitized_messages.append(msg_copy)
 
-        return estimate_token_count(sanitized_messages)
+        return estimate_token_count(sanitized_messages) + media_tokens
     
+    @staticmethod
+    def _scale_offset(result: CompactionResult) -> int:
+        """How far the caller's token count lies above the message estimate.
+
+        Tool definitions and whatever the provider counts beyond the heuristic.
+        Taken against the estimate before the first rewriting layer, with the
+        media savings booked until then added back, so the offset is not the
+        media the passes just removed. 0 while no layer has taken its baseline.
+        """
+        if result.estimated_before is None:
+            return 0
+        return max(0, result.original_tokens - result.saved_before_baseline
+                   - result.estimated_before)
+
+    def _take_baseline(self, result: CompactionResult) -> None:
+        """Estimate the messages once, before the first layer rewrites them.
+
+        tokens_saved used to be original_tokens - final_tokens: the first is
+        what the hook measured (real prompt tokens, tool definitions included),
+        the second a messages-only estimate. A layer that changed nothing still
+        "saved" the tool definitions — and that positive number made every such
+        call count as a compaction: status line, history write, usage-tracker
+        invalidation. Both sides of the difference now come from the estimate.
+        Taken lazily because an estimate of a large session costs ~50 ms and the
+        media-only passes, which run on every call, book their own savings.
+        """
+        if result.estimated_before is None:
+            result.estimated_before = self._estimate_messages_tokens(result.modified_messages)
+            result.saved_before_baseline = result.tokens_saved
+
     def _finalize(self, result: CompactionResult) -> CompactionResult:
         """Finalize compaction result."""
-        result.tokens_saved = result.original_tokens - result.final_tokens
+        if result.estimated_before is not None:
+            result.tokens_saved = result.saved_before_baseline + max(
+                0, result.estimated_before - self._estimate_messages_tokens(result.modified_messages))
+        # else: only media passes ran, and they booked their savings themselves.
+        # Reported on the scale of original_tokens, so the two stay comparable.
+        result.final_tokens = max(0, result.original_tokens - result.tokens_saved)
 
         # THE INVARIANT (utils/reasoning_artifacts.py): provider reasoning
         # artifacts (OpenAI encrypted reasoning items, Gemini thought
@@ -2288,7 +2520,17 @@ class LayeredCompactionStrategy:
             + result.messages_pruned
         ) > 0 or result.media_bytes_saved > 0
         if mutated:
-            invalidated = invalidate_reasoning_artifacts(result.modified_messages)
+            # Only from the first changed message on. An assistant turn before
+            # it was produced by a history that is still byte-identical, so its
+            # artifacts still verify. Stripping all of them turned the eviction
+            # of one image near the end into a rewrite of every replayed turn
+            # (the Responses client sends them verbatim): measured, the break
+            # moved from message 101 to message 2 and re-billed 10x as much.
+            start = 0
+            if result.shapes_before is not None:
+                first = _first_changed_index(result.shapes_before, result.modified_messages)
+                start = 0 if first is None else first
+            invalidated = invalidate_reasoning_artifacts(result.modified_messages, start=start)
             if invalidated:
                 logger.info(
                     f"Compaction mutated history -> invalidated reasoning "
@@ -2334,7 +2576,7 @@ class LayeredCompactionStrategy:
         tool_stats = await asyncio.to_thread(self.tool_store.get_stats)
         if tool_stats["total_entries"] > 0:
             sections.append(
-                "## Tool Results\n"
+                f"{TOOL_RESULTS_SECTION}\n"
                 "Some tool results have been stored externally. When you see a JSON "
                 "reference with `type: tool_result_ref`, use list(section='tool_results') "
                 "to see what it contains, then read(ref=ref_id, find=\"...\") for just "

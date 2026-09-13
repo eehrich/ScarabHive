@@ -638,34 +638,72 @@ class TestLayeredCompactionStrategy:
         assert result.tokens_saved >= 0
 
     async def test_mutation_invalidates_reasoning_artifacts(self, strategy_components):
-        """DIE INVARIANTE: mutiert Compaction die History (Tool-Result→Ref),
-        müssen provider reasoning artifacts invalidiert werden — ältere
-        reasoning_details gestrippt, die letzte Assistant-Message rd_orphaned
-        geflaggt. Sonst 400 'encrypted content could not be verified' später
-        im Lauf (OpenAI-Kette über die exakte History gebrochen)."""
+        """THE INVARIANT: when compaction mutates the history, the provider
+        reasoning artifacts produced AFTER the first change are invalidated —
+        older reasoning_details stripped, the last assistant flagged
+        rd_orphaned. Otherwise a later call fails with 400 'encrypted content
+        could not be verified'. Turns BEFORE the first change keep theirs: the
+        history that produced them is unchanged, and stripping them rewrote
+        every replayed turn, moving the prompt-cache break to the front."""
         strategy = strategy_components["strategy"]
 
-        large1 = "word " * 200
-        large2 = "test " * 200
         rd = lambda i: [{"type": "reasoning.encrypted", "id": f"rs_{i}", "data": f"blob{i}"}]
         messages = [
-            {"role": "user", "content": "Read the file"},
+            {"role": "user", "content": "Read the files"},
             {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "read"}}],
              "reasoning_details": rd(1)},
-            {"role": "tool", "name": "read_file", "tool_call_id": "c1", "content": large1},
+            {"role": "tool", "name": "read_file", "tool_call_id": "c1", "content": "word " * 200},
             {"role": "assistant", "tool_calls": [{"id": "c2", "function": {"name": "read"}}],
              "reasoning_details": rd(2)},
-            {"role": "tool", "name": "read_file", "tool_call_id": "c2", "content": large2},
+            {"role": "tool", "name": "read_file", "tool_call_id": "c2", "content": "test " * 200},
+            {"role": "assistant", "tool_calls": [{"id": "c3", "function": {"name": "read"}}],
+             "reasoning_details": rd(3)},
+            {"role": "tool", "name": "read_file", "tool_call_id": "c3", "content": "more " * 200},
             {"role": "user", "content": "Latest question"},
         ]
 
-        result = await strategy.compact(messages, current_tokens=800, force=True)
-        assert result.tool_results_stored >= 1, "Vorbedingung: Mutation ist passiert"
+        result = await strategy.compact(messages, current_tokens=1200, force=True)
+        out = result.modified_messages
+        assert result.tool_results_stored >= 1, "precondition: the history was mutated"
+        assert out[2] is not messages[2], "precondition: the first change is the first result"
 
-        assistants = [m for m in result.modified_messages if m.get("role") == "assistant"]
-        assert "reasoning_details" not in assistants[0], "ältere Kettenglieder gestrippt"
-        assert assistants[-1].get("reasoning_details"), "letzte behält (Gemini-Roundtrip)"
-        assert assistants[-1].get("rd_orphaned") is True, "letzte als orphaned geflaggt"
+        assert out[1].get("reasoning_details") == rd(1), "a turn before the change was stripped"
+        assert "reasoning_details" not in out[3], "a turn after the change kept stale artifacts"
+        assert out[5].get("reasoning_details"), "the last keeps them (Gemini round trip)"
+        assert out[5].get("rd_orphaned") is True, "the last is flagged orphaned"
+
+    async def test_media_evicted_in_place_counts_as_the_first_change(self, strategy_components):
+        """Eviction replaces an item INSIDE the message's content list: the dict
+        and the list stay the same objects, only the item changes."""
+        import base64
+
+        strategy = strategy_components["strategy"]
+        strategy.config.always_compact_media_keep_last = 1
+        rd = lambda i: [{"type": "reasoning.encrypted", "id": f"rs_{i}", "data": f"blob{i}"}]
+        image = lambda: {"type": "image", "source": {
+            "type": "base64", "media_type": "image/png",
+            "data": base64.b64encode(b"x" * 30_000).decode()}}
+        messages = [
+            {"role": "user", "content": "look at both"},
+            {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "shot"}}],
+             "reasoning_details": rd(1)},
+            {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "one"}, image()]},
+            {"role": "assistant", "tool_calls": [{"id": "c2", "function": {"name": "shot"}}],
+             "reasoning_details": rd(2)},
+            {"role": "tool", "tool_call_id": "c2", "content": [{"type": "text", "text": "two"}, image()]},
+            {"role": "assistant", "content": "compared", "reasoning_details": rd(3)},
+            {"role": "user", "content": "and now?"},
+        ]
+        content_before = messages[2]["content"]
+
+        result = await strategy.compact(messages, current_tokens=100)
+        out = result.modified_messages
+
+        assert out[2] is messages[2] and out[2]["content"] is content_before, (
+            "precondition: the eviction happened in place")
+        assert out[2]["content"][1]["type"] == "text", "precondition: the first image was evicted"
+        assert out[1].get("reasoning_details") == rd(1), "a turn before the change was stripped"
+        assert "reasoning_details" not in out[3], "a turn after the change kept stale artifacts"
 
     async def test_no_mutation_keeps_reasoning_artifacts(self, strategy_components):
         """Ohne Mutation bleiben reasoning_details unangetastet — kein
@@ -814,8 +852,8 @@ class TestLayeredCompactionStrategy:
         strategy = strategy_components["strategy"]
         strategy.config.tool_result_min_size = 100  # Lower threshold for test
         
-        # Large audio base64 data (~4000 chars = 1000 tokens)
-        large_audio_base64 = "A" * 4000
+        # Large audio: 2.2M base64 chars = 1.65 MB, about 100 s = ~4,000 tokens
+        large_audio_base64 = "A" * 2_200_000
         
         messages = [
             # First user message with audio (will be compacted - not the last user msg)
@@ -844,7 +882,7 @@ class TestLayeredCompactionStrategy:
         assert len(placeholders) == 1
         
         # Verify tokens were saved
-        assert result.tokens_saved > 500  # Removed ~1000 token audio
+        assert result.tokens_saved > 500  # Removed ~4,000 token audio
 
     @pytest.mark.asyncio
     async def test_compact_multimodal_preserves_small_audio(self, strategy_components):
@@ -909,28 +947,30 @@ class TestLayeredCompactionStrategy:
         """Test that _estimate_messages_tokens counts inline data tokens."""
         strategy = strategy_components["strategy"]
         
-        # Create message with large base64 audio (4000 chars = ~1000 tokens)
-        large_audio_base64 = "D" * 4000
-        
+        # Large base64 audio: 2.2M chars = 1.65 MB, about 100 s = ~4,000 tokens.
+        # Counted by duration like an audio file, not at 0.25 tokens per char.
+        large_audio_base64 = "D" * 2_200_000
+
         messages = [
             {"role": "user", "content": [
                 {"type": "text", "text": "Hello"},  # ~1 token
-                {"type": "audio", "source": {"type": "base64", "data": large_audio_base64}}  # ~1000 tokens
+                {"type": "audio", "source": {"type": "base64", "data": large_audio_base64}}
             ]}
         ]
-        
+
         tokens = strategy._estimate_messages_tokens(messages)
-        
-        # Should be text tokens + inline data tokens + overhead
-        # ~1 (text) + ~1000 (audio) + 4 (overhead) = ~1005
-        assert tokens > 900  # Should include inline data
+
+        assert 3_000 < tokens < 10_000, tokens
 
     @pytest.mark.asyncio
     async def test_compact_multimodal_content_with_file_paths(self, strategy_components, tmp_path):
         """Test that multimodal_content with file paths is compacted but path is preserved."""
         strategy = strategy_components["strategy"]
         strategy.config.tool_result_min_size = 100  # Lower threshold
-        
+        # The eviction mechanics are under test, not recency: with the default
+        # the only tool result is also the newest, whose media Layer 1 keeps.
+        strategy.config.tool_result_keep_last = 0
+
         # Create a large audio file (100KB = ~33,000 tokens)
         audio_file = tmp_path / "test_audio.wav"
         audio_file.write_bytes(b"x" * 100_000)
@@ -974,8 +1014,11 @@ class TestLayeredCompactionStrategy:
         # here is why the model paged blindly instead of restoring the file.
         assert "read(ref=" in content
         
-        # Should have saved significant tokens (~33K)
-        assert result.tokens_saved > 30_000
+        # Saved on the scale of the message estimate. This used to assert
+        # > 30 000, which only held because tokens_saved subtracted a messages-
+        # only estimate from the 35 000 passed in as current_tokens.
+        assert 0 < result.tokens_saved < result.original_tokens
+        assert result.final_tokens == result.original_tokens - result.tokens_saved
 
     @pytest.mark.asyncio
     async def test_estimate_messages_tokens_includes_multimodal_content_files(self, strategy_components, tmp_path):
@@ -2645,7 +2688,6 @@ class TestSessionEvictionSkipsActiveCompactions:
         hooks = ContextEngineerPlugin.__new__(ContextEngineerPlugin)
         hooks._session_components = {}
         hooks._active_compactions = set()
-        hooks._last_compaction_time = {}
         hooks._session_ttl_seconds = 0.0  # everything is "expired" by TTL
         hooks._max_tracked_sessions = 1   # force LRU pressure too
         return hooks, MagicMock

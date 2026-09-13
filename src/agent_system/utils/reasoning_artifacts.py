@@ -256,7 +256,7 @@ def strip_all_reasoning_artifacts(messages: list) -> int:
     return touched
 
 
-def invalidate_reasoning_artifacts(messages: list) -> int:
+def invalidate_reasoning_artifacts(messages: list, start: int = 0) -> int:
     """Invalidate provider reasoning artifacts after a history mutation.
 
     Call this AFTER any in-place mutation of persisted conversation history
@@ -269,6 +269,10 @@ def invalidate_reasoning_artifacts(messages: list) -> int:
 
     Args:
         messages: the (already mutated) conversation history, oldest first.
+        start: index of the first message the mutation changed. Assistant
+            turns before it came from a history that is unchanged, so their
+            artifacts stay — stripping them would rewrite every replayed turn
+            and move the prompt-cache break to the front of the conversation.
 
     Returns:
         Number of messages whose reasoning artifacts were stripped or flagged.
@@ -284,7 +288,7 @@ def invalidate_reasoning_artifacts(messages: list) -> int:
         return 0
 
     for i, msg in enumerate(messages):
-        if _get(msg, "role") != "assistant":
+        if i < start or _get(msg, "role") != "assistant":
             continue
         if i == last_assistant_idx:
             if _get(msg, "reasoning_details"):

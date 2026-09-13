@@ -214,8 +214,11 @@ class MediaStore:
         # First pass: remove expired files
         expired_hashes = []
         for data_hash, meta in list(self._metadata.items()):
-            created_at = meta.get("created_at", 0)
-            if now - created_at > self.ttl_seconds:
+            # Idle time, not age: storing the same bytes again refreshes only
+            # last_accessed and hands out the existing path in a new hint —
+            # expiring by created_at deleted a file that hint had just named.
+            last_used = meta.get("last_accessed") or meta.get("created_at", 0)
+            if now - last_used > self.ttl_seconds:
                 expired_hashes.append(data_hash)
         
         for data_hash in expired_hashes:

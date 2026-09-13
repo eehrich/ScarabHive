@@ -46,7 +46,7 @@ plugins:
               target_tokens: 8000000
               # Der einzige Weg in compact() hinein — derselbe wie im Betrieb.
               compact_media_after_user_message: true
-              min_time_between_compactions: 0
+              min_tokens_between_compactions: 0
               # Und der einzige Mechanismus, der dort etwas tut.
               #
               # NICHT kleiner setzen: Pre-Layer P sucht seine Kandidaten unter

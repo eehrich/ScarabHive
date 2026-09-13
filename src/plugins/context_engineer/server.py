@@ -209,7 +209,11 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 importance=importance,
                 session_id=session_id
             )
-            
+            if not result.get("success"):
+                if status:
+                    await status.error(result["error"])
+                return {"status": "error", **result}
+
             if status:
                 await status.end(f"Stored fact: {fact[:50]}...")
             
@@ -300,10 +304,26 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             if status:
                 await status.progress(f"Compacting {len(messages)} messages...")
             
-            # Create hook context with manual trigger flag
-            # manual_trigger=True causes hook to bypass threshold checks
+            # manual_trigger=True bypasses the threshold gate and the hysteresis.
+            # Only for a person: a /compact typed at the prompt arrives through
+            # run_plugin_command, which dispatches without a request id. The
+            # model calling this tool mid-run always has one — and it called it
+            # "proactively" every few steps, far below the threshold, each call
+            # a rewrite of the prompt and a cache break the hysteresis never saw.
+            # For the model the automatic rules apply.
+            by_person = not params.get("_request_id")
             from agent_system.hooks import HookContext, HookType
-            
+
+            # The agent's own hooks.overrides for this hook, as the registry
+            # hands them to the pre-LLM call — without them a /compact that
+            # came first compacted with the plugin defaults.
+            hooks_cfg = getattr(getattr(agent, "agent_config", None), "hooks", None)
+            override = (getattr(hooks_cfg, "overrides", None) or {}).get(
+                f"{self.name}.engineer_context") or {}
+            hook_config = {k: v for k, v in override.items()
+                           if k not in ("enabled", "timeout", "order")} \
+                if isinstance(override, dict) else {}
+
             hook_context = HookContext(
                 hook_type=HookType.PRE_LLM_CALL,
                 request_id=session_id,
@@ -312,7 +332,11 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 agent=agent,
                 agent_name=agent.name if hasattr(agent, "name") else "unknown",
                 llm=agent.llm if hasattr(agent, "llm") else None,
-                metadata={"manual_trigger": True}
+                # The system prompt is filtered out above: this reading is not
+                # comparable with the pre-LLM call's and must not move the
+                # hysteresis base.
+                metadata={"manual_trigger": by_person, "partial_view": True},
+                hook_config=hook_config,
             )
             
             # Execute compaction
@@ -328,7 +352,12 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             # We can't modify the request's local messages list directly, so we store
             # the compacted messages in the session tracker. The agent will use these
             # when persisting the session at end of request.
-            if result.modified and result.context and result.context.messages:
+            # Only when something changed: the agent rebuilds its list from a
+            # staged history as [system prompt] + staged + tool messages, which
+            # drops every other leading system message — a prompt rewrite of its
+            # own, for a run that compacted nothing.
+            if (result.modified and (result.metadata or {}).get("compacted")
+                    and result.context and result.context.messages):
                 agent._session_tracker.set_compacted_messages(
                     session_id, result.context.messages
                 )

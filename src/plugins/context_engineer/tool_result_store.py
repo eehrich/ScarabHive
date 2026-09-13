@@ -226,13 +226,27 @@ class ToolResultStore:
         # Estimate tokens
         token_count = estimate_content_tokens(content)
 
-        # Create short ID for reference (collision-resistant hash of full tool_call_id —
+        # A tool_call_id is not unique within a session: the Gemini batch client
+        # mints `call_{name}_{index}`, which repeats across assistant turns. With
+        # the id as the key, the second result REPLACED the first and both
+        # placeholders pointed at the survivor — read() handed one turn's body
+        # to the other and the first was gone. A different body under a taken
+        # id gets a row of its own; the same body under the same id is the same
+        # row, as before.
+        row_id = tool_call_id
+        taken = self._db.execute(
+            "SELECT content_hash FROM tool_results WHERE id = ?", (tool_call_id,)
+        ).fetchone()
+        if taken and taken[0] != content_hash:
+            row_id = f"{tool_call_id}#{content_hash}"
+
+        # Create short ID for reference (collision-resistant hash of the row id —
         # independent of prefix style: 'call_', 'tool_', or anything else).
-        short_id = _compute_short_id(tool_call_id)
+        short_id = _compute_short_id(row_id)
 
         # Store in database
         entry = ToolResultEntry(
-            id=tool_call_id,
+            id=row_id,
             tool_name=tool_name,
             content=content,
             content_hash=content_hash,
