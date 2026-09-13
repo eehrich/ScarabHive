@@ -54,7 +54,6 @@ async def test_full_index_build(file_ops_server, tmp_allowed_dir):
     
     # Verify all files are indexed
     assert len(file_ops_server.search_engine.file_mtimes) == 3
-    assert len(file_ops_server.search_engine.file_name_index) == 3
 
 
 @pytest.mark.asyncio
@@ -81,7 +80,6 @@ async def test_incremental_no_changes(file_ops_server, tmp_allowed_dir):
     
     # Index should be unchanged
     assert file_ops_server.search_engine.file_mtimes == initial_mtimes
-    assert len(file_ops_server.search_engine.file_name_index) == 2
 
 
 @pytest.mark.asyncio
@@ -161,9 +159,6 @@ async def test_incremental_file_deleted(file_ops_server, tmp_allowed_dir):
     assert len(file_ops_server.search_engine.file_mtimes) == 1
     assert file1 in file_ops_server.search_engine.file_mtimes
     assert file2 not in file_ops_server.search_engine.file_mtimes
-    
-    # Deleted file should not be in file index
-    assert "delete.py" not in file_ops_server.search_engine.file_name_index
 
 
 @pytest.mark.asyncio
@@ -229,8 +224,8 @@ async def test_ensure_index_fresh_throttling(file_ops_server, tmp_allowed_dir):
 
 
 @pytest.mark.asyncio
-async def test_search_triggers_incremental_update(file_ops_server, tmp_allowed_dir):
-    """Test that search operations trigger incremental updates."""
+async def test_search_sees_files_added_after_the_index_was_built(file_ops_server, tmp_allowed_dir):
+    """A glob walks the disk, so a stale index cannot hide a new file."""
     # Create initial file
     (tmp_allowed_dir / "file1.py").write_text("old content")
     
@@ -244,11 +239,10 @@ async def test_search_triggers_incremental_update(file_ops_server, tmp_allowed_d
     # Mark as needing update (simulate time passing)
     file_ops_server.search_engine._last_incremental_update = time.time() - 31
     
-    # Search should trigger incremental update
     result = await file_ops_server.search_engine.search_files("*.py")
     
     assert result["status"] == "success"
-    # Both files should be found (new file was indexed)
+    # Both files are found, the new one included
     assert result["total_found"] >= 2
 
 
@@ -274,39 +268,6 @@ async def test_background_indexer_incremental(file_ops_server, tmp_allowed_dir):
     # Should be fast (incremental)
     assert elapsed < 1.0
     assert len(file_ops_server.search_engine.file_mtimes) == 2
-
-
-@pytest.mark.asyncio
-async def test_incremental_preserves_unchanged_text_index(file_ops_server, tmp_allowed_dir):
-    """Test that incremental update preserves text index for unchanged files."""
-    # Create files with searchable content
-    (tmp_allowed_dir / "file1.py").write_text("function important_function")
-    (tmp_allowed_dir / "file2.py").write_text("class ImportantClass")
-    
-    # Build initial index
-    await file_ops_server.search_engine.rebuild_index(incremental=False)
-    
-    # Store text index state
-    text_index_before = file_ops_server.search_engine.text_index.copy()
-    
-    # Modify only file2
-    await asyncio.sleep(0.1)
-    (tmp_allowed_dir / "file2.py").write_text("class DifferentClass")
-    
-    # Incremental update
-    await file_ops_server.search_engine.rebuild_index(incremental=True)
-    
-    # file1 text index should be unchanged
-    # Check that "important" from file1 is still in index
-    file1_path = tmp_allowed_dir / "file1.py"
-    if "important" in text_index_before:
-        # Should still find file1 in the index for "important"
-        assert any(path == file1_path for path, _ in file_ops_server.search_engine.text_index.get("important", []))
-    
-    # file2 should have new words indexed
-    if "different" in file_ops_server.search_engine.text_index:
-        file2_path = tmp_allowed_dir / "file2.py"
-        assert any(path == file2_path for path, _ in file_ops_server.search_engine.text_index["different"])
 
 
 @pytest.mark.asyncio 

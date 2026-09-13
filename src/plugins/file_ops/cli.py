@@ -174,10 +174,6 @@ async def cmd_search(args: Namespace) -> dict[str, Any]:
     search_dir = Path(args.search_dir or ".").absolute()
     server = create_test_server([str(search_dir)])
 
-    # Enable indexing for search
-    server.search_engine.config["enable_indexing"] = True
-    await server.search_engine.rebuild_index()
-
     params: dict[str, Any] = {
         "pattern": args.pattern,
     }
@@ -197,10 +193,6 @@ async def cmd_grep(args: Namespace) -> dict[str, Any]:
     """Search file contents with grep."""
     search_dir = Path(args.search_dir or ".").absolute()
     server = create_test_server([str(search_dir)])
-
-    # Enable indexing for search
-    server.search_engine.config["enable_indexing"] = True
-    await server.search_engine.rebuild_index()
 
     params: dict[str, Any] = {
         "query": args.query,

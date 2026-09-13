@@ -250,8 +250,8 @@ class TestPromptsMatchTheToolset:
 
 
 class TestDeadToolStaysBlocked:
-    """With embeddings off, semantic_search reports success with zero hits, so
-    'nothing found' is indistinguishable from 'the feature is off'."""
+    """With embeddings off, semantic_search can only answer
+    SemanticSearchDisabled, so offering it costs the agent a turn."""
 
     @pytest.mark.parametrize(
         "agent,instance",

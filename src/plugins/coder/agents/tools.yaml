@@ -20,19 +20,25 @@ plugins:
         # The project workspace the harness builds in.
         - data/workspace/
         # Its own skills: the harness may correct the discipline it works by.
-        # Everything else about this plugin (agents, prompts) stays out of
-        # reach — an agent that can rewrite its own tool allowlist has none.
         - src/plugins/coder/skills/
+        # The repository itself. With `.` in the list the two entries above
+        # are contained in it, and so is this file: the coder can rewrite its
+        # own tool allowlist. Drop `src/` and `.` to get that boundary back.
+        #
+        # Search stays cheap all the same: overlapping roots are walked once,
+        # and gitignored trees (data/sessions, data/message_debugger) are
+        # pruned — while data/workspace stays searchable, because a configured
+        # root is never hidden by an ignore rule of the root above it.
+        - src/
+        - .
       max_file_size_mb: 10
       max_unpaginated_file_size_kb: 200
       default_line_limit: 500
       search:
-        # Text/filename indexes are in-memory dicts and grep_search needs
-        # them, so indexing stays on. Semantic search stays off (the default):
-        # it is the only part that persists a ChromaDB store to disk, and
-        # grep over a code tree does not need embeddings.
-        enable_indexing: true
-        index_on_startup: true
+        # grep_search and search_files walk the disk and need no index.
+        # Semantic search stays off (the file_ops default): it is the only part
+        # that builds an index and persists a ChromaDB store, and grep over a
+        # code tree does not need embeddings.
         exclude_patterns:
           - '**/.git/**'
           - '**/__pycache__/**'
@@ -47,24 +53,21 @@ plugins:
     # a sentence in a prompt: in read_only mode file_ops does not even render
     # its write tools into the schema, and the server rejects them a second
     # time if one is called anyway.
-    #
-    # A second instance means a second in-memory index over the same tree.
-    # That is the price of the guarantee, and it is only paid while a
-    # read-only sub-agent is actually running.
     coder_fs_ro:
       type: file_ops
       enabled: true
       description: "coder harness: read-only file access for reviewer and explorer"
       read_only: true
+      # Identical to coder_fs, see the header.
       allowed_directories:
         - data/workspace/
         - src/plugins/coder/skills/
+        - src/
+        - .
       max_file_size_mb: 10
       max_unpaginated_file_size_kb: 200
       default_line_limit: 500
       search:
-        enable_indexing: true
-        index_on_startup: true
         exclude_patterns:
           - '**/.git/**'
           - '**/__pycache__/**'

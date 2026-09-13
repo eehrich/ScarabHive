@@ -112,8 +112,14 @@ tools:
     function:
       name: "{{ name }}_search_files"
       description: |
-        Search for files by name pattern using glob syntax. Fast indexed search.
+        Search for files by name pattern using glob syntax.
         Examples: "*.py", "**/*.test.ts", "src/**/models/*.py"
+
+        Files hidden by .gitignore, by the configured exclude patterns and
+        dotfiles are skipped by default — that is what keeps the search fast on a large
+        tree. The answer always reports which filters were active, so an empty
+        result can be told apart from "it is there, behind a filter". Set
+        include_ignored when you need to be sure.
       parameters:
         type: object
         properties:
@@ -126,6 +132,10 @@ tools:
             maximum: 500
             default: 50
             description: "Maximum number of files to return"
+          include_ignored:
+            type: boolean
+            default: false
+            description: "Also search ignored, excluded and hidden files. A full walk: minutes on a large tree, so keep the pattern narrow"
         required: ["pattern"]
         additionalProperties: false
 
@@ -134,7 +144,12 @@ tools:
       name: "{{ name }}_grep_search"
       description: |
         Search for text patterns across files. Supports literal strings and regex.
-        Similar to GitHub Copilot's grep_search tool - fast indexed search with context.
+        Returns matching lines with surrounding context.
+
+        Files hidden by .gitignore, by the configured exclude patterns and
+        dotfiles are skipped by default. The answer reports which filters were active, so
+        "no matches" does not have to mean "not in the codebase" — set
+        include_ignored to search those as well.
       parameters:
         type: object
         properties:
@@ -164,6 +179,10 @@ tools:
             maximum: 10
             default: 2
             description: "Number of context lines before/after match"
+          include_ignored:
+            type: boolean
+            default: false
+            description: "Also search ignored, excluded and hidden files. A full walk: minutes on a large tree, so keep the pattern narrow"
         required: ["query"]
         additionalProperties: false
 
@@ -180,6 +199,8 @@ tools:
           - "error handling patterns" → locates try/except blocks, error classes
 
         Better than grep for conceptual searches where exact keywords vary.
+        Off unless configured: a disabled instance answers with an error, not
+        with an empty result.
       parameters:
         type: object
         properties:
@@ -226,13 +247,22 @@ config:
     maximum: 10000
   
   search:
+    # These govern the SEMANTIC index only, and it is built on the first
+    # semantic_search call. search_files and grep_search walk the disk and never
+    # wait for an index — that wait was the reason a glob over a large tree did
+    # not return within 150 seconds.
     enable_indexing: true
     index_on_startup: true
-    # Requires ChromaDB Python package for vector embeddings and similarity search
-    enable_semantic_search: true
+    # Requires ChromaDB Python package for vector embeddings and similarity search.
+    # Off unless configured — the server defaults it to false.
+    enable_semantic_search: false
     auto_reindex_interval: 3600
-    # Exclude patterns optimize indexing performance by skipping large binary/generated files
-    # Also reduces memory usage and search noise
+
+    # Search dotfiles and dot-directories as well.
+    search_hidden: false
+
+    # Skipped by BOTH the index and the text search, and reported as skipped
+    # rather than silently dropped. Matched relative to each allowed directory.
     exclude_patterns:
       - '**/.git/**'
       - '**/__pycache__/**'

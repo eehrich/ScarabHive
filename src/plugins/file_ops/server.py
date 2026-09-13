@@ -533,11 +533,13 @@ class FileOpsServer(SchemaBasedMCPServer):
         try:
             pattern = params["pattern"]
             max_results = params.get("max_results", 50)
+            include_ignored = params.get("include_ignored", False)
 
             if status:
                 await status.progress(f"Searching files: {pattern}")
 
-            result = await self.search_engine.search_files(pattern, max_results)
+            result = await self.search_engine.search_files(
+                pattern, max_results, include_ignored=include_ignored)
 
             if status:
                 found = result.get("total_found", 0)
@@ -572,6 +574,7 @@ class FileOpsServer(SchemaBasedMCPServer):
             case_sensitive = params.get("case_sensitive", False)
             max_results = params.get("max_results", 100)
             context_lines = params.get("context_lines", 2)
+            include_ignored = params.get("include_ignored", False)
 
             if status:
                 msg = f"Searching text: '{query[:40]}...'"
@@ -585,7 +588,8 @@ class FileOpsServer(SchemaBasedMCPServer):
                 include_pattern=include_pattern,
                 case_sensitive=case_sensitive,
                 max_results=max_results,
-                context_lines=context_lines
+                context_lines=context_lines,
+                include_ignored=include_ignored
             )
 
             if status:

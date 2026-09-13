@@ -200,11 +200,9 @@ worth it once the bundle actually holds conventions — add it then.
 ## One tool is deliberately blocked
 
 `semantic_search` is in `tools.blocked` for all four agents. With ChromaDB
-embeddings off — the default — it does not fail: it returns
-`status: success` with zero results, so "nothing found" is indistinguishable
-from "the feature is off", and the call quietly creates an empty vector store
-on disk on the way. `grep_search` covers the need. Turn the embeddings on
-first if you ever want it back.
+embeddings off — the default — every call answers `SemanticSearchDisabled`, so
+offering it only costs the agent a turn. `grep_search` covers the need. Turn
+the embeddings on first if you ever want it back.
 
 Note the doubled name in that pattern — `coder_fs/coder_fs_semantic_search` —
 because a `server/tool` pattern is matched **exactly** against

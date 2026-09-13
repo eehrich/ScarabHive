@@ -53,13 +53,10 @@ plugins:
             - "skills/*"
             - "sequential_thinking/*"
 
-          # semantic_search is dead weight here and worse than useless: with
-          # ChromaDB embeddings off (the default) it still reports
-          # status=success with zero hits, so "nothing found" is
-          # indistinguishable from "the feature is off" — and the call
-          # creates an empty vector store on disk as a side effect.
-          # grep_search covers the need. Enable embeddings first if you ever
-          # want this back.
+          # semantic_search is dead weight here: with ChromaDB embeddings off
+          # (the default) every call answers SemanticSearchDisabled, so
+          # offering it only costs a turn. grep_search covers the need.
+          # Enable embeddings first if you ever want this back.
           # Note the doubled name -- that is the house convention and it is
           # correct: a "server/tool" pattern is matched EXACTLY against
           # server_name + "/" + tool_name, and the tool name already carries

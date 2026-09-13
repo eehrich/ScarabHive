@@ -42,27 +42,32 @@ def workspace_config():
 
 
 @pytest.mark.asyncio
-async def test_grep_search_on_demand_indexing(workspace_config):
-    """Test that grep search triggers index build on first use."""
+async def test_grep_search_needs_no_index(workspace_config):
+    """Grep answers WITHOUT building an index — that wait was the whole bug.
+
+    The previous contract was the opposite: the first grep triggered a full
+    index build and waited for it. Measured on this repository with the coder
+    configuration, one such call had not returned after 150 seconds, because
+    the index reads every file before answering a question about a few. The
+    index still exists for semantic search; nothing else waits for it.
+    """
     system_config, mcp_config = workspace_config
     server = FileOpsServer("test", system_config, mcp_config)
-    
-    # Index should be empty initially
+
     assert len(server.search_engine.file_mtimes) == 0
-    
-    # First grep search should trigger index build
+
     result = await server.search_engine.grep_search(
         query="def",
         is_regex=False,
         include_pattern="*.py",
         max_results=5
     )
-    
-    # Index should now be populated
-    assert len(server.search_engine.file_mtimes) > 0
+
     assert result["status"] == "success"
     assert result["total_matches"] > 0
-    
+    # Still empty: the answer came from the file system, not from an index.
+    assert len(server.search_engine.file_mtimes) == 0
+
     await server.search_engine.stop()
 
 
@@ -92,19 +97,10 @@ async def test_grep_search_with_include_pattern(workspace_config):
 
 @pytest.mark.asyncio
 async def test_grep_search_finds_short_tokens(workspace_config):
-    """Test that grep search indexes 2-character tokens."""
+    """A two-character query matches: there is no word index to fall below."""
     system_config, mcp_config = workspace_config
     server = FileOpsServer("test", system_config, mcp_config)
-    
-    # Build index first
-    await server.search_engine.rebuild_index(incremental=False)
-    
-    # Check that 2-character words are indexed
-    assert "if" in server.search_engine.text_index or \
-           "is" in server.search_engine.text_index or \
-           "in" in server.search_engine.text_index
-    
-    # Search should find 2-char tokens
+
     result = await server.search_engine.grep_search(
         query="if ",
         is_regex=False,
@@ -237,3 +233,56 @@ async def test_an_unreadable_semantic_index_raises_instead_of_filling_nothing(
 
     with pytest.raises(VectorStoreError, match="unreadable"):
         await server.search_engine.rebuild_index(incremental=False)
+
+
+@pytest.mark.asyncio
+async def test_disabled_semantic_search_says_so_instead_of_finding_nothing(
+    workspace_config
+):
+    """Disabled used to answer "No files found" after walking every root.
+
+    That reads as a verdict about the code, not about the configuration — and
+    the file_ops server disables semantic search unless it is configured, so
+    it was what every default instance answered.
+    """
+    system_config, mcp_config = workspace_config
+    server = FileOpsServer("test", system_config, mcp_config)
+
+    result = await server.search_engine.semantic_search("anything")
+
+    assert result["status"] == "error"
+    assert result["error_type"] == "SemanticSearchDisabled"
+    assert len(server.search_engine.file_mtimes) == 0, "nothing may be walked"
+    await server.search_engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_searches_walk_the_disk_off_the_event_loop(workspace_config, monkeypatch):
+    """The walk blocks; on the loop it stalls every other tool call.
+
+    With include_ignored a walk over this repository takes around 15 seconds.
+    """
+    import threading
+    from plugins.file_ops import textsearch
+
+    system_config, mcp_config = workspace_config
+    server = FileOpsServer("test", system_config, mcp_config)
+    loop_thread = threading.current_thread()
+    ran_on = []
+
+    def recording(real):
+        def wrapper(*args, **kwargs):
+            ran_on.append(threading.current_thread())
+            return real(*args, **kwargs)
+        return wrapper
+
+    monkeypatch.setattr(textsearch, "find_files", recording(textsearch.find_files))
+    monkeypatch.setattr(textsearch, "grep", recording(textsearch.grep))
+
+    await server.search_engine.search_files("conftest.py", max_results=1)
+    await server.search_engine.grep_search("import", include_pattern="conftest.py",
+                                           max_results=1)
+
+    assert len(ran_on) == 2
+    assert all(thread is not loop_thread for thread in ran_on)
+    await server.search_engine.stop()
