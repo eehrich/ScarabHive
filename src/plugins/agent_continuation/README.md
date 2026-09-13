@@ -84,6 +84,38 @@ The hook itself does no agent gating: the registry only fires it for agents
 that opted in, so an `if agent_name in ...` check here would be a second,
 divergent allowlist.
 
+## Scripted follow-ups
+
+Agents often deliver a sloppy first result and find their own mistakes when
+asked to look again. `followups` automates that ask: a list of fixed user
+messages, sent one per final answer, in order.
+
+```yaml
+agent_continuation.evaluate_completion:
+  enabled: true
+  followups:
+    - "Review your result once more against the source. Fix what is wrong."
+    - "Now return the complete final result in the required format."
+```
+
+```
+user → tools → final → follow-up 1 → tools → final → follow-up 2 → … → final
+```
+
+- **The last final answer is the result.** The caller gets only that one, so
+  for an agent with an output format the last follow-up has to ask for the
+  **complete** result again — a "fixed two things" answer replaces the report.
+- Follow-ups come **after** the strategy: an answer the rules read as a status
+  report gets `continue_message` first; only a final answer gets the next
+  follow-up.
+- **No state.** Sent follow-ups are the user messages marked
+  `injected_by: agent_continuation.followup` since the last message a person
+  wrote. Every new request — also a pipeline continuing a sub-agent — starts
+  the list again.
+- Follow-ups count against `max_continuations`, and none is sent once it is
+  reached: the ceiling on a history that lost its markers.
+- Each round costs steps; `max_steps` must leave room for them.
+
 ## Budget
 
 `max_continuations` (default 10) is counted per `request_id` and the counter is

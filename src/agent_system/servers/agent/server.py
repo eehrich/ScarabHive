@@ -3183,6 +3183,9 @@ class Agent(MCPServer):
                         "Continue with your task.",
                     ),
                     timestamp=datetime.now(timezone.utc),
+                    # Marks the message as not typed by a person; a hook that
+                    # scripts several turns counts its own messages by this.
+                    injected_by=hook_metadata.get("continue_injected_by"),
                 )
                 messages.append(continuation_msg)
                 context.messages = messages

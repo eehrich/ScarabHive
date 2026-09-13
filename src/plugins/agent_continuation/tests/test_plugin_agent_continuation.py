@@ -1457,3 +1457,103 @@ class TestSchemaDispatchWithTargetHookName:
 
         # No matching hook → nothing fired
         assert result.metadata.get("continue") is None or result.metadata.get("continue") is not True
+
+
+# ===========================================================================
+# Scripted follow-ups
+# ===========================================================================
+
+FOLLOWUPS = ["Review it once more.", "Now the complete final result."]
+
+
+def _history(*markers):
+    """A request from a person, then one user message per marker."""
+    from agent_system.llm.models import ChatMessage
+    from plugins.agent_continuation.hooks import FOLLOWUP_MARKER
+
+    messages = [ChatMessage(role="user", content="Score chapter 3."),
+                ChatMessage(role="assistant", content="Score: 7")]
+    for marker in markers:
+        injected = {"followup": FOLLOWUP_MARKER, "continue": "agent_continuation",
+                    "person": None}[marker]
+        messages.append(ChatMessage(role="user", content="...", injected_by=injected))
+        messages.append(ChatMessage(role="assistant", content="Score: 6"))
+    return messages
+
+
+def _followup_context(messages, **config):
+    ctx = _make_context(content="Final score: 6", hook_config={"followups": FOLLOWUPS, **config})
+    ctx.messages = messages
+    return ctx
+
+
+class TestFollowups:
+
+    @pytest.mark.asyncio
+    async def test_sent_in_order_one_per_final_answer_then_final(self):
+        from plugins.agent_continuation.hooks import FOLLOWUP_MARKER
+
+        plugin = _make_plugin()
+        first = await plugin.evaluate_completion(_followup_context(_history()))
+        assert first.metadata["continue_message"] == FOLLOWUPS[0]
+        assert first.metadata["continue_injected_by"] == FOLLOWUP_MARKER
+
+        second = await plugin.evaluate_completion(_followup_context(_history("followup")))
+        assert second.metadata["continue_message"] == FOLLOWUPS[1]
+
+        done = await plugin.evaluate_completion(_followup_context(_history("followup", "followup")))
+        assert not done.metadata.get("continue")
+
+    @pytest.mark.asyncio
+    async def test_a_message_from_a_person_starts_the_list_again(self):
+        plugin = _make_plugin()
+        result = await plugin.evaluate_completion(
+            _followup_context(_history("followup", "followup", "person")))
+        assert result.metadata["continue_message"] == FOLLOWUPS[0]
+
+    @pytest.mark.asyncio
+    async def test_a_plain_continuation_is_not_mistaken_for_a_person(self):
+        plugin = _make_plugin()
+        result = await plugin.evaluate_completion(
+            _followup_context(_history("followup", "continue")))
+        assert result.metadata["continue_message"] == FOLLOWUPS[1]
+
+    @pytest.mark.asyncio
+    async def test_plain_continuations_are_marked(self):
+        plugin = _make_plugin()
+        result = await plugin.evaluate_completion(_make_context(
+            content="I will now read the file", hook_config={"default": "continue"}))
+        assert result.metadata["continue_injected_by"] == "agent_continuation"
+
+    @pytest.mark.asyncio
+    async def test_a_status_report_gets_the_continue_message_first(self):
+        plugin = _make_plugin()
+        ctx = _followup_context(_history(), rules=[
+            {"type": "keyword_continue", "keywords": ["final score"]}],
+            continue_message="Keep going.")
+        result = await plugin.evaluate_completion(ctx)
+        assert result.metadata["continue_message"] == "Keep going."
+
+    @pytest.mark.asyncio
+    async def test_no_followup_past_the_budget(self):
+        plugin = _make_plugin()
+        plugin._continuation_counts["req-1"] = 2
+        result = await plugin.evaluate_completion(
+            _followup_context(_history(), max_continuations=2))
+        assert not result.metadata.get("continue")
+
+    @pytest.mark.asyncio
+    async def test_a_single_string_is_one_followup_not_one_per_character(self):
+        plugin = _make_plugin()
+        first = await plugin.evaluate_completion(
+            _followup_context(_history(), followups="Review it once more."))
+        assert first.metadata["continue_message"] == "Review it once more."
+        done = await plugin.evaluate_completion(
+            _followup_context(_history("followup"), followups="Review it once more."))
+        assert not done.metadata.get("continue")
+
+    @pytest.mark.asyncio
+    async def test_followups_count_against_the_budget(self):
+        plugin = _make_plugin()
+        await plugin.evaluate_completion(_followup_context(_history()))
+        assert plugin._continuation_counts["req-1"] == 1

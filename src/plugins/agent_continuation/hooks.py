@@ -33,6 +33,9 @@ from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
+#: injected_by of a scripted follow-up message — how the plugin counts them.
+FOLLOWUP_MARKER = "agent_continuation.followup"
+
 
 class AgentContinuationPlugin(SchemaBasedPluginHook):
     """Schema-based hook plugin for autonomous agent continuation."""
@@ -185,6 +188,8 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         request_id = context.request_id
         count = self._continuation_counts.get(request_id, 0)
         if count >= max_continuations:
+            # Also the ceiling for follow-ups: none is offered past it, so a
+            # history that lost its markers cannot replay them forever.
             logger.warning(
                 f"[AgentContinuation] Max continuations ({max_continuations}) "
                 f"reached for request {request_id}"
@@ -247,14 +252,72 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                 metadata={
                     "continue": True,
                     "continue_message": continue_msg,
+                    # Marked, or follow-up counting would take it for a
+                    # message a person wrote and start the list again.
+                    "continue_injected_by": "agent_continuation",
                     "continuation_count": count + 1,
                     "continuation_reason": reason,
+                },
+            )
+
+        # A final answer — unless a scripted follow-up is still due.
+        followup = self._next_followup(context, agent_cfg)
+        if followup is not None:
+            index, message = followup
+            self._continuation_counts[request_id] = count + 1
+            logger.info(
+                f"[AgentContinuation] Follow-up {index + 1} for '{agent_name}'"
+            )
+            return HookResult(
+                success=True,
+                modified=False,
+                metadata={
+                    "continue": True,
+                    "continue_message": message,
+                    "continue_injected_by": FOLLOWUP_MARKER,
+                    "continuation_count": count + 1,
+                    "continuation_reason": f"follow-up {index + 1}",
                 },
             )
 
         # Final answer — clean up counter
         self._continuation_counts.pop(request_id, None)
         return HookResult(success=True, modified=False)
+
+    # ------------------------------------------------------------------
+    # Scripted follow-ups
+    # ------------------------------------------------------------------
+
+    def _next_followup(
+        self, context: HookContext, agent_cfg: Dict[str, Any]
+    ) -> Tuple[int, str] | None:
+        """(index, message) of the follow-up due after this final answer, or None.
+
+        No state: the follow-ups already sent are the messages marked
+        FOLLOWUP_MARKER after the last user message a person wrote (one with
+        no ``injected_by``). A new request starts the list again; a cancelled
+        run leaves nothing behind.
+        """
+        raw = agent_cfg.get("followups") or []
+        if isinstance(raw, str):
+            # A single message written without the list dash: iterating the
+            # string would send every character as its own follow-up.
+            raw = [raw]
+        followups = [str(item).strip() for item in raw if str(item).strip()]
+        if not followups:
+            return None
+        sent = 0
+        for msg in reversed(context.messages or []):
+            if getattr(msg, "role", None) != "user":
+                continue
+            marker = getattr(msg, "injected_by", None)
+            if marker is None:
+                break
+            if marker == FOLLOWUP_MARKER:
+                sent += 1
+        if sent >= len(followups):
+            return None
+        return sent, followups[sent]
 
     # ------------------------------------------------------------------
     # Rule engine
