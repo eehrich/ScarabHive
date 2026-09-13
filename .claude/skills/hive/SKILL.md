@@ -218,24 +218,10 @@ source .venv/Scripts/activate
 
 Mandatory: Never run all tests unless absolutely necessary. Prefer targeted tests or groups for speed. Complete test run takes 20mins+.
 
-
-## Backlog.md
-
-Never change backlog.md directly. Instead, update it via .venv/Scripts/backlog.exe tool to ensure consistency.
-
-```bash
-backlog --help
-```
-
-see also docs/backlog_tool.md for usage instructions.
-src/scripts/backlog.py is the implementation.
-
-Mandatory: Never change backlog.md directly!!
-
 ## developer docs
 
 - Primary prompt files: ` .prompts/developer_rules.md`, ` .prompts/project_objectives.md`, and ` .prompts/master_system_prompt.md`.
 - Usage: load `developer_rules.md` and `project_objectives.md` first, then initialize the assistant session with `master_system_prompt.md` so the agent follows repository rules (tests-first, preserve tests, update README when behavior changes).
-- load `README.md` and `backlog.md` for a general overview.
+- load `README.md` for a general overview.
 
 Work step-by-step until task is **fully completed**. No intermediate reports.
