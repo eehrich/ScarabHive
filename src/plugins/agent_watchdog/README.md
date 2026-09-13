@@ -31,6 +31,18 @@ the verdicts are good enough to act on.
   - `empty` is structural: a JSON result whose top-level lists are all empty
     (a search answering `"status": "success"` with no hits) — measured live,
     such searches used to read as `ok`.
+- **Inside a call** (`observe_reasoning`, hook type `llm_progress`): a single
+  call that thinks for a long time has no step boundary to check at. Every
+  `every_n_reasoning_chars` characters of that call's thinking, the same
+  judge gets the same excerpt, with the running call's thinking as
+  `recent_thinking` and `call_in_progress: true`. The stream context carries
+  no messages, so `remember_task` (`pre_llm_call`) builds the excerpt of the
+  call about to stream and keeps only that — both hooks have to be on. Characters, not tokens:
+  token counts arrive only with the end of the call. Blind on clients that
+  stream no thinking deltas (Gemini, batch). Measured live with
+  `or-deepseek-flash`: checks at 4 024 and 6 024 characters, 2.5–3 s each.
+- Every log line carries `trigger`: `step` or `reasoning` (then with
+  `reasoning_chars`).
 - On shutdown (`stop_plugin`) running checks are awaited up to
   `judge_timeout_seconds`, and any still running is logged as
   `cancelled_at_shutdown`. Measured live: the CLI exited 0.35 s after starting
@@ -63,10 +75,22 @@ hooks:
       first_check_step: 10
       every_n_steps: 10
       judge_prompt: "config/agents/prompts/my_agent_watchdog.md"
+    # checks inside one long call — both hooks
+    agent_watchdog.remember_task:
+      enabled: true
+    agent_watchdog.observe_reasoning:
+      enabled: true
+      every_n_reasoning_chars: 20000
 ```
 
+Settings are read per hook, each from its own override. For checks inside a
+call, `remember_task` builds the excerpt before the call (`task_chars`,
+`spec_chars`, `max_tool_calls`); `observe_reasoning` takes the rest
+(`every_n_reasoning_chars`, `reasoning_chars`, `judge_prompt`,
+`judge_timeout_seconds`).
+
 Keys (defaults in `schema.yaml`): `llm_profile`, `judge_prompt`,
-`first_check_step`, `every_n_steps`, `task_chars`, `spec_chars`,
+`first_check_step`, `every_n_steps`, `every_n_reasoning_chars`, `task_chars`, `spec_chars`,
 `reasoning_chars`, `max_tool_calls`, `judge_timeout_seconds`, `log_path`. Per
 agent: all except `llm_profile` and `log_path`. A value that is not a positive
 integer falls back to the plugin value with a warning.
@@ -80,7 +104,8 @@ An unreadable file falls back to the built-in prompt; the log line then carries
 ## The log
 
 `data/agent_watchdog/verdicts.jsonl`, one line per check (timestamps UTC):
-`request_id`, `session_id`, `agent`, `observed_model`, `step`,
+`request_id`, `session_id`, `agent`, `observed_model`, `step`, `trigger`,
+`reasoning_chars` (reasoning checks), `judge_prompt` (when configured),
 `task_preview` (first 200 characters of the newest user message), `verdict`,
 `reason`, `evidence`, `message`, `judge_model`, `usage`, `finish_reason`,
 `latency_ms`, and — when the answer was not used as given — `fail_open` plus
@@ -98,7 +123,8 @@ The **watched** agent sees nothing from this plugin.
 
 The **judge** receives `prompts/judge.md` as system prompt and the excerpt as a
 JSON user message with the keys `user_messages`, `expected_result`, `recent_thinking`,
-`recent_tool_calls`. It has no tools.
+`recent_tool_calls`, and `call_in_progress` for checks inside a call. It has no
+tools.
 
 ### Token and cache effect
 

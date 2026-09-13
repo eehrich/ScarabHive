@@ -207,7 +207,10 @@ def parse_verdict(raw: str, excerpt: Dict[str, Any]) -> Tuple[Dict[str, Any], Op
         excerpt.get("recent_thinking", ""),
         json.dumps(excerpt.get("recent_tool_calls", []), ensure_ascii=False),
     ]))
-    if _normalize(record["evidence"]) not in haystack:
+    # An ellipsis at either end marks a cut, not words of the excerpt — measured
+    # live: a word-for-word quote ending in "..." was discarded as not verbatim.
+    quote = record["evidence"].strip().strip(".…").strip()
+    if not quote or _normalize(quote) not in haystack:
         return {**record, "verdict": "continue"}, "evidence_not_verbatim"
     if record["verdict"] != "continue" and not record["message"]:
         return {**record, "verdict": "continue"}, "no_message"

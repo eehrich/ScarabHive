@@ -109,6 +109,34 @@ async def on_post_llm_call(self, context: HookContext) -> HookResult:
 - `request_logger`: Logs timing and response preview
 - `context_optimizer`: Logs context statistics
 
+### LLM_PROGRESS
+
+**Trigger:** Während eines streamenden LLM-Calls, alle 2000 Zeichen Denken
+(`_REASONING_PROGRESS_TICK` in `server.py`)
+**Use Cases:** einen Call beobachten, der sich festdenkt
+**Can Modify:** nichts — der Call läuft schon
+
+```python
+async def on_llm_progress(self, context: HookContext) -> HookResult:
+    """context.reasoning_text: das Denken dieses Calls bisher,
+    context.reasoning_chars / previous_reasoning_chars: Länge jetzt und beim
+    letzten Takt. KEINE messages."""
+```
+
+- **Der Stream wartet auf den Hook** — er muss sofort zurückkehren; alles
+  Langsame gehört in einen Hintergrund-Task. Fehler im Hook brechen den Call
+  nicht ab.
+- **Keine `messages`:** der Registry-Deep-Copy pro Takt blockiert den
+  streamenden Loop (gemessen: 72 ms bei 4691 Nachrichten). Wer den Auftrag
+  braucht, merkt ihn sich in einem `pre_llm_call`-Hook.
+- **Eigenes Intervall ohne Zustand:** fällig, wenn
+  `reasoning_chars // n > previous_reasoning_chars // n`.
+- **Blind**, wo kein `thinking_delta` fließt: Gemini (Gedanken kommen als
+  `content_delta`), Batch, nicht-streamende Clients.
+
+**Example Plugins:**
+- `agent_watchdog`: `observe_reasoning`
+
 ### PRE_TOOL_CALL
 
 > ⚠️ **Not wired yet:** The hook type, registry routing and

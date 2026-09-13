@@ -7,6 +7,7 @@ A JSON object:
 - `user_messages` — what the user sent in this conversation, oldest first. The **last** one says what the agent is working on now; earlier ones are previous questions or notes, and the agent is not expected to still be working on them.
 - `expected_result` — the end of the agent's instructions, where the deliverable is usually described. It may be empty.
 - `recent_thinking` — the most recent part of the agent's reasoning, oldest first.
+- `call_in_progress` — present and `true` when the thinking belongs to one model call that is still running. The agent has not acted on it yet, so the tool calls are older than this thinking; judge whether the thinking itself still decides things.
 - `recent_tool_calls` — the latest tool calls: tool name, a fingerprint of the arguments (identical fingerprints mean identical arguments), whether the result was `ok`, `empty`, `error` or still `pending`, and the result size.
 
 ## The question

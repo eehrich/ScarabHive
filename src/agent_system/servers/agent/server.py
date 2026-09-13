@@ -49,6 +49,11 @@ from .tool_schema_builder import ToolSchemaBuilder, server_matches_patterns
 
 logger = logging.getLogger(__name__)
 
+# llm_progress hooks fire every this many characters of thinking. A hook sets
+# its own, coarser interval on top; this only bounds how often the loop pays
+# for a hook dispatch while it streams.
+_REASONING_PROGRESS_TICK = 2000
+
 # Local descriptor exhaustion. httpx reports it as a ConnectError, which is
 # indistinguishable from an unreachable endpoint unless the cause chain is
 # inspected — see _is_local_resource_exhaustion.
@@ -1852,6 +1857,7 @@ class Agent(MCPServer):
         yield_pending_status_fn,
         status_scope: Optional[StatusScope] = None,
         watch_reasoning: bool = True,
+        on_reasoning_progress=None,
     ):
         """Call LLM with streaming support and interleaved status events.
 
@@ -1867,6 +1873,8 @@ class Agent(MCPServer):
             step: Current step number
             yield_pending_status_fn: Function that yields pending status events
             status_scope: Optional status scope for LLM to report progress (batch status, etc.)
+            on_reasoning_progress: Optional ``async (text, chars, previous_chars)``,
+                awaited every _REASONING_PROGRESS_TICK characters of thinking
 
         Yields:
             - {"type": "thinking_delta", "step": int, "delta": str, "accumulated": str}
@@ -1887,6 +1895,10 @@ class Agent(MCPServer):
                    # the second attempt too would mean a second abort policy,
                    # and there is nothing sensible left to do after it.
                    "enabled": self._reasoning_loop_config["enabled"] and watch_reasoning})
+            # Thinking of THIS call, for llm_progress hooks; a retry starts empty.
+            reasoning_parts: List[str] = []
+            reasoning_chars = 0
+            reasoning_ticked_at = 0
 
             async for chunk in llm.chat_tools_streaming(
                 messages, tools_schema,
@@ -1915,6 +1927,19 @@ class Agent(MCPServer):
                         raise ReasoningLoopError(
                             loop_reason,
                             characters=reasoning_detector.characters_seen)
+
+                    if on_reasoning_progress is not None:
+                        reasoning_parts.append(chunk["delta"])
+                        reasoning_chars += len(chunk["delta"])
+                        if reasoning_chars - reasoning_ticked_at >= _REASONING_PROGRESS_TICK:
+                            try:
+                                await on_reasoning_progress(
+                                    "".join(reasoning_parts), reasoning_chars,
+                                    reasoning_ticked_at)
+                            except Exception as exc:  # an observer never breaks the call
+                                logger.warning("[%s] llm_progress hooks failed: %s",
+                                               self.name, exc)
+                            reasoning_ticked_at = reasoning_chars
 
                     # Check status events after each token (zero overhead)
                     for status_event in yield_pending_status_fn():
@@ -2360,6 +2385,15 @@ class Agent(MCPServer):
             # comparing the client re-arms the watchdog by itself, where a
             # plain flag would leave an innocent model unwatched.
             reasoning_loop_llm = None
+
+            async def _reasoning_progress(text, chars, previous):
+                # current_llm is read at call time: after a fallback switch the
+                # hooks see the model that is actually thinking.
+                await self._hook_manager.execute_llm_progress_hooks(
+                    reasoning_text=text, reasoning_chars=chars,
+                    previous_reasoning_chars=previous, step=step,
+                    request_id=request_id, session_id=session_id, llm=current_llm)
+
             while True:  # Retry loop for fallbacks (rate limits + upstream errors)
                 pending_thinking_complete = None
                 _llm_call_started = asyncio.get_event_loop().time()
@@ -2372,7 +2406,10 @@ class Agent(MCPServer):
                         step=step,
                         yield_pending_status_fn=yield_pending_status_events,
                         status_scope=status_worker,
-                        watch_reasoning=current_llm is not reasoning_loop_llm
+                        watch_reasoning=current_llm is not reasoning_loop_llm,
+                        on_reasoning_progress=(_reasoning_progress
+                                               if self._hook_manager.wants_llm_progress()
+                                               else None),
                     ):
                         event_type = event.get("type")
 

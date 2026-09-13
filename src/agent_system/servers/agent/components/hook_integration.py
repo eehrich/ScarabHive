@@ -364,6 +364,54 @@ class HookIntegrationManager:
             return modified_context.llm_response, modified_context.metadata
         return llm_response, {}
     
+    def wants_llm_progress(self) -> bool:
+        """Whether any llm_progress hook would run for this agent.
+
+        Checked before a streaming call, so an agent that watches nothing does
+        not collect its thinking for hooks that are all switched off.
+        """
+        if not self.is_enabled():
+            return False
+        for name, _hook, _order, metadata in self.registry._hooks[HookType.LLM_PROGRESS]:
+            if self.is_hook_enabled(name, metadata.get("enabled", True)):
+                return True
+        return False
+
+    async def execute_llm_progress_hooks(
+        self,
+        reasoning_text: str,
+        reasoning_chars: int,
+        previous_reasoning_chars: int,
+        step: int,
+        request_id: str,
+        session_id: str,
+        llm: Optional[Any] = None
+    ) -> None:
+        """Execute llm_progress hooks from inside a streaming call.
+
+        Deliberately without messages (see HookType.LLM_PROGRESS) and without
+        a return value: a hook cannot change a call that is already running.
+        """
+        if not self.is_enabled():
+            return
+        context = HookContext(
+            hook_type=HookType.LLM_PROGRESS,
+            request_id=request_id,
+            session_id=session_id,
+            agent=self.agent,
+            agent_name=self.agent.name,
+            step=step,
+            llm=llm,
+            reasoning_text=reasoning_text,
+            reasoning_chars=reasoning_chars,
+            previous_reasoning_chars=previous_reasoning_chars,
+        )
+        await self.registry.execute_hooks(
+            HookType.LLM_PROGRESS,
+            context,
+            hook_filter=self.is_hook_enabled
+        )
+
     async def execute_pre_tool_hooks(
         self,
         tool_call: Dict[str, Any],

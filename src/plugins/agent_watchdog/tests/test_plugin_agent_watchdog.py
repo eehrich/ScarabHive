@@ -123,6 +123,13 @@ class TestVerdict:
         verdict, fail_open = parse_verdict(self._raw(), self.excerpt)
         assert (verdict["verdict"], fail_open) == ("steer", None)
 
+    @pytest.mark.parametrize("quote", ["searching the same folder...",
+                                       "…searching the same folder", "... searching the same folder …"])
+    def test_an_ellipsis_marking_a_cut_is_not_part_of_the_quote(self, quote):
+        """Measured live: a word-for-word quote ending in "..." was discarded."""
+        verdict, fail_open = parse_verdict(self._raw(evidence=quote), self.excerpt)
+        assert (verdict["verdict"], fail_open) == ("steer", None)
+
     def test_fenced_json_is_read(self):
         verdict, fail_open = parse_verdict("```json\n" + self._raw() + "\n```", self.excerpt)
         assert (verdict["verdict"], fail_open) == ("steer", None)
@@ -138,6 +145,7 @@ class TestVerdict:
     @pytest.mark.parametrize("fields,reason", [
         ({"evidence": ""}, "no_evidence"),
         ({"evidence": "the agent gave up entirely"}, "evidence_not_verbatim"),
+        ({"evidence": "..."}, "evidence_not_verbatim"),
         ({"message": ""}, "no_message"),
     ])
     def test_an_ungrounded_intervention_reads_as_continue(self, fields, reason):
@@ -156,6 +164,7 @@ class FakeLLM:
     async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
         self.calls += 1
         self.system_prompt = messages[0].content
+        self.excerpt = json.loads(messages[1].content)
         if self.release is not None:
             await self.release.wait()
         if self.exc:
@@ -315,6 +324,80 @@ class TestHook:
         assert seen["end"].startswith("abort: loops")
         assert "error" not in seen
         assert _log(plugin)[0]["message"] == "Lies die Datei config.py."
+
+
+def _progress(chars, previous, request_id="req-1", hook_config=None, text=None):
+    return HookContext(
+        hook_type=HookType.LLM_PROGRESS, request_id=request_id, session_id="s",
+        agent=FakeAgent(), agent_name="observed", step=4,
+        llm=SimpleNamespace(model="observed-model"), hook_config=hook_config or {},
+        reasoning_text=text if text is not None else "x" * chars,
+        reasoning_chars=chars, previous_reasoning_chars=previous,
+    )
+
+
+async def _remember(plugin, request_id="req-1"):
+    await plugin.remember_task(HookContext(
+        hook_type=HookType.PRE_LLM_CALL, request_id=request_id, session_id="s",
+        messages=_messages()))
+
+
+class TestReasoning:
+    @pytest.mark.asyncio
+    async def test_checks_when_the_interval_is_crossed_not_on_every_tick(self, plugin):
+        plugin._judge_llm = FakeLLM("{}")
+        await _remember(plugin)
+        for chars, previous in ((2000, 0), (18000, 16000), (22000, 20000), (38000, 36000)):
+            await plugin.observe_reasoning(_progress(chars, previous))
+            assert plugin._running == {}, f"no check due at {chars}"
+        await plugin.observe_reasoning(_progress(20500, 18500))
+        assert "req-1" in plugin._running
+        await _drain(plugin)
+        await plugin.observe_reasoning(_progress(4000, 2000, hook_config={"every_n_reasoning_chars": 3000}))
+        assert "req-1" in plugin._running, "the per-agent interval must apply"
+        await _drain(plugin)
+
+    @pytest.mark.asyncio
+    async def test_the_judge_sees_the_running_call_s_thinking_and_the_task(self, plugin):
+        llm = FakeLLM(json.dumps({"verdict": "continue", "reason": "ok",
+                                  "evidence": "weighing option B"}))
+        plugin._judge_llm = llm
+        await _remember(plugin)
+        thinking = "old part " * 2000 + "now weighing option B against A"
+        await plugin.observe_reasoning(_progress(len(thinking), 0, text=thinking,
+                                                 hook_config={"every_n_reasoning_chars": 1000}))
+        await _drain(plugin)
+
+        assert llm.excerpt["user_messages"] == ["Find every caller of load_config."]
+        assert llm.excerpt["call_in_progress"] is True
+        assert llm.excerpt["recent_thinking"] == thinking[-8000:]
+        entry = _log(plugin)[-1]
+        assert (entry["trigger"], entry["reasoning_chars"], entry["verdict"]) == (
+            "reasoning", len(thinking), "continue")
+        assert "fail_open" not in entry, "evidence from the running thinking must count as verbatim"
+
+    @pytest.mark.asyncio
+    async def test_without_remember_task_there_is_no_call_but_a_line(self, plugin):
+        llm = FakeLLM("{}")
+        plugin._judge_llm = llm
+        await plugin.observe_reasoning(_progress(20000, 18000))
+        assert llm.calls == 0
+        assert _log(plugin)[-1]["fail_open"] == "task_not_visible"
+
+    @pytest.mark.asyncio
+    async def test_remembered_runs_are_bounded(self, plugin):
+        for index in range(watchdog_hooks._REMEMBERED_RUNS + 5):
+            await _remember(plugin, request_id=f"r{index}")
+        assert len(plugin._tasks) == watchdog_hooks._REMEMBERED_RUNS
+        assert "r0" not in plugin._tasks and f"r{watchdog_hooks._REMEMBERED_RUNS + 4}" in plugin._tasks
+
+    @pytest.mark.asyncio
+    async def test_step_checks_are_marked_as_such(self, plugin):
+        plugin._judge_llm = FakeLLM("{}")
+        await plugin.observe_step(_context(step=10))
+        await _drain(plugin)
+        assert _log(plugin)[-1]["trigger"] == "step"
+        assert "call_in_progress" not in plugin._judge_llm.excerpt
 
 
 class TestShutdown:

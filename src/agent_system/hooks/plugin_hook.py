@@ -32,6 +32,10 @@ class HookType(str, Enum):
     # LLM-client-level hooks: capture exact API payloads/responses
     PRE_LLM_REQUEST = "pre_llm_request"
     POST_LLM_RESPONSE = "post_llm_response"
+    # Fires DURING a streaming LLM call, every few KB of thinking. Carries no
+    # messages: a deep copy of a long conversation on every tick blocks the
+    # loop that is streaming (measured: 72 ms for a 4691-message session).
+    LLM_PROGRESS = "llm_progress"
 
 
 @dataclass
@@ -100,7 +104,13 @@ class HookContext:
     llm_usage: Optional[Dict[str, Any]] = None
     llm_finish_reason: Optional[str] = None
     llm_is_streaming: bool = False
-    
+    # llm_progress: thinking of the running call so far, its length, and the
+    # length at the previous tick — a hook compares both against its own
+    # interval and needs no per-call state.
+    reasoning_text: Optional[str] = None
+    reasoning_chars: int = 0
+    previous_reasoning_chars: int = 0
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert context to dictionary for serialization."""
         return {
@@ -306,6 +316,23 @@ class PluginHook(ABC):
         """
         return HookResult(success=True, modified=False, context=context)
     
+    async def on_llm_progress(self, context: HookContext) -> HookResult:
+        """
+        Called while a streaming LLM call is thinking, every few KB of thinking.
+
+        The streaming loop awaits it, so it must return at once; anything slow
+        belongs in a background task. Read-only: modifications are ignored.
+        Clients that stream no thinking deltas (Gemini, batch) never fire it.
+
+        Args:
+            context: Hook context with reasoning_text, reasoning_chars,
+                     previous_reasoning_chars, step, llm — no messages
+
+        Returns:
+            HookResult with success status
+        """
+        return HookResult(success=True, modified=False, context=context)
+
     async def on_pre_llm_request(self, context: HookContext) -> HookResult:
         """
         Called at the LLM client level just before sending API request.

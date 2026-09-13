@@ -1,4 +1,5 @@
-"""Agent watchdog — stage 1: a passive judge at the step boundary.
+"""Agent watchdog — stage 1: a passive judge at the step boundary and, via
+``llm_progress``, inside a call that is still thinking.
 
 Concept: ``docs/agent_watchdog_konzept.md``. This is Etappe 1 and nothing more:
 every *n* steps a separate, configurable model reads a bounded excerpt of the
@@ -32,7 +33,8 @@ import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from collections import OrderedDict
+from typing import Any, Dict, List, Optional
 
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.models import ChatMessage
@@ -53,7 +55,13 @@ _INT_SETTINGS = {
     "reasoning_chars": 8000,
     "max_tool_calls": 20,
     "judge_timeout_seconds": 120,
+    "every_n_reasoning_chars": 20000,
 }
+
+#: Runs whose excerpt remember_task keeps for observe_reasoning (~15 KB each).
+#: Nothing ends a request from a hook's point of view, so the map is bounded
+#: instead of cleaned.
+_REMEMBERED_RUNS = 32
 
 
 def _positive_int(raw: Any) -> Optional[int]:
@@ -97,6 +105,7 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
         self._prompts: Dict[str, str] = {}
 
         self._running: Dict[str, asyncio.Task] = {}
+        self._tasks: "OrderedDict[str, Optional[Dict[str, Any]]]" = OrderedDict()
         self._judge_llm: Any = None
 
     # ------------------------------------------------------------------
@@ -156,35 +165,80 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
 
     async def observe_step(self, context: HookContext) -> HookResult:
         """POST_LLM_CALL: snapshot the excerpt when a check is due, judge later."""
-        if not self._is_due(context):
-            return HookResult(success=True, modified=False)
+        if self._is_due(context) and not self._busy(context):
+            assistant = (context.llm_response or {}).get("assistant") or {}
+            self._start_check(context, self._excerpt(context, context.messages, assistant),
+                              {"trigger": "step"})
+        return HookResult(success=True, modified=False)
 
-        request_id = context.request_id
-        if request_id in self._running:
-            # The previous check of this run is still thinking. Queuing a second
-            # one would judge a window that overlaps the first.
-            logger.debug("[AgentWatchdog] check for %s step %s skipped: previous "
-                         "check still running", request_id, context.step)
-            return HookResult(success=True, modified=False)
+    async def remember_task(self, context: HookContext) -> HookResult:
+        """PRE_LLM_CALL: build the excerpt of the call that is about to stream.
 
-        assistant = (context.llm_response or {}).get("assistant") or {}
-        excerpt = build_excerpt(
-            context.messages or [], assistant,
-            task_chars=self._setting(context, "task_chars"),
-            spec_chars=self._setting(context, "spec_chars"),
-            reasoning_chars=self._setting(context, "reasoning_chars"),
-            max_tool_calls=self._setting(context, "max_tool_calls"),
-        )
-        base = {
-            "request_id": request_id,
+        ``observe_reasoning`` fires inside the stream, where the context carries
+        no messages (a deep copy per tick would block the streaming loop). So
+        the excerpt is built here, before the call, and only the bounded
+        excerpt is kept — not the conversation.
+        """
+        self._tasks[context.request_id] = self._excerpt(context, context.messages, None)
+        self._tasks.move_to_end(context.request_id)
+        while len(self._tasks) > _REMEMBERED_RUNS:
+            self._tasks.popitem(last=False)
+        return HookResult(success=True, modified=False)
+
+    async def observe_reasoning(self, context: HookContext) -> HookResult:
+        """LLM_PROGRESS: check a call that is still thinking, every n characters."""
+        every = self._setting(context, "every_n_reasoning_chars")
+        if context.reasoning_chars // every <= context.previous_reasoning_chars // every:
+            return HookResult(success=True, modified=False)
+        if self._busy(context):
+            return HookResult(success=True, modified=False)
+        # None both when remember_task is off for this agent and when the task
+        # was not visible: either way a judge could only guess.
+        excerpt = self._tasks.get(context.request_id)
+        if excerpt is not None:
+            # The running call's own thinking is what is under judgement.
+            excerpt = {**excerpt, "call_in_progress": True, "recent_thinking":
+                       (context.reasoning_text or "")[-self._setting(context, "reasoning_chars"):]}
+        self._start_check(context, excerpt,
+                          {"trigger": "reasoning", "reasoning_chars": context.reasoning_chars})
+        return HookResult(success=True, modified=False)
+
+    def _base(self, context: HookContext) -> Dict[str, Any]:
+        return {
+            "request_id": context.request_id,
             "session_id": context.session_id,
             "agent": context.agent_name,
             "observed_model": _model_of(context.llm),
             "step": context.step,
         }
+
+    def _busy(self, context: HookContext) -> bool:
+        if context.request_id not in self._running:
+            return False
+        # The previous check of this run is still thinking. Queuing a second
+        # one would judge a window that overlaps the first.
+        logger.debug("[AgentWatchdog] check for %s step %s skipped: previous "
+                     "check still running", context.request_id, context.step)
+        return True
+
+    def _excerpt(self, context: HookContext, messages: Optional[List[Any]],
+                 assistant: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        return build_excerpt(
+            messages or [], assistant,
+            task_chars=self._setting(context, "task_chars"),
+            spec_chars=self._setting(context, "spec_chars"),
+            reasoning_chars=self._setting(context, "reasoning_chars"),
+            max_tool_calls=self._setting(context, "max_tool_calls"),
+        )
+
+    def _start_check(self, context: HookContext, excerpt: Optional[Dict[str, Any]],
+                     extra: Dict[str, Any]) -> None:
+        """Judge the excerpt in a background task; no excerpt is a logged no-call."""
+        request_id = context.request_id
+        base = {**self._base(context), **extra}
         if excerpt is None:
             self._write({**base, "verdict": "continue", "fail_open": "task_not_visible"})
-            return HookResult(success=True, modified=False)
+            return
 
         # Which assignment the judge was shown — without it a verdict cannot be
         # checked against the run afterwards.
@@ -195,7 +249,6 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
                                                self._setting(context, "judge_timeout_seconds")))
         self._running[request_id] = task
         task.add_done_callback(lambda _t, rid=request_id: self._running.pop(rid, None))
-        return HookResult(success=True, modified=False)
 
     # ------------------------------------------------------------------
     # judge

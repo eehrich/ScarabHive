@@ -17,6 +17,27 @@ hooks:
     order:
       before: ["message_debugging"]
 
+  - name: remember_task
+    type: pre_llm_call
+    # Needed by observe_reasoning: inside the stream the context has no messages.
+    enabled: false
+    timeout: 5.0
+    description: >
+      Builds the excerpt of the call about to stream, so a check during the
+      call sees the assignment. Keeps only the excerpt, for the last runs.
+    category: "agent_watchdog"
+
+  - name: observe_reasoning
+    type: llm_progress
+    # Off everywhere; an agent opts in together with remember_task.
+    enabled: false
+    timeout: 5.0
+    description: >
+      Every n characters of thinking inside one streaming call, the judge
+      checks whether the call still decides things. Same log, same stage 1.
+      Blind on clients that stream no thinking deltas (Gemini, batch).
+    category: "agent_watchdog"
+
 # Defaults — overridable in plugins.yaml (config:) and per agent in
 # hooks.overrides (every key except llm_profile and log_path).
 config:
@@ -39,6 +60,11 @@ config:
     type: integer
     default: 10
     description: "Steps between checks after the first one"
+
+  every_n_reasoning_chars:
+    type: integer
+    default: 20000
+    description: "observe_reasoning: characters of thinking in one call between checks"
 
   task_chars:
     type: integer

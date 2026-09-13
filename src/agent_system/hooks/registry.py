@@ -360,6 +360,8 @@ class HookRegistry:
             return await hook.on_pre_llm_request(context)
         elif hook_type == HookType.POST_LLM_RESPONSE:
             return await hook.on_post_llm_response(context)
+        elif hook_type == HookType.LLM_PROGRESS:
+            return await hook.on_llm_progress(context)
         else:
             raise ValueError(f"Unknown hook type: {hook_type}")
 
@@ -561,6 +563,9 @@ class HookRegistry:
             llm_usage=copy.deepcopy(context.llm_usage) if context.llm_usage else None,
             llm_finish_reason=context.llm_finish_reason,
             llm_is_streaming=context.llm_is_streaming,
+            reasoning_text=context.reasoning_text,  # String is immutable
+            reasoning_chars=context.reasoning_chars,
+            previous_reasoning_chars=context.previous_reasoning_chars,
         )
 
     # Keys managed by the hook system itself — stripped from hook_config
