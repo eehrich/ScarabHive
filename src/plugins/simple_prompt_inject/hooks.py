@@ -17,6 +17,7 @@ from jinja2 import Environment, BaseLoader, TemplateSyntaxError, UndefinedError
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.models import ChatMessage
+from agent_system.utils.prompt_renderer import strip_prompt_comments
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
                 f"simple_prompt_inject: prompt_file is not a file: {path}"
             )
 
-        content = path.read_text(encoding="utf-8")
+        content = strip_prompt_comments(path.read_text(encoding="utf-8"), str(path))
         logger.info("Loaded prompt_file: %s (%d chars)", path, len(content))
         return content
 

@@ -302,6 +302,12 @@ file is the system prompt and is rendered with Jinja2 (`{{ current_date }}`,
 `system_prompt` / `tools_prompt` / `general_instructions_prompt` keys — has been
 removed; use one markdown file.)
 
+**HTML comments never reach the model.** `<!-- ... -->` in a template — and in
+every `{% include %}` partial — is stripped before rendering, so it is the place
+for notes to whoever edits the prompt (why a rule exists, which run it came
+from). A comment that fills its line takes the line with it. Text that arrives
+through a variable (a chapter, a document) is left as it is.
+
 **config/prompts/my_prompt.md:**
 
 ```markdown

@@ -16,6 +16,60 @@ logger = logging.getLogger(__name__)
 #: copy-pasted into every pipeline's prompts (v4 / v5b / v6 ...).
 SHARED_PROMPT_DIR = Path("config/prompts")
 
+def strip_prompt_comments(source: str, origin: str = "prompt") -> str:
+    """The template source without its ``<!-- ... -->`` comments.
+
+    An HTML comment in a prompt file is a note for whoever edits the prompt,
+    and every agent that edits one assumes it never reaches the model. A
+    comment that fills its line takes the line with it, so no blank line is
+    left behind.
+
+    Applied to the SOURCE, before Jinja renders it: text that comes in through
+    a variable (a chapter, a test case) keeps whatever it contains.
+
+    A plain scan with ``str.find`` rather than a regex: a regex rescans to the
+    end of the text from every unclosed opener, which is quadratic on a prompt
+    that renders on every LLM call.
+    """
+    out = []
+    pos = 0
+    while (start := source.find("<!--", pos)) != -1:
+        end = source.find("-->", start + 4)
+        if end == -1:
+            # Keeping the rest is safer than dropping it, but it breaks the
+            # promise above -- say so.
+            logger.warning("Unclosed '<!--' in %s at offset %d: everything after "
+                           "it is sent to the model", origin, start)
+            break
+        end += 3
+        # Look only as far as the text not yet handled, in both directions:
+        # searching the whole line again for every comment is quadratic on
+        # one long line full of them.
+        newline = source.rfind("\n", pos, start)
+        line_start = newline + 1 if newline != -1 else pos
+        at_line_start = newline != -1 or pos == 0 or source[pos - 1] == "\n"
+        line_end = end
+        while line_end < len(source) and source[line_end] in " \t\r":
+            line_end += 1
+        if (at_line_start and not source[line_start:start].strip(" \t")
+                and (line_end == len(source) or source[line_end] == "\n")):
+            out.append(source[pos:line_start])
+            pos = line_end + 1
+        else:
+            out.append(source[pos:start])
+            pos = end
+    out.append(source[pos:])
+    return "".join(out)
+
+
+class _CommentStrippingLoader(FileSystemLoader):
+    """FileSystemLoader whose templates arrive without HTML comments, so an
+    ``{% include %}`` partial is stripped like the prompt that includes it."""
+
+    def get_source(self, environment, template):
+        source, filename, uptodate = super().get_source(environment, template)
+        return strip_prompt_comments(source, filename), filename, uptodate
+
 
 def get_datetime_context(timezone_str: str = "UTC", location: str = "Unknown") -> Dict[str, Any]:
     """Generate current datetime context for prompt templates."""
@@ -97,7 +151,7 @@ def _get_env(search_paths: Tuple[str, ...]) -> Environment:
     markdown prompts, not HTML) and undefined variables render empty.
     """
     return Environment(
-        loader=FileSystemLoader(list(search_paths), encoding="utf-8"),
+        loader=_CommentStrippingLoader(list(search_paths), encoding="utf-8"),
         autoescape=False,
     )
 
@@ -118,7 +172,7 @@ def _render_text_template(template_path: str, context: Dict[str, Any]) -> Dict[s
         Dict with single 'system_prompt' key containing the rendered content
     """
     with open(template_path, "r", encoding="utf-8") as f:
-        raw_content = f.read()
+        raw_content = strip_prompt_comments(f.read(), template_path)
 
     try:
         # An Environment (not a bare Template) is what gives templates a loader —
@@ -131,7 +185,8 @@ def _render_text_template(template_path: str, context: Dict[str, Any]) -> Dict[s
         # the model — log loudly enough that it is not mistaken for prose.
         logger.warning(
             "Failed to render prompt template %s: %s "
-            "(includes are resolved from %s) — using unrendered content",
+            "(includes are resolved from %s; line numbers count without "
+            "comment lines) — using unrendered content",
             template_path, e, _include_search_paths(template_path),
         )
         rendered = raw_content  # Fallback to unrendered content

@@ -6,11 +6,14 @@ clear error with migration guidance.
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 from pathlib import Path
 
 from agent_system.utils.prompt_renderer import (
     render_prompts,
+    strip_prompt_comments,
     _is_text_template,
     _render_text_template,
     get_datetime_context,
@@ -99,6 +102,92 @@ class TestRenderTextTemplate:
         
         assert "system_prompt" in result
         assert "{{ invalid syntax" in result["system_prompt"]
+
+
+class TestHtmlCommentsNeverReachTheModel:
+    """Agents that edit a prompt leave notes in <!-- --> and rely on the model
+    never seeing them. Stripped from the template source, not the rendered
+    text: what a variable brings in stays as it is."""
+
+    def test_comments_are_gone_and_leave_no_blank_lines(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "agent.md"
+        md_file.write_text(
+            "# Agent\n"
+            "<!-- why this rule exists: book 77 -->\n"
+            "Rule one. <!-- inline note --> Rule two.\n"
+            "  <!--\n  a note over\n  several lines\n  -->\n"
+            "End.",
+            encoding="utf-8")
+
+        result = render_prompts(str(md_file), {}, auto_datetime=False)
+
+        assert result["system_prompt"] == "# Agent\nRule one.  Rule two.\nEnd."
+
+    def test_prose_between_two_comments_survives(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "agent.md"
+        md_file.write_text("<!-- a --> keep me\n<!-- b -->\nkeep me too", encoding="utf-8")
+
+        result = render_prompts(str(md_file), {}, auto_datetime=False)
+
+        assert result["system_prompt"] == " keep me\nkeep me too"
+
+    def test_an_included_partial_is_stripped_too(self, tmp_path: Path) -> None:
+        (tmp_path / "partial.md").write_text("<!-- partial note -->\nShared rule.", encoding="utf-8")
+        md_file = tmp_path / "agent.md"
+        md_file.write_text('Own rule.\n{% include "partial.md" %}', encoding="utf-8")
+
+        result = render_prompts(str(md_file), {}, auto_datetime=False)
+
+        assert result["system_prompt"] == "Own rule.\nShared rule."
+
+    def test_text_from_a_variable_keeps_its_comments(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "agent.md"
+        md_file.write_text("<!-- note -->\nChapter:\n{{ chapter }}", encoding="utf-8")
+
+        result = render_prompts(str(md_file), {"chapter": "a <!-- b --> c"}, auto_datetime=False)
+
+        assert result["system_prompt"] == "Chapter:\na <!-- b --> c"
+
+    def test_the_raw_fallback_is_stripped_as_well(self, tmp_path: Path) -> None:
+        # A broken template ships unrendered -- still without its notes.
+        md_file = tmp_path / "agent.md"
+        md_file.write_text("<!-- note -->\nContent with {{ invalid syntax", encoding="utf-8")
+
+        result = render_prompts(str(md_file), {}, auto_datetime=False)
+
+        assert "note" not in result["system_prompt"]
+        assert "{{ invalid syntax" in result["system_prompt"]
+
+    def test_a_second_comment_after_prose_keeps_the_line_break(self) -> None:
+        source = "Rule one. <!-- a --> <!-- b -->\nRule two."
+        assert strip_prompt_comments(source) == "Rule one.  \nRule two."
+
+    def test_crlf_comment_lines_leave_no_blank_lines(self) -> None:
+        # Jinja's loader reads bytes, so an include still carries its \r\n here.
+        assert strip_prompt_comments("A\r\n<!-- note -->\r\nB") == "A\r\nB"
+
+    def test_an_unclosed_comment_keeps_the_rest_and_warns(self, caplog) -> None:
+        with caplog.at_level("WARNING", logger="agent_system.utils.prompt_renderer"):
+            result = strip_prompt_comments("keep\n<!-- open\nrest", "agent.md")
+
+        assert result == "keep\n<!-- open\nrest"
+        assert "agent.md" in caplog.text
+
+    def test_many_unclosed_openers_stay_linear(self) -> None:
+        # Rescanning to the end from every opener is quadratic: at 1.4 MB a
+        # str.find loop takes ~3.6 s (a regex minutes), one scan ~0.2 ms.
+        source = "<!-- yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n" * 40000
+        started = time.perf_counter()
+        strip_prompt_comments(source)
+        assert time.perf_counter() - started < 1.0
+
+    def test_many_comments_on_one_line_stay_linear(self) -> None:
+        # Looking for the line's start and end per comment is quadratic on a
+        # line without newlines: 440 KB took ~2.3 s that way.
+        source = "x<!-- a -->" * 80000
+        started = time.perf_counter()
+        assert strip_prompt_comments(source) == "x" * 80000
+        assert time.perf_counter() - started < 1.0
 
 
 class TestYamlRejected:

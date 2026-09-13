@@ -370,6 +370,18 @@ class TestPromptFile:
 
         assert p.prompt_template == "# Instructions\nBe helpful."
 
+    def test_comments_in_the_file_are_not_injected(self, plugin_dir, tmp_path):
+        from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
+
+        md_file = tmp_path / "test_prompt.md"
+        md_file.write_text("<!-- editor note -->\nBe helpful.", encoding="utf-8")
+
+        mcp_config = MagicMock()
+        mcp_config.config = {"prompt_file": str(md_file)}
+        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+
+        assert p.prompt_template == "Be helpful."
+
     def test_prompt_file_takes_precedence(self, plugin_dir, tmp_path):
         """prompt_file should override prompt_text when both are set."""
         from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
