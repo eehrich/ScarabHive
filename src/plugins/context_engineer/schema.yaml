@@ -157,11 +157,11 @@ tools:
         Compact the conversation now, regardless of how full the context is.
         Use this to proactively reduce token usage before context gets too large.
 
-        Everything that leaves the conversation stays retrievable:
+        Runs regardless of how full the context is. Below the automatic limits
+        it applies reversible optimizations only, nothing leaves the conversation:
         - Store large tool results externally with references (the newest stay)
         - Move attached files into the same store
         - Evict inline media (saved to disk first, restorable with read)
-        - Archive old turns and drop very old ones (both kept in the archive)
       parameters:
         type: object
         properties: {}
@@ -173,7 +173,7 @@ tools:
 # context_engineer_compact never sees /compact.
 commands:
   - name: compact
-    description: "shrink this conversation now — tool results, media, old turns; no token threshold"
+    description: "shrink this conversation now — externalize tool results and media, no token threshold"
     tool: "{{ name }}_compact"
 
 # Web UI configuration

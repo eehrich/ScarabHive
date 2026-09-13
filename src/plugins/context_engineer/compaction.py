@@ -559,10 +559,10 @@ class LayeredCompactionStrategy:
             messages: Conversation messages
             current_tokens: Current token count (calculated if not provided)
             force: Force compaction even if below target threshold
-            manual: A person asked for it (/compact). Every layer runs, none
-                of the token thresholds or the target applies; what a layer
-                can take is still decided by its own rules (keep_last,
-                min_size, archive_after_turns, drop_after_turns).
+            manual: A person asked for it (/compact). Layer 1 (reversible)
+                runs whatever the token count; what it takes is still decided
+                by its own rules (keep_last, min_size). Layers 2 and 3 keep
+                their thresholds.
             trigger_event: Optional event that triggered compaction:
                 - 'user_message': New user message arrived
                 - 'final_response': Agent sent final response
@@ -679,9 +679,11 @@ class LayeredCompactionStrategy:
         
         # Layer 1: Apply only if above threshold (or bytes exceeded which sets force)
         # Note: always_compact_media triggers compact() but should NOT trigger Layer 1
-        # A manual compaction ignores the thresholds and the target: a person
+        # A manual compaction runs Layer 1 whatever the token count: a person
         # typing /compact wants it now, and was told "saved 0 tokens" whenever
-        # the session sat below the automatic trigger.
+        # the session sat below the automatic trigger. ONLY Layer 1 — it is
+        # the reversible one. Layers 2 and 3 take messages out of the view,
+        # and below their thresholds that is not what /compact is for.
         layer1_needed = manual or current_tokens >= self.config.layer1_threshold or bytes_exceeded
         if layer1_needed:
             await self._apply_layer1(result)
@@ -689,20 +691,20 @@ class LayeredCompactionStrategy:
 
             # Check both token AND byte targets
             final_bytes = self._estimate_request_bytes(result.modified_messages)
-            if (not manual and result.final_tokens <= self.config.target_tokens and
+            if (result.final_tokens <= self.config.target_tokens and
                 final_bytes <= self.config.target_request_bytes):
                 return self._finalize(result)
 
         # Layer 2: Only apply if above threshold (turn-based archival)
-        if manual or result.final_tokens >= self.config.layer2_threshold:
+        if result.final_tokens >= self.config.layer2_threshold:
             await self._apply_layer2(result)
             result.layers_applied.append(2)
 
-            if not manual and result.final_tokens <= self.config.target_tokens:
+            if result.final_tokens <= self.config.target_tokens:
                 return self._finalize(result)
 
         # Layer 3: Only apply if above threshold (turn-based dropping)
-        if manual or result.final_tokens >= self.config.layer3_threshold:
+        if result.final_tokens >= self.config.layer3_threshold:
             await self._apply_layer3(result)
             result.layers_applied.append(3)
         

@@ -2,8 +2,9 @@
 
 A person typing /compact was told "saved 0 tokens" whenever the session sat
 below layer1_threshold: the manual flag got compact() past its entry check,
-but every layer then asked the token thresholds again. Manual now runs every
-layer; what a layer can take is decided by its own age and size rules only.
+but Layer 1 then asked the token threshold again. Manual now runs Layer 1 —
+the reversible one — whatever the token count. Layers 2 and 3 take messages
+out of the conversation; they keep their thresholds, manual or not.
 """
 
 from __future__ import annotations
@@ -50,21 +51,40 @@ def _session(turns: int) -> list[dict]:
 class TestManualIgnoresTheThresholds:
 
     @pytest.mark.asyncio
-    async def test_manual_compacts_a_session_below_every_threshold(self, tmp_path):
-        result = await _strategy(tmp_path).compact(_session(8), current_tokens=5_000, manual=True)
+    async def test_manual_runs_the_reversible_layer_below_every_threshold(self, tmp_path):
+        messages = _session(8)
+        result = await _strategy(tmp_path).compact(messages, current_tokens=5_000, manual=True)
 
         assert result.tool_results_stored > 0, "old tool results stayed inline"
-        assert result.messages_archived > 0, "turns older than archive_after_turns stayed"
-        assert result.messages_dropped > 0, "turns older than drop_after_turns stayed"
-        assert result.layers_applied[:3] == [1, 2, 3]
+        assert result.layers_applied == [1]
 
     @pytest.mark.asyncio
-    async def test_the_layers_own_rules_still_decide_what_can_go(self, tmp_path):
-        """Two turns: nothing old enough to archive, one result protected by keep_last."""
+    async def test_below_the_thresholds_no_message_leaves_the_conversation(self, tmp_path):
+        """The session is old enough for Layer 2 (3 turns) and Layer 3 (6 turns)."""
+        messages = _session(8)
+        result = await _strategy(tmp_path).compact(messages, current_tokens=5_000, manual=True)
+
+        assert result.messages_archived == 0, "a manual compaction archived turns below the threshold"
+        assert result.messages_dropped == 0, "a manual compaction dropped turns below the threshold"
+        assert len(result.modified_messages) == len(messages)
+
+    @pytest.mark.asyncio
+    async def test_at_the_limit_manual_goes_on_to_layer_3(self, tmp_path):
+        strategy = _strategy(tmp_path)
+        strategy.config.layer2_threshold = 1
+        strategy.config.layer3_threshold = 1
+        strategy.config.target_tokens = 0
+        result = await strategy.compact(_session(8), current_tokens=5_000, manual=True)
+
+        assert result.layers_applied == [1, 2, 3]
+        assert result.messages_dropped > 0
+
+    @pytest.mark.asyncio
+    async def test_keep_last_still_decides_what_can_go(self, tmp_path):
+        """Two turns: one result protected by keep_last."""
         messages = _session(2)
         result = await _strategy(tmp_path).compact(messages, current_tokens=5_000, manual=True)
 
-        assert result.messages_archived == 0 and result.messages_dropped == 0
         assert result.tool_results_stored == 1, "keep_last=1 keeps the newest result inline"
         assert result.modified_messages[-2]["content"] == BIG
 

@@ -164,7 +164,7 @@ The plugin exposes these tools to the agent:
 | `list` | Browse what is stored, or filter it — refs, summaries, excerpts; no bodies |
 | `read` | Read ONE ref, always bounded, says how to continue |
 | `store_fact` | Add important fact to core memory |
-| `compact` | Compact now, without token thresholds |
+| `compact` | Reversible compaction now, without token threshold |
 
 `recall`, `get_variable`, `get_tool_result`, `stats` and `restore_multimodal`
 were removed in 2026-08. The last four were already unreachable: they were not
@@ -254,11 +254,11 @@ stats: {}
 compact: {}
 ```
 
-A manual compaction ignores `layer1/2/3_threshold` and `target_tokens`: every
-layer runs, however full the context is. What can go is still decided by the
-layers' own rules — `tool_result_keep_last`, `tool_result_min_size`,
-`archive_after_turns`, `drop_after_turns`. A short conversation therefore
-compacts little or nothing, and that is the answer, not a threshold.
+A manual compaction runs Layer 1 whatever the token count — only Layer 1,
+because it is the reversible one: tool results become references, files move
+to the store, media goes to disk. What it takes is still decided by its own
+rules (`tool_result_keep_last`, `tool_result_min_size`). Layers 2 and 3 take
+messages out of the conversation and keep their thresholds, manual or not.
 
 ## Hook Integration
 
