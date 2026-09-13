@@ -691,9 +691,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         Checks multiple auth methods in order (via get_current_user dependency):
         1. Bearer token in Authorization header
-        2. JWT token in access_token cookie (for EventSource/browser)
-        3. JWT token in 'token' query parameter (for EventSource - workaround for no custom headers)
-        4. X-API-Key header (for programmatic access)
+        2. JWT token in access_token cookie (browser, including EventSource)
+        3. X-API-Key header (for programmatic access)
+
+        No ``?token=`` query parameter: see EndpointSecurityMiddleware._extract_user_info.
         """
         try:
             from .auth.dependencies import get_current_user as get_user_dep
@@ -704,19 +705,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             credentials = await bearer_scheme(request)
             x_api_key = request.headers.get("X-API-Key")
 
-            # NEW: Check for token in query parameters (EventSource workaround)
-            query_token = request.query_params.get("token")
-            if query_token and not credentials:
-                # Create fake credentials object from query token
-                from fastapi.security import HTTPAuthorizationCredentials
-                credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=query_token)
-
             # Debug: Check what auth methods are available
             has_bearer = credentials is not None
             has_cookie = request.cookies.get("access_token") is not None
             has_api_key = x_api_key is not None
-            has_query_token = query_token is not None
-            logger.debug(f"[AUTH_DEBUG] Auth methods - Bearer: {has_bearer}, Cookie: {has_cookie}, QueryToken: {has_query_token}, API-Key: {has_api_key}")
+            logger.debug(f"[AUTH_DEBUG] Auth methods - Bearer: {has_bearer}, Cookie: {has_cookie}, API-Key: {has_api_key}")
 
             # Get database instance (NOT a generator!)
             db = get_db()

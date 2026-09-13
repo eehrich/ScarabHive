@@ -311,17 +311,16 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
         assert username == "cookieuser"
         assert role == "user"
     
-    def test_extract_from_query_parameter(self, middleware):
-        """Should extract token from query parameter."""
+    def test_a_token_in_the_query_string_does_not_authenticate(self, middleware):
+        """A token in a URL leaks into access logs, history and Referer headers,
+        so ``?token=`` is refused -- even carrying a valid JWT."""
         token = self._create_token({"sub": "queryuser", "role": "user"})
         scope = {
             "headers": [],
             "query_string": f"token={token}&other=value".encode(),
         }
-        
-        username, role = middleware._extract_user_info(scope)
-        assert username == "queryuser"
-        assert role == "user"
+
+        assert middleware._extract_user_info(scope) == (None, None)
     
     def test_extract_bearer_takes_precedence_over_cookie(self, middleware):
         """Bearer header should take precedence over cookie."""

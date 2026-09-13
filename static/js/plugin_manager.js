@@ -4,6 +4,12 @@ window.AgentSystem = window.AgentSystem || {};
 window.AgentSystem.PluginManager = {
   plugins: new Map(),
 
+  // allow-modals / allow-popups: without them confirm() silently returns false
+  // and alert() / window.open() do nothing -- writer_admin's "Fix all" asks
+  // with confirm() and could never run. Panels are same-origin with
+  // allow-same-origin, so the sandbox is no security boundary to begin with.
+  PANEL_SANDBOX: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups',
+
   async init() {
     try {
       await this.loadPlugins();
@@ -135,7 +141,7 @@ window.AgentSystem.PluginManager = {
     iframe.style.width = '100%';
     iframe.style.height = '100%';
     iframe.style.border = 'none';
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
+    iframe.setAttribute('sandbox', this.PANEL_SANDBOX);
 
     // Inject scroll prevention script after iframe loads
     this._injectScrollPrevention(iframe);
@@ -548,7 +554,7 @@ window.AgentSystem.PluginManager = {
     const iframe = document.createElement('iframe');
     iframe.src = tab.endpoint;
     iframe.style.cssText = 'width: 100%; height: 100%; border: none;';
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
+    iframe.setAttribute('sandbox', this.PANEL_SANDBOX);
 
     // Inject scroll prevention
     this._injectScrollPrevention(iframe);

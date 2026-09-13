@@ -71,3 +71,115 @@ def test_reset_between_calls_no_reference_leak():
     # A later message that references [ref] without defining it must NOT resolve.
     second = markdown_to_html("[y][ref]")
     assert "https://example.com" not in second
+
+
+class TestAllowlistSanitizer:
+    """The regex filter only removed event handlers whose value stood in
+    quotes: ``<img src=x onerror=alert(1)>`` went through to innerHTML. Model
+    answers carry whatever a tool fetched, so the output is now rebuilt from
+    an allowlist instead."""
+
+    @pytest.mark.parametrize("payload", [
+        "<img src=x onerror=alert(1)>",
+        "<svg onload=alert(1)>",
+        '<a href="x" onclick=alert(1)>link</a>',
+        "<a href=javascript:alert(1)>link</a>",
+        '<a href="java\tscript:alert(1)">link</a>',
+        '<a href="&#106;avascript:alert(1)">link</a>',
+        '<a href="data:text/html,x">link</a>',
+        '<iframe src="https://evil.example"></iframe>',
+        '<div style="background:url(javascript:alert(1))">x</div>',
+        '<code class="language-py onmouseover=alert(1)">x</code>',
+    ])
+    def test_no_active_markup_survives(self, payload):
+        html = markdown_to_html(f"Text {payload} end")
+
+        lowered = html.lower()
+        for marker in ("<img", "<svg", "<iframe", " on", "javascript:", "data:", "style="):
+            assert marker not in lowered, (marker, html)
+
+    @pytest.mark.parametrize("href", [
+        "javascript:alert(1)",
+        "java\tscript:alert(1)",
+        " JAVASCRIPT:alert(1)",
+        "&#106;avascript:alert(1)",
+        "vbscript:msgbox(1)",
+        "data:text/html,x",
+    ])
+    def test_a_link_to_a_script_loses_its_target(self, href):
+        # Browsers drop tabs and newlines inside a scheme, so "java\tscript:"
+        # runs even though the string "javascript:" never appears.
+        html = markdown_to_html(f'Text <a href="{href}">link</a> end')
+
+        assert "href" not in html, html
+        assert "link" in html
+
+    def test_a_web_link_keeps_its_target(self):
+        html = markdown_to_html('<a href="https://example.com/a?b=1&c=2">x</a> [y](/rel)')
+
+        assert 'href="https://example.com/a?b=1&amp;c=2"' in html
+        assert 'href="/rel"' in html
+
+    def test_markdown_output_is_unchanged(self):
+        source = ('# T\n\nA **b** `c` [l](https://example.com "t").\n\n'
+                  "| A |\n|---|\n| 1 |\n\n```python\nx = '<b>'\n```\n\n> q")
+
+        assert markdown_to_html(source) == markdown_to_html(source, sanitize=False)
+
+    def test_a_placeholder_in_angle_brackets_stays_visible(self):
+        html = markdown_to_html("Reicht er DELTA_DOC=<id> weiter?")
+
+        assert "DELTA_DOC=&lt;id&gt;" in html
+
+    def test_an_unclosed_script_does_not_swallow_the_answer(self):
+        html = markdown_to_html("Erwähnt <script> im Text und schreibt weiter")
+
+        assert "schreibt weiter" in html
+        assert "<script" not in html
+
+    def test_the_allowlist_can_be_narrowed(self):
+        html = markdown_to_html("| A |\n|---|\n| 1 |\n\n**fett**",
+                                allowed_tags={"p", "strong"})
+
+        assert "<table" not in html
+        assert "<strong>fett</strong>" in html
+
+    @pytest.mark.parametrize("text", ["x<!-->", "a <!-- --!> b", "Siehe `a;<!-->` hier"])
+    def test_a_broken_comment_does_not_hang_the_renderer(self, text):
+        # Markdown 3.10's raw-HTML block parser never returns on these; the
+        # API event loop hung on the reply and on every reload of the session.
+        # In a subprocess: a hung render holds the module lock, and in-process
+        # it would stall every later test instead of failing this one.
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1] / "src"
+        code = ("import sys; sys.path.insert(0, sys.argv[1]);"
+                "from agent_system.utils.markdown_render import markdown_to_html;"
+                "print(markdown_to_html(sys.argv[2]))")
+        try:
+            done = subprocess.run([sys.executable, "-c", code, str(src), text],
+                                  capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            pytest.fail("markdown_to_html did not return")
+
+        assert done.returncode == 0, done.stderr
+        assert "&lt;!--" in done.stdout
+
+    def test_a_raw_html_table_stays_a_table(self):
+        html = markdown_to_html(
+            "Vorher\n\n<table>\n<tr><td>Mo - Fr</td><td>9 - 17 - 18</td></tr>\n</table>\n\nNachher")
+
+        assert "<td>Mo - Fr</td>" in html and "<td>9 - 17 - 18</td>" in html
+        assert "<ul>" not in html
+        assert "<p><table>" not in html
+        assert "<br>" not in html.split("<table>")[1].split("</table>")[0]
+
+    def test_markup_the_parser_rejects_comes_back_as_text(self):
+        from agent_system.utils.markdown_render import _sanitize_html
+
+        html = _sanitize_html('<p>a</p><![1 <img src=x onerror=alert(1)>')
+
+        assert "<img" not in html and "<p>" not in html
+        assert "&lt;img" in html

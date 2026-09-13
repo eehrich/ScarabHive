@@ -12,7 +12,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
-from urllib.parse import unquote, parse_qs
+from urllib.parse import unquote
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -173,8 +173,11 @@ class EndpointSecurityMiddleware:
         Checks in priority order:
         1. Authorization: Bearer <token> header (JWT)
         2. access_token cookie (JWT)
-        3. ?token=<token> query parameter (JWT, for WebSocket/SSE connections)
-        4. X-API-Key header (API key, looked up in UserDatabase)
+        3. X-API-Key header (API key, looked up in UserDatabase)
+
+        Deliberately no ``?token=`` query parameter: a token in a URL ends up in
+        access logs, browser history and Referer headers. EventSource, the one
+        client that cannot set headers, sends the cookie same-origin anyway.
 
         JWT validation failures fall through to the X-API-Key lookup so that
         clients which combine an invalid/expired session with a valid API key
@@ -203,15 +206,6 @@ class EndpointSecurityMiddleware:
                 if part.startswith("access_token="):
                     token = part[13:].strip()
                     break
-
-        # 3. Try query parameter (for SSE/WebSocket where headers may not be available)
-        if not token:
-            query_string = scope.get("query_string", b"").decode("utf-8", errors="ignore")
-            if query_string:
-                query_params = parse_qs(query_string)
-                token_list = query_params.get("token", [])
-                if token_list:
-                    token = token_list[0].strip()
 
         # Try to decode JWT if a token was found. Soft-fail to allow the
         # X-API-Key fallback below to still authenticate the request.

@@ -1567,7 +1567,9 @@
         
         // Show reconnect info in response area
         showSection(blk.t);
-        blk.t.innerHTML = `<div class="response-text reconnect-info">🔄 ${data.message}${data.last_status ? '<br><em>Last status: ' + data.last_status + '</em>' : ''}</div>`;
+        // Both escaped: last_status is a plugin's status line and carries
+        // tool arguments the model chose ("Searching: <query>").
+        blk.t.innerHTML = `<div class="response-text reconnect-info">🔄 ${escapeHtml(data.message)}${data.last_status ? '<br><em>Last status: ' + escapeHtml(data.last_status) + '</em>' : ''}</div>`;
         break;
       case 'heartbeat':
         // Keep-alive heartbeat during long LLM calls - ignore but log in debug mode
@@ -2547,13 +2549,10 @@
           
           // Build SSE URL - only pass request_id, backend uses job's agent
           const session = sessionStorage.getItem('lastSessionId') || '';
-          let sseUrl = `/events?task=&request_id=${encodeURIComponent(storedRequestId)}&session_id=${encodeURIComponent(session)}`;
-          
-          const token = localStorage.getItem('token');
-          if (token) {
-            sseUrl += `&token=${encodeURIComponent(token)}`;
-          }
-          
+          // No token in the URL: the server does not accept one, and the
+          // access_token cookie goes along with this same-origin request.
+          const sseUrl = `/events?task=&request_id=${encodeURIComponent(storedRequestId)}&session_id=${encodeURIComponent(session)}`;
+
           // Create EventSource and use THE SAME handleSSEEvent as normal flow
           const es = new EventSource(sseUrl, { withCredentials: true });
           currentEventSource = es;

@@ -225,6 +225,7 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                         tables=self.enable_tables,
                         code=self.enable_code_highlighting,
                         sanitize=self.sanitize_html,
+                        allowed_tags=self.allowed_html_tags,
                     )
                 if html_content is None:
                     return HookResult(

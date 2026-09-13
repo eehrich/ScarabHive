@@ -323,3 +323,21 @@ async def test_format_html_to_ansi(formatter):
     markdown_output = result.context.output
     assert '# Header 1' in markdown_output or 'Header 1' in markdown_output
     assert '**Bold**' in markdown_output or 'Bold' in markdown_output
+
+
+@pytest.mark.asyncio
+async def test_allowed_html_tags_config_is_applied():
+    """``allowed_html_tags`` was read from the schema and never used."""
+    pytest.importorskip("markdown")
+    plugin_dir = Path(__file__).parent.parent
+    formatter = MarkdownFormatterPlugin(plugin_dir)
+    formatter.allowed_html_tags = {"p", "strong"}
+    context = HookContext(
+        hook_type=HookType.FORMAT_OUTPUT, request_id="test", session_id="s",
+        agent=None, agent_name="test_agent",
+        output="| A |\n|---|\n| 1 |\n\n**fett**", output_format="html")
+
+    result = await formatter.format_markdown_output(context)
+
+    assert "<table" not in result.context.output
+    assert "<strong>fett</strong>" in result.context.output
