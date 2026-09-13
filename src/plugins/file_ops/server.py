@@ -401,10 +401,8 @@ class FileOpsServer(SchemaBasedMCPServer):
             # Validate path
             safe_path = self.validator.validate_path(file_path, must_exist=True)
 
-            # Use edit_file's replace mode
             result = await self.operations.edit_file_safe(
                 safe_path,
-                mode="replace",
                 old_string=old_string,
                 new_string=new_string
             )
@@ -481,7 +479,10 @@ class FileOpsServer(SchemaBasedMCPServer):
                 safe_path,
                 recursive=recursive,
                 pattern=pattern,
-                include_hidden=include_hidden
+                include_hidden=include_hidden,
+                max_results=params.get("max_results", 200),
+                include_ignored=params.get("include_ignored", False),
+                excludes=self.search_engine._search_backend_options()["excludes"],
             )
 
             if status:

@@ -56,7 +56,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -379,6 +379,7 @@ def walk_files(
     ignore_spec: Any = None,
     protected: Sequence[Path] = (),
     allowed: Sequence[Path] = (),
+    on_directory: Optional[Callable[[Path], None]] = None,
 ) -> Iterator[Path]:
     """Yield files under *root*, PRUNING excluded directories on the way down.
 
@@ -436,6 +437,8 @@ def walk_files(
                                     (sub, sub) for sub in _outermost_below(path, protected))
                             continue
                         if is_dir:
+                            if on_directory is not None:
+                                on_directory(path)
                             stack.append((path, base))
                         elif entry.is_file(follow_symlinks=False):
                             yield path
@@ -631,4 +634,94 @@ def grep(
         "total_files": len(files_searched),
         "truncated": report.truncated,
         "skipped": report.as_dict(len(matches)),
+    }
+
+
+def list_directory(
+    directory: Path,
+    *,
+    recursive: bool = False,
+    pattern: Optional[str] = None,
+    max_results: int = 200,
+    excludes: Sequence[str] = DEFAULT_EXCLUDES,
+    include_hidden: bool = False,
+    include_ignored: bool = False,
+) -> Dict[str, Any]:
+    """Files and directories under *directory*, capped, with what was skipped.
+
+    Uncapped, a recursive listing of a repository is the whole repository in
+    the model's context; it also used ``rglob``, which descends into every
+    ignored and excluded tree first. Recursive listings therefore use the same
+    pruning walk as the searches, and every listing stops at *max_results*
+    entries and says so.
+    """
+    if include_ignored:
+        excludes = ALWAYS_EXCLUDED   # see find_files
+        include_hidden = True
+    report = SearchReport(
+        excluded_patterns=list(excludes) if recursive else [],
+        hidden_files_skipped=not include_hidden,
+    )
+    files: List[str] = []
+    directories: List[str] = []
+    limit = max_results + 1   # see find_files: truncation must be a fact
+    if pattern:
+        # Same spellings as the searches accept: ./, backslashes, a repeated root.
+        pattern = relativize_pattern(pattern, directory)
+
+    def full() -> bool:
+        return len(files) + len(directories) >= limit
+
+    def wanted(path: Path) -> bool:
+        if not pattern:
+            return True
+        rel = path.relative_to(directory).as_posix()
+        return path_matches(rel, path.name, pattern)
+
+    if recursive:
+        spec = None if include_ignored else gitignore_spec(directory)
+        report.respected_ignore_files = spec is not None
+
+        def on_directory(path: Path) -> None:
+            if not full() and wanted(path):
+                directories.append(str(path))
+
+        for path in walk_files(directory, excludes, include_hidden=include_hidden,
+                               ignore_spec=spec, on_directory=on_directory):
+            if full():
+                break
+            if wanted(path):
+                files.append(str(path))
+    else:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if full():
+                    break
+                if not include_hidden and entry.name.startswith("."):
+                    continue
+                path = Path(entry.path)
+                if not wanted(path):
+                    continue
+                try:
+                    if entry.is_dir():
+                        directories.append(str(path))
+                    elif entry.is_file():
+                        files.append(str(path))
+                except OSError:
+                    continue
+
+    total = len(files) + len(directories)
+    report.truncated = total > max_results
+    if report.truncated:
+        # Drop the one extra entry that proved there were more.
+        (files if files else directories).pop()
+    return {
+        "status": "success",
+        "dir_path": str(directory),
+        "files": sorted(files),
+        "directories": sorted(directories),
+        "total_files": len(files),
+        "total_directories": len(directories),
+        "truncated": report.truncated,
+        "skipped": report.as_dict(total),
     }

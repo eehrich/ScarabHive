@@ -54,68 +54,6 @@ async def cmd_read(args: Namespace) -> dict[str, Any]:
         return {"error": str(e)}
 
 
-async def cmd_create(args: Namespace) -> dict[str, Any]:
-    """Create a new file."""
-    server = create_test_server([str(Path(args.file_path).parent.absolute())])
-
-    params: dict[str, Any] = {
-        "file_path": str(Path(args.file_path).absolute()),
-        "content": args.content,
-        "overwrite": args.overwrite,
-        "create_dirs": args.create_dirs,
-    }
-
-    try:
-        result = await server.create_file(params)
-        return result
-    except Exception as e:
-        logger.error(f"Create error: {e}")
-        return {"error": str(e)}
-
-
-async def cmd_edit(args: Namespace) -> dict[str, Any]:
-    """Edit an existing file."""
-    server = create_test_server([str(Path(args.file_path).parent.absolute())])
-
-    params: dict[str, Any] = {
-        "file_path": str(Path(args.file_path).absolute()),
-        "mode": args.mode,
-    }
-
-    if args.mode == "append":
-        params["content"] = args.content
-    elif args.mode == "replace":
-        params["old_string"] = args.old_string
-        params["new_string"] = args.new_string
-    elif args.mode == "insert":
-        params["line_number"] = args.line_number
-        params["content"] = args.content
-
-    try:
-        result = await server.edit_file(params)
-        return result
-    except Exception as e:
-        logger.error(f"Edit error: {e}")
-        return {"error": str(e)}
-
-
-async def cmd_delete(args: Namespace) -> dict[str, Any]:
-    """Delete a file."""
-    server = create_test_server([str(Path(args.file_path).parent.absolute())])
-
-    params: dict[str, Any] = {
-        "file_path": str(Path(args.file_path).absolute()),
-        "confirm": args.confirm,
-    }
-
-    try:
-        result = await server.delete_file(params)
-        return result
-    except Exception as e:
-        logger.error(f"Delete error: {e}")
-        return {"error": str(e)}
-
-
 async def cmd_list(args: Namespace) -> dict[str, Any]:
     """List directory contents."""
     server = create_test_server([str(Path(args.dir_path).absolute())])
@@ -134,38 +72,6 @@ async def cmd_list(args: Namespace) -> dict[str, Any]:
         return result
     except Exception as e:
         logger.error(f"List error: {e}")
-        return {"error": str(e)}
-
-
-async def cmd_exists(args: Namespace) -> dict[str, Any]:
-    """Check if file or directory exists."""
-    server = create_test_server([str(Path(args.path).parent.absolute())])
-
-    params: dict[str, Any] = {
-        "path": str(Path(args.path).absolute()),
-    }
-
-    try:
-        result = await server.file_exists(params)
-        return result
-    except Exception as e:
-        logger.error(f"Exists error: {e}")
-        return {"error": str(e)}
-
-
-async def cmd_info(args: Namespace) -> dict[str, Any]:
-    """Get file metadata."""
-    server = create_test_server([str(Path(args.file_path).parent.absolute())])
-
-    params: dict[str, Any] = {
-        "file_path": str(Path(args.file_path).absolute()),
-    }
-
-    try:
-        result = await server.get_file_info(params)
-        return result
-    except Exception as e:
-        logger.error(f"Info error: {e}")
         return {"error": str(e)}
 
 
@@ -219,7 +125,7 @@ def create_parser() -> ArgumentParser:
     """Create argument parser for all commands."""
     parser = ArgumentParser(
         description="File Operations plugin CLI",
-        prog="python -m plugins.file_operations.cli",
+        prog="python -m plugins.file_ops",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -230,42 +136,12 @@ def create_parser() -> ArgumentParser:
     read_p.add_argument("--offset", type=int, help="Starting line number (0-indexed)")
     read_p.add_argument("--limit", type=int, help="Maximum number of lines to read")
 
-    # Create command
-    create_p = subparsers.add_parser("create", help="Create a new file")
-    create_p.add_argument("file_path", help="Path to file to create")
-    create_p.add_argument("content", help="File content")
-    create_p.add_argument("--overwrite", action="store_true", help="Overwrite if file exists")
-    create_p.add_argument("--create-dirs", action="store_true", help="Create parent directories")
-
-    # Edit command
-    edit_p = subparsers.add_parser("edit", help="Edit an existing file")
-    edit_p.add_argument("file_path", help="Path to file to edit")
-    edit_p.add_argument("--mode", choices=["append", "replace", "insert"], required=True,
-                        help="Edit mode")
-    edit_p.add_argument("--content", help="Content to append or insert")
-    edit_p.add_argument("--old-string", help="String to replace (for replace mode)")
-    edit_p.add_argument("--new-string", help="Replacement string (for replace mode)")
-    edit_p.add_argument("--line-number", type=int, help="Line number to insert at (for insert mode)")
-
-    # Delete command
-    delete_p = subparsers.add_parser("delete", help="Delete a file")
-    delete_p.add_argument("file_path", help="Path to file to delete")
-    delete_p.add_argument("--confirm", action="store_true", help="Confirm deletion")
-
     # List command
     list_p = subparsers.add_parser("list", help="List directory contents")
     list_p.add_argument("dir_path", help="Path to directory")
     list_p.add_argument("--recursive", action="store_true", help="Recursive listing")
     list_p.add_argument("--pattern", help="Filter pattern (glob)")
     list_p.add_argument("--include-hidden", action="store_true", help="Include hidden files")
-
-    # Exists command
-    exists_p = subparsers.add_parser("exists", help="Check if path exists")
-    exists_p.add_argument("path", help="Path to check")
-
-    # Info command
-    info_p = subparsers.add_parser("info", help="Get file metadata")
-    info_p.add_argument("file_path", help="Path to file")
 
     # Search command
     search_p = subparsers.add_parser("search", help="Search for files by name")
@@ -298,12 +174,7 @@ async def main() -> int:
     # Dispatch to appropriate command
     command_map = {
         "read": cmd_read,
-        "create": cmd_create,
-        "edit": cmd_edit,
-        "delete": cmd_delete,
         "list": cmd_list,
-        "exists": cmd_exists,
-        "info": cmd_info,
         "search": cmd_search,
         "grep": cmd_grep,
     }

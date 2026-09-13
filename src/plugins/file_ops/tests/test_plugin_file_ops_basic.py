@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import gc
 import pytest
 from unittest.mock import Mock
@@ -101,11 +103,71 @@ async def test_replace_string_in_file(file_ops_server, tmp_allowed_dir):
         "newString": "Hi"
     })
 
-    assert result["status"] == "success"
-    assert result["changes"]["replacements"] == 2
+    # "Hello" occurs twice. The tool promises ONE occurrence, so an
+    # ambiguous oldString is refused instead of editing both places.
+    assert result["status"] == "error"
+    assert result["error_type"] == "AmbiguousMatchError"
+    assert result["occurrences"] == 2
+    assert test_file.read_text() == "Hello World\nHello Python"
 
-    # Verify content
-    assert test_file.read_text() == "Hi World\nHi Python"
+    result = await file_ops_server.replace_string_in_file({
+        "filePath": str(test_file),
+        "oldString": "Hello World",
+        "newString": "Hi World"
+    })
+    assert result["status"] == "success"
+    assert result["changes"]["replacements"] == 1
+    assert test_file.read_text() == "Hi World\nHello Python"
+
+
+@pytest.mark.asyncio
+async def test_replace_keeps_crlf_line_endings(file_ops_server, tmp_allowed_dir):
+    """An edit used to rewrite every CRLF of the file as LF."""
+    test_file = tmp_allowed_dir / "crlf.txt"
+    test_file.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+
+    result = await file_ops_server.replace_string_in_file({
+        "filePath": str(test_file),
+        "oldString": "two\nthree",
+        "newString": "TWO\nTHREE"
+    })
+
+    assert result["status"] == "success"
+    assert test_file.read_bytes() == b"one\r\nTWO\r\nTHREE\r\n"
+
+
+@pytest.mark.asyncio
+async def test_list_directory_is_capped_and_says_so(file_ops_server, tmp_allowed_dir):
+    for i in range(5):
+        (tmp_allowed_dir / f"f{i}.txt").write_text("x")
+
+    capped = await file_ops_server.list_directory({
+        "dir_path": str(tmp_allowed_dir), "max_results": 3})
+    assert capped["total_files"] == 3
+    assert capped["truncated"] is True
+
+    exact = await file_ops_server.list_directory({
+        "dir_path": str(tmp_allowed_dir), "max_results": 5})
+    assert exact["total_files"] == 5
+    assert exact["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_recursive_listing_prunes_excluded_trees(file_ops_server, tmp_allowed_dir):
+    (tmp_allowed_dir / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_allowed_dir / "node_modules" / "pkg" / "index.js").write_text("x")
+    (tmp_allowed_dir / "src").mkdir()
+    (tmp_allowed_dir / "src" / "main.py").write_text("x")
+
+    result = await file_ops_server.list_directory({
+        "dir_path": str(tmp_allowed_dir), "recursive": True})
+    names = {pathlib.Path(f).name for f in result["files"]}
+    assert names == {"main.py"}
+    assert not any("node_modules" in d for d in result["directories"])
+
+    complete = await file_ops_server.list_directory({
+        "dir_path": str(tmp_allowed_dir), "recursive": True, "include_ignored": True})
+    assert "index.js" in {pathlib.Path(f).name for f in complete["files"]}
 
 
 

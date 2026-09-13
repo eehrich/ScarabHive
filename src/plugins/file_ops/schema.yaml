@@ -87,7 +87,11 @@ tools:
   - type: function
     function:
       name: "{{ name }}_list_directory"
-      description: "List directory contents with optional filtering and recursion."
+      description: |
+        List directory contents with optional filtering and recursion.
+        Capped at max_results entries; a cut-off listing says so (truncated).
+        A recursive listing skips .gitignored and excluded directories and
+        reports that in skipped — use search_files to look for a file by name.
       parameters:
         type: object
         properties:
@@ -100,11 +104,21 @@ tools:
             description: "Recursively list subdirectories"
           pattern:
             type: string
-            description: "Glob pattern to filter files (e.g., '*.py')"
+            description: "Glob pattern to filter entries (e.g., '*.py')"
           include_hidden:
             type: boolean
             default: false
             description: "Include hidden files (starting with .)"
+          max_results:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+            description: "Maximum number of entries (files + directories) to return"
+          include_ignored:
+            type: boolean
+            default: false
+            description: "Also list ignored, excluded and hidden entries"
         required: ["dir_path"]
         additionalProperties: false
 

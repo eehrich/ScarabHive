@@ -176,45 +176,7 @@ Unified file/directory management: create, delete, move, rename.
 
 ---
 
-### 3. `file_ops_create_file`
-
-Create a new file with atomic write guarantee. *(Legacy - prefer `file_ops_manage` with `operation: create`)*
-
-**Parameters:**
-- `file_path` (string, required): Absolute path for new file
-- `content` (string, required): File content
-- `overwrite` (boolean, optional): Allow overwriting existing file (default: false)
-- `create_dirs` (boolean, optional): Create parent directories (default: true)
-- `encoding` (string, optional): Text encoding (default: "utf-8")
-
-**Example:**
-```json
-{
-  "file_path": "/project/tmp/output.txt",
-  "content": "Hello World\nLine 2",
-  "overwrite": true,
-  "create_dirs": true
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "file_path": "/project/tmp/output.txt",
-  "bytes_written": 18,
-  "encoding": "utf-8"
-}
-```
-
-**Atomic Write Behavior:**
-- File is written to a temporary file first
-- Atomic rename ensures no corruption on failure
-- Original file preserved if write fails
-
----
-
-### 4. `file_ops_replace_string_in_file`
+### 3. `file_ops_replace_string_in_file`
 
 Replace exact string match in a file (VSCode/Copilot-style precise string replacement).
 
@@ -245,13 +207,14 @@ Replace exact string match in a file (VSCode/Copilot-style precise string replac
 ```
 
 **Notes:**
-- `oldString` must match exactly including whitespace
+- `oldString` must match exactly including whitespace, and exactly **once**: several matches are refused with `error_type: AmbiguousMatchError` and the count, nothing is written
 - Include 3+ lines of context to ensure unique match
-- Supports CRLF/LF line ending flexibility
+- `\n` in `oldString` also matches a CRLF file, and the file keeps its line endings
+- This is the only edit primitive — there are no line-number edits: line numbers go stale after the first edit above them
 
 ---
 
-### 5. `file_ops_list_directory`
+### 4. `file_ops_list_directory`
 
 List directory contents with optional filtering and recursion.
 
@@ -260,6 +223,10 @@ List directory contents with optional filtering and recursion.
 - `recursive` (boolean, optional): Recursive listing (default: false)
 - `pattern` (string, optional): Glob filter pattern (e.g., "*.py")
 - `include_hidden` (boolean, optional): Include hidden files (default: false)
+- `max_results` (integer, optional): Maximum entries, files + directories (default: 200, at most 1000)
+- `include_ignored` (boolean, optional): Also list ignored, excluded and hidden entries (default: false)
+
+A recursive listing uses the same pruning walk as the searches: `.gitignore`d and excluded directories are not entered, and `skipped` says so. A cut-off listing has `truncated: true`.
 
 **Example:**
 ```json
@@ -277,24 +244,22 @@ List directory contents with optional filtering and recursion.
   "status": "success",
   "dir_path": "/project/src",
   "files": [
-    "main.py",
-    "utils.py",
-    "models/user.py"
+    "/project/src/main.py",
+    "/project/src/models/user.py"
   ],
   "directories": [
-    "models",
-    "services"
+    "/project/src/models"
   ],
-  "total_files": 3,
-  "total_directories": 2,
-  "recursive": true,
-  "pattern": "*.py"
+  "total_files": 2,
+  "total_directories": 1,
+  "truncated": false,
+  "skipped": {"filters_active": ["..."], "notes": ["..."]}
 }
 ```
 
 ---
 
-### 6. `file_ops_search_files`
+### 5. `file_ops_search_files`
 
 Search for files by glob pattern. Walks the allowed directories on demand — see [Search Architecture](#search--indexing-architecture).
 
@@ -335,7 +300,7 @@ Search for files by glob pattern. Walks the allowed directories on demand — se
 
 ---
 
-### 7. `file_ops_grep_search`
+### 6. `file_ops_grep_search`
 
 Search file contents for text/regex patterns with context lines.
 
@@ -392,7 +357,7 @@ Binary files (decided by content, not extension) and files above `max_file_size_
 
 ---
 
-### 8. `file_ops_semantic_search`
+### 7. `file_ops_semantic_search`
 
 AI-powered semantic code search using ChromaDB embeddings. Finds files by meaning, not just keywords.
 
@@ -618,45 +583,22 @@ Run commands directly from the command line for testing:
 source .venv/Scripts/activate
 
 # Read a file
-python -m plugins.file_ops.cli read /path/to/file.txt
+python -m plugins.file_ops read /path/to/file.txt
 
 # Read with pagination
-python -m plugins.file_ops.cli read /path/to/file.txt --offset 10 --limit 50
-
-# Create a file
-python -m plugins.file_ops.cli create /path/to/new.txt "Hello World" --overwrite
-
-# Edit file (append)
-python -m plugins.file_ops.cli edit /path/to/file.txt --mode append --content "\nNew line"
-
-# Edit file (replace)
-python -m plugins.file_ops.cli edit /path/to/file.txt --mode replace \
-  --old-string "old text" --new-string "new text"
-
-# Edit file (insert)
-python -m plugins.file_ops.cli edit /path/to/file.txt --mode insert \
-  --line-number 5 --content "import logging"
-
-# Delete a file
-python -m plugins.file_ops.cli delete /path/to/file.txt --confirm
+python -m plugins.file_ops read /path/to/file.txt --offset 10 --limit 50
 
 # List directory
-python -m plugins.file_ops.cli list /path/to/dir --recursive --pattern "*.py"
-
-# Check existence
-python -m plugins.file_ops.cli exists /path/to/file.txt
-
-# Get file info
-python -m plugins.file_ops.cli info /path/to/file.txt
+python -m plugins.file_ops list /path/to/dir --recursive --pattern "*.py"
 
 # Search files by name
-python -m plugins.file_ops.cli search "*.py" --search-dir /project/src --max-results 50
+python -m plugins.file_ops search "*.py" --search-dir /project/src --max-results 50
 
 # Grep search (literal)
-python -m plugins.file_ops.cli grep "TODO" --context 2 --include-pattern "**/*.py"
+python -m plugins.file_ops grep "TODO" --context 2 --include-pattern "**/*.py"
 
 # Grep search (regex)
-python -m plugins.file_ops.cli grep "def\s+\w+\(" --regex --include-pattern "src/**/*.py"
+python -m plugins.file_ops grep "def\s+\w+\(" --regex --include-pattern "src/**/*.py"
 ```
 
 **CLI Notes:**
@@ -753,8 +695,6 @@ All tools return structured error responses:
 - ✅ Exclude generated directories (`**/dist/**`, `**/build/**`) — they are pruned, not filtered
 
 ### Reliability
-- ✅ Use `create_file` with `overwrite: false` for safety
-- ✅ Check `file_exists` before operations
 - ✅ Handle error responses gracefully
 - ❌ Don't assume write operations succeeded without checking response
 
@@ -866,4 +806,3 @@ file_ops/
 For issues or questions:
 - Check this README's troubleshooting section
 - Review test files: `tests/test_plugin_file_ops_basic.py`
-- Check design docs: `docs/file_ops_plugin_design.md`
