@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" color="#c9a227">
+  <title>ScarabHive</title>
+  <!-- A scarab in a hive cell, drawn in currentColor so the UI can tint it with the
+       brand token through a use reference to #mark (templates/kit/macros.html). -->
+  <symbol id="mark" viewBox="0 0 64 64">
+    <path d="M32 3.5 56.5 17.5v29L32 60.5 7.5 46.5v-29Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
+    <g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+      <path d="M29.6 17.2 27 13.4M34.4 17.2 37 13.4"/>
+      <path d="M23.5 25.5 17.5 21.5M40.5 25.5l6-4M22.2 36l-6.4-2.2M41.8 36l6.4-2.2M23.2 44.5l-6.2 3.8M40.8 44.5l6.2 3.8"/>
+    </g>
+    <g fill="currentColor">
+      <path d="M27.4 21a4.6 4.1 0 0 1 9.2 0Z"/>
+      <rect x="23" y="22.4" width="18" height="6.8" rx="3.4"/>
+      <path d="M31 31v19c-5.6-.6-9.6-5.1-9.6-10.6v-6A2.4 2.4 0 0 1 23.8 31Z"/>
+      <path d="M33 31v19c5.6-.6 9.6-5.1 9.6-10.6v-6A2.4 2.4 0 0 0 40.2 31Z"/>
+    </g>
+  </symbol>
+  <use href="#mark"/>
+</svg>

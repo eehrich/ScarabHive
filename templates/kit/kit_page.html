@@ -1,0 +1,189 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon, logo %}
+{% block title %}UI Kit{% endblock %}
+{% block head %}
+<style>
+  .kit-section { display: flex; flex-direction: column; gap: var(--space-3); }
+  .kit-section > h2 { font-size: var(--text-sm); color: var(--text-muted); font-weight: 500; }
+  .kit-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-2); }
+  .kit-swatch { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); overflow: hidden; font-size: var(--text-xs); }
+  .kit-swatch > div:first-child { height: 40px; }
+  .kit-swatch > div:last-child { padding: var(--space-2); font-family: var(--font-mono); }
+  .kit-icons { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--space-2); }
+  .kit-icons > div { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-secondary); }
+  .kit-brand { display: flex; align-items: center; gap: var(--space-3); color: var(--brand); }
+  .kit-brand span { color: var(--text-primary); font-size: var(--text-xl); font-weight: 600; letter-spacing: -0.02em; }
+</style>
+{% endblock %}
+{% block toolbar %}
+<div class="pk-row" role="group" aria-label="Theme">
+  <button type="button" class="pk-btn pk-btn--sm" data-theme-choice="light">{{ icon('sun') }} Light</button>
+  <button type="button" class="pk-btn pk-btn--sm" data-theme-choice="dark">{{ icon('moon') }} Dark</button>
+  <button type="button" class="pk-btn pk-btn--sm" data-theme-choice="system">{{ icon('monitor') }} System</button>
+</div>
+{% endblock %}
+{% block content %}
+<section class="kit-section">
+  <div class="kit-brand">{{ logo(40) }}<span>ScarabHive</span></div>
+  <p class="pk-secondary" style="margin:0">Every control a panel needs, in every state. Panels use these classes and the tokens below; they define no colours and no controls of their own.</p>
+</section>
+
+<section class="kit-section">
+  <h2>Colour tokens</h2>
+  <div class="kit-swatches">
+    {% for token in ["surface-0", "surface-1", "surface-2", "surface-3", "text-primary", "text-secondary", "text-muted", "accent", "accent-text", "ok", "warn", "danger", "info", "brand"] %}
+    <div class="kit-swatch"><div style="background: var(--{{ token }})"></div><div>--{{ token }}</div></div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Buttons</h2>
+  <div class="pk-row">
+    <button class="pk-btn pk-btn--primary">{{ icon('plus') }} Primary</button>
+    <button class="pk-btn">Secondary</button>
+    <button class="pk-btn pk-btn--ghost">Ghost</button>
+    <button class="pk-btn pk-btn--danger">{{ icon('trash-2') }} Danger</button>
+    <button class="pk-btn" disabled>Disabled</button>
+    <button class="pk-btn" aria-pressed="true">Pressed</button>
+    <button class="pk-btn pk-btn--icon" aria-label="Settings">{{ icon('settings') }}</button>
+    <pk-refresh interval="5"></pk-refresh>
+  </div>
+  <div class="pk-row">
+    <button class="pk-btn pk-btn--sm">Small</button>
+    <button class="pk-btn">Medium</button>
+    <button class="pk-btn pk-btn--lg">Large</button>
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Form controls</h2>
+  <form class="pk-form">
+    <label class="pk-field"><span class="pk-label">Name</span><input class="pk-input" placeholder="writer_review"><span class="pk-help">Shown in the dock.</span></label>
+    <label class="pk-field"><span class="pk-label">Email</span><input class="pk-input" aria-invalid="true" value="not-an-email"><span class="pk-error">Enter a valid address.</span></label>
+    <div class="pk-search">{{ icon('search') }}<input class="pk-input" type="search" placeholder="Search panels"></div>
+    <label class="pk-field"><span class="pk-label">Model</span><select class="pk-select"><option>deepseek-v4</option><option>gemini-flash</option></select></label>
+    <label class="pk-field"><span class="pk-label">Notes</span><textarea class="pk-textarea" placeholder="Optional"></textarea></label>
+    <div class="pk-row">
+      <label class="pk-check"><input type="checkbox" checked> Checkbox</label>
+      <label class="pk-radio"><input type="radio" name="r" checked> Radio</label>
+      <label class="pk-radio"><input type="radio" name="r"> Radio</label>
+      <label class="pk-switch"><input type="checkbox" role="switch" checked> Switch</label>
+    </div>
+    <div class="pk-form-actions"><button type="button" class="pk-btn">Cancel</button><button type="button" class="pk-btn pk-btn--primary">Save</button></div>
+  </form>
+</section>
+
+<section class="kit-section">
+  <h2>Tabs</h2>
+  <div class="pk-tabs" role="tablist" data-pk-tabs>
+    <button class="pk-tab" role="tab" aria-selected="true" aria-controls="kit-tab-a">Requests <span class="pk-tab-count">128</span></button>
+    <button class="pk-tab" role="tab" aria-selected="false" aria-controls="kit-tab-b">Hooks</button>
+    <button class="pk-tab" role="tab" aria-selected="false" aria-controls="kit-tab-c">Settings</button>
+  </div>
+  <div id="kit-tab-a" class="pk-tabpanel" role="tabpanel">
+    <div class="pk-table-wrap">
+      <table class="pk-table">
+        <thead><tr><th>Time</th><th>Agent</th><th>Status</th><th class="pk-num">Duration</th></tr></thead>
+        <tbody>
+          <tr><td class="pk-mono">14:02:11</td><td>writer_review</td><td><span class="pk-badge pk-badge--ok">ok</span></td><td class="pk-num">1.2 s</td></tr>
+          <tr aria-selected="true"><td class="pk-mono">14:01:58</td><td>coder</td><td><span class="pk-badge pk-badge--warn">retry</span></td><td class="pk-num">4.8 s</td></tr>
+          <tr><td class="pk-mono">14:01:40</td><td>research</td><td><span class="pk-badge pk-badge--danger">error</span></td><td class="pk-num">0.3 s</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div id="kit-tab-b" class="pk-tabpanel" role="tabpanel" hidden>
+    <div class="pk-empty">{{ icon('activity') }}<div class="pk-empty-title">No hook activity</div><div>Hooks show up here as soon as a request runs.</div></div>
+  </div>
+  <div id="kit-tab-c" class="pk-tabpanel" role="tabpanel" hidden>
+    <dl class="pk-kv"><dt>Retention</dt><dd>5 GB</dd><dt>Capture</dt><dd>requests, responses, hooks</dd></dl>
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Cards, numbers, status</h2>
+  <div class="pk-stats">
+    <div class="pk-stat"><div class="pk-stat-label">Requests today</div><div class="pk-stat-value">1,284</div></div>
+    <div class="pk-stat"><div class="pk-stat-label">Context used</div><div class="pk-stat-value">62%</div><progress class="pk-progress" value="62" max="100"></progress></div>
+    <div class="pk-stat"><div class="pk-stat-label">Cost</div><div class="pk-stat-value">$0.12</div></div>
+  </div>
+  <div class="pk-card">
+    <div class="pk-card-head"><h3 class="pk-card-title">Connections</h3><span class="pk-badge pk-badge--accent">3</span></div>
+    <div class="pk-stack">
+      <div class="pk-row"><span class="pk-dot pk-dot--ok"></span> api <span class="pk-muted">connected</span></div>
+      <div class="pk-row"><span class="pk-dot pk-dot--warn"></span> worker <span class="pk-muted">slow</span></div>
+      <div class="pk-row"><span class="pk-dot pk-dot--danger"></span> comfyui <span class="pk-muted">offline</span></div>
+    </div>
+  </div>
+  <div class="pk-row">
+    <span class="pk-badge">neutral</span><span class="pk-badge pk-badge--info">info</span><span class="pk-badge pk-badge--ok">ok</span>
+    <span class="pk-badge pk-badge--warn">warn</span><span class="pk-badge pk-badge--danger">danger</span>
+    <span class="pk-spinner" aria-label="Loading"></span>
+    <span class="pk-shortcut">Ctrl K</span>
+  </div>
+  <div class="pk-stack" style="max-width: 320px"><span class="pk-skeleton"></span><span class="pk-skeleton" style="width: 70%"></span></div>
+</section>
+
+<section class="kit-section">
+  <h2>Dialogs and toasts</h2>
+  <div class="pk-row">
+    <button class="pk-btn" data-demo="alert">Alert</button>
+    <button class="pk-btn" data-demo="confirm">Confirm</button>
+    <button class="pk-btn" data-demo="danger">Confirm (danger)</button>
+    <button class="pk-btn" data-demo="prompt">Prompt</button>
+    <button class="pk-btn" data-demo="toast">Toasts</button>
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Menu</h2>
+  <div class="pk-row">
+    <button class="pk-btn" popovertarget="kit-menu">{{ icon('ellipsis') }} Actions</button>
+    <div id="kit-menu" class="pk-menu" popover>
+      <div class="pk-menu-label">Session</div>
+      <button class="pk-menu-item">{{ icon('pencil') }} Rename</button>
+      <button class="pk-menu-item">{{ icon('copy') }} Copy id <span class="pk-shortcut">C</span></button>
+      <hr class="pk-menu-separator">
+      <button class="pk-menu-item pk-menu-item--danger">{{ icon('trash-2') }} Delete</button>
+    </div>
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Code and JSON</h2>
+  <pre class="pk-code">POST /events  {"agent_name": "writer_review", "task": "Check chapter 3"}</pre>
+  <div id="kit-json" class="pk-card"></div>
+</section>
+
+<section class="kit-section">
+  <h2>Icons</h2>
+  <div class="kit-icons">
+    {% for name in icons %}<div>{{ icon(name) }} {{ name }}</div>{% endfor %}
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script type="module">
+  import { alert, confirm, prompt, toast, jsonView, render } from '/static/kit/panel-kit.js';
+
+  document.querySelectorAll('[data-theme-choice]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const theme = button.dataset.themeChoice;
+      document.documentElement.dataset.theme = theme;
+      document.cookie = `ui_theme=${theme}; path=/; max-age=31536000; samesite=lax`;
+    });
+  });
+
+  const demos = {
+    alert: () => alert('The queue was paused by an operator.'),
+    confirm: async () => toast(`Confirmed: ${await confirm('Retry all failed jobs?')}`),
+    danger: async () => toast(`Confirmed: ${await confirm('Delete this session and its sub-agent sessions?', { title: 'Delete session', confirmLabel: 'Delete', danger: true })}`),
+    prompt: async () => toast(`Name: ${await prompt('New name for the session', { title: 'Rename session', value: 'Buch 945 Review' })}`),
+    toast: () => { toast('Saved'); toast('3 jobs finished', { kind: 'ok' }); toast('Worker is slow', { kind: 'warn' }); toast('Request failed: 502', { kind: 'error' }); },
+  };
+  document.querySelectorAll('[data-demo]').forEach((b) => b.addEventListener('click', demos[b.dataset.demo]));
+
+  render(document.getElementById('kit-json'), jsonView({ request_id: '8f2c1a', agent: 'writer_review', usage: { prompt_tokens: 4120, completion_tokens: 380 }, tools: ['writer_content_chapter', 'writer_issues_list'], cached: null }));
+</script>
+{% endblock %}

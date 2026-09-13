@@ -19,9 +19,10 @@ from fastapi import FastAPI, Request, Query, Header, HTTPException, Response, st
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from .api.endpoints import router as api_router
+from .ui.resources import STATIC_DIR, ui_templates
+from .ui.routes import router as ui_router
 from .mcp.base import MCPRegistry
 # Module level: inside list_agents it would sit in a try/except that
 # skips the server -- an import cycle would then empty the UI dropdown
@@ -237,36 +238,8 @@ async def lifespan(app: FastAPI):
 from .llm.capabilities import capability_model_name  # noqa: E402,F401
 
 
-# Module level templates and static path setup
-# For installed packages, templates/static must be in package root
-# Check multiple locations: package data > development paths
-def _find_resource_dir(name: str) -> Path:
-    """Find templates or static directory in various install scenarios."""
-    # Try 1: Installed package data in site-packages
-    try:
-        import agent_system
-        pkg_dir = Path(agent_system.__file__).parent
-        resource_path = pkg_dir / name
-        if resource_path.exists():
-            return resource_path
-    except Exception:
-        pass
-    
-    # Try 2: Development - relative to this file
-    dev_path = Path(__file__).parents[2] / name
-    if dev_path.exists():
-        return dev_path
-    
-    # Try 3: Current working directory (last resort)
-    cwd_path = Path.cwd() / name
-    if cwd_path.exists():
-        return cwd_path
-    
-    # Fallback to dev path (will fail later with clear error)
-    return dev_path
-
-templates = Jinja2Templates(directory=str(_find_resource_dir("templates")))
-static_path = _find_resource_dir("static")
+templates = ui_templates()
+static_path = STATIC_DIR
 
 # Global application state
 _app_start_time = None
@@ -975,6 +948,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Include API router
     app.include_router(api_router)
+    app.include_router(ui_router)
 
     # Include debug/profiling router (available when AGENT_ENABLE_PROFILING=1)
     from .api.debug_endpoints import router as debug_router

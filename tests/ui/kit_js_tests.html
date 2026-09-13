@@ -1,0 +1,179 @@
+<!doctype html>
+<html class="pk-root" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <title>panel-kit.js tests</title>
+  <link rel="stylesheet" href="/static/kit/kit.css">
+</head>
+<body>
+<div class="pk-tabs" role="tablist" data-pk-tabs>
+  <button class="pk-tab" role="tab" aria-selected="true" aria-controls="t-a" data-tab="a">A</button>
+  <button class="pk-tab" role="tab" aria-selected="false" aria-controls="t-b" data-tab="b">B</button>
+</div>
+<div id="t-a" role="tabpanel">a</div>
+<div id="t-b" role="tabpanel" hidden>b</div>
+<script type="module">
+  import * as pk from '/static/kit/panel-kit.js';
+
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error}`; }
+  };
+  const nextFrame = () => new Promise((r) => setTimeout(r, 0));
+
+  await check('html escapes interpolated markup', () => {
+    const out = String(pk.html`<p title="${'"><img src=x onerror=alert(1)>'}">${'<b>x</b>'}</p>`);
+    return !out.includes('<img') && !out.includes('<b>') && out.includes('&quot;&gt;&lt;img');
+  });
+
+  await check('html keeps nested html and joins arrays', () => {
+    const items = ['<i>', 'b'].map((v) => pk.html`<li>${v}</li>`);
+    return String(pk.html`<ul>${items}</ul>`) === '<ul><li>&lt;i&gt;</li><li>b</li></ul>';
+  });
+
+  await check('trusted markup passes unchanged', () => String(pk.html`${pk.trusted('<b>ok</b>')}`) === '<b>ok</b>');
+
+  await check('jsonView escapes keys and strings', () => {
+    const out = String(pk.jsonView({ '<k>': '<img src=x onerror=alert(1)>' }));
+    return !out.includes('<img') && !out.includes('<k>') && out.includes('&lt;k&gt;');
+  });
+
+  await check('native confirm is refused, not blocking', () => window.confirm('x') === false);
+
+  await check('a dialog resolves with the pressed action', async () => {
+    const answer = pk.confirm('Delete?', { danger: true });
+    await nextFrame();
+    const dialog = document.querySelector('dialog.pk-dialog[open]');
+    dialog.querySelector('.pk-btn--danger').click();
+    return (await answer) === true && !document.querySelector('dialog.pk-dialog');
+  });
+
+  await check('a prompt resolves with the typed text', async () => {
+    const answer = pk.prompt('Name?', { value: 'old' });
+    await nextFrame();
+    const field = document.querySelector('dialog.pk-dialog[open] input[name="value"]');
+    field.value = 'new name';
+    document.querySelector('dialog.pk-dialog[open] .pk-btn--primary').click();
+    return (await answer) === 'new name';
+  });
+
+  await check('dismissing a dialog resolves null', async () => {
+    const answer = pk.alert('Hi');
+    await nextFrame();
+    document.querySelector('dialog.pk-dialog[open]').close();
+    return (await answer) === null;
+  });
+
+  await check('tabs switch their panels', () => {
+    document.querySelector('[data-tab="b"]').click();
+    return document.getElementById('t-a').hidden && !document.getElementById('t-b').hidden
+      && document.querySelector('[data-tab="b"]').getAttribute('aria-selected') === 'true';
+  });
+
+  await check('autoRefresh starts and stops', () => {
+    const control = pk.autoRefresh(() => {}, 1000);
+    control.start();
+    const started = control.running;
+    control.stop();
+    return started && !control.running;
+  });
+
+  await check('api turns an HTTP error into ApiError', async () => {
+    try {
+      await pk.api('/static/kit/does-not-exist.json', { quiet: true });
+      return false;
+    } catch (error) {
+      return error instanceof pk.ApiError && error.status === 404;
+    }
+  });
+
+  await check('overlays cast a shadow', () => {
+    const menu = document.createElement('div');
+    menu.className = 'pk-menu';
+    document.body.appendChild(menu);
+    const shadow = getComputedStyle(menu).boxShadow;
+    menu.remove();
+    return shadow !== 'none' && shadow !== '';
+  });
+
+  await check('an empty tab list does not break the kit', () => {
+    const list = document.createElement('div');
+    list.setAttribute('data-pk-tabs', '');
+    document.body.appendChild(list);
+    pk.initTabs();
+    return true;
+  });
+
+  await check('tabs are wired once however often initTabs runs', () => {
+    let changes = 0;
+    const list = document.querySelector('[data-pk-tabs][role="tablist"]');
+    list.addEventListener('tabchange', () => { changes += 1; });
+    pk.initTabs();
+    document.querySelector('[data-tab="a"]').click();
+    return changes === 1;
+  });
+
+  await check('pk-refresh falls back to a sane interval', () => {
+    const control = document.createElement('pk-refresh');
+    control.setAttribute('interval', '0');
+    document.body.appendChild(control);
+    const label = control.querySelector('[data-act="auto"]').textContent;
+    control.remove();
+    return label === '5s';
+  });
+
+  await check('icon escapes its size', () => !String(pk.icon('bug', { size: '"><img src=x>' })).includes('<img'));
+
+  await check('api reports a broken body like any other failure', async () => {
+    const before = document.querySelectorAll('.pk-toast').length;
+    try {
+      await pk.api('/tests/ui/kit_broken.json');
+      return false;
+    } catch (error) {
+      return error instanceof SyntaxError && document.querySelectorAll('.pk-toast').length === before + 1;
+    }
+  });
+
+  await check('a frame that is not the shell answers dialogs itself', () => new Promise((resolve) => {
+    window.addEventListener('message', (event) => {
+      if (event.data && event.data.probe === 'frame') resolve(event.data.ok === true);
+    });
+    const frame = document.createElement('iframe');
+    frame.src = '/tests/ui/kit_frame_probe.html';
+    document.body.appendChild(frame);
+  }));
+
+  await check('tabs rendered later still switch', () => {
+    const list = document.querySelector('[data-pk-tabs][role="tablist"]');
+    list.insertAdjacentHTML('beforeend', '<button class="pk-tab" role="tab" aria-selected="false" aria-controls="t-c" data-tab="c">C</button>');
+    document.body.insertAdjacentHTML('beforeend', '<div id="t-c" role="tabpanel" hidden>c</div>');
+    document.querySelector('[data-tab="c"]').click();
+    return !document.getElementById('t-c').hidden && document.getElementById('t-a').hidden;
+  });
+
+  await check('the handshake delivers early calls and visibility', () => new Promise((resolve) => {
+    const seen = [];
+    let frame;
+    window.addEventListener('message', (event) => {
+      if (!frame || event.source !== frame.contentWindow) return;
+      const m = event.data || {};
+      if (m.type === 'pk:ready') {
+        seen.push('ready');
+        frame.contentWindow.postMessage({ type: 'pk:init', v: 1, theme: 'dark', visible: false, session: null }, location.origin);
+      } else if (m.type === 'pk:title' || m.type === 'pk:navigate') {
+        seen.push(m.type === 'pk:title' ? m.text : m.path);
+      } else if (m.probe === 'shell') {
+        setTimeout(() => resolve(m.hiddenAfterInit === true && seen.includes('Early title')
+          && seen.includes('/early/path') && seen[0] === 'ready'), 50);
+      }
+    });
+    frame = document.createElement('iframe');
+    frame.src = '/tests/ui/kit_shell_probe.html';
+    document.body.appendChild(frame);
+  }));
+
+  await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });
+</script>
+</body>
+</html>

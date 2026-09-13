@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The logo without legs and antennae: at 16px they only blur. -->
+  <path d="M32 4 55.5 17.75v28.5L32 60 8.5 46.25v-28.5Z" fill="#141820" stroke="#c9a227" stroke-width="5" stroke-linejoin="round"/>
+  <g fill="#c9a227">
+    <path d="M26.5 22a5.5 5 0 0 1 11 0Z"/>
+    <rect x="21.5" y="23.5" width="21" height="8" rx="4"/>
+    <path d="M30.8 33.5v17.8c-6.4-.7-10.8-5.6-10.8-11.6v-3.8a2.4 2.4 0 0 1 2.4-2.4Z"/>
+    <path d="M33.2 33.5v17.8c6.4-.7 10.8-5.6 10.8-11.6v-3.8a2.4 2.4 0 0 0-2.4-2.4Z"/>
+  </g>
+</svg>
