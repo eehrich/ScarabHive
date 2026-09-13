@@ -1184,6 +1184,47 @@ class TestReplKeepsTheHistoryOnTheLiveSession:
         assert built == [], "built a full-screen editor into a redirected stdout"
 
 
+class TestPipedInputFromPowerShell:
+    """Windows PowerShell 5.1 prefixes piped input with a UTF-8 BOM.
+
+    Measured: ``"/compact" | agent-cli chat`` delivers
+    ``b'\\xef\\xbb\\xbf/compact\\n'``. input() returned ``'\\ufeff/compact'``,
+    strip() kept the mark, and the command went to the model as a message.
+    """
+
+    def test_a_piped_bom_does_not_turn_a_command_into_a_message(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        piped = io.TextIOWrapper(io.BytesIO("\ufeff/exit\n".encode("utf-8")), encoding="utf-8")
+        monkeypatch.setattr(chat.sys, "stdin", piped)
+        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: False, raising=False)
+        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
+        turns = []
+        monkeypatch.setattr(chat, "_execute_turn",
+                            lambda loop, ctx, task, renderer, editor=None: turns.append(task) or {})
+
+        tracker = SimpleNamespace(get_session_messages=lambda sid: [])
+        agent = SimpleNamespace(_session_tracker=tracker, agent_config=None,
+                                llm=SimpleNamespace(model="m"))
+        loop = asyncio.new_event_loop()
+        try:
+            chat.run_chat_loop(
+                agent=agent, entry_name="a", session_service=None,
+                session_user="u", session_id="s1", was_new_session=False,
+                llm_profile="p", show_status=False, loop=loop)
+        finally:
+            loop.close()
+        assert turns == [], f"/exit behind a BOM was sent to the model: {turns!r}"
+
+    def test_only_the_leading_mark_goes(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        piped = io.TextIOWrapper(io.BytesIO("\ufeffa\ufeffb\n".encode("utf-8")), encoding="utf-8")
+        monkeypatch.setattr(chat.sys, "stdin", piped)
+        chat._skip_piped_bom()
+        assert chat.sys.stdin.readline() == "a\ufeffb\n"
+
+
 class TestCallPricingKey:
     """Which client the turn is priced with.
 

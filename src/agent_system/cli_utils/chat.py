@@ -951,6 +951,29 @@ def _build_prompt_editor(seed: Sequence[str]) -> Optional[_PromptEditor]:
         return None
 
 
+def _skip_piped_bom() -> None:
+    """Decode piped stdin as utf-8-sig, so a leading byte-order mark is dropped.
+
+    Windows PowerShell 5.1 prefixes everything it pipes into a native process
+    with a UTF-8 BOM -- measured: ``b'\\xef\\xbb\\xbf/compact\\n/exit\\n'``, also
+    with ``$OutputEncoding`` set to UTF-8 without BOM. input() then returns
+    ``'\\ufeff/compact'``; strip() keeps the BOM, so the line was no command and
+    went to the model as a billed message. utf-8-sig drops the mark only at
+    the start of the stream, never a U+FEFF inside the text.
+
+    Must run before the first read: a TextIOWrapper refuses a new encoding
+    once it has decoded data.
+    """
+    stream = sys.stdin
+    encoding = (getattr(stream, "encoding", None) or "").lower().replace("_", "-")
+    if encoding not in ("utf-8", "utf8"):
+        return
+    try:
+        stream.reconfigure(encoding="utf-8-sig")
+    except Exception:
+        logger.debug("Could not switch piped stdin to utf-8-sig", exc_info=True)
+
+
 def _prompt_key_bindings() -> Any:
     """Restore Ctrl-Z's old meaning on Windows: end of input.
 
@@ -2223,6 +2246,12 @@ def run_chat_loop(
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
     except Exception:
         interactive = False
+    try:
+        piped = not sys.stdin.isatty()
+    except Exception:
+        piped = False
+    if piped:
+        _skip_piped_bom()
     editor = _build_prompt_editor(_history_seed(ctx)) if interactive else None
     read_line = editor.read if editor else None
     read_cont = editor.read_continuation if editor else None
