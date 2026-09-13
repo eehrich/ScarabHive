@@ -345,6 +345,109 @@ class TestTheShapesTheRuntimeSupports:
         assert validator.schema_yaml is not None, "the schema did not load at all"
 
 
+class TestToolMethodRouting:
+    """Every tool routes to a method (``SchemaBasedToolMixin._get_method_name``)
+    that has to exist. This was a script of its own that walked two plugin
+    roots of four, stripped the Jinja with a regex (tavily_search "broken") and
+    looked only into server.py (writer_issues keeps its handler in
+    repair_pipeline.py) -- both findings false alarms."""
+
+    TOOL = ("  - type: function\n"
+            "    function:\n"
+            '      name: "{tool}"\n'
+            "      parameters:\n"
+            "        type: object\n")
+
+    def _plugin(self, tmp_path, tools, files):
+        plugin = tmp_path / "probe"
+        plugin.mkdir()
+        (plugin / "schema.yaml").write_text(
+            "tools:\n" + "".join(self.TOOL.format(tool=t) for t in tools),
+            encoding="utf-8")
+        for name, body in files.items():
+            (plugin / name).write_text(body, encoding="utf-8")
+        return plugin
+
+    def _warnings(self, plugin):
+        from scripts.validate_all_tool_schemas import ToolSchemaValidator
+        validator = ToolSchemaValidator()
+        assert validator.validate_plugin(plugin), validator.errors
+        return validator.warnings
+
+    def test_a_tool_without_its_method_is_reported(self, tmp_path):
+        plugin = self._plugin(tmp_path, ["{{ name }}_list", "{{ name }}"], {
+            "server.py": "class S:\n    async def tail(self, params): ...\n"})
+
+        warnings = self._warnings(plugin)
+
+        assert [w for w in warnings if "'list()'" in w], warnings
+        assert [w for w in warnings if "'execute()'" in w], warnings
+
+    def test_a_handler_in_another_module_counts(self, tmp_path):
+        plugin = self._plugin(tmp_path, ["{{ name }}_execute_task", "search"], {
+            "server.py": "class S(Mixin):\n    pass\n",
+            "repair_pipeline.py": ("class Mixin:\n"
+                                   "    async def execute_task(self, params): ...\n"
+                                   "    def search(self, params): ...\n")})
+
+        assert self._warnings(plugin) == []
+
+    def test_a_wrapper_that_hands_on_is_still_checked(self, tmp_path):
+        plugin = self._plugin(tmp_path, ["{{ name }}_list"], {
+            "plugin.py": ("class P:\n"
+                          "    async def call(self, tool, params):\n"
+                          "        return await self.server.call(tool, params)\n")})
+
+        assert self._warnings(plugin) != []
+
+    def test_a_plugin_that_dispatches_itself_is_skipped(self, tmp_path):
+        plugin = self._plugin(tmp_path, ["{{ name }}_list"], {
+            "mcp_server.py": ("class S:\n"
+                              "    async def call(self, tool, params):\n"
+                              "        if tool.endswith('list'):\n"
+                              "            return await self._list_log_files(params)\n")})
+
+        assert self._warnings(plugin) == []
+
+    def test_a_plugin_with_its_own_method_name_rule_is_skipped(self, tmp_path):
+        plugin = self._plugin(tmp_path, ["{{ name }}_list"], {
+            "server.py": ("class S:\n"
+                          "    def _get_method_name(self, tool):\n"
+                          "        return 'handle'\n"
+                          "    async def handle(self, params): ...\n")})
+
+        assert self._warnings(plugin) == []
+
+    def test_neither_tests_nor_nested_functions_supply_a_handler(self, tmp_path):
+        plugin = self._plugin(tmp_path, ["{{ name }}_list", "{{ name }}_tail"], {
+            "server.py": ("def build():\n"
+                          "    async def call(req):\n"
+                          "        return {}\n"
+                          "    def tail(params): ...\n")})
+        (plugin / "tests").mkdir()
+        (plugin / "tests" / "test_probe.py").write_text(
+            "class Fake:\n    async def list(self, params): ...\n", encoding="utf-8")
+
+        warnings = self._warnings(plugin)
+
+        assert [w for w in warnings if "'list()'" in w], warnings
+        assert [w for w in warnings if "'tail()'" in w], warnings
+
+    def test_the_shipped_plugins_route_every_tool(self):
+        from scripts import validate_all_tool_schemas as script
+
+        validator = script.ToolSchemaValidator()
+        for plugin in script.find_plugin_directories(plugin_roots(REPO)):
+            validator.validate_plugin(plugin)
+
+        # Counted where the lookup happens: "0 warnings" must not mean "every
+        # plugin was skipped".
+        assert validator.methods_checked > len(validator.all_schemas) // 2, (
+            f"only {validator.methods_checked} of {len(validator.all_schemas)} "
+            f"tools were checked; skipped: {validator.own_routing}")
+        assert validator.warnings == []
+
+
 class TestTheHookVocabulary:
     """The valid hook types were a hand-copied list that had fallen behind."""
 

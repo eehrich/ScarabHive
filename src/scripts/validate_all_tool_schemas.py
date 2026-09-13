@@ -6,6 +6,7 @@ Validates that all tool schemas in plugin schema.yaml files are in the correct f
 This script checks:
 1. OpenAI format: {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
 2. MCP format: {"name": "...", "description": "...", "inputSchema": {...}}
+3. Every tool routes to a method the plugin defines (warning otherwise)
 
 Usage:
     python src/scripts/validate_all_tool_schemas.py
@@ -14,6 +15,7 @@ Usage:
 """
 
 import argparse
+import ast
 import json
 import logging
 import sys
@@ -48,12 +50,18 @@ class ToolSchemaValidator:
     #: basic_agent ("object of type 'bool' has no len()") and llm_router.
     PRESENT = ["TEMPLATE_VALUE"]
 
+    #: What a ``call`` override invokes when it only hands the tool on
+    #: (``self.server.call``, ``super().call``, ``call_with_status``).
+    HAND_ON = {"call", "call_tool", "call_with_status"}
+
     def __init__(self):
         self.errors: list[str] = []
         self.warnings: list[str] = []
         self.all_schemas: list[tuple[str, dict, str]] = []  # (plugin_name, tool_schema, format)
         self.two_state: list[str] = []  # schemas validated in both branch states
         self.one_state: list[str] = []  # ... and those where the second render failed
+        self.methods_checked = 0  # tools whose handler method was looked up
+        self.own_routing: list[str] = []  # plugins that route by their own rule
 
     def _render(self, plugin_path: Path) -> list[dict]:
         """The schema in every shape production can build it.
@@ -156,7 +164,76 @@ class ToolSchemaValidator:
             if not validation_result:
                 plugin_passed = False
 
+        self._check_tool_methods(plugin_path, tools)
         return plugin_passed
+
+    @staticmethod
+    def _method_name(plugin_name: str, tool_name: str) -> str:
+        """The routing of ``SchemaBasedToolMixin._get_method_name``."""
+        if tool_name == plugin_name:
+            return "execute"
+        if tool_name.startswith(f"{plugin_name}_"):
+            return tool_name[len(plugin_name) + 1:]
+        return tool_name
+
+    def _check_tool_methods(self, plugin_path: Path, tools: list) -> None:
+        """Warn about a tool whose handler method exists nowhere in the plugin.
+
+        Searched across the whole plugin package, not only server.py: a
+        handler may live in a mixin module (writer_issues keeps execute_task in
+        repair_pipeline.py).
+
+        Skipped: a plugin that routes by its own rule -- overriding
+        ``_get_method_name``, or a ``call`` that hands on to no other ``call``
+        (log_viewer dispatches with if/elif). Defining ``call`` or
+        ``call_tool`` alone is no such sign: most plugin.py wrappers define
+        them only to hand on to the server's mixin, where this routing applies.
+
+        Only methods count -- functions defined directly in a class body -- so
+        a same-named module-level or nested function (a route handler called
+        ``call``) neither stands in for a missing handler nor switches the
+        check off.
+
+        ponytail: methods are pooled across every class in the package, so a
+        same-named method on an unrelated class satisfies the lookup. A handler
+        inherited from a class outside the package, and the mixin's Agent
+        special case (tool == agent name goes to Agent.call), would read as
+        missing. None of it occurs in the tree today; resolve the server class
+        hierarchy if it does.
+        """
+        defined: set[str] = set()
+        own_call = False
+        for py_file in plugin_path.rglob("*.py"):
+            if "tests" in py_file.relative_to(plugin_path).parts:
+                continue
+            try:
+                tree = ast.parse(py_file.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError) as e:
+                self.warnings.append(f"{plugin_path.name}: cannot parse {py_file.name}: {e}")
+                continue
+            methods = [node for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
+                       for node in cls.body
+                       if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            for node in methods:
+                defined.add(node.name)
+                if node.name == "call" and not any(
+                        isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                        and sub.func.attr in self.HAND_ON
+                        for sub in ast.walk(node)):
+                    own_call = True
+        if own_call or "_get_method_name" in defined:
+            self.own_routing.append(plugin_path.name)
+            return
+        for tool in tools:
+            name = self._tool_key(tool)
+            if not isinstance(tool, dict) or name.startswith("{"):
+                continue
+            self.methods_checked += 1
+            method = self._method_name(plugin_path.name, name)
+            if method not in defined:
+                self.warnings.append(
+                    f"{plugin_path.name}: tool '{name}' routes to method "
+                    f"'{method}()', which the plugin does not define")
 
     def _validate_tool_format(self, plugin_name: str, idx: int, tool: dict) -> bool:
         """
@@ -274,6 +351,10 @@ class ToolSchemaValidator:
             print(f"\n{len(self.one_state)} schema(s) could only be rendered with "
                   f"their variables ABSENT -- tools behind a flag are unchecked "
                   f"there: {', '.join(sorted(self.one_state))}")
+        print(f"\nHandler methods checked for {self.methods_checked} tool(s)")
+        if self.own_routing:
+            print(f"{len(self.own_routing)} plugin(s) route by their own rule, "
+                  f"handlers unchecked: {', '.join(sorted(self.own_routing))}")
         print()
 
         return len(self.errors) == 0
