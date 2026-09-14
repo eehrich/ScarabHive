@@ -61,7 +61,6 @@ hooks:
     description: "Inject active TODO tasks into system prompt before LLM calls"
     category: "prompt_injection"
     order:
-      after: ["context_optimization"]
       before: ["message_validation"]
 
 config:

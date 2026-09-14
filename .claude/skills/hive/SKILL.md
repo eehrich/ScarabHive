@@ -58,7 +58,6 @@ Name of the System is ScarabHive
 | `cognitive_stack/` | Multi-step reasoning |
 | `sequential_thinking/` | Step-by-step reasoning |
 | `context_engineer/` | Context engineering |
-| `context_optimizer/` | Context window optimization |
 | `context_summarizer/` | Conversation summarization |
 | `context_usage_tracker/` | Context usage tracking |
 | `sub_agent_manager/` | Sub-agent spawning & control |

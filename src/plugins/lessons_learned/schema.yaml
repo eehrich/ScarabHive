@@ -96,7 +96,6 @@ hooks:
     description: "Inject active lessons into system prompt before LLM calls"
     category: "prompt_injection"
     order:
-      after: ["context_optimization"]
       before: ["message_validation"]
 
   - name: extract_lessons

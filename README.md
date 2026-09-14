@@ -68,7 +68,7 @@ ScarabHive is designed for developers who need:
 | **Agent & Workflow** | basic_agent, sub_agent_manager, agent_continuation, task_switch, sequential_thinking, cognitive_stack,  memory,  todo, lessons_learned |
 | **Web & Search** | web_scraper, duckduckgo_search, tavily_search |
 | **System & Files** | terminal, file_ops, ssh_control, script_interpreter, sqlite_query |
-| **Context** | context_optimizer, context_summarizer, context_engineer, context_usage_tracker  |
+| **Context** | context_engineer, context_summarizer, context_usage_tracker |
 | **Media** | audio_ops, comfyui |
 | **Monitoring & Debug** | log_viewer, batch_monitor, message_debugger, message_validator, request_logger |
 | **Utilities** | basic_operations, datetime, weather, http_server, markdown_formatter, user_management, llm_router, example |

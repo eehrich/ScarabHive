@@ -147,5 +147,5 @@ pytest src/plugins/message_validator/tests -v
 ## See Also
 
 - `docs/plugin_architecture.md` - Plugin type selection guide
-- `src/plugins/context_optimizer/` - Another reference hook plugin
+- `src/plugins/markdown_formatter/` - Another reference hook plugin
 - `src/plugins/request_logger/` - Simple logging hook example

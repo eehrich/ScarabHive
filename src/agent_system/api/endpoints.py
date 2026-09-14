@@ -122,7 +122,7 @@ async def get_context_stats():
             "summarization_threshold": None,
             "actual_usage": None,
             "warning_levels": None,
-            "note": "Context management migrated to hook plugins (context_optimizer, context_summarizer)"
+            "note": "Context management migrated to hook plugins (context_engineer, context_summarizer)"
         }
     except Exception as e:
         logger.error(f"Error getting context stats: {e}")

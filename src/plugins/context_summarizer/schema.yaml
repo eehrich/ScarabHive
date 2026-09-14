@@ -9,7 +9,6 @@ hooks:
     category: "context_summarization"
     order:
       after: ["context_engineering"]
-      before: ["context_optimization"]
 
 # MCP Tools - Manual summarization controls
 tools:

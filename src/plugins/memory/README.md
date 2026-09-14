@@ -49,7 +49,7 @@ hooks:
   inject_memory_context:
     enabled: false  # Disabled by default - enable per agent
     hook_type: pre_llm_call
-    priority: 20  # After context_optimization (30)
+    priority: 20
 ```
 
 To enable memory injection for specific agents, add to their configuration:

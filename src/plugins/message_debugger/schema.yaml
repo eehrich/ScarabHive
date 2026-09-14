@@ -7,7 +7,7 @@ hooks:
     description: "Captures LLM input messages just before sending to LLM (runs last in pre-chain)"
     category: "message_debugging"
     order:
-      after: ["context_summarization", "context_optimization", "prompt_injection", "message_validation"]
+      after: ["context_summarization", "prompt_injection", "message_validation"]
       before: ["end"]
   
   - name: debugger_capture_post_llm

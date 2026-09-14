@@ -143,41 +143,24 @@ def test_multi_instance_plugin_loading():
 
 def test_multi_instance_hook_plugins():
     """Test that hook plugins can be loaded multiple times."""
-    from plugins.context_optimizer.plugin import PLUGIN_FACTORY as OptimizerFactory
-    
-    # Load first instance with aggressive optimization
-    optimizer1 = OptimizerFactory(
-        name='optimizer_aggressive',
-        system_config={},
-        mcp_config={
-            'max_tokens': 1000,
-            'preserve_recent': 5
-        }
-    )
-    
-    # Load second instance with conservative optimization
-    optimizer2 = OptimizerFactory(
-        name='optimizer_conservative',
-        system_config={},
-        mcp_config={
-            'max_tokens': 5000,
-            'preserve_recent': 10
-        }
-    )
-    
+    from plugins.message_validator.plugin import PLUGIN_FACTORY as ValidatorFactory
+
+    validator1 = ValidatorFactory(name='validator_1', system_config={}, mcp_config=None)
+    validator2 = ValidatorFactory(name='validator_2', system_config={}, mcp_config=None)
+
     # Verify both loaded
-    assert optimizer1 is not None
-    assert optimizer2 is not None
-    
+    assert validator1 is not None
+    assert validator2 is not None
+
     # Verify they are different instances
-    assert optimizer1 is not optimizer2
-    
+    assert validator1 is not validator2
+
     # Verify both have get_hooks method
-    assert hasattr(optimizer1, 'get_hooks')
-    assert hasattr(optimizer2, 'get_hooks')
-    
-    hooks1 = optimizer1.get_hooks()
-    hooks2 = optimizer2.get_hooks()
+    assert hasattr(validator1, 'get_hooks')
+    assert hasattr(validator2, 'get_hooks')
+
+    hooks1 = validator1.get_hooks()
+    hooks2 = validator2.get_hooks()
     
     assert len(hooks1) > 0
     assert len(hooks2) > 0

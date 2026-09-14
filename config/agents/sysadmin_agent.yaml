@@ -117,9 +117,7 @@ plugins:
             # Context management hooks - CRITICAL for large tool responses
             context_engineer.engineer_context:
               enabled: true
-            context_optimizer.optimize_context:
-              enabled: true
-            
+
             # Formatting and injection hooks
             markdown_formatter.format_markdown_output:
               enabled: true

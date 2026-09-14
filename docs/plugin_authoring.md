@@ -2959,7 +2959,7 @@ async def test_my_handler(plugin):
 
 See these example implementations:
 
-- **[context_optimizer](../src/plugins/context_optimizer/)** - Basic context optimization (truncation, deduplication)
+- **[context_engineer](../src/plugins/context_engineer/)** - Kontext-Kompaktierung in Schichten, schont den Prompt-Cache
 - **[context_summarizer](../src/plugins/context_summarizer/)** - Intelligent LLM-based summarization
 - **[message_validator](../src/plugins/message_validator/)** - Message format validation
 - **[request_logger](../src/plugins/request_logger/)** - Request/response logging with timing

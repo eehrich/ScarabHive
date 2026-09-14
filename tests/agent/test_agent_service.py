@@ -43,7 +43,6 @@ def mock_agent():
     # Mock other methods
     agent.run_events = AsyncMock()
     agent.append_to_session = AsyncMock()
-    agent.optimize_context = AsyncMock()
     agent.cancel_request = AsyncMock()
     return agent
 
@@ -345,65 +344,6 @@ async def test_list_sessions_multiple(agent_service, mock_agent):
     assert len(sessions) == 2
     assert {"session_id": "session1", "message_count": 1} in sessions
     assert {"session_id": "session2", "message_count": 2} in sessions
-
-
-# ===== Session Optimization Tests =====
-
-@pytest.mark.asyncio
-async def test_optimize_session_success(agent_service, mock_agent):
-    """Test successful session optimization."""
-    # Setup session with messages using component API
-    session_id = "test123"
-    mock_agent._session_tracker.set_session_messages(session_id, [{"content": f"msg{i}"} for i in range(10)])
-
-    # Mock optimization to reduce messages
-    async def mock_optimize(*args):
-        mock_agent._session_tracker.set_session_messages(session_id,
-            mock_agent._session_tracker.get_session_messages(session_id)[:5])
-
-    mock_agent.optimize_context = mock_optimize
-
-    result = await agent_service.optimize_session(session_id)
-
-    assert result["success"] is True
-    assert result["original_messages"] == 10
-    assert result["optimized_messages"] == 5
-    assert result["reduction_percent"] == 50.0
-
-
-@pytest.mark.asyncio
-async def test_optimize_session_not_found(agent_service):
-    """Test optimizing non-existent session."""
-    result = await agent_service.optimize_session("nonexistent")
-
-    assert result["success"] is False
-    assert "not found" in result["error"].lower()
-
-
-@pytest.mark.asyncio
-async def test_optimize_session_not_supported(agent_service, mock_agent):
-    """Test optimization when agent doesn't support it."""
-    session_id = "test123"
-    mock_agent._session_tracker.set_session_messages(session_id, [])
-    delattr(mock_agent, 'optimize_context')
-
-    result = await agent_service.optimize_session(session_id)
-
-    assert result["success"] is False
-    assert "not supported" in result["error"].lower()
-
-
-@pytest.mark.asyncio
-async def test_optimize_session_exception(agent_service, mock_agent):
-    """Test optimization exception handling."""
-    session_id = "test123"
-    mock_agent._session_tracker.set_session_messages(session_id, [])
-    mock_agent.optimize_context.side_effect = RuntimeError("Optimization failed")
-
-    result = await agent_service.optimize_session(session_id)
-
-    assert result["success"] is False
-    assert "Optimization failed" in result["error"]
 
 
 # ===== Request Cancellation Tests =====

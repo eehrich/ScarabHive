@@ -7,7 +7,6 @@ hooks:
     description: "Inject debate forum messages from other participants into the agent's context"
     category: "prompt_injection"
     order:
-      after: ["context_optimization"]
       before: ["message_validation"]
 
   - name: deliver_direct_messages
@@ -17,7 +16,6 @@ hooks:
     description: "Hand the session the direct messages sent to it"
     category: "prompt_injection"
     order:
-      after: ["context_optimization"]
       before: ["message_validation"]
 
   - name: mark_direct_messages_delivered

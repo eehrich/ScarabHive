@@ -119,18 +119,6 @@ def test_agent_initialization_with_full_config():
     assert agent.agent_config.max_steps == 10
 
 
-# Test removed: context_manager is now handled by hook plugins (context_optimizer, context_summarizer)
-
-
-# Test removed: context_manager is now handled by hook plugins (context_optimizer, context_summarizer)
-
-
-# Test removed: token_optimizer is now handled by context_optimizer hook plugin
-
-
-# Test removed: token_optimizer is now handled by context_optimizer hook plugin
-
-
 def test_agent_description_property():
     """Agent description property returns agent name."""
     agent_config = AgentConfig()

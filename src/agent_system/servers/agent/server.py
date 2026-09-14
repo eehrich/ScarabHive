@@ -269,7 +269,7 @@ class Agent(MCPServer):
         if self.llm is not None and hasattr(self.llm, 'set_app_title'):
             self.llm.set_app_title(name)
 
-        # Context management now handled by hook plugins (context_optimizer, context_summarizer)
+        # Context management now handled by hook plugins (context_engineer, context_summarizer)
 
         # NOTE: the global cancellation manager is configured ONCE at process
         # bootstrap (servers/bootstrap.py), not per agent — reconfiguring here

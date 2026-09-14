@@ -2736,7 +2736,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             status_code=410,
             detail=(
                 "Manual optimization was removed: context optimization and "
-                "summarization run automatically via the context_optimizer/"
+                "summarization run via the context_engineer/"
                 "context_summarizer hook plugins during LLM calls."
             ),
         )
@@ -2749,7 +2749,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             status_code=410,
             detail=(
                 "Manual optimization was removed: context optimization and "
-                "summarization run automatically via the context_optimizer/"
+                "summarization run via the context_engineer/"
                 "context_summarizer hook plugins during LLM calls."
             ),
         )

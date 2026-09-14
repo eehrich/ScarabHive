@@ -10,7 +10,7 @@ hooks:
     category: "context_engineering"
     order:
       after: ["begin"]
-      before: ["context_summarization", "context_optimization", "prompt_injection"]
+      before: ["context_summarization", "prompt_injection"]
 
 # MCP Tools - Manual context management controls
 #

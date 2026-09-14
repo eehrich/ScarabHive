@@ -421,7 +421,7 @@ src/plugins/
 │   ├── plugin.py
 │   ├── plugin.yaml
 │   └── __init__.py
-└── context_optimizer/
+└── context_engineer/
     ├── plugin.py
     ├── plugin.yaml
     └── __init__.py
@@ -449,7 +449,7 @@ hooks:
     enabled: true
     order:
       after: ["begin"]
-      before: ["context_optimizer"]
+      before: ["context_engineering"]
 
 # Plugin configuration
 config:
@@ -562,9 +562,9 @@ hooks:
     type: pre_llm_call
     order:
       after: ["begin"]  # Special marker for start
-      before: ["context_optimizer"]
+      before: ["engineer_context"]
 
-  - name: context_optimizer
+  - name: engineer_context
     type: pre_llm_call
     order:
       after: ["token_counter"]

@@ -358,9 +358,6 @@ This is useful for:
 ### context_summarizer
 The context_engineer can work alongside context_summarizer. Use context_engineer for structured storage and retrieval, and context_summarizer for LLM-generated conversation summaries.
 
-### context_optimizer
-For model-specific token limits, context_optimizer handles the model selection while context_engineer manages the content optimization.
-
 ## Storage Locations
 
 Data is stored under `data/context_engineer/{session_id}/`:

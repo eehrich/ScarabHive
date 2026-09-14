@@ -955,30 +955,6 @@ plugins:
         max_messages: 150
         summarization_trigger_percentage: 0.8
 
-    context_optimizer:
-      type: context_optimizer
-      enabled: false # FIXME: Disabled it for now
-      config:
-        # Token limit: Use X% of LLM context window
-        max_context_percentage: 0.80  # 80% of context window
-        
-        # Message truncation: Max tokens for individual messages
-        max_message_length_tokens: 8000       # Soft limit - triggers smart truncation
-        hard_max_message_length_tokens: 16000 # Hard limit - force-truncate if exceeded
-        
-        # Smart JSON truncation for tool responses
-        # When tool response JSON exceeds max_message_length_tokens,
-        # long strings within the JSON are truncated while keeping structure valid
-        max_json_string_length: 50000  # Max chars per string in JSON
-        keep_string_end: true  # Keep END of strings (newest data) vs beginning
-        
-        # Message preservation rules
-        preserve_system_messages: true  # Never remove system messages
-        preserve_last_n_messages: 7  # Always keep last N messages
-        
-        # Remove consecutive duplicate messages (same role + content)
-        remove_duplicates: true
-
     context_engineer:
       type: context_engineer
       enabled: true
@@ -1205,18 +1181,11 @@ hooks:
 
   # Per-hook configuration overrides
   # Format: plugin_name.hook_name (exact, wins) or plugin_name (all hooks of that plugin)
-  overrides:
+  overrides: {}
     # Example: Override request_logger hooks
     # request_logger.log_pre_llm:
     #   enabled: true
     #   timeout: 5.0
-
-    # AKTIVER Override (kein Beispiel): schaltet ALLE Hooks des reinen
-    # Hook-Plugins context_optimizer ab — auch wenn servers.context_optimizer
-    # aktiviert wird. Der plugin-weite Key greift seit dem Discovery-Fix
-    # wirklich (vorher wurde nur die volle plugin.hook-Form nachgeschlagen).
-    context_optimizer:
-      enabled: false
 
     # Example: Configure hook ordering
     # some_plugin.some_hook:
@@ -1229,5 +1198,5 @@ hooks:
     #   enabled: true
     #   timeout: 5.0
     #   order:
-    #     after: ["context_optimizer"]
+    #     after: ["context_engineering"]
     #     before: ["end"]

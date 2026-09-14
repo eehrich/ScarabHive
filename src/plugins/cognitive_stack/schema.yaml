@@ -56,7 +56,6 @@ hooks:
     description: "Inject active cognitive stack into system prompt to provide working memory context"
     category: "prompt_injection"
     order:
-      after: ["context_optimization"]
       before: ["message_validation"]
 
 config:

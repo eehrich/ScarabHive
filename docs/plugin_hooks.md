@@ -83,7 +83,7 @@ async def on_pre_llm_call(self, context: HookContext) -> HookResult:
 ```
 
 **Example Plugins:**
-- `context_optimizer`: Removes duplicates, truncates long messages
+- `context_engineer`: Kompaktiert den Kontext in Schichten (Tool-Ergebnisse auslagern, archivieren)
 - `context_summarizer`: Intelligently summarizes older messages
 - `message_validator`: Validates message format
 
@@ -107,7 +107,6 @@ async def on_post_llm_call(self, context: HookContext) -> HookResult:
 
 **Example Plugins:**
 - `request_logger`: Logs timing and response preview
-- `context_optimizer`: Logs context statistics
 
 ### LLM_PROGRESS
 
@@ -378,14 +377,14 @@ The `HookRegistry` uses topological sort (Kahn's algorithm) to determine executi
 hooks:
   enabled: true
   overrides:
-    context_optimizer.optimize_context:
+    request_logger.log_pre_llm:
       order:
         after: ["begin"]
         before: ["summarize_context"]
 
     context_summarizer.summarize_context:
       order:
-        after: ["optimize_context"]
+        after: ["log_pre_llm"]
         before: ["validate_messages"]
 
     message_validator.validate_messages:
@@ -396,7 +395,7 @@ hooks:
 
 **Execution Order:**
 1. `begin` (virtual)
-2. `optimize_context`
+2. `log_pre_llm`
 3. `summarize_context`
 4. `validate_messages`
 5. `end` (virtual)
@@ -523,7 +522,7 @@ hooks:
 **Examples:**
 - `todo_management.inject_todo_tasks`
 - `markdown_formatter.format_markdown_output`
-- `context_optimizer.optimize_context`
+- `context_engineer.engineer_context`
 
 **Why This Matters:**
 - Enables multiple plugins to have hooks with the same base name
@@ -679,7 +678,7 @@ sysadmin_agent:
 
 See [Plugin Examples](../src/plugins/) for complete implementations:
 
-- **[context_optimizer](../src/plugins/context_optimizer/)**: Basic context optimization
+- **[context_engineer](../src/plugins/context_engineer/)**: Kontext-Kompaktierung in Schichten, schont den Prompt-Cache
 - **[context_summarizer](../src/plugins/context_summarizer/)**: Intelligent LLM-based summarization
 - **[message_validator](../src/plugins/message_validator/)**: Message format validation
 - **[request_logger](../src/plugins/request_logger/)**: Request/response logging

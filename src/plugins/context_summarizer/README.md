@@ -231,18 +231,17 @@ The plugin is automatically discovered if placed in `src/plugins/context_summari
 
 ### Hook Ordering
 
-The plugin is configured to run **after** `context_optimizer`:
+The plugin is configured to run **after** `context_engineer`:
 
 ```yaml
 hooks:
   - name: summarize_context
     type: pre_llm_call
     order:
-      after: ["optimize_context"]  # Run after basic optimization
-      before: ["validate_messages"]
+      after: ["context_engineering"]
 ```
 
-This ensures basic optimizations (duplicate removal, truncation) happen first, then intelligent summarization if still needed.
+context_engineer externalizes and archives first; summarization runs only if the context is still too large.
 
 ### Global Configuration
 
@@ -320,7 +319,7 @@ The plugin provides detailed metadata in hook results:
 - **LLM Calls**: Each chunk requires an LLM call (can be slow/expensive)
 - **Timeout**: Default 60s timeout (may need adjustment for large batches)
 - **Chunk Size**: Larger chunks = fewer LLM calls but potentially lower quality
-- **Order**: Runs after `context_optimizer` to avoid unnecessary summarization
+- **Order**: Runs after `context_engineer` to avoid unnecessary summarization
 
 ## Troubleshooting
 
@@ -349,22 +348,8 @@ Run tests with:
 pytest tests/test_plugin_context_summarizer.py -v
 ```
 
-## Integration with Context Optimizer
-
-This plugin works in tandem with `context_optimizer`:
-
-1. **context_optimizer** runs first:
-   - Removes duplicate messages
-   - Truncates overly long messages
-   - Basic token limit enforcement
-
-2. **context_summarizer** runs second:
-   - If context still exceeds threshold after optimization
-   - Creates intelligent summaries of older messages
-   - Preserves information while reducing size
-
 ## Related Plugins
 
-- **context_optimizer**: Basic context optimization (truncation, deduplication)
+- **context_engineer**: Layered context compaction (runs first)
 - **message_validator**: Message format validation
 - **request_logger**: Logging of agent lifecycle events
