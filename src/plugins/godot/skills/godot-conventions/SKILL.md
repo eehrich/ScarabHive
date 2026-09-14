@@ -81,6 +81,97 @@ Editing `project.godot` while the editor is open is a race: the editor
 holds the settings in memory and writes them back. Edit with it closed, or
 follow with `godot_command restart_editor`.
 
+# Wiring a spritesheet, tileset or 9-patch panel
+
+These take one PNG from the image agent (brief in `asset-pipeline`) and
+turn it into the node that uses it. The number that matters is always the
+**frame/tile/margin size**, and it must be the size that was briefed, not
+a size guessed from the sheet's total dimensions.
+
+**Spritesheet  `AnimatedSprite2D`.** Import the sheet as a texture, then
+cut it into an `AtlasTexture` per frame and collect them in a
+`SpriteFrames` resource:
+
+```
+[sub_resource type="AtlasTexture" id="AtlasTexture_f0"]
+atlas = ExtResource("1_sheet")
+region = Rect2(0, 0, 64, 64)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_f1"]
+atlas = ExtResource("1_sheet")
+region = Rect2(64, 0, 64, 64)
+
+[sub_resource type="SpriteFrames" id="SpriteFrames_walk"]
+animations = [{
+"name": &"walk",
+"speed": 8.0,
+"loop": true,
+"frames": [{"texture": SubResource("AtlasTexture_f0"), "duration": 1.0},
+           {"texture": SubResource("AtlasTexture_f1"), "duration": 1.0}]
+}]
+
+[node name="Sprite" type="AnimatedSprite2D" parent="."]
+sprite_frames = SubResource("SpriteFrames_walk")
+autoplay = "walk"
+```
+
+`region`'s width/height is the frame size from the brief; its x is
+`column * frame_width`. Building this by hand for more than a few frames
+is what `godot_script` is for — loop `frame_count`, `region.position.x =
+i * frame_width`. Reload, play, screenshot: a frame_size off by even a
+few pixels shows as the sheet's seam cutting a character in half.
+
+**Tileset  `TileSet` / `TileMapLayer`.** The atlas source needs the same
+tile size and separation that were briefed, or the wrong texels end up in
+each tile:
+
+```
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_1"]
+texture = ExtResource("1_tiles")
+texture_region_size = Vector2i(32, 32)
+separation = Vector2i(2, 2)
+0:0/0 = 0
+1:0/0 = 0
+2:0/0 = 0
+
+[sub_resource type="TileSet" id="TileSet_1"]
+tile_size = Vector2i(32, 32)
+sources/0 = SubResource("TileSetAtlasSource_1")
+
+[node name="TileMapLayer" type="TileMapLayer" parent="."]
+tile_set = SubResource("TileSet_1")
+```
+
+`texture_region_size` is the tile size, `separation` is the gap briefed
+between tiles — both must match the sheet exactly, or the importer reads
+from between two tiles. `X:Y/0 = 0` registers tile atlas-coordinate
+`(X, Y)` as usable (alternative id 0); every tile the brief listed needs
+one line. The editor's click-drag tile painter is not reachable through
+the addon, but setting cells is: `godot_command command="set_cell"` with
+the layer, coordinates, source id and atlas coordinates against an open
+project, or the same call (`TileMapLayer.set_cell`) in a `godot_script`
+when the editor is closed or the number of cells makes a loop the
+shorter path.
+
+**9-patch  `NinePatchRect`.** The margin is the border thickness from the
+brief, on all four sides unless asked otherwise:
+
+```
+[node name="Panel" type="NinePatchRect" parent="."]
+texture = ExtResource("1_panel")
+size = Vector2(300, 120)
+patch_margin_left = 16
+patch_margin_top = 16
+patch_margin_right = 16
+patch_margin_bottom = 16
+```
+
+The margins cut the fixed corners out of the source texture; `size` is
+the rect's on-screen size, independent of the texture's own size — that
+is the point of a 9-patch, it can be larger than what was generated. If a
+corner looks stretched, the margin is smaller than the border actually
+drawn in the PNG; check the sheet, do not just change the number.
+
 # Scripts
 
 ```gdscript

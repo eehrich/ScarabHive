@@ -87,6 +87,65 @@ shader: the image agent renders the object on a plain background and sets
 alpha where you expect it — thin parts (antennae, rope, whiskers) can be
 lost, and the agent's report names what it lost.
 
+# Briefing `image_agent` for a spritesheet
+
+The agent still delivers **one PNG**; it is a sheet, not a folder of
+frames. Brief the layout, not just the subject — it decides internally
+whether to generate each frame and compose them onto one canvas, or
+generate the sheet directly:
+
+| | Example |
+|---|---|
+| Subject and the animation | \"a knight walking, side view, 6 frames\" |
+| Frame size in pixels | \"64×64 per frame\" |
+| Grid | \"6 columns × 1 row\" — say rows too; do not make it infer a square |
+| Consistency | \"same character, same palette, same lighting across all frames\" — a fixed seed with a per-frame prompt change is how it holds |
+| Background | almost always transparent for a character sheet |
+
+Reply is one PNG, e.g. `data/workspace/images/knight_walk.png`, 384×64 for
+the example above. Move it, import it, then wire frames as
+`AtlasTexture` regions into a `SpriteFrames` resource — recipe in
+`godot-conventions`. The frame size you asked for is the region size you
+cut; if they do not match, the sheet was not built to the brief and goes
+back for another pass, not for you to reverse-engineer the actual grid.
+
+# Briefing `image_agent` for a tileset
+
+A tileset is one sheet of same-size tiles with **gaps between them** —
+without the gap, Godot's atlas importer bleeds one tile's edge into its
+neighbour's texel when filtering is on.
+
+| | Example |
+|---|---|
+| Tiles needed | \"grass, dirt, water, grass-to-dirt edge — 4 tiles\" |
+| Tile size in pixels | \"32×32\", power of two |
+| Separation | \"2 px transparent gap between tiles\" — always ask for this, it is not the default anyone generates unprompted |
+| Style | consistent across tiles: \"same style and lighting as the grass tile\" once one is approved |
+
+Reply is one sheet, e.g. 4 tiles at 32×32 with 2 px gaps  a 134×32 PNG (4
+× 32 + 3 × 2 gaps = 128 + 6). State the exact expected size in the brief
+so a wrong layout is visible immediately, do not compute it after the
+fact. Wire it as a `TileSetAtlasSource` with `texture_region_size` and
+`separation` — recipe in `godot-conventions`.
+
+# Briefing `image_agent` for a 9-patch UI panel
+
+A `NinePatchRect` stretches the middle and keeps the corners fixed size —
+brief the corner size explicitly, because that number becomes
+`patch_margin_*` in the scene and has to match what was actually drawn:
+
+| | Example |
+|---|---|
+| What | \"a stone dialogue-box panel with a carved border\" |
+| Exact size in pixels | \"96×96\" — generous enough that the corner detail reads |
+| Corner / border thickness | \"16 px uniform border on all four sides\" — this becomes the patch margin, pick it before asking |
+| Center | \"flat, tileable when stretched\" — the middle gets stretched, not tiled, so it must not have a visible pattern the stretch would smear |
+| Background | opaque unless the panel floats over game content, then transparent outside the border shape |
+
+Reply is one PNG at the exact size. `patch_margin_left/top/right/bottom`
+in the scene must equal the border thickness you briefed — recipe in
+`godot-conventions`.
+
 # Check before you report
 
 - The file is in `res://assets/...` and `godot_import_assets` ran clean.
