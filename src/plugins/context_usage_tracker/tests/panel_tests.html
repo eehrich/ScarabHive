@@ -80,6 +80,37 @@
     return all && writer;
   });
 
+  await check('a line hidden in the legend stays hidden when the chart draws anew', async () => {
+    const chart = frame.contentWindow.Chart.getChart($('#chart'));
+    const clickLegend = (label) => {  // where the viewer clicks: the legend item's box on the canvas
+      const box = chart.legend.legendHitBoxes[chart.legend.legendItems.findIndex((item) => item.text === label)];
+      const rect = $('#chart').getBoundingClientRect();
+      $('#chart').dispatchEvent(new MouseEvent('click', {
+        bubbles: true, clientX: rect.left + box.left + box.width / 2, clientY: rect.top + box.top + box.height / 2 }));
+    };
+    const visible = () => chart.data.datasets.map((set, i) => (chart.isDatasetVisible(i) ? set.label : '')).join();
+    const redrawn = async (why) => {
+      const before = chart.data.datasets[0];
+      await until(why, () => chart.data.datasets[0] !== before);
+    };
+    clickLegend('prompt');  // Chart.js hands canvas events on in the next frame
+    const hidden = await until('prompt hidden', () => visible() === 'total,,output,cached,cost ¢');
+    $('pk-refresh [data-act="now"]').click();
+    await redrawn('the chart drawn by a refresh');
+    const afterRefresh = visible() === 'total,,output,cached,cost ¢';
+    const select = $('#chartAgent');
+    select.value = 'writer';
+    select.dispatchEvent(new Event('change'));
+    const afterAgent = visible() === 'total,,output,cached,cost ¢';
+    select.value = '';
+    select.dispatchEvent(new Event('change'));
+    clickLegend('prompt');
+    const shownAgain = await until('prompt shown again', () => visible() === 'total,prompt,output,cached,cost ¢');
+    $('pk-refresh [data-act="now"]').click();
+    await redrawn('the chart drawn by a refresh again');
+    return hidden && afterRefresh && afterAgent && shownAgain && visible() === 'total,prompt,output,cached,cost ¢';
+  });
+
   await check('agents sort by a column, one way and the other, and show their cache share: all-time from the paired counts, a session from its calls', async () => {
     tab('agents');
     const names = () => rows('agents').map((row) => cells(row)[0]);

@@ -189,6 +189,9 @@ function drawChart() {
     },
   };
   if (chart) {
+    // Chart.js keeps a line hidden in the legend in a meta bound to the dataset object, and these are new ones: carry it over
+    const hidden = new Set(chart.data.datasets.filter((_, i) => !chart.isDatasetVisible(i)).map((set) => set.label));
+    for (const set of datasets) set.hidden = hidden.has(set.label);
     chart.data = { labels, datasets };
     chart.options = options;
     chart.update();

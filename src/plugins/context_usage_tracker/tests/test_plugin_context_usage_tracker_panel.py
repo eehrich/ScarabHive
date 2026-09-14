@@ -92,6 +92,7 @@ EXPECTED = [
     'opened on a session, the panel counts it and its sub-agents: billed and estimated cost apart, cache share, context',
     'all sessions count every call, and the calls tab shows the newest of them',
     'the overview draws the newest 60 calls, tokens and cost, for the agent chosen',
+    'a line hidden in the legend stays hidden when the chart draws anew',
     'agents sort by a column, one way and the other, and show their cache share: all-time from the paired counts, a session from its calls',
     'a failed load shows the error and nothing of what was shown before, and keeps the agent chosen',
     'a tick of the auto refresh leaves a load still on its way alone',
