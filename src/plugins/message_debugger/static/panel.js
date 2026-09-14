@@ -1,611 +1,536 @@
-/* Message Debugger Panel - JavaScript */
-const debugger_ = {
-    autoRefreshInterval: null,
-    autoRefreshEnabled: false,
-    activeTab: 'turns',
-    copyDataStore: new Map(),
-    copyDataCounter: 0,
+// Message Debugger: the messages agents send to their LLM (turns) and the raw provider requests behind them.
+// Opened from a chat answer (?request_id=) or a session (?session_id=), both lists start filtered to it; a
+// request takes the calls under it along (tool calls, sub-agents).
+import { api, html, render, icon, jsonView, trusted, alert, confirm, toast } from '/static/kit/panel-kit.js';
 
-    // ---- Init ----
-    init() {
-        this.loadStats();
-        this.loadTurns();
-    },
+const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
+const PAGE = 50;
+const MOST = 500;  // the API's largest page: a list shows at most the newest 500 entries its filters match
+const $ = (id) => document.getElementById(id);
 
-    // ---- Tab switching ----
-    switchTab(tab) {
-        this.activeTab = tab;
-        document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-        document.querySelectorAll('.tab-content').forEach(tc => tc.classList.toggle('active', tc.id === 'tab-' + tab));
-        if (tab === 'turns') this.loadTurns();
-        else this.loadRequests();
-    },
-
-    // ---- Stats ----
-    async loadStats() {
-        try {
-            const res = await fetch('/plugins/message_debugger/stats');
-            const s = await res.json();
-            document.getElementById('stats-container').innerHTML = `
-                <div class="stat-card"><h3>Turns</h3><div class="value">${s.total_turns}</div></div>
-                <div class="stat-card blue"><h3>LLM Requests</h3><div class="value">${s.total_llm_requests}</div></div>
-                <div class="stat-card orange"><h3>DB Size</h3><div class="value">${s.db_size_mb || 0} MB</div></div>
-                <div class="stat-card purple"><h3>Sessions</h3><div class="value">${s.unique_session_count || 0}</div></div>
-                <div class="stat-card"><h3>Agents</h3><div class="value">${(s.unique_agents||[]).length}</div></div>
-                <div class="stat-card red"><h3>Errors</h3><div class="value">${s.error_count||0}</div></div>
-            `;
-            document.getElementById('turns-count').textContent = s.total_turns;
-            document.getElementById('llm-requests-count').textContent = s.total_llm_requests;
-            this.updateFilterDropdowns(s);
-        } catch (e) { console.error('Stats error:', e); }
-    },
-
-    updateFilterDropdowns(s) {
-        const agents = s.unique_agents || [];
-        const providers = s.unique_providers || [];
-
-        this._updateSelect('turns-filter-agent', agents, a => a);
-        this._updateSelect('req-filter-agent', agents, a => a);
-        this._updateSelect('req-filter-provider', providers, p => p);
-    },
-
-    _updateSelect(id, items, labelFn) {
-        const el = document.getElementById(id);
-        if (!el) return;
-        const val = el.value;
-        const first = el.options[0]?.textContent || 'All';
-        el.innerHTML = `<option value="">${first}</option>` + items.map(i =>
-            `<option value="${this.esc(i)}" ${i===val?'selected':''}>${this.esc(labelFn(i))}</option>`
-        ).join('');
-    },
-
-    // ---- Turns ----
-    async loadTurns() {
-        const container = document.getElementById('turns-list');
-        const agent = document.getElementById('turns-filter-agent')?.value || '';
-        const session = document.getElementById('turns-filter-session')?.value || '';
-        const type = document.getElementById('turns-filter-type')?.value || '';
-        const limit = document.getElementById('turns-filter-limit')?.value || 50;
-
-        let url = `/plugins/message_debugger/turns?limit=${limit}`;
-        if (agent) url += `&agent_name=${encodeURIComponent(agent)}`;
-        if (session) url += `&session_id=${encodeURIComponent(session)}`;
-        if (type) url += `&snapshot_type=${encodeURIComponent(type)}`;
-
-        try {
-            const res = await fetch(url);
-            const data = await res.json();
-            if (!data.turns || data.turns.length === 0) {
-                container.innerHTML = this.emptyHTML('📭', 'No turns captured yet', 'Run agent requests to see message snapshots here');
-                return;
-            }
-            container.innerHTML = data.turns.map(t => this.renderTurnCard(t)).join('');
-        } catch (e) {
-            container.innerHTML = this.emptyHTML('⚠️', 'Failed to load turns', e.message);
-        }
-    },
-
-    renderTurnCard(t) {
-        const ts = this.fmtTimestamp(t.timestamp_ms);
-        const typeClass = t.snapshot_type === 'pre_llm' ? 'pre-llm' : 'post-llm';
-        const typeLabel = t.snapshot_type === 'pre_llm' ? '→ Pre-LLM' : '← Post-LLM';
-
-        // Extract cached % from LLM response usage if available
-        let cachedHtml = '';
-        const usage = t.llm_response_json?.usage;
-        if (usage) {
-            const cached = usage.prompt_tokens_details?.cached_tokens
-                        || usage.cache_read_input_tokens
-                        || 0;
-            const prompt = usage.prompt_tokens || usage.input_tokens || 0;
-            if (cached > 0 && prompt > 0) {
-                const pct = Math.round((cached / prompt) * 100);
-                cachedHtml = `<span class="card-metric cached">${pct}% cached</span>`;
-            }
-        }
-
-        // Short session/request IDs for traceability
-        const sessShort = t.session_id ? t.session_id.substring(0, 8) : '';
-        const reqShort = t.request_id ? t.request_id.substring(0, 8) : '';
-
-        return `
-        <div class="turn-card" onclick="debugger_.showTurnDetail(${t.id})">
-            <div class="card-row">
-                <div class="card-left">
-                    <span class="badge ${typeClass}">${typeLabel}</span>
-                    <span class="badge agent">${this.esc(t.agent_name || '?')}</span>
-                    <span class="card-meta">Step ${t.step || 0}</span>
-                    ${sessShort ? `<span class="card-id" title="Session: ${this.esc(t.session_id)}">S:${this.esc(sessShort)}</span>` : ''}
-                    ${reqShort ? `<span class="card-id" title="Request: ${this.esc(t.request_id)}">R:${this.esc(reqShort)}</span>` : ''}
-                </div>
-                <div class="card-right">
-                    <span class="card-metric msgs">${t.message_count} msgs</span>
-                    ${t.total_tokens ? `<span class="card-metric tokens">${t.total_tokens.toLocaleString()} tok</span>` : ''}
-                    ${cachedHtml}
-                    <span class="card-timestamp">${ts}</span>
-                </div>
-            </div>
-        </div>`;
-    },
-
-    // ---- LLM Requests ----
-    async loadRequests() {
-        const container = document.getElementById('requests-list');
-        const agent = document.getElementById('req-filter-agent')?.value || '';
-        const provider = document.getElementById('req-filter-provider')?.value || '';
-        const direction = document.getElementById('req-filter-direction')?.value || '';
-        const limit = document.getElementById('req-filter-limit')?.value || 50;
-
-        let url = `/plugins/message_debugger/llm-requests?limit=${limit}`;
-        if (agent) url += `&agent_name=${encodeURIComponent(agent)}`;
-        if (provider) url += `&provider=${encodeURIComponent(provider)}`;
-        if (direction) url += `&direction=${encodeURIComponent(direction)}`;
-
-        try {
-            const res = await fetch(url);
-            const data = await res.json();
-            if (!data.requests || data.requests.length === 0) {
-                container.innerHTML = this.emptyHTML('📭', 'No LLM requests captured yet', 'Make agent requests to see raw API logs here');
-                return;
-            }
-            container.innerHTML = data.requests.map(r => this.renderRequestCard(r)).join('');
-        } catch (e) {
-            container.innerHTML = this.emptyHTML('⚠️', 'Failed to load requests', e.message);
-        }
-    },
-
-    renderRequestCard(r) {
-        const ts = this.fmtTimestamp(r.timestamp_ms);
-        const isReq = r.direction === 'request';
-        const isRetry = r.finish_reason === 'retry';
-        const dirLabel = isReq ? '→ Request' : (isRetry ? '⟳ Retry' : '← Response');
-        const dirClass = isReq ? 'request' : (isRetry ? 'response retry' : (r.error ? 'response error' : 'response'));
-        const streaming = r.is_streaming ? '<span class="badge streaming">stream</span>' : '';
-
-        // Extract retry label from error (e.g. "[RETRY 1/4] MALFORMED_FUNCTION_CALL" → "1/4")
-        let retryInfo = '';
-        if (isRetry && r.error) {
-            const m = r.error.match(/\[RETRY (\d+\/\d+)\]/);
-            if (m) retryInfo = `<span class="card-metric retry-count">${m[1]}</span>`;
-        }
-        // Short error reason (strip [RETRY x/y] prefix)
-        let errorReason = '';
-        if (r.error && !isReq) {
-            const clean = r.error.replace(/^\[RETRY \d+\/\d+\]\s*/, '');
-            if (clean.length > 50) errorReason = `<span class="card-metric error" title="${this.esc(clean)}">${this.esc(clean.substring(0, 50))}…</span>`;
-            else errorReason = `<span class="card-metric error">${this.esc(clean)}</span>`;
-        }
-
-        return `
-        <div class="request-card ${isRetry ? 'retry-card' : ''}" onclick="debugger_.showRequestDetail(${r.id})">
-            <div class="card-row">
-                <div class="card-left">
-                    <span class="badge ${dirClass}">${dirLabel}</span>
-                    <span class="badge provider">${this.esc(r.provider || '?')}</span>
-                    <span class="badge model">${this.esc(r.model || '?')}</span>
-                    ${streaming}
-                    <span class="badge agent">${this.esc(r.agent_name || '?')}</span>
-                </div>
-                <div class="card-right">
-                    ${retryInfo}
-                    ${r.duration_ms ? `<span class="card-metric duration">${Math.round(r.duration_ms)}ms</span>` : ''}
-                    ${errorReason}
-                    ${!isRetry && r.finish_reason ? `<span class="card-metric">${r.finish_reason}</span>` : ''}
-                    <span class="card-timestamp">${ts}</span>
-                </div>
-            </div>
-        </div>`;
-    },
-
-    // ---- Detail Modals ----
-    async showTurnDetail(id) {
-        try {
-            // Clear copy data store for fresh render
-            this.copyDataStore.clear();
-            this.copyDataCounter = 0;
-            const res = await fetch(`/plugins/message_debugger/turns/${id}`);
-            const t = await res.json();
-            document.getElementById('modal-title').textContent = `Turn #${t.id} — ${t.snapshot_type} (${t.agent_name})`;
-            let html = `
-            <div class="detail-section">
-                <h3>Metadata</h3>
-                <div class="detail-grid">
-                    <div class="detail-item"><div class="detail-label">Type</div><div class="detail-value">${t.snapshot_type}</div></div>
-                    <div class="detail-item"><div class="detail-label">Agent</div><div class="detail-value">${this.esc(t.agent_name)}</div></div>
-                    <div class="detail-item"><div class="detail-label">Request ID</div><div class="detail-value">${this.esc(t.request_id)}</div></div>
-                    <div class="detail-item"><div class="detail-label">Session ID</div><div class="detail-value">${this.esc(t.session_id)}</div></div>
-                    <div class="detail-item"><div class="detail-label">Step</div><div class="detail-value">${t.step}</div></div>
-                    <div class="detail-item"><div class="detail-label">Messages</div><div class="detail-value">${t.message_count}</div></div>
-                    <div class="detail-item"><div class="detail-label">Tokens</div><div class="detail-value">${(t.total_tokens||0).toLocaleString()}</div></div>
-                    <div class="detail-item"><div class="detail-label">Context Window</div><div class="detail-value">${t.context_window || 'N/A'}</div></div>
-                    <div class="detail-item"><div class="detail-label">Timestamp</div><div class="detail-value">${this.fmtTimestamp(t.timestamp_ms)}</div></div>
-                </div>
-            </div>`;
-
-            // Messages
-            const msgs = t.messages_json || [];
-            if (msgs.length > 0) {
-                html += `<div class="detail-section"><h3>Messages (${msgs.length})</h3>`;
-                msgs.forEach(m => {
-                    const role = m.role || 'unknown';
-                    // Multimodal content is a list of parts, not a string.
-                    const fullContent = typeof m.content === 'string'
-                        ? m.content
-                        : (m.content ? JSON.stringify(m.content, null, 2) : '');
-
-                    // Build content HTML — try JSON formatting for tool results
-                    let contentHtml = '';
-                    if (fullContent) {
-                        if (m.is_tool_result) {
-                            try {
-                                const parsed = JSON.parse(fullContent);
-                                contentHtml = `<div class="msg-content">${this.formatJson(parsed)}</div>`;
-                            } catch { contentHtml = `<div class="msg-content">${this.esc(fullContent)}</div>`; }
-                        } else {
-                            contentHtml = `<div class="msg-content">${this.esc(fullContent)}</div>`;
-                        }
-                    }
-
-                    // Store full (non-truncated) copy data in JS Map to avoid HTML attribute issues
-                    const copyId = this.copyDataCounter++;
-                    const msgData = JSON.stringify(m);
-                    this.copyDataStore.set(copyId, msgData);
-
-                    // Every other field the snapshot carries (served_by, thinking_model,
-                    // reasoning_details, ...) is rendered generically: a new ChatMessage
-                    // field needs no change here. Values become badges, objects fold out.
-                    const shown = new Set(['index', 'role', 'content', 'content_length', 'estimated_tokens',
-                                           'tool_calls', 'tool_call_count', 'tool_call_id', 'is_tool_result']);
-                    const extras = Object.entries(m).filter(([k, v]) => !shown.has(k) && v !== null && v !== undefined);
-                    const extraBadges = extras.filter(([, v]) => typeof v !== 'object')
-                        .map(([k, v]) => `<span class="msg-field">${this.esc(k)}: ${this.esc(String(v))}</span>`).join('');
-                    const extraBlocks = extras.filter(([, v]) => typeof v === 'object')
-                        .map(([k, v]) => `<details class="msg-extra"><summary>${this.esc(k)}</summary>${this.formatJson(v)}</details>`).join('');
-
-                    html += `<div class="msg-item ${role}" data-copy-id="${copyId}">
-                        <div class="msg-role">
-                            <span>${role}</span>
-                            <span class="copy-icon msg-copy" title="Copy message">📋</span>
-                        </div>
-                        ${contentHtml}
-                        <div class="msg-meta">
-                            ${m.estimated_tokens ? `<span>${m.estimated_tokens} tokens</span>` : ''}
-                            ${m.content_length ? `<span>${m.content_length} chars</span>` : ''}
-                            ${m.is_tool_result ? '<span>Tool Result</span>' : ''}
-                            ${extraBadges}
-                        </div>
-                        ${extraBlocks}`;
-                    if (m.tool_calls && m.tool_calls.length > 0) {
-                        m.tool_calls.forEach(tc => {
-                            const args = tc.function?.arguments || '';
-                            let argsHtml;
-                            try {
-                                const parsed = typeof args === 'string' ? JSON.parse(args) : args;
-                                argsHtml = this.formatJson(parsed);
-                            } catch {
-                                argsHtml = `<div class="tool-call-args">${this.esc(args)}</div>`;
-                            }
-                            html += `<div class="tool-call-block">
-                                <div class="tool-call-name">🔧 ${tc.function?.name || '?'}</div>
-                                ${argsHtml}
-                            </div>`;
-                        });
-                    }
-                    html += `</div>`;
-                });
-                html += `</div>`;
-            }
-
-            // LLM Response
-            if (t.llm_response_json) {
-                html += `<div class="detail-section"><h3>LLM Response</h3>
-                    ${this.formatJson(t.llm_response_json)}
-                </div>`;
-            }
-
-            document.getElementById('modal-body').innerHTML = html;
-            document.getElementById('modal-overlay').classList.add('visible');
-            if (typeof Prism !== 'undefined') Prism.highlightAllUnder(document.getElementById('modal-body'));
-            this.addCopyIcons();
-        } catch (e) { this.notify('Failed to load turn: ' + e.message); }
-    },
-
-    async showRequestDetail(id) {
-        try {
-            // Clear copy data store for fresh render
-            this.copyDataStore.clear();
-            this.copyDataCounter = 0;
-            const res = await fetch(`/plugins/message_debugger/llm-requests/${id}`);
-            const r = await res.json();
-            document.getElementById('modal-title').textContent = `LLM ${r.direction} #${r.id} — ${r.provider}/${r.model}`;
-            let html = `
-            <div class="detail-section">
-                <h3>Metadata</h3>
-                <div class="detail-grid">
-                    <div class="detail-item"><div class="detail-label">Direction</div><div class="detail-value">${r.direction}</div></div>
-                    <div class="detail-item"><div class="detail-label">Provider</div><div class="detail-value">${this.esc(r.provider)}</div></div>
-                    <div class="detail-item"><div class="detail-label">Model</div><div class="detail-value">${this.esc(r.model)}</div></div>
-                    <div class="detail-item"><div class="detail-label">Agent</div><div class="detail-value">${this.esc(r.agent_name)}</div></div>
-                    <div class="detail-item"><div class="detail-label">Request ID</div><div class="detail-value">${this.esc(r.request_id)}</div></div>
-                    <div class="detail-item"><div class="detail-label">Session ID</div><div class="detail-value">${this.esc(r.session_id)}</div></div>
-                    <div class="detail-item"><div class="detail-label">URL</div><div class="detail-value">${this.esc(r.url)}</div></div>
-                    <div class="detail-item"><div class="detail-label">Streaming</div><div class="detail-value">${r.is_streaming ? 'Yes' : 'No'}</div></div>
-                    <div class="detail-item"><div class="detail-label">Duration</div><div class="detail-value">${r.duration_ms ? Math.round(r.duration_ms) + 'ms' : 'N/A'}</div></div>
-                    <div class="detail-item"><div class="detail-label">Finish Reason</div><div class="detail-value">${r.finish_reason || 'N/A'}</div></div>
-                    <div class="detail-item"><div class="detail-label">Timestamp</div><div class="detail-value">${this.fmtTimestamp(r.timestamp_ms)}</div></div>
-                </div>
-            </div>`;
-
-            if (r.error) {
-                html += `<div class="detail-section"><h3>Error</h3>
-                    <pre style="color:#f14c4c">${this.esc(r.error)}</pre>
-                </div>`;
-            }
-
-            if (r.usage_json) {
-                html += `<div class="detail-section"><h3>Usage</h3>
-                    ${this.formatJson(r.usage_json)}
-                </div>`;
-            }
-
-            if (r.payload_json) {
-                html += `<div class="detail-section"><h3>Request Payload</h3>
-                    ${this.formatJson(r.payload_json)}
-                </div>`;
-            }
-
-            if (r.response_json) {
-                html += `<div class="detail-section"><h3>Response Data</h3>
-                    ${this.formatJson(r.response_json)}
-                </div>`;
-            }
-
-            document.getElementById('modal-body').innerHTML = html;
-            document.getElementById('modal-overlay').classList.add('visible');
-            if (typeof Prism !== 'undefined') Prism.highlightAllUnder(document.getElementById('modal-body'));
-            this.addCopyIcons();
-        } catch (e) { this.notify('Failed to load request: ' + e.message); }
-    },
-
-    closeModal() {
-        document.getElementById('modal-overlay').classList.remove('visible');
-    },
-
-    // ---- Actions ----
-    async refresh() {
-        await this.loadStats();
-        if (this.activeTab === 'turns') await this.loadTurns();
-        else await this.loadRequests();
-    },
-
-    toggleAutoRefresh() {
-        this.autoRefreshEnabled = !this.autoRefreshEnabled;
-        const btn = document.getElementById('auto-refresh-btn');
-        if (this.autoRefreshEnabled) {
-            this.autoRefreshInterval = setInterval(() => this.refresh(), 5000);
-            btn.classList.add('active');
-            btn.title = 'Auto-Refresh (5s) - Active';
-        } else {
-            if (this.autoRefreshInterval) clearInterval(this.autoRefreshInterval);
-            this.autoRefreshInterval = null;
-            btn.classList.remove('active');
-            btn.title = 'Auto-Refresh (5s) - Inactive';
-        }
-    },
-
-    async clearAll() {
-        const confirmed = await this.confirm('Clear ALL captured turns and LLM request logs?\n\nThis action cannot be undone.');
-        if (!confirmed) return;
-        try {
-            const res = await fetch('/plugins/message_debugger/clear', { method: 'DELETE' });
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({ detail: res.statusText }));
-                this.notify('Clear failed: ' + (err.detail || res.statusText));
-                return;
-            }
-            await this.refresh();
-        } catch (e) { this.notify('Clear failed: ' + e.message); }
-    },
-
-    async pruneOld() {
-        const ok = await this.confirm(
-            'Prune to the size cap and VACUUM to reclaim disk space?\n\n' +
-            'Strips the oldest raw payloads (cost data is kept) and drops the ' +
-            'oldest message snapshots. Cost history is preserved.'
-        );
-        if (!ok) return;
-        try {
-            const res = await fetch('/plugins/message_debugger/prune?vacuum=true', { method: 'POST' });
-            const data = await res.json();
-            let msg = `Stripped ${data.stripped} payloads, dropped ${data.turns_deleted} turns` +
-                      (data.requests_deleted ? `, deleted ${data.requests_deleted} old cost rows` : '') + '.';
-            if (data.vacuumed) {
-                msg += `\nVACUUM reclaimed ${data.freed_mb} MB (DB now ${data.size_after_mb} MB).`;
-            } else if (data.vacuum_error) {
-                msg += `\nVACUUM failed (likely not enough free disk for the temp copy): ${data.vacuum_error}`;
-            }
-            await this.refresh();
-            this.notify(msg);
-        } catch (e) { this.notify('Prune failed: ' + e.message); }
-    },
-
-    confirm(message) {
-        return new Promise(resolve => {
-            this.confirmResolve = resolve;
-            document.getElementById('confirm-message').textContent = message;
-            document.getElementById('confirm-overlay').classList.add('visible');
-        });
-    },
-
-    closeConfirm(result) {
-        document.getElementById('confirm-overlay').classList.remove('visible');
-        if (this.confirmResolve) {
-            this.confirmResolve(result);
-            this.confirmResolve = null;
-        }
-    },
-
-    // Info dialog — native alert() is unreliable inside the panel iframe.
-    notify(message) {
-        return new Promise(resolve => {
-            this.notifyResolve = resolve;
-            document.getElementById('notify-message').textContent = message;
-            document.getElementById('notify-overlay').classList.add('visible');
-        });
-    },
-
-    closeNotify() {
-        document.getElementById('notify-overlay').classList.remove('visible');
-        if (this.notifyResolve) {
-            this.notifyResolve();
-            this.notifyResolve = null;
-        }
-    },
-
-    // ---- Helpers ----
-    fmtTimestamp(ms) {
-        if (!ms) return '';
-        const d = new Date(ms);
-        const dateStr = d.toLocaleString('de-DE', { 
-            year: 'numeric', month: '2-digit', day: '2-digit',
-            hour: '2-digit', minute: '2-digit', second: '2-digit'
-        });
-        const msec = String(Math.floor(ms) % 1000).padStart(3, '0');
-        return `${dateStr}.${msec}`;
-    },
-
-    formatJson(obj) {
-        if (!obj) return '';
-        const json = JSON.stringify(obj, null, 2);
-        const copyId = this.copyDataCounter++;
-        this.copyDataStore.set(copyId, json);
-        return `<pre data-copy-id="${copyId}"><code class="language-json">${this.esc(json)}</code></pre>`;
-    },
-
-    copyToClipboard(text, iconElement) {
-        navigator.clipboard.writeText(text).then(() => {
-            const originalText = iconElement.textContent;
-            iconElement.textContent = '✓';
-            setTimeout(() => {
-                iconElement.textContent = originalText;
-            }, 1000);
-        }).catch(err => {
-            console.error('Copy failed:', err);
-            iconElement.textContent = '✗';
-            setTimeout(() => {
-                iconElement.textContent = '📋';
-            }, 1000);
-        });
-    },
-
-    addCopyIcons() {
-        // Add copy icons to content fields ONLY (skip metadata in detail-grid)
-        document.querySelectorAll('.detail-value').forEach(valueDiv => {
-            // Skip if already has icon or is in metadata grid
-            if (valueDiv.querySelector('.copy-icon')) return;
-            if (valueDiv.closest('.detail-grid')) return; // Skip metadata fields
-            
-            const text = valueDiv.textContent.trim();
-            if (!text || text === 'N/A') return;
-            
-            // Wrap existing text in a span
-            const textSpan = document.createElement('span');
-            textSpan.textContent = text;
-            textSpan.style.flex = '1';
-            textSpan.style.minWidth = '0';
-            
-            // Create icon
-            const icon = document.createElement('span');
-            icon.className = 'copy-icon';
-            icon.textContent = '📋';
-            icon.title = 'Copy to clipboard';
-            icon.onclick = (e) => {
-                e.stopPropagation();
-                this.copyToClipboard(text, icon);
-            };
-            
-            // Clear and rebuild
-            valueDiv.innerHTML = '';
-            valueDiv.appendChild(textSpan);
-            valueDiv.appendChild(icon);
-        });
-
-        // Add copy handlers to per-message copy icons
-        document.querySelectorAll('.msg-copy').forEach(icon => {
-            icon.onclick = (e) => {
-                e.stopPropagation();
-                const msgItem = icon.closest('.msg-item');
-                const copyId = parseInt(msgItem.getAttribute('data-copy-id'), 10);
-                const msgData = this.copyDataStore.get(copyId);
-                if (msgData) {
-                    try {
-                        const parsed = JSON.parse(msgData);
-                        const text = JSON.stringify(parsed, null, 2);
-                        this.copyToClipboard(text, icon);
-                    } catch {
-                        this.copyToClipboard(msgData, icon);
-                    }
-                }
-            };
-        });
-
-        // Add copy icons to JSON blocks (in section headers)
-        document.querySelectorAll('.detail-section').forEach(section => {
-            const pre = section.querySelector('pre[data-copy-id]');
-            if (!pre) return;
-            
-            const h3 = section.querySelector('h3');
-            if (!h3 || h3.querySelector('.section-copy-icon')) return;
-            
-            const copyId = parseInt(pre.getAttribute('data-copy-id'), 10);
-            const json = this.copyDataStore.get(copyId) || '';
-            const icon = document.createElement('span');
-            icon.className = 'copy-icon section-copy-icon';
-            icon.textContent = '📋';
-            icon.title = 'Copy JSON to clipboard';
-            icon.onclick = (e) => {
-                e.stopPropagation();
-                this.copyToClipboard(json, icon);
-            };
-            h3.appendChild(icon);
-        });
-    },
-
-    fmtDuration(ms) {
-        if (!ms || ms === 0) return '0s';
-        if (ms < 1000) return Math.round(ms) + 'ms';
-        if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
-        return (ms / 60000).toFixed(1) + 'm';
-    },
-
-    esc(text) {
-        if (!text) return '';
-        const d = document.createElement('div');
-        d.textContent = String(text);
-        return d.innerHTML;
-    },
-
-    emptyHTML(icon, text, hint) {
-        return `<div class="empty-state">
-            <div class="empty-icon">${icon}</div>
-            <div class="empty-text">${text}</div>
-            <div class="empty-hint">${hint || ''}</div>
-        </div>`;
-    }
+/**
+ * Each list: the rows it shows, the total its filters match, how many it wants (a page more per "Load more"),
+ * the number of its latest load and whether one is on its way.
+ */
+const lists = {
+  turns: { path: 'turns', field: 'turns', rows: [], total: 0, want: PAGE, load: 0, busy: false, drawn: '' },
+  requests: { path: 'llm-requests', field: 'requests', rows: [], total: 0, want: PAGE, load: 0, busy: false, drawn: '' },
 };
+let activeTab = 'turns';
+let statsLoad = 0;
+let statsBusy = false;
+/** The entry the drawer shows ({tab, id}) -- still marked in its list once the drawer is closed. */
+let shown = null;
+let detailLoad = 0;
+/** What the copy buttons of the drawer copy, by index. */
+let copies = [];
 
-// Keyboard shortcuts
-document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-        // Close confirmation modal first if open, otherwise close detail modal
-        const confirmOverlay = document.getElementById('confirm-overlay');
-        if (confirmOverlay && confirmOverlay.classList.contains('visible')) {
-            debugger_.closeConfirm(false);
-        } else {
-            debugger_.closeModal();
-        }
+const params = new URLSearchParams(location.search);
+$('filterSession').value = params.get('session_id') || '';
+$('filterRequest').value = params.get('request_id') || '';
+
+// ------------------------------------------------------------------ formatting
+
+const number = (value) => (value === null || value === undefined ? '' : Number(value).toLocaleString());
+const duration = (ms) => (!ms ? '' : ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
+const head = (id) => (id ? id.slice(0, 8) : '');
+
+/** A request id, short: its first characters and, for a call under a request (`<id>_001`, `<id>_sub_...`), the rest. */
+function requestLabel(id) {
+  if (!id) return '';
+  const under = id.indexOf('_');
+  if (under < 0) return head(id);
+  return `${id.slice(0, Math.min(under, 8))}${under > 8 ? '…' : ''}${id.slice(under)}`;
+}
+
+function time(ms, full = false) {
+  if (!ms) return '';
+  const date = new Date(ms);
+  const clock = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  if (full) return `${date.toLocaleDateString()} ${clock}.${String(Math.floor(ms) % 1000).padStart(3, '0')}`;
+  if (date.toDateString() === new Date().toDateString()) return clock;
+  return `${date.toLocaleDateString([], { day: '2-digit', month: '2-digit' })} ${clock}`;
+}
+
+/** Share of the prompt read from the provider's cache: OpenAI-style usage counts it in prompt_tokens, Anthropic's beside input_tokens. */
+function cached(usage) {
+  if (!usage) return '';
+  const read = usage.prompt_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens ?? 0;
+  const prompt = usage.prompt_tokens
+    ?? (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+  return read > 0 && prompt > 0 ? `${Math.round((read / prompt) * 100)}%` : '';
+}
+
+const cost = (usage) => (typeof usage?.cost === 'number' ? `$${usage.cost.toFixed(4)}` : '');
+
+function parseJson(text) {
+  try { return JSON.parse(text); } catch { return undefined; }
+}
+
+const isTree = (value) => value !== null && typeof value === 'object';
+
+const empty = (name, title, text = '') =>
+  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
+
+const stat = (label, value) =>
+  html`<div class="pk-stat"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${value}</div></div>`;
+
+// ---------------------------------------------------------------- statistics
+
+/** A select's choices; a chosen value the statistics no longer name (pruned away) stays chosen. */
+function fillOptions(select, values) {
+  const chosen = select.value;
+  const all = chosen && !values.includes(chosen) ? [chosen, ...values] : values;
+  const key = JSON.stringify(all);
+  if (select.dataset.options === key) return;  // drawing an open select anew would close it
+  select.dataset.options = key;
+  const first = select.options[0].textContent;
+  render(select, [html`<option value="">${first}</option>`,
+    all.map((value) => html`<option value="${value}" ${value === chosen ? trusted('selected') : ''}>${value}</option>`)]);
+}
+
+async function loadStats({ auto = false } = {}) {
+  if (auto && statsBusy) return;  // a tick while the last answer is on its way would only discard it
+  const load = ++statsLoad;
+  statsBusy = true;
+  let stats;
+  try {
+    stats = await api(`${BASE}stats`, { quiet: true });
+  } catch (error) {
+    if (load === statsLoad) render($('stats'), empty('circle-alert', 'Statistics could not be loaded', error.message));
+    return;
+  } finally {
+    if (load === statsLoad) statsBusy = false;
+  }
+  if (load !== statsLoad) return;
+  render($('stats'), [
+    stat('Turns', number(stats.total_turns)),
+    stat('LLM requests', number(stats.total_llm_requests)),
+    stat('Sessions', number(stats.unique_session_count)),
+    stat('Agents', number(stats.unique_agents.length)),
+    stat('Errors', number(stats.error_count)),
+    stat('Database', `${number(stats.db_size_mb)} MB`),
+  ]);
+  fillOptions($('filterAgent'), stats.unique_agents);
+  fillOptions($('filterProvider'), stats.unique_providers);
+}
+
+// --------------------------------------------------------------------- lists
+
+function query(tab, limit) {
+  const filters = {
+    agent_name: $('filterAgent').value,
+    session_id: $('filterSession').value.trim(),
+    request_id: $('filterRequest').value.trim(),
+    ...(tab === 'turns'
+      ? { snapshot_type: $('filterType').value }
+      : { provider: $('filterProvider').value, direction: $('filterDirection').value }),
+  };
+  const search = new URLSearchParams({ limit: String(limit) });
+  Object.entries(filters).forEach(([name, value]) => { if (value) search.set(name, value); });
+  return search;
+}
+
+const filtered = (tab) => [...query(tab, 1).keys()].length > 1;
+const selected = (tab, id) => String(shown !== null && shown.tab === tab && shown.id === id);
+
+const snapshotBadge = (type) => (type === 'pre_llm'
+  ? html`<span class="pk-badge pk-badge--info">${icon('arrow-up', { size: 'sm' })} input</span>`
+  : html`<span class="pk-badge pk-badge--ok">${icon('arrow-down', { size: 'sm' })} output</span>`);
+
+const directionBadge = (entry) => (entry.direction === 'request'
+  ? html`<span class="pk-badge pk-badge--info">${icon('arrow-up', { size: 'sm' })} request</span>`
+  : html`<span class="pk-badge pk-badge--ok">${icon('arrow-down', { size: 'sm' })} response</span>`);
+
+const reason = (text) => html`<span class="md-reason" title="${text}">${text}</span>`;
+
+function status(entry) {
+  if (entry.direction === 'request') return '';
+  if (entry.finish_reason === 'retry') {
+    const [, attempt = '', why = entry.error || ''] = /^\[RETRY (\d+\/\d+)\]\s*(.*)$/s.exec(entry.error || '') || [];
+    return html`<span class="pk-badge pk-badge--warn">retry ${attempt}</span> ${reason(why)}`;
+  }
+  if (entry.error) return html`<span class="pk-badge pk-badge--danger">error</span> ${reason(entry.error)}`;
+  return entry.finish_reason ? html`<span class="pk-badge">${entry.finish_reason}</span>` : '';
+}
+
+const requestCell = (id) => html`<td class="pk-mono" title="${id}">${requestLabel(id)}</td>`;
+
+function turnRows(rows) {
+  return html`<div class="pk-table-wrap"><table class="pk-table md-entries">
+    <thead><tr><th>Time</th><th>Type</th><th>Agent</th><th class="pk-num">Step</th><th class="pk-num">Messages</th>
+      <th class="pk-num">Tokens</th><th class="pk-num">Cached</th><th class="pk-num">Cost</th><th>Session</th><th>Request</th></tr></thead>
+    <tbody>${rows.map((turn) => html`<tr tabindex="0" data-id="${turn.id}" aria-selected="${selected('turns', turn.id)}">
+      <td class="pk-mono" title="${time(turn.timestamp_ms, true)}">${time(turn.timestamp_ms)}</td>
+      <td>${snapshotBadge(turn.snapshot_type)}</td>
+      <td>${turn.agent_name}</td>
+      <td class="pk-num">${turn.step}</td>
+      <td class="pk-num">${number(turn.message_count)}</td>
+      <td class="pk-num">${number(turn.total_tokens)}</td>
+      <td class="pk-num">${cached(turn.usage_json)}</td>
+      <td class="pk-num">${cost(turn.usage_json)}</td>
+      <td class="pk-mono" title="${turn.session_id}">${head(turn.session_id)}</td>
+      ${requestCell(turn.request_id)}
+    </tr>`)}</tbody>
+  </table></div>`;
+}
+
+function requestRows(rows) {
+  return html`<div class="pk-table-wrap"><table class="pk-table md-entries">
+    <thead><tr><th>Time</th><th>Direction</th><th>Agent</th><th>Model</th><th class="pk-num">Duration</th>
+      <th class="pk-num">Tokens</th><th class="pk-num">Cost</th><th>Status</th><th>Request</th></tr></thead>
+    <tbody>${rows.map((entry) => html`<tr tabindex="0" data-id="${entry.id}" aria-selected="${selected('requests', entry.id)}">
+      <td class="pk-mono" title="${time(entry.timestamp_ms, true)}">${time(entry.timestamp_ms)}</td>
+      <td>${directionBadge(entry)}</td>
+      <td>${entry.agent_name}</td>
+      <td><span class="pk-muted">${entry.provider}</span> ${entry.model}${entry.is_streaming ? html` <span class="pk-badge">stream</span>` : ''}</td>
+      <td class="pk-num">${duration(entry.duration_ms)}</td>
+      <td class="pk-num">${number(entry.usage_json?.total_tokens)}</td>
+      <td class="pk-num">${cost(entry.usage_json)}</td>
+      <td>${status(entry)}</td>
+      ${requestCell(entry.request_id)}
+    </tr>`)}</tbody>
+  </table></div>`;
+}
+
+function draw(tab) {
+  const list = lists[tab];
+  // unchanged rows are not drawn anew: a refresh keeps the row the keyboard is on
+  const drawn = JSON.stringify([list.total, list.rows.map((row) => row.id)]);
+  if (drawn === list.drawn) return;
+  list.drawn = drawn;
+  $(`${tab}Count`).textContent = number(list.total);
+  if (!list.rows.length) {
+    render($(tab), filtered(tab)
+      ? empty('filter', 'Nothing matches the filters')
+      : tab === 'turns'
+        ? empty('history', 'No turns captured yet', 'The messages agents send to their LLM show up here.')
+        : empty('history', 'No LLM requests captured yet', 'The raw requests to the LLM providers and their responses show up here.'));
+    return;
+  }
+  const more = list.rows.length < Math.min(list.total, MOST);
+  render($(tab), html`${tab === 'turns' ? turnRows(list.rows) : requestRows(list.rows)}
+    <div class="pk-row md-footer">
+      <span class="pk-muted">${number(list.rows.length)} of ${number(list.total)}</span>
+      ${more ? html`<button type="button" class="pk-btn pk-btn--sm" data-more>Load more</button>` : ''}
+      ${!more && list.total > list.rows.length ? html`<span class="pk-muted">Narrow the filters to reach older entries</span>` : ''}
+    </div>`);
+  if (shown?.tab === tab && $('detail').open) updateSteps();
+}
+
+/**
+ * Load the newest entries of a list, as many as it wants -- from the top each time, so entries captured
+ * meanwhile neither repeat nor push others out of reach; `more` wants a page more. With `countOnly` just its
+ * total, for the count on the tab not shown. A tick of the auto refresh skips a list still loading: with
+ * answers slower than the tick, every answer would be outdated on arrival.
+ */
+async function loadList(tab, { more = false, countOnly = false, auto = false } = {}) {
+  const list = lists[tab];
+  if (auto && list.busy) return;
+  if (more) list.want = Math.min(MOST, list.want + PAGE);
+  const load = ++list.load;
+  list.busy = true;
+  let data;
+  try {
+    data = await api(`${BASE}${list.path}?${query(tab, countOnly ? 1 : list.want)}`, { quiet: true });
+  } catch (error) {
+    if (load === list.load && !countOnly) {
+      list.drawn = '';
+      render($(tab), empty('circle-alert', 'Could not be loaded', error.message));
     }
+    return;
+  } finally {
+    if (load === list.load) list.busy = false;
+  }
+  if (load !== list.load) return;  // a newer load -- other filters, a refresh -- draws this list
+  if (countOnly) {
+    $(`${tab}Count`).textContent = number(data.total);
+    return;
+  }
+  list.rows = data[list.field];
+  list.total = data.total;
+  draw(tab);
+}
+
+const otherTab = () => (activeTab === 'turns' ? 'requests' : 'turns');
+
+function refresh(event) {
+  const auto = Boolean(event?.detail?.auto);
+  loadStats({ auto });
+  loadList(activeTab, { auto });
+  loadList(otherTab(), { countOnly: true, auto });
+}
+
+/** Filters changed: the lists start over from their first page, and show nothing of the filters before. */
+function startOver(tabs) {
+  for (const tab of tabs) {
+    Object.assign(lists[tab], { rows: [], want: PAGE, drawn: '' });
+    $(`${tab}Count`).textContent = '';
+    render($(tab), html`<span class="pk-skeleton"></span>`);
+    loadList(tab, { countOnly: tab !== activeTab });
+  }
+}
+
+// -------------------------------------------------------------------- drawer
+
+const copyButton = (value, label = 'Copy as JSON') => html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm"
+  data-copy="${copies.push(value) - 1}" aria-label="${label}" title="${label}">${icon('copy')}</button>`;
+
+const section = (title, value, body) => html`<section class="pk-stack md-section">
+  <div class="pk-row"><h3 class="pk-card-title pk-grow">${title}</h3>${copyButton(value)}</div>
+  ${body}
+</section>`;
+
+const facts = (pairs) => html`<dl class="pk-kv">${pairs
+  .filter(([, value]) => value !== '' && value !== null && value !== undefined)
+  .map(([label, value]) => html`<dt>${label}</dt><dd>${value}</dd>`)}</dl>`;
+
+const idFact = (kind, id) => (id ? html`<span class="pk-row md-id"><span class="pk-mono">${id}</span>
+  <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-filter="${kind}" data-value="${id}"
+    aria-label="Show only this ${kind}" title="Show only this ${kind}">${icon('filter')}</button></span>` : '');
+
+const ROLE_BADGES = { system: 'pk-badge--accent', user: 'pk-badge--info', assistant: 'pk-badge--ok' };
+// fields a message card shows in its own place; every other field of the snapshot is listed generically
+const MESSAGE_FIELDS = new Set(['index', 'role', 'content', 'content_length', 'estimated_tokens',
+  'tool_calls', 'tool_call_count', 'tool_call_id', 'is_tool_result']);
+
+function messageContent(message) {
+  const { content } = message;
+  if (content === null || content === undefined || content === '') return '';
+  if (typeof content !== 'string') return jsonView(content);  // the parts of a multimodal message
+  const tree = message.is_tool_result ? parseJson(content) : undefined;
+  return isTree(tree) ? jsonView(tree) : html`<pre class="pk-code">${content}</pre>`;
+}
+
+function toolCall(call) {
+  const args = call.function?.arguments;
+  const tree = typeof args === 'string' ? parseJson(args) : args;
+  return html`<div class="md-tool-call">
+    <div class="pk-row">${icon('wrench', { size: 'sm' })}<span class="pk-mono">${call.function?.name || '?'}</span>
+      ${call.id ? html`<span class="pk-mono pk-muted">${call.id}</span>` : ''}</div>
+    ${isTree(tree) ? jsonView(tree) : html`<pre class="pk-code">${args ?? ''}</pre>`}
+  </div>`;
+}
+
+function messageCard(message) {
+  const extras = Object.entries(message).filter(([key, value]) => !MESSAGE_FIELDS.has(key) && value !== null && value !== undefined);
+  return html`<article class="md-message" data-role="${message.role || ''}">
+    <div class="pk-row">
+      <span class="pk-badge ${ROLE_BADGES[message.role] || ''}">${message.role || 'unknown'}</span>
+      ${message.is_tool_result ? html`<span class="pk-badge">tool result</span>` : ''}
+      ${message.tool_call_id ? html`<span class="pk-mono pk-muted">${message.tool_call_id}</span>` : ''}
+      <span class="pk-grow"></span>
+      ${message.content_length ? html`<span class="pk-muted">${number(message.content_length)} chars</span>` : ''}
+      ${message.estimated_tokens ? html`<span class="pk-muted">${number(message.estimated_tokens)} tokens</span>` : ''}
+      ${copyButton(message, 'Copy message as JSON')}
+    </div>
+    ${messageContent(message)}
+    ${(message.tool_calls || []).map(toolCall)}
+    ${extras.some(([, value]) => !isTree(value))
+      ? html`<div class="pk-row">${extras.filter(([, value]) => !isTree(value)).map(([key, value]) => html`<span class="pk-badge">${key}: ${String(value)}</span>`)}</div>`
+      : ''}
+    ${extras.filter(([, value]) => isTree(value)).map(([key, value]) => html`<details class="md-extra"><summary>${key}</summary>${jsonView(value)}</details>`)}
+  </article>`;
+}
+
+const entryName = (tab, id) => `${tab === 'turns' ? 'Turn' : 'LLM request log entry'} #${id}`;
+
+function drawTurn(turn) {
+  const messages = turn.messages_json || [];
+  $('detailTitle').textContent = `${entryName('turns', turn.id)} · ${turn.snapshot_type === 'pre_llm' ? 'input' : 'output'} · ${turn.agent_name}`;
+  render($('detailBody'), html`
+    ${facts([
+      ['Agent', turn.agent_name], ['Step', turn.step], ['Messages', number(turn.message_count)],
+      ['Tokens', number(turn.total_tokens)], ['Context window', number(turn.context_window)],
+      ['Time', time(turn.timestamp_ms, true)], ['Session', idFact('session', turn.session_id)],
+      ['Request', idFact('request', turn.request_id)],
+    ])}
+    ${messages.length ? section(`Messages (${messages.length})`, messages, html`<div class="pk-stack">${messages.map(messageCard)}</div>`) : ''}
+    ${turn.llm_response_json ? section('LLM response', turn.llm_response_json, jsonView(turn.llm_response_json)) : ''}`);
+}
+
+function drawRequest(entry) {
+  $('detailTitle').textContent = `${entry.direction === 'request' ? 'Request' : 'Response'} #${entry.id} · ${entry.provider}/${entry.model}`;
+  render($('detailBody'), html`
+    ${facts([
+      ['Agent', entry.agent_name], ['Provider', entry.provider], ['Model', entry.model], ['URL', entry.url],
+      ['Streaming', entry.is_streaming ? 'yes' : 'no'], ['Duration', duration(entry.duration_ms)],
+      ['Finish reason', entry.finish_reason], ['Time', time(entry.timestamp_ms, true)],
+      ['Session', idFact('session', entry.session_id)], ['Request', idFact('request', entry.request_id)],
+    ])}
+    ${entry.error ? section('Error', entry.error, html`<pre class="pk-code md-error-text">${entry.error}</pre>`) : ''}
+    ${entry.usage_json ? section('Usage', entry.usage_json, jsonView(entry.usage_json)) : ''}
+    ${entry.payload_json ? section('Request payload', entry.payload_json, jsonView(entry.payload_json)) : ''}
+    ${entry.response_json ? section('Response data', entry.response_json, jsonView(entry.response_json)) : ''}`);
+}
+
+function markSelected() {
+  for (const tab of Object.keys(lists)) {
+    $(tab).querySelectorAll('tr[data-id]').forEach((row) => row.setAttribute('aria-selected', selected(tab, Number(row.dataset.id))));
+  }
+}
+
+function updateSteps() {
+  const { rows } = lists[shown.tab];
+  const index = rows.findIndex((row) => row.id === shown.id);
+  $('detail').querySelector('[data-step="-1"]').disabled = index <= 0;
+  $('detail').querySelector('[data-step="1"]').disabled = index < 0 || index >= rows.length - 1;
+}
+
+async function openDetail(tab, id) {
+  const load = ++detailLoad;
+  shown = { tab, id };
+  markSelected();
+  const drawer = $('detail');
+  if (!drawer.open) {
+    $('detailTitle').textContent = '';
+    render($('detailBody'), html`<span class="pk-skeleton"></span>`);
+    drawer.showModal();
+  }
+  updateSteps();
+  let entry;
+  try {
+    entry = await api(`${BASE}${lists[tab].path}/${id}`, { quiet: true });
+  } catch (error) {
+    if (load === detailLoad) {
+      $('detailTitle').textContent = entryName(tab, id);
+      render($('detailBody'), empty('circle-alert', 'Could not be loaded', error.message));
+    }
+    return;
+  }
+  if (load !== detailLoad) return;  // a later entry was asked for
+  copies = [];
+  if (tab === 'turns') drawTurn(entry);
+  else drawRequest(entry);
+  $('detailBody').scrollTop = 0;
+}
+
+function step(delta) {
+  const { rows } = lists[shown.tab];
+  const next = rows[rows.findIndex((row) => row.id === shown.id) + delta];
+  if (next) openDetail(shown.tab, next.id);
+}
+
+async function copy(value) {
+  try {
+    await navigator.clipboard.writeText(typeof value === 'string' ? value : JSON.stringify(value, null, 2));
+    toast('Copied', { kind: 'ok' });
+  } catch (error) {
+    toast(`Could not copy: ${error.message}`, { kind: 'error' });
+  }
+}
+
+// ------------------------------------------------------------------- actions
+
+async function prune() {
+  const asked = await confirm(
+    'Strip the oldest raw payloads and drop the oldest turn snapshots until the database is well below its size cap, '
+    + 'then compact the file. Cost data is kept. On a large database this takes minutes.',
+    { title: 'Prune the database', confirmLabel: 'Prune' });
+  if (!asked) return;
+  const button = $('actionsButton');
+  button.disabled = true;
+  toast('Pruning the database…');
+  let result;
+  try {
+    result = await api(`${BASE}prune?vacuum=true`, { method: 'POST' });
+  } catch {
+    return;  // api() has shown the failure
+  } finally {
+    button.disabled = false;
+  }
+  loadStats();
+  startOver(Object.keys(lists));
+  const done = [`Stripped ${number(result.stripped)} payloads`, `dropped ${number(result.turns_deleted)} turns`];
+  if (result.requests_deleted) done.push(`deleted ${number(result.requests_deleted)} old cost rows`);
+  const file = result.vacuum_error ? `Compacting the file failed: ${result.vacuum_error}`
+    : result.vacuumed ? `The file was compacted: ${number(result.freed_mb)} MB freed, ${number(result.size_after_mb)} MB now.`
+      : 'The file had nothing to compact.';
+  alert(`${done.join(', ')}. ${file}`, { title: 'Database pruned' });  // stays until read: the prune took its time
+}
+
+async function clearAll() {
+  const asked = await confirm('Delete every captured turn and LLM request log, cost history included? This cannot be undone.',
+    { title: 'Clear all captured data', confirmLabel: 'Clear all', danger: true });
+  if (!asked) return;
+  let result;
+  try {
+    result = await api(`${BASE}clear`, { method: 'DELETE' });
+  } catch {
+    return;  // api() has shown the failure
+  }
+  toast(`Deleted ${number(result.turns_deleted)} turns and ${number(result.requests_deleted)} LLM request logs`, { kind: 'ok' });
+  if ($('detail').open) $('detail').close();
+  loadStats();
+  startOver(Object.keys(lists));
+}
+
+// -------------------------------------------------------------------- wiring
+
+document.querySelector('[data-pk-tabs]').addEventListener('tabchange', (event) => {
+  activeTab = event.detail.tab;
+  loadList(activeTab);
+});
+document.addEventListener('refresh', refresh);
+
+$('filterAgent').addEventListener('change', () => startOver(Object.keys(lists)));
+for (const id of ['filterSession', 'filterRequest']) {
+  let typing = null;
+  $(id).addEventListener('input', () => {
+    clearTimeout(typing);
+    typing = setTimeout(() => startOver(Object.keys(lists)), 300);
+  });
+}
+$('filterType').addEventListener('change', () => startOver(['turns']));
+$('filterProvider').addEventListener('change', () => startOver(['requests']));
+$('filterDirection').addEventListener('change', () => startOver(['requests']));
+
+for (const tab of Object.keys(lists)) {
+  $(tab).addEventListener('click', (event) => {
+    if (event.target.closest('[data-more]')) {
+      loadList(tab, { more: true });
+      return;
+    }
+    const row = event.target.closest('tr[data-id]');
+    if (row) openDetail(tab, Number(row.dataset.id));
+  });
+  $(tab).addEventListener('keydown', (event) => {
+    const row = event.target.closest('tr[data-id]');
+    if (row && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      openDetail(tab, Number(row.dataset.id));
+    }
+  });
+}
+
+$('detail').addEventListener('click', (event) => {
+  const drawer = $('detail');
+  if (event.target === drawer) {
+    const box = drawer.getBoundingClientRect();
+    const outside = event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
+    if (outside) drawer.close();  // a click on the backdrop
+    return;
+  }
+  const button = event.target.closest('button');
+  if (!button) return;
+  if (button.hasAttribute('data-close')) drawer.close();
+  else if (button.dataset.copy !== undefined) copy(copies[Number(button.dataset.copy)]);
+  else if (button.dataset.step) step(Number(button.dataset.step));
+  else if (button.dataset.filter) {
+    // a request lies in one session: the session filter shows all of its requests, the request filter one
+    $('filterSession').value = button.dataset.filter === 'session' ? button.dataset.value : '';
+    $('filterRequest').value = button.dataset.filter === 'request' ? button.dataset.value : '';
+    drawer.close();
+    startOver(Object.keys(lists));
+  }
 });
 
-// Initialize
-debugger_.init();
+$('actions').addEventListener('click', (event) => {
+  const item = event.target.closest('[data-action]');
+  if (!item) return;
+  $('actions').hidePopover();
+  if (item.dataset.action === 'prune') prune();
+  else clearAll();
+});
+
+refresh();

@@ -56,23 +56,19 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
         self,
         plugin_dir: Path | str,
         db: Optional[MessageDebuggerDB] = None,
-        message_history: Optional[List[Dict[str, Any]]] = None,
         mcp_config: Any = None,
     ):
         """Initialize the message debugger plugin.
-        
+
         Args:
             plugin_dir: Directory containing schema.yaml
             db: SQLite database instance for persistent storage
-            message_history: Legacy list (kept for backward compat)
             mcp_config: MCP configuration
         """
         super().__init__(plugin_dir)
-        
+
         self.db = db
-        # Keep legacy list reference for backward compat
-        self.message_history = message_history if message_history is not None else []
-        
+
         # Load config
         config = self.get_config()
         if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
@@ -85,9 +81,7 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
         self.include_tool_calls = bool(config.get('include_tool_calls', True))
         self.include_token_estimates = bool(config.get('include_token_estimates', True))
         self.max_field_chars = int(config.get('max_field_chars', 500))
-        self.max_history = int(config.get('max_history_entries', 100))
-        self.auto_cleanup_threshold = int(config.get('auto_cleanup_threshold', 150))
-        
+
         logger.info(
             f"MessageDebuggerPlugin initialized: db={'YES' if db else 'NO'}, "
             f"capture_enabled={self.capture_enabled}, "

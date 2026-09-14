@@ -1,164 +1,89 @@
 # Message Debugger Plugin
 
-Debug and inspect LLM conversation messages with detailed token analysis and history tracking.
+Captures what agents send to their LLM and what comes back, in a SQLite database, and shows it in a panel.
 
-## Overview
+## What it captures
 
-The Message Debugger plugin provides comprehensive debugging capabilities for LLM conversations in AgentSystem. It captures message snapshots before each LLM call, allowing you to inspect exactly what messages are being sent, including token counts, tool calls, and conversation flow.
+Four hooks write into `data/message_debugger/debugger.db` (or `db_path`), through a background writer thread so a
+slow database never stalls an agent:
 
-## Features
+| Hook | Table | What |
+|---|---|---|
+| `pre_llm_call` | `turns` (`pre_llm`) | the messages of a step, as the LLM gets them |
+| `post_llm_call` | `turns` (`post_llm`) | the messages and the LLM response |
+| `pre_llm_request` | `llm_requests` (`request`) | the raw payload sent to the provider |
+| `post_llm_response` | `llm_requests` (`response`) | the raw response, usage, duration, error; a failed retry attempt is logged with `finish_reason: retry` and an error starting `[RETRY n/m]` |
 
-- **Automatic Message Capture**: Hooks into pre_llm_call to capture messages before each LLM interaction
-- **Token Analysis**: Detailed token count estimates for each message and total conversation
-- **Tool Call Inspection**: View all tool calls with their arguments and results
-- **Session Tracking**: Track messages across different sessions and agents
-- **Web UI**: Interactive dashboard for browsing and filtering message snapshots
-- **History Management**: Configurable history limits with automatic cleanup
-- **Real-time Updates**: Optional auto-refresh for live debugging
+A turn stores every field of every message (role, content, tool calls, `served_by`, `reasoning_details`, ...), so a
+field added to `ChatMessage` shows up without changes here. `content` and `tool_calls` are kept whole; any other
+string longer than `max_field_chars` is stored as a preview that names its full length, because every snapshot
+repeats the whole history. The LLM response of a post-LLM turn is stored the same way, but every long string in
+it is cut, its text included. The snapshot adds `index`, `content_length`, `estimated_tokens` (with
+`include_token_estimates`) and `tool_call_count`/`is_tool_result` (with `include_tool_calls`).
+
+## Retention
+
+`max_db_size_mb` caps the data size: above ~90 % the oldest request payloads are stripped (their cost columns
+stay) and the oldest turns deleted, down to ~75 %. The file plateaus and reuses freed pages; only the panel's
+prune action gives them back to the disk (VACUUM). `0` disables retention.
 
 ## Configuration
 
-The plugin is configured via `schema.yaml`:
+| Key | Default | Meaning |
+|---|---|---|
+| `capture_enabled` | `true` | all capture on or off |
+| `capture_pre_llm`, `capture_post_llm` | `true` | the two turn snapshots |
+| `capture_llm_requests` | `true` | the raw requests and responses |
+| `include_tool_calls` | `true` | tool call details in the snapshot |
+| `include_token_estimates` | `true` | a token estimate per message |
+| `max_field_chars` | `500` | preview length of long non-content fields; `0` keeps everything |
+| `db_path` | `""` | database file; empty means `data/message_debugger/debugger.db` |
+| `max_db_size_mb` | `5120` | retention cap, see above |
+| `capture_queue_max` | `2000` | bound of the write queue; on overflow the newest capture is dropped and logged |
 
-```yaml
-config:
-  max_history_entries: 100           # Maximum snapshots to keep
-  capture_enabled: true              # Enable/disable capturing
-  include_tool_calls: true           # Include tool call details
-  include_token_estimates: true      # Calculate token estimates
-  max_field_chars: 500               # Preview length for long non-content fields (0 = keep all)
-  auto_cleanup_threshold: 150        # Auto-cleanup when exceeded
-```
+## The panel
 
-## Usage
+In the launcher under **Debug**. The chat offers it on a response's request ID and on a session: opened that way,
+both lists start filtered to that request or session.
 
-### Web UI
+- **Turns** and **LLM requests**, newest first, 50 at a time (at most the newest 500 a filter matches), with the
+  total the filters match on each tab. Filters: agent, session, request, plus type (turns) and provider and
+  direction (requests). A request takes the calls under it along -- tool calls (`<id>_001`) and sub-agents
+  (`<id>_sub_...`), which the request column shows by what follows the id; a session filter shows that session's
+  own calls, a sub-agent's are in its own session.
+- A row opens its entry in a drawer: the messages as cards (text as text, JSON tool results and tool arguments as
+  trees, every other field by name), the LLM response, or the request payload, response, usage and error. Each
+  part copies as JSON; the arrows step to the next newer or older entry; the filter buttons narrow the lists to
+  the entry's session or request.
+- The menu prunes the database and compacts the file, or clears all captured data -- cost history included,
+  which `writer-costs` reads. A prune reports what it did in a dialog; after a clear, pruning gives the freed
+  space back to the disk.
 
-Access the Message Debugger panel in the main UI:
+## API
 
-1. Navigate to the "Message Debugger" panel (🐛 icon)
-2. View real-time statistics (snapshots, messages, tokens, sessions)
-3. Filter by agent name, session ID, or limit results
-4. Click on a snapshot to expand and view detailed messages
-5. Use auto-refresh for live debugging
-6. Clear history when needed
+All under `/plugins/message_debugger/`:
 
-### API Endpoints
+| Route | |
+|---|---|
+| `GET turns` | `agent_name`, `session_id`, `request_id` (with the calls under it), `snapshot_type`, `limit` (≤ 500), `offset` → `{total, turns}`; a row carries `usage_json` (the usage of its LLM response), not the messages |
+| `GET turns/{turn_id}` | the whole turn |
+| `GET llm-requests` | `agent_name`, `session_id`, `request_id` (with the calls under it), `direction`, `provider`, `limit`, `offset` → `{total, requests}`, without payload and response |
+| `GET llm-requests/{entry_id}` | the whole log entry |
+| `GET stats` | counts, agents, providers, errors, database size |
+| `POST prune?vacuum=true` | retention down to ~75 %, then VACUUM when the file has free pages (can take minutes; a VACUUM failure is reported, not raised) |
+| `DELETE clear` | deletes everything |
+| `GET /` | the panel |
 
-#### List Snapshots
-```bash
-GET /api/plugins/message-debugger/snapshots?agent_name=agent&limit=50
-```
-
-#### Get Specific Snapshot
-```bash
-GET /api/plugins/message-debugger/snapshots/{index}
-```
-
-#### Get Statistics
-```bash
-GET /api/plugins/message-debugger/stats
-```
-
-#### Clear History
-```bash
-DELETE /api/plugins/message-debugger/snapshots
-```
-
-## How It Works
-
-1. **Hook Registration**: The plugin registers a `pre_llm_call` hook that runs after all other pre-processing hooks
-2. **Message Capture**: Before each LLM call, it captures the current message state
-3. **Token Estimation**: Uses `estimate_token_count` to calculate token usage
-4. **Tool Analysis**: Extracts tool call information and arguments
-5. **Storage**: Stores snapshots in memory with automatic cleanup
-6. **Web Access**: Provides REST API and web panel for viewing captured data
-
-## Message Details
-
-Each captured snapshot includes:
-
-- **Timestamp**: When the snapshot was taken
-- **Agent Name**: Which agent made the request
-- **Request ID**: Unique identifier for the request
-- **Session ID**: Session identifier (if available)
-- **Message Count**: Number of messages in the conversation
-- **Total Tokens**: Estimated token count for all messages
-- **Context Window**: LLM context window size
-
-Each message includes every field it carries (role, content, tool calls,
-served_by, reasoning_details, ...), so a field added to `ChatMessage` shows up
-in snapshot and panel without changes to this plugin. `content` and
-`tool_calls` are kept whole; any other string longer than `max_field_chars` is
-stored as a preview that names its full length, because every snapshot repeats
-the whole history. The snapshot adds:
-
-- **Index**: Position in conversation
-- **Content Length / Estimated Tokens**: Size of this message
-- **Tool Call Count / Tool Result**: Tool summary (with `include_tool_calls`)
-
-A post-LLM snapshot stores the whole LLM response the same way.
-
-## Development
-
-### Plugin Structure
+## Files
 
 ```
 message_debugger/
-├── plugin.yaml              # Plugin metadata
-├── schema.yaml              # Hook and config definitions
-├── plugin.py                # Hybrid plugin factory
-├── hooks.py                 # Hook implementations
-├── web_endpoints.py         # REST API endpoints
-├── templates/
-│   └── panel.html          # Web UI panel
-└── README.md               # This file
+├── plugin.py          # hybrid plugin: hooks + web, static assets
+├── hooks.py           # capture
+├── database.py        # SQLite storage, retention, write queue
+├── web_endpoints.py   # API and panel route
+├── schema.yaml        # hooks, config, panel catalogue entry, endpoints
+├── templates/panel.html
+├── static/panel.js, panel.css
+└── tests/             # unit tests; test_plugin_message_debugger_panel.py drives the panel in a browser
 ```
-
-### Testing
-
-Run the plugin tests:
-
-```bash
-pytest tests/test_plugin_message_debugger.py -v
-```
-
-## Best Practices
-
-1. **History Management**: Set `max_history_entries` based on your debugging needs
-2. **Performance**: Disable `include_token_estimates` for faster capture if token counts aren't needed
-3. **Tool Debugging**: Enable `include_tool_calls` when debugging tool execution
-4. **Session Tracking**: Use session IDs to trace multi-turn conversations
-5. **Auto-Cleanup**: Set `auto_cleanup_threshold` higher than `max_history_entries` to prevent frequent cleanups
-
-## Troubleshooting
-
-### Snapshots Not Appearing
-
-- Check that `capture_enabled: true` in schema.yaml
-- Verify the plugin is loaded: Check `/api/plugins/message-debugger/stats`
-- Ensure LLM requests are actually being made
-
-### High Memory Usage
-
-- Reduce `max_history_entries` to keep fewer snapshots
-- Lower `auto_cleanup_threshold` for more aggressive cleanup
-- Disable `include_token_estimates` to reduce per-message overhead
-
-### Missing Tool Call Information
-
-- Enable `include_tool_calls: true` in configuration
-- Verify tool calls are actually present in messages
-
-## Integration
-
-The plugin integrates seamlessly with:
-
-- **Hook System**: Runs as part of the pre_llm_call hook chain
-- **Web UI**: Provides panel and REST API
-- **Token Utils**: Uses standard token estimation utilities
-- **Status System**: Logs capture events for monitoring
-
-## License
-
-Part of AgentSystem - see main project license.

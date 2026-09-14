@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 from .database import MessageDebuggerDB
@@ -62,15 +62,8 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
             f"(cap {max_size_mb} MB, write-queue {queue_max})"
         )
         
-        # Legacy list kept for backward compat (not actively used)
-        self._message_history: List[Dict[str, Any]] = []
-        
         # Create hooks plugin with DB and config
-        self.hooks_plugin = MessageDebuggerPlugin(
-            plugin_dir, db=self._db,
-            message_history=self._message_history,
-            mcp_config=mcp_config,
-        )
+        self.hooks_plugin = MessageDebuggerPlugin(plugin_dir, db=self._db, mcp_config=mcp_config)
         
         # Create web UI factory with DB for queries
         self.web_factory = MessageDebuggerWebFactory(
@@ -90,6 +83,10 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
     def get_web_router(self):
         """Return FastAPI router for web UI."""
         return self.web_factory.get_web_router()
+
+    def get_static_assets(self) -> Path:
+        """The panel's script and stylesheet, served under /plugins/<name>/static/."""
+        return Path(__file__).parent / "static"
 
 
 PLUGIN_FACTORY = MessageDebuggerHybridPlugin

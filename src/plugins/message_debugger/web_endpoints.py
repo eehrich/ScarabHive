@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Query, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse
 
 from agent_system.plugins.schema_router import create_schema_router
+from agent_system.ui.resources import ui_templates
 
 if TYPE_CHECKING:
     from .database import MessageDebuggerDB
@@ -44,7 +44,7 @@ class MessageDebuggerWebFactory:
         self.name = name
         self.db = db
         self.server = server
-        self.plugin_dir = Path(__file__).parent
+        self.templates = ui_templates(Path(__file__).parent / "templates")
     
     # ---- Turns endpoints ----
     
@@ -53,19 +53,16 @@ class MessageDebuggerWebFactory:
         request: Request,
         agent_name: str | None = Query(default=None, description="Filter by agent name"),
         session_id: str | None = Query(default=None, description="Filter by session ID"),
+        request_id: str | None = Query(default=None, description="Filter by request ID"),
         snapshot_type: str | None = Query(default=None, description="Filter by type (pre_llm/post_llm)"),
         limit: int = Query(default=50, ge=1, le=500, description="Maximum turns to return"),
         offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     ):
-        """List captured agent-level message turns."""
-        turns = self.db.get_turns(
-            agent_name=agent_name,
-            session_id=session_id,
-            snapshot_type=snapshot_type,
-            limit=limit,
-            offset=offset,
-        )
-        total = self.db.count_turns(agent_name=agent_name, session_id=session_id)
+        """List captured agent-level message turns; ``total`` counts every turn the filters match."""
+        filters = dict(agent_name=agent_name, session_id=session_id, request_id=request_id,
+                       snapshot_type=snapshot_type)
+        turns = self.db.get_turns(**filters, limit=limit, offset=offset)
+        total = self.db.count_turns(**filters)
         return {
             'total': total,
             'offset': offset,
@@ -88,21 +85,17 @@ class MessageDebuggerWebFactory:
         request: Request,
         agent_name: str | None = Query(default=None, description="Filter by agent name"),
         session_id: str | None = Query(default=None, description="Filter by session ID"),
+        request_id: str | None = Query(default=None, description="Filter by request ID"),
         direction: str | None = Query(default=None, description="Filter by direction (request/response)"),
         provider: str | None = Query(default=None, description="Filter by provider"),
         limit: int = Query(default=50, ge=1, le=500, description="Maximum entries to return"),
         offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     ):
-        """List raw LLM API request/response logs."""
-        items = self.db.get_llm_requests(
-            agent_name=agent_name,
-            session_id=session_id,
-            direction=direction,
-            provider=provider,
-            limit=limit,
-            offset=offset,
-        )
-        total = self.db.count_llm_requests(agent_name=agent_name, provider=provider)
+        """List raw LLM API request/response logs; ``total`` counts every entry the filters match."""
+        filters = dict(agent_name=agent_name, session_id=session_id, request_id=request_id,
+                       direction=direction, provider=provider)
+        items = self.db.get_llm_requests(**filters, limit=limit, offset=offset)
+        total = self.db.count_llm_requests(**filters)
         return {
             'total': total,
             'offset': offset,
@@ -110,12 +103,12 @@ class MessageDebuggerWebFactory:
             'count': len(items),
             'requests': items,
         }
-    
-    async def get_llm_request(self, request: Request, request_id: int):
-        """Get a specific LLM request log by ID."""
-        item = self.db.get_llm_request(request_id)
+
+    async def get_llm_request(self, request: Request, entry_id: int):
+        """Get one LLM request log entry by its row ID."""
+        item = self.db.get_llm_request(entry_id)
         if not item:
-            raise HTTPException(status_code=404, detail=f"LLM request {request_id} not found")
+            raise HTTPException(status_code=404, detail=f"LLM request log entry {entry_id} not found")
         return item
     
     # ---- Stats & maintenance ----
@@ -140,7 +133,7 @@ class MessageDebuggerWebFactory:
         (keeping the tiny cost columns) and drops the oldest turn snapshots — it
         does NOT throw away cost history. force=True drives it down to the LOW
         watermark even when between watermarks, then VACUUM shrinks the file on
-        disk (the auto path never VACUUMs). VACUUM needs free temp space roughly
+        disk whenever it has free pages (the auto path never VACUUMs). VACUUM needs free temp space roughly
         the size of the remaining data, so it can fail on a full disk; that is
         reported instead of erroring the request.
 
@@ -167,7 +160,9 @@ class MessageDebuggerWebFactory:
             did_work = result["stripped"] or result["turns_deleted"] or result["requests_deleted"]
 
             result["vacuumed"] = False
-            if vacuum and did_work:
+            # also when retention had nothing to do: pages freed before -- a clear, the automatic retention --
+            # are given back only by a VACUUM
+            if vacuum and (did_work or self.db.free_pages()):
                 try:
                     self.db.vacuum()
                     result["vacuumed"] = True
@@ -181,41 +176,11 @@ class MessageDebuggerWebFactory:
             return result
     
     # ---- Panel rendering ----
-    
-    async def render_panel(self, request: Request) -> HTMLResponse:
-        """Render the message debugger panel HTML."""
-        template_path = self.plugin_dir / 'templates' / 'panel.html'
-        
-        if not template_path.exists():
-            return HTMLResponse(
-                content="<html><body><h1>Error</h1><p>Template not found</p></body></html>",
-                status_code=500,
-            )
-        
-        try:
-            html_content = template_path.read_text(encoding='utf-8')
-            return HTMLResponse(content=html_content, media_type="text/html")
-        except Exception as e:
-            logger.error(f"Failed to load message debugger panel: {e}")
-            return HTMLResponse(
-                content=f"<html><body><h1>Error</h1><p>{e}</p></body></html>",
-                status_code=500,
-            )
-    
-    async def serve_css(self, request: Request):
-        """Serve the panel CSS file."""
-        return FileResponse(
-            self.plugin_dir / "static" / "panel.css",
-            media_type="text/css",
-        )
-    
-    async def serve_js(self, request: Request):
-        """Serve the panel JavaScript file."""
-        return FileResponse(
-            self.plugin_dir / "static" / "panel.js",
-            media_type="application/javascript",
-        )
-    
+
+    async def render_panel(self, request: Request):
+        """Render the panel; its script and stylesheet are the plugin's static assets."""
+        return self.templates.TemplateResponse(request, "panel.html", {"plugin": self.name})
+
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router for web UI."""
         schema = self.server.get_schema_data() if self.server and hasattr(self.server, 'get_schema_data') else {}

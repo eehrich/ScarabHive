@@ -42,13 +42,6 @@ hooks:
 
 # Configuration schema
 config:
-  max_history_entries:
-    type: integer
-    default: 100
-    description: "Maximum number of message snapshots to keep in history"
-    minimum: 10
-    maximum: 1000
-  
   capture_enabled:
     type: boolean
     default: true
@@ -90,13 +83,6 @@ config:
     description: "Turn snapshots store every field of every message. content and tool_calls stay whole; any other string longer than this is cut to a preview that names its full length (encrypted reasoning and base64 media would otherwise repeat in every snapshot of a run). 0 keeps everything."
     minimum: 0
   
-  auto_cleanup_threshold:
-    type: integer
-    default: 150
-    description: "When history exceeds this size, automatically cleanup old entries"
-    minimum: 50
-    maximum: 2000
-
   max_db_size_mb:
     type: integer
     default: 5120
@@ -123,6 +109,9 @@ web_ui:
     category: debug
     keywords: [requests, responses, llm, hooks]
     window: {width: 1000, height: 700}
+    contexts:
+      request: "/plugins/{{ name }}/?request_id={request_id}"
+      session: "/plugins/{{ name }}/?session_id={session_id}"
 
   endpoints:
     - path: "/turns"
@@ -140,11 +129,11 @@ web_ui:
       handler: "list_llm_requests"
       response_type: "json"
       description: "List raw LLM API request/response logs"
-    - path: "/llm-requests/{request_id}"
+    - path: "/llm-requests/{entry_id}"
       method: "GET"
       handler: "get_llm_request"
       response_type: "json"
-      description: "Get specific LLM request by ID"
+      description: "Get one LLM request log entry by its row ID"
     - path: "/stats"
       method: "GET"
       handler: "get_stats"
@@ -159,19 +148,9 @@ web_ui:
       method: "POST"
       handler: "prune"
       response_type: "json"
-      description: "Prune old entries, keep only the most recent N turns/requests"
+      description: "Prune the oldest entries down to the retention watermark, then compact the file"
     - path: "/"
       method: "GET"
       handler: "render_panel"
       response_type: "html"
       description: "Render the interactive web panel UI"
-    - path: "/static/panel.css"
-      method: "GET"
-      handler: "serve_css"
-      response_type: "response"
-      description: "Serve panel CSS"
-    - path: "/static/panel.js"
-      method: "GET"
-      handler: "serve_js"
-      response_type: "response"
-      description: "Serve panel JavaScript"

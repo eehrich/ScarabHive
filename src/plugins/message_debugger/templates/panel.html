@@ -1,149 +1,59 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Message Debugger</title>
-    <link rel="stylesheet" href="/static/css/scrollbar.css">
-    <link rel="stylesheet" href="/plugins/message_debugger/static/panel.css">
-    <!-- Prism.js for JSON Syntax Highlighting -->
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
-</head>
-<body>
-<div class="container">
-    <!-- Header -->
-    <div class="header">
-        <h1>🐛 Message Debugger</h1>
-        <div class="header-actions">
-            <button class="icon-only" onclick="debugger_.refresh()" title="Refresh">🔄</button>
-            <button class="icon-only" id="auto-refresh-btn" onclick="debugger_.toggleAutoRefresh()" title="Auto-Refresh (5s) - Inactive">⏱️</button>
-            <button class="icon-only" onclick="debugger_.pruneOld()" title="Prune old entries">✂️</button>
-            <button class="icon-only danger" onclick="debugger_.clearAll()" title="Clear All Data">🗑️</button>
-        </div>
-    </div>
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Message Debugger{% endblock %}
+{% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
+{% block toolbar %}
+<pk-refresh interval="5"></pk-refresh>
+<button id="actionsButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" popovertarget="actions" aria-label="More actions" title="More actions">{{ icon('ellipsis') }}</button>
+<div id="actions" class="pk-menu" popover>
+  <button type="button" class="pk-menu-item" data-action="prune">{{ icon('hard-drive') }} Prune and reclaim disk space</button>
+  <hr class="pk-menu-separator">
+  <button type="button" class="pk-menu-item pk-menu-item--danger" data-action="clear">{{ icon('trash-2') }} Clear all captured data</button>
+</div>
+{% endblock %}
+{% block content %}
+<div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
 
-    <!-- Stats -->
-    <div class="stats-grid" id="stats-container"></div>
-
-    <!-- Tabs -->
-    <div class="tabs">
-        <button class="tab active" data-tab="turns" onclick="debugger_.switchTab('turns')">
-            📋 Turns <span class="tab-count" id="turns-count"></span>
-        </button>
-        <button class="tab" data-tab="llm-requests" onclick="debugger_.switchTab('llm-requests')">
-            🔌 LLM Requests <span class="tab-count" id="llm-requests-count"></span>
-        </button>
-    </div>
-
-    <!-- Content -->
-    <div class="content">
-        <!-- Turns Tab -->
-        <div class="tab-content active" id="tab-turns">
-            <div class="filters">
-                <div class="filter-group">
-                    <label>Agent</label>
-                    <select id="turns-filter-agent" onchange="debugger_.loadTurns()">
-                        <option value="">All Agents</option>
-                    </select>
-                </div>
-                <div class="filter-group">
-                    <label>Session</label>
-                    <input type="text" id="turns-filter-session" placeholder="Session ID..." onchange="debugger_.loadTurns()">
-                </div>
-                <div class="filter-group">
-                    <label>Type</label>
-                    <select id="turns-filter-type" onchange="debugger_.loadTurns()">
-                        <option value="">All Types</option>
-                        <option value="pre_llm">Pre-LLM</option>
-                        <option value="post_llm">Post-LLM</option>
-                    </select>
-                </div>
-                <div class="filter-group">
-                    <label>Limit</label>
-                    <input type="number" id="turns-filter-limit" value="50" min="1" max="500" onchange="debugger_.loadTurns()">
-                </div>
-            </div>
-            <div id="turns-list" class="items-list">
-                <div class="loading"><div class="spinner"></div>Loading...</div>
-            </div>
-        </div>
-
-        <!-- LLM Requests Tab -->
-        <div class="tab-content" id="tab-llm-requests">
-            <div class="filters">
-                <div class="filter-group">
-                    <label>Agent</label>
-                    <select id="req-filter-agent" onchange="debugger_.loadRequests()">
-                        <option value="">All Agents</option>
-                    </select>
-                </div>
-                <div class="filter-group">
-                    <label>Provider</label>
-                    <select id="req-filter-provider" onchange="debugger_.loadRequests()">
-                        <option value="">All Providers</option>
-                    </select>
-                </div>
-                <div class="filter-group">
-                    <label>Direction</label>
-                    <select id="req-filter-direction" onchange="debugger_.loadRequests()">
-                        <option value="">All</option>
-                        <option value="request">Request →</option>
-                        <option value="response">← Response</option>
-                    </select>
-                </div>
-                <div class="filter-group">
-                    <label>Limit</label>
-                    <input type="number" id="req-filter-limit" value="50" min="1" max="500" onchange="debugger_.loadRequests()">
-                </div>
-            </div>
-            <div id="requests-list" class="items-list">
-                <div class="loading"><div class="spinner"></div>Loading...</div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Detail Modal -->
-    <div class="modal-overlay" id="modal-overlay" onclick="debugger_.closeModal()">
-        <div class="modal" onclick="event.stopPropagation()">
-            <div class="modal-header">
-                <h2 id="modal-title">Detail</h2>
-                <button class="modal-close" onclick="debugger_.closeModal()">✕</button>
-            </div>
-            <div class="modal-body" id="modal-body"></div>
-        </div>
-    </div>
-
-    <!-- Confirmation Modal -->
-    <div class="modal-overlay" id="confirm-overlay" onclick="debugger_.closeConfirm(false)">
-        <div class="confirm-modal" onclick="event.stopPropagation()">
-            <div class="confirm-header">
-                <h3>⚠️ Confirm Action</h3>
-            </div>
-            <div class="confirm-body" id="confirm-message"></div>
-            <div class="confirm-actions">
-                <button onclick="debugger_.closeConfirm(false)">Cancel</button>
-                <button class="danger" onclick="debugger_.closeConfirm(true)">Confirm</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Info / notification modal (alert() does not work inside the iframe) -->
-    <div class="modal-overlay" id="notify-overlay" onclick="debugger_.closeNotify()">
-        <div class="confirm-modal" onclick="event.stopPropagation()">
-            <div class="confirm-header">
-                <h3>ℹ️ Message Debugger</h3>
-            </div>
-            <div class="confirm-body" id="notify-message" style="white-space: pre-line"></div>
-            <div class="confirm-actions">
-                <button class="primary" onclick="debugger_.closeNotify()">OK</button>
-            </div>
-        </div>
-    </div>
+<div class="pk-row" role="group" aria-label="Filters">
+  <select id="filterAgent" class="pk-select pk-select--sm md-filter" aria-label="Agent"><option value="">All agents</option></select>
+  <div class="pk-search pk-grow">{{ icon('search') }}<input id="filterSession" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="Session ID" aria-label="Session ID"></div>
+  <div class="pk-search pk-grow">{{ icon('search') }}<input id="filterRequest" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="Request ID" aria-label="Request ID"></div>
 </div>
 
-<!-- Prism.js for JSON Syntax Highlighting -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
-<script src="/plugins/message_debugger/static/panel.js"></script>
-</body>
-</html>
+<div class="pk-tabs" role="tablist" data-pk-tabs>
+  <button class="pk-tab" role="tab" aria-selected="true" aria-controls="tab-turns" data-tab="turns">Turns <span class="pk-tab-count" id="turnsCount"></span></button>
+  <button class="pk-tab" role="tab" aria-selected="false" aria-controls="tab-requests" data-tab="requests">LLM requests <span class="pk-tab-count" id="requestsCount"></span></button>
+</div>
+<section id="tab-turns" class="pk-stack" role="tabpanel">
+  <div class="pk-row">
+    <select id="filterType" class="pk-select pk-select--sm md-filter" aria-label="Type">
+      <option value="">Before and after the LLM</option>
+      <option value="pre_llm">Before the LLM (input)</option>
+      <option value="post_llm">After the LLM (output)</option>
+    </select>
+  </div>
+  <div id="turns"><span class="pk-skeleton"></span></div>
+</section>
+<section id="tab-requests" class="pk-stack" role="tabpanel" hidden>
+  <div class="pk-row">
+    <select id="filterProvider" class="pk-select pk-select--sm md-filter" aria-label="Provider"><option value="">All providers</option></select>
+    <select id="filterDirection" class="pk-select pk-select--sm md-filter" aria-label="Direction">
+      <option value="">Requests and responses</option>
+      <option value="request">Requests</option>
+      <option value="response">Responses</option>
+    </select>
+  </div>
+  <div id="requests"><span class="pk-skeleton"></span></div>
+</section>
+
+<dialog id="detail" class="pk-dialog pk-drawer md-detail" aria-labelledby="detailTitle">
+  <div class="pk-dialog-head">
+    <h2 id="detailTitle" class="pk-dialog-title pk-truncate pk-grow"></h2>
+    <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-step="-1" aria-label="Newer entry" title="Newer entry">{{ icon('chevron-up') }}</button>
+    <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-step="1" aria-label="Older entry" title="Older entry">{{ icon('chevron-down') }}</button>
+    <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-close aria-label="Close" title="Close">{{ icon('x') }}</button>
+  </div>
+  <div id="detailBody" class="pk-dialog-body pk-stack"></div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}

@@ -148,6 +148,7 @@ class MessageDebuggerDB:
             
             CREATE INDEX IF NOT EXISTS idx_turns_agent ON turns(agent_name);
             CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
+            CREATE INDEX IF NOT EXISTS idx_turns_request_id ON turns(request_id);
             CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp_ms);
             CREATE INDEX IF NOT EXISTS idx_turns_type ON turns(snapshot_type);
             
@@ -227,11 +228,11 @@ class MessageDebuggerDB:
         self.maybe_enforce_retention()
         return cursor.lastrowid  # type: ignore[return-value]
     
-    # Columns to select in list queries (excludes large JSON blobs)
+    # Columns to select in list queries (excludes large JSON blobs; of the LLM response only its usage)
     _TURNS_LIST_COLS = (
         "id, timestamp_ms, snapshot_type, agent_name, request_id, "
         "session_id, step, message_count, total_tokens, context_window, "
-        "llm_response_json, created_at"
+        "json_extract(llm_response_json, '$.usage') AS usage_json, created_at"
     )
     _LLM_REQUESTS_LIST_COLS = (
         "id, timestamp_ms, direction, agent_name, request_id, "
@@ -239,61 +240,60 @@ class MessageDebuggerDB:
         "error, duration_ms, usage_json, finish_reason, created_at"
     )
 
+    @staticmethod
+    def _where(request_id: Optional[str] = None, **filters: Optional[str]) -> tuple[str, list]:
+        """The WHERE clause of a list or count query: each filter given is an equality on its column.
+
+        A request takes the calls under it along: tool calls and sub-agents run under ``<request_id>_...`` ids.
+        """
+        given = {column: value for column, value in filters.items() if value}
+        clauses = [f"{column} = ?" for column in given]
+        params: list = list(given.values())
+        if request_id:
+            # the ids that start with "<request_id>_" as a range the index serves: '`' is the character after '_'
+            clauses.append("(request_id = ? OR (request_id >= ? AND request_id < ?))")
+            params += [request_id, f"{request_id}_", f"{request_id}`"]
+        return (f" WHERE {' AND '.join(clauses)}" if clauses else ""), params
+
     def get_turns(
         self,
         agent_name: Optional[str] = None,
         session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
         snapshot_type: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """Query turns with optional filters.
-        
+
         Returns lightweight rows (no messages_json) for list views.
         Use get_turn(id) to fetch full details including messages.
         """
-        conn = self._get_conn()
-        query = f"SELECT {self._TURNS_LIST_COLS} FROM turns WHERE 1=1"
-        params: list = []
-        
-        if agent_name:
-            query += " AND agent_name = ?"
-            params.append(agent_name)
-        if session_id:
-            query += " AND session_id = ?"
-            params.append(session_id)
-        if snapshot_type:
-            query += " AND snapshot_type = ?"
-            params.append(snapshot_type)
-        
-        query += " ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        
-        rows = conn.execute(query, params).fetchall()
+        where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
+                                    snapshot_type=snapshot_type)
+        rows = self._get_conn().execute(
+            f"SELECT {self._TURNS_LIST_COLS} FROM turns{where} ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
         return [self._row_to_dict(row) for row in rows]
-    
+
     def get_turn(self, turn_id: int) -> Optional[Dict[str, Any]]:
         """Get a specific turn by ID."""
         conn = self._get_conn()
         row = conn.execute("SELECT * FROM turns WHERE id = ?", (turn_id,)).fetchone()
         return self._row_to_dict(row) if row else None
-    
+
     def count_turns(
         self,
         agent_name: Optional[str] = None,
         session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        snapshot_type: Optional[str] = None,
     ) -> int:
-        """Count turns with optional filters."""
-        conn = self._get_conn()
-        query = "SELECT COUNT(*) FROM turns WHERE 1=1"
-        params: list = []
-        if agent_name:
-            query += " AND agent_name = ?"
-            params.append(agent_name)
-        if session_id:
-            query += " AND session_id = ?"
-            params.append(session_id)
-        return conn.execute(query, params).fetchone()[0]
+        """Count the turns get_turns finds with the same filters."""
+        where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
+                                    snapshot_type=snapshot_type)
+        return self._get_conn().execute(f"SELECT COUNT(*) FROM turns{where}", params).fetchone()[0]
     
     # ---- LLM Request operations ----
     
@@ -442,61 +442,43 @@ class MessageDebuggerDB:
         self,
         agent_name: Optional[str] = None,
         session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
         direction: Optional[str] = None,
         provider: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """Query LLM request logs with optional filters.
-        
+
         Returns lightweight rows (no payload_json/response_json) for list views.
         Use get_llm_request(id) to fetch full details.
         """
-        conn = self._get_conn()
-        query = f"SELECT {self._LLM_REQUESTS_LIST_COLS} FROM llm_requests WHERE 1=1"
-        params: list = []
-        
-        if agent_name:
-            query += " AND agent_name = ?"
-            params.append(agent_name)
-        if session_id:
-            query += " AND session_id = ?"
-            params.append(session_id)
-        if direction:
-            query += " AND direction = ?"
-            params.append(direction)
-        if provider:
-            query += " AND provider = ?"
-            params.append(provider)
-        
-        query += " ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        
-        rows = conn.execute(query, params).fetchall()
+        where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
+                                    direction=direction, provider=provider)
+        rows = self._get_conn().execute(
+            f"SELECT {self._LLM_REQUESTS_LIST_COLS} FROM llm_requests{where} ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
         return [self._row_to_dict(row) for row in rows]
-    
+
     def get_llm_request(self, req_id: int) -> Optional[Dict[str, Any]]:
         """Get a specific LLM request by ID."""
         conn = self._get_conn()
         row = conn.execute("SELECT * FROM llm_requests WHERE id = ?", (req_id,)).fetchone()
         return self._row_to_dict(row) if row else None
-    
+
     def count_llm_requests(
         self,
         agent_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        direction: Optional[str] = None,
         provider: Optional[str] = None,
     ) -> int:
-        """Count LLM request logs."""
-        conn = self._get_conn()
-        query = "SELECT COUNT(*) FROM llm_requests WHERE 1=1"
-        params: list = []
-        if agent_name:
-            query += " AND agent_name = ?"
-            params.append(agent_name)
-        if provider:
-            query += " AND provider = ?"
-            params.append(provider)
-        return conn.execute(query, params).fetchone()[0]
+        """Count the LLM request logs get_llm_requests finds with the same filters."""
+        where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
+                                    direction=direction, provider=provider)
+        return self._get_conn().execute(f"SELECT COUNT(*) FROM llm_requests{where}", params).fetchone()[0]
     
     # ---- Stats ----
     
@@ -566,52 +548,9 @@ class MessageDebuggerDB:
         conn.commit()
         return {"turns_deleted": turns, "requests_deleted": requests}
     
-    def clear_older_than(self, hours: float = 24) -> Dict[str, int]:
-        """Clear entries older than specified hours."""
-        conn = self._get_conn()
-        cutoff_ms = (time.time() - hours * 3600) * 1000
-        turns = conn.execute(
-            "DELETE FROM turns WHERE timestamp_ms < ?", (cutoff_ms,)
-        ).rowcount
-        requests = conn.execute(
-            "DELETE FROM llm_requests WHERE timestamp_ms < ?", (cutoff_ms,)
-        ).rowcount
-        conn.commit()
-        return {"turns_deleted": turns, "requests_deleted": requests}
-    
-    def prune_to_max(self, max_turns: int = 5000, max_requests: int = 5000) -> Dict[str, int]:
-        """Prune tables to keep only the most recent N entries.
-        
-        Args:
-            max_turns: Maximum turns to keep
-            max_requests: Maximum LLM requests to keep
-            
-        Returns:
-            Counts of deleted rows
-        """
-        conn = self._get_conn()
-        turns_deleted = 0
-        requests_deleted = 0
-        
-        turn_count = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
-        if turn_count > max_turns:
-            # Delete oldest rows, keeping max_turns most recent
-            turns_deleted = conn.execute(
-                "DELETE FROM turns WHERE id NOT IN "
-                "(SELECT id FROM turns ORDER BY timestamp_ms DESC LIMIT ?)",
-                (max_turns,)
-            ).rowcount
-        
-        req_count = conn.execute("SELECT COUNT(*) FROM llm_requests").fetchone()[0]
-        if req_count > max_requests:
-            requests_deleted = conn.execute(
-                "DELETE FROM llm_requests WHERE id NOT IN "
-                "(SELECT id FROM llm_requests ORDER BY timestamp_ms DESC LIMIT ?)",
-                (max_requests,)
-            ).rowcount
-        
-        conn.commit()
-        return {"turns_deleted": turns_deleted, "requests_deleted": requests_deleted}
+    def free_pages(self) -> int:
+        """Pages on the freelist: the space a VACUUM gives back to the disk."""
+        return self._get_conn().execute("PRAGMA freelist_count").fetchone()[0]
 
     def vacuum(self) -> None:
         """Reclaim disk space after deletions (shrinks the file).

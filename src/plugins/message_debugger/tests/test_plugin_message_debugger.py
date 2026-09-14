@@ -234,20 +234,6 @@ class TestMessageDebuggerDB:
         assert db.count_turns() == 0
         assert db.count_llm_requests() == 0
 
-    def test_clear_older_than(self, db):
-        """Test clearing old data."""
-        old_ts = (time.time() - 3700) * 1000  # >1 hour ago
-        recent_ts = time.time() * 1000
-
-        db.insert_turn(old_ts, "pre_llm", agent_name="old")
-        db.insert_turn(recent_ts, "pre_llm", agent_name="new")
-
-        result = db.clear_older_than(hours=1)
-        assert result["turns_deleted"] == 1
-        assert db.count_turns() == 1
-        remaining = db.get_turns()
-        assert remaining[0]["agent_name"] == "new"
-
     def test_json_serialization(self, db):
         """Test that JSON fields round-trip correctly."""
         ts = time.time() * 1000
@@ -313,8 +299,10 @@ class TestMessageDebuggerHooks:
         turns = db.get_turns()
         assert len(turns) == 1
         assert turns[0]["snapshot_type"] == "post_llm"
-        assert turns[0]["llm_response_json"] is not None
-        assert turns[0]["llm_response_json"]["model"] == "gpt-4"
+        # a list row carries only the usage of the response; the turn itself all of it
+        assert turns[0]["usage_json"] == {"total_tokens": 50}
+        assert "llm_response_json" not in turns[0]
+        assert db.get_turn(turns[0]["id"])["llm_response_json"]["model"] == "gpt-4"
 
     @pytest.mark.asyncio
     async def test_capture_disabled(self, hooks_plugin, sample_messages, db):
@@ -436,7 +424,7 @@ class TestMessageDebuggerHooks:
         await hooks_plugin.debugger_capture_post_llm(context)
 
         assert db.flush(timeout=3)
-        stored = db.get_turns()[0]["llm_response_json"]
+        stored = db.get_turn(db.get_turns()[0]["id"])["llm_response_json"]
         assert stored["usage"] == {"prompt_tokens": 10}
         assert stored["assistant"]["served_by"] == "DeepInfra"
         assert stored["assistant"]["content"].endswith("[5000 chars]")
@@ -650,6 +638,66 @@ class TestMessageDebuggerWebEndpoints:
         assert response.status_code == 200
         result = response.json()
         assert result["count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_lists_narrow_to_a_request_and_count_what_their_filters_match(self, web_factory, db):
+        """The panel opened from a chat answer asks for its request: both lists narrow to it and the calls under
+        it -- tool calls and sub-agents run under ``<request_id>_...`` -- and total counts what all the filters
+        given match, not the whole table."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        ts = time.time() * 1000
+        db.insert_turn(ts, "pre_llm", agent_name="a", request_id="r-1", session_id="s-1")
+        db.insert_turn(ts + 1, "post_llm", agent_name="a", request_id="r-1", session_id="s-1")
+        db.insert_turn(ts + 2, "pre_llm", agent_name="tool", request_id="r-1_001", session_id="s-1")
+        db.insert_turn(ts + 3, "pre_llm", agent_name="sub", request_id="r-1_sub_ab12", session_id="s-sub")
+        # other requests are the newest: a list that ignores the filter shows them first; r-10 and r-1a share
+        # r-1's first characters without being calls under it
+        for offset, request_id in enumerate(("r-2", "r-10", "r-1a"), start=4):
+            db.insert_turn(ts + offset, "pre_llm", agent_name="a", request_id=request_id, session_id="s-1")
+        db.insert_llm_request(ts, "request", agent_name="a", request_id="r-1", session_id="s-1", provider="p")
+        db.insert_llm_request(ts + 1, "response", agent_name="a", request_id="r-1", session_id="s-1", provider="p")
+        db.insert_llm_request(ts + 2, "response", agent_name="sub", request_id="r-1_sub_ab12", session_id="s-sub",
+                              provider="p")
+        db.insert_llm_request(ts + 3, "response", agent_name="a", request_id="r-2", session_id="s-2", provider="p")
+
+        app = FastAPI()
+        app.include_router(web_factory.get_web_router())
+        client = TestClient(app)
+
+        turns = client.get("/plugins/message_debugger/turns?request_id=r-1").json()
+        assert [turn["request_id"] for turn in turns["turns"]] == ["r-1_sub_ab12", "r-1_001", "r-1", "r-1"]
+        assert turns["total"] == 4
+        assert client.get("/plugins/message_debugger/turns?request_id=r-1&limit=1").json()["turns"][0]["request_id"] \
+            == "r-1_sub_ab12"
+        assert client.get("/plugins/message_debugger/turns?request_id=r-1&snapshot_type=pre_llm").json()["total"] == 3
+        assert client.get("/plugins/message_debugger/turns?session_id=s-1&request_id=r-1").json()["total"] == 3
+
+        entries = client.get("/plugins/message_debugger/llm-requests?request_id=r-1&limit=1").json()
+        assert [entry["request_id"] for entry in entries["requests"]] == ["r-1_sub_ab12"]
+        assert entries["total"] == 3
+        assert client.get("/plugins/message_debugger/llm-requests?session_id=s-1&direction=response").json()["total"] == 1
+
+    @pytest.mark.asyncio
+    async def test_prune_compacts_the_file_after_a_clear(self, web_factory, db):
+        """Pages freed before -- by a clear, by the automatic retention -- go back to the disk only through a
+        VACUUM: the prune runs it although retention has nothing to do."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        for i in range(40):
+            db.insert_llm_request(time.time() * 1000 + i, "request", payload={"messages": ["x" * 5000]})
+        db.clear_all()
+        assert db.free_pages() > 0, "fixture: the clear freed no pages"
+
+        app = FastAPI()
+        app.include_router(web_factory.get_web_router())
+        result = TestClient(app).post("/plugins/message_debugger/prune?vacuum=true").json()
+
+        assert result["stripped"] == result["turns_deleted"] == result["requests_deleted"] == 0
+        assert result["vacuumed"] is True
+        assert db.free_pages() == 0
 
     @pytest.mark.asyncio
     async def test_list_llm_requests(self, web_factory, db):

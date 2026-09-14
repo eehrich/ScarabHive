@@ -290,6 +290,9 @@
   margin: 0 0 0 auto; height: 100vh; max-height: none; width: min(420px, 100vw);
   border-radius: 0; border-width: 0 0 0 1px;
 }
+/* the head stays where it is, the body scrolls ([open]: a display of its own would show a closed dialog) */
+.pk-drawer[open] { display: flex; flex-direction: column; overflow: hidden; }
+.pk-drawer > .pk-dialog-body { flex: 1; min-height: 0; }
 
 /* ------------------------------------------------------- menus and tooltips */
 
