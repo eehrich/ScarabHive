@@ -330,10 +330,10 @@ def gitignore_spec(root: Path) -> Optional[Any]:
     are not re-implemented here — a hand-rolled approximation of ``.gitignore``
     is how a search quietly stops matching what the user sees in git.
 
-    It is present only as a TRANSITIVE dependency, so its absence is a
-    documented downgrade rather than an error: the walk then prunes by the
-    configured patterns alone, and the answer says which filters were actually
-    applied. On this repository the difference is not cosmetic —
+    Declared in plugin.toml (it used to arrive only transitively, via mypy
+    and comfy-cli). A venv without it is still a documented downgrade rather
+    than an error: the walk then prunes by the configured patterns alone, and
+    the answer says which filters were actually applied. On this repository the difference is not cosmetic —
     ``data/sessions/`` and ``data/message_debugger/`` are gitignored and hold
     130.935 of the 152.664 files.
     """

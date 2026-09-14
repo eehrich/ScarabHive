@@ -11,3 +11,7 @@ entrypoint = "server:FileOpsServer"
 type = ["mcp-server"]
 category = "utilities"
 requires = { agent_system = ">=0.6.0" }
+# .gitignore semantics for search; without it the walk covers gitignored
+# trees (data/sessions and data/message_debugger: 131k of 153k files) and
+# gets far slower.
+dependencies = ["pathspec>=0.12"]

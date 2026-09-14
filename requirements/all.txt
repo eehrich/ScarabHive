@@ -37,6 +37,7 @@ numpy>=1.26
 onnxruntime>=1.20.0
 openai>=1.37.0
 openrouter>=1.1.108
+pathspec>=0.12
 Pillow>=10.0.0
 posthog>=3.0.0,<3.2.0
 prompt_toolkit>=3.0
