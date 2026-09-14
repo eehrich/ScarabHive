@@ -43,6 +43,7 @@ EXPECTED = [
     "a menu stays inside the window however wide or tall it is",
     "a theme change reaches its listeners once",
     "a destructive dialog starts on the safe button",
+    "pk-refresh with auto refreshes from the start, and its button stops it",
     "a refresh says whether the viewer or the timer asked",
     "hidden hides whatever display a component sets",
 ]

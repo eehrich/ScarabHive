@@ -457,10 +457,12 @@ class RefreshControl extends HTMLElement {
     this.auto = autoRefresh(() => fire(true), interval * 1000);
     this.querySelector('[data-act="now"]').addEventListener('click', () => fire(false));
     const toggle = this.querySelector('[data-act="auto"]');
-    toggle.addEventListener('click', () => {
-      if (this.auto.running) this.auto.stop(); else this.auto.start();
-      toggle.setAttribute('aria-pressed', String(this.auto.running));
-    });
+    const set = (on) => {
+      if (on) this.auto.start(); else this.auto.stop();
+      toggle.setAttribute('aria-pressed', String(on));
+    };
+    toggle.addEventListener('click', () => set(!this.auto.running));
+    if (this.hasAttribute('auto')) set(true);  // <pk-refresh auto>: refreshing from the start
   }
 
   disconnectedCallback() { if (this.auto) this.auto.stop(); }

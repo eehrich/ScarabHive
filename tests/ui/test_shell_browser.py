@@ -75,7 +75,7 @@ from pathlib import Path
 import jinja2
 import pytest
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_system.ui.catalog import Panel, build_catalog, core_panels
@@ -239,8 +239,13 @@ def stub_app() -> FastAPI:
         return plugin_page("todo", name="todo")
 
     @app.get("/plugins/context_usage_tracker/")
-    async def usage_panel():
-        return plugin_page("context_usage_tracker")
+    async def usage_panel(request: Request):  # on the kit: rendered as the plugin renders it
+        panel_templates = ui_templates(PLUGINS / "context_usage_tracker" / "templates")
+        return panel_templates.TemplateResponse(request, "panel.html", {"plugin": "context_usage_tracker"})
+
+    @app.get("/plugins/context_usage_tracker/static/{name}")
+    async def usage_panel_static(name: str):
+        return FileResponse(PLUGINS / "context_usage_tracker" / "static" / name)
 
     @app.post("/plugins/memory/memories/search")
     async def memory_search(session_id: str = ""):

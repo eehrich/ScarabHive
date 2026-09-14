@@ -227,6 +227,10 @@ class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
         """Get the web router for this plugin."""
         return self.web_factory.get_web_router()
 
+    def get_static_assets(self) -> Path:
+        """The panel's script and stylesheet, served under /plugins/<name>/static/."""
+        return Path(__file__).parent / "static"
+
 
 # Plugin factory
 PLUGIN_FACTORY = ContextUsageTrackerPlugin

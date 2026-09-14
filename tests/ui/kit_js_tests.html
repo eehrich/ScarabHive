@@ -224,6 +224,22 @@
     return focused === 'Cancel' && (await answer) === false;
   });
 
+  await check('pk-refresh with auto refreshes from the start, and its button stops it', () => {
+    const control = document.createElement('pk-refresh');
+    control.setAttribute('auto', '');
+    document.body.appendChild(control);
+    const toggle = control.querySelector('[data-act="auto"]');
+    const startedOn = control.auto.running && toggle.getAttribute('aria-pressed') === 'true';
+    toggle.click();
+    const stopped = !control.auto.running && toggle.getAttribute('aria-pressed') === 'false';
+    control.remove();
+    const plain = document.createElement('pk-refresh');
+    document.body.appendChild(plain);
+    const plainOff = !plain.auto.running && plain.querySelector('[data-act="auto"]').getAttribute('aria-pressed') === 'false';
+    plain.remove();
+    return startedOn && stopped && plainOff;
+  });
+
   await check('a refresh says whether the viewer or the timer asked', () => {
     const control = document.createElement('pk-refresh');
     document.body.appendChild(control);

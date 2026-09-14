@@ -1,0 +1,218 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Context & Cost Usage panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1300px; height: 900px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
+  const statSub = (key) => $(`#stats [data-stat="${key}"] .cu-sub`)?.textContent;
+  const rows = (id) => [...doc().querySelectorAll(`#${id} tbody tr`)];
+  const cells = (row) => [...row.children].map((cell) => cell.textContent.trim());
+  const n = (value) => Number(value).toLocaleString();
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const tab = (name) => $(`[data-tab="${name}"]`).click();
+
+  await go('/plugins/context_usage_tracker/?session_id=s-1');
+
+  await check('opened on a session, the panel counts it and its sub-agents: billed and estimated cost apart, cache share, context', async () => {
+    await until('the calls of s-1', () => statValue('calls') === '3');
+    return statValue('output') === n(600) && statSub('output') === `prompt ${n(2900)}`
+      && statValue('cost') === '~0.550¢' && statSub('cost') === '2 billed · 1 estimated'
+      && statValue('cached') === n(800) && statSub('cached') === '27.6% of the prompt'
+      && statValue('context') === n(1800) && statSub('context') === `18.0% of ${n(10000)}`;
+  });
+
+  await check('all sessions count every call, and the calls tab shows the newest of them', async () => {
+    $('[data-scope="all"]').click();
+    await until('every call', () => statValue('calls') === '124');
+    const pressed = $('[data-scope="all"]').getAttribute('aria-pressed') === 'true'
+      && $('[data-scope="session"]').getAttribute('aria-pressed') === 'false';
+    tab('calls');
+    const select = $('#callLimit');
+    select.value = '50';
+    select.dispatchEvent(new Event('change'));
+    // the newest first: the last of the bulk calls, and 49 before it
+    const limited = rows('calls').length === 50 && $('#callsShown').textContent === '50 of 124'
+      && cells(rows('calls')[0])[2] === 's-3 · r-bulk-119' && cells(rows('calls').at(-1))[2] === 's-3 · r-bulk-70';
+    select.value = '100';
+    select.dispatchEvent(new Event('change'));
+    return pressed && limited && rows('calls').length === 100;
+  });
+
+  await check('the overview draws the newest 60 calls, tokens and cost, for the agent chosen', async () => {
+    tab('overview');
+    const chart = frame.contentWindow.Chart.getChart($('#chart'));
+    const series = () => chart.data.datasets.map((set) => set.data.join());
+    // the newest 60 of 124 calls are all bulk calls of 10 tokens
+    const all = chart.data.labels.length === 60 && chart.data.datasets.map((set) => set.label).join() === 'total,prompt,output,cached,cost ¢'
+      && chart.data.datasets[0].data[0] === 10 && chart.data.datasets.every((set) => String(set.borderColor).startsWith('rgb'));
+    const select = $('#chartAgent');
+    select.value = 'writer';
+    select.dispatchEvent(new Event('change'));
+    const writer = chart.data.labels.length === 2 && series().join('|') === '1200,1800|1000,1500|200,300|800,0|0.2,0.3';
+    select.value = '';
+    select.dispatchEvent(new Event('change'));
+    return all && writer;
+  });
+
+  await check('agents sort by a column, one way and the other, and show their cache share: all-time from the paired counts, a session from its calls', async () => {
+    tab('agents');
+    const names = () => rows('agents').map((row) => cells(row)[0]);
+    const byCost = names().join();  // most expensive first
+    $('#agents th[data-sort="total_cost"]').click();
+    const byCostUp = names();
+    $('#agents th[data-sort="total_calls"]').click();
+    const byCalls = names();
+    const share = (name) => cells(rows('agents').find((row) => cells(row)[0] === name))[5].replace(/^[\d,.\s]+/, '');
+    // all-time: writer's paired counts give 800 of 2,500; the archivist's calls predate the pair
+    const allTime = share('writer') === '(32%)' && share('archivist') === '(–)';
+    $('[data-scope="session"]').click();
+    await until('the agents of s-1', () => statValue('calls') === '3' && rows('agents').length === 2);
+    const inSession = share('writer') === '(32%)';  // the session's own calls, summed
+    return byCost.startsWith('writer,helper') && byCostUp.at(-1) === 'writer' && byCostUp.at(-2) === 'helper'
+      && $('#agents th[data-sort="total_calls"]').getAttribute('aria-sort') === 'descending'
+      && byCalls.slice(0, 3).join() === 'bulk,archivist,writer' && allTime && inSession;
+  });
+
+  await check('a failed load shows the error and nothing of what was shown before, and keeps the agent chosen', async () => {
+    const agent = $('#callAgent');
+    agent.value = 'writer';
+    agent.dispatchEvent(new Event('change'));
+    document.cookie = 'cu_usage=fails; path=/';
+    try {
+      $('pk-refresh [data-act="now"]').click();
+      await until('the error', () => $('#stats').textContent.includes('Usage could not be loaded'));
+      const nothingLeft = rows('agents').length === 0 && rows('calls').length === 0 && $('#agentsCount').textContent === ''
+        && frame.contentWindow.Chart.getChart($('#chart')).data.labels.length === 0;
+      document.cookie = 'cu_usage=; path=/; max-age=0';
+      $('pk-refresh [data-act="now"]').click();
+      await until('the calls again', () => statValue('calls') === '3');
+      const kept = agent.value === 'writer' && rows('calls').length === 2;
+      agent.value = '';
+      agent.dispatchEvent(new Event('change'));
+      return nothingLeft && kept;
+    } finally {
+      document.cookie = 'cu_usage=; path=/; max-age=0';
+    }
+  });
+
+  await check('a tick of the auto refresh leaves a load still on its way alone', async () => {
+    document.cookie = 'cu_usage=slow; path=/';
+    const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+    let ticking = null;
+    try {
+      $('[data-scope="all"]').click();  // answered after 1.5 s
+      ticking = setInterval(tick, 200);
+      await until('every call while the ticks go on', () => statValue('calls') === '124', 4000);
+      return true;
+    } finally {
+      clearInterval(ticking);
+      document.cookie = 'cu_usage=; path=/; max-age=0';
+    }
+  });
+
+  await check('the LLMs tab adds up each model with its average and p95 latency', async () => {
+    tab('llms');
+    const fast = rows('llms').map(cells).find((row) => row[0] === 'm-fast');
+    const cheap = rows('llms').map(cells).find((row) => row[0] === 'm-cheap');
+    // m-fast: two billed calls and one without cost or latency
+    return fast[1] === '3' && fast[6] === '0.500¢' && fast[7] === '0.250¢' && fast[8] === '1.00 s' && fast[9] === '1.20 s'
+      && cheap[6] === '~0.050¢' && cheap[8] === '300 ms' && rows('llms').map(cells)[0][0] === 'm-bulk';
+  });
+
+  await check("calls filter by agent, mark a sub-agent's call and open in the drawer", async () => {
+    $('[data-scope="session"]').click();
+    await until('the calls of s-1 again', () => statValue('calls') === '3');
+    tab('calls');
+    const marked = rows('calls').filter((row) => row.textContent.includes('↳')).map((row) => cells(row)[1]);
+    const select = $('#callAgent');
+    select.value = 'writer';
+    select.dispatchEvent(new Event('change'));
+    const writerOnly = rows('calls').length === 2 && $('#callsShown').textContent === '2 of 2';
+    rows('calls')[0].click();  // the newest: 0.3¢
+    await until('the drawer', () => $('#detail').open);
+    const facts = Object.fromEntries([...doc().querySelectorAll('#detailBody dt')].map((dt) => [dt.textContent, dt.nextElementSibling.textContent]));
+    $('#detail [data-close]').click();
+    select.value = '';
+    select.dispatchEvent(new Event('change'));
+    return marked.length === 1 && marked[0].includes('helper') && writerOnly && facts.Agent === 'writer'
+      && facts.Cost === '0.3000¢' && facts.Request === 'r-1' && !$('#detail').open;
+  });
+
+  await check('the auto refresh runs from the start and brings a new call', async () => {
+    const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
+    await fetch('/__stub/call', { method: 'POST' });
+    await until('the new call, brought by a tick', () => statValue('calls') === '4', 8000);
+    return running;
+  });
+
+  await check('with no session open the panel says so instead of counting every session', async () => {
+    await go('/plugins/context_usage_tracker/');  // no shell, no link: no session
+    await until('the empty state', () => $('#stats')?.textContent.includes('No session open'));
+    await sleep(300);
+    return !statValue('calls') && rows('calls').length === 0 && $('#callsCount').textContent === '';
+  });
+
+  await check('clearing asks first and, confirmed, empties the panel', async () => {
+    await go('/plugins/context_usage_tracker/?session_id=s-1');
+    await until('the calls of s-1', () => statValue('calls') === '4');
+    $('pk-refresh [data-act="auto"]').click();  // no tick: the clear itself has to draw the panel anew
+    const question = () => doc().querySelector('dialog.pk-dialog[open]:not(#detail)');
+    $('#clearButton').click();
+    let asked = await until('the question', question);
+    const titled = asked.textContent.includes('Clear the usage history');
+    asked.querySelector('[data-index="0"]').click();  // Cancel
+    await sleep(500);
+    const kept = statValue('calls') === '4';
+    $('#clearButton').click();
+    asked = await until('the question again', question);
+    asked.querySelector('[data-index="1"]').click();
+    await until('the empty panel', () => statValue('calls') === '0');
+    return titled && kept;
+  });
+
+  await check('the chart takes real colours from the theme and a theme change draws it in the new ones', async () => {
+    const win = frame.contentWindow;
+    const chart = () => win.Chart.getChart($('#chart'));
+    // a line's colour and the axes' -- the axes are no part of the data
+    const colours = () => `${chart().data.datasets[0].borderColor}|${chart().options.scales.x.ticks.color}`;
+    const tell = (message) => win.postMessage({ v: 1, ...message }, location.origin);  // this page is the panel's host
+    tell({ type: 'pk:init', theme: 'light', visible: true, session: null });
+    await until('the light chart', () => doc().documentElement.dataset.theme === 'light' && colours().startsWith('rgb'));
+    const [lightLine, lightAxis] = colours().split('|');
+    tell({ type: 'pk:theme', theme: 'dark' });
+    await until('the dark chart', () => colours().split('|')[0] !== lightLine);
+    const [darkLine, darkAxis] = colours().split('|');
+    return darkLine.startsWith('rgb') && darkAxis.startsWith('rgb') && darkAxis !== lightAxis;
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

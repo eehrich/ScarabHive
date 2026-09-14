@@ -240,9 +240,6 @@ def test_tracker_persistence(tmp_path):
         context_window=8000,
     )
     
-    # Force save to disk (saves are debounced/async by default)
-    tracker1.force_save()
-    
     # Verify data in first tracker
     assert len(tracker1.get_history()) == 2
     latest1 = tracker1.get_latest()
@@ -424,9 +421,6 @@ def test_tracker_cached_tokens_persistence(tmp_path):
         context_window=8000,
         cached_tokens=100,
     )
-
-    # Force save to disk (saves are debounced/async by default)
-    tracker1.force_save()
 
     # Verify data in first tracker
     assert tracker1.get_latest()["cached_tokens"] == 100

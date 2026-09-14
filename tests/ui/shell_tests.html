@@ -1677,11 +1677,14 @@
     // every figure of one answer agreeing, or nothing
     const agree = (...values) => values.every((value) => value === values[0]) ? values[0] : undefined;
     const panels = [
-      { id: 'context_engineer', pause: 'autoRefreshBtn', shows: (page) => agree(
+      { id: 'context_engineer', pause: (page) => page.getElementById('autoRefreshBtn').click(), shows: (page) => agree(
         page.querySelector('#storage-stats .value')?.textContent, page.querySelector('#memory-list strong')?.textContent) },
-      { id: 'memory', pause: 'auto-refresh-btn', shows: (page) => page.getElementById('total-memories').textContent },
-      { id: 'todo', pause: 'auto-refresh-btn', shows: (page) => page.getElementById('total-tasks').textContent },
-      { id: 'context_usage_tracker', pause: 'autoBtn', shows: (page) => page.querySelectorAll('#statsGrid .value')[2]?.textContent },
+      { id: 'memory', pause: (page) => page.getElementById('auto-refresh-btn').click(), shows: (page) => page.getElementById('total-memories').textContent },
+      { id: 'todo', pause: (page) => page.getElementById('auto-refresh-btn').click(), shows: (page) => page.getElementById('total-tasks').textContent },
+      // on the kit: the output tokens of the session, and with no session open it says so and asks nothing
+      { id: 'context_usage_tracker', asksNothingWithoutSession: true, pause: (page) => page.querySelector('pk-refresh [data-act="auto"]').click(),
+        shows: (page) => page.querySelector('#stats [data-stat="output"] .pk-stat-value')?.textContent
+          ?? (page.getElementById('stats').textContent.includes('No session open') ? '3' : undefined) },
       { id: 'sam_writer', shows: (page) => {
         const agent = page.querySelector('#agentsList .agent-id')?.textContent;
         if (agent) {
@@ -1719,7 +1722,7 @@
           await pick('s-1', 'Refactor the kit');
         }
         await until(`${panel.id} on the kit session`, () => panel.shows(page) === '7');
-        if (panel.pause) page.getElementById(panel.pause).click();  // its own refresh stops
+        if (panel.pause) panel.pause(page);  // its own refresh stops
         if (panel.id === 'memory') {
           page.getElementById('search-input').value = 'kit';
           page.defaultView.performSearch();
@@ -1735,8 +1738,13 @@
         await sleep(1700);  // the answers for the lagging session have come in by now
         if (panel.shows(page) !== '7') failures.push(`${panel.id} shows a late answer`);
         if (panel.id === 'memory' && page.querySelector('#memory-list .memory-title')) failures.push('memory shows a late search');
+        const askedWithoutSession = await hits(`${panel.id}:`);
         $('#sessionsPane [data-act="new"]').click();
         await until(`${panel.id} on no session`, () => panel.shows(page) === '3', 3000);
+        await sleep(300);
+        if (panel.asksNothingWithoutSession && await hits(`${panel.id}:`) !== askedWithoutSession) {
+          failures.push(`${panel.id} asks the server about no session`);
+        }
       } finally {
         $(`.dock-tab[data-key^="${panel.id}:"] [data-act="close"]`)?.click();
       }

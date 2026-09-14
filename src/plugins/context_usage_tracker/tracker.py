@@ -183,33 +183,6 @@ class UsageTracker:
             f"messages={message_count}"
         )
 
-    @staticmethod
-    def _filter_session_tree(history_list: List[Dict[str, Any]],
-                             session_id: str) -> List[Dict[str, Any]]:
-        """Calls belonging to a session INCLUDING its sub-agents (any depth).
-
-        Sub-agent calls run in their own sub-sessions, so a plain session_id
-        match hides them. Their request_ids are hierarchical
-        (``<parent_request>_sub_<id>``, transitively for sub-sub-agents — see
-        sub_agent_manager), so the session's own request ids expand the filter
-        to the whole tree. Calls recorded before request_ids existed (pre-2.0
-        snapshots) can only match by exact session.
-
-        Deliberately kept in Python rather than pushed into SQL: the prefix
-        expansion is transitive over the session's OWN requests, which is a
-        two-pass rule that a single WHERE clause cannot express without either
-        a recursive CTE or one LIKE per request id.
-        """
-        own_requests = {s.get("request_id") for s in history_list
-                        if s.get("session_id") == session_id and s.get("request_id")}
-        prefixes = tuple(r + "_" for r in own_requests)
-        return [
-            s for s in history_list
-            if s.get("session_id") == session_id
-            or (prefixes and s.get("request_id")
-                and s["request_id"].startswith(prefixes))
-        ]
-
     def _window(self, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """The query window: the newest ``max_history`` snapshots, oldest first.
 
@@ -227,7 +200,7 @@ class UsageTracker:
         """Get usage history as a list of dictionaries (optionally filtered).
 
         The session filter includes the session's sub-agent calls (see
-        _filter_session_tree).
+        UsageDatabase.recent_snapshots).
         """
         history_list = self._window(session_id)
         if agent_id is not None:
@@ -395,17 +368,6 @@ class UsageTracker:
         """Clear all usage history."""
         self.db.clear()
         logger.info("🗑️  Context usage history cleared")
-
-    def force_save(self) -> None:
-        """No-op, kept so existing callers keep working.
-
-        Every record is committed inside ``record_usage``; there is no
-        in-memory state left that could be lost, which is the point of the
-        move off the JSON file. The only callers left are two tests that
-        exercise "write, then read from a second instance" — the property
-        still holds, it just needs no flush.
-        """
-        return None
 
     # ------------------------------------------------------------------
     # One-time migration off the JSON file

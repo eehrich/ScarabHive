@@ -1,19 +1,12 @@
 """Web UI endpoints for context usage tracker plugin."""
 
-import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import JSONResponse
 
 from agent_system.plugins.schema_router import create_schema_router
-
-logger = logging.getLogger(__name__)
+from agent_system.ui.resources import ui_templates
 
 
 class ContextUsageWebFactory:
@@ -28,9 +21,7 @@ class ContextUsageWebFactory:
         """
         self.server = server
         self.tracker = server.tracker
-        self.plugin_dir = Path(__file__).parent
-        self.templates_dir = self.plugin_dir / "templates"
-        self.templates = Jinja2Templates(directory=str(self.templates_dir))
+        self.templates = ui_templates(Path(__file__).parent / "templates")
 
     def get_web_router(self) -> APIRouter:
         """Get the FastAPI router for this plugin's web endpoints."""
@@ -46,12 +37,9 @@ class ContextUsageWebFactory:
     
     # Handler methods (called by schema router)
     
-    async def get_panel(self, request: Request) -> HTMLResponse:
-        """Render the context usage debug panel."""
-        return self.templates.TemplateResponse(
-            "panel.html",
-            {"request": request}
-        )
+    async def get_panel(self, request: Request):
+        """Render the panel; its script and stylesheet are the plugin's static assets."""
+        return self.templates.TemplateResponse(request, "panel.html", {"plugin": self.server.name})
     
     async def get_usage(self, request: Request, session_id: str | None = None) -> JSONResponse:
         """Get current usage statistics."""
@@ -65,9 +53,10 @@ class ContextUsageWebFactory:
             "statistics": statistics,
         })
     
-    async def get_history(self, request: Request, last_n: int = 100, session_id: str | None = None,
+    async def get_history(self, request: Request, last_n: int | None = None, session_id: str | None = None,
                           agent_id: str | None = None) -> JSONResponse:
-        """Get usage history (optionally filtered by session and/or agent)."""
+        """Get usage history (optionally filtered by session and/or agent): the newest ``last_n`` calls of the
+        tracker's window, the whole window without it -- the calls the statistics are computed over."""
         history = self.tracker.get_history(last_n=last_n, session_id=session_id, agent_id=agent_id)
         return JSONResponse({"history": history})
     
