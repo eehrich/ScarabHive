@@ -1,5 +1,7 @@
 """Unit tests for message_validator plugin."""
 
+import pytest
+
 from plugins.message_validator.hooks import (
     InternalMessageValidator,
 )
@@ -491,6 +493,27 @@ class TestMessageSequence:
 
         assert len(result.repaired_messages) == 2
         assert result.repaired_messages[1].served_by == "backend-a"
+
+    @pytest.mark.parametrize("first, second, expected", [
+        (("small", True), (None, False), "small"),
+        ((None, False), ("small", True), "small"),
+        # Two producers match no model: the next call strips the merged list.
+        (("small", True), ("big", True), "small|big"),
+        # A tag whose artifacts a compaction already removed names nothing.
+        (("small", False), ("big", True), "big"),
+    ])
+    def test_merge_names_the_producers_of_the_merged_reasoning(self, first, second, expected):
+        def turn(content, tag, has_details):
+            return ChatMessage(role="assistant", content=content, reasoning_model=tag,
+                               reasoning_details=[{"type": "reasoning.encrypted", "data": content}]
+                               if has_details else None)
+
+        messages = [ChatMessage(role="user", content="Think"), turn("A", *first), turn("B", *second)]
+
+        result = InternalMessageValidator().validate_and_repair(messages, "test")
+
+        assert len(result.repaired_messages) == 2
+        assert result.repaired_messages[1].reasoning_model == expected
 
     def test_merge_thinking_blocks_from_different_models_keeps_newer(self):
         """Signatures are model-bound: merging blocks from two different

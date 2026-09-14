@@ -190,6 +190,10 @@ class ChatMessage(BaseModel):
     # LLM client (keep_all strips the now-unverifiable chain remnant) and
     # never sent to providers (client pops it before building the payload).
     rd_orphaned: Optional[bool] = None
+    # Model that produced reasoning_details. Set by the agent loop, never sent
+    # to a provider; a call to another model strips all artifacts first
+    # (utils/reasoning_artifacts.strip_foreign_reasoning_artifacts).
+    reasoning_model: Optional[str] = None
     # Anthropic extended/adaptive thinking blocks, verbatim as returned
     # (thinking+signature / redacted_thinking+data) in the model's original
     # order. Inside a tool-use turn these MUST be echoed back COMPLETE and

@@ -69,6 +69,8 @@ def mock_agent_with_session():
     llm_mock.context_window = 100000  # Set directly on LLM, not on model_config
 
     agent.llm = llm_mock
+    # The tools ask the agent for the model answering the step.
+    agent.llm_for_session = Mock(return_value=llm_mock)
 
     # Mock session tracker
     session_tracker = Mock()
@@ -151,6 +153,40 @@ async def test_check_stats_tool(plugin, mock_agent_with_session):
 
     # Should recommend summarization (high utilization)
     assert result['recommendation'] in ['summarize', 'ok']
+
+
+@pytest.mark.asyncio
+async def test_check_stats_reads_the_window_of_the_answering_model(plugin, mock_agent_with_session):
+    """Mid-run on a persistent fallback, agent.llm is the configured model; the
+    utilization must be a share of the window of the model that answers."""
+    mock_agent_with_session.llm_for_session = Mock(return_value=Mock(context_window=50_000))
+
+    result = await plugin.call('context_summarizer_check_stats', {
+        '_session_id': 'test-session-123', '_agent': mock_agent_with_session})
+
+    mock_agent_with_session.llm_for_session.assert_called_with('test-session-123')
+    assert result['context_window'] == 50_000
+
+
+@pytest.mark.asyncio
+async def test_summarize_hands_the_hook_the_answering_model(plugin, mock_agent_with_session, monkeypatch):
+    """The trigger is a share of the window of the model that answers the step."""
+    from agent_system.hooks import HookResult
+
+    answering = Mock(context_window=50_000)
+    mock_agent_with_session.llm_for_session = Mock(return_value=answering)
+    seen = {}
+
+    async def capture(context):
+        seen["llm"] = context.llm
+        return HookResult(success=False, modified=False, context=context, error="captured")
+
+    monkeypatch.setattr(plugin.server._hooks_impl, "summarize_context", capture)
+
+    await plugin.call('context_summarizer_summarize', {
+        '_session_id': 'test-session-123', '_agent': mock_agent_with_session})
+
+    assert seen["llm"] is answering
 
 
 @pytest.mark.asyncio

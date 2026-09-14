@@ -13,6 +13,7 @@ from agent_system.utils.reasoning_artifacts import (
     RD_ORPHANED_FLAG,
     invalidate_reasoning_artifacts,
     strip_all_reasoning_artifacts,
+    strip_foreign_reasoning_artifacts,
     strip_reasoning_artifacts_containing,
     thinking_text,
     thinking_text_from_details,
@@ -238,3 +239,31 @@ class TestInvalidateReasoningArtifacts:
         dumped = latest.model_dump(exclude_none=True)
         assert dumped.get("rd_orphaned") is True
         assert older.model_dump(exclude_none=True).get("rd_orphaned") is None
+
+
+class TestStripForeignReasoningArtifacts:
+    def _tagged(self, *tags):
+        msgs = _msgs()
+        msgs[1]["reasoning_model"], msgs[3]["reasoning_model"] = tags
+        return msgs
+
+    def test_one_foreign_artifact_resets_all(self):
+        msgs = self._tagged("big", "small")
+        assert strip_foreign_reasoning_artifacts(msgs, "big") == 2
+        assert all("reasoning_details" not in m for m in msgs)
+
+    def test_own_and_untagged_artifacts_stay(self):
+        msgs = self._tagged("big", None)
+        assert strip_foreign_reasoning_artifacts(msgs, "big") == 0
+        assert msgs[1]["reasoning_details"] and msgs[3]["reasoning_details"]
+
+    def test_a_tag_whose_artifacts_are_gone_is_no_reason(self):
+        """invalidate_reasoning_artifacts drops the details and leaves the tag."""
+        msgs = self._tagged("small", "big")
+        del msgs[1]["reasoning_details"]
+        assert strip_foreign_reasoning_artifacts(msgs, "big") == 0
+        assert msgs[3]["reasoning_details"]
+
+    def test_a_client_without_a_model_name_strips_nothing(self):
+        msgs = self._tagged("small", "small")
+        assert strip_foreign_reasoning_artifacts(msgs, None) == 0

@@ -256,6 +256,26 @@ def strip_all_reasoning_artifacts(messages: list) -> int:
     return touched
 
 
+def strip_foreign_reasoning_artifacts(messages: list, model: Any) -> int:
+    """Full reset when any artifact in *messages* was produced by another model.
+
+    Catches the switches the step loop does not see: between two requests of
+    a session (a fallback switched on or recovered meanwhile, a per-request
+    profile override, a restart). Artifacts without ``reasoning_model`` stay —
+    their origin is unknown. One foreign artifact resets all: a switch strips
+    everything, so artifacts of two models side by side mean a broken chain.
+    """
+    if not isinstance(model, str) or not model:
+        return 0
+    for msg in messages:
+        origin = _get(msg, "reasoning_model")
+        if (origin and origin != model and _get(msg, "role") == "assistant"
+                and _get(msg, "reasoning_details")):
+            logger.info("Reasoning artifacts of %s found before a call to %s", origin, model)
+            return strip_all_reasoning_artifacts(messages)
+    return 0
+
+
 def invalidate_reasoning_artifacts(messages: list, start: int = 0) -> int:
     """Invalidate provider reasoning artifacts after a history mutation.
 

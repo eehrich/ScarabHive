@@ -22,7 +22,10 @@ from ...core.session_presence import SessionBusy, presence_for
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
 from ...utils.json_utils import history_safe_tool_calls
-from ...utils.reasoning_artifacts import strip_all_reasoning_artifacts
+from ...utils.reasoning_artifacts import (
+    strip_all_reasoning_artifacts,
+    strip_foreign_reasoning_artifacts,
+)
 import httpx
 
 from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
@@ -191,6 +194,9 @@ class Agent(MCPServer):
         # display can be truly restored (stripping ":fallback" only left the
         # fallback profile's name standing).
         self._original_llm_profile_info: Optional[str] = None
+        # The client answering each session's running step (fallback, escalation
+        # or override included); cleared when the request ends.
+        self._step_llms: Dict[str, LLMClient] = {}
 
         # Extract profile info even if LLM is provided externally
         if self.llm is not None and self.agent_config and system_config.llm_system:
@@ -456,6 +462,14 @@ class Agent(MCPServer):
         if data.get("status") == "error":
             return True
         return "status" not in data and bool(data.get("error"))
+
+    def llm_for_session(self, session_id: Optional[str]) -> Optional[LLMClient]:
+        """The client answering the session's running step, else the agent's own.
+
+        For tools that size the context themselves: agent.llm is the configured
+        model, not the persistent fallback, escalation or override that answers.
+        """
+        return self._step_llms.get(session_id) if session_id in self._step_llms else self.llm
 
     def _get_escalation_llm(self) -> Optional[LLMClient]:
         """The advanced-profile LLM client used for auto-escalation, built once
@@ -1763,6 +1777,10 @@ class Agent(MCPServer):
             results: Execution results dictionary
             step: Final step number
         """
+        # First, before anything that awaits: a cancellation there would leave the
+        # finished run's model registered for the session's next /compact.
+        self._step_llms.pop(session_id, None)
+
         # Flush injected user messages that arrived too late to be processed
         # (e.g. during the very last LLM call) into the conversation so they
         # persist with the final save instead of being dropped with the request
@@ -2187,6 +2205,10 @@ class Agent(MCPServer):
         # fallback switch -- not re-derived per step (a 5xx run keeps showing
         # the fallback label until the request ends).
         display_profile_info = self.llm_profile_info
+        # The profile a request-scoped fallback swap made this run's base
+        # (active_llm): later steps leave it out of their fallback chain, or the
+        # fallback that fails next would be retried as its own fallback.
+        base_profile: Optional[str] = None
 
         # Extract from context
         messages = context.messages
@@ -2274,21 +2296,6 @@ class Agent(MCPServer):
             for status_event in yield_pending_status_events():
                 yield status_event
 
-            # Auto-escalation: run this step on the advanced model when a window
-            # is open — but NOT while a persistent rate-limit fallback is active
-            # (we don't escalate on top of a degraded run). The budget round is
-            # only spent later, when the advanced client is actually used.
-            escalated_this_step = escalator.active and self._active_fallback_llm is None
-
-            # Signal LLM call start
-            if escalated_this_step:
-                llm_display = " (advanced — escalated: stuck)"
-            elif llm_profile_info_override:
-                llm_display = f" ({llm_profile_info_override})"
-            else:
-                llm_display = f" ({display_profile_info})" if display_profile_info else " (unknown LLM)"
-            await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
-
             # Re-render the system message (session-scoped template vars may have
             # changed). Keep it free of per-step values: it is the cached prefix.
             # The step count reaches the model through _step_budget_note.
@@ -2308,6 +2315,113 @@ class Agent(MCPServer):
             # Before the hooks: the input they hand over needs no wake at the end.
             self._presence_step(session_id, request_id)
 
+            # Pick the model that answers this step BEFORE the hooks run: they
+            # size the context by context.llm (context_engineer's arrival cap,
+            # context_summarizer's trigger, context_usage_tracker's percentage).
+            # Picked after them, a persistent fallback with a smaller window was
+            # sized by the original's window, and a recovery switch stripped
+            # the history the hooks had already worked on.
+
+            # Auto-escalation: run this step on the advanced model when a window
+            # is open — but NOT while a persistent rate-limit fallback is active
+            # (we don't escalate on top of a degraded run). The budget round is
+            # only spent once it is settled that the advanced client answers.
+            escalated_this_step = escalator.active and self._active_fallback_llm is None
+
+            # Check if fallback recovery period has elapsed - try original LLM again.
+            # Coming BACK is a model switch too, so it needs the same strip as the
+            # switch away: the history now carries the FALLBACK model's reasoning
+            # items, and the original's gateway rejects them — straight back into
+            # the fallback that was just left.
+            # No strip when this run's base already IS that fallback (a persistent
+            # endpoint-level switch in this request): the pick returns it again.
+            self._check_fallback_recovery(
+                None if self._active_fallback_llm is active_llm else messages)
+
+            def _pick_step_llm(escalate: bool):
+                """(client, fallback chain, escalated) for this step. Spends no budget."""
+                # Check if we have an active persistent fallback (from previous rate limit/quota exhaustion)
+                if self._active_fallback_llm is not None:
+                    logger.info(f"[{self.name}] Using persistent fallback LLM: {self._active_fallback_profile}")
+                    return self._active_fallback_llm, [], False  # no further fallbacks to try
+                # Escalated step → advanced client (if it built); otherwise the
+                # run's normal LLM. A persistent fallback (rate-limit path above)
+                # takes precedence — we don't escalate on top of a degraded run.
+                llm = active_llm
+                # Profil des TATSÄCHLICH aktiven Modells, wenn es vom Config-
+                # Primär abweicht: Eskalations-Swap oder explizites Override
+                # (llm_profile_info_override = "profil:provider/model"). Wird
+                # aus der Fallback-Kette exkludiert, sonst würde das gerade
+                # fehlschlagende Modell als sein eigener Fallback erneut laufen.
+                active_profile_override = None
+                if base_profile is not None:
+                    active_profile_override = base_profile
+                elif llm_override is not None and llm_profile_info_override:
+                    active_profile_override = llm_profile_info_override.split(":", 1)[0]
+                if escalate:
+                    escalation_llm = self._get_escalation_llm()
+                    if escalation_llm is not None:
+                        llm = escalation_llm
+                        active_profile_override = (
+                            self.agent_config.advanced_llm_profile
+                            if self.agent_config else None
+                        )
+                    else:
+                        # Advanced client couldn't be built — ran on standard.
+                        # Disable escalation for this run so we don't retry the
+                        # build every step (the window would never close).
+                        escalate = False
+                        escalator.disable()
+                # Ketten-Semantik: llm_profile = [primär, fallback1, ...],
+                # llm_profile_advanced analog. fallback_chain() liefert die
+                # passende Reihenfolge (advanced-Kette zuerst, dann die
+                # normale Kette als letztes Sicherheitsnetz).
+                profiles = (
+                    self.agent_config.fallback_chain(
+                        use_advanced_model, exclude=active_profile_override)
+                    if self.agent_config else []
+                )
+                if base_profile is not None and llm_override is not None and llm_profile_info_override:
+                    # The override the swap replaced failed too: not a fallback.
+                    failed_override = llm_profile_info_override.split(":", 1)[0]
+                    profiles = [p for p in profiles if p != failed_override]
+                if use_advanced_model and profiles:
+                    logger.debug(
+                        f"[{self.name}] use_advanced_model=True — fallback "
+                        f"chain: {profiles}"
+                    )
+                return llm, profiles, escalate
+
+            async def _announce_llm():
+                # Signal LLM call start — for the picked client, so an escalation
+                # whose client did not build is not announced as one.
+                if escalated_this_step:
+                    llm_display = " (advanced — escalated: stuck)"
+                elif current_llm is self._active_fallback_llm and self._active_fallback_profile:
+                    llm_display = f" ({self._active_fallback_profile}:fallback)"
+                elif llm_profile_info_override and base_profile is None:
+                    llm_display = f" ({llm_profile_info_override})"
+                else:
+                    llm_display = f" ({display_profile_info})" if display_profile_info else " (unknown LLM)"
+                await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
+
+            fallback_seen = self._active_fallback_llm
+            previous_step_llm = self._step_llms.get(session_id)
+            current_llm, fallback_profiles, escalated_this_step = _pick_step_llm(escalated_this_step)
+            fallback_index = 0
+            if previous_step_llm is not None and current_llm is not previous_step_llm:
+                # A switch between steps: into or out of an escalation, or onto a
+                # fallback another request switched on (its strip went to its own
+                # history). The history carries the previous model's reasoning.
+                strip_all_reasoning_artifacts(messages)
+            # A switch since the previous request (or restart) left no step
+            # model behind; the artifacts name the model that produced them.
+            strip_foreign_reasoning_artifacts(messages, getattr(current_llm, "model", None))
+            # Before the hooks too: tool_preload runs tools inside them, and a
+            # tool that sizes the context asks llm_for_session.
+            self._step_llms[session_id] = current_llm
+            await _announce_llm()
+
             # Execute pre-LLM hooks with real-time status streaming
             # NOTE: Hooks execute synchronously from this generator's perspective,
             # so we use asyncio.create_task() + polling to stream status events
@@ -2323,7 +2437,7 @@ class Agent(MCPServer):
                         step=step,
                         request_id=request_id,
                         session_id=session_id,
-                        llm=active_llm,
+                        llm=current_llm,
                         cancellation_token=main_token
                     )
                 )
@@ -2359,66 +2473,34 @@ class Agent(MCPServer):
             except Exception as e:
                 logger.warning(f"Pre-LLM hooks failed: {e}", exc_info=True)
 
+            # The fallback state is shared by every request on this agent, and
+            # the hooks can take minutes (context_summarizer): another request
+            # may have switched to a fallback, or recovered from one, meanwhile.
+            # Pick again rather than call a model known to be limited, or leave
+            # the working original unused with an empty fallback chain. The
+            # hooks are not re-run — they are not idempotent (tool_preload runs
+            # tools); the next step's hooks see the new model.
+            if self._active_fallback_llm is not fallback_seen:
+                previous_llm = current_llm
+                current_llm, fallback_profiles, escalated_this_step = _pick_step_llm(False)
+                fallback_index = 0
+                self._step_llms[session_id] = current_llm
+                if current_llm is not previous_llm:
+                    # A model switch either way: THIS request's history carries
+                    # the previous model's reasoning items (the strip
+                    # _switch_to_fallback_llm / reset_fallback did went to the
+                    # request that switched).
+                    strip_all_reasoning_artifacts(messages)
+                    await _announce_llm()
+
+            # Spent only now that it is settled which model answers: a re-pick
+            # onto a fallback would otherwise have spent a round on no advanced call.
+            if escalated_this_step:
+                escalator.consume()
+
             # LLM call with streaming support and fallback handling
             llm_out = None
-            
-            # Check if fallback recovery period has elapsed - try original LLM again.
-            # Coming BACK is a model switch too, so it needs the same strip as the
-            # switch away: the history now carries the FALLBACK model's reasoning
-            # items, and the original's gateway rejects them — straight back into
-            # the fallback that was just left.
-            self._check_fallback_recovery(messages)
 
-            # Check if we have an active persistent fallback (from previous rate limit/quota exhaustion)
-            if self._active_fallback_llm is not None:
-                logger.info(f"[{self.name}] Using persistent fallback LLM: {self._active_fallback_profile}")
-                current_llm = self._active_fallback_llm
-                fallback_index = 0  # Already at fallback, no further fallbacks available
-                fallback_profiles = []  # No more fallbacks to try
-            else:
-                # Escalated step → advanced client (if it built); otherwise the
-                # run's normal LLM. A persistent fallback (rate-limit path above)
-                # takes precedence — we don't escalate on top of a degraded run.
-                current_llm = active_llm
-                # Profil des TATSÄCHLICH aktiven Modells, wenn es vom Config-
-                # Primär abweicht: Eskalations-Swap oder explizites Override
-                # (llm_profile_info_override = "profil:provider/model"). Wird
-                # aus der Fallback-Kette exkludiert, sonst würde das gerade
-                # fehlschlagende Modell als sein eigener Fallback erneut laufen.
-                active_profile_override = None
-                if llm_override is not None and llm_profile_info_override:
-                    active_profile_override = llm_profile_info_override.split(":", 1)[0]
-                if escalated_this_step:
-                    escalation_llm = self._get_escalation_llm()
-                    if escalation_llm is not None:
-                        current_llm = escalation_llm
-                        active_profile_override = (
-                            self.agent_config.advanced_llm_profile
-                            if self.agent_config else None
-                        )
-                        escalator.consume()   # budget spent only on an actual advanced call
-                    else:
-                        # Advanced client couldn't be built — ran on standard.
-                        # Disable escalation for this run so we don't retry the
-                        # build every step (the window would never close).
-                        escalated_this_step = False
-                        escalator.disable()
-                fallback_index = 0
-                # Ketten-Semantik: llm_profile = [primär, fallback1, ...],
-                # llm_profile_advanced analog. fallback_chain() liefert die
-                # passende Reihenfolge (advanced-Kette zuerst, dann die
-                # normale Kette als letztes Sicherheitsnetz).
-                fallback_profiles = (
-                    self.agent_config.fallback_chain(
-                        use_advanced_model, exclude=active_profile_override)
-                    if self.agent_config else []
-                )
-                if use_advanced_model and fallback_profiles:
-                    logger.debug(
-                        f"[{self.name}] use_advanced_model=True — fallback "
-                        f"chain: {fallback_profiles}"
-                    )
-            
             # WHICH client was told to try again after its thinking looped —
             # not merely THAT one was. A fallback switch later in this step
             # replaces current_llm, and the new model has earned no exemption:
@@ -2435,6 +2517,9 @@ class Agent(MCPServer):
                     request_id=request_id, session_id=session_id, llm=current_llm)
 
             while True:  # Retry loop for fallbacks (rate limits + upstream errors)
+                # For tools that size the context themselves (compact, summarize):
+                # the model answering this session's step, see llm_for_session.
+                self._step_llms[session_id] = current_llm
                 pending_thinking_complete = None
                 _llm_call_started = asyncio.get_event_loop().time()
                 try:
@@ -2509,17 +2594,22 @@ class Agent(MCPServer):
                                 fallback_profile, persistent=False,
                                 messages=messages)
                             if fallback_llm:
-                                display_profile_info = f"{fallback_profile}:fallback"
-                                current_llm = fallback_llm
                                 # Also swap the run's base LLM so hooks use the
-                                # fallback too. The rate-limit path deliberately
-                                # does NOT swap active_llm: mid-run fallback
-                                # recovery (_check_fallback_recovery on long
-                                # runs) must be able to return to the original
-                                # client via `current_llm = active_llm`. The
-                                # post-loop final-answer call selects the
-                                # persistent fallback itself (see final_llm).
-                                active_llm = fallback_llm
+                                # fallback too — when the BASE failed. An
+                                # escalation model that failed says nothing about
+                                # the base; only this step is rescued. The
+                                # rate-limit path deliberately does NOT swap
+                                # active_llm: mid-run fallback recovery
+                                # (_check_fallback_recovery on long runs) must be
+                                # able to return to the original client via
+                                # `current_llm = active_llm`. The post-loop
+                                # final-answer call selects the persistent
+                                # fallback itself (see final_llm).
+                                if current_llm is active_llm:
+                                    display_profile_info = f"{fallback_profile}:fallback"
+                                    active_llm = fallback_llm
+                                    base_profile = fallback_profile
+                                current_llm = fallback_llm
                                 continue  # Retry LLM call with fallback in same step
                             else:
                                 logger.error(
@@ -2671,7 +2761,15 @@ class Agent(MCPServer):
                             fallback_profile, persistent=False,
                             messages=messages)
                         if fallback_llm:
-                            display_profile_info = f"{fallback_profile}:fallback"
+                            # Request-scoped swap when the BASE failed, like its
+                            # twins (upstream error, connection error): without it
+                            # every following step started on the failing base
+                            # again, its hooks sizing the context for a model the
+                            # call never reached.
+                            if current_llm is active_llm:
+                                display_profile_info = f"{fallback_profile}:fallback"
+                                active_llm = fallback_llm
+                                base_profile = fallback_profile
                             current_llm = fallback_llm
                             continue  # Retry with fallback (non-persistent)
                         else:
@@ -2739,18 +2837,20 @@ class Agent(MCPServer):
                             fallback_profile, persistent=endpoint_level,
                             messages=messages)
                         if fallback_llm:
-                            display_profile_info = f"{fallback_profile}:fallback"
+                            # Request-scoped swap when the BASE failed (like the
+                            # upstream-error and 5xx paths): without it, EVERY
+                            # following step retries the dead endpoint first
+                            # (~connect timeout x retries per step), and the
+                            # post-loop final-answer call (`final_llm =
+                            # _active_fallback_llm or active_llm`) would hit the
+                            # dead endpoint again — its failure text contains
+                            # "timeout", which the final-call catch-all
+                            # misreports as "cancelled".
+                            if current_llm is active_llm:
+                                display_profile_info = f"{fallback_profile}:fallback"
+                                active_llm = fallback_llm
+                                base_profile = fallback_profile
                             current_llm = fallback_llm
-                            # Request-scoped swap (like the upstream-error path,
-                            # unlike LLMServerError): without it, EVERY following
-                            # step retries the dead endpoint first (~connect
-                            # timeout x retries per step), and the post-loop
-                            # final-answer call (`final_llm = _active_fallback_llm
-                            # or active_llm`) would hit the dead endpoint again —
-                            # its failure text contains "timeout", which the
-                            # final-call catch-all misreports as "cancelled".
-                            # A 5xx answers instantly, a dead endpoint does not.
-                            active_llm = fallback_llm
                             continue  # Retry with fallback (non-persistent)
                         else:
                             logger.error(f"[{self.name}] Failed to create fallback LLM for connection error")
@@ -2802,6 +2902,7 @@ class Agent(MCPServer):
             # via OpenRouter's reasoning_details). MUST be carried through to the
             # next request or upstream returns MALFORMED_FUNCTION_CALL.
             reasoning_details = assistant.get("reasoning_details")
+            answering_model = getattr(current_llm, "model", None)
 
             # Create assistant message and add it BEFORE post_llm hooks
             # so message debugger can capture the complete conversation
@@ -2821,6 +2922,8 @@ class Agent(MCPServer):
                 tool_calls=history_safe_tool_calls(tool_calls) if tool_calls else None,
                 reasoning_content=assistant.get("reasoning_content"),
                 reasoning_details=reasoning_details,
+                reasoning_model=(answering_model if reasoning_details
+                                 and isinstance(answering_model, str) else None),
                 # Anthropic thinking blocks (+ the model that signed them).
                 # Same contract as reasoning_content above: with tool use they
                 # must be echoed back complete and unmodified, so they have to
@@ -2853,7 +2956,9 @@ class Agent(MCPServer):
                         step=step,
                         request_id=request_id,
                         session_id=session_id,
-                        llm=active_llm
+                        # The client that produced this response — after a
+                        # fallback switch in the retry loop, not the run's base.
+                        llm=current_llm
                     )
                 )
 
@@ -3321,6 +3426,10 @@ class Agent(MCPServer):
         # the broken client here would fail the whole request in its last step
         # despite a working fallback.
         final_llm = self._active_fallback_llm or active_llm
+        if self._step_llms.get(session_id) not in (None, final_llm):
+            # The last step escalated, or another request switched on a
+            # fallback during its tools: the history carries that model's reasoning.
+            strip_all_reasoning_artifacts(messages)
         try:
             final_llm_out = await final_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
             final_assistant = final_llm_out.get("assistant", {})

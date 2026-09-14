@@ -209,7 +209,10 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
                 session_id=session_id,
                 messages=messages,
                 agent=agent,
-                llm=agent.llm if hasattr(agent, 'llm') else None,
+                # The model answering the running step, not the configured one:
+                # the trigger is a share of ITS window.
+                llm=(agent.llm_for_session(session_id) if hasattr(agent, 'llm_for_session')
+                     else getattr(agent, 'llm', None)),
                 metadata={"manual_trigger": True, "reason": reason}
             )
 
@@ -381,8 +384,10 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
 
             # Get context window
             context_window = 0
-            if hasattr(agent, 'llm') and agent.llm:
-                context_window = getattr(agent.llm, 'context_window', 0)
+            answering = (agent.llm_for_session(session_id) if hasattr(agent, 'llm_for_session')
+                         else getattr(agent, 'llm', None))
+            if answering:
+                context_window = getattr(answering, 'context_window', 0)
 
             # Calculate utilization
             utilization = (total_tokens / context_window * 100) if context_window > 0 else 0

@@ -331,7 +331,10 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
                 messages=messages,
                 agent=agent,
                 agent_name=agent.name if hasattr(agent, "name") else "unknown",
-                llm=agent.llm if hasattr(agent, "llm") else None,
+                # The model answering the running step (fallback, escalation,
+                # override) — Pre-Layer T sizes by its window, not agent.llm's.
+                llm=(agent.llm_for_session(session_id) if hasattr(agent, "llm_for_session")
+                     else getattr(agent, "llm", None)),
                 # The system prompt is filtered out above: this reading is not
                 # comparable with the pre-LLM call's and must not move the
                 # hysteresis base.

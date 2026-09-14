@@ -595,6 +595,14 @@ class InternalMessageValidator:
                     # A broken chain on either side stays broken in the merge.
                     "rd_orphaned": (getattr(first_msg, 'rd_orphaned', None)
                                     or getattr(second_msg, 'rd_orphaned', None)),
+                    # Two producers in one merged list match no model, so
+                    # strip_foreign_reasoning_artifacts would reset them. The
+                    # agent loop strips before this hook runs, so today the
+                    # merge only ever sees one producer.
+                    "reasoning_model": "|".join(dict.fromkeys(
+                        m.reasoning_model for m in (first_msg, second_msg)
+                        if getattr(m, 'reasoning_details', None)
+                        and getattr(m, 'reasoning_model', None))) or None,
                     "thinking_blocks": merged_tb,
                     "thinking_model": merged_tm if merged_tb else None,
                     # The later turn's backend is the one holding the cache.

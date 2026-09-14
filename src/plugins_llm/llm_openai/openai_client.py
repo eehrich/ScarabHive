@@ -123,6 +123,7 @@ class OpenAIAsyncClient(LLMClient):
                     d.pop('injected_by', None)  # Internal hook metadata
                     d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
                     d.pop('served_by', None)  # OpenRouter backend provenance, never sent
+                    d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent
                     # Kept for us, not for the API: reasoning_content is a
                     # DeepSeek extension and unknown here. Every sibling client
                     # drops it before the request; this one now produces it, so
@@ -355,6 +356,7 @@ class OpenAIAsyncClient(LLMClient):
                 d.pop('multimodal_content', None)
                 d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
                 d.pop('served_by', None)  # OpenRouter backend provenance, never sent
+                d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent
                 # Kept for us, not for the API — see chat() above.
                 d.pop('reasoning_content', None)
 
@@ -782,7 +784,8 @@ class OpenAIAsyncClient(LLMClient):
                 d.pop('injected_by', None)
                 d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
                 d.pop('served_by', None)  # OpenRouter backend provenance, never sent
-                
+                d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent
+
                 # Normalize content for OpenAI API
                 if isinstance(d.get('content'), list):
                     d['content'] = openai_utils.normalize_content_list(d['content'])

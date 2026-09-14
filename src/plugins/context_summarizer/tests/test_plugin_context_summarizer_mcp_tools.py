@@ -71,6 +71,8 @@ def mock_agent_with_session():
     llm_mock.context_window = 100000
 
     agent.llm = llm_mock
+    # The tools ask the agent for the model answering the step.
+    agent.llm_for_session = Mock(return_value=llm_mock)
 
     # Mock session tracker
     session_tracker = Mock()

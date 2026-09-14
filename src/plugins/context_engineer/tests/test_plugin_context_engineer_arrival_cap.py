@@ -309,6 +309,36 @@ async def test_pre_layer_p_keeps_the_round_the_model_has_not_seen(plugin):
     assert json.loads(tail[1]["content"])["type"] == TOOL_RESULT_REF_TYPE
 
 
+@pytest.mark.asyncio
+async def test_the_compact_tool_sizes_by_the_model_answering_the_step():
+    """Called by the model mid-run on a persistent fallback, the tool handed the
+    hook agent.llm — Pre-Layer T then sized by the configured model's window."""
+    from unittest.mock import MagicMock
+
+    from agent_system.config.models import MCPConfig
+    from agent_system.hooks import HookResult
+    from plugins.context_engineer.server import ContextEngineerServer
+
+    srv = ContextEngineerServer("context_engineer", MagicMock(),
+                                MCPConfig(type="context_engineer", enabled=True))
+    seen = {}
+
+    async def capture(context):
+        seen["llm"] = context.llm
+        return HookResult(success=False, modified=False, context=context, error="captured")
+
+    srv._hooks_impl = SimpleNamespace(engineer_context=capture)
+    answering = SimpleNamespace(context_window=65_000)
+    agent = SimpleNamespace(
+        name="a", agent_config=None, llm=SimpleNamespace(context_window=1_000_000),
+        llm_for_session=lambda session_id: answering,
+        get_live_messages=lambda session_id: [ChatMessage(role="user", content="hi")])
+
+    await srv.compact({"_session_id": "s", "_agent": agent, "_request_id": "r"})
+
+    assert seen["llm"] is answering
+
+
 def test_the_window_falls_back_to_the_agents_model(monkeypatch):
     import agent_system.llm.factory as factory
     monkeypatch.setattr(factory, "resolve_llm_config_for_agent",
