@@ -5,7 +5,6 @@ One test per defect found in the review of 2026-09-13, each reproduced first.
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from types import SimpleNamespace
 

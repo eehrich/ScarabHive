@@ -670,7 +670,6 @@ class TestLayerThreeCutsDeep:
     @pytest.mark.asyncio
     async def test_media_removed_before_the_baseline_is_not_part_of_the_offset(self, tmp_path):
         """The media passes book their savings before Layer 1 takes its estimate."""
-        import copy as copy_module
 
         def conversation():
             messages = self._chat(20)

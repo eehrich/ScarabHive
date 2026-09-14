@@ -415,13 +415,14 @@
                             <th>Before</th>
                             <th>After</th>
                             <th>Saved</th>
+                            <th title="Tool results moved to the store (read them back with read)">Stored</th>
                             <th>Media</th>
                             <th>Reduction</th>
                             <th>Layers</th>
                         </tr>
                     </thead>
                     <tbody id="history-body">
-                        <tr><td colspan="9" class="loading"><div class="spinner"></div>Loading...</td></tr>
+                        <tr><td colspan="10" class="loading"><div class="spinner"></div>Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -559,7 +560,7 @@
                 const tbody = document.getElementById('history-body');
                 
                 if (!data.success || !data.events || data.events.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="9" class="empty-state">No compaction events yet</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="10" class="empty-state">No compaction events yet</td></tr>`;
                     return;
                 }
 
@@ -584,6 +585,7 @@
                         <td>${formatNumber(event.original_tokens)}</td>
                         <td>${formatNumber(event.final_tokens)}</td>
                         <td style="color: #6ee56e">${formatNumber(event.tokens_saved)}</td>
+                        <td>${event.tool_results_stored ? formatNumber(event.tool_results_stored) : '-'}</td>
                         <td style="color: #ff9800">${mediaInfo}</td>
                         <td>${event.reduction_percent.toFixed(1)}%</td>
                         <td>${renderLayers(event.layers_applied || [])}</td>
@@ -592,7 +594,7 @@
             } catch (e) {
                 console.error('Error loading history:', e);
                 document.getElementById('history-body').innerHTML = 
-                    `<tr><td colspan="9" class="empty-state">Error loading history</td></tr>`;
+                    `<tr><td colspan="10" class="empty-state">Error loading history</td></tr>`;
             }
         }
 
