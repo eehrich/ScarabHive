@@ -1,0 +1,485 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SSH Machines panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const all = (selector) => [...doc().querySelectorAll(selector)];
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const text = (selector) => $(selector)?.textContent.trim() ?? '';
+  const tabs = () => all('#tabs [role="tab"]').map((tab) => tab.dataset.tab).join();
+  const tab = (name) => all('#tabs [role="tab"]').find((one) => one.dataset.tab === name);
+  const shown = () => all('#tabs [role="tab"]').find((one) => one.getAttribute('aria-selected') === 'true')?.dataset.tab;
+  const entries = () => all('#output .ssh-entry:not(.ssh-pending)');
+  const last = () => entries().at(-1);
+  const exitLine = (entry) => [...entry.querySelectorAll('.ssh-exit')].at(-1).textContent;
+  const failedLine = (entry) => entry.classList.contains('ssh-failed');
+  const question = () => $('dialog.pk-dialog[open]:not(#add)');
+  const toasts = (kind) => all(`.pk-toast--${kind}`).map((toast) => toast.textContent);
+  const toasted = (kind, part) => until(`the ${kind} toast "${part}"`, () => toasts(kind).some((one) => one.includes(part)));
+  const clearToasts = () => all('.pk-toast').forEach((toast) => toast.remove());
+  const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+  const now = () => $('pk-refresh [data-act="now"]').click();
+  const cookie = (name, value) => { document.cookie = `${name}=${value}; path=/`; };
+  const uncookie = (name) => { document.cookie = `${name}=; path=/; max-age=0`; };
+  const get = async (path) => (await fetch(path)).json();
+  const post = (path) => fetch(path, { method: 'POST' });
+  // no tick: what the check waits for has to come from what it drives, not from the next auto refresh
+  const autoOff = async () => {
+    const toggle = await until('the refresh control', () => $('pk-refresh [data-act="auto"]'));
+    if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+  };
+  const choose = async (name) => {
+    tab(name).click();
+    await until(`the terminal of ${name}`, () => text('#prompt') === `${name}$` && !$('#output .pk-skeleton'));
+  };
+  const runCommand = (command) => {
+    $('#command').value = command;
+    $('#runButton').click();
+  };
+  const ranOnce = (command) => until(`"${command}" drawn`, () => last()?.querySelector('.ssh-command').textContent.includes(command)
+    && !$('#output .ssh-pending') && last());
+  const fill = (fields) => {
+    const form = $('#addForm');
+    for (const [name, value] of Object.entries(fields)) {
+      const field = form.elements[name];
+      if (field.type === 'checkbox') field.checked = value;
+      else field.value = value;
+      field.dispatchEvent(new Event('change'));
+    }
+  };
+
+  await check('opened, the panel lists the machines with their state and shows the first one, without a credential', async () => {
+    await go('/plugins/ssh_control/');
+    await until('the machines', () => tabs() === 'alpha,beta,gamma,stuck' && text('#output').length, 3000);  // not the first tick's
+    await autoOff();
+    const pane = shown() === 'alpha' && text('#address') === 'deploy@alpha.test:22' && text('#prompt') === 'alpha$'
+      && all('#tags .pk-badge').map((one) => one.textContent).join() === 'web,prod'
+      && text('#state') === 'Not connected yet' && text('#output') === 'No command run on alpha yet.' && !$('#pane').hidden;
+    const listed = await get('/plugins/ssh_control/api/machines');
+    const keys = listed.machines.map((machine) => Object.keys(machine).sort().join()).join('|');
+    const expected = 'connected,error,host,last_run,latency_ms,name,not_yet_connected,port,tags,username';
+    return pane && keys === Array(4).fill(expected).join('|') && text('#notice') === '';
+  });
+
+  await check('a command runs on the machine shown once, its output and the connection drawn', async () => {
+    runCommand('   ');
+    const blank = !$('#output .ssh-pending') && text('#output') === 'No command run on alpha yet.';
+    runCommand('sleep');
+    await until('the command on its way', () => $('#output .ssh-pending'));
+    const pending = text('#output .ssh-pending').includes('alpha$ sleep') && $('#output .ssh-pending .pk-spinner')
+      && $('#command').disabled && $('#runButton').disabled && $('#command').value === '' && !text('#output').includes('No command run');
+    runCommand('sleep');  // on the disabled button: nothing
+    await choose('beta');
+    const otherFree = !$('#command').disabled && !$('#runButton').disabled && !$('#output .ssh-pending');
+    await choose('alpha');
+    const stillBusy = $('#command').disabled && $('#output .ssh-pending');
+    const done = await ranOnce('sleep');
+    const drawn = done.querySelector('.ssh-stdout').textContent === 'ran sleep\n' && exitLine(done).startsWith('exit 0 · ')
+      && !failedLine(done) && !$('#command').disabled && doc().activeElement === $('#command');
+    runCommand('hostname');
+    const host = await ranOnce('hostname');
+    await until('the connection drawn', () => /^\d+ ms$/.test(text('#state')));
+    const connected = host.querySelector('.ssh-stdout').textContent === 'alpha.test\n' && $('#state .pk-badge--ok')
+      && tab('alpha').querySelector('.pk-dot--ok') && /\d+ ms/.test(tab('alpha').querySelector('.pk-tab-count').textContent)
+      && !tab('beta').querySelector('.pk-tab-count');
+    return Boolean(blank && pending && otherFree && stillBusy && drawn && connected)
+      && await get('/__stub/runs?machine=alpha&command=sleep') === 1 && await get('/__stub/runs?machine=alpha&command=') === 0;
+  });
+
+  await check('a failed command, an unreachable machine and timeouts are drawn as failures, with their reason', async () => {
+    runCommand('false');
+    const failed = await ranOnce('false');
+    const exited = failedLine(failed) && failed.querySelector('.ssh-stderr').textContent === 'failed\n'
+      && exitLine(failed).startsWith('exit 1 · ') && !failedLine(entries().at(-2));
+    await choose('gamma');
+    runCommand('hostname');
+    await toasted('error', '502: Connection refused by down.test');
+    const refused = await ranOnce('hostname');
+    const unreachable = failedLine(refused) && exitLine(refused).startsWith('Connection refused by down.test · ')
+      && !refused.querySelector('.ssh-stdout');
+    await post('/__stub/blackhole?host=down.test');
+    try {
+      runCommand('uptime');
+      await toasted('error', '504: No answer from gamma in time');
+    } finally {
+      await post('/__stub/mend?host=down.test');
+      await post('/__stub/break?host=down.test');
+    }
+    const blackholed = await ranOnce('uptime');
+    // the time it took to give up on the connection, and why
+    const connectTimeout = failedLine(blackholed) && exitLine(blackholed).startsWith('Connection timed out · ')
+      && parseFloat(exitLine(blackholed).split(' · ')[1]) >= 0.25;
+    await choose('alpha');
+    clearToasts();
+    runCommand('hang');
+    await toasted('error', '504: No answer from alpha in time');
+    const hung = await ranOnce('hang');
+    return exited && unreachable && connectTimeout && failedLine(hung) && exitLine(hung).startsWith('Timed out after 2s · ');
+  });
+
+  await check('a run the plugin never saw leaves no line behind', async () => {
+    const before = entries().length;
+    cookie('ssh_execute', 'gateway');
+    try {
+      runCommand('uptime');
+      await toasted('error', '502: The gateway is down');
+      await until('the line on its way gone', () => !$('#output .ssh-pending') && !$('#command').disabled);
+    } finally {
+      uncookie('ssh_execute');
+    }
+    const kept = entries().length === before && shown() === 'alpha';
+    await choose('gamma');
+    await post('/__stub/forget?name=gamma');  // gone behind the panel's back
+    runCommand('hostname');
+    await toasted('error', "404: Machine 'gamma' not found");
+    await until('gamma gone', () => tabs() === 'alpha,beta,stuck' && shown() === 'alpha' && text('#prompt') === 'alpha$');
+    return kept && await get('/__stub/runs?machine=alpha&command=uptime') === 0;
+  });
+
+  await check('switching machines shows each one its history, and a history answered late is dropped; the keyboard stays on the tabs', async () => {
+    cookie('ssh_slow', 'beta');
+    cookie('ssh_history_fails', 'beta');
+    try {
+      tab('beta').click();
+      tab('alpha').click();
+      await until('the history of alpha', () => text('#output').includes('alpha.test'));
+      await sleep(1800);  // the failure for beta is in by now
+      const failureDropped = text('#output').includes('alpha.test') && !text('#output').includes('could not be loaded');
+      uncookie('ssh_history_fails');
+      tab('beta').click();
+      const waiting = text('#prompt') === 'beta$' && text('#address') === 'root@beta.test:2222' && $('#output .pk-skeleton')
+        && !text('#output').includes('alpha.test');
+      tab('alpha').click();
+      await until('the history of alpha', () => text('#output').includes('alpha.test'));
+      await sleep(1800);  // the answer for beta is in by now
+      const alphaKept = text('#prompt') === 'alpha$' && text('#output').includes('alpha.test') && !text('#output').includes('No command run on beta');
+      uncookie('ssh_slow');
+      await choose('beta');
+      const beta = text('#output') === 'No command run on beta yet.' && !$('#tags .pk-badge');
+      const arrow = () => doc().activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      tab('beta').focus();
+      arrow();
+      const first = shown() === 'stuck' && doc().activeElement === tab('stuck');
+      arrow();  // around to the first
+      const second = shown() === 'alpha' && doc().activeElement === tab('alpha');
+      tick();
+      await until('the tick answered', () => text('#output').includes('alpha.test'));
+      await sleep(300);
+      return Boolean(failureDropped && waiting && alphaKept && beta && first && second) && doc().activeElement === tab('alpha');
+    } finally {
+      uncookie('ssh_slow');
+      uncookie('ssh_history_fails');
+    }
+  });
+
+  await check('the output follows new lines only while it is scrolled to the end', async () => {
+    await choose('alpha');
+    const out = $('#output');
+    const atEnd = () => out.scrollTop + out.clientHeight >= out.scrollHeight - 8;
+    runCommand('big');
+    const big = await ranOnce('big');
+    const followed = [...big.querySelectorAll('.ssh-exit')].some((line) => line.textContent === 'Output cut at 10 KB')
+      && big.querySelector('.ssh-stdout').textContent.length === 10000 && out.scrollHeight > out.clientHeight + 100 && atEnd();
+    out.scrollTop = 0;
+    await post('/__stub/agent-run?machine=alpha');
+    tick();
+    await until('the agent run', () => entries().length && last().textContent.includes('ran uptime'));
+    const kept = out.scrollTop === 0;
+    out.scrollTop = out.scrollHeight;
+    const count = entries().length;
+    await post('/__stub/agent-run?machine=alpha');
+    tick();
+    await until('the second agent run', () => entries().length === count + 1);
+    return followed && kept && atEnd();
+  });
+
+  await check('adding tests the connection, shows a refusal in the dialog and keeps the machine if asked; a late answer leaves a new dialog alone', async () => {
+    clearToasts();
+    $('#addMachine').click();
+    const dialog = $('#add');
+    const ways = (method) => { fill({ auth_method: method }); return `${$('#keyField').hidden}/${$('#passwordField').hidden}`; };
+    const opened = dialog.open && $('#addError').hidden && ways('key') === 'false/true' && ways('password') === 'true/false'
+      && ways('agent') === 'true/true';
+    fill({ name: 'delta', host: 'down.test', username: 'root', auth_method: 'password', password: 'secret', persistent: true });
+    fill({ auth_method: 'key' });  // a password typed before choosing a key is not sent
+    $('#addSubmit').click();
+    await until('the refusal', () => !$('#addError').hidden);
+    const refused = dialog.open && text('#addError') === 'Connection test failed: Connection refused by down.test' && !$('#addSubmit').disabled
+      && tabs() === 'alpha,beta,stuck' && !toasts('error').length;
+    $('#addCancel').click();
+    await until('the dialog closed and reset', () => !dialog.open && !$('#addForm').elements.name.value);
+    $('#addMachine').click();
+    const cleared = dialog.open && $('#addError').hidden && !$('#addForm').elements.name.value && !$('#addForm').elements.password.value
+      && $('#addForm').elements.port.value === '22' && !$('#keyField').hidden && $('#passwordField').hidden;
+    const added = (await get('/__stub/asked')).added;
+    fill({ name: 'delta', host: 'delta.test', port: 2200, username: 'root', auth_method: 'password', password: 'secret', persistent: true });
+    fill({ auth_method: 'key' });
+    $('#addSubmit').click();
+    $('#addSubmit').click();  // the test takes a while: once
+    await until('the machine added', () => !dialog.open && tab('delta') && shown() === 'delta' && text('#address') === 'root@delta.test:2200');
+    await sleep(500);
+    const once = (await get('/__stub/asked')).added === added + 1 && !toasts('error').length && !toasts('warn').length
+      && JSON.stringify(await get('/__stub/stored')) === '["delta"]' && await get('/__stub/password?name=delta') === false;
+    await sleep(100);  // the form is reset when the dialog has closed
+    $('#addMachine').click();
+    const reset = dialog.open && !$('#addForm').elements.name.value && !$('#addForm').elements.persistent.checked && $('#addError').hidden;
+    fill({ name: 'zeta', auth_method: 'password' });
+    $('#addCancel').click();
+    await until('the dialog closed and reset', () => !dialog.open && !$('#addForm').elements.name.value);
+    $('#addMachine').click();
+    const redrawn = !$('#keyField').hidden && $('#passwordField').hidden;
+    fill({ name: 'zeta', host: 'zeta.test', username: 'root', auth_method: 'password', password: 'hunter2', persistent: true });
+    $('#addSubmit').click();
+    await toasted('warn', 'zeta is added, but not kept');
+    const unkept = toasts('warn').some((one) => one.includes('password')) && JSON.stringify(await get('/__stub/stored')) === '["delta"]'
+      && await get('/__stub/password?name=zeta') === true && !dialog.open && !$('#addForm').elements.password.value;
+    $('#addMachine').click();
+    fill({ name: 'eta', host: 'down.test', username: 'root' });
+    $('#addSubmit').click();
+    $('#addCancel').click();  // closed before the refusal is in: it cannot be shown in the dialog
+    await toasted('error', 'eta could not be added: Connection test failed');
+    // answers to a dialog closed and opened again: the new one keeps what is typed in it
+    await post('/__stub/blackhole?host=late.test');
+    $('#addMachine').click();
+    fill({ name: 'iota', host: 'late.test', username: 'root' });
+    $('#addSubmit').click();
+    $('#addCancel').click();
+    await until('the dialog closed and reset', () => !dialog.open && !$('#addForm').elements.name.value);
+    $('#addMachine').click();
+    fill({ name: 'typed' });
+    const freed = !$('#addSubmit').disabled;
+    await toasted('error', 'iota could not be added');
+    await sleep(100);
+    const lateRefusal = dialog.open && $('#addForm').elements.name.value === 'typed' && $('#addError').hidden;
+    await post('/__stub/mend?host=late.test');
+    $('#addCancel').click();
+    await until('the dialog closed and reset', () => !dialog.open && !$('#addForm').elements.name.value);
+    $('#addMachine').click();
+    fill({ name: 'theta', host: 'late.test', username: 'root' });
+    $('#addSubmit').click();
+    $('#addCancel').click();
+    await until('the dialog closed and reset', () => !dialog.open && !$('#addForm').elements.name.value);
+    $('#addMachine').click();
+    fill({ name: 'kappa', host: 'slow.test', username: 'root' });
+    $('#addSubmit').click();  // on its way when theta's answer comes in
+    await toasted('ok', 'theta is added');
+    const lateAdd = dialog.open && $('#addForm').elements.name.value === 'kappa' && $('#addSubmit').disabled;
+    await until('kappa added', () => !dialog.open && shown() === 'kappa', 5000);
+    return Boolean(opened && refused && cleared && once && reset && redrawn && unkept && freed && lateRefusal && lateAdd);
+  });
+
+  await check('commands, output and names are drawn as text, never as markup', async () => {
+    const markup = '<img src=x onerror=parent.__xss=1>';
+    await choose('alpha');
+    runCommand(markup);
+    const ran = await ranOnce(markup);
+    const asText = ran.querySelector('.ssh-command').textContent.includes(markup) && ran.querySelector('.ssh-stdout').textContent === `ran ${markup}\n`;
+    $('#addMachine').click();
+    fill({ name: '<img src=x onerror=parent.__xss=2>', host: '<i>h</i>', username: '<u>u</u>', auth_method: 'agent', persistent: false });
+    $('#addSubmit').click();
+    await until('the machine named in markup', () => shown() === '<img src=x onerror=parent.__xss=2>' && !$('#output .pk-skeleton'));
+    await sleep(300);
+    const named = text('#address') === '<u>u</u>@<i>h</i>:22' && text('#prompt') === '<img src=x onerror=parent.__xss=2>$'
+      && text('#output').includes('No command run on <img');
+    return asText && named && !$('#output img, #tabs img, #tabs i, #address u, #address i, #prompt img')
+      && frame.contentWindow.__xss === undefined && window.__xss === undefined;
+  });
+
+  await check('removing asks first, removes for good, and says what it could not remove', async () => {
+    clearToasts();
+    await choose('delta');
+    $('#remove').click();
+    $('#remove').click();  // before the question is up: one question
+    let asked = await until('the question', question);
+    await sleep(200);
+    const once = all('dialog.pk-dialog[open]:not(#add)').length === 1 && asked.textContent.includes('Remove the machine “delta”');
+    asked.querySelector('[data-index="0"]').click();  // Cancel
+    await sleep(400);
+    const kept = Boolean(tab('delta')) && !$('#remove').disabled;
+    $('#remove').click();
+    (await until('the question again', question)).querySelector('[data-index="1"]').click();
+    await until('delta gone', () => !tab('delta'));
+    await sleep(300);
+    const gone = JSON.stringify(await get('/__stub/stored')) === '[]' && !toasts('warn').length && !toasts('error').length;
+    await choose('beta');
+    $('#remove').click();
+    (await until('the question for beta', question)).querySelector('[data-index="1"]').click();
+    await toasted('warn', 'beta is removed, but not from the store');
+    await until('beta gone', () => !tab('beta'));
+    await choose('stuck');
+    runCommand('hostname');  // a connection to close
+    await ranOnce('hostname');
+    $('#remove').click();
+    (await until('the question for stuck', question)).querySelector('[data-index="1"]').click();
+    await toasted('error', '500: Failed to remove machine: The connection to stuck.test will not close');
+    await sleep(300);
+    const stuckKept = Boolean(tab('stuck')) && !$('#remove').disabled;
+    await choose('zeta');
+    await post('/__stub/forget?name=zeta');
+    $('#remove').click();
+    (await until('the question for zeta', question)).querySelector('[data-index="1"]').click();
+    await toasted('error', "404: Machine 'zeta' not found");
+    await until('zeta gone', () => !tab('zeta'));
+    return once && kept && gone && stuckKept;
+  });
+
+  await check('a failed load shows the error and nothing of the machines shown before', async () => {
+    cookie('ssh_machines', 'fails');
+    try {
+      now();
+      await until('the error', () => text('#notice').includes('Machines could not be loaded'));
+      const shownError = text('#notice').includes('The machine list is locked') && tabs() === '' && $('#pane').hidden;
+      uncookie('ssh_machines');
+      now();
+      await until('the machines again', () => tab('alpha') && !$('#pane').hidden && text('#notice') === '');
+      cookie('ssh_history_fails', 'alpha');
+      tab('alpha').click();
+      await until('the history error', () => text('#output') === 'The history could not be loaded: The history is locked');
+      uncookie('ssh_history_fails');
+      tick();
+      await until('the history of alpha', () => text('#output').includes('alpha.test'));
+      return shownError;
+    } finally {
+      uncookie('ssh_machines');
+      uncookie('ssh_history_fails');
+    }
+  });
+
+  await check('a click on refresh pings the machines connected to before, a tick only looks, and a busy machine is not waited for', async () => {
+    await choose('alpha');
+    const before = await get('/__stub/asked');
+    now();
+    await until('the active list', async () => (await get('/__stub/asked')).active === before.active + 1);
+    await sleep(300);
+    tick();
+    await until('the lazy list', async () => (await get('/__stub/asked')).lazy === before.lazy + 1);
+    await sleep(300);
+    const counted = (await get('/__stub/asked')).active === before.active + 1;
+    runCommand('hang');  // alpha's only slot, for 2 s
+    await until('the command on its way', () => $('#output .ssh-pending'));
+    await sleep(300);
+    const started = performance.now();
+    const pinged = await get('/plugins/ssh_control/api/machines?active=true');
+    const unwaited = performance.now() - started < 1000;
+    const alpha = pinged.machines.find((one) => one.name === 'alpha');
+    const notUnreachable = alpha.error === null && alpha.connected === true;
+    await ranOnce('hang');
+    await post('/__stub/break?host=alpha.test');
+    try {
+      now();
+      await until('alpha unreachable', () => text('#state').startsWith('Unreachable'));
+      return counted && unwaited && notUnreachable && text('#state').includes('Connection refused by alpha.test') && Boolean(tab('alpha').querySelector('.pk-dot--danger')
+        && $('#state .pk-badge--danger'));
+    } finally {
+      await post('/__stub/mend?host=alpha.test');
+    }
+  });
+
+  await check('a tick of the auto refresh leaves a load still on its way alone', async () => {
+    let ticking = null;
+    cookie('ssh_machines', 'slow');
+    try {
+      await go('/plugins/ssh_control/');  // its first look answered after 1.5 s
+      await sleep(700);
+      now();  // the pings, answered 0.7 s later: the first answer, dropped, leaves this one on its way
+      ticking = setInterval(tick, 200);
+      await until('the machines while the ticks go on', () => tab('alpha'), 4000);
+      return true;
+    } finally {
+      clearInterval(ticking);
+      uncookie('ssh_machines');
+      await autoOff();
+    }
+  });
+
+  await check('an answer overtaken by a later load is dropped', async () => {
+    // a click pings, a run only looks: two addresses, so the browser does not hold the second back for the first
+    await choose('alpha');
+    cookie('ssh_machines', 'slowfail');
+    try {
+      now();  // fails after 1.5 s
+      await sleep(200);
+      uncookie('ssh_machines');
+      runCommand('whoami');
+      await until('the run drawn', () => last()?.textContent.includes('ran whoami'));
+      await sleep(1800);
+      const failureDropped = Boolean(tab('alpha')) && !$('#pane').hidden && !text('#notice').includes('could not be loaded');
+      cookie('ssh_machines', 'slow');
+      now();  // succeeds after 1.5 s
+      await sleep(200);
+      cookie('ssh_machines', 'fails');
+      runCommand('whoami');  // its look fails at once
+      await until('the error', () => text('#notice').includes('Machines could not be loaded'));
+      await sleep(1800);
+      const listDropped = text('#notice').includes('Machines could not be loaded') && tabs() === '';
+      uncookie('ssh_machines');
+      now();
+      await until('the machines again', () => tab('alpha'));
+      return failureDropped && listDropped;
+    } finally {
+      uncookie('ssh_machines');
+    }
+  });
+
+  await check('the auto refresh runs from the start and brings what an agent runs and adds, a name with a slash too', async () => {
+    cookie('ssh_machines', 'slow');
+    await go('/plugins/ssh_control/');
+    const loading = $('#pane').hidden && Boolean($('#notice .pk-skeleton')) && tabs() === '';
+    uncookie('ssh_machines');
+    await until('the terminal of alpha', () => shown() === 'alpha' && entries().length);
+    const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
+    const count = entries().length;
+    await post('/__stub/agent-run?machine=alpha');
+    await until('the agent run, brought by a tick', () => last().textContent.includes('ran uptime') && entries().length === count + 1, 8000);
+    await post('/__stub/agent-add');
+    await until('the machine the agent added, brought by a tick', () => tab('rack/epsilon'), 8000);
+    await autoOff();
+    await choose('rack/epsilon');
+    const slashed = text('#output') === 'No command run on rack/epsilon yet.';
+    clearToasts();
+    $('#remove').click();
+    (await until('the question for rack/epsilon', question)).querySelector('[data-index="1"]').click();
+    await until('rack/epsilon gone', () => !tab('rack/epsilon'));
+    await sleep(300);
+    return loading && running && slashed && !toasts('error').length;
+  });
+
+  await check('with no machines the panel says so', async () => {
+    await autoOff();
+    await post('/__stub/clear');
+    now();
+    await until('the empty state', () => text('#notice').includes('No machines'));
+    return tabs() === '' && $('#pane').hidden;
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

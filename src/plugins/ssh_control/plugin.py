@@ -32,15 +32,8 @@ class SSHControlHybridPlugin:
             command_history=self.command_history
         )
         
-        # Initialize web endpoints component
-        self.web_endpoints = SSHControlWebEndpoints(
-            name,
-            system_config,
-            mcp_config,
-            connection_manager=self.mcp_server.connection_manager,
-            command_history=self.command_history,
-            plugin=self
-        )
+        # Web endpoints component: the panel, on the MCP server's connections and history
+        self.web_endpoints = SSHControlWebEndpoints(self.mcp_server)
     
     # MCP Server interface methods
     async def call(self, tool: str | None = None, params: dict | None = None, *args, **kwargs):
@@ -75,10 +68,6 @@ class SSHControlHybridPlugin:
     def get_static_assets(self):
         """Delegate to web endpoints."""
         return self.web_endpoints.get_static_assets()
-    
-    def get_security_config(self):
-        """Delegate to web endpoints."""
-        return self.web_endpoints.get_security_config()
     
     async def close(self):
         """Clean up resources."""

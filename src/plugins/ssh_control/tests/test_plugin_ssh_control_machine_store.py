@@ -6,7 +6,6 @@ drifted apart: add wrote ``plugins.servers.ssh_control``, remove read
 ``servers.ssh_control``. Removal silently did nothing and reported success.
 Neither endpoint had a test, which is how that survived.
 """
-from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,21 +13,17 @@ import yaml
 
 from agent_system.config.models import AgentSystemConfig, MCPConfig
 from plugins.ssh_control import machine_store
-from plugins.ssh_control.web_endpoints import AddMachineRequest, SSHControlWebEndpoints
+from plugins.ssh_control.web_endpoints import NewMachine
 
 
 @pytest.fixture
 def panel():
-    """The web endpoints with a connection manager that accepts anything."""
-    manager = MagicMock()
-    manager.machines = {}
-    return SSHControlWebEndpoints(
-        name='ssh_control_test',
-        system_config=AgentSystemConfig(),
-        mcp_config=MCPConfig(),
-        connection_manager=manager,
-        command_history=deque(maxlen=10),
-    )
+    """The web endpoints of a plugin instance without configured machines."""
+    from plugins.ssh_control.plugin import PLUGIN_FACTORY
+
+    config = MCPConfig()
+    config.machines = []
+    return PLUGIN_FACTORY('ssh_control_test', AgentSystemConfig(), config).web_endpoints
 
 
 @pytest.fixture
@@ -59,10 +54,10 @@ def _stored(store_dir, instance='ssh_control_test'):
 async def test_the_panel_writes_the_store(panel, isolated_machine_store, ssh_ok):
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                AsyncMock(return_value=ssh_ok)):
-        result = await panel.add_machine(AddMachineRequest(
+        result = await panel.add_machine(None, NewMachine(
             name='panel-box', host='10.1.0.1', username='root', persistent=True))
 
-    assert result['persisted'] is True, result
+    assert result['persistent'] is True, result
     assert [m['name'] for m in _stored(isolated_machine_store)] == ['panel-box']
 
 
@@ -87,11 +82,10 @@ async def test_the_panel_removes_what_the_tool_stored(
     assert add['persistent'] is True, add.get('config_error')
     assert [m['name'] for m in _stored(isolated_machine_store)] == ['crossed']
 
-    panel.connection_manager.machines = {'crossed': MagicMock()}
-    panel.connection_manager.pools = {}
-    result = await panel.remove_machine(name='crossed', remove_from_config=True)
+    panel.server.connection_manager.machines = {'crossed': MagicMock()}
+    result = await panel.remove_machine(None, name='crossed')
 
-    assert result['config_removed'] is True, result
+    assert result['removed_from_config'] is True, result
     assert _stored(isolated_machine_store) == []
 
 
@@ -104,13 +98,13 @@ async def test_the_panel_refuses_a_password_machine(
     """
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                AsyncMock(return_value=ssh_ok)):
-        result = await panel.add_machine(AddMachineRequest(
+        result = await panel.add_machine(None, NewMachine(
             name='pw-box', host='10.1.0.3', username='root',
             auth_method='password', password='hunter2', persistent=True))
 
     assert result['success'] is True
-    assert result['persisted'] is False
-    assert 'password' in result['persistence_error'], result
+    assert result['persistent'] is False
+    assert 'password' in result['config_error'], result
     assert not (isolated_machine_store / 'machines.ssh_control_test.yaml').exists()
 
 
@@ -160,23 +154,3 @@ def test_a_failed_write_leaves_the_existing_store_intact():
 
     assert [m['name'] for m in machine_store.load('ssh_control_test')] == ['Old']
 
-
-def test_the_panel_delete_button_really_deletes():
-    """The UI must not offer persistence it cannot undo.
-
-    `panel.html` hardcoded `remove_from_config=false` on the DELETE call.
-    That was harmless while nothing read the store back; now a machine the
-    operator persisted and then removed in the UI would REAPPEAR at the next
-    restart. Asserted on the template because that string is the whole bug --
-    there is no Python between the button and the endpoint.
-    """
-    from pathlib import Path
-
-    panel_html = (Path(__file__).resolve().parents[1]
-                  / 'templates' / 'panel.html').read_text(encoding='utf-8')
-
-    assert 'remove_from_config=false' not in panel_html, \
-        "the panel's delete leaves the machine in the store -- it comes back"
-    assert 'remove_from_config=true' in panel_html
-    # And it must not send the operator to the file that never worked.
-    assert 'config/mcp.yaml' not in panel_html

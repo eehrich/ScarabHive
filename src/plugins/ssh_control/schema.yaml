@@ -205,87 +205,33 @@ web_ui:
   endpoints:
     - path: "/"
       method: "GET"
-      handler: "panel"
+      handler: "render_panel"
       response_type: "html"
-      description: "SSH control dashboard panel"
     - path: "/api/machines"
       method: "GET"
       handler: "list_machines"
       response_type: "json"
-      description: "List all configured machines with connection status"
-    - path: "/api/machines/{machine_name}/status"
-      method: "GET"
-      handler: "get_machine_status"
-      response_type: "json"
-      description: "Get detailed status for specific machine"
-    - path: "/api/machines/add"
+      description: "The machines with their connection state (active=true pings the ones connected to before)"
+    - path: "/api/machines"
       method: "POST"
       handler: "add_machine"
       response_type: "json"
-      description: "Dynamically add a new SSH machine (calls {{ name }}_add_machine tool)"
-      body_schema:
-        type: object
-        properties:
-          name:
-            type: string
-            description: "Unique machine name"
-          host:
-            type: string
-            description: "Hostname or IP"
-          port:
-            type: integer
-            description: "SSH port (default: 22)"
-          username:
-            type: string
-            description: "SSH username"
-          auth_method:
-            type: string
-            enum: ["key", "password", "agent"]
-          password:
-            type: string
-            description: "Password (not saved to config)"
-          key_path:
-            type: string
-            description: "Path to SSH key file"
-          tags:
-            type: array
-            items:
-              type: string
-          persistent:
-            type: boolean
-            description: "Save to config file (default: false)"
-          max_connections:
-            type: integer
-        required: ["name", "host", "username"]
-    - path: "/api/machines/{name}"
+      description: "Add a machine through {{ name }}_add_machine, into the store too if it is to be kept"
+    - path: "/api/machines/{name:path}"
       method: "DELETE"
       handler: "remove_machine"
       response_type: "json"
-      description: "Remove an SSH machine (calls {{ name }}_remove_machine tool)"
-      query_parameters:
-        remove_from_config:
-          type: boolean
-          description: "Also remove from config file (default: false)"
-    - path: "/api/history"
+      description: "Remove a machine through {{ name }}_remove_machine, from the store too"
+    - path: "/api/machines/{machine_name:path}/history"
       method: "GET"
-      handler: "get_command_history"
+      handler: "machine_history"
       response_type: "json"
-      description: "Get recent command execution history"
-    - path: "/api/machines/{machine_name}/history"
-      method: "GET"
-      handler: "get_machine_history"
-      response_type: "json"
-      description: "Get command execution history for a specific machine"
+      description: "The last commands run on a machine, oldest first"
     - path: "/api/execute"
       method: "POST"
-      handler: "execute_command"
+      handler: "run_command"
       response_type: "json"
-      description: "Execute command on remote machine"
-    - path: "/api/execute/stream"
-      method: "GET"
-      handler: "execute_command_stream"
-      response_type: "response"
-      description: "Execute command with streaming SSE output"
+      description: "Run a command on a machine"
 
 config:
   machines:

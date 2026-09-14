@@ -49,6 +49,10 @@ class ConnectionPool:
         
         self._lock = asyncio.Lock()
     
+    def has_free_slot(self) -> bool:
+        """Whether acquire() would get a slot without waiting for another command to finish."""
+        return not self._semaphore.locked()
+
     async def acquire(self, timeout: float = 30.0) -> asyncssh.SSHClientConnection:
         """Acquire connection from pool using semaphore for fairness.
         
@@ -92,8 +96,8 @@ class ConnectionPool:
             async with self._lock:
                 self.in_use.add(conn)
             return conn
-        except Exception:
-            # Release semaphore slot on failure
+        except BaseException:
+            # Release semaphore slot on failure, cancellation included
             self._semaphore.release()
             raise
     
@@ -295,34 +299,51 @@ class SSHConnectionManager:
             asyncssh.Error: On connection or execution failure
         """
         pool = await self._get_pool(machine_name)
-        conn = await pool.acquire()
-        
-        # Measure and cache latency on first use of this pool
-        if pool.last_latency_ms is None:
-            try:
-                ping_start = time.time()
-                await asyncio.wait_for(
-                    conn.run('echo 1', check=False),
-                    timeout=2.0
-                )
-                pool.last_latency_ms = (time.time() - ping_start) * 1000
-                logger.debug(f"Measured initial latency for {machine_name}: {pool.last_latency_ms:.1f}ms")
-            except Exception as e:
-                logger.debug(f"Failed to measure latency for {machine_name}: {e}")
-                pool.last_latency_ms = 0.0  # Set to 0 to avoid retrying
-        
         start_time = time.time()
         try:
+            conn = await pool.acquire()
+        except Exception as e:
+            # connect_timeout raises a bare TimeoutError
+            error = str(e) or ("Connection timed out" if isinstance(e, asyncio.TimeoutError) else type(e).__name__)
+            self._remember(machine_name, command, start_time, error=error)
+            if isinstance(e, asyncio.TimeoutError):
+                raise asyncio.TimeoutError(error) from e  # the agent's answer carries the reason the history does
+            raise
+
+        try:  # everything after the acquire, so that a cancelled call releases the connection too
+            # Measure and cache latency on first use of this pool
+            if pool.last_latency_ms is None:
+                try:
+                    ping_start = time.time()
+                    await asyncio.wait_for(
+                        conn.run('echo 1', check=False),
+                        timeout=2.0
+                    )
+                    pool.last_latency_ms = (time.time() - ping_start) * 1000
+                    logger.debug(f"Measured initial latency for {machine_name}: {pool.last_latency_ms:.1f}ms")
+                except Exception as e:
+                    logger.debug(f"Failed to measure latency for {machine_name}: {e}")
+                    pool.last_latency_ms = 0.0  # Set to 0 to avoid retrying
+
+            start_time = time.time()
             # Use machine's default timeout if not specified
             if timeout is None:
                 timeout = pool.config.command_timeout
             
             logger.debug(f"Executing command on {machine_name}: {command}")
             
-            result = await asyncio.wait_for(
-                conn.run(command, check=False),
-                timeout=timeout
-            )
+            try:
+                result = await asyncio.wait_for(
+                    conn.run(command, check=False),
+                    timeout=timeout
+                )
+            except Exception as e:
+                error = f"Timed out after {timeout}s" if isinstance(e, asyncio.TimeoutError) else str(e)
+                logger.error(f"Command failed on {machine_name} after {time.time() - start_time:.2f}s: {command}: {error}")
+                self._remember(machine_name, command, start_time, error=error)
+                if isinstance(e, asyncio.TimeoutError):
+                    raise asyncio.TimeoutError(error) from e
+                raise
             
             duration = time.time() - start_time
             
@@ -337,23 +358,9 @@ class SSHConnectionManager:
                 duration=duration
             )
             
-            # Add to command history if available (include stdout/stderr)
-            if self.command_history is not None:
-                # Store full output (up to 10KB to avoid memory issues)
-                stdout_full = result.stdout[:10000] if result.stdout else ''
-                stderr_full = result.stderr[:10000] if result.stderr else ''
-                entry = {
-                    'machine': machine_name,
-                    'command': command,
-                    'stdout_preview': stdout_full,
-                    'stderr_preview': stderr_full,
-                    'exit_code': command_result.exit_code,
-                    'duration': duration,
-                    'timestamp': start_time,
-                    'success': command_result.exit_code == 0
-                }
-                self.command_history.append(entry)
-            
+            self._remember(machine_name, command, start_time, stdout=result.stdout, stderr=result.stderr,
+                           exit_code=command_result.exit_code)
+
             # Audit log
             if self.audit_log_enabled:
                 self._audit_log('execute_command', machine_name, {
@@ -366,230 +373,25 @@ class SSHConnectionManager:
             
             return command_result
             
-        except asyncio.TimeoutError:
-            duration = time.time() - start_time
-            logger.error(f"Command timeout on {machine_name} after {duration:.2f}s: {command}")
-            raise
         finally:
             await pool.release(conn)
-    
-    async def execute_command_stream(
-        self,
-        machine_name: str,
-        command: str,
-        timeout: int | None = None
-    ):
-        """Execute command with streaming output (async generator for SSE).
-        
-        Args:
-            machine_name: Name of the machine
-            command: Command to execute
-            timeout: Command timeout in seconds (uses machine default if None)
-            
-        Yields:
-            Dict with 'type' (stdout/stderr/exit/error) and 'data' (output line or exit code)
-            
-        Raises:
-            ValueError: If machine not configured
-            asyncssh.Error: On connection or execution failure
-        """
-        pool = await self._get_pool(machine_name)
-        conn = await pool.acquire()
-        
-        start_time = time.time()
-        try:
-            # Use machine's default timeout if not specified
-            if timeout is None:
-                timeout = pool.config.command_timeout
-            
-            logger.debug(f"Executing streaming command on {machine_name}: {command}")
-            
-            # Yield start event
-            yield {
-                'type': 'start',
-                'data': {
-                    'machine': machine_name,
-                    'command': command,
-                    'timestamp': start_time
-                }
-            }
-            
-            # Create SSH process for real-time output
-            stdout_lines = []
-            stderr_lines = []
-            
-            async with conn.create_process(command) as process:
-                # Read stdout and stderr line by line using event-driven approach
-                stdout_done = False
-                stderr_done = False
-                
-                # Create task to wait for process completion with timeout
-                process_wait_task = asyncio.create_task(
-                    asyncio.wait_for(process.wait(), timeout=timeout)
-                )
-                
-                try:
-                    while not (stdout_done and stderr_done):
-                        # Create tasks for reading both streams
-                        tasks = [('process', process_wait_task)]
-                        
-                        if not stdout_done:
-                            stdout_task = asyncio.create_task(process.stdout.readline())
-                            tasks.append(('stdout', stdout_task))
-                        
-                        if not stderr_done:
-                            stderr_task = asyncio.create_task(process.stderr.readline())
-                            tasks.append(('stderr', stderr_task))
-                        
-                        # Wait for any stream to have data or process to complete (no polling!)
-                        task_set = {task for _, task in tasks}
-                        done, pending = await asyncio.wait(
-                            task_set,
-                            return_when=asyncio.FIRST_COMPLETED
-                        )
-                        
-                        # Check if process completed or timed out
-                        if process_wait_task in done:
-                            try:
-                                await process_wait_task
-                                # Process finished normally, exit loop to drain remaining output
-                                break
-                            except asyncio.TimeoutError:
-                                # Kill process on timeout
-                                process.kill()
-                                duration = time.time() - start_time
-                                yield {
-                                    'type': 'error',
-                                    'data': f'Command timeout after {duration:.2f}s'
-                                }
-                                # Cancel pending stream reads
-                                for _, task in tasks:
-                                    if task in pending and task != process_wait_task:
-                                        task.cancel()
-                                raise
-                        
-                        # Process completed stream reads
-                        for stream_name, task in tasks:
-                            if stream_name == 'process':
-                                continue
-                            
-                            if task in done:
-                                try:
-                                    line = await task
-                                    if line:
-                                        line_stripped = line.rstrip('\n')
-                                        if stream_name == 'stdout':
-                                            stdout_lines.append(line_stripped)
-                                            yield {
-                                                'type': 'stdout',
-                                                'data': line_stripped
-                                            }
-                                        else:  # stderr
-                                            stderr_lines.append(line_stripped)
-                                            yield {
-                                                'type': 'stderr',
-                                                'data': line_stripped
-                                            }
-                                    else:
-                                        # Empty line means stream closed
-                                        if stream_name == 'stdout':
-                                            stdout_done = True
-                                        else:
-                                            stderr_done = True
-                                except Exception as e:
-                                    logger.error(f"Error reading {stream_name}: {e}")
-                                    if stream_name == 'stdout':
-                                        stdout_done = True
-                                    else:
-                                        stderr_done = True
-                            elif task in pending:
-                                # Cancel pending stream read task
-                                task.cancel()
-                                try:
-                                    await task
-                                except asyncio.CancelledError:
-                                    pass
-                
-                finally:
-                    # Ensure process_wait_task is cleaned up
-                    if not process_wait_task.done():
-                        process_wait_task.cancel()
-                        try:
-                            await process_wait_task
-                        except (asyncio.CancelledError, asyncio.TimeoutError):
-                            pass
-                
-                # Drain any remaining output after process completion
-                remaining_stdout = await process.stdout.read()
-                if remaining_stdout:
-                    for line in remaining_stdout.splitlines():
-                        stdout_lines.append(line)
-                        yield {
-                            'type': 'stdout',
-                            'data': line
-                        }
-                
-                remaining_stderr = await process.stderr.read()
-                if remaining_stderr:
-                    for line in remaining_stderr.splitlines():
-                        stderr_lines.append(line)
-                        yield {
-                            'type': 'stderr',
-                            'data': line
-                        }
-                
-                # Yield exit code
-                exit_code = process.returncode or 0
-                duration = time.time() - start_time
-                
-                pool.total_commands += 1
-                
-                # Add to command history if available (with collected output)
-                if self.command_history is not None:
-                    stdout_full = '\n'.join(stdout_lines)
-                    stderr_full = '\n'.join(stderr_lines)
-                    # Store full output (up to 10KB to avoid memory issues)
-                    self.command_history.append({
-                        'machine': machine_name,
-                        'command': command,
-                        'stdout_preview': stdout_full[:10000] if stdout_full else '',
-                        'stderr_preview': stderr_full[:10000] if stderr_full else '',
-                        'exit_code': exit_code,
-                        'duration': duration,
-                        'timestamp': start_time,
-                        'success': exit_code == 0
-                    })
-                
-                yield {
-                    'type': 'exit',
-                    'data': {
-                        'exit_code': exit_code,
-                        'duration': duration,
-                        'success': exit_code == 0
-                    }
-                }
-                
-                # Audit log
-                if self.audit_log_enabled:
-                    self._audit_log('execute_command_stream', machine_name, {
-                        'command': command,
-                        'exit_code': exit_code,
-                        'duration': duration
-                    })
-                
-                logger.debug(f"Streaming command completed on {machine_name}: exit_code={exit_code}, duration={duration:.2f}s")
-        
-        except asyncio.TimeoutError:
-            raise
-        except Exception as e:
-            logger.info(f"Streaming command failed on {machine_name}: {e}")
-            yield {
-                'type': 'error',
-                'data': str(e)
-            }
-        finally:
-            await pool.release(conn)
-    
+
+    def _remember(self, machine_name: str, command: str, start_time: float, *, stdout: str | None = '',
+                  stderr: str | None = '', exit_code: int | None = None, error: str | None = None) -> None:
+        """The history the panel shows: every run, also one that failed, with up to 10 KB of each output."""
+        if self.command_history is None:
+            return
+        self.command_history.append({
+            'machine': machine_name,
+            'command': command,
+            'stdout_preview': (stdout or '')[:10000],
+            'stderr_preview': (stderr or '')[:10000],
+            'exit_code': exit_code,
+            'error': error,
+            'duration': time.time() - start_time,
+            'timestamp': start_time,
+        })
+
     async def upload_file(
         self,
         machine_name: str,

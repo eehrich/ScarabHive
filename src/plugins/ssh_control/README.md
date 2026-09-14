@@ -1,6 +1,6 @@
 # SSH Control Plugin
 
-The SSH Control plugin provides comprehensive SSH-based control and management of multiple remote Linux machines. It offers command execution, file operations, connection management, and a terminal-style web interface with real-time command streaming.
+The SSH Control plugin provides comprehensive SSH-based control and management of multiple remote Linux machines. It offers command execution, file operations, connection management, and a terminal-style panel.
 
 ## Overview
 
@@ -9,18 +9,11 @@ This plugin enables secure remote machine control through SSH with support for m
 ## Features
 
 ### Core Operations
-- **Command Execution**: Execute commands on remote machines with streaming output
+- **Command Execution**: Execute commands on remote machines
 - **File Operations**: Upload/download files via SCP/SFTP
 - **Connection Management**: Pooled connections with automatic reconnection
 - **Multi-machine Support**: Manage multiple SSH servers simultaneously
 - **Dynamic Provisioning**: Add/remove machines at runtime via MCP tools
-
-### Web Interface
-- **Terminal Emulation**: Tab-based terminal UI for each machine
-- **Real-time Streaming**: SSE-based command output streaming
-- **Status Monitoring**: Connection status and latency indicators
-- **Command History**: Persistent command history per machine
-- **Machine Management**: Add/remove machines via web UI modal
 
 ### Security
 - **Multiple Auth Methods**: SSH keys, passwords, SSH agent
@@ -135,33 +128,29 @@ servers:
 }
 ```
 
-### Web UI Usage
+## The panel
 
-#### Access Terminal Interface
-1. Navigate to the main web UI at `http://localhost:8000`
-2. Select the SSH Control panel from the plugin list
-3. Click on machine tabs to switch between servers
-4. Use the command input at the bottom to execute commands
+**SSH Machines** in the panel launcher (category *system*). One tab per machine, each with a dot for its
+connection: green with the latency once commands went through in the last five minutes, grey when not connected
+yet or idle, red when unreachable.
 
-#### Add Machine via Web UI
-1. Click the "+" button in the tab bar
-2. Fill in the machine details:
-   - Name (unique identifier)
-   - Host (hostname or IP)
-   - Port (default: 22)
-   - Username
-   - Authentication method (key/password/agent)
-   - Credentials (key path or password)
-   - Tags (optional, comma-separated)
-3. Check "Keep across restarts" to store the machine in
-   `data/ssh_control/machines.<instance>.yaml`. Password machines cannot be
-   stored: the secret would have to be written to disk.
-4. Click "Add Machine" to test connection and add
+- **Terminal.** The tab shows the last 50 commands run on that machine -- by agents and from the panel, failed runs
+  included -- with their output, exit code, duration and time. The line at the bottom runs a command on the machine
+  shown; while it runs, that machine's line is locked, the other machines stay usable. A machine that cannot be
+  reached or a command that does not finish within the machine's `command_timeout` is reported and recorded.
+- **Refreshing.** Every 5 seconds the panel looks at the machines and brings new commands and machines an agent
+  added. It does not connect for that. The refresh button also pings each machine that was connected to before, so
+  a machine gone away shows as unreachable. A machine whose connections are all busy is not pinged -- its last use
+  stands.
+- **Add machine.** Name, host, port, username and the way to authenticate. The connection is tested before the
+  machine is added (the same path as the `add_machine` tool); a refusal is shown in the dialog. *Keep across
+  restarts* stores it in `data/ssh_control/machines.<instance>.yaml` -- a machine with a password is added but not
+  stored, since no password is written to disk.
+- **Remove.** Asks first, then closes the machine's connections and removes it from the store too. A machine from
+  the configuration comes back at the next start; the panel says so.
 
-#### View Connection Status
-- Connected machines show latency in milliseconds (e.g., "45ms")
-- Disconnected machines show an em-dash (—)
-- Hover over status indicator for tooltip
+The panel never receives a password or a key path. Anyone who may open it may run commands on every machine:
+restrict `/plugins/<instance>/*` in `auth.plugin_security` if that is not everyone.
 
 ## Security Best Practices
 
@@ -186,30 +175,14 @@ servers:
 
 ## Web API Endpoints
 
-### Command Execution
-- `POST /plugins/ssh_control/api/execute`
-  - Body: `{"machine": "name", "command": "ls -la"}`
-  - Returns: `{"stdout": "...", "stderr": "...", "exit_code": 0, "duration": 1.23}`
+What the panel calls, under `/plugins/<instance>/`:
 
-### Machine Status
-- `GET /plugins/ssh_control/api/machines/{name}/status`
-  - Returns: `{"connected": true, "latency_ms": 45}`
-
-### Machine Management
-- `POST /plugins/ssh_control/api/machines/add`
-  - Body: Machine configuration with optional `persistent` flag
-  - Returns: `{"success": true, "machine": "name", "persisted": true}`
-- `DELETE /plugins/ssh_control/api/machines/{name}`
-  - Returns: `{"success": true, "message": "Machine removed"}`
-
-### Command History
-- `GET /plugins/ssh_control/api/machines/{name}/history?limit=50`
-  - Returns: Array of command history entries with timestamps
-
-### SSE Streaming
-- `GET /plugins/ssh_control/api/stream/{machine}`
-  - Server-Sent Events endpoint for real-time command output
-  - Subscribe with EventSource in browser
+- `GET api/machines[?active=true]` -- the machines and their connection state
+- `POST api/machines` -- add a machine (body like the `add_machine` tool); a refusal is `400`
+- `DELETE api/machines/{name}` -- remove a machine, from the store too; `404` if unknown
+- `GET api/machines/{name}/history` -- the last 50 runs, oldest first
+- `POST api/execute` -- `{"machine": "...", "command": "..."}`; `404` unknown machine, `502` not reachable,
+  `504` timed out
 
 ## Troubleshooting
 
@@ -218,17 +191,12 @@ servers:
 #### "SSH key not found"
 - **Cause**: The `key_path` points to a non-existent file
 - **Solution**: Verify the key path exists and is accessible to the API process
-- **Error Response**: `401 Authentication failed: SSH key not found: /path/to/key`
+- **Error Response**: `502 SSH key not found: /path/to/key`
 
-#### Disconnected Status (em-dash)
+#### Unreachable (red dot)
 - **Cause**: Machine is unreachable or authentication failed
 - **Check**: Verify host, port, and credentials are correct
 - **Test**: Use `ssh username@host -p port` from API host to test manually
-
-#### "Exit code: undefined" (legacy)
-- **Cause**: Old browser cache with outdated JavaScript
-- **Solution**: Clear browser cache and reload the SSH Control panel
-- **Note**: Modern UI shows explicit error messages
 
 ### Authentication Problems
 
@@ -266,7 +234,10 @@ src/plugins/ssh_control/
 ├── connection_manager.py # Connection pooling
 ├── auth.py               # Authentication helpers
 ├── templates/
-│   └── panel.html        # Web UI template
+│   └── panel.html        # Panel template (kit/panel_base.html)
+├── static/
+│   ├── panel.js          # Panel script
+│   └── panel.css         # Panel styles
 └── README.md            # This file
 ```
 
@@ -287,24 +258,10 @@ pytest tests/test_ssh_control_integration.py
 3. Add API endpoint in `web_endpoints.py` if needed
 4. Update this README with usage example
 
-#### Customize Web UI
-1. Edit `templates/panel.html` for UI changes
-2. Update JavaScript event handlers for new functionality
-3. Add corresponding API endpoints in `web_endpoints.py`
-
-## Error Handling
-
-The plugin provides detailed error responses with appropriate HTTP status codes:
-
-- `400 Bad Request`: Invalid parameters or malformed request
-- `401 Unauthorized`: Authentication failure (missing key, wrong password)
-- `403 Forbidden`: Permission denied on remote machine
-- `404 Not Found`: Machine not found in configuration
-- `500 Internal Server Error`: Unexpected server error
-- `503 Service Unavailable`: Connection refused by remote machine
-- `504 Gateway Timeout`: Connection or command timeout
-
-Web UI displays these errors as clear messages in the terminal output.
+#### Change the Panel
+1. `templates/panel.html`, `static/panel.js`, `static/panel.css` -- built on the UI kit (`/ui/kit`)
+2. Endpoints in `web_endpoints.py`, listed under `web_ui.endpoints` in `schema.yaml`
+3. `tests/test_plugin_ssh_control_panel.py` drives the panel in a real browser
 
 ## Examples
 
@@ -336,26 +293,6 @@ agent-cli "Download /var/log/app.log from staging to ./logs/ using ssh_control"
 ```bash
 # Execute on multiple machines
 agent-cli "Execute 'systemctl status nginx' on all production machines using ssh_control"
-```
-
-### Example 4: SSE Stream Subscription (JavaScript)
-```javascript
-// Subscribe to command stream
-const eventSource = new EventSource(
-  '/plugins/ssh_control/api/stream/production-web'
-);
-
-eventSource.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log('Command:', data.command);
-  console.log('Output:', data.stdout);
-  console.log('Exit code:', data.exit_code);
-};
-
-eventSource.onerror = (error) => {
-  console.error('SSE connection error:', error);
-  eventSource.close();
-};
 ```
 
 ## Version History
