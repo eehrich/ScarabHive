@@ -415,6 +415,7 @@
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2);
   padding: var(--space-8) var(--space-4); text-align: center; color: var(--text-muted); font-size: var(--text-sm);
 }
+.pk-stats > .pk-empty { grid-column: 1 / -1; }  /* a notice in place of the figures spans the row */
 .pk-empty > .pk-icon { width: 28px; height: 28px; color: var(--text-muted); stroke-width: 1.5; }
 .pk-empty-title { font-size: var(--text-md); font-weight: 600; color: var(--text-secondary); }
 
