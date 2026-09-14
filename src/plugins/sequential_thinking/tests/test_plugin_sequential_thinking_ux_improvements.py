@@ -30,7 +30,6 @@ def plugin_server():
         max_thoughts_in_prompt=5,
         show_branch_info=True,
         format="markdown",
-        show_relative_timestamps=True,
         show_quick_actions=True,
         max_sessions_in_prompt=2
     )
@@ -43,30 +42,41 @@ def plugin_server():
 
 
 @pytest.mark.asyncio
-async def test_relative_timestamp_formatting(plugin_server):
-    """Test that relative timestamps are correctly formatted."""
-    now = datetime.now()
-    
-    # Test seconds
-    dt = now - timedelta(seconds=30)
-    assert plugin_server._relative_time(dt) == "30s ago"
-    
-    # Test minutes
-    dt = now - timedelta(minutes=5)
-    assert plugin_server._relative_time(dt) == "5m ago"
-    
-    # Test hours
-    dt = now - timedelta(hours=2)
-    assert plugin_server._relative_time(dt) == "2h ago"
-    
-    # Test days
-    dt = now - timedelta(days=3)
-    assert plugin_server._relative_time(dt) == "3d ago"
+@pytest.mark.parametrize("sessions", [1, 2])
+async def test_the_injection_does_not_change_while_the_session_does_not(plugin_server, sessions):
+    """It sits right behind the system prompt and is rebuilt before every step.
+    "Started: 19s ago" / "(8s ago)" changed it on every call and re-billed the
+    whole conversation behind it."""
+    agent_session_id = "test_agent_session"
+    for s in range(sessions):
+        await plugin_server.call("sequential_thinking", {
+            "thought": f"Initial analysis {s}", "thought_number": 1, "total_thoughts": 3,
+            "next_thought_needed": True, "_status": AsyncMock(), "_session_id": agent_session_id,
+            "session_id": f"think{s:06d}"})
+
+    async def injected():
+        context = HookContext(
+            hook_type=HookType.PRE_LLM_CALL, request_id="test-req",
+            messages=[ChatMessage(role="system", content="You are helpful")],
+            session_id=agent_session_id, agent=MagicMock())
+        return (await plugin_server.on_pre_llm_call(context)).context.messages[1].content
+
+    first = await injected()
+    for session in plugin_server._sessions.values():   # ninety seconds pass
+        session.created_at -= timedelta(seconds=90)
+        for thought in session.thoughts:
+            thought.timestamp -= timedelta(seconds=90)
+    second = await injected()
+
+    assert "Initial analysis" in first, "fixture: no session was injected"
+    assert ("Active Sequential Thinking Sessions (2)" in first) is (sessions == 2), (
+        "fixture: the multi-session view was not the one rendered")
+    assert first == second, "the injected block changed with the clock alone"
 
 
 @pytest.mark.asyncio
-async def test_hook_with_relative_timestamps(plugin_server):
-    """Test that hook includes relative timestamps when enabled."""
+async def test_hook_shows_session_progress(plugin_server):
+    """The hook shows the active session and its progress."""
     agent_session_id = "test_agent_session"
     
     # Create a thinking session with some thoughts
@@ -108,10 +118,9 @@ async def test_hook_with_relative_timestamps(plugin_server):
     assert result.success
     assert result.modified
     
-    # Check that prompt includes relative timestamp indicators
     injected_msg = result.context.messages[1]
-    assert "**Started**:" in injected_msg.content
-    assert "ago" in injected_msg.content  # Should show "Xs ago" or similar
+    assert "**Progress**: 2/3" in injected_msg.content
+    assert "ago" not in injected_msg.content
 
 
 @pytest.mark.asyncio
@@ -332,38 +341,3 @@ async def test_hook_shows_branch_switch_action_with_branches(plugin_server):
     assert "Switch branch:" in injected_msg.content or "branch_id=" in injected_msg.content
 
 
-@pytest.mark.asyncio
-async def test_relative_timestamps_can_be_disabled(plugin_server):
-    """Test that relative timestamps can be disabled via config."""
-    # Disable relative timestamps
-    plugin_server.mcp_config.show_relative_timestamps = False
-    
-    agent_session_id = "test_agent_session"
-    
-    # Create session
-    params = {
-        "thought": "Test thought",
-        "thought_number": 1,
-        "total_thoughts": 3,
-        "next_thought_needed": True,
-        "_status": AsyncMock(),
-        "_session_id": agent_session_id
-    }
-    await plugin_server.call("sequential_thinking", params)
-    
-    # Call hook
-    context = HookContext(
-        hook_type=HookType.PRE_LLM_CALL,
-        request_id="test-req",
-        messages=[ChatMessage(role="system", content="You are helpful")],
-        session_id=agent_session_id,
-        agent=MagicMock()
-    )
-    
-    result = await plugin_server.on_pre_llm_call(context)
-    
-    # Should NOT include "Started:" or timestamp indicators
-    injected_msg = result.context.messages[1]
-    assert "Started:" not in injected_msg.content
-    # Should still show progress
-    assert "**Progress**:" in injected_msg.content

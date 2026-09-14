@@ -6,7 +6,6 @@ hooks:
     description: "Inject active sessions into system prompt"
     category: "prompt_injection"
     order:
-      after: ["context_optimization"]
       before: ["message_validation"]
 
 config:
@@ -28,11 +27,6 @@ config:
     type: boolean
     default: true
     description: "Show branch information"
-  
-  show_relative_timestamps:
-    type: boolean
-    default: true
-    description: "Relative timestamps ('2m ago' vs absolute)"
   
   show_quick_actions:
     type: boolean

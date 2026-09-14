@@ -355,21 +355,6 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 f"removed {excess} oldest thoughts"
             )
 
-    def _relative_time(self, dt: datetime) -> str:
-        """Format datetime as relative time (e.g., '2m ago', '1h ago')."""
-        now = datetime.now()
-        delta = now - dt
-
-        seconds = int(delta.total_seconds())
-        if seconds < 60:
-            return f"{seconds}s ago"
-        elif seconds < 3600:
-            return f"{seconds // 60}m ago"
-        elif seconds < 86400:
-            return f"{seconds // 3600}h ago"
-        else:
-            return f"{seconds // 86400}d ago"
-
     def _get_branch_tree(self, session: SessionState) -> dict[str, Any]:
         """Get branch tree visualization."""
         tree = {}
@@ -948,21 +933,20 @@ sequential_thinking(
         show_branch_info: bool,
         format_type: str = "markdown"
     ) -> str:
-        """Format active session for injection into prompt."""
-        # Get config options for UX improvements
-        show_relative_timestamps = getattr(self.mcp_config, "show_relative_timestamps", True)
+        """Format active session for injection into prompt.
+
+        Nothing here may change unless the session does. The message sits right
+        behind the system prompt and is rebuilt before every step; it used to
+        carry "Started: 19s ago" and "(8s ago)" per thought, so every call of a
+        run changed the front of the prompt and re-billed the whole
+        conversation behind it, on steps that never touched this tool.
+        """
         show_quick_actions = getattr(self.mcp_config, "show_quick_actions", True)
 
         if format_type == "markdown":
             lines = []
             lines.append("## Active Sequential Thinking Session\n")
             lines.append(f"**Session ID**: `{session.session_id}`")
-
-            # Add relative timestamp for session age if enabled
-            if show_relative_timestamps:
-                session_age = self._relative_time(session.created_at)
-                lines.append(f"**Started**: {session_age}")
-
             lines.append(f"**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts\n")
 
             # Show recent thoughts
@@ -974,16 +958,11 @@ sequential_thinking(
                     branch_tag = f" [{thought.branch_id}]" if show_branch_info and thought.branch_id != "main" else ""
                     revision_tag = f" (revises #{thought.revises_thought})" if thought.is_revision else ""
 
-                    # Add relative timestamp if enabled
-                    time_tag = ""
-                    if show_relative_timestamps:
-                        time_tag = f" *({self._relative_time(thought.timestamp)})*"
-
                     # Truncate long thoughts
                     content = thought.content[:150] + "..." if len(thought.content) > 150 else thought.content
 
                     lines.append(
-                        f"- **Thought #{thought.number}**{branch_tag}{revision_tag}{time_tag}: {content}"
+                        f"- **Thought #{thought.number}**{branch_tag}{revision_tag}: {content}"
                     )
 
             # Show branch info if enabled
@@ -1036,13 +1015,6 @@ sequential_thinking(
             for i, session in enumerate(sessions, 1):
                 # Session header
                 lines.append(f"### Session {i}: `{session.session_id}`")
-
-                # Add relative timestamp if enabled
-                show_relative_timestamps = getattr(self.mcp_config, "show_relative_timestamps", True)
-                if show_relative_timestamps:
-                    session_age = self._relative_time(session.created_at)
-                    lines.append(f"**Started**: {session_age}")
-
                 lines.append(f"**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts")
 
                 # Show recent thoughts (reduced for multi-session view)
@@ -1054,14 +1026,9 @@ sequential_thinking(
                     for thought in recent_thoughts:
                         branch_tag = f" [{thought.branch_id}]" if show_branch_info and thought.branch_id != "main" else ""
 
-                        # Add relative timestamp if enabled
-                        time_tag = ""
-                        if show_relative_timestamps:
-                            time_tag = f" *({self._relative_time(thought.timestamp)})*"
-
                         # Truncate for compactness
                         content = thought.content[:100] + "..." if len(thought.content) > 100 else thought.content
-                        lines.append(f"- **#{thought.number}**{branch_tag}{time_tag}: {content}")
+                        lines.append(f"- **#{thought.number}**{branch_tag}: {content}")
 
                 # Add divider between sessions (except after last)
                 if i < len(sessions):

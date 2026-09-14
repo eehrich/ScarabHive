@@ -249,6 +249,102 @@ class TestLayerTwo:
         assert not any("fetched" in r[0] for r in rows), "a retrieval answer went back into the archive"
 
 
+class TestTheCurrentRequestBehindLoopNotes:
+    """In a continued session the agent loop adds marked user messages after the
+    request (step budget note, loop intervention, follow-up). "The last user
+    message" was then the note, and the request itself was an old turn."""
+
+    @staticmethod
+    def _continued_session(request_content):
+        messages = [{"role": "system", "content": "prompt"}]
+        for t in range(30):
+            messages += [{"role": "user", "content": f"old question {t}"},
+                         {"role": "assistant", "content": f"old answer {t} " + "text " * 300}]
+        messages.append({"role": "user", "content": request_content})
+        for n in range(2):
+            messages += [{"role": "assistant", "content": None, "tool_calls": [_call(f"c{n}")]},
+                         {"role": "tool", "tool_call_id": f"c{n}", "name": "read", "content": "ok"},
+                         {"role": "user", "content": f"Step {n + 4} of 5", "injected_by": "agent.step_budget"}]
+        return messages
+
+    @pytest.mark.asyncio
+    async def test_layer3_keeps_the_request(self, tmp_path):
+        # A target below what the request's own turn weighs: the cut has to reach it.
+        strategy, _ = _strategy(tmp_path, layer3_threshold=1, target_tokens=1, drop_after_turns=100)
+
+        result = await strategy.compact(self._continued_session("THE CURRENT TASK"),
+                                        current_tokens=100_000, force=True)
+
+        contents = [m.get("content") for m in result.modified_messages]
+        assert "old question 29" not in contents, "fixture: the cut did not get past the old turns"
+        assert "THE CURRENT TASK" in contents
+
+    @pytest.mark.asyncio
+    async def test_the_message_limit_keeps_the_request(self, tmp_path):
+        strategy, _ = _strategy(tmp_path, max_messages=12)
+
+        result = await strategy.compact(self._continued_session("THE CURRENT TASK"),
+                                        current_tokens=100, force=True)
+
+        assert result.messages_pruned > 0, "fixture: Pre-Layer P removed nothing"
+        assert "THE CURRENT TASK" in [m.get("content") for m in result.modified_messages]
+
+    @pytest.mark.asyncio
+    async def test_layer1_keeps_the_picture_of_the_request(self, tmp_path):
+        strategy, _ = _strategy(tmp_path, layer1_threshold=1)
+        payload = base64.b64encode(b"x" * 750_000).decode()
+        messages = self._continued_session([
+            {"type": "text", "text": "what is on this screenshot?"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{payload}"}}])
+        messages.insert(1, {"role": "user", "content": [
+            {"type": "text", "text": "an old screenshot"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{payload}"}}]})
+
+        result = await strategy.compact(messages, current_tokens=100_000, force=True)
+
+        pictures = [m for m in result.modified_messages if payload in str(m.get("content"))]
+        assert len(pictures) == 1, f"fixture: {len(pictures)} pictures left, the old one was not compacted"
+        assert "what is on this screenshot?" in str(pictures[0]["content"])
+
+    @pytest.mark.asyncio
+    async def test_the_media_event_keeps_the_picture_of_the_request(self, tmp_path):
+        """Input drained at the start of a step is followed by the step note."""
+        strategy, _ = _strategy(tmp_path, compact_media_after_user_message=True, deduplicate_media=False)
+        old = base64.b64encode(b"o" * 50_000).decode()
+        new = base64.b64encode(b"n" * 50_000).decode()
+        messages = self._continued_session([
+            {"type": "text", "text": "what is on this screenshot?"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{new}"}}])
+        messages.insert(1, {"role": "user", "content": [
+            {"type": "text", "text": "an old screenshot"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{old}"}}]})
+
+        result = await strategy.compact(messages, current_tokens=100, force=True, trigger_event="user_message")
+
+        kept = str(result.modified_messages)
+        assert old not in kept, "fixture: the event evicted nothing"
+        assert new in kept, "the request's picture was evicted because a note came after it"
+
+    @pytest.mark.asyncio
+    async def test_an_archived_loop_message_keeps_its_marker(self, tmp_path):
+        """Unmarked, an archived follow-up counts as a message a person wrote."""
+        strategy, _ = _strategy(tmp_path, layer2_threshold=1, archive_after_turns=1)
+        messages = [{"role": "system", "content": "prompt"},
+                    {"role": "user", "content": "the task"},
+                    {"role": "assistant", "content": "answer " + "text " * 300},
+                    {"role": "user", "content": "the follow-up " + "text " * 300,
+                     "injected_by": "agent_continuation.followup"},
+                    {"role": "assistant", "content": "answer " + "text " * 300},
+                    {"role": "user", "content": "the latest"}]
+
+        result = await strategy.compact(messages, current_tokens=100_000, force=True)
+
+        pointers = [m for m in result.modified_messages if "archived_ref" in str(m.get("content"))]
+        followup = [m for m in pointers if m.get("role") == "user" and m is not result.modified_messages[1]]
+        assert followup, f"fixture: the follow-up was not archived: {result.modified_messages}"
+        assert followup[0].get("injected_by") == "agent_continuation.followup"
+
+
 class TestCoreMemoryEviction:
 
     @pytest.mark.asyncio

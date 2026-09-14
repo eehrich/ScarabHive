@@ -127,6 +127,31 @@ class TestEventBasedMediaCompaction:
             f"Expected compaction hint in content, got: {content_text}"
     
     @pytest.mark.asyncio
+    async def test_a_loop_note_after_tool_results_is_no_new_user_message(self, hooks_impl, tmp_path):
+        """The step budget note ends the history on the last steps of a run; read
+        as a user message it evicted old media and rewrote old messages there."""
+        audio_file = tmp_path / "test_audio.mp3"
+        audio_file.write_bytes(b"x" * 1024)
+        messages = [
+            {"role": "user", "content": "an old message with media",
+             "multimodal_content": [{"type": "audio", "path": str(audio_file), "mime_type": "audio/mpeg"}]},
+            {"role": "assistant", "content": "I processed your audio"},
+            {"role": "user", "content": "the request"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "name": "read", "content": "ok"},
+            {"role": "user", "content": "Step 29 of 30", "injected_by": "agent.step_budget"},
+        ]
+        context = HookContext(hook_type="pre_llm_call", request_id="r", session_id="s", agent=None,
+                              agent_name="test_agent", messages=messages, metadata={}, step=28)
+
+        result = await hooks_impl.engineer_context(context)
+
+        first = result.context.messages[0]
+        media = first.get("multimodal_content") if isinstance(first, dict) else first.multimodal_content
+        assert media, "the old audio was evicted on a note"
+
+    @pytest.mark.asyncio
     async def test_no_compaction_without_event_below_threshold(self, hooks_impl, tmp_path):
         """Test that compaction is skipped below threshold without event trigger."""
         # Disable event-based compaction

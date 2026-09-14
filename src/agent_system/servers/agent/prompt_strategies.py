@@ -169,22 +169,9 @@ class TemplateFileStrategy(PromptStrategy):
             context.agent_name, system_template_path
         )
 
-        rendered = render_prompts(
-            system_template_path,
-            context_vals,
-            auto_datetime=(
-                context.system_config.context.auto_datetime
-                if hasattr(context.system_config, 'context') else False
-            ),
-            timezone=(
-                context.system_config.context.timezone
-                if hasattr(context.system_config, 'context') else None
-            ),
-            location=(
-                context.system_config.context.location
-                if hasattr(context.system_config, 'context') else None
-            )
-        )
+        # The datetime values are already in context_vals, beneath the
+        # template_vars; merging them again here would override a pinned date.
+        rendered = render_prompts(system_template_path, context_vals, auto_datetime=False)
         system_prompt = rendered.get("system_prompt", "")
         if not system_prompt.strip():
             # A configured template that renders empty (empty file, or a body

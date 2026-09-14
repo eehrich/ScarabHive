@@ -851,6 +851,40 @@ class Agent(MCPServer):
         """
         return None
 
+    #: Agents with fewer allowed steps get no step-budget note: a judge or
+    #: extractor that answers in one call would read "finish now" as part of
+    #: its task.
+    _STEP_BUDGET_NOTE_MIN_STEPS = 5
+    #: The note rides on this many of the last steps.
+    _STEP_BUDGET_NOTE_LAST_STEPS = 2
+
+    @classmethod
+    def _step_budget_note(cls, step: int, max_steps: int) -> Optional[ChatMessage]:
+        """A note on the steps left, for the last steps of a run; else None.
+
+        The step count used to sit in the system prompt ("Current step: 3/30").
+        That prompt is re-rendered before every step and is the start of the
+        prefix the provider caches, so every call re-billed the conversation
+        behind it. The note goes into the history instead, like a loop
+        intervention: sent only at the tail of one call, it would be missing
+        from the next call's prefix, and a provider that caches at the last
+        message (Anthropic) would find nothing to read back.
+        """
+        steps_left = max_steps - (step + 1)
+        if max_steps < cls._STEP_BUDGET_NOTE_MIN_STEPS or steps_left >= cls._STEP_BUDGET_NOTE_LAST_STEPS:
+            return None
+        if steps_left == 0:
+            note = (f"This is step {max_steps} of {max_steps}, the last one. Finish now with what "
+                    f"your task requires, the final answer or the closing tool call, using what "
+                    f"you have, and say what is still missing.")
+        else:
+            note = (f"Step {step + 1} of {max_steps}: {steps_left} step left after this one. "
+                    f"Start wrapping up and do not begin new lines of work.")
+        # Marked: hooks that look for the last message a person wrote (OKF seeds,
+        # scripted follow-ups, tool preloads, compaction) must not take this one.
+        return ChatMessage(role="user", content=note, timestamp=datetime.now(timezone.utc),
+                           injected_by="agent.step_budget")
+
     # ------------------------------------------------------------------
     # Pre-LLM Message Selection
     # ------------------------------------------------------------------
@@ -2255,12 +2289,18 @@ class Agent(MCPServer):
                 llm_display = f" ({display_profile_info})" if display_profile_info else " (unknown LLM)"
             await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
 
-            # Update system message with current step number
-            # Pass session_id to use session-scoped template vars
+            # Re-render the system message (session-scoped template vars may have
+            # changed). Keep it free of per-step values: it is the cached prefix.
+            # The step count reaches the model through _step_budget_note.
             updated_system_msg, _ = self._render_prompts(
                 context.available_tools, max_steps, current_step=step + 1, session_id=context.session_id
             )
             messages[0] = ChatMessage(role="system", content=updated_system_msg)
+
+            budget_note = self._step_budget_note(step, max_steps)
+            if budget_note is not None:
+                messages.append(budget_note)
+                context.messages = messages
 
             # Emit thinking event before LLM call (for UI step display)
             yield {"type": "thinking", "step": step + 1}
@@ -2937,7 +2977,9 @@ class Agent(MCPServer):
                     logger.warning(f"Empty response #{consecutive_empty_responses}: Injecting 'Continue' user message to prompt LLM")
                     # Instead of breaking, inject a "Continue" user message to nudge the LLM
                     # This mimics the user typing "weiter" or "continue" manually
-                    continue_message = ChatMessage(role="user", content="Continue with your task.")
+                    continue_message = ChatMessage(role="user", content="Continue with your task.",
+                                                   timestamp=datetime.now(timezone.utc),
+                                                   injected_by="agent.empty_response")
                     messages.append(continue_message)
                     # Don't reset counter - if we get another empty response after this, we'll inject again
                     # But cap at a reasonable limit to prevent truly infinite loops
@@ -2981,7 +3023,8 @@ class Agent(MCPServer):
                     pending_intervention_msg = ChatMessage(
                         role="user",
                         content=loop_result.intervention,
-                        timestamp=datetime.now(timezone.utc)
+                        timestamp=datetime.now(timezone.utc),
+                        injected_by="agent.loop_intervention",
                     )
                     
                     # Emit status event for visibility
@@ -3266,7 +3309,8 @@ class Agent(MCPServer):
                 "Please provide your final answer NOW based on the information you have gathered. "
                 "Do NOT use any tools in this response - just give me your best answer or summary of what you've accomplished."
             ),
-            timestamp=datetime.now(timezone.utc)
+            timestamp=datetime.now(timezone.utc),
+            injected_by="agent.max_steps",
         )
         messages.append(final_user_message)
 

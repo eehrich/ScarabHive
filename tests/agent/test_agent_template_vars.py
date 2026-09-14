@@ -271,6 +271,29 @@ class TestTemplateFileWithTemplateVars:
         # Built-in vars
         assert "5/20" in system_prompt
 
+    def test_template_vars_pin_the_date_in_a_file_template(
+        self, tmp_path: Path, mock_system_config: AgentSystemConfig, mock_agent_instance: MagicMock
+    ) -> None:
+        """The raw strategy honoured a pinned date; the file strategy merged the
+        clock in a second time, on top of the template_vars."""
+        template_file = tmp_path / "agent_prompt.md"
+        template_file.write_text("Today is {{ current_date }}.", encoding="utf-8")
+        mock_system_config.context.auto_datetime = True
+        context = PromptContext(
+            agent_name="test_agent",
+            agent_config=AgentConfig(system_template=str(template_file),
+                                     template_vars={"current_date": "2000-01-01"}),
+            system_config=mock_system_config,
+            available_tools=[],
+            max_steps=20,
+            current_step=5,
+            agent_instance=mock_agent_instance,
+        )
+
+        system_prompt, _ = TemplateFileStrategy().render(context)
+
+        assert system_prompt == "Today is 2000-01-01."
+
 
 class TestPromptRendererWithTemplateVars:
     """Integration tests for PromptRenderer with template_vars."""

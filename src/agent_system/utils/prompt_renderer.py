@@ -198,7 +198,7 @@ def render_prompts(template_path: str, context: Dict[str, Any], auto_datetime: b
     """Render a markdown/text prompt template into a single ``system_prompt``.
 
     The entire file is the system prompt, rendered with Jinja2 (e.g.
-    ``{{ current_date }}``, ``{{ tools }}``, ``{{ current_step }}``). Templates
+    ``{{ current_date }}``, ``{{ tools }}``, ``{{ max_steps }}``). Templates
     are ``.md`` / ``.txt`` / ``.markdown``.
 
     The former multi-section YAML format (``system_prompt`` / ``tools_prompt`` /

@@ -84,6 +84,12 @@ def _role(message: Any) -> str:
     return getattr(message, "role", "")
 
 
+def _injected_by(message: Any) -> str | None:
+    if isinstance(message, dict):
+        return message.get("injected_by")
+    return getattr(message, "injected_by", None)
+
+
 def _json_native(value: Any) -> Any:
     """A value json.dumps can serialise, whatever YAML produced.
 
@@ -273,7 +279,12 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
         unchanged = HookResult(success=True, modified=False, context=context)
         try:
             messages = context.messages
-            if not messages or _role(messages[-1]) != "user":
+            # The turn a person opened, behind any note the loop added after it
+            # (the step budget note follows drained user input).
+            last = len(messages) - 1
+            while last >= 0 and _role(messages[last]) == "user" and _injected_by(messages[last]):
+                last -= 1
+            if last < 0 or _role(messages[last]) != "user":
                 return unchanged
 
             config = context.hook_config or {}
@@ -286,7 +297,7 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                 return unchanged
 
             # Bounded before it ever reaches a regex — see MATCH_TEXT_LIMIT.
-            text = _user_text(messages[-1])[:MATCH_TEXT_LIMIT]
+            text = _user_text(messages[last])[:MATCH_TEXT_LIMIT]
             if not text:
                 return unchanged
 

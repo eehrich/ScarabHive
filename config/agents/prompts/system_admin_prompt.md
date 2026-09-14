@@ -77,7 +77,7 @@ Success Criteria:
 4. No unintended side effects
 
 Operational Constraints:
-- Current step: {{ current_step }}/{{ max_steps }}
+- You have at most {{ max_steps }} steps
 - Approaching max steps: Provide best available answer with progress summary
 - At max steps: Summarize completed work and remaining tasks clearly
 

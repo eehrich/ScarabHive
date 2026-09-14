@@ -298,7 +298,7 @@ agent_config:
 
 For complex, reusable prompts, put the prompt in a **markdown file**. The whole
 file is the system prompt and is rendered with Jinja2 (`{{ current_date }}`,
-`{{ tools }}`, `{{ current_step }}`, etc.). (The old multi-section YAML format —
+`{{ tools }}`, `{{ max_steps }}`, etc.). (The old multi-section YAML format —
 `system_prompt` / `tools_prompt` / `general_instructions_prompt` keys — has been
 removed; use one markdown file.)
 
@@ -322,7 +322,7 @@ Available Tools: {% if tools %}{{ tools | join(', ') }}{% else %}(none){% endif 
 
 ## Context
 - Current date: {{ current_date }}
-- Current step: {{ current_step }}/{{ max_steps }}
+- You have at most {{ max_steps }} steps
 ```
 
 Reference in agent config (per-agent variables via `template_vars`):
@@ -376,10 +376,10 @@ The following variables are automatically available in all templates:
 |----------|-------------|
 | `tools` | List of available tool names |
 | `max_steps` | Maximum reasoning steps configured |
-| `current_step` | Current step number (1-indexed) |
+| `current_step` | Current step number (1-indexed) — **changes every call, see below** |
 | `current_date` | Current date (YYYY-MM-DD) |
-| `current_time` | Current time (HH:MM:SS) |
-| `current_datetime` | ISO format datetime |
+| `current_time` | Current time (HH:MM:SS) — **changes every call, see below** |
+| `current_datetime` | ISO format datetime — **changes every call, see below** |
 | `current_timezone` | Configured timezone |
 | `current_location` | Configured location |
 | `current_weekday` | Day name (e.g., "Monday") |
@@ -387,6 +387,14 @@ The following variables are automatically available in all templates:
 | `current_year` | Year (e.g., 2025) |
 
 Custom `template_vars` are merged with these built-in variables. **Custom variables take precedence** if there's a name conflict.
+
+**Keep the system prompt stable.** It is re-rendered before every step and is the
+start of the prompt the provider caches; a value that differs from one call to
+the next re-bills the whole conversation behind it, on every call. So no
+`current_step`, `current_time`, `current_datetime` or `unix_timestamp` in a
+system prompt (`tests/config/test_prompts_have_no_ticking_clock.py` enforces
+it). `current_date` changes once a day and is fine; an agent that needs the
+exact time has the `datetime` tool.
 
 #### Using with Template Files
 
@@ -409,7 +417,7 @@ You are a specialized assistant for **{{ project_name }}**.
 
 ## Current Context
 Today is {{ current_weekday }}, {{ current_date }}.
-You are on step {{ current_step }} of {{ max_steps }}.
+You have at most {{ max_steps }} steps.
 ```
 
 **config/agents/my_agent.yaml:**

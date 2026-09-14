@@ -852,11 +852,16 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Determine trigger event for media compaction BEFORE early return check
             # This is a pre_llm_call hook, so the last message is what the user just sent
             trigger_event = None
-            if messages_as_dicts:
-                last_msg = messages_as_dicts[-1]
-                last_role = last_msg.get("role", "")
-                if last_role == "user":
-                    trigger_event = "user_message"
+            # A person's message, behind any the agent loop added after it (the
+            # step budget note follows drained input): a note alone is no new
+            # turn, and evicting media on it rewrote old messages at the end of
+            # every long run.
+            last = len(messages_as_dicts) - 1
+            while (last >= 0 and messages_as_dicts[last].get("role") == "user"
+                   and messages_as_dicts[last].get("injected_by")):
+                last -= 1
+            if last >= 0 and messages_as_dicts[last].get("role") == "user":
+                trigger_event = "user_message"
                 # Note: final_response is detected in post-hooks, not here
             
             # Check if event-based media compaction should run even below threshold

@@ -459,6 +459,17 @@ def _is_archive_pointer(message: dict[str, Any]) -> bool:
     return _ref_type(message) == ARCHIVED_REF_TYPE
 
 
+def _request_user_indices(messages: list[dict[str, Any]]) -> set[int]:
+    """The user messages the current request stands on: the last one (the API
+    needs it) and the last one a person wrote. The agent loop adds marked user
+    messages after it (step budget note, loop intervention, follow-ups), and
+    the task or the image they refer to was compacted like any old turn."""
+    last = [i for i, msg in enumerate(messages) if msg.get("role") == "user"][-1:]
+    person = [i for i, msg in enumerate(messages)
+              if msg.get("role") == "user" and msg.get("injected_by") is None][-1:]
+    return {*last, *person}
+
+
 class LayeredCompactionStrategy:
     """Implements progressive context compaction.
     
@@ -1243,10 +1254,15 @@ class LayeredCompactionStrategy:
         if not messages:
             return
 
-        # Selection: everything but the newest message.
+        # Selection: everything but the newest message — and, while the turn
+        # runs, the request the agent loop's notes may follow. After the final
+        # response the request is done with.
+        keep = {len(messages) - 1}
+        if trigger == "user_message":
+            keep.update(_request_user_indices(messages))
         picks = []
         for msg_idx, item_idx, item, in_mm in self._iter_media(messages):
-            if msg_idx >= len(messages) - 1:
+            if msg_idx in keep:
                 continue
             if item.get("compacted") and not in_mm:
                 continue  # already a placeholder
@@ -1623,22 +1639,17 @@ class LayeredCompactionStrategy:
             # Layer 2 archives them by age instead, which is what actually ran.
 
             # Process user messages with multimodal content
-            # Only skip the LAST user message for audio/image/video media preservation
-            # text_file items should always be processed (they are code/text)
+            # Only skip the current request's user message for audio/image/video
+            # media preservation; text_file items should always be processed
+            # (they are code/text)
             elif msg.get("role") == "user":
-                # Find if this is the last user message
-                is_last_user_msg = all(
-                    messages[j].get("role") != "user" 
-                    for j in range(i + 1, len(messages))
-                )
-                
                 content = msg.get("content")
                 if content and isinstance(content, list):
-                    # For the last user message, only compact text_file items
+                    # For the current request, only compact text_file items
                     # (preserve audio/image/video inline data)
                     compacted_content = await self._compact_multimodal_content(
                         content, result, session_id=self._current_session_id,
-                        preserve_media=is_last_user_msg  # Preserve media in last user msg
+                        preserve_media=i in _request_user_indices(messages)
                     )
                     if compacted_content != content:
                         messages[i] = {**msg, "content": compacted_content}
@@ -1753,7 +1764,12 @@ class LayeredCompactionStrategy:
                     archived_msg["tool_call_id"] = msg["tool_call_id"]
                 if msg.get("name"):
                     archived_msg["name"] = msg["name"]
-            
+
+            # Who added it: an archived follow-up or loop note must not come
+            # back as a message a person wrote.
+            if msg.get("injected_by"):
+                archived_msg["injected_by"] = msg["injected_by"]
+
             messages[i] = archived_msg
             result.messages_archived += 1
         
@@ -1861,7 +1877,8 @@ class LayeredCompactionStrategy:
         protected = {i for i, msg in enumerate(messages) if self._is_protected(msg)}
         user_indices = [i for i, msg in enumerate(messages) if msg.get("role") == "user"]
         if user_indices:
-            protected.update((user_indices[0], user_indices[-1]))
+            protected.add(user_indices[0])
+            protected.update(_request_user_indices(messages))
 
         tail_start = len(messages)
         units = 0
@@ -1950,7 +1967,7 @@ class LayeredCompactionStrategy:
             # The FIRST one is the task everything else refers to: in a single
             # agent run they are the same message, but in a continued session
             # the task sits at the front and was the very first thing to go.
-            protected.add(user_indices[-1])
+            protected.update(_request_user_indices(messages))
             protected.add(user_indices[0])
 
         indices_to_remove = self._select_prune_candidates(

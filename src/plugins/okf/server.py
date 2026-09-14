@@ -904,9 +904,13 @@ class OkfServer(SchemaBasedMCPServer):
             messages = getattr(context, "messages", None) or []
             user_msg = ""
             for m in reversed(messages):
-                content = getattr(m, "content", None) if not isinstance(m, dict) else m.get("content")
-                role = getattr(m, "role", None) if not isinstance(m, dict) else m.get("role")
-                if role == "user" and isinstance(content, str) and content.strip():
+                get = m.get if isinstance(m, dict) else lambda key, m=m: getattr(m, key, None)
+                content, role = get("content"), get("role")
+                # Seeded from what a person wrote: a message the loop or a hook
+                # added (step note, follow-up, "continue") re-ranked the concepts
+                # and rewrote this block right behind the system prompt.
+                if (role == "user" and get("injected_by") is None
+                        and isinstance(content, str) and content.strip()):
                     user_msg = content
                     break
 

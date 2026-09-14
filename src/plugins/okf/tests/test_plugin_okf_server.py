@@ -645,6 +645,25 @@ class TestContextHook:
         assert injected.count("DEPRECATED") == 1, injected
 
     @pytest.mark.asyncio
+    async def test_a_note_the_loop_added_does_not_reseed(self, mock_system_config, tmp_path, bundle):
+        """The block sits right behind the system prompt: re-seeded from the
+        step budget note it changed on the last calls of a run and re-billed
+        the whole conversation."""
+        srv = self._server_with_hook(mock_system_config, tmp_path, bundle)
+        request = [SimpleNamespace(role="user", content="tell me about customers"),
+                   SimpleNamespace(role="assistant", content="reading")]
+        note = SimpleNamespace(role="user", injected_by="agent.step_budget",
+                               content="This is step 30 of 30, the last one. Finish now.")
+        plain = SimpleNamespace(messages=list(request), session_id="s1", hook_config={})
+        noted = SimpleNamespace(messages=[*request, note], session_id="s1", hook_config={})
+
+        await srv.on_pre_llm_call(plain)
+        await srv.on_pre_llm_call(noted)
+
+        assert self._injected(plain) and "Customers" in self._injected(plain), "fixture: nothing injected"
+        assert self._injected(noted) == self._injected(plain)
+
+    @pytest.mark.asyncio
     async def test_hook_config_per_agent_overrides(self, mock_system_config, tmp_path, bundle):
         # Server has NO hook_bundle default; the per-agent hooks.overrides supplies it.
         cfg = MCPConfig(type="okf", enabled=True,

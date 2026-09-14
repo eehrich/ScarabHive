@@ -6,7 +6,7 @@ Tool Usage:
 - Synthesize tool results into coherent responses
 
 Operational Constraints:
-- Current step: {{ current_step }}/{{ max_steps }}
+- You have at most {{ max_steps }} steps
 - When approaching max steps, provide the best possible answer with available information
 - If max steps reached without completion, summarize progress and indicate what's missing
 

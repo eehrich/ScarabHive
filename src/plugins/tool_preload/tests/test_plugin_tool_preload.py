@@ -271,6 +271,22 @@ class TestFiring:
         assert agent.calls == [("json_store_read", {"doc": "plan.md"})]
 
     @pytest.mark.asyncio
+    async def test_a_loop_note_behind_the_turn_neither_hides_nor_fires_it(self, plugin):
+        """The step budget note follows drained user input at the start of a step."""
+        rules = [{"match": "(?P<word>\\w+)", "tool": "json_store_read", "params": {"doc": "{word}"}}]
+        note = ChatMessage(role="user", content="Step 29 of 30: wrap up",
+                           injected_by="agent.step_budget")
+        agent = FakeAgent()
+
+        result = await plugin.preload(make_context([user("lies plan"), note], rules, agent))
+        assert result.modified is True
+        assert agent.calls == [("json_store_read", {"doc": "lies"})], "the note was read as the turn"
+
+        later = [user("lies plan"), note, ChatMessage(role="assistant", content="ok"), note]
+        result = await plugin.preload(make_context(later, rules, FakeAgent()))
+        assert result.modified is False, "a note alone opened a new turn"
+
+    @pytest.mark.asyncio
     async def test_no_rules_no_action(self, plugin):
         result = await plugin.preload(make_context([user("hallo")], []))
         assert result.modified is False
