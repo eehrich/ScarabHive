@@ -124,6 +124,11 @@ results = archive.search_semantic("how to handle large datasets", limit=5)
 
 Progressive compression strategy that applies increasingly aggressive techniques based on token budget.
 
+**Pre-Layer T (on arrival):**
+- A new tool result larger than `tool_result_max_window_share` (default 0.25) of the model's context window is stored right away, below every threshold and hysteresis. The agent reads it back with `read` (paged, or `find=` for the matching parts).
+- The bound is a share of the window, not a token count: a 1M model keeps a 100k chapter inline (the read tool pages 5000 characters at a time). Lower the share per agent for a tighter cap.
+- Only the current round (after the last assistant message the model wrote) is touched: messages a request already carried and their reasoning artifacts stay as they were sent. The one front change is the restoration block behind the system prompt, which explains how to read a stored result: it gains its "Tool Results" section when a session stores its first one, and for an agent whose calls normally skip the hook (no always-on media compaction) it is inserted whenever the hook runs — the same as on a Layer 1 run.
+
 **Layer 1 (Reversible):**
 - Store tool outputs with compact references
 - **Media Deduplication** - Auto-detect duplicate media by file hash, compact older duplicates (keep newest)

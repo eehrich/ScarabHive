@@ -326,6 +326,9 @@ class TestMessageShape:
         assert len(out) == 3
         assistant, tool = out[1], out[2]
         assert assistant.role == "assistant"
+        # Internal only (clients drop it): context_engineer's Pre-Layer T counts
+        # the round after the last assistant message the MODEL wrote as unsent.
+        assert assistant.injected_by == "tool_preload"
         tc = assistant.tool_calls[0]
         assert tc["function"]["name"] == "json_store_read"
         assert json.loads(tc["function"]["arguments"]) == {"doc": "plan.md"}

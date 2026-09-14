@@ -73,7 +73,10 @@ class CompactionConfig:
     tool_result_min_size: int = 500  # Min tokens to store externally
     tool_result_keep_last: int = 3   # Keep last N tool results inline (unless too large)
     tool_result_max_inline_size: int = 5000  # Max tokens before auto-archive (even if in last N)
-    
+    # A NEW tool result larger than this share of the model's context window is
+    # stored on arrival, below every threshold (Pre-Layer T). 0 disables it.
+    tool_result_max_window_share: float = 0.25
+
     # Message archival settings
     archive_after_turns: int = 10    # Archive messages older than N turns
     keep_system_messages: bool = True  # Never archive system messages
@@ -459,6 +462,20 @@ def _is_archive_pointer(message: dict[str, Any]) -> bool:
     return _ref_type(message) == ARCHIVED_REF_TYPE
 
 
+def _arrival_indices(messages: list[dict[str, Any]]) -> range:
+    """Positions after the last assistant message: the round no request carried yet.
+
+    Rewriting only these leaves the prompt-cache prefix byte-identical, and no
+    model-written assistant turn sits at or after them, so no reasoning artifact
+    is touched. An injected assistant message does not end the round: tool_preload
+    appends its calls as assistant/tool pairs in the same pass, none of them sent.
+    """
+    last = max((i for i, msg in enumerate(messages)
+                if msg.get("role") == "assistant" and not msg.get("injected_by")),
+               default=-1)
+    return range(last + 1, len(messages))
+
+
 def _request_user_indices(messages: list[dict[str, Any]]) -> set[int]:
     """The user messages the current request stands on: the last one (the API
     needs it) and the last one a person wrote. The agent loop adds marked user
@@ -641,6 +658,9 @@ class LayeredCompactionStrategy:
         session_id: str = "default",
         manual: bool = False,
         rewrite_layers: bool = True,
+        context_window: int | None = None,
+        arrivals_only: bool = False,
+        tokens_after_arrivals: int | None = None,
     ) -> CompactionResult:
         """Apply layered compaction to messages.
 
@@ -653,7 +673,14 @@ class LayeredCompactionStrategy:
                 by its own rules (keep_last, min_size). Layers 2 and 3 keep
                 their thresholds.
             rewrite_layers: False holds back the layers that rewrite messages
-                (P, 1, 2, 3) — the hook's hysteresis. The media passes still run.
+                (P, 1, 2, 3) — the hook's hysteresis. The media passes and
+                Pre-Layer T still run.
+            context_window: The model's window, for Pre-Layer T. None skips it.
+            arrivals_only: The hook came in for Pre-Layer T alone (below its
+                gate or held): no other pass runs.
+            tokens_after_arrivals: The caller's reading with T's results left
+                out. Without it the estimate of what T stored is subtracted —
+                wrong where a provider count from before the arrival dominates.
             trigger_event: Optional event that triggered compaction:
                 - 'user_message': New user message arrived
                 - 'final_response': Agent sent final response
@@ -676,6 +703,38 @@ class LayeredCompactionStrategy:
             modified_messages=messages.copy()
         )
         result.shapes_before = [_message_shape(m) for m in result.modified_messages]
+
+        # Pre-Layer T: a new tool result too big for the window is stored before
+        # any request carries it. Layer 1 takes large results too, but only from
+        # layer1_threshold on — until then a result that took a 128k window's
+        # third went out with every call, or sank it. The bound is the window,
+        # not a token count: a 1M model may carry a whole chapter, and the read
+        # tool pages 5000 characters at a time. Only the current round is
+        # touched, so the messages a request already carried stay as they were
+        # sent; neither the thresholds nor the hysteresis hold it back.
+        arrivals = self.oversized_arrivals(result.modified_messages, context_window)
+        if arrivals:
+            estimated = 0
+            for i in arrivals:
+                msg = result.modified_messages[i]
+                reference = await self._store_tool_result(msg, msg["content"])
+                result.modified_messages[i] = {**msg, "content": reference}
+                result.tool_results_stored += 1
+                estimated += (estimate_content_tokens(msg["content"])
+                              - estimate_content_tokens(reference))
+            result.layers_applied.append("T")
+            after = (max(0, current_tokens - estimated) if tokens_after_arrivals is None
+                     else min(current_tokens, tokens_after_arrivals))
+            # Booked on the caller's scale, so _scale_offset stays the reading
+            # minus the estimate once the layers take their baseline.
+            result.tokens_saved += current_tokens - after
+            # Both readings the layer gates use: Layer 2 reads final_tokens, and
+            # left at the reading from before it ran after T had already taken
+            # the context back under Layer 1's threshold.
+            current_tokens = result.final_tokens = after
+            messages = result.modified_messages
+            if arrivals_only:
+                return self._finalize(result)
 
         # Check byte size - Gemini has 100MB limit, force compaction if exceeded
         request_bytes = self._estimate_request_bytes(messages)
@@ -705,8 +764,8 @@ class LayeredCompactionStrategy:
                 f"No compaction needed: {current_tokens} tokens "
                 f"<= {self.config.target_tokens} target"
             )
-            return result
-        
+            return self._finalize(result) if arrivals else result
+
         # Build trigger reason for logging
         triggers = []
         if force:
@@ -1513,6 +1572,37 @@ class LayeredCompactionStrategy:
         
         return compacted, tokens_saved
     
+    def oversized_arrivals(self, messages: list[dict[str, Any]],
+                           context_window: int | None) -> list[int]:
+        """Pre-Layer T's work: new tool results over the window share.
+
+        Cheap enough for every call — it looks at the current round only. A
+        retrieval answer is exempt for the reason Layer 1 gives.
+        """
+        share = self.config.tool_result_max_window_share
+        if not context_window or share <= 0:
+            return []
+        limit = context_window * share
+        return [i for i in _arrival_indices(messages)
+                if messages[i].get("role") == "tool"
+                and isinstance(messages[i].get("content"), str)
+                and not _is_retrieval_result(messages[i])
+                and estimate_content_tokens(messages[i]["content"]) > limit]
+
+    async def _store_tool_result(self, msg: dict[str, Any], content: str) -> str:
+        """Store one tool result and return the placeholder that replaces it."""
+        # A bare ref+token_count gives the model nothing to decide what to
+        # find= for — it can only page blindly. A cheap preview (no LLM call)
+        # is enough to point it at find=.
+        preview = " ".join(content.split())[:200]
+        return await asyncio.to_thread(
+            self.tool_store.store_and_reference,
+            tool_call_id=msg.get("tool_call_id", ""),
+            tool_name=msg.get("name", "unknown"),
+            content=content,
+            summary=preview,
+        )
+
     async def _apply_layer1(self, result: CompactionResult, bytes_exceeded: bool = False) -> None:
         """Layer 1: Reversible compaction.
 
@@ -1604,31 +1694,14 @@ class LayeredCompactionStrategy:
                     should_archive = False
 
                 if should_archive:
-                    # Store and replace with reference
-                    tool_name = msg.get("name", "unknown")
-                    tool_call_id = msg.get("tool_call_id", "")
-
-                    # A bare ref+token_count gives the model nothing to decide
-                    # what to find= for — it can only page blindly. A cheap
-                    # preview (no LLM call) is enough to point it at find=.
-                    preview = " ".join(content.split())[:200]
-
-                    # Wrap sync SQLite operation in thread pool
-                    reference = await asyncio.to_thread(
-                        self.tool_store.store_and_reference,
-                        tool_call_id=tool_call_id,
-                        tool_name=tool_name,
-                        content=content,
-                        summary=preview,
-                    )
-                    
+                    reference = await self._store_tool_result(msg, content)
                     messages[i] = {**msg, "content": reference}
                     result.tool_results_stored += 1
                     result.tokens_saved += token_count - estimate_content_tokens(reference)
-                    
+
                     if is_too_large:
                         logger.debug(
-                            f"Auto-archived large tool result '{tool_name}' "
+                            f"Auto-archived large tool result '{msg.get('name', 'unknown')}' "
                             f"({token_count} tokens, exceeds max_inline_size)"
                         )
             
@@ -1969,6 +2042,11 @@ class LayeredCompactionStrategy:
             # the task sits at the front and was the very first thing to go.
             protected.update(_request_user_indices(messages))
             protected.add(user_indices[0])
+        # The round the model has not seen yet. With a small max_messages the
+        # candidate window spans the whole list, and the pointer Pre-Layer T just
+        # left ranks cheapest of all: the call went out and the model never saw
+        # what came back.
+        protected.update(_arrival_indices(messages))
 
         indices_to_remove = self._select_prune_candidates(
             messages, protected, excess
@@ -1982,13 +2060,14 @@ class LayeredCompactionStrategy:
         result.final_tokens = self._estimate_messages_tokens(messages)
 
         if len(messages) > max_msgs:
-            # Everything left is protected (a long leading system block, or the
-            # only user message). Saying so once per call beats an INFO line
-            # that reads like work was done while the list never shrinks.
+            # Everything left is protected (a long leading system block, the
+            # only user message, the round the model has not seen). Saying so
+            # once per call beats an INFO line that reads like work was done
+            # while the list never shrinks.
             logger.warning(
                 f"Pre-Layer P: still {len(messages)} messages over the limit of "
                 f"{max_msgs} after pruning {pruned_count} — the remainder is "
-                f"protected (system messages, first/last user message)"
+                f"protected (system messages, first/last user message, the unsent round)"
             )
 
         logger.info(
@@ -2039,12 +2118,11 @@ class LayeredCompactionStrategy:
             # and so always met the assistant before its results — the cost sort
             # inverts exactly that order, and preferentially so.
             group = groups.get(i, (i,))
-            # Today `protected` holds only system/user indices and a group only
-            # assistant/tool indices, so this never fires. It is here because
-            # the guarantee currently rests on that coincidence: one new rule in
-            # `protected` and the closure would silently evict a protected
-            # message. Skipping the whole group keeps BOTH invariants — nothing
-            # protected leaves, and no pair is split.
+            # `protected` holds tool results too — the unsent round — so a group
+            # can be partly protected: its assistant call sits before the round,
+            # its results inside it. Evicting the closure would take the call and
+            # orphan the results. Skipping the whole group keeps BOTH invariants
+            # — nothing protected leaves, and no pair is split.
             if any(j in protected for j in group):
                 continue
             indices_to_remove.update(group)

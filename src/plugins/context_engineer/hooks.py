@@ -115,6 +115,24 @@ def _conversation_probe(messages: list[dict[str, Any]]) -> tuple[int, bytes]:
     return len(conversation), hashlib.blake2b(head, digest_size=16).digest()
 
 
+def _context_window(context: HookContext) -> int | None:
+    """The window of the model this call goes to — the client's first, so an
+    llm_profile override counts; the agent's configured model otherwise."""
+    window = getattr(context.llm, "context_window", None)
+    if isinstance(window, int) and window > 0:
+        return window
+    agent = context.agent
+    if getattr(agent, "agent_config", None) is None or getattr(agent, "system_config", None) is None:
+        return None
+    try:
+        from agent_system.llm.factory import resolve_llm_config_for_agent
+        window = resolve_llm_config_for_agent(agent.system_config, agent.agent_config).spec.context_window
+    except Exception as e:
+        logger.debug("[ContextEngineer] no context window for %s: %s", context.agent_name, e)
+        return None
+    return window if isinstance(window, int) and window > 0 else None
+
+
 def _due_level(tokens: int, cfg: CompactionConfig) -> int:
     """The deepest layer whose threshold ``tokens`` has reached, 0 for none."""
     return max((level for level, threshold in ((1, cfg.layer1_threshold),
@@ -815,6 +833,22 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Get actual or estimated token usage (prefer actual from usage_tracker)
             current_tokens, reading_is_whole = self._read_tokens(context, messages_as_dicts, strategy)
 
+            # A new tool result too big for the window (Pre-Layer T) is stored
+            # whatever the thresholds and the hysteresis below say. Those decide
+            # on the call as it will go out — without the results T stores. Read
+            # again rather than subtracted: a provider count from the previous
+            # call never contained them, and max(count, estimate) minus their
+            # estimate undercut it.
+            context_window = _context_window(context)
+            arrivals = strategy.oversized_arrivals(messages_as_dicts, context_window)
+            gate_tokens = current_tokens
+            gate_messages = messages_as_dicts
+            if arrivals:
+                gate_messages = list(messages_as_dicts)
+                for i in arrivals:
+                    gate_messages[i] = {**gate_messages[i], "content": ""}
+                gate_tokens = min(current_tokens, self._read_tokens(context, gate_messages, strategy)[0])
+
             # The hysteresis base follows every measurement, including the calls
             # the threshold gate below turns away: taken only on a call that
             # passed the gate, the first reading after a compaction would be the
@@ -826,17 +860,18 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             mark = self._hysteresis_marks.get(session_id)
             if mark is not None and not (context.metadata or {}).get("partial_view"):
                 if reading_is_whole:
-                    if mark.tokens is None or mark.provisional or current_tokens < mark.tokens:
-                        mark.tokens = current_tokens
+                    if mark.tokens is None or mark.provisional or gate_tokens < mark.tokens:
+                        mark.tokens = gate_tokens
                         mark.provisional = False
                 elif mark.tokens is None:
                     mark.stale_readings += 1
                     if mark.stale_readings >= 2:
-                        mark.tokens = current_tokens
+                        mark.tokens = gate_tokens
                         mark.provisional = True
 
             # Estimate request bytes using strategy's method (for Gemini 100MB limit check)
-            request_bytes = strategy._estimate_request_bytes(messages_as_dicts)
+            # — of the call as it will go out, like the token gates above.
+            request_bytes = strategy._estimate_request_bytes(gate_messages)
             bytes_exceeded = request_bytes > cfg.max_request_bytes
 
             if bytes_exceeded:
@@ -878,7 +913,9 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
 
             # Skip only if: not manual, below token threshold, below byte limit,
             # AND no event-based media compaction, AND always_compact_media disabled
-            if not is_manual and current_tokens < cfg.layer1_threshold and not bytes_exceeded and not event_media_compaction_needed and not always_compact_media_enabled:
+            below_gate = (not is_manual and gate_tokens < cfg.layer1_threshold and not bytes_exceeded
+                          and not event_media_compaction_needed and not always_compact_media_enabled)
+            if below_gate and not arrivals:
                 logger.debug(
                     f"[ContextEngineer] Session {session_id}: "
                     f"{current_tokens} tokens < {cfg.layer1_threshold} threshold, "
@@ -911,11 +948,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             held = False
             if mark is not None:
                 # No base yet (only partial readings since the run): no growth.
-                growth = 0 if mark.tokens is None else current_tokens - mark.tokens
+                growth = 0 if mark.tokens is None else gate_tokens - mark.tokens
                 held = (not is_manual and not bytes_exceeded
                         and growth < cfg.min_tokens_between_compactions
-                        and _due_level(current_tokens, cfg) <= mark.level)
-            if held and not event_media_compaction_needed and not always_compact_media_enabled:
+                        and _due_level(gate_tokens, cfg) <= mark.level)
+            held_back = held and not event_media_compaction_needed and not always_compact_media_enabled
+            if held_back and not arrivals:
                 logger.debug(
                     f"[ContextEngineer] Session {session_id}: held by hysteresis - "
                     f"{growth} tokens since the last compaction "
@@ -957,6 +995,11 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     session_id=session_id,
                     manual=is_manual,
                     rewrite_layers=not held,
+                    context_window=context_window,
+                    # In only for Pre-Layer T: no other pass may run that the
+                    # gates above would have kept out (media dedup, Pre-Layer P).
+                    arrivals_only=below_gate or held_back,
+                    tokens_after_arrivals=gate_tokens,
                 )
             finally:
                 self._active_compactions.discard(session_id)
@@ -965,9 +1008,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # found nothing to take: that is exactly the run which would
             # otherwise repeat on every call. A media-only pass must not, or it
             # would hold the token layers back for good.
+            # The level is what was due once Pre-Layer T had taken its share.
             if any(layer in (1, 2, 3, "P") for layer in result.layers_applied):
                 self._hysteresis_marks[session_id] = _HysteresisMark(
-                    level=_due_level(current_tokens, cfg))
+                    level=_due_level(gate_tokens, cfg))
                 self._hysteresis_marks.move_to_end(session_id)
                 while len(self._hysteresis_marks) > _MAX_HYSTERESIS_MARKS:
                     self._hysteresis_marks.popitem(last=False)

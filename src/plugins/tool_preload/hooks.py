@@ -496,6 +496,10 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                     ChatMessage(
                         role="assistant",
                         content=None,
+                        # Not written by the model: context_engineer's Pre-Layer T
+                        # reads the unsent round as everything after the last
+                        # assistant message that is NOT injected.
+                        injected_by="tool_preload",
                         tool_calls=[{
                             "id": call_id,
                             "type": "function",
