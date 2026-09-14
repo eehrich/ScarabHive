@@ -1,19 +1,16 @@
 # Memory Plugin - Schema (Tools, Hooks, Config, Web UI)
 
 web_ui:
-  button:
-    enabled: true
-    text: "Memories"
-    icon: "💾"
-
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Memory Manager"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    width: "1000px"
-    height: "800px"
+    title: "Memory"
+    description: "Long-term memories of the agents"
+    icon: database
+    category: context
+    keywords: [memory, recall]
+    window: {width: 1000, height: 760}
 
   endpoints:
     - path: "/"

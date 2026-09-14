@@ -175,36 +175,16 @@ config:
 
 # Web UI configuration
 web_ui:
-  # Header button configuration
-  button:
-    enabled: false
-    text: "{{ name }}"
-    icon: "📝"
-    tooltip: "View context summarization history and statistics"
-
-  # Dropdown menu integration
-  menu:
-    enabled: true
-    items:
-      - id: "context_summarizer"
-        menu_id: "user"
-        section: "Context Management"
-        label: "Context Summarizer"
-        action: "openPanel"
-        icon: "📝"
-        requires_admin: false
-        order: 100
-        tooltip: "Context Summarizer"
-
-  # Panel configuration
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Context Summarizer"  # Shared title for grouped panel
-    panel_id: "context_summarizer"  # Shared ID for all instances
-    panel_group: "context_summarizer"  # Enables tab grouping
-    endpoint: "/plugins/{{ name }}/"  # Instance-specific endpoint
-    type: "iframe"
-    description: "View summarization events with before/after message counts and token savings"
+    endpoint: "/plugins/{{ name }}/"
+    title: "Context Summarizer"
+    description: "Summarization events with message counts and token savings"
+    icon: scroll-text
+    category: context
+    keywords: [summary, tokens]
+    window: {width: 820, height: 600}
 
   endpoints:
     - path: "/history"

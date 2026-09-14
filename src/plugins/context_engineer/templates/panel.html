@@ -458,31 +458,13 @@
                 console.log('[Context Engineer] Cannot access parent sessionManager:', e.message);
             }
             
-            // Parse from parent's DOM (header element)
-            try {
-                if (window.parent && window.parent !== window) {
-                    const headerEl = window.parent.document.getElementById('headerSessionId');
-                    if (headerEl && headerEl.textContent && headerEl.textContent !== '--') {
-                        return headerEl.textContent;
-                    }
-                }
-            } catch (e) {
-                console.log('[Context Engineer] Cannot access parent DOM:', e.message);
-            }
-            
             // URL parameter
             const urlParams = new URLSearchParams(window.location.search);
             const urlSessionId = urlParams.get('session_id');
             if (urlSessionId) return urlSessionId;
             
-            // LocalStorage fallback
-            const storedSessionId = localStorage.getItem('currentSessionId');
-            if (storedSessionId) return storedSessionId;
-            
             return 'default';
         }
-        
-        let sessionId = getCurrentSessionId();
         
         // Tab switching
         document.querySelectorAll('.tab').forEach(tab => {
@@ -537,6 +519,8 @@
                     return `<span class="badge badge-layerB" title="Byte Limit: Request size exceeded 90MB (Gemini limit protection)">B</span>`;
                 } else if (l === 'M') {
                     return `<span class="badge badge-layerM" title="Media Always-Compact: Keeping only last N messages with media files">M</span>`;
+                } else if (l === 'T') {
+                    return `<span class="badge badge-layer1" title="Pre-Layer T: a new tool result too large for the context window was stored on arrival">T</span>`;
                 } else if (l === 'P') {
                     return `<span class="badge badge-layerP" title="Pre-Layer Prune: Message count exceeded limit, oldest messages removed">P</span>`;
                 } else if (l === '1' || l === 1) {
@@ -612,88 +596,87 @@
             }
         }
 
-        // Load session details (storage stats)
-        async function loadSessionDetails() {
+        // The session's storage stats and core memory: one answer fills both
+        async function loadSession() {
+            // read on every load: the shell restores and switches its session after this panel loaded
+            const sessionId = getCurrentSessionId();
+            let data = null;
             try {
                 const url = `${basePath}/session_details${sessionId ? '?session_id=' + sessionId : ''}`;
-                const response = await fetch(url);
-                const data = await response.json();
-                
-                const container = document.getElementById('storage-stats');
-                
-                if (!data.success) {
-                    container.innerHTML = `<div class="empty-state">No session data available</div>`;
-                    return;
-                }
-
-                const toolResults = data.tool_results || {};
-                const coreMemory = data.core_memory || {};
-                const archival = data.archival_memory || {};
-
-                container.innerHTML = `
-                    <div class="stat-card">
-                        <h3>Tool Results</h3>
-                        <div class="value">${formatNumber(toolResults.total_entries || 0)}</div>
-                        <div class="subvalue">${formatNumber(toolResults.total_tokens_stored || 0)} tokens stored</div>
-                    </div>
-                    <div class="stat-card">
-                        <h3>Media Compacted</h3>
-                        <div class="value">${formatNumber((data.media_deduplicated || 0) + (data.media_compacted || 0) + (data.media_always_compacted || 0))}</div>
-                        <div class="subvalue">${formatNumber(data.media_always_compacted || 0)} always, ${formatNumber(data.media_deduplicated || 0)} dedup, ${formatNumber(data.media_compacted || 0)} event</div>
-                    </div>
-                    <div class="stat-card">
-                        <h3>Core Memory</h3>
-                        <div class="value">${formatNumber(coreMemory.facts || 0)} facts</div>
-                        <div class="subvalue">${formatNumber(coreMemory.token_usage || 0)} / 2000 tokens</div>
-                    </div>
-                    <div class="stat-card">
-                        <h3>Archived Messages</h3>
-                        <div class="value">${formatNumber(archival.total_messages || 0)}</div>
-                        <div class="subvalue">${formatNumber(archival.total_tokens || 0)} tokens archived</div>
-                    </div>
-                `;
+                data = await (await fetch(url)).json();
             } catch (e) {
                 console.error('Error loading session details:', e);
-                document.getElementById('storage-stats').innerHTML = 
-                    `<div class="empty-state">Error loading storage stats</div>`;
             }
+            // the session switched to meanwhile has its own refresh on the way
+            if (getCurrentSessionId() !== sessionId) return;
+            if (!data) {
+                document.getElementById('storage-stats').innerHTML = `<div class="empty-state">Error loading storage stats</div>`;
+                document.getElementById('memory-list').innerHTML = `<li class="empty-state">Error loading memory data</li>`;
+                return;
+            }
+            renderStorageStats(data);
+            renderCoreMemory(data, sessionId);
         }
 
-        // Load core memory facts
-        async function loadMemory() {
-            try {
-                const url = `${basePath}/session_details${sessionId ? '?session_id=' + sessionId : ''}`;
-                const response = await fetch(url);
-                const data = await response.json();
-                
-                const container = document.getElementById('memory-list');
-                
-                if (!data.success || !data.core_memory || !data.core_memory.facts_count) {
-                    container.innerHTML = `<li class="empty-state">No core memory facts stored${sessionId ? ' for this session' : ''}.</li>`;
-                    return;
-                }
-                
-                const memory = data.core_memory;
-                container.innerHTML = `
-                    <li class="empty-state">
-                        <strong>${memory.facts_count || 0}</strong> facts stored<br>
-                        <strong>${memory.token_usage || 0}</strong> / 2000 tokens used<br>
-                        <em>Facts are organized by category and stored in memory persistence files.</em>
-                    </li>
-                `;
-            } catch (e) {
-                console.error('Error loading memory:', e);
-                document.getElementById('memory-list').innerHTML = 
-                    `<li class="empty-state">Error loading memory data</li>`;
+        function renderStorageStats(data) {
+            const container = document.getElementById('storage-stats');
+
+            if (!data.success) {
+                container.innerHTML = `<div class="empty-state">No session data available</div>`;
+                return;
             }
+
+            const toolResults = data.tool_results || {};
+            const coreMemory = data.core_memory || {};
+            const archival = data.archival_memory || {};
+
+            container.innerHTML = `
+                <div class="stat-card">
+                    <h3>Tool Results</h3>
+                    <div class="value">${formatNumber(toolResults.total_entries || 0)}</div>
+                    <div class="subvalue">${formatNumber(toolResults.total_tokens_stored || 0)} tokens stored</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Media Compacted</h3>
+                    <div class="value">${formatNumber((data.media_deduplicated || 0) + (data.media_compacted || 0) + (data.media_always_compacted || 0))}</div>
+                    <div class="subvalue">${formatNumber(data.media_always_compacted || 0)} always, ${formatNumber(data.media_deduplicated || 0)} dedup, ${formatNumber(data.media_compacted || 0)} event</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Core Memory</h3>
+                    <div class="value">${formatNumber(coreMemory.facts || 0)} facts</div>
+                    <div class="subvalue">${formatNumber(coreMemory.token_usage || 0)} / 2000 tokens</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Archived Messages</h3>
+                    <div class="value">${formatNumber(archival.total_messages || 0)}</div>
+                    <div class="subvalue">${formatNumber(archival.total_tokens || 0)} tokens archived</div>
+                </div>
+            `;
+        }
+
+        function renderCoreMemory(data, sessionId) {
+            const container = document.getElementById('memory-list');
+
+            if (!data.success || !data.core_memory || !data.core_memory.facts_count) {
+                container.innerHTML = `<li class="empty-state">No core memory facts stored${sessionId ? ' for this session' : ''}.</li>`;
+                return;
+            }
+
+            const memory = data.core_memory;
+            container.innerHTML = `
+                <li class="empty-state">
+                    <strong>${memory.facts_count || 0}</strong> facts stored<br>
+                    <strong>${memory.token_usage || 0}</strong> / 2000 tokens used<br>
+                    <em>Facts are organized by category and stored in memory persistence files.</em>
+                </li>
+            `;
         }
 
         // Refresh all data
         function refreshAll() {
             loadStats();
             loadHistory();
-            loadSessionDetails();
-            loadMemory();
+            loadSession();
             document.getElementById('lastUpdate').textContent = 
                 'Updated: ' + new Date().toLocaleTimeString();
         }
@@ -732,6 +715,12 @@
         // Initial load
         refreshAll();
         startAutoRefresh();
+
+        // the shell names its session on every change, after a reload a moment after this panel loaded
+        window.addEventListener('message', (event) => {
+            if (event.source === window.parent && event.origin === window.location.origin
+                && event.data?.type === 'pk:session') refreshAll();
+        });
     </script>
 </body>
 </html>

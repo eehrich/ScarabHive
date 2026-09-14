@@ -661,9 +661,16 @@ def _reset_all_global_state():
     except (ImportError, AttributeError):
         pass
     
+    # The web registry likewise: mcp_adapter registers into its import-time
+    # alias, the UI catalogue reads web_adapter's -- clear in place so both
+    # stay one object.
     try:
         from agent_system.plugins import web_adapter
-        web_adapter.plugin_web_registry = web_adapter.PluginWebRegistry()
+        web_registry = web_adapter.plugin_web_registry
+        web_registry.web_plugins.clear()
+        web_registry.active_routers.clear()
+        web_registry.static_mounts.clear()
+        web_registry.security_configs.clear()
         web_adapter._plugin_security_enforcer = None
     except ImportError:
         pass

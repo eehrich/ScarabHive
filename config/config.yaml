@@ -149,14 +149,6 @@ auth:
     audit_enabled: true             # Log all endpoint access to security.log
     rules:
       # Public API endpoints - no auth required
-      - pattern: "GET /api/menu-definitions"
-        policy: "allow_anonymous"
-        description: "Menu definitions needed for login button display"
-      
-      - pattern: "GET /api/menu-items"
-        policy: "allow_anonymous"
-        description: "Menu items needed for UI initialization"
-      
       - pattern: "GET /agents"
         policy: "allow_anonymous"
         description: "Agent listing for UI dropdown"

@@ -1,0 +1,421 @@
+// Sessions: the pane beside the chat and the one owner of "which session is open".
+//
+// Keeps the contract the chat and older panels use: window.sessionManager with
+// loadSession / loadSessions / newConversation / leaveRunningRequest /
+// setCurrentSession / messageWritten / onSessionUpdated / getCurrentSessionId, and
+// the window events session:loaded and session:new (detail.chosen: the viewer chose it).
+import { api, html, render, icon, confirm, prompt, toast } from '/static/kit/panel-kit.js';
+
+function relative(dateString) {
+  const minutes = Math.floor((Date.now() - new Date(dateString)) / 60000);
+  if (minutes < 1) return 'now';
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return days < 7 ? `${days}d` : new Date(dateString).toLocaleDateString();
+}
+
+function dayGroup(dateString) {
+  const date = new Date(dateString);
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  if (date >= start) return 'Today';
+  if (date >= new Date(start - 86400000)) return 'Yesterday';
+  if (date >= new Date(start - 6 * 86400000)) return 'This week';
+  return 'Earlier';
+}
+
+/** What the pane needs of a session -- not its messages, which a loaded session carries. */
+function summary(session) {
+  const { session_id, title, agent_name, updated_at, has_children } = session;
+  return { session_id, title, agent_name, updated_at, has_children };
+}
+
+export class SessionManager {
+  /**
+   * @param {object} deps
+   * @param {(session: {id: string, title: string}|null) => void} deps.onChange
+   * @param {(anchor: Element, context: string, values: object) => void} deps.openContext
+   *   offers the panels that open on a session
+   * @param {() => void} deps.onShown  what the viewer picked -- a session, a new one -- is in the chat
+   * @param {(sessions: object[]) => void} deps.onListChange  the list of sessions changed
+   */
+  constructor({ onChange, openContext, onShown, onListChange }) {
+    this.onChange = onChange;
+    this.openContext = openContext;
+    this.onShown = onShown;
+    this.onListChange = onListChange;
+    this.pane = document.getElementById('sessionsPane');
+    this.currentSessionId = null;
+    this.currentTitle = null;
+    this.sessions = [];
+    this.byId = new Map();
+    /** parent id -> its loaded sub-sessions, for every node shown expanded */
+    this.expanded = new Map();
+    this.filter = '';
+    /** counted up by every choice of a session; a load whose count moved on is dropped */
+    this.loading = 0;
+    /** the session last asked for -- by a pick, the restore or the chat: open, or still on its way */
+    this.requested = null;
+    /** counted up by every pick and New as it is made -- before a run it leaves has stopped */
+    this.navigations = 0;
+    /** counted up by every message the chat writes into its session, sent or held */
+    this.chatChoices = 0;
+    /** session id -> the messages the chat has written into it, sent or held */
+    this.written = new Map();
+    render(this.pane, html`
+      <div class="sessions-head">
+        <h2 class="pk-grow">Sessions</h2>
+        <button type="button" class="pk-btn pk-btn--sm" data-act="new" title="New session">${icon('plus', { size: 'sm' })} New</button>
+      </div>
+      <div class="sessions-filter pk-search">${icon('search')}<input class="pk-input pk-input--sm" type="search" placeholder="Filter" aria-label="Filter sessions"></div>
+      <div class="sessions-list"></div>`);
+    this.list = this.pane.querySelector('.sessions-list');
+    this.pane.querySelector('[data-act="new"]').addEventListener('click', () => this.newConversation());
+    this.pane.querySelector('input[type="search"]').addEventListener('input', (event) => {
+      this.filter = event.target.value.trim().toLowerCase();
+      this.render();
+    });
+    this.list.addEventListener('click', (event) => this.onListClick(event));
+  }
+
+  getCurrentSessionId() { return this.currentSessionId; }
+
+  remember(sessions) {
+    sessions.forEach((s) => this.byId.set(s.session_id, summary(s)));
+  }
+
+  async loadSessions() {
+    const data = await api('/api/sessions/hierarchy', { quiet: true }).catch(() => null);
+    if (!data) {
+      render(this.list, html`<div class="pk-empty">${icon('circle-alert')}<div>Sessions could not be loaded</div></div>`);
+      return;
+    }
+    this.sessions = data.sessions || [];
+    this.remember(this.sessions);
+    // open branches come along: runs add sub-sessions, renames and deletes change them
+    const open = [...this.expanded.keys()];
+    const branches = await Promise.all(open.map((id) => this.children(id, { quiet: true })));
+    open.forEach((id, index) => {
+      if (!this.expanded.has(id)) return;  // closed meanwhile
+      if (branches[index]) this.expanded.set(id, branches[index]);
+      else this.expanded.delete(id);
+    });
+    this.render();
+    this.onListChange(this.sessions);
+    // a session started from the chat is named by the server only now
+    const known = this.byId.get(this.currentSessionId);
+    if (known && known.title && known.title !== this.currentTitle) this.setCurrent(this.currentSessionId, known.title);
+  }
+
+  row(session, depth) {
+    const id = session.session_id;
+    const children = this.expanded.get(id);
+    return html`
+      <div class="session-item" data-id="${id}" aria-current="${String(id === this.currentSessionId)}">
+        <div class="session-row" style="--depth: ${depth}">
+          ${session.has_children
+            ? html`<button type="button" class="session-expand" data-act="expand" aria-expanded="${String(Boolean(children))}" title="Sub-sessions">${icon('chevron-right', { size: 'sm' })}</button>`
+            : html`<span class="session-expand-spacer"></span>`}
+          <button type="button" class="session-open pk-truncate" data-act="open" title="${session.title || 'Untitled'}">${session.title || 'Untitled'}</button>
+          <span class="session-meta">${relative(session.updated_at)}</span>
+          <span class="session-actions">
+            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="info" title="Open in a panel">${icon('info', { size: 'sm' })}</button>
+            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="rename" title="Rename">${icon('pencil', { size: 'sm' })}</button>
+            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="delete" title="Delete">${icon('trash-2', { size: 'sm' })}</button>
+          </span>
+        </div>
+        ${children ? html`<div class="session-children">${children.map((child) => this.row(child, depth + 1))}</div>` : ''}
+      </div>`;
+  }
+
+  render() {
+    // re-rendering (after every run) must not throw the keyboard focus out of the list
+    const focused = this.list.contains(document.activeElement) ? document.activeElement : null;
+    const refocus = focused && { id: focused.closest('[data-id]')?.dataset.id, act: focused.dataset.act };
+    const shown = this.sessions.filter((s) => !this.filter
+      || `${s.title} ${s.agent_name}`.toLowerCase().includes(this.filter));
+    if (!shown.length) {
+      render(this.list, html`<div class="pk-empty">${icon('messages-square')}
+        <div>${this.filter ? 'No matching sessions' : 'No sessions yet -- the first message starts one.'}</div></div>`);
+      return;
+    }
+    const groups = new Map();
+    shown.forEach((s) => {
+      const group = dayGroup(s.updated_at);
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push(s);
+    });
+    render(this.list, [...groups].map(([group, sessions]) => html`
+      <div class="sessions-group">${group}</div>${sessions.map((s) => this.row(s, 0))}`));
+    if (refocus?.id) {
+      this.list.querySelector(`[data-id="${CSS.escape(refocus.id)}"] [data-act="${refocus.act}"]`)?.focus();
+    }
+  }
+
+  async onListClick(event) {
+    const item = event.target.closest('.session-item');
+    const button = event.target.closest('[data-act]');
+    if (!item || !button) return;
+    const id = item.dataset.id;
+    const act = button.dataset.act;
+    if (act === 'expand') await this.toggleChildren(id);
+    else if (act === 'info') this.openContext(button, 'session', { session_id: id });
+    else if (act === 'rename') await this.rename(id);
+    else if (act === 'delete') await this.remove(id);
+    else if (act === 'open') await this.loadSession(id);
+  }
+
+  /** A node's sub-sessions, or null when they could not be loaded. */
+  async children(id, { quiet }) {
+    const data = await api(`/api/sessions/${encodeURIComponent(id)}/children`, { quiet }).catch(() => null);
+    if (!data) return null;
+    this.remember(data.sessions || []);
+    return data.sessions || [];
+  }
+
+  async toggleChildren(id) {
+    if (this.expanded.has(id)) {
+      this.expanded.delete(id);
+    } else {
+      const children = await this.children(id, { quiet: false });
+      if (!children) return;  // api() has shown the failure; the node stays closed
+      this.expanded.set(id, children);
+    }
+    this.render();
+  }
+
+  async rename(id) {
+    const session = this.byId.get(id);
+    const title = await prompt('New title for the session', { title: 'Rename session', value: session?.title || '', confirmLabel: 'Rename' });
+    if (!title || !title.trim() || title === session?.title) return;
+    try {
+      await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', json: { title: title.trim() } });
+    } catch {
+      return;  // api() has shown the failure
+    }
+    if (id === this.currentSessionId) this.setCurrent(id, title.trim());
+    await this.loadSessions();
+  }
+
+  async remove(id) {
+    const session = this.byId.get(id);
+    const ok = await confirm(`"${session?.title || 'Untitled'}" and its messages will be deleted. This cannot be undone.`,
+      { title: 'Delete session', confirmLabel: 'Delete', danger: true });
+    if (!ok) return;
+    // Its runs are stopped, and one past its answer has saved the session, first: a refusal leaves the session
+    // untouched. That takes a while -- a message written into the session meanwhile keeps it, even one written after
+    // opening it again; a pick of another session, and a message there, do not.
+    const written = this.written.get(id);
+    if (!await this.cancelLostRun(id)) return;
+    if (id === this.currentSessionId && !await this.leaveRunningRequest('Deleting it')) return;
+    if (!await window.chatModule.runSaved(id)) {
+      toast('The server did not confirm that the run has saved the session; the session stays', { kind: 'error' });
+      return;
+    }
+    if (this.written.get(id) !== written) {
+      toast('The session was written into while it was being deleted; it stays', { kind: 'warn' });
+      return;
+    }
+    if (id === this.currentSessionId) {
+      // The chat lets go of it before it is deleted, so neither a message sent meanwhile
+      // nor a load of it still on its way brings it back; a pick of another one may take the chat over.
+      if (this.requested === id) this.startNew();
+      else this.showNew();
+    }
+    try {
+      await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch {
+      return;  // api() has shown the failure; a pick of another session on its way still opens
+    }
+    this.expanded.delete(id);
+    // It was asked for before or during the DELETE: picked or restored, or picked again
+    // after the chat let go of it. Its answer may be on its way still -- it must not open
+    // the session -- or have opened it already: a browser holds the DELETE back until that
+    // load has its response headers. Opened meanwhile, with a run still going when the
+    // DELETE answers, it stays in the chat: that run brings it back.
+    if (id === this.requested && !(id === this.currentSessionId && window.chatModule.hasActiveRequest())) {
+      if (id === this.currentSessionId || !this.currentSessionId) {
+        this.startNew();
+      } else {
+        this.requested = null;
+        this.loading++;
+      }
+    }
+    await this.loadSessions();
+  }
+
+  /**
+   * A run of the session whose connection was lost may still be going, and would write the
+   * session back: deleting the session cancels it first.
+   */
+  async cancelLostRun(id) {
+    // taken before asking: the chat may let the run go while the question is open
+    const run = window.chatModule.lostRunIn(id);
+    if (!run) return true;
+    const ok = await confirm('A run of this session may still be going. Deleting the session cancels it.',
+      { title: 'Run may still be going', confirmLabel: 'Cancel the run', danger: true });
+    if (!ok) return false;
+    if (await window.chatModule.cancelLostRun(run)) return true;
+    toast('The server did not confirm that the run has stopped; the session stays', { kind: 'error' });
+    return false;
+  }
+
+  /**
+   * Whether a running request of the open session may be cancelled. `answer`: 'nothing' (none runs), 'confirmed'
+   * or 'declined'; `run`: the chat's run the viewer was asked about.
+   */
+  async askToCancelRunningRequest(action) {
+    const run = window.chatModule.activeRun();
+    if (!run) return { answer: 'nothing' };
+    const ok = await confirm(`A request is still running in this session. ${action} cancels it.`,
+      { title: 'Request running', confirmLabel: 'Cancel the request', danger: true });
+    return { answer: ok ? 'confirmed' : 'declined', run };
+  }
+
+  /** Cancel it, as confirmed: false, with a toast, when the server did not confirm it has stopped. */
+  async cancelRunningRequest(run) {
+    const outcome = await window.chatModule.cancelActiveRequest(run);
+    if (outcome === 'stopped') return true;
+    toast(outcome === 'starting'
+      ? 'The request is still starting and cannot be cancelled yet; the session stays open'
+      : 'The server did not confirm that the request has stopped; the session stays open', { kind: 'error' });
+    return false;
+  }
+
+  /** A running request belongs to the open session: leaving it means cancelling it first. */
+  async leaveRunningRequest(action) {
+    const { answer, run } = await this.askToCancelRunningRequest(action);
+    return answer === 'nothing' || (answer === 'confirmed' && await this.cancelRunningRequest(run));
+  }
+
+  /**
+   * Leave the open session for a pick or New. False when its running request stays -- or when, while it
+   * stopped, a later pick or New was made, or the chat wrote into the session: that one wins. A declined
+   * pick is none, and a delete takes no pick's place: the pick opens, the deleted session goes.
+   */
+  async leaveFor(action) {
+    const { answer, run } = await this.askToCancelRunningRequest(action);
+    if (answer === 'declined') return false;
+    const navigation = ++this.navigations;
+    const chatChoices = this.chatChoices;
+    if (answer === 'confirmed' && !await this.cancelRunningRequest(run)) return false;
+    return navigation === this.navigations && chatChoices === this.chatChoices;
+  }
+
+  /** The new session: nothing still loading may replace it. */
+  startNew({ chosen = true } = {}) {
+    this.loading++;
+    this.requested = null;
+    this.showNew({ chosen });
+  }
+
+  /** An empty chat that continues no session -- chosen, or all that is left when the stored one cannot be shown. */
+  showNew({ chosen = true } = {}) {
+    this.setCurrent(null, null);
+    window.dispatchEvent(new CustomEvent('session:new', { detail: { chosen } }));
+  }
+
+  async newConversation() {
+    if (!await this.leaveFor('Starting a new session')) return;
+    this.startNew();
+    this.onShown();
+  }
+
+  /** Open a session in the chat. Resolves true when it is shown. Clicked twice quickly, the last click wins, not the last answer. */
+  async loadSession(id) {
+    // the open session while it works: nothing to switch to, nothing to cancel -- and a pick still
+    // waiting for the run to stop gives way to it
+    if (id === this.currentSessionId && window.chatModule.hasActiveRequest()) {
+      this.navigations++;
+      this.onShown();
+      return true;
+    }
+    if (!await this.leaveFor('Switching sessions')) return false;
+    const attempt = ++this.loading;
+    this.requested = id;
+    let session;
+    try {
+      session = await api(`/api/sessions/${encodeURIComponent(id)}`);
+    } catch {
+      // api() already told the user; with no session open the chat offers a start again -- as it did, no choice
+      if (attempt === this.loading && !this.currentSessionId) this.startNew({ chosen: false });
+      return false;
+    }
+    if (attempt !== this.loading) return false;
+    this.show(session);
+    this.onShown();
+    return true;
+  }
+
+  /** Put a fetched session into the chat -- read-only when its sub-agent cannot be picked here. */
+  show(session) {
+    const id = session.session_id;
+    this.remember([session]);
+    this.setCurrent(id, session.title || session.name);
+    const agentSelect = document.getElementById('agentSelector');
+    const agentAvailable = [...agentSelect.options].some((option) => option.value === session.agent_name);
+    const readOnly = Boolean(session.depth) && !agentAvailable;
+    window.dispatchEvent(new CustomEvent('session:loaded', {
+      detail: {
+        session,
+        readOnly,
+        reason: readOnly ? `Sub-agent "${session.agent_name}" is not available in the agent selector` : null,
+      },
+    }));
+  }
+
+  setCurrent(id, title) {
+    this.currentSessionId = id;
+    this.currentTitle = id ? title || this.byId.get(id)?.title || 'Untitled' : null;
+    if (id) sessionStorage.setItem('lastSessionId', id);
+    else sessionStorage.removeItem('lastSessionId');
+    this.list.querySelectorAll('.session-item').forEach((item) => {
+      item.setAttribute('aria-current', String(item.dataset.id === id));
+    });
+    this.onChange(id ? { id, title: this.currentTitle } : null);
+  }
+
+  /**
+   * The chat reports the session it continues: its stream's (a new one on the first message),
+   * or a run's reattached after a reload.
+   */
+  setCurrentSession(id) {
+    this.loading++;  // the chat decided: a session still loading must not take the header
+    this.requested = id;
+    this.setCurrent(id, id ? this.byId.get(id)?.title : null);
+  }
+
+  /** The chat writes a message into its session, sent or held: a pick, New or delete still waiting for the run to stop gives way. */
+  messageWritten(id) {
+    this.chatChoices++;
+    this.written.set(id, (this.written.get(id) ?? 0) + 1);
+    this.setCurrentSession(id);
+  }
+
+  /** A stream names its session: a new one on the first message, or the one of a run reattached after a reload. */
+  onSessionUpdated(id) {
+    // Naming the session last chosen is no new choice (a delete waiting for its run must not
+    // take it for one). Naming another -- a new session, or the chat's own while a pick is on
+    // its way -- is the chat's: its run shows there.
+    if (id !== this.requested) this.setCurrentSession(id);
+    this.loadSessions();
+  }
+
+  /**
+   * Reopen the session this tab had open; when it is gone, start a new one.
+   * Anything chosen before or meanwhile wins -- a pick, a message, and a run
+   * the chat reattached after the reload, which reports the session it runs in.
+   */
+  async restore() {
+    if (this.loading) return;  // a session was chosen before the shell was ready: that one stays
+    const last = sessionStorage.getItem('lastSessionId');
+    const attempt = ++this.loading;
+    this.requested = last;
+    const session = last && await api(`/api/sessions/${encodeURIComponent(last)}`, { quiet: true }).catch(() => null);
+    if (attempt !== this.loading) return;
+    if (session) this.show(session);
+    else this.startNew({ chosen: false });
+  }
+}

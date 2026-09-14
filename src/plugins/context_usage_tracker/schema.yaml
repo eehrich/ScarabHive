@@ -10,20 +10,19 @@ hooks:
       before: ["end"]
 
 web_ui:
-  button:
-    enabled: true
-    icon: "📊"
-    text: "Context Usage"
-    tooltip: "Context, token and cost usage per agent and per call"
-
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Context & Cost Usage"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    default_height: 760
-    
+    title: "Context & Cost Usage"
+    description: "Context, token and cost usage per agent and per call"
+    icon: chart-column
+    category: context
+    keywords: [tokens, cost, usage]
+    window: {width: 900, height: 760}
+    contexts:
+      session: "/plugins/{{ name }}/?session_id={session_id}"
+
   endpoints:
     - path: "/"
       method: "GET"

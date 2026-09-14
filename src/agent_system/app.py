@@ -1063,12 +1063,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Include auth and admin routers
         from .api.auth_endpoints import router as auth_router
         from .api.admin_endpoints import router as admin_router
-        from .api.menu_endpoints import menu_router
         from .api.session_endpoints import session_router
 
         app.include_router(auth_router)
         app.include_router(admin_router)
-        app.include_router(menu_router)
         app.include_router(session_router)
 
         # Note: SessionManager is stored in app.state during async lifespan startup
@@ -2421,8 +2419,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def get_request_status(request_id: str):
         """Get the status of a request for reconnection purposes.
         
-        Used by the WebUI to poll for request completion when SSE connection is lost.
-        Returns whether the request is still running or completed.
+        Used by the WebUI before it follows a run again after a reload: GET /events
+        with an id the job manager no longer holds would start a new run. Returns
+        whether the request is still running or completed.
         """
         # First check BackgroundJobManager for more accurate status
         job_manager = get_background_job_manager()
@@ -2474,8 +2473,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         #
         # New contract: status='unknown', completed=false +
         # error+reason so the writer-side reconcile leaves the row
-        # for the sweep (= Resume) and the frontend's poll loop
-        # surfaces the loss instead of silently swallowing it.
+        # for the sweep (= Resume) and the WebUI lets the run go
+        # instead of following it.
         return {
             "request_id": request_id,
             "status": "unknown",

@@ -191,21 +191,16 @@ tools:
 
 # Web UI Configuration
 web_ui:
-  # Header button configuration
-  button:
-    enabled: true
-    text: "SSH Control"
-    icon: "🖥️"
-    tooltip: "SSH Machine Control Panel"
-
-  # Panel configuration
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "SSH Machine Control"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
+    title: "SSH Machines"
     description: "Control and monitor SSH-connected machines"
+    icon: server
+    category: system
+    keywords: [ssh, machines, remote]
+    window: {width: 900, height: 640}
 
   endpoints:
     - path: "/"

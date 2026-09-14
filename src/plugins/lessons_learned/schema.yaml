@@ -1,19 +1,16 @@
 # Lessons Learned Plugin - Schema (Tools, Hooks, Config, Web UI)
 
 web_ui:
-  button:
-    enabled: true
-    text: "Lessons"
-    icon: "🎓"
-
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Lessons Learned"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    width: "1100px"
-    height: "850px"
+    title: "Lessons Learned"
+    description: "Lessons the agents recorded and where they apply"
+    icon: graduation-cap
+    category: context
+    keywords: [lessons, learning]
+    window: {width: 1100, height: 820}
 
   endpoints:
     - path: "/"

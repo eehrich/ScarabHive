@@ -1,21 +1,17 @@
 # TODO Management Plugin - Schema (Tools, Hooks, Config, Web UI)
 
 web_ui:
-  button:
-    enabled: true
-    text: "TODOs"
-    icon: "✅"
-  
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "TODO Management"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    width: "1000px"
-    height: "800px"
-  
-  # Web endpoint definitions (schema-based routing)
+    title: "Todos"
+    description: "Tasks the agents track in their todo lists"
+    icon: list-todo
+    category: agents
+    keywords: [todo, tasks]
+    window: {width: 900, height: 700}
+
   endpoints:
     - path: "/"
       method: "GET"

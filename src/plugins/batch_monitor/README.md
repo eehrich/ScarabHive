@@ -14,7 +14,7 @@ Real-time monitoring interface for LLM Batch API queues.
 
 ### Accessing the Panel
 
-1. **Via UI Menu**: Click user menu → "Batch Queues"
+1. **Via the Launcher**: grid button in the header (or Ctrl+K) → "Batch Queues"
 2. **Direct URL**: Navigate to `/plugins/batch_monitor/`
 
 ### UI Overview
@@ -157,7 +157,7 @@ The plugin requires no additional configuration. It automatically discovers the 
 
 - **Modularity**: Batch monitoring is optional, not core functionality
 - **Separation of Concerns**: Queue manager stays in `llm/batch/`, UI is plugin
-- **Discoverability**: Shows up in plugin list and menu
+- **Discoverability**: Shows up in the panel launcher and the command palette
 - **Maintainability**: Can be updated independently
 
 ### Why Not Agent Tools?
@@ -182,7 +182,7 @@ The plugin requires no additional configuration. It automatically discovers the 
 src/plugins/batch_monitor/
 ├── __init__.py           # Plugin exports
 ├── plugin.py             # PLUGIN_FACTORY
-├── plugin.yaml           # Plugin metadata
+├── plugin.toml           # Plugin metadata
 ├── schema.yaml           # Web UI config
 ├── server.py             # Web endpoints
 └── templates/
@@ -262,7 +262,7 @@ models:
 
 - [LLM Batch API](../../docs/llm_batch_api.md) - Batch system overview
 - [Plugin Authoring](../../docs/plugin_authoring.md) - Plugin development guide
-- [Schema Router](../../docs/schema_router.md) - Auto-routing system
+- [Schema-Based Web Routing](../../docs/schema_based_web_routing.md) - Auto-routing system
 
 ## License
 

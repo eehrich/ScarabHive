@@ -47,22 +47,17 @@ tools:
 
 # Web UI configuration
 web_ui:
-  # Header button configuration
-  button:
-    enabled: true
-    text: "Log Viewer"
-    icon: "📄"
-    tooltip: "Real-time Log Viewer"
-  
-  # Panel configuration
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Real-time Log Viewer"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"  # How to load content: "fetch" or "iframe"
-    description: "View application logs with polling-based updates (avoids infinite logging loops)"
-  
+    title: "Logs"
+    description: "Application logs with filtering and live polling"
+    icon: file-text
+    category: debug
+    keywords: [logs, errors, api]
+    window: {width: 1000, height: 680}
+
   endpoints:
     - path: "/"
       method: "GET"

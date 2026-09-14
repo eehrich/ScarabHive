@@ -603,29 +603,6 @@ class SSHControlWebEndpoints(PluginWebInterface):
             return static_path
         return None
 
-    def get_panels(self) -> List[Dict[str, Any]]:
-        """Return UI panel configuration derived from schema."""
-        schema = self._load_schema()
-        panel_config = schema.get("web_ui", {}).get("panel", {})
-
-        if not panel_config.get("enabled", False):
-            return []
-
-        panel_id = panel_config.get("panel_id", f"{self.name}_panel")
-        endpoint = panel_config.get("endpoint", f"/plugins/{self.name}/panel")
-
-        return [
-            {
-                "id": panel_id,
-                "title": panel_config.get("title", "SSH Control"),
-                "icon": panel_config.get("icon", "🖥️"),
-                "url": endpoint,
-                "position": panel_config.get("position", "right"),
-                "width": panel_config.get("width", "600px"),
-                "height": panel_config.get("height", "500px")
-            }
-        ]
-
     def get_security_config(self) -> Dict[str, Any]:
         """Return security configuration"""
         return {

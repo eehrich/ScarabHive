@@ -9,8 +9,8 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from agent_system.ui.resources import STATIC_DIR, TEMPLATES_DIR, ui_templates
-from agent_system.ui.routes import router, sprite_icons
+from agent_system.ui.resources import STATIC_DIR, TEMPLATES_DIR, sprite_icons, ui_templates
+from agent_system.ui.routes import router
 
 REPO = Path(__file__).resolve().parents[2]
 KIT = STATIC_DIR / "kit"
@@ -78,28 +78,40 @@ def test_every_kit_svg_is_well_formed_xml(svg):
 
 
 def _kit_users():
-    """Templates and scripts built on the kit: templates extending the kit base,
-    and every script -- in static/ or a plugin's static/ -- importing panel-kit.js."""
+    """Templates and scripts built on the kit: the shell's own pages and every
+    script in static/ (vendored libraries aside), plugin templates extending the
+    kit base, and plugin scripts importing panel-kit.js."""
     files = []
-    for path in [*TEMPLATES_DIR.rglob("*.html"), *(REPO / "src").rglob("templates/**/*.html")]:
+    for path in TEMPLATES_DIR.rglob("*.html"):
+        files.append((path, path.read_text(encoding="utf-8")))
+    for path in (REPO / "src").rglob("templates/**/*.html"):
         text = path.read_text(encoding="utf-8")
-        if "kit/panel_base.html" in text or path.is_relative_to(TEMPLATES_DIR / "kit"):
+        if "kit/panel_base.html" in text:
             files.append((path, text))
-    for path in [*STATIC_DIR.rglob("*.js"), *(REPO / "src").rglob("static/**/*.js")]:
+    for path in STATIC_DIR.rglob("*.js"):
+        if not path.is_relative_to(STATIC_DIR / "vendor"):
+            files.append((path, path.read_text(encoding="utf-8")))
+    for path in (REPO / "src").rglob("static/**/*.js"):
         text = path.read_text(encoding="utf-8")
-        if path.parent == KIT or re.search(r"panel-kit\.js['\"]", text):
+        if re.search(r"panel-kit\.js['\"]", text):
             files.append((path, text))
     return files
 
 
+_ICON_CALL = re.compile(r"\b(?:icon|kitIcon)\(([^()]*)\)")
+_ICON_NAME = re.compile(r"""(?<!size: )(?<!label: )(?<!size=)(?<!label=)['"]([a-z][\w-]*)['"]""")
+
+
 def test_every_icon_named_in_code_exists_in_the_sprite():
     names = set(sprite_icons())
-    pattern = re.compile(r"""icons\.svg#([\w-]+)|\bicon\(\s*['"]([\w-]+)['"]""")
     referenced = {}
     for path, text in _kit_users():
-        for match in pattern.finditer(text):
-            referenced.setdefault(match.group(1) or match.group(2), path.name)
-    assert referenced, "fixture: no icon reference found at all"
+        found = re.findall(r"icons\.svg#([\w-]+)", text)
+        for call in _ICON_CALL.finditer(text):
+            found += _ICON_NAME.findall(call.group(1))
+        for name in found:
+            referenced.setdefault(name, path.name)
+    assert {"x", "play", "shield"} <= set(referenced), "fixture: literal, ternary or sprite references went unseen"
 
     unknown = {name: where for name, where in referenced.items() if name not in names}
 

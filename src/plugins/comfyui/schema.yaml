@@ -171,46 +171,17 @@ config:
 
 # Web UI configuration for ComfyUI Monitor
 web_ui:
-  # Button in plugin bar
-  button:
-    enabled: true
-    text: "ComfyUI"
-    icon: "🎨"
-  
-  # Dropdown menu integration
-  menu:
-    enabled: true
-    items:
-      - id: "comfyui_monitor"
-        menu_id: "user"
-        section: "Tools"
-        label: "ComfyUI Monitor"
-        action: "openPanel"
-        panel_id: "{{ name }}"
-        icon: "🎨"
-        requires_admin: false
-        order: 150
-        tooltip: "Monitor ComfyUI workflow jobs"
-
-  # Panel configuration
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    panel_id: "{{ name }}"
-    panel_group: "comfyui"
-    title: "ComfyUI Monitor"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    icon: "🎨"
-    position: "right"
-    width: "700px"
-    height: "550px"
-    description: "Monitor and manage ComfyUI workflow jobs"
+    title: "ComfyUI"
+    description: "Workflow jobs on the ComfyUI server"
+    icon: image
+    category: agents
+    keywords: [images, workflows, jobs]
+    window: {width: 760, height: 560}
 
-  # Access control
-  requires_auth: false
-  requires_role: null
-
-  # Web endpoints documentation
   endpoints:
     - path: "/"
       method: "GET"

@@ -173,6 +173,77 @@
     document.body.appendChild(frame);
   }));
 
+  await check('a menu opens at its button', async () => {
+    document.body.insertAdjacentHTML('beforeend', `
+      <button id="menu-left" popovertarget="kit-menu-left" style="position:fixed;left:40px;top:60px">Left</button>
+      <div id="kit-menu-left" class="pk-menu" popover><button class="pk-menu-item">One</button></div>
+      <button id="menu-right" popovertarget="kit-menu-right" style="position:fixed;right:30px;top:60px">Right</button>
+      <div id="kit-menu-right" class="pk-menu" popover><button class="pk-menu-item">Two</button></div>`);
+    const at = (id) => {
+      document.getElementById(`menu-${id}`).click();
+      const button = document.getElementById(`menu-${id}`).getBoundingClientRect();
+      const menu = document.getElementById(`kit-menu-${id}`).getBoundingClientRect();
+      document.getElementById(`kit-menu-${id}`).hidePopover();
+      return { button, menu };
+    };
+    const left = at('left');
+    const right = at('right');
+    return Math.abs(left.menu.top - (left.button.bottom + 4)) < 1 && Math.abs(left.menu.left - left.button.left) < 1
+      && Math.abs(right.menu.right - right.button.right) < 1;
+  });
+
+  await check('a menu stays inside the window however wide or tall it is', async () => {
+    document.body.insertAdjacentHTML('beforeend', `
+      <button id="menu-edge" popovertarget="kit-menu-edge" style="position:fixed;right:10px;bottom:20px">Edge</button>
+      <div id="kit-menu-edge" class="pk-menu" popover style="width:4000px">
+        ${Array.from({ length: 80 }, (_, i) => `<button class="pk-menu-item">Item ${i}</button>`).join('')}
+      </div>`);
+    document.getElementById('menu-edge').click();
+    const menu = document.getElementById('kit-menu-edge').getBoundingClientRect();
+    document.getElementById('kit-menu-edge').hidePopover();
+    const room = { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight };
+    return menu.left >= 0 && menu.right <= room.width && menu.top >= 0 && menu.bottom <= room.height;
+  });
+
+  await check('a theme change reaches its listeners once', () => {
+    const seen = [];
+    const stop = pk.onThemeChange((theme) => seen.push(theme));
+    pk.setTheme('light');
+    pk.setTheme('light');
+    pk.setTheme('dark');
+    stop();
+    pk.setTheme('system');
+    return seen.join(',') === 'light,dark';
+  });
+
+  await check('a destructive dialog starts on the safe button', async () => {
+    const answer = pk.confirm('Delete everything?', { danger: true, confirmLabel: 'Delete' });
+    await nextFrame();
+    const focused = document.activeElement.textContent.trim();
+    document.querySelector('dialog.pk-dialog[open]').close();
+    return focused === 'Cancel' && (await answer) === false;
+  });
+
+  await check('a refresh says whether the viewer or the timer asked', () => {
+    const control = document.createElement('pk-refresh');
+    document.body.appendChild(control);
+    let detail = null;
+    control.addEventListener('refresh', (event) => { detail = event.detail; });
+    control.querySelector('[data-act="now"]').click();
+    control.remove();
+    return detail && detail.auto === false;
+  });
+
+  await check('hidden hides whatever display a component sets', () => {
+    const card = document.createElement('div');
+    card.className = 'pk-stack';
+    card.hidden = true;
+    document.body.appendChild(card);
+    const display = getComputedStyle(card).display;
+    card.remove();
+    return display === 'none';
+  });
+
   await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });
 </script>
 </body>

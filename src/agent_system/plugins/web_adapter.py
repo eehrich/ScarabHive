@@ -45,68 +45,6 @@ class PluginWebInterface(ABC):
         """
         return None
     
-    def get_panels(self) -> List[Dict[str, Any]]:
-        """Return list of UI panel configurations
-        
-        Returns:
-            List[Dict[str, Any]]: List of panel configuration dictionaries.
-                Each panel config should include:
-                - id: unique panel identifier
-                - title: display title for panel tab
-                - url: URL for panel content (usually HTML page)
-                - icon: icon name/class for panel tab (optional)
-                - position: "left", "right", "bottom", "top" (optional, default: "right")
-                - width: CSS width value (optional, default: "400px")
-                - height: CSS height value (optional, default: "300px")
-        """
-        return []
-    
-    def get_menu_items(self) -> List[Dict[str, Any]]:
-        """Return list of dropdown menu item configurations
-        
-        Plugins can add items to predefined menus (user, admin, tools, help)
-        or custom menus defined via get_menu_definitions().
-        
-        Returns:
-            List[Dict[str, Any]]: List of menu item configuration dictionaries.
-                Each menu item config should include:
-                - id: unique menu item identifier
-                - menu_id: which menu to add to ("user", "admin", "tools", "help", or custom)
-                - label: display text for menu item
-                - url: URL to navigate to (optional if onclick provided)
-                - icon: icon emoji or class (optional)
-                - requires_admin: bool, show only to admins (default: False)
-                - section: section within menu (e.g., "account", "settings") (optional)
-                - order: integer for sorting (default: 100)
-                - target: "_blank", "_self", etc. (default: "_self")
-                - onclick: JavaScript function name (optional, instead of url)
-                - divider_after: bool, add divider after this item (default: False)
-                - divider_before: bool, add divider before this item (default: False)
-                - badge: badge text/count to show (optional)
-                - shortcut: keyboard shortcut hint (optional)
-        """
-        return []
-    
-    def get_menu_definitions(self) -> List[Dict[str, Any]]:
-        """Return custom dropdown menu definitions
-        
-        Allows plugins to create entirely new dropdown menus in the header.
-        Built-in menus: "user" (always present when authenticated)
-        
-        Returns:
-            List[Dict[str, Any]]: List of menu definition dictionaries.
-                Each menu definition should include:
-                - id: unique menu identifier (used in menu_items)
-                - label: button text for menu dropdown
-                - icon: icon emoji or class (optional)
-                - position: "left" or "right" in header (default: "right")
-                - order: integer for menu button positioning (default: 100)
-                - requires_admin: bool, show only to admins (default: False)
-                - tooltip: hover tooltip text (optional)
-                - button_class: additional CSS classes for button (optional)
-        """
-        return []
-    
     def get_security_config(self) -> Dict[str, Any]:
         """Return security configuration for endpoints
         
@@ -366,34 +304,18 @@ class PluginWebRegistry:
         self.active_routers: Dict[str, APIRouter] = {}
         self.static_mounts: Dict[str, Path] = {}
         self.security_configs: Dict[str, Dict[str, Any]] = {}
-        self.plugin_metadata: Dict[str, Dict[str, Any]] = {}  # Store additional metadata
         logger.info("PluginWebRegistry initialized")
     
-    def register_web_plugin(self, name: str, plugin, metadata: Optional[Dict[str, Any]] = None) -> None:
+    def register_web_plugin(self, name: str, plugin) -> None:
         """Register a plugin's web capabilities
         
         Args:
             name: Plugin name/identifier
             plugin: Plugin instance implementing PluginWebInterface or having web methods
-            metadata: Additional plugin metadata including schema path
         """
         logger.info(f"Registering web capabilities for plugin: {name}")
         
         self.web_plugins[name] = plugin
-        
-        # Store plugin metadata including schema path
-        self.plugin_metadata[name] = metadata or {}
-        
-        # Try to find schema path if not provided
-        if 'schema_path' not in self.plugin_metadata[name]:
-            for plugin_dir in ["src/plugins", "plugins"]:
-                for schema_name in ["schema.yaml", "mcp_schema.yaml", "schema.json", "mcp_schema.json"]:
-                    schema_path = Path(plugin_dir) / name / schema_name
-                    if schema_path.exists():
-                        self.plugin_metadata[name]['schema_path'] = str(schema_path)
-                        break
-                if 'schema_path' in self.plugin_metadata[name]:
-                    break
         
         # Register router if provided
         try:
@@ -439,44 +361,6 @@ class PluginWebRegistry:
         self.active_routers.pop(name, None)
         self.static_mounts.pop(name, None)
         self.security_configs.pop(name, None)
-    
-    def get_all_panels(self) -> List[Dict[str, Any]]:
-        """Get all registered UI panels
-        
-        Returns:
-            List[Dict[str, Any]]: List of all panel configurations from all plugins
-        """
-        panels = []
-        for name, plugin in self.web_plugins.items():
-            try:
-                if hasattr(plugin, 'get_panels'):
-                    plugin_panels = plugin.get_panels()
-                    for panel in plugin_panels:
-                        # Ensure panel has required fields and add plugin metadata
-                        panel_config = dict(panel)
-                        panel_config["plugin_name"] = name
-                        
-                        # Validate required fields
-                        if "id" not in panel_config:
-                            logger.warning(f"Panel from plugin {name} missing 'id' field, skipping")
-                            continue
-                        if "title" not in panel_config:
-                            panel_config["title"] = f"Plugin {name}"
-                        if "url" not in panel_config:
-                            logger.warning(f"Panel {panel_config['id']} from plugin {name} missing 'url' field, skipping")
-                            continue
-                        
-                        # Set defaults for optional fields
-                        panel_config.setdefault("position", "right")
-                        panel_config.setdefault("width", "400px")
-                        panel_config.setdefault("height", "300px")
-                        
-                        panels.append(panel_config)
-                        
-            except Exception as e:
-                logger.warning(f"Failed to get panels for plugin {name}: {e}")
-        
-        return panels
     
     def get_security_config(self, plugin_name: str) -> Dict[str, Any]:
         """Get security configuration for a specific plugin
@@ -636,18 +520,6 @@ class PluginWebRegistry:
                 logger.info(f"Mounted static assets for plugin {name} at {mount_path}")
             except Exception as e:
                 logger.error(f"Failed to mount static files for plugin {name}: {e}")
-        
-        # Add panel discovery endpoint
-        @app.get("/api/plugins/panels")
-        def get_plugin_panels():
-            """Get all available plugin UI panels"""
-            try:
-                panels = self.get_all_panels()
-                logger.debug(f"Returning {len(panels)} plugin panels")
-                return {"panels": panels}
-            except Exception as e:
-                logger.error(f"Failed to get plugin panels: {e}")
-                return {"panels": [], "error": str(e)}
         
         # Add security audit endpoints only if audit is enabled
         audit_enabled = (
@@ -828,22 +700,3 @@ class PluginWebRegistry:
 
 # Global plugin web registry instance
 plugin_web_registry = PluginWebRegistry()
-
-def get_web_plugin_registry() -> Optional[Dict[str, Any]]:
-    """Get the web plugin registry for API access"""
-    global plugin_web_registry
-    if not plugin_web_registry:
-        return None
-    
-    # Return plugin information with schema paths
-    registry_data = {}
-    for name, plugin in plugin_web_registry.web_plugins.items():
-        metadata = plugin_web_registry.plugin_metadata.get(name, {})
-        registry_data[name] = {
-            'name': getattr(plugin, 'name', name),
-            'description': getattr(plugin, 'description', ''),
-            'schema_path': metadata.get('schema_path'),
-            **metadata  # Include any additional metadata
-        }
-    
-    return registry_data

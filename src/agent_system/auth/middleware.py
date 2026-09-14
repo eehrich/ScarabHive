@@ -862,9 +862,11 @@ class SecurityHeadersMiddleware:
         
         # Get path for plugin detection
         path = scope.get("path", "")
-        # Allow iframes for plugin panels and debug dashboards
+        # Allow iframes for panels: the shell shows every panel in a frame
+        # (agent_system.ui.catalog lists them).
         is_embeddable_path = (
-            path.startswith("/plugins/") or 
+            path.startswith("/plugins/") or
+            path.startswith("/ui/") or
             path.startswith("/debug/") or
             path.startswith("/api/security/audit")
         )

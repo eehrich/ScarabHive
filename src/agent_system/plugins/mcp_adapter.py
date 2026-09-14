@@ -167,9 +167,8 @@ class PluginMCPRegistry:
         self.plugin_servers[name] = mcp_adapter
         
         # Register web capabilities if supported
-        plugin_metadata = {'name': name, 'description': getattr(plugin_instance, 'description', '')}
         if hasattr(plugin_instance, 'get_web_router'):
-            plugin_web_registry.register_web_plugin(name, plugin_instance, plugin_metadata)
+            plugin_web_registry.register_web_plugin(name, plugin_instance)
             logger.debug(f"Registered web capabilities for existing plugin {name}")
         
         logger.info(f"Registered existing plugin instance {name} in plugin_mcp_registry")
@@ -304,16 +303,12 @@ class PluginMCPRegistry:
         self.plugin_servers[name] = mcp_adapter
 
         # Register web capabilities if plugin supports them
-        plugin_metadata = {'name': name, 'description': getattr(plugin_server, 'description', '')}
-        if schema_file:
-            plugin_metadata['schema_path'] = str(schema_file)
-
         if isinstance(plugin_server, PluginWebInterface):
-            plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
+            plugin_web_registry.register_web_plugin(name, plugin_server)
             logger.debug(f"Registered web capabilities for plugin {name}")
         elif hasattr(plugin_server, 'get_web_router'):
             # Handle hybrid plugins that implement web methods but don't inherit PluginWebInterface
-            plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
+            plugin_web_registry.register_web_plugin(name, plugin_server)
             logger.debug(f"Registered hybrid web capabilities for plugin {name}")
 
         await self.start_plugin(name)
@@ -540,15 +535,11 @@ class PluginMCPRegistry:
         self.plugin_servers[name] = mcp_adapter
 
         # Register web capabilities if plugin supports them
-        plugin_metadata = {'name': name, 'description': getattr(plugin_server, 'description', '')}
-        if schema_file:
-            plugin_metadata['schema_path'] = str(schema_file)
-
         if isinstance(plugin_server, PluginWebInterface):
-            plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
+            plugin_web_registry.register_web_plugin(name, plugin_server)
             logger.debug(f"Registered web capabilities for plugin {name}")
         elif hasattr(plugin_server, 'get_web_router'):
-            plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
+            plugin_web_registry.register_web_plugin(name, plugin_server)
             logger.debug(f"Registered hybrid web capabilities for plugin {name}")
 
         await self.start_plugin(name)

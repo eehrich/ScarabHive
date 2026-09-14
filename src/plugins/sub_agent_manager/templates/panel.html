@@ -639,50 +639,40 @@
         let phaseInfo = null;  // Store phase filtering info
         let showAllAgents = false;  // Toggle state for agent filter
         
-        // Phase filtering functions
-        async function loadPhaseInfo() {
-            if (!currentSessionId) return;
-            
-            try {
-                const response = await fetch(`${API_BASE}/phase-info?session_id=${currentSessionId}`);
-                phaseInfo = await response.json();
-                
-                const banner = document.getElementById('phaseBanner');
-                const phaseValue = document.getElementById('currentPhaseValue');
-                const phaseAgentsList = document.getElementById('phaseAgentsList');
-                const phaseAgentsLabel = document.getElementById('phaseAgentsLabel');
-                
-                if (phaseInfo.enabled) {
-                    banner.style.display = 'flex';
-                    
-                    if (phaseInfo.current_phase) {
-                        phaseValue.textContent = phaseInfo.current_phase;
-                        phaseValue.className = 'phase-value ' + phaseInfo.current_phase;
-                        
-                        const agents = showAllAgents 
-                            ? phaseInfo.all_allowed_agents 
-                            : phaseInfo.filtered_agents;
-                        phaseAgentsList.textContent = agents.join(', ');
-                        phaseAgentsLabel.textContent = showAllAgents 
-                            ? 'All allowed agents:' 
-                            : `Phase "${phaseInfo.current_phase}" agents:`;
-                    } else {
-                        phaseValue.textContent = 'Not Set';
-                        phaseValue.className = 'phase-value';
-                        phaseAgentsList.textContent = phaseInfo.all_allowed_agents.join(', ');
-                        phaseAgentsLabel.textContent = 'All allowed agents:';
-                    }
-                } else {
-                    banner.style.display = 'none';
-                }
-            } catch (error) {
-                console.error('Error loading phase info:', error);
+        // Phase filtering: the banner shows the phase info loadAgents fetched
+        function renderPhaseInfo() {
+            const banner = document.getElementById('phaseBanner');
+            if (!phaseInfo || !phaseInfo.enabled) {
+                banner.style.display = 'none';
+                return;
+            }
+            const phaseValue = document.getElementById('currentPhaseValue');
+            const phaseAgentsList = document.getElementById('phaseAgentsList');
+            const phaseAgentsLabel = document.getElementById('phaseAgentsLabel');
+            banner.style.display = 'flex';
+
+            if (phaseInfo.current_phase) {
+                phaseValue.textContent = phaseInfo.current_phase;
+                phaseValue.className = 'phase-value ' + phaseInfo.current_phase;
+
+                const agents = showAllAgents
+                    ? phaseInfo.all_allowed_agents
+                    : phaseInfo.filtered_agents;
+                phaseAgentsList.textContent = agents.join(', ');
+                phaseAgentsLabel.textContent = showAllAgents
+                    ? 'All allowed agents:'
+                    : `Phase "${phaseInfo.current_phase}" agents:`;
+            } else {
+                phaseValue.textContent = 'Not Set';
+                phaseValue.className = 'phase-value';
+                phaseAgentsList.textContent = phaseInfo.all_allowed_agents.join(', ');
+                phaseAgentsLabel.textContent = 'All allowed agents:';
             }
         }
-        
+
         function toggleAgentFilter() {
             showAllAgents = document.getElementById('showAllAgentsToggle').checked;
-            loadPhaseInfo();  // Refresh display
+            renderPhaseInfo();
         }
         
         // Filter dropdown functions
@@ -758,30 +748,34 @@
             updateFilter();
         }
         
-        // Get session ID from parent window if available (iframe context)
+        // In the shell its open session (none on a new one); opened on its own, the one typed in
         function getSessionId() {
             try {
-                if (window.parent && window.parent.AgentSystem && window.parent.AgentSystem.ChatModule) {
-                    const sessionId = window.parent.AgentSystem.ChatModule.getCurrentSessionId();
-                    if (sessionId) {
-                        return sessionId;
-                    }
+                if (window.parent !== window && window.parent.sessionManager) {
+                    return window.parent.sessionManager.getCurrentSessionId() || '';
                 }
             } catch (e) {
                 console.warn('Cannot access parent window session ID:', e);
             }
-            
-            // Fallback to manual input
             return document.getElementById('sessionIdInput').value.trim();
         }
-        
+
+        function showNoSession() {
+            currentSessionId = '';
+            document.getElementById('sessionIdInput').style.display = 'none';  // the shell's session decides
+            document.getElementById('agentsList').innerHTML = '<div class="empty-state"><div class="empty-state-icon">📦</div><div>No session open -- its sub-agents show here once it has one.</div></div>';
+            ['statTotal', 'statActive', 'statArchived'].forEach((id) => { document.getElementById(id).textContent = '0'; });
+            document.getElementById('phaseBanner').style.display = 'none';
+        }
+
         async function loadAgents() {
             currentSessionId = getSessionId();
             if (!currentSessionId) {
                 showError('Please enter a session ID');
                 return;
             }
-            
+            const sessionId = currentSessionId;
+
             const filters = getSelectedFilters();
             console.log('loadAgents - filters:', filters);  // Debug
             // Load archived agents only if archived filter is selected
@@ -790,17 +784,25 @@
             agentsList.innerHTML = '<div class="loading">Loading...</div>';
             
             try {
-                const response = await fetch(`${API_BASE}/sub-agents?session_id=${currentSessionId}&include_completed=${includeArchived}`);
-                const data = await response.json();
+                const json = (url) => fetch(url).then((response) => response.json());
+                // the stats and the phase info are extras: without them the list still shows
+                const [data, stats, info] = await Promise.all([
+                    json(`${API_BASE}/sub-agents?session_id=${sessionId}&include_completed=${includeArchived}`),
+                    json(`${API_BASE}/stats?session_id=${sessionId}`).catch(() => null),
+                    json(`${API_BASE}/phase-info?session_id=${sessionId}`).catch(() => null),
+                ]);
                 console.log('loadAgents - API response:', data);  // Debug
-                
+                // the session switched to meanwhile has its own load on the way
+                if (getSessionId() !== sessionId) return;
+
                 if (data.error) {
                     throw new Error(data.error);
                 }
-                
+
                 renderAgents(data.instances || [], filters);
-                await loadStats();
-                await loadPhaseInfo();  // Load phase filtering info
+                if (stats) renderStats(stats);
+                phaseInfo = info;
+                renderPhaseInfo();
             } catch (error) {
                 console.error('Error loading agents:', error);
                 agentsList.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠️</div><div>Error: ${error.message}</div></div>`;
@@ -848,19 +850,10 @@
             }
         }
         
-        async function loadStats() {
-            if (!currentSessionId) return;
-            
-            try {
-                const response = await fetch(`${API_BASE}/stats?session_id=${currentSessionId}`);
-                const stats = await response.json();
-                
-                document.getElementById('statTotal').textContent = stats.total || 0;
-                document.getElementById('statActive').textContent = stats.active || 0;
-                document.getElementById('statArchived').textContent = stats.archived || 0;
-            } catch (error) {
-                console.error('Error loading stats:', error);
-            }
+        function renderStats(stats) {
+            document.getElementById('statTotal').textContent = stats.total || 0;
+            document.getElementById('statActive').textContent = stats.active || 0;
+            document.getElementById('statArchived').textContent = stats.archived || 0;
         }
         
         function timeAgo(dateString) {
@@ -1086,20 +1079,30 @@
             }, 3000);
         }
         
-        // Auto-load on page load if session ID is available from parent
-        window.addEventListener('DOMContentLoaded', () => {
-            const sessionId = getSessionId();
-            if (sessionId) {
-                // Hide session ID input if we got it from parent
-                const sessionInput = document.getElementById('sessionIdInput');
-                if (sessionInput && sessionInput.value === '') {
-                    sessionInput.style.display = 'none';
-                }
-                
-                // Initialize filter label and load agents
-                updateFilterLabel();
-                loadAgents();
+        function startWithShellSession() {
+            // Hide session ID input if we got it from parent
+            const sessionInput = document.getElementById('sessionIdInput');
+            if (sessionInput && sessionInput.value === '') {
+                sessionInput.style.display = 'none';
             }
+
+            // Initialize filter label and load agents
+            updateFilterLabel();
+            loadAgents();
+        }
+
+        // Auto-load on page load if session ID is available from parent
+        function followShell() {
+            if (getSessionId()) startWithShellSession();
+            else if (window.parent !== window) showNoSession();
+        }
+
+        window.addEventListener('DOMContentLoaded', followShell);
+
+        // the shell names its session on every change, after a reload a moment after this panel loaded
+        window.addEventListener('message', (event) => {
+            if (event.source === window.parent && event.origin === window.location.origin
+                && event.data?.type === 'pk:session') followShell();
         });
         
         // Cleanup on page unload

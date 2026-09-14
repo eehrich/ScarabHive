@@ -270,33 +270,6 @@ async def list_sessions_hierarchy(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@session_router.get("/search", response_model=Dict[str, Any])
-async def search_sessions(
-    q: Optional[str] = None,
-    session_id: Optional[str] = None,
-    limit: int = 50,
-    current_user: Optional[User] = Depends(get_optional_user),
-    session_manager=Depends(get_session_manager),
-):
-    """Server-side session lookup/search.
-
-    ``session_id=...`` resolves one session (existence + metadata) without the
-    sidebar having to hold the whole tree in memory. ``q=...`` matches titles
-    across all partitions. Must stay registered BEFORE ``/{session_id}``.
-    """
-    user_id = current_user.username if current_user else "anonymous"
-    try:
-        found = await session_manager.find_sessions(
-            user_id, session_id=session_id, query=q, limit=limit
-        )
-        return {"sessions": [_session_node(s) for s in found], "count": len(found)}
-    except ValueError as e:  # invalid session id
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to search sessions: %s", e)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-
 @session_router.get("/{session_id}/children", response_model=Dict[str, Any])
 async def list_session_children(
     session_id: str,

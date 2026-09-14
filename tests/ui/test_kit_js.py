@@ -39,6 +39,12 @@ EXPECTED = [
     "a frame that is not the shell answers dialogs itself",
     "tabs rendered later still switch",
     "the handshake delivers early calls and visibility",
+    "a menu opens at its button",
+    "a menu stays inside the window however wide or tall it is",
+    "a theme change reaches its listeners once",
+    "a destructive dialog starts on the safe button",
+    "a refresh says whether the viewer or the timer asked",
+    "hidden hides whatever display a component sets",
 ]
 
 

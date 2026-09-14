@@ -1,6 +1,8 @@
 """Where templates and static files live, and how a panel template reaches the kit."""
 from __future__ import annotations
 
+import re
+from functools import lru_cache
 from pathlib import Path
 
 from starlette.requests import Request
@@ -33,6 +35,13 @@ def find_resource_dir(name: str) -> Path:
 
 TEMPLATES_DIR = find_resource_dir("templates")
 STATIC_DIR = find_resource_dir("static")
+
+
+@lru_cache(maxsize=1)
+def sprite_icons() -> tuple[str, ...]:
+    """Icon names in the kit sprite, in sprite order."""
+    sprite = (STATIC_DIR / "kit" / "icons.svg").read_text(encoding="utf-8")
+    return tuple(re.findall(r'<symbol id="([^"]+)"', sprite))
 
 
 def ui_theme(request: Request) -> str:

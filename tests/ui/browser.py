@@ -11,10 +11,15 @@ import functools
 import http.server
 import json
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
+
+import uvicorn
+from fastapi import FastAPI, Request, Response
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -61,6 +66,22 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+def _open_headless(browser: str, url: str, reported: threading.Event, timeout: float) -> None:
+    with tempfile.TemporaryDirectory() as profile:
+        process = subprocess.Popen(
+            # nothing but the test server resolves: a panel's CDN script fails at once
+            # instead of tying the result to the network
+            [browser, "--headless=new", "--disable-gpu", f"--user-data-dir={profile}",
+             "--no-first-run", "--disable-extensions", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1", url],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            if not reported.wait(timeout):
+                raise AssertionError(f"{url} reported no results within {timeout}s")
+        finally:
+            process.kill()
+            process.wait(timeout=30)
+
+
 def run_test_page(browser: str, page: str, timeout: float = 90) -> dict:
     """Open /<page> headless and return the JSON the page POSTed to /__results."""
     handler = functools.partial(_Handler, directory=str(REPO))
@@ -68,17 +89,44 @@ def run_test_page(browser: str, page: str, timeout: float = 90) -> dict:
     server.reported = threading.Event()
     server.results = None
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_address[1]}/{page}"
-    with tempfile.TemporaryDirectory() as profile:
-        process = subprocess.Popen(
-            [browser, "--headless=new", "--disable-gpu", f"--user-data-dir={profile}",
-             "--no-first-run", "--disable-extensions", url],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        try:
-            if not server.reported.wait(timeout):
-                raise AssertionError(f"{page} reported no results within {timeout}s")
-        finally:
-            process.kill()
-            process.wait(timeout=30)
-            server.shutdown()
+    try:
+        _open_headless(browser, f"http://127.0.0.1:{server.server_address[1]}/{page}", server.reported, timeout)
+    finally:
+        server.shutdown()
     return server.results
+
+
+def run_app_test_page(browser: str, app: FastAPI, page: str, timeout: float = 120) -> dict:
+    """Serve an ASGI app with uvicorn, open /<page> headless, return what it POSTed to /__results.
+
+    For pages the server renders (the shell's index.html is a template); the
+    app gets the /__results route added.
+    """
+    reported = threading.Event()
+    box: dict = {}
+
+    @app.post("/__results")
+    async def results(request: Request):
+        box["results"] = await request.json()
+        reported.set()
+        return Response(status_code=204)
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    # ws="none": the websockets import warns about its legacy module, and the
+    # suite turns warnings into errors -- inside the server thread, silently.
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="off", ws="none"))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 30
+        while not server.started:
+            if time.monotonic() > deadline or not thread.is_alive():
+                raise AssertionError("the test server did not start")
+            time.sleep(0.05)
+        _open_headless(browser, f"http://127.0.0.1:{sock.getsockname()[1]}/{page}", reported, timeout)
+    finally:
+        server.should_exit = True
+        thread.join(timeout=30)
+        sock.close()
+    return box["results"]

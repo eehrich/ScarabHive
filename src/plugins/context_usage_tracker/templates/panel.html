@@ -162,29 +162,18 @@ const panel = {
   latest: null,
   agentSort: { key: 'total_cost', dir: -1 },
 
-  // ---- session resolution (iframe -> parent bridges, same as before) ----
+  // ---- session resolution ----
+  // ?session_id= (the shell's "Open in" link) pins a session; otherwise the
+  // panel follows the one open in the shell.
   getCurrentSessionId() {
-    try {
-      if (window.parent && window.parent !== window && window.parent.sessionManager) {
-        const sid = window.parent.sessionManager.getCurrentSessionId();
-        if (sid) return sid;
-      }
-    } catch (e) { /* cross-frame access denied */ }
-    try {
-      if (window.parent && window.parent !== window && window.parent.chatModule) {
-        const sid = window.parent.chatModule.getCurrentSessionId?.();
-        if (sid) return sid;
-      }
-    } catch (e) { /* ignore */ }
-    try {
-      if (window.parent && window.parent !== window) {
-        const el = window.parent.document.getElementById('headerSessionId');
-        if (el && el.textContent && el.textContent !== '--') return el.textContent;
-      }
-    } catch (e) { /* ignore */ }
     const url = new URLSearchParams(window.location.search).get('session_id');
     if (url) return url;
-    return localStorage.getItem('currentSessionId') || null;
+    try {
+      if (window.parent && window.parent !== window && window.parent.sessionManager) {
+        return window.parent.sessionManager.getCurrentSessionId();
+      }
+    } catch (e) { /* cross-frame access denied */ }
+    return null;
   },
 
   // ---- formatting ----
@@ -211,7 +200,8 @@ const panel = {
 
   // ---- data ----
   async refresh() {
-    const sid = this.scopeSession ? this.getCurrentSessionId() : null;
+    const scope = () => this.scopeSession ? this.getCurrentSessionId() : null;
+    const sid = scope();
     const q = sid ? `?session_id=${encodeURIComponent(sid)}` : '';
     const qh = sid ? `&session_id=${encodeURIComponent(sid)}` : '';
     try {
@@ -219,6 +209,8 @@ const panel = {
         fetch(`${this.base}/usage${q}`, { cache: 'no-store' }).then(r => r.json()),
         fetch(`${this.base}/history?last_n=1000${qh}`, { cache: 'no-store' }).then(r => r.json()),
       ]);
+      // the session or scope switched to meanwhile has its own refresh on the way
+      if (scope() !== sid) return;
       this.latest = usage.latest && Object.keys(usage.latest).length ? usage.latest : null;
       this.agents = usage.agents || {};
       this.statistics = usage.statistics || {};
@@ -557,6 +549,11 @@ const panel = {
       m.addEventListener('click', e => { if (e.target === m) this.closeModals(); }));
     this.autoTimer = setInterval(() => this.refresh(), 5000);
     this.refresh();
+    // the shell names its session on every change, after a reload a moment after this panel loaded
+    window.addEventListener('message', (event) => {
+      if (event.source === window.parent && event.origin === window.location.origin
+        && event.data?.type === 'pk:session') this.refresh();
+    });
   },
 };
 panel.init();

@@ -490,3 +490,46 @@ class TestTheHookVocabulary:
     def test_a_type_the_runtime_does_not_know_is_still_rejected(self, hook_plugin):
         """The other way: the list is derived, not abandoned."""
         assert self._with_hook_type(hook_plugin, "pre_llm_teatime") != []
+
+
+class TestTheWebUiSection:
+    """web_ui is judged by the panel catalogue's own parser: a panel the
+    validator accepts is one the launcher shows."""
+
+    PANEL = (
+        "\nweb_ui:\n"
+        "  panel:\n"
+        '    endpoint: "/plugins/{{ name }}/"\n'
+        "    title: Probe\n"
+        "    icon: bug\n"
+        "    category: debug\n"
+        "  endpoints:\n"
+        '    - path: "/"\n'
+    )
+
+    def _errors_with(self, plugin_dir, web_ui):
+        schema = plugin_dir / "schema.yaml"
+        schema.write_text(schema.read_text(encoding="utf-8") + web_ui, encoding="utf-8")
+        return _validate(plugin_dir).errors
+
+    def test_a_catalogue_panel_passes(self, plugin_copy):
+        """basic_agent is typed mcp-server only: the section is checked all the same."""
+        assert self._errors_with(plugin_copy, self.PANEL) == []
+
+    def test_the_retired_button_and_menu_blocks_are_refused(self, plugin_copy):
+        legacy = self.PANEL + "  button:\n    enabled: true\n"
+
+        errors = self._errors_with(plugin_copy, legacy)
+
+        assert any("unknown keys ['button']" in e for e in errors), errors
+
+    def test_a_panel_the_launcher_could_not_show_is_refused(self, plugin_copy):
+        errors = self._errors_with(plugin_copy, self.PANEL.replace("icon: bug", "icon: no-such-icon"))
+
+        assert any("no-such-icon" in e for e in errors), errors
+
+    def test_keys_yaml_reads_as_booleans_are_reported_not_a_crash(self, plugin_copy):
+        """`on:` is a boolean key to YAML; sorting it with text keys stopped the whole --all run."""
+        errors = self._errors_with(plugin_copy, self.PANEL + "  on: {}\n  menu: {}\n")
+
+        assert any("unknown keys ['True', 'menu']" in e for e in errors), errors

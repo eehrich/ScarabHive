@@ -4,7 +4,7 @@ Tests for plugin web adapter and registry
 
 import pytest
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
@@ -17,12 +17,11 @@ from agent_system.plugins.web_adapter import (
 class MockWebPlugin(PluginWebInterface):
     """Mock plugin with web capabilities for testing"""
     
-    def __init__(self, name: str, has_router: bool = True, has_static: bool = True, has_panels: bool = True):
+    def __init__(self, name: str, has_router: bool = True, has_static: bool = True):
         self.name = name
         self.has_router = has_router
         self.has_static = has_static
-        self.has_panels = has_panels
-        
+
     def get_web_router(self) -> Optional[APIRouter]:
         if not self.has_router:
             return None
@@ -40,17 +39,6 @@ class MockWebPlugin(PluginWebInterface):
             return None
         # Return a mock path that exists (use current directory for testing)
         return Path.cwd()
-    
-    def get_panels(self) -> List[Dict[str, Any]]:
-        if not self.has_panels:
-            return []
-            
-        return [{
-            "id": f"{self.name}_panel",
-            "title": f"{self.name.title()} Panel",
-            "url": f"/plugins/{self.name}/panel.html",
-            "icon": "chart-bar"
-        }]
     
     def get_security_config(self) -> Dict[str, Any]:
         return {
@@ -73,8 +61,7 @@ class TestPluginWebInterface:
         
         assert plugin.get_web_router() is None
         assert plugin.get_static_assets() is None
-        assert plugin.get_panels() == []
-        
+
         security_config = plugin.get_security_config()
         assert security_config["require_auth"] is False
         assert security_config["cors_origins"] == []
@@ -140,49 +127,6 @@ class TestPluginWebRegistry:
         assert "test" not in registry.static_mounts
         assert "test" not in registry.security_configs
     
-    def test_get_all_panels(self, registry):
-        """Test getting all panels from registered plugins"""
-        plugin1 = MockWebPlugin("plugin1")
-        plugin2 = MockWebPlugin("plugin2")
-        plugin3 = MockWebPlugin("plugin3", has_panels=False)
-        
-        registry.register_web_plugin("plugin1", plugin1)
-        registry.register_web_plugin("plugin2", plugin2)
-        registry.register_web_plugin("plugin3", plugin3)
-        
-        panels = registry.get_all_panels()
-        
-        assert len(panels) == 2  # Only plugin1 and plugin2 have panels
-        
-        # Check that plugin names are added to panel configs
-        plugin_names = {panel["plugin_name"] for panel in panels}
-        assert plugin_names == {"plugin1", "plugin2"}
-        
-        # Check that defaults are applied
-        for panel in panels:
-            assert "position" in panel
-            assert "width" in panel
-            assert "height" in panel
-            assert panel["position"] == "right"  # Default value
-    
-    def test_get_all_panels_missing_required_fields(self, registry):
-        """Test handling of panels with missing required fields"""
-        
-        class BadPlugin(PluginWebInterface):
-            def get_panels(self):
-                return [
-                    {"title": "No ID panel"},  # Missing 'id'
-                    {"id": "no_url", "title": "No URL panel"},  # Missing 'url'
-                    {"id": "valid", "title": "Valid panel", "url": "/test"}  # Valid
-                ]
-        
-        registry.register_web_plugin("bad", BadPlugin())
-        panels = registry.get_all_panels()
-        
-        # Only the valid panel should be included
-        assert len(panels) == 1
-        assert panels[0]["id"] == "valid"
-    
     def test_get_security_config(self, registry, mock_plugin):
         """Test getting security config for a plugin"""
         registry.register_web_plugin("test", mock_plugin)
@@ -216,13 +160,6 @@ class TestPluginWebRegistry:
         assert response.status_code == 200
         assert response.json() == {"status": "ok", "plugin": "test"}
         
-        # Test panels endpoint
-        response = client.get("/api/plugins/panels")
-        assert response.status_code == 200
-        data = response.json()
-        assert "panels" in data
-        assert len(data["panels"]) == 1
-        assert data["panels"][0]["plugin_name"] == "test"
 
 
 class TestPluginWebIntegration:

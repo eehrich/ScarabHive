@@ -13,7 +13,7 @@ export const PROTOCOL_VERSION = 1;
 const framed = window.parent !== window;
 const host = framed ? window.parent : null;
 let inShell = false;
-const listeners = { session: new Set(), visibility: new Set() };
+const listeners = { session: new Set(), visibility: new Set(), theme: new Set() };
 const pending = new Map();
 let nextId = 1;
 
@@ -181,7 +181,9 @@ window.addEventListener('message', (event) => {
 });
 
 function applyTheme(theme) {
-  if (theme) document.documentElement.dataset.theme = theme;
+  if (!theme || theme === document.documentElement.dataset.theme) return;
+  document.documentElement.dataset.theme = theme;
+  listeners.theme.forEach((fn) => fn(theme));
 }
 
 function setVisible(value) {
@@ -226,6 +228,12 @@ export const session = {
   get id() { return currentSession ? currentSession.id : null; },
   onChange(fn) { listeners.session.add(fn); return () => listeners.session.delete(fn); },
 };
+
+/** Called with the new theme when the viewer switches it, here or anywhere in the shell. */
+export function onThemeChange(fn) {
+  listeners.theme.add(fn);
+  return () => listeners.theme.delete(fn);
+}
 
 export function onVisibilityChange(fn) {
   listeners.visibility.add(fn);
@@ -331,11 +339,56 @@ export function showDialog(doc, { title, message, actions, input }) {
     element.addEventListener('close', () => { element.remove(); resolve(result); });
     doc.body.appendChild(element);
     element.showModal();
-    (field || element.querySelector('.pk-btn--primary, .pk-btn--danger') || element).focus();
+    // Enter confirms what is safe: a destructive dialog starts on its other button.
+    (field || element.querySelector('.pk-btn--primary')
+      || element.querySelector('[data-index]:not(.pk-btn--danger)') || element).focus();
   });
 }
 
 function localDialog(spec) { return showDialog(document, spec); }
+
+// ------------------------------------------------------------------ menus
+
+/**
+ * Put a popover menu at a box (a button's getBoundingClientRect()): below it,
+ * or above when there is more room there; right-aligned in the right half of
+ * the window.
+ */
+export function placeMenu(menu, box) {
+  const gap = 4;
+  const margin = 8;
+  // client sizes: a fixed position is measured inside the scrollbars
+  const width = document.documentElement.clientWidth;
+  const height = document.documentElement.clientHeight;
+  const rightHalf = box.left + box.width / 2 > width / 2;
+  const left = Math.max(margin, box.left);
+  const right = Math.max(margin, width - box.right);
+  const roomBelow = height - box.bottom - gap - margin;
+  const roomAbove = box.top - gap - margin;
+  const up = roomBelow < 240 && roomAbove > roomBelow;
+  Object.assign(menu.style, {
+    position: 'fixed',
+    margin: '0',
+    left: rightHalf ? 'auto' : `${left}px`,
+    right: rightHalf ? `${right}px` : 'auto',
+    top: up ? 'auto' : `${box.bottom + gap}px`,
+    bottom: up ? `${height - box.top + gap}px` : 'auto',
+    maxWidth: `${width - (rightHalf ? right : left) - margin}px`,
+    maxHeight: `${Math.max(up ? roomAbove : roomBelow, 0)}px`,
+  });
+}
+
+// A .pk-menu opened by a button appears at that button -- popovers have no
+// anchor of their own in every browser yet. The event names the button where
+// the browser supports it (ToggleEvent.source); otherwise the menu's
+// popovertarget button stands in. beforetoggle does not bubble, so it is
+// caught on the way down.
+document.addEventListener('beforetoggle', (event) => {
+  const menu = event.target;
+  if (event.newState !== 'open' || !(menu instanceof HTMLElement) || !menu.matches('.pk-menu[id]')) return;
+  const button = event.source || document.querySelector(`[popovertarget="${CSS.escape(menu.id)}"]`);
+  if (button) placeMenu(menu, button.getBoundingClientRect());
+}, true);
 
 // Native dialogs are not allowed: they block the page and look foreign, and
 // in the shell's sandbox confirm() silently returned false. Loud, not silent.
@@ -349,6 +402,21 @@ for (const name of ['alert', 'confirm', 'prompt']) {
 }
 
 // ------------------------------------------------------------ navigation
+
+export const THEMES = ['system', 'light', 'dark'];
+
+/** The viewer's theme choice: remembered in the cookie the server paints with, applied everywhere. */
+export function setTheme(theme) {
+  if (!THEMES.includes(theme)) throw new Error(`unknown theme ${theme}`);
+  document.cookie = `ui_theme=${theme}; path=/; max-age=31536000; samesite=lax`;
+  applyTheme(theme);
+  tell('pk:set-theme', { theme });
+}
+
+export function currentTheme() {
+  const theme = document.documentElement.dataset.theme;
+  return THEMES.includes(theme) ? theme : 'system';
+}
 
 export function navigate(path) { tell('pk:navigate', { path }); }
 export function setTitle(text) { tell('pk:title', { text }); document.title = text; }
@@ -384,9 +452,10 @@ class RefreshControl extends HTMLElement {
       <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="now" title="Refresh">${icon('refresh-cw')}</button>
       <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm pk-refresh-auto" data-act="auto" aria-pressed="false"
               title="Refresh every ${interval}s">${interval}s</button>`);
-    const fire = () => this.dispatchEvent(new CustomEvent('refresh', { bubbles: true }));
-    this.auto = autoRefresh(fire, interval * 1000);
-    this.querySelector('[data-act="now"]').addEventListener('click', fire);
+    // detail.auto: the timer fired, not the viewer -- a costly reload may skip that
+    const fire = (auto) => this.dispatchEvent(new CustomEvent('refresh', { bubbles: true, detail: { auto } }));
+    this.auto = autoRefresh(() => fire(true), interval * 1000);
+    this.querySelector('[data-act="now"]').addEventListener('click', () => fire(false));
     const toggle = this.querySelector('[data-act="auto"]');
     toggle.addEventListener('click', () => {
       if (this.auto.running) this.auto.stop(); else this.auto.start();

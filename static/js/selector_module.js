@@ -252,12 +252,6 @@
   SelectorModule.setAgent = setAgent;
   SelectorModule.setLLMProfile = setLLMProfile;
 
-  // Register in global namespace
-  if (!global.AgentSystem) {
-    global.AgentSystem = {};
-  }
-  global.AgentSystem.Selectors = SelectorModule;
-
   global.selectorModule = SelectorModule;
 
 })(window);

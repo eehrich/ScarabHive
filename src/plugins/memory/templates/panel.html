@@ -380,11 +380,10 @@
     </div>
     
     <script>
-        // Note: Scroll prevention is now handled centrally by plugin_manager.js
-
         let autoRefreshInterval = null;
         let allMemories = [];
         let currentSearchQuery = null;
+        let searchSession = null;  // the session the search shown was made in
         
         function getCurrentSessionId() {
             // Try to get from parent window's sessionManager
@@ -397,26 +396,10 @@
                 console.log('[Memory Manager] Cannot access parent sessionManager:', e.message);
             }
             
-            // Parse from parent's DOM
-            try {
-                if (window.parent && window.parent !== window) {
-                    const headerEl = window.parent.document.getElementById('headerSessionId');
-                    if (headerEl && headerEl.textContent && headerEl.textContent !== '--') {
-                        return headerEl.textContent;
-                    }
-                }
-            } catch (e) {
-                console.log('[Memory Manager] Cannot access parent DOM:', e.message);
-            }
-            
             // URL parameter
             const urlParams = new URLSearchParams(window.location.search);
             const urlSessionId = urlParams.get('session_id');
             if (urlSessionId) return urlSessionId;
-            
-            // LocalStorage fallback
-            const storedSessionId = localStorage.getItem('currentSessionId');
-            if (storedSessionId) return storedSessionId;
             
             return 'default';
         }
@@ -436,26 +419,23 @@
         async function refreshData() {
             try {
                 const sessionId = getCurrentSessionId();
-                
-                // Fetch stats
-                const statsUrl = `/plugins/{{ name }}/stats?session_id=${sessionId}`;
-                const statsResp = await fetch(statsUrl);
-                const stats = await statsResp.json();
-                
+                const json = (url) => fetch(url).then((response) => response.json());
+                // the stats, and the memories unless a search shows its own
+                const [stats, memoriesData] = await Promise.all([
+                    json(`/plugins/{{ name }}/stats?session_id=${sessionId}`),
+                    currentSearchQuery ? null : json(`/plugins/{{ name }}/memories?session_id=${sessionId}&limit=100&sort_by=accessed&sort_order=desc`),
+                ]);
+                // the session switched to meanwhile has its own refresh on the way
+                if (getCurrentSessionId() !== sessionId) return;
+
                 // Update stats
                 document.getElementById('total-memories').textContent = stats.total_memories || 0;
                 document.getElementById('avg-importance').textContent = stats.avg_importance?.toFixed(1) || '0.0';
                 document.getElementById('total-accesses').textContent = stats.total_accesses || 0;
-                
-                // Fetch memories (if no search active)
-                if (!currentSearchQuery) {
-                    const memoriesUrl = `/plugins/{{ name }}/memories?session_id=${sessionId}&limit=100&sort_by=accessed&sort_order=desc`;
-                    const memoriesResp = await fetch(memoriesUrl);
-                    const memoriesData = await memoriesResp.json();
-                    
-                    allMemories = memoriesData.memories || [];
-                }
-                
+
+                // a search shown meanwhile keeps its results
+                if (memoriesData && !currentSearchQuery) allMemories = memoriesData.memories || [];
+
                 renderMemories();
                 
                 document.getElementById('error-container').innerHTML = '';
@@ -498,7 +478,10 @@
                 }
                 
                 const searchData = await resp.json();
+                // the session switched to meanwhile: the search was for the one before
+                if (getCurrentSessionId() !== sessionId) return;
                 currentSearchQuery = query;
+                searchSession = sessionId;
                 
                 // Convert search results to memory format
                 allMemories = searchData.results.map(r => ({
@@ -679,6 +662,15 @@
             // Default: enabled (or no saved preference)
             autoRefreshInterval = setInterval(refreshData, 5000);
         }
+
+        // the shell names its session on every change, after a reload a moment after this panel
+        // loaded; a search shown for the session before goes with it
+        window.addEventListener('message', (event) => {
+            if (event.source !== window.parent || event.origin !== window.location.origin
+                || event.data?.type !== 'pk:session') return;
+            if (currentSearchQuery && searchSession !== getCurrentSessionId()) clearSearch();
+            else refreshData();
+        });
     </script>
 </body>
 </html>

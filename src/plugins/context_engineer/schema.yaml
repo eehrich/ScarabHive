@@ -176,38 +176,17 @@ commands:
 
 # Web UI configuration
 web_ui:
-  # Header button configuration
-  button:
-    enabled: true
-    text: "{{ name }}"
-    icon: "🔧"
-    tooltip: "View context engineering statistics and optimization history"
-
-  # Dropdown menu integration
-  menu:
-    enabled: true
-    items:
-      - id: "context_engineer"
-        menu_id: "user"
-        section: "Context Management"
-        label: "Context Engineer"
-        action: "openPanel"
-        panel_id: "{{ name }}"
-        icon: "🔧"
-        requires_admin: false
-        order: 110
-        tooltip: "Context Engineer - Advanced context optimization"
-
-  # Panel configuration
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Context Engineer"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    description: "View context engineering statistics including compaction history, core memory, and token savings"
+    title: "Context Engineer"
+    description: "Compaction history, core memory and token savings of the context engineering"
+    icon: brain
+    category: context
+    keywords: [compaction, memory, tokens]
+    window: {width: 860, height: 640}
 
-  # API endpoints
   endpoints:
     - path: "/"
       methods: ["GET"]
@@ -251,7 +230,14 @@ config:
     default: 5000
     minimum: 1000
     maximum: 50000
-    description: "Maximum token size for inline tool results. Results exceeding this are ALWAYS archived, even if in last N."
+    description: "Maximum token size for inline tool results. From layer1_threshold on, results exceeding this are archived even if in last N."
+
+  tool_result_max_window_share:
+    type: number
+    default: 0.25
+    minimum: 0.0
+    maximum: 1.0
+    description: "A NEW tool result larger than this share of the model's context window is stored on arrival, below every threshold and hysteresis (Pre-Layer T). Only the current round is touched: messages a request already carried stay as sent. 0 disables it."
 
   # Tool Result Clearing (Legacy - kept for compatibility)
 

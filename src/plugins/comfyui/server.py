@@ -2040,42 +2040,6 @@ class ComfyUIServer(SchemaBasedMCPServer):
             })
         
         return router
-    
-    def get_panels(self) -> list[dict[str, Any]]:
-        """Return UI panel configuration for ComfyUI monitor.
-        
-        Returns:
-            List with panel configuration dict
-        """
-        return [
-            {
-                "id": "comfyui_monitor",
-                "title": "ComfyUI Monitor",
-                "icon": "🎨",
-                "url": f"/plugins/{self.name}/",
-                "position": "right",
-                "width": "650px",
-                "height": "500px"
-            }
-        ]
-    
-    def get_menu_items(self) -> list[dict[str, Any]]:
-        """Return menu items for ComfyUI.
-        
-        Returns:
-            List of menu item configuration dicts
-        """
-        return [
-            {
-                "id": "comfyui_monitor",
-                "menu_id": "tools",
-                "label": "ComfyUI Monitor",
-                "icon": "🎨",
-                "url": f"/plugins/{self.name}/",
-                "order": 50,
-                "target": "_blank"
-            }
-        ]
 
 
 # Plugin factory for discovery

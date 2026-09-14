@@ -1,33 +1,16 @@
 # Web UI configuration for Batch Monitor Plugin
 
 web_ui:
-  # Dropdown menu integration
-  menu:
-    enabled: true
-    items:
-      - id: "batch_queues"
-        menu_id: "user"
-        section: "Monitoring"
-        label: "Batch Queues"
-        action: "openPanel"
-        panel_id: "{{ name }}"
-        icon: "⚡"
-        requires_admin: false
-        order: 200
-        tooltip: "Monitor batch queue status"
-
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Batch Queues"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    width: "900px"
-    height: "600px"
-
-  # Access control
-  requires_auth: false  # Public monitoring
-  requires_role: null
+    title: "Batch Queues"
+    description: "Queue status of batched LLM requests"
+    icon: layers
+    category: system
+    keywords: [batch, queue, llm]
+    window: {width: 900, height: 600}
 
   endpoints:
     - path: "/"

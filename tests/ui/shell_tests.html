@@ -1,0 +1,2173 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ScarabHive shell tests</title>
+  <style>body { margin: 0; } iframe { width: 1400px; height: 900px; border: 0; }</style>
+</head>
+<body>
+<iframe id="shell" title="shell"></iframe>
+<script type="module">
+  // The real shell (index.html, shell.js, the chat scripts) against a stub
+  // server, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  /** Resolves with the first truthy value of predicate -- which may ask the stub server, and so be async. */
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('shell');
+  const doc = () => frame.contentDocument;
+  const win = () => frame.contentWindow;
+  const $ = (selector) => doc().querySelector(selector);
+  const $$ = (selector) => [...doc().querySelectorAll(selector)];
+  const probeFrame = () => $$('iframe.panel-frame').find((f) => f.src.includes('shell_probe_panel'));
+  const probe = () => probeFrame()?.contentWindow?.probe;
+  const received = (type) => probe().received.filter((m) => m.type === type);
+  const panelFrame = (path) => $$('iframe.panel-frame').find((f) => f.src.includes(path));
+  const sessionButton = (id, act) => $(`.session-item[data-id="${id}"] > .session-row [data-act="${act}"]`);
+  const cookie = (name, value) => {
+    document.cookie = value ? `${name}=${value}; path=/` : `${name}=; path=/; max-age=0`;
+  };
+  const account = (state) => cookie('stub_account', state);
+  const stub = (path, json) => fetch(path, json === undefined ? {} : {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(json) });
+  const withWidth = async (width, fn) => {
+    frame.style.width = width;
+    try { return await fn(); } finally { frame.style.width = ''; }
+  };
+  /** Pretend a request is running in the chat while fn runs. */
+  const whileRunning = async (fn, { stops = true } = {}) => {
+    const chat = win().chatModule;
+    const original = { has: chat.hasActiveRequest, run: chat.activeRun, cancel: chat.cancelActiveRequest };
+    chat.hasActiveRequest = () => true;
+    chat.activeRun = () => ({});
+    chat.cancelActiveRequest = async () => (stops ? 'stopped' : 'unconfirmed');
+    try {
+      return await fn();
+    } finally {
+      Object.assign(chat, { hasActiveRequest: original.has, activeRun: original.run, cancelActiveRequest: original.cancel });
+    }
+  };
+
+  /** The run of this tab a reload follows, stored with the session it runs in -- which the tab shows too. */
+  const storeRun = (requestId, sessionId) => {
+    sessionStorage.setItem('activeRequestId', requestId);
+    sessionStorage.setItem('activeRequestSession', sessionId);
+    sessionStorage.setItem('lastSessionId', sessionId);
+  };
+  const forgetRun = () => [...Object.keys(sessionStorage).filter((key) => key.startsWith('stoppingRequest:')),
+    'activeRequestId', 'activeRequestSession', 'lastSessionId'].forEach((key) => sessionStorage.removeItem(key));
+  const stopAsked = (requestId) => sessionStorage.getItem(`stoppingRequest:${requestId}`) !== null;
+
+  function go(url) {
+    return new Promise((resolve) => { frame.onload = resolve; frame.src = url; });
+  }
+
+  const hits = async (key) => (await (await stub('/__stub/hits')).json())[key] || 0;
+  const runsPosted = async () => (await (await stub('/__stub/posted')).json()).length;
+  /** Reload the shell and resolve once it has asked the stub server for `key` once more (e.g. its stored session). */
+  async function reloadUntilAsked(key) {
+    const before = await hits(key);
+    await go(`/?load=${performance.now()}`);
+    await until(`the shell to ask for ${key}`, async () => await hits(key) !== before, 5000);
+  }
+  /** The server has named the run the chat follows after a reload. */
+  const reattached = () => $('#chat .reconnect-info');
+
+  // Started means start() ran through: the welcome (or the restored session) is
+  // drawn only after the catalogue and the sessions have arrived.
+  async function loadShell() {
+    await go(`/?load=${performance.now()}`);
+    await until('the started shell', () => $('.session-item') && ($('#chatWelcome') || $('#chat .msg')));
+  }
+
+  async function openPalette(query) {
+    doc().dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    await until('the palette', () => $('#palette').open);
+    const input = $('#paletteInput');
+    input.value = query;
+    input.dispatchEvent(new Event('input'));
+    return input;
+  }
+
+  const report = () => fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+
+  localStorage.clear();
+  sessionStorage.clear();
+  account(null);
+
+  const STARTS = 'the shell starts for the owner when auth is off';
+  await check(STARTS, async () => {
+    await loadShell();
+    await until('the health poll', () => $('#connectionState').textContent.includes('Connected'));
+    await until('the agents', () => $('#agentSelector').options.length === 2);
+    return $('#userMenuName').textContent === 'Owner' && $('#logoutButton').hidden
+      && $('#versionLabel').textContent === 'v9.9.9' && $('#chatWelcome') !== null;
+  });
+  if (results[STARTS] !== 'ok') {
+    await report();  // nothing below can run without a shell
+    throw new Error(results[STARTS]);
+  }
+
+  await check('an empty message leaves the welcome in place', async () => {
+    $('#f').requestSubmit();
+    await sleep(300);
+    return $('#chatWelcome') !== null;
+  });
+
+  await check('the message form never reloads the page, not even before the chat has taken it over', async () => {
+    // a copy carries the markup and none of the chat's listeners
+    const copy = $('#f').cloneNode(true);
+    copy.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
+    doc().body.appendChild(copy);
+    let reloaded = false;
+    const onLoad = () => { reloaded = true; };
+    frame.addEventListener('load', onLoad);
+    try {
+      copy.requestSubmit();
+      await sleep(500);
+      return !reloaded && $('#chatWelcome') !== null;
+    } finally {
+      frame.removeEventListener('load', onLoad);
+      copy.remove();
+    }
+  });
+
+  await check('attaching files is a button the keyboard reaches', async () => {
+    let picked = false;
+    $('#fileInput').addEventListener('click', (event) => { picked = true; event.preventDefault(); }, { once: true });
+    $('#attachButton').focus();
+    const focused = doc().activeElement === $('#attachButton');
+    $('#attachButton').click();
+    return focused && picked;
+  });
+
+  await check('a mangled pin or recent list leaves the launcher working', async () => {
+    localStorage.setItem('scarabhive.pinned', '{}');
+    localStorage.setItem('scarabhive.recent', 'null');
+    try {
+      $('#launcherButton').click();
+      await until('the open launcher', () => $('#launcher').matches(':popover-open'));
+      const listed = $$('#launcherList [data-panel="probe"]').length === 1;
+      $('#launcherList [data-pin="probe"]').click();
+      const pins = JSON.parse(localStorage.getItem('scarabhive.pinned'));
+      $('#launcher').hidePopover();
+      return listed && pins.join() === 'probe';
+    } finally {
+      localStorage.removeItem('scarabhive.pinned');
+      localStorage.removeItem('scarabhive.recent');
+    }
+  });
+
+  await check('the launcher lists the catalogue by category under its button', async () => {
+    $('#launcherButton').click();
+    await until('the open launcher', () => $('#launcher').matches(':popover-open'));
+    const groups = $$('#launcherList .launcher-group').map((g) => g.textContent);
+    const items = $$('#launcherList [data-panel]').map((i) => i.dataset.panel);
+    const button = $('#launcherButton').getBoundingClientRect();
+    const launcher = $('#launcher').getBoundingClientRect();
+    return groups.includes('Session') && groups.includes('Debugging') && items.includes('probe') && items.includes('system')
+      && launcher.top >= button.bottom && Math.abs(launcher.right - button.right) < 1;
+  });
+
+  await check('instances of one plugin fold into one launcher row', async () => {
+    const folds = $$('#launcherList details.launcher-fold');
+    const members = folds[0] && [...folds[0].querySelectorAll('[data-panel]')].map((i) => i.dataset.panel).sort().join(',');
+    return folds.length === 1 && folds[0].querySelector('summary').textContent.includes('Sub-Agents')
+      && folds[0].querySelector('summary .pk-badge').textContent === '2' && members === 'sam_skills,sam_writer'
+      && $$('#launcherList > [data-panel^="sam_"]').length === 0;
+  });
+
+  await check('the launcher search matches description and keywords', async () => {
+    const search = $('#launcherSearch');
+    search.value = 'records protocol';
+    search.dispatchEvent(new Event('input'));
+    const items = $$('#launcherList [data-panel]').map((i) => i.dataset.panel);
+    return items.length === 1 && items[0] === 'probe';
+  });
+
+  await check('a panel opens docked and the host answers pk:ready with pk:init', async () => {
+    $('#launcherList [data-panel="probe"]').click();
+    await until('pk:init at the probe', () => received('pk:init').length);
+    const [init] = received('pk:init');
+    return !$('#dock').hidden && !$('#launcher').matches(':popover-open') && $$('.dock-tab').length === 1
+      && init.v === 1 && init.visible === true && init.theme === 'system' && init.session === null;
+  });
+
+  await check("a panel's dialog is shown over the whole app", async () => {
+    const answer = probe().pk.confirm('Delete everything?', { danger: true });
+    const dialog = await until('the dialog in the shell', () => $('dialog.pk-dialog[open]'));
+    const inPanel = probeFrame().contentDocument.querySelector('dialog.pk-dialog');
+    dialog.querySelector('.pk-btn--danger').click();
+    return (await answer) === true && inPanel === null;
+  });
+
+  await check("a panel's title, badge and toast reach the shell", async () => {
+    $('.dock-tab [data-act="close"]').focus();
+    probe().pk.setTitle('Probe · 3 new');
+    probe().pk.setBadge(3);
+    probe().pk.toast('Saved', { kind: 'ok' });
+    await until('the tab title', () => $('.dock-tab .dock-tab-title').textContent === 'Probe · 3 new');
+    await until('the badge', () => $('.dock-tab .pk-badge')?.textContent === '3');
+    await until('the toast', () => $$('.pk-toast--ok').some((t) => t.textContent.includes('Saved')));
+    // the bar was drawn anew twice: the keyboard focus stayed on the same button
+    return doc().activeElement.dataset.act === 'close';
+  });
+
+  await check('a second docked panel takes the front and the first is told it is hidden', async () => {
+    $('#userButton').click();
+    await until('the user menu', () => $('#userMenu').matches(':popover-open'));
+    $('#userMenu [data-open-panel="settings"]').click();
+    await until('the second tab', () => $$('.dock-tab').length === 2);
+    await until('the hidden notice', () => received('pk:visibility').at(-1)?.visible === false);
+    return probeFrame().hidden && getComputedStyle(probeFrame()).display === 'none'
+      && $('.dock-tab[aria-selected="true"]').textContent.includes('Settings');
+  });
+
+  await check('a dock tab is chosen with the keyboard', async () => {
+    const tab = (name) => $$('.dock-tab').find((t) => t.textContent.includes(name));
+    tab('Probe').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const probeChosen = tab('Probe').getAttribute('aria-selected') === 'true';
+    tab('Settings').dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    return probeChosen && tab('Settings').getAttribute('aria-selected') === 'true' && tab('Probe').tabIndex === 0;
+  });
+
+  await check('a framed kit panel leaves its title to the tab and keeps its content', async () => {
+    const settings = panelFrame('/ui/panels/settings');
+    const panel = await until('the settings panel', () => settings.contentDocument.querySelector('.pk-page-title') && settings.contentDocument);
+    await until('the account check', () => !panel.getElementById('noAccounts').hidden);
+    const shown = (selector) => getComputedStyle(panel.querySelector(selector)).display !== 'none';
+    return !shown('.pk-page-title') && !shown('#account') && shown('#noAccounts');
+  });
+
+  await check('a docked panel detaches into a window and docks back', async () => {
+    $$('.dock-tab').find((t) => t.textContent.includes('Probe')).querySelector('[data-act="float"]').click();
+    const window_ = await until('the window', () => $('#floatingLayer .app-window'));
+    await until('pk:init in the window', () => received('pk:init').at(-1)?.visible === true);
+    const detached = $$('.dock-tab').length === 1 && $('#floatingList [data-key]') !== null
+      && window_.querySelector('.app-window-title').textContent === 'Probe';
+    window_.querySelector('[data-act="dock"]').click();
+    await until('the tab again', () => $$('.dock-tab').length === 2 && !$('#floatingLayer .app-window'));
+    await until('pk:init back in the dock', () => received('pk:init').length);
+    return detached && $('.dock-tab[aria-selected="true"]').textContent.includes('Probe');
+  });
+
+  await check('a window gets its size back once the browser window grows again', async () => {
+    $$('.dock-tab').find((t) => t.textContent.includes('Probe')).querySelector('[data-act="float"]').click();
+    const window_ = await until('the window', () => $('#floatingLayer .app-window'));
+    const height = () => window_.getBoundingClientRect().height;
+    const full = height();
+    frame.style.height = '500px';
+    try {
+      await until('the squeezed window', () => height() < full);
+    } finally {
+      frame.style.height = '';
+    }
+    await until('the window at its own size', () => Math.abs(height() - full) < 1, 3000);
+    window_.querySelector('[data-act="dock"]').click();
+    await until('the tab again', () => !$('#floatingLayer .app-window') && received('pk:init').length);
+    return true;
+  });
+
+  await check('loading a session names it in the header and tells the panels', async () => {
+    sessionButton('s-1', 'open').click();
+    await until('the header title', () => $('#headerSessionId').textContent === 'Refactor the kit');
+    // the probe was loaded before: the session has to come as pk:session, not with pk:init
+    await until('pk:session at the probe', () => received('pk:session').at(-1)?.session?.id === 's-1');
+    await until('session.onChange in the probe', () => probe().sessions.at(-1)?.id === 's-1');
+    return $$('#chat .msg.user').length === 1 && !$('#chatWelcome') && doc().title === 'Refactor the kit · ScarabHive'
+      && sessionButton('s-1', 'open').tagName === 'BUTTON';
+  });
+
+  await check('an open branch of the session tree stays open and current when the list refreshes', async () => {
+    sessionButton('s-1', 'expand').click();
+    await until('the sub-session', () => $('.session-item[data-id="s-1-sub"]'));
+    const expanded = sessionButton('s-1', 'expand').getAttribute('aria-expanded') === 'true';
+    await stub('/__stub/children', { parent: 's-1', session_id: 's-1-sub2', title: 'Draw the logo' });  // a run spawned it
+    await win().sessionManager.loadSessions();  // what every run's start and end does
+    return expanded && $('.session-item[data-id="s-1-sub"]') !== null && $('.session-item[data-id="s-1-sub2"]') !== null
+      && sessionButton('s-1', 'expand').getAttribute('aria-expanded') === 'true';
+  });
+
+  await check('a session started from the chat is named once the server has named it', async () => {
+    await stub('/__stub/sessions', { session_id: 's-2', title: 'Fresh session', has_children: false });
+    win().sessionManager.onSessionUpdated('s-2');  // what the chat calls on the stream's start event
+    await until('the server title in the header', () => $('#headerSessionId').textContent === 'Fresh session');
+    await until('pk:session with the title', () => received('pk:session').at(-1)?.session?.title === 'Fresh session');
+    return true;
+  });
+
+  await check('the last session clicked wins, not the last answer', async () => {
+    await stub('/__stub/sessions', { session_id: 's-slow', title: 'Slow session', delay: 0.8, has_children: false });
+    await win().sessionManager.loadSessions();
+    sessionButton('s-slow', 'open').click();
+    await sleep(50);
+    sessionButton('s-1', 'open').click();
+    await sleep(1500);
+    return $('#headerSessionId').textContent === 'Refactor the kit';
+  });
+
+  await check('a session still loading does not replace a newer choice', async () => {
+    const header = () => $('#headerSessionId').textContent;
+    sessionButton('s-slow', 'open').click();
+    await sleep(50);
+    $('#sessionsPane [data-act="new"]').click();
+    await sleep(1500);
+    const keptNew = header() === 'New session' && $('#chatWelcome') !== null;
+    sessionButton('s-slow', 'open').click();
+    await sleep(50);
+    win().sessionManager.onSessionUpdated('s-1');  // meanwhile a message started a run in s-1
+    await sleep(1500);
+    const keptRun = header() === 'Refactor the kit';
+    sessionButton('s-1', 'open').click();
+    await until('the kit session in the chat', () => $$('#chat .msg.user').length === 1);
+    sessionButton('s-slow', 'open').click();
+    await sleep(50);
+    win().sessionManager.onSessionUpdated('s-1');  // meanwhile the open session's own run started
+    await sleep(1500);
+    return keptNew && keptRun && header() === 'Refactor the kit' && sessionStorage.getItem('lastSessionId') === 's-1';
+  });
+
+  await check('clicking the open session during a run does not stop the run', () => whileRunning(async () => {
+    sessionButton('s-1', 'open').click();
+    await sleep(300);
+    return !$('dialog.pk-dialog[open]');
+  }));
+
+  await check('deleting the open session asks about its run before anything is deleted', () => whileRunning(async () => {
+    sessionButton('s-1', 'delete').click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    const second = await until('the run question', () => {
+      const open = $('dialog.pk-dialog[open]');
+      return open && open.textContent.includes('still running') && open;
+    });
+    [...second.querySelectorAll('[data-index]')].find((b) => !b.classList.contains('pk-btn--danger')).click();
+    await sleep(300);
+    const deletes = await (await stub('/__stub/deletes')).json();
+    return deletes.length === 0 && $('#headerSessionId').textContent === 'Refactor the kit';
+  }));
+
+  await check('the open session is deleted once its run has stopped, and the welcome does not offer it', async () => {
+    await stub('/__stub/sessions', { session_id: 's-doomed', title: 'Doomed session', has_children: false });
+    await win().sessionManager.loadSessions();
+    sessionButton('s-doomed', 'open').click();
+    await until('the doomed session', () => $('#headerSessionId').textContent === 'Doomed session');
+    const deleteAndCancelTheRun = async () => {
+      sessionButton('s-doomed', 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+      (await until('the run question', () => {
+        const open = $('dialog.pk-dialog[open]');
+        return open && open.textContent.includes('still running') && open.querySelector('.pk-btn--danger');
+      })).click();
+    };
+    const deleted = async () => (await (await stub('/__stub/deletes')).json()).join();
+    await whileRunning(async () => {
+      await deleteAndCancelTheRun();
+      await until('the refusal', () => $$('.pk-toast--error').some((t) => t.textContent.includes('did not confirm')));
+    }, { stops: false });
+    const kept = await deleted() === '' && $('#headerSessionId').textContent === 'Doomed session';
+    await whileRunning(async () => {
+      await deleteAndCancelTheRun();
+      await until('the welcome of a new session, without it', () => $('#chatWelcome') && !$('#chatWelcome [data-session="s-doomed"]'));
+    }, { stops: true });
+    return kept && await deleted() === 's-doomed' && $('#headerSessionId').textContent === 'New session'
+      && $('#chatWelcome [data-session="s-1"]') !== null;
+  });
+
+  await check('the start page forgets a session deleted while it shows', async () => {
+    await stub('/__stub/sessions', { session_id: 's-stale', title: 'Stale session', has_children: false });
+    await win().sessionManager.loadSessions();  // the start page from the check above is still showing
+    const card = await until('the card on the start page', () => $('#chatWelcome [data-session="s-stale"]'));
+    sessionButton('s-stale', 'delete').click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    await until('the start page without it', () => $('#chatWelcome') && !$('#chatWelcome [data-session="s-stale"]'));
+    return card !== null;
+  });
+
+  await check('deleting a session is a choice: a pick after it wins, a pick of it does not stay open', async () => {
+    const header = () => $('#headerSessionId').textContent;
+    const confirmDelete = async (id) => {
+      sessionButton(id, 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    };
+    await stub('/__stub/sessions', { session_id: 's-condemned', title: 'Condemned session', delete_delay: 0.5, has_children: false });
+    await stub('/__stub/sessions', { session_id: 's-late', title: 'Late session', delay: 2, has_children: false });
+    await stub('/__stub/sessions', { session_id: 's-late2', title: 'Late session two', delay: 1, has_children: false });
+    await stub('/__stub/sessions', { session_id: 's-trickling', title: 'Trickling session', trickle: 1, has_children: false });
+    await win().sessionManager.loadSessions();
+    // the open session is being deleted when another one is picked
+    sessionButton('s-condemned', 'open').click();
+    await until('the condemned session', () => header() === 'Condemned session');
+    await confirmDelete('s-condemned');
+    await sleep(50);
+    sessionButton('s-late', 'open').click();
+    await until('the session picked after the delete', () => header() === 'Late session', 4000);
+    // a pick answered before its delete -- the browser holds the delete back until then -- is let go again
+    sessionButton('s-late2', 'open').click();
+    await sleep(50);
+    await confirmDelete('s-late2');
+    await until('the chat letting go of it', () => header() === 'New session', 3000);
+    // a pick whose answer is still coming in when its delete is done never opens
+    sessionButton('s-1', 'open').click();
+    await until('the kit session', () => header() === 'Refactor the kit');
+    sessionButton('s-trickling', 'open').click();
+    await sleep(300);  // its headers are in, its body takes a second
+    await confirmDelete('s-trickling');
+    await sleep(1500);
+    return header() === 'Refactor the kit' && sessionStorage.getItem('lastSessionId') === 's-1';
+  });
+
+  await check('a delete that fails takes nothing from a session on its way', async () => {
+    const header = () => $('#headerSessionId').textContent;
+    const confirmDelete = async (id) => {
+      sessionButton(id, 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    };
+    await stub('/__stub/sessions', { session_id: 's-stubborn', title: 'Stubborn session', delay: 1, delete_fails: 2, has_children: false });
+    // the session the shell restores
+    sessionStorage.setItem('lastSessionId', 's-stubborn');
+    await reloadUntilAsked('session:s-stubborn');
+    await confirmDelete('s-stubborn');
+    await until('the restored session', () => header() === 'Stubborn session', 4000);
+    // a pick still on its way while the open session is deleted
+    sessionButton('s-slow', 'open').click();
+    await sleep(50);
+    await confirmDelete('s-stubborn');
+    await until('the picked session', () => header() === 'Slow session', 4000);
+    return (await (await stub('/__stub/deletes')).json()).every((id) => id !== 's-stubborn');
+  });
+
+  await check('a load of the open session still on its way does not open it again once it is deleted', async () => {
+    const header = () => $('#headerSessionId').textContent;
+    await stub('/__stub/sessions', { session_id: 's-again', title: 'Again session', delay: 1, has_children: false });
+    await win().sessionManager.loadSessions();
+    sessionButton('s-again', 'open').click();
+    await until('the session', () => header() === 'Again session', 3000);
+    sessionButton('s-again', 'open').click();  // once more: the answer takes a second
+    await sleep(50);
+    sessionButton('s-again', 'delete').click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    await sleep(1500);  // the load has answered by now
+    return header() === 'New session' && sessionStorage.getItem('lastSessionId') === null
+      && (await (await stub('/__stub/deletes')).json()).includes('s-again');
+  });
+
+  await check('a message sent while the open session is being deleted does not bring it back', async () => {
+    await stub('/__stub/sessions', { session_id: 's-leaving', title: 'Leaving session', delete_delay: 1, has_children: false });
+    await win().sessionManager.loadSessions();
+    sessionButton('s-leaving', 'open').click();
+    await until('the leaving session', () => $('#headerSessionId').textContent === 'Leaving session');
+    sessionButton('s-leaving', 'delete').click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    await sleep(50);
+    $('#task').value = 'Something else';
+    $('#f').requestSubmit();
+    await sleep(300);
+    const posted = await (await stub('/__stub/posted')).json();
+    const run = posted.at(-1);
+    await loadShell();  // the run's stream ends with the page
+    return run?.task === 'Something else' && !('session_id' in run);
+  });
+
+  await check('a note written while the open session is being deleted stays', async () => {
+    await stub('/__stub/sessions', { session_id: 's-leaving2', title: 'Leaving session two', delete_delay: 1, has_children: false });
+    await win().sessionManager.loadSessions();
+    sessionButton('s-leaving2', 'open').click();
+    await until('the leaving session', () => $('#headerSessionId').textContent === 'Leaving session two');
+    sessionButton('s-leaving2', 'delete').click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    await until('the chat letting go of it', () => $('#headerSessionId').textContent === 'New session');
+    await win().chatModule.runCommand('session');
+    const note = await until('the note', () => $('#chat .msg.note'));
+    await sleep(1300);  // the delete is done by now
+    return note.isConnected && (await (await stub('/__stub/deletes')).json()).includes('s-leaving2');
+  });
+
+  await check('after a failed delete of the open session, deleting it again leaves the chat alone', async () => {
+    const confirmDelete = async (id) => {
+      sessionButton(id, 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    };
+    await stub('/__stub/sessions', { session_id: 's-sticky', title: 'Sticky session', delete_fails: 1, has_children: false });
+    await win().sessionManager.loadSessions();
+    sessionButton('s-sticky', 'open').click();
+    await until('the sticky session', () => $('#headerSessionId').textContent === 'Sticky session');
+    await confirmDelete('s-sticky');  // fails -- the chat has let go of it all the same
+    await until('the refusal', () => $$('.pk-toast--error').some((t) => t.textContent.includes('locked')));
+    await win().chatModule.runCommand('session');
+    const note = await until('the note', () => $('#chat .msg.note'));
+    await confirmDelete('s-sticky');  // goes this time
+    await until('the second delete', async () => (await (await stub('/__stub/deletes')).json()).includes('s-sticky'), 4000);
+    await sleep(300);
+    return note.isConnected;
+  });
+
+  await check('while the run of a session being deleted stops, a pick elsewhere keeps its place and a message keeps the session', async () => {
+    const header = () => $('#headerSessionId').textContent;
+    const deleted = async () => (await (await stub('/__stub/deletes')).json());
+    const confirmDeleteAndCancel = async (id) => {
+      sessionButton(id, 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+      (await until('the run question', () => {
+        const open = $('dialog.pk-dialog[open]');
+        return open && open.textContent.includes('still running') && open.querySelector('.pk-btn--danger');
+      })).click();
+    };
+    await stub('/__stub/sessions', { session_id: 's-busy', title: 'Busy session', has_children: false });
+    await stub('/__stub/sessions', { session_id: 's-busy2', title: 'Busy session two', has_children: false });
+    await win().sessionManager.loadSessions();
+    const chat = win().chatModule;
+    const original = { has: chat.hasActiveRequest, run: chat.activeRun, cancel: chat.cancelActiveRequest };
+    let running = false;
+    chat.hasActiveRequest = () => running;
+    chat.activeRun = () => (running ? {} : null);
+    // like the chat's own cancel: the run stops, and the wait notices a moment later
+    chat.cancelActiveRequest = async () => { await sleep(400); running = false; await sleep(400); return 'stopped'; };
+    let pickKept;
+    try {
+      sessionButton('s-busy', 'open').click();
+      await until('the busy session', () => header() === 'Busy session');
+      running = true;
+      await confirmDeleteAndCancel('s-busy');
+      await until('the stopped run', () => !running);
+      sessionButton('s-1', 'open').click();  // picked and shown before the delete goes on
+      await until('the kit session', () => header() === 'Refactor the kit');
+      await sleep(800);
+      pickKept = header() === 'Refactor the kit' && (await deleted()).includes('s-busy');
+    } finally {
+      Object.assign(chat, { hasActiveRequest: original.has, activeRun: original.run, cancelActiveRequest: original.cancel });
+    }
+    // a real run this time, reattached after a reload: a message written while the delete stops it
+    storeRun('r-live-busy', 's-busy2');  // its stream ends after five seconds
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the second busy session with its run', () => header() === 'Busy session two' && reattached());
+      await confirmDeleteAndCancel('s-busy2');
+      await until('the stop asked for', () => stopAsked('r-live-busy'), 1000);
+      $('#task').value = 'Keep this session';
+      $('#f').requestSubmit();  // written into it while its run stops: held -- the run would save it unanswered
+      await until('the session staying', () => $$('.pk-toast--warn').some((t) => t.textContent.includes('stays')), 8000);
+      return pickKept && !(await deleted()).includes('s-busy2') && header() === 'Busy session two'
+        && await hits('append:r-live-busy') === 0 && $('#task').value === 'Keep this session';
+    } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a stream naming the open session while its delete asks about the run does not keep the session', async () => {
+    await stub('/__stub/sessions', { session_id: 's-named', title: 'Named session', has_children: false });
+    await win().sessionManager.loadSessions();
+    sessionButton('s-named', 'open').click();
+    await until('the named session', () => $('#headerSessionId').textContent === 'Named session');
+    await whileRunning(async () => {
+      sessionButton('s-named', 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+      const stop = await until('the run question', () => {
+        const open = $('dialog.pk-dialog[open]');
+        return open && open.textContent.includes('still running') && open.querySelector('.pk-btn--danger');
+      });
+      win().sessionManager.onSessionUpdated('s-named');  // the start of a message sent just before the delete
+      stop.click();
+      await until('the delete', async () => (await (await stub('/__stub/deletes')).json()).includes('s-named'), 3000);
+    });
+    return !$$('.pk-toast--warn').some((t) => t.textContent.includes('stays'));
+  });
+
+  await check('a session opened and written into while it is being deleted keeps its run in the chat', async () => {
+    const header = () => $('#headerSessionId').textContent;
+    await stub('/__stub/sessions', { session_id: 's-reborn', title: 'Reborn session', delay: 0.8, delete_delay: 1.5, has_children: false });
+    await win().sessionManager.loadSessions();
+    sessionButton('s-1', 'open').click();
+    await until('the kit session', () => header() === 'Refactor the kit');
+    try {
+      sessionButton('s-reborn', 'open').click();  // answers after 0.8 s
+      sessionButton('s-reborn', 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();  // before it has answered
+      await until('the session opening while its delete runs', () => header() === 'Reborn session', 3000);
+      $('#task').value = 'Bring it back';
+      $('#f').requestSubmit();
+      await until('its run', () => win().chatModule.hasActiveRequest(), 2000);
+      await until('the delete', async () => (await (await stub('/__stub/deletes')).json()).includes('s-reborn'), 4000);
+      await sleep(300);
+      return header() === 'Reborn session' && win().chatModule.hasActiveRequest()
+        && $$('#chat .msg.user').some((m) => m.textContent.includes('Bring it back'));
+    } finally {
+      await loadShell();  // the run's stream ends with the page
+    }
+  });
+
+  await check('after New, deleting the session left behind leaves the chat alone', async () => {
+    await stub('/__stub/sessions', { session_id: 's-left', title: 'Left session', has_children: false });
+    await win().sessionManager.loadSessions();
+    sessionButton('s-left', 'open').click();
+    await until('the left session', () => $('#headerSessionId').textContent === 'Left session');
+    $('#sessionsPane [data-act="new"]').click();
+    await until('the start page', () => $('#chatWelcome'));
+    await win().chatModule.runCommand('session');
+    const note = await until('the note', () => $('#chat .msg.note'));
+    sessionButton('s-left', 'delete').click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    await sleep(500);
+    const kept = note.isConnected && !$('#chatWelcome');
+    sessionButton('s-1', 'open').click();
+    await until('the kit session again', () => $('#headerSessionId').textContent === 'Refactor the kit');
+    return kept;
+  });
+
+  await check('a message sent while a pick is on its way stays when that pick is deleted', async () => {
+    await stub('/__stub/sessions', { session_id: 's-late3', title: 'Late session three', delay: 2, has_children: false });
+    await win().sessionManager.loadSessions();
+    $('#sessionsPane [data-act="new"]').click();
+    sessionButton('s-late3', 'open').click();
+    await sleep(50);
+    $('#task').value = 'Start over';
+    $('#f').requestSubmit();  // a run in a new session; the stub never names it
+    await until('the message', () => $$('#chat .msg.user').some((m) => m.textContent.includes('Start over')));
+    sessionButton('s-late3', 'delete').click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    await sleep(2300);  // the deleted pick has answered by now
+    const kept = $$('#chat .msg.user').some((m) => m.textContent.includes('Start over')) && !$('#chatWelcome');
+    await loadShell();  // the run's stream ends with the page
+    sessionButton('s-1', 'open').click();
+    await until('the kit session again', () => $('#headerSessionId').textContent === 'Refactor the kit');
+    return kept;
+  });
+
+  await check('/new during a run asks about the run and stays in the session while it goes on', () => whileRunning(async () => {
+    const command = win().chatModule.runCommand('new');
+    const question = await until('the run question', () => {
+      const open = $('dialog.pk-dialog[open]');
+      return open && open.textContent.includes('still running') && open;
+    }, 2000);
+    [...question.querySelectorAll('[data-index]')].find((b) => !b.classList.contains('pk-btn--danger')).click();
+    await command;
+    return $('#headerSessionId').textContent === 'Refactor the kit' && win().chatModule.getCurrentSessionId() === 's-1'
+      && !$('#chatWelcome');
+  }));
+
+  await check('a slash command that ends while a newer line resolves leaves that line its guard against a second Send', async () => {
+    const slash = win().slashCommands;
+    const originalResolve = slash.resolve;
+    const resolving = [];
+    slash.resolve = (line) => new Promise((resolve) => resolving.push(resolve));
+    try {
+      return await whileRunning(async () => {  // /new asks about the running request, and waits for the answer
+        $('#task').value = '/new';
+        $('#f').requestSubmit();
+        await until('the first line resolving', () => resolving.length === 1);
+        resolving[0]({ kind: 'command', name: 'new', payload: '' });
+        const question = await until('the run question', () => {
+          const open = $('dialog.pk-dialog[open]');
+          return open && open.textContent.includes('still running') && open;
+        }, 2000);
+        $('#task').value = '/session';
+        $('#f').requestSubmit();  // a newer line, still resolving
+        await until('the second line resolving', () => resolving.length === 2);
+        [...question.querySelectorAll('[data-index]')].find((b) => !b.classList.contains('pk-btn--danger')).click();  // /new ends
+        await sleep(100);
+        $('#f').requestSubmit();  // Send again, while the newer line still resolves
+        await sleep(100);
+        return resolving.length === 2;
+      });
+    } finally {
+      resolving.slice(1).forEach((resolve) => resolve(null));  // let the lines still resolving finish
+      slash.resolve = originalResolve;
+      await loadShell();
+    }
+  });
+
+  await check('files sent while a request runs stay attached, and so does their message', async () => {
+    storeRun('r-live-files', 's-unsaved');  // a run the chat can append to
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', reattached);
+      const upload = win().fileUploadModule;
+      upload.addFiles([new (win().File)(['a note'], 'notes.txt', { type: 'text/plain' })]);
+      $('#task').value = 'Read this';
+      $('#f').requestSubmit();
+      await until('the note', () => $$('#chat .msg.note').some((note) => note.textContent.includes('stay attached')), 2000);
+      await sleep(300);
+      return $$('#chat .msg.user').length === 0 && $('#task').value === 'Read this' && upload.hasValidFiles()
+        && await hits('append:r-live-files') === 0;
+    } finally {
+      forgetRun();
+      await loadShell();  // the reattached run's stream ends with the page
+    }
+  });
+
+  await check('a message sent before the running request has started stays in the input', () => whileRunning(async () => {
+    const messages = $$('#chat .msg.user').length;
+    const runs = await runsPosted();
+    $('#task').value = 'Not yet';
+    try {
+      $('#f').requestSubmit();  // no start event has named the run yet
+      await until('the note', () => $$('#chat .msg.note').some((note) => note.textContent.includes('still starting')), 2000);
+      return $$('#chat .msg.user').length === messages && $('#task').value === 'Not yet' && await runsPosted() === runs;
+    } finally {
+      $('#task').value = '';
+    }
+  }));
+
+  await check('a run whose stream was cut off is left to a reload, which follows it again', async () => {
+    sessionButton('s-1', 'open').click();
+    await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+    cookie('stub_stream', 'drops');
+    try {
+      $('#task').value = 'Go on';
+      $('#f').requestSubmit();
+      await until('the lost connection', () => $('#chat').textContent.includes('reload the page to follow it'), 3000);
+      const letGo = !win().chatModule.hasActiveRequest() && $('#stopBtn').style.display === 'none'
+        && !$('#chat').textContent.includes('Connection failed')
+        && sessionStorage.getItem('activeRequestId') === 'r-dropped' && sessionStorage.getItem('activeRequestSession') === 's-1';
+      // a message meanwhile starts a run the server refuses: the refusal says why, and keeps the run stored
+      cookie('stub_stream', 'refused');
+      $('#task').value = 'Still there?';
+      $('#f').requestSubmit();
+      await until('the refusal', () => $$('#chat .response-text.error').some((e) => e.textContent.includes('currently locked')), 3000);
+      await sleep(300);
+      cookie('stub_stream', null);
+      const kept = sessionStorage.getItem('activeRequestId') === 'r-dropped';
+      await go(`/?load=${performance.now()}`);
+      await until('the run followed after the reload', () => reattached() && $('#headerSessionId').textContent === 'Refactor the kit', 4000);
+      return letGo && kept;
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();  // the followed run's stream ends with the page
+    }
+  });
+
+  await check('a run whose stream was cut off is let go once the chat shows another session', async () => {
+    const stored = () => sessionStorage.getItem('activeRequestId');
+    const loseRun = async () => {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
+      cookie('stub_stream', 'drops');
+      $('#task').value = 'Go on';
+      $('#f').requestSubmit();
+      await until('the lost connection', () => $('#chat').textContent.includes('reload the page to follow it'), 3000);
+      cookie('stub_stream', null);
+    };
+    try {
+      await loseRun();
+      sessionButton('s-1', 'open').click();  // its own session, loaded again
+      await until('the session loaded again', () => !$('#chat').textContent.includes('reload the page to follow it'));
+      const keptForItsSession = stored() === 'r-dropped';
+      sessionButton('s-2', 'open').click();
+      await until('another session', () => $('#headerSessionId').textContent === 'Fresh session');
+      const letGoForAnother = stored() === null;
+      await loseRun();
+      await win().chatModule.runCommand('new');
+      const letGoForSlashNew = stored() === null && $('#chatWelcome') !== null;  // the New button's path
+      await loseRun();
+      $('#sessionsPane [data-act="new"]').click();
+      await until('a new session', () => $('#chatWelcome'));
+      return keptForItsSession && letGoForAnother && letGoForSlashNew && stored() === null;
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+    }
+  });
+
+  await check('a reattached run whose stream drops is left to a reload', async () => {
+    storeRun('r-live-dropping', 's-unsaved');  // its stream delivers, then drops
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the drop', () => $('#chat').textContent.includes('reload the page to follow it'), 4000);
+      return !win().chatModule.hasActiveRequest() && $('#stopBtn').style.display === 'none'
+        && sessionStorage.getItem('activeRequestId') === 'r-live-dropping' && sessionStorage.getItem('activeRequestSession') === 's-unsaved';
+    } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a run that ends -- a final answer, a cancel, an error, a stream that closes -- is forgotten without a connection notice, and offers no Stop and takes no message while its stream stays open', async () => {
+    const quiet = () => !['Connection lost', 'Connection failed'].some((text) => $('#chat').textContent.includes(text))
+      && $('#stopBtn').style.display === 'none';
+    const stored = () => sessionStorage.getItem('activeRequestId');
+    try {
+      // a message's run: [how its stream ends, the run it names]
+      for (const [ending, run] of [['closes', 'r-closed'], ['final-drops', 'r-final-dropped'], ['cancelled-drops', 'r-cancelled-dropped']]) {
+        sessionButton('s-1', 'open').click();
+        await until('the kit session loaded', () => $('#headerSessionId').textContent === 'Refactor the kit'
+          && $$('#chat .msg.user').length === 1 && !win().chatModule.hasActiveRequest());
+        cookie('stub_stream', ending);
+        $('#task').value = `Until it ${ending}`;
+        $('#f').requestSubmit();
+        await until(`the run that ${ending}`, () => stored() === run, 2000);
+        await until('the end of its stream', () => !win().chatModule.hasActiveRequest(), 4000);
+        await sleep(200);
+        if (!quiet() || stored() !== null) return false;
+      }
+      cookie('stub_stream', null);
+      // a run reattached after a reload: its final answer, then its stream closes
+      storeRun('r-live-final', 's-unsaved');
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', reattached, 4000);
+      await until('the final answer', () => stored() === null, 2000);
+      // its stream is still open: nothing is left to stop
+      const idleAtFinal = win().chatModule.hasActiveRequest() && $('#stopBtn').style.display === 'none';
+      await until('the closed stream', () => !win().chatModule.hasActiveRequest(), 3000);
+      await sleep(200);
+      if (!idleAtFinal || !quiet()) return false;
+      // one cancelled elsewhere: its stream stays open for its save, and a message meanwhile waits in the composer
+      storeRun('r-live-cancelled', 's-unsaved');
+      await go(`/?load=${performance.now()}`);
+      await until('the cancel', () => $('#chat').textContent.includes('Request cancelled'), 4000);
+      const idleAtCancel = $('#stopBtn').style.display === 'none';
+      $('#task').value = 'Too late';
+      $('#f').requestSubmit();
+      await until('the note', () => $$('#chat .msg.note').some((note) => note.textContent.includes('finishing')), 1000);
+      const held = win().chatModule.hasActiveRequest() && stored() === null && $('#task').value === 'Too late'
+        && await hits('append:r-live-cancelled') === 0;
+      $('#task').value = '';
+      await until('the closed stream', () => !win().chatModule.hasActiveRequest(), 3000);
+      await sleep(200);
+      if (!idleAtCancel || !held || !quiet() || stored() !== null) return false;
+      // one that fails: its error, then its end
+      storeRun('r-live-failing', 's-unsaved');
+      await go(`/?load=${performance.now()}`);
+      await until('the error', () => $('#chat .response-text.error')?.textContent.includes('max steps'), 4000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 2000);
+      await sleep(300);
+      return quiet() && stored() === null;
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a run with files shows its answer, is not stored for a reload and leaves the stored run alone; files it did not send stay attached, and a cut after its answer is no failure', async () => {
+    const upload = () => win().fileUploadModule;
+    const attached = () => upload().getFiles().map((file) => file.name).join();
+    const note = (name) => new (win().File)(['a note'], name, { type: 'text/plain' });
+    const send = () => {
+      $('#task').value = 'Read this';
+      $('#f').requestSubmit();
+    };
+    sessionButton('s-1', 'open').click();
+    await until('the kit session loaded', () => $('#headerSessionId').textContent === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
+    storeRun('r-gone', 's-1');  // a run of the session a reload would follow
+    try {
+      // refused, the session being held: its files stay attached
+      cookie('stub_stream', 'refused');
+      upload().addFiles([note('notes.txt')]);
+      send();
+      await until('the refusal', () => $$('#chat .response-text.error').some((e) => e.textContent.includes('currently locked')), 3000);
+      await until('the refused stream closed', () => !win().chatModule.hasActiveRequest(), 2000);
+      cookie('stub_stream', null);
+      const refusedKept = attached() === 'notes.txt';
+      // taken, and run to its final answer and end -- a file attached before it has started is not sent
+      send();
+      await until('the run with files', () => win().chatModule.hasActiveRequest(), 1000);
+      upload().addFiles([note('later.txt')]);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 4000);
+      const answered = $$('#chat .msg.assistant').at(-1).querySelector('.response-text')?.textContent === 'Done';
+      if (!refusedKept || !answered || attached() !== 'later.txt' || sessionStorage.getItem('activeRequestId') !== 'r-gone') return false;
+      // cut off after its final answer: no failure takes the answer's place
+      cookie('stub_stream', 'final-drops');
+      send();
+      await until('its start', () => $$('#chat .message-request-id').some((id) => id.textContent.includes('r-files-final-dropped')), 2000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 4000);
+      await sleep(200);
+      return !$('#chat').textContent.includes('Request failed');
+    } finally {
+      cookie('stub_stream', null);
+      upload().removeFiles(upload().getFiles());
+      forgetRun();
+    }
+  });
+
+  await check('after a reload a stored run that has ended is forgotten, one the server could not tell about stays stored', async () => {
+    const restored = () => $('#headerSessionId').textContent === 'Refactor the kit' && $$('#chat .msg.user').length === 1;
+    try {
+      // [the stored run, its session, what the chat shows once the shell has started, what stays stored]
+      for (const [run, session, shown, stays] of [
+        ['r-live-ended', 's-1', restored, null],
+        ['r-live-unanswered', 's-1', restored, 'r-live-unanswered'],
+        // its session cannot be shown either: the start page the shell falls back to is no choice to leave it
+        ['r-live-unanswered', 's-unsaved', () => $('#chatWelcome'), 'r-live-unanswered'],
+      ]) {
+        storeRun(run, session);
+        const asked = await hits(`status:${run}`);
+        await go(`/?load=${performance.now()}`);
+        // the shell restores the session once the chat has its answer
+        await until(`the shell started after asking about ${run} in ${session}`, shown, 4000);
+        if (await hits(`status:${run}`) !== asked + 1 || sessionStorage.getItem('activeRequestId') !== stays
+          || win().chatModule.hasActiveRequest() || $('#task').disabled) return false;
+      }
+      return true;
+    } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('Stop leaves the end of a run to its stream and holds the messages sent meanwhile; a late answer leaves the next run alone', async () => {
+    const stopShown = () => $('#stopBtn').style.display !== 'none';
+    const stored = () => sessionStorage.getItem('activeRequestId');
+    try {
+      // a message's run that ends just as Stop asks: its final answer still comes, and it is forgotten
+      sessionButton('s-1', 'open').click();
+      await until('the kit session loaded', () => $('#headerSessionId').textContent === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
+      cookie('stub_stream', 'ending');  // its final answer and end after a second; a cancel finds nothing
+      $('#task').value = 'Go on';
+      $('#f').requestSubmit();
+      await until('its run', () => stored() === 'r-ending' && stopShown(), 2000);
+      cookie('stub_stream', null);
+      $('#stopBtn').click();
+      await until('the answer', () => $('#stopBtn').getAttribute('title') === 'Done', 1000);
+      const stillFollowed = stopShown() && win().chatModule.hasActiveRequest();  // its stream brings the end
+      const appends = await hits('append:r-ending');
+      $('#task').value = 'Do this instead';
+      $('#f').requestSubmit();  // while the run is being stopped: it would save the message unanswered
+      await until('the note', () => $$('#chat .msg.note').some((note) => note.textContent.includes('being stopped')), 1000);
+      const held = $('#task').value === 'Do this instead' && await hits('append:r-ending') === appends;
+      await until('its final answer', () => $$('#chat .response-text').some((text) => text.textContent === 'Done'), 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 2000);
+      if (!stillFollowed || !held || stored() !== null || $('#chat').textContent.includes('Connection lost')) return false;
+      // a Stop answered after its run has ended and the next one has started
+      $('#task').value = '';
+      storeRun('r-live-stopping', 's-1');  // it ends after 1.5 s; a cancel finds nothing, told after 3 s
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run to stop', () => reattached() && stopShown(), 4000);
+      $('#stopBtn').click();
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 3000);
+      cookie('stub_stream', 'late-drops');  // it goes on for 3 s
+      $('#task').value = 'Next';
+      $('#f').requestSubmit();
+      await until('the next run', () => stored() === 'r-late-dropped' && stopShown(), 2000);
+      cookie('stub_stream', null);
+      await sleep(2000);  // the late answer has come by now
+      const nextUntouched = stopShown() && $('#stopBtn').getAttribute('title') === 'Stop' && !$('#stopBtn').classList.contains('cancelled');
+      $('#task').value = 'For the next run';
+      $('#f').requestSubmit();
+      await until('the append to the next run', async () => await hits('append:r-late-dropped') > 0, 2000);
+      const lostNotices = () => ($('#chat').textContent.match(/Connection lost/g) || []).length;
+      await until('the next run lost', () => lostNotices() === 1, 3000);
+      // a run Stop was answered for, whose stream breaks before the run's own end: it may still be unwinding
+      cookie('stub_stream', 'late-drops');
+      $('#task').value = 'Once more';
+      $('#f').requestSubmit();
+      await until('the run to stop', () => stopShown() && win().chatModule.hasActiveRequest() && stored() === 'r-late-dropped', 2000);
+      cookie('stub_stream', null);
+      $('#stopBtn').click();
+      await until('its lost connection', () => lostNotices() === 2, 5000);
+      const lostAfterStop = stored() === 'r-late-dropped';
+      // a Stop from before a reload still holds the messages for its run
+      storeRun('r-live', 's-unsaved');
+      sessionStorage.setItem('stoppingRequest:r-live', '1');
+      await go(`/?load=${performance.now()}`);
+      await until('the stopping run followed again', reattached, 4000);
+      const liveAppends = await hits('append:r-live');
+      $('#task').value = 'Still there?';
+      $('#f').requestSubmit();
+      await until('the note after the reload', () => $$('#chat .msg.note').some((note) => note.textContent.includes('being stopped')), 1000);
+      return nextUntouched && lostAfterStop && await hits('append:r-live') === liveAppends && $('#task').value === 'Still there?';
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('deleting the open session whose run loses its stream while it stops waits until the server no longer runs it', async () => {
+    await stub('/__stub/sessions', { session_id: 's-severed', title: 'Severed session', has_children: false });
+    storeRun('r-live-severed', 's-severed');  // its stream breaks as it is cancelled; it unwinds 1.5 s longer
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', () => reattached() && sessionButton('s-severed', 'delete'), 4000);
+      sessionButton('s-severed', 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+      (await until('the run question', () => {
+        const open = $('dialog.pk-dialog[open]');
+        return open && open.textContent.includes('still running') && open.querySelector('.pk-btn--danger');
+      }, 2000)).click();
+      await until('the delete', async () => (await (await stub('/__stub/deletes')).json()).includes('s-severed'), 5000);
+      return await hits('delete-while-unwinding') === 0 && $('#chatWelcome') !== null;
+    } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('deleting a session waits for its run: one named and cut off while the run question is open is cancelled first, one cut off past its answer -- asked about or not, or followed by a run elsewhere -- is waited for without a cancel', async () => {
+    await stub('/__stub/sessions', { session_id: 's-late-start', title: 'Late start', has_children: false });
+    await stub('/__stub/sessions', { session_id: 's-answered', title: 'Answered session', has_children: false });
+    await stub('/__stub/sessions', { session_id: 's-saving', title: 'Saving session', has_children: false });
+    await stub('/__stub/sessions', { session_id: 's-overtaken', title: 'Overtaken session', has_children: false });
+    await win().sessionManager.loadSessions();
+    const deleteOpen = async (id) => {
+      sessionButton(id, 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+      return until('the run question', () => {
+        const open = $('dialog.pk-dialog[open]');
+        return open && open.textContent.includes('still running') && open.querySelector('.pk-btn--danger');
+      }, 2000);
+    };
+    const deleted = async (id) => (await (await stub('/__stub/deletes')).json()).includes(id);
+    const runIn = async (id, title, stream) => {
+      sessionButton(id, 'open').click();
+      await until(`the session ${title}`, () => $('#headerSessionId').textContent === title && $$('#chat .msg.user').length === 1);
+      cookie('stub_stream', stream);
+      $('#task').value = 'Go on';
+      $('#f').requestSubmit();
+      await until('its stream', () => win().chatModule.hasActiveRequest(), 1000);
+      cookie('stub_stream', null);
+    };
+    try {
+      // asked about before its start has named it, then named and cut off while the viewer is asked
+      await runIn('s-late-start', 'Late start', 'late-start-drops');
+      const first = await deleteOpen('s-late-start');
+      await until('the lost connection', () => $('#chat').textContent.includes('reload the page to follow it'), 4000);
+      first.click();
+      await until('the first delete', () => deleted('s-late-start'), 5000);
+      // cut off past its answer while the viewer is asked: it is still saving its session
+      await runIn('s-answered', 'Answered session', 'final-drops');
+      const second = await deleteOpen('s-answered');
+      await until('its cut', () => !win().chatModule.hasActiveRequest(), 4000);
+      second.click();
+      await until('the second delete', () => deleted('s-answered'), 5000);
+      // cut off past its answer before the delete is asked for: no question about it, and still the save comes first
+      await runIn('s-saving', 'Saving session', 'final-drops');
+      await until('its cut before the delete', () => !win().chatModule.hasActiveRequest(), 4000);
+      sessionButton('s-saving', 'delete').click();
+      (await until('the third delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+      await until('the third delete', () => deleted('s-saving'), 5000);
+      // cut off past its answer, then a run in another session: deleting the session still waits for its save
+      await runIn('s-overtaken', 'Overtaken session', 'final-drops');
+      await until('its cut before the run elsewhere', () => !win().chatModule.hasActiveRequest(), 4000);
+      await runIn('s-2', 'Fresh session', null);  // a run that goes on for five seconds
+      sessionButton('s-overtaken', 'delete').click();
+      (await until('the fourth delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+      await until('the fourth delete', () => deleted('s-overtaken'), 5000);
+      return await hits('cancel:r-late-started:force') === 1 && await hits('cancel:r-final-dropped:force') === 0
+        && await hits('delete-while-unwinding') === 0;
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a session written into while its delete waits for its run to save stays, even opened again; a message into another session keeps no session', async () => {
+    await stub('/__stub/sessions', { session_id: 's-reopened', title: 'Reopened session', has_children: false });
+    await stub('/__stub/sessions', { session_id: 's-written-elsewhere', title: 'Written elsewhere', has_children: false });
+    await win().sessionManager.loadSessions();
+    const header = () => $('#headerSessionId').textContent;
+    const deleted = async (id) => (await (await stub('/__stub/deletes')).json()).includes(id);
+    const deleteIt = async (id) => {
+      sessionButton(id, 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    };
+    // a run in the session, cut off past its answer: its save takes 2.5 s from the answer, and a delete waits for it
+    const answeredIn = async (id, title) => {
+      sessionButton(id, 'open').click();
+      await until(`the session ${title}`, () => header() === title && $$('#chat .msg.user').length === 1);
+      cookie('stub_stream', 'final-drops');
+      $('#task').value = 'Answer me';
+      $('#f').requestSubmit();
+      await until('its run', () => win().chatModule.hasActiveRequest(), 1000);
+      cookie('stub_stream', null);
+      await until('its cut', () => !win().chatModule.hasActiveRequest(), 4000);
+    };
+    try {
+      // deleted from another session, opened again and written into while the delete waits
+      await answeredIn('s-reopened', 'Reopened session');
+      sessionButton('s-2', 'open').click();
+      await until('another session', () => header() === 'Fresh session');
+      await deleteIt('s-reopened');
+      sessionButton('s-reopened', 'open').click();
+      await until('the session opened again', () => header() === 'Reopened session' && $$('#chat .msg.user').length === 1);
+      $('#task').value = 'Still needed';
+      $('#f').requestSubmit();  // its run goes on for five seconds
+      await until('the session staying', () => $$('.pk-toast--warn').some((t) => t.textContent.includes('stays')), 4000);
+      const kept = !await deleted('s-reopened') && header() === 'Reopened session' && win().chatModule.hasActiveRequest()
+        && $$('#chat .msg.user').some((message) => message.textContent.includes('Still needed'));
+      await loadShell();  // the run of that message ends with the page
+      // deleted while open, then another session picked and written into while the delete waits: it goes
+      await answeredIn('s-written-elsewhere', 'Written elsewhere');
+      await deleteIt('s-written-elsewhere');
+      sessionButton('s-2', 'open').click();
+      await until('the session elsewhere', () => header() === 'Fresh session');
+      $('#task').value = 'Something else';
+      $('#f').requestSubmit();
+      if (await deleted('s-written-elsewhere')) return false;  // not before the save it waits for
+      await until('the delete', () => deleted('s-written-elsewhere'), 5000);
+      return kept && header() === 'Fresh session' && await hits('delete-while-unwinding') === 0;
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();  // the run of the last message ends with the page
+    }
+  });
+
+  await check('leaving a session during its run: past its answer a pick asks nothing and takes the chat, a later choice wins, and a message sent while the run stops keeps the session', async () => {
+    await stub('/__stub/sessions', { session_id: 's-later', title: 'Later pick', has_children: false });
+    const header = () => $('#headerSessionId').textContent;
+    const runQuestion = () => until('the run question', () => {
+      const open = $('dialog.pk-dialog[open]');
+      return open && open.textContent.includes('still running') && open.querySelector('.pk-btn--danger');
+    }, 2000);
+    try {
+      // past its answer, while its stream waits for the save: the pick asks nothing and takes the chat at once
+      storeRun('r-live-answered', 's-1');  // its final answer after half a second, its end 3 s later
+      await go(`/?load=${performance.now()}`);
+      await until('the answered run', () => reattached() && sessionStorage.getItem('activeRequestId') === null, 3000);
+      sessionButton('s-2', 'open').click();
+      await until('the pick at once', () => header() === 'Fresh session' && !reattached() && $$('#chat .msg.user').length === 1, 1500);
+      if (!win().chatModule.hasActiveRequest() || $('dialog.pk-dialog[open]')) return false;
+      // a pick whose run honours the cancel at once, while the answer takes its time: a pick after that wins
+      storeRun('r-live-honouring', 's-1');
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', () => reattached() && sessionButton('s-later', 'open'), 4000);
+      cookie('stub_cancel', 'slow');
+      sessionButton('s-2', 'open').click();
+      (await runQuestion()).click();
+      await until('the cancelled run', () => !win().chatModule.hasActiveRequest(), 2000);
+      sessionButton('s-later', 'open').click();
+      await until('the later pick', () => header() === 'Later pick', 2000);
+      await sleep(4000);  // the cancel has been answered, and the server has let the run go
+      cookie('stub_cancel', null);
+      if (header() !== 'Later pick') return false;
+      // /new, typed: a message sent while its run stops is held, and keeps the chat in the session
+      storeRun('r-live-leaving', 's-1');  // its stream goes on for 5 s
+      await go(`/?load=${performance.now()}`);
+      await until('the run to leave', reattached, 4000);
+      cookie('stub_cancel', 'slow');
+      $('#task').value = '/new';
+      $('#f').requestSubmit();
+      (await runQuestion()).click();
+      await until('the stop asked for', () => stopAsked('r-live-leaving'), 1000);
+      $('#task').value = 'Keep going here';
+      $('#f').requestSubmit();
+      await until('the held message', () => $$('#chat .msg.note').some((note) => note.textContent.includes('being stopped')), 2000);
+      await until('the run stopped', () => !win().chatModule.hasActiveRequest(), 8000);
+      await sleep(1000);  // the server has let it go, and /new has had its say
+      cookie('stub_cancel', null);
+      if ($('#chatWelcome') || win().chatModule.getCurrentSessionId() !== 's-1' || $('#task').value !== 'Keep going here'
+        || await hits('append:r-live-leaving') !== 0) return false;
+      // a Stop whose cancel fails may have been taken all the same: the run's messages stay held
+      storeRun('r-live-kept', 's-unsaved');  // its stream goes on for 5 s
+      await go(`/?load=${performance.now()}`);
+      await until('the run to stop', () => reattached() && $('#stopBtn').style.display !== 'none', 4000);
+      cookie('stub_cancel', 'fails');
+      $('#stopBtn').click();
+      await until('the failed Stop', () => $('#stopBtn').getAttribute('title') === 'Failed', 2000);
+      cookie('stub_cancel', null);
+      $('#task').value = 'After a failed Stop';
+      $('#f').requestSubmit();
+      await until('the message held', () => $$('#chat .msg.note').some((note) => note.textContent.includes('being stopped')), 1000);
+      // and so does a failed cancel on the way out of the session
+      cookie('stub_cancel', 'fails');
+      sessionButton('s-2', 'open').click();
+      (await runQuestion()).click();
+      await until('the failed cancel', () => $$('.pk-toast--error').some((t) => t.textContent.includes('did not confirm')), 3000);
+      cookie('stub_cancel', null);
+      $('#task').value = 'After a failed switch';
+      $('#f').requestSubmit();
+      await until('the message held again', () => $$('#chat .msg.note').filter((note) => note.textContent.includes('being stopped')).length === 2, 1000);
+      if (await hits('append:r-live-kept') !== 0) return false;
+      // leaving before the run's start has named it: there is nothing to cancel yet, and the chat says so
+      forgetRun();
+      await loadShell();
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => header() === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
+      $('#task').value = 'Start something';
+      $('#f').requestSubmit();  // its stream names no run for 5 s
+      await until('its stream', () => win().chatModule.hasActiveRequest(), 1000);
+      sessionButton('s-2', 'open').click();
+      (await runQuestion()).click();
+      await until('the answer', () => $$('.pk-toast--error').some((t) => t.textContent.includes('still starting')), 2000);
+      return header() === 'Refactor the kit';
+    } finally {
+      cookie('stub_cancel', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('while a run stops for a pick: a later pick wins, a declined one is no pick, a click on the open session keeps it', async () => {
+    const header = () => $('#headerSessionId').textContent;
+    const runQuestion = () => until('the run question', () => {
+      const open = $('dialog.pk-dialog[open]');
+      return open && open.textContent.includes('still running') && open;
+    }, 2000);
+    const confirmIt = async () => (await runQuestion()).querySelector('.pk-btn--danger').click();
+    const declineIt = async () => [...(await runQuestion()).querySelectorAll('[data-index]')]
+      .find((button) => !button.classList.contains('pk-btn--danger')).click();
+    // [the phase, the run -- its stream goes on for 5 s -- what it does while the pick of s-2 waits, the cancels
+    //  answered in the end, the session shown in the end]
+    const phases = [
+      ['a later pick answered first', 'r-live-kept-later', async () => {
+        cookie('stub_cancel', null);  // its cancel is answered before the first one's
+        sessionButton('s-later', 'open').click();
+        await confirmIt();
+      }, 2, 'Later pick'],
+      ['a later pick declined', 'r-live-kept-declined', async () => {
+        sessionButton('s-later', 'open').click();
+        await declineIt();
+      }, 1, 'Fresh session'],
+      ['a click on the open session', 'r-live-kept-open', async () => {
+        sessionButton('s-1', 'open').click();
+      }, 1, 'Refactor the kit'],
+    ];
+    try {
+      for (const [phase, run, meanwhile, answered, shown] of phases) {
+        storeRun(run, 's-1');
+        await go(`/?load=${performance.now()}`);
+        await until(`the run for ${phase}`, () => reattached() && sessionButton('s-later', 'open'), 4000);
+        cookie('stub_cancel', 'slower');  // the pick's cancel is answered after 6 s, once the run's stream has ended
+        sessionButton('s-2', 'open').click();
+        await confirmIt();
+        await until(`the stop asked for in ${phase}`, () => stopAsked(run), 1000);
+        await meanwhile();
+        await until(`every cancel answered in ${phase}`, async () => await hits(`answered:${run}`) === answered, 9000);
+        cookie('stub_cancel', null);
+        await sleep(2000);  // the server has let the run go, and every pick has had its say
+        if (header() !== shown) return false;
+      }
+      return true;
+    } finally {
+      cookie('stub_cancel', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('while the viewer is asked: a start that arrives is no choice, a run that ends is not cancelled, a stream that breaks still has its run cancelled, a refused request leaves a lost run to the pick; a delete started after a cancel asks nothing and waits for the save', async () => {
+    const header = () => $('#headerSessionId').textContent;
+    const runQuestion = () => until('the run question', () => {
+      const open = $('dialog.pk-dialog[open]');
+      return open && open.textContent.includes('still running') && open.querySelector('.pk-btn--danger');
+    }, 2000);
+    try {
+      // a message's run that ends while the viewer is asked: nothing is left to cancel
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => header() === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
+      cookie('stub_stream', 'ending');  // its final answer and end after a second
+      $('#task').value = 'Finish';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-ending', 1000);
+      cookie('stub_stream', null);
+      sessionButton('s-2', 'open').click();
+      const ended = await runQuestion();
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 3000);
+      ended.click();
+      await until('the pick after its end', () => header() === 'Fresh session', 3000);
+      if (await hits('cancel:r-ending:force') !== 0) return false;
+      // a message with files in a new session, asked about before its start has named its run
+      $('#sessionsPane [data-act="new"]').click();
+      await until('a new session', () => $('#chatWelcome'));
+      win().fileUploadModule.addFiles([new (win().File)(['a note'], 'notes.txt', { type: 'text/plain' })]);
+      $('#task').value = 'Read this';
+      $('#f').requestSubmit();  // its run starts after half a second
+      await until('its stream', () => win().chatModule.hasActiveRequest(), 1000);
+      sessionButton('s-2', 'open').click();
+      const question = await runQuestion();
+      await until('its start', () => !win().fileUploadModule.hasValidFiles(), 2000);  // its files are sent
+      question.click();
+      await until('the pick', () => header() === 'Fresh session', 6000);
+      if (await hits('cancel:r-files-ended:force') !== 1) return false;
+      // a message's run whose stream breaks while the viewer is asked
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => header() === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
+      cookie('stub_stream', 'question-drops');  // cut off after 1.5 s
+      $('#task').value = 'Go on';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-question-dropped', 1000);
+      cookie('stub_stream', null);
+      sessionButton('s-2', 'open').click();
+      const second = await runQuestion();
+      await until('the lost connection', () => $('#chat').textContent.includes('reload the page to follow it'), 3000);
+      second.click();
+      await until('the pick after the cancel', () => header() === 'Fresh session', 5000);
+      if (await hits('cancel:r-question-dropped:force') !== 1 || sessionStorage.getItem('activeRequestId') !== null) return false;
+      // a message the server refuses while the viewer is asked, beside a lost run of the session: the question was
+      // about the refused request -- the pick goes on, and lets the lost run go without cancelling it
+      sessionButton('s-1', 'open').click();
+      await until('the kit session for the refusal', () => header() === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
+      cookie('stub_stream', 'drops');
+      $('#task').value = 'Go on';
+      $('#f').requestSubmit();
+      await until('the lost run', () => $('#chat').textContent.includes('reload the page to follow it'), 3000);
+      cookie('stub_stream', 'refused-late');  // refused after a second: its error, then its end
+      $('#task').value = 'Once more';
+      $('#f').requestSubmit();
+      await until('the refused stream', () => win().chatModule.hasActiveRequest(), 1000);
+      cookie('stub_stream', null);
+      const lostCancels = await hits('cancel:r-dropped:force');
+      sessionButton('s-2', 'open').click();
+      const refused = await runQuestion();
+      await until('the refusal', () => !win().chatModule.hasActiveRequest(), 3000);
+      refused.click();
+      await until('the pick after the refusal', () => header() === 'Fresh session', 3000);
+      if (await hits('cancel:r-dropped:force') !== lostCancels || sessionStorage.getItem('activeRequestId') !== null) return false;
+      // a delete started once a stopped run has brought its cancelled event: its stream stays open for the save, and
+      // the session goes only after that -- the run is not cancelled again
+      await stub('/__stub/sessions', { session_id: 's-honour', title: 'Honouring session', has_children: false });
+      storeRun('r-live-honouring-late', 's-honour');  // honours a cancel a second after it is asked, then saves
+      await go(`/?load=${performance.now()}`);
+      await until('the run to stop', () => reattached() && sessionButton('s-honour', 'delete') && $('#stopBtn').style.display !== 'none', 4000);
+      $('#stopBtn').click();
+      await until('its cancelled event', () => $('#chat').textContent.includes('Request cancelled'), 3000);
+      sessionButton('s-honour', 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+      await until('the delete', async () => (await (await stub('/__stub/deletes')).json()).includes('s-honour'), 5000);
+      return await hits('delete-while-unwinding') === 0 && await hits('cancel:r-live-honouring-late:force') === 0;
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('deleting the session of a run whose connection was lost cancels that run first', async () => {
+    await stub('/__stub/sessions', { session_id: 's-lost', title: 'Lost run session', has_children: false });
+    await stub('/__stub/sessions', { session_id: 's-lost-too', title: 'Lost run session too', has_children: false });
+    await stub('/__stub/sessions', { session_id: 's-slow-pick', title: 'Slow pick', delay: 1.2, has_children: false });
+    await win().sessionManager.loadSessions();
+    const loseRunIn = async (id, title) => {
+      sessionButton(id, 'open').click();
+      await until(`the session ${title}`, () => $('#headerSessionId').textContent === title);
+      cookie('stub_stream', 'drops');
+      $('#task').value = 'Go on';
+      $('#f').requestSubmit();
+      await until('the lost connection', () => $('#chat').textContent.includes('reload the page to follow it'), 3000);
+      cookie('stub_stream', null);
+    };
+    const deleteIt = async (id) => {
+      sessionButton(id, 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+      return until('the run question', () => {
+        const open = $('dialog.pk-dialog[open]');
+        return open && open.textContent.includes('may still be going') && open;
+      }, 2000);
+    };
+    const deleted = async (id) => (await (await stub('/__stub/deletes')).json()).includes(id);
+    const cancels = () => hits('cancel:r-dropped:force');
+    const stored = () => sessionStorage.getItem('activeRequestId');
+    const before = await cancels();
+    try {
+      await loseRunIn('s-lost', 'Lost run session');
+      [...(await deleteIt('s-lost')).querySelectorAll('[data-index]')].find((b) => !b.classList.contains('pk-btn--danger')).click();
+      await sleep(300);
+      const declined = !await deleted('s-lost') && await cancels() === before && stored() === 'r-dropped';
+      cookie('stub_cancel', 'fails');
+      (await deleteIt('s-lost')).querySelector('.pk-btn--danger').click();
+      await until('the failed cancel', () => $$('.pk-toast--error').some((t) => t.textContent.includes('did not confirm')), 3000);
+      cookie('stub_cancel', null);
+      const failed = !await deleted('s-lost') && stored() === 'r-dropped' && $('#headerSessionId').textContent === 'Lost run session';
+      (await deleteIt('s-lost')).querySelector('.pk-btn--danger').click();
+      await until('the delete', () => deleted('s-lost'), 3000);
+      const cancelled = await cancels() === before + 2 && stored() === null && $('#chatWelcome') !== null;
+      // a pick answering while the question is open lets the run go; a run stored while the cancel waits is another one
+      await loseRunIn('s-lost-too', 'Lost run session too');
+      sessionButton('s-slow-pick', 'open').click();  // answers after 1.2 s
+      const question = await deleteIt('s-lost-too');
+      await until('the pick behind the question', () => $('#headerSessionId').textContent === 'Slow pick', 3000);
+      const letGoMeanwhile = stored() === null;
+      cookie('stub_cancel', 'slow');
+      question.querySelector('.pk-btn--danger').click();
+      await sleep(300);
+      storeRun('r-other', 's-slow-pick');
+      await until('the second delete', () => deleted('s-lost-too'), 4000);
+      cookie('stub_cancel', null);
+      const keptTheOther = await cancels() === before + 3 && stored() === 'r-other';
+      // a stored run of a session the shell could not show after a reload: neither a failed pick of that session
+      // nor a run with files elsewhere lets it go, and deleting the session cancels it -- its session goes only
+      // once the run has unwound, since it saves its session as it does
+      await stub('/__stub/sessions', { session_id: 's-unreadable', title: 'Unreadable session', fails: true, has_children: false });
+      storeRun('r-live-unanswered', 's-unreadable');
+      await go(`/?load=${performance.now()}`);
+      await until('the start page', () => $('#chatWelcome') && sessionButton('s-unreadable', 'open'));
+      sessionButton('s-unreadable', 'open').click();
+      await until('the failed pick', async () => await hits('session:s-unreadable') >= 2, 3000);
+      await sleep(300);
+      const keptAfterPick = stored() === 'r-live-unanswered' && $('#chatWelcome') !== null;
+      cookie('stub_stream', 'stale');
+      win().fileUploadModule.addFiles([new (win().File)(['a note'], 'notes.txt', { type: 'text/plain' })]);
+      $('#task').value = 'Read this';
+      $('#f').requestSubmit();
+      await until('the run with files', () => !win().fileUploadModule.hasValidFiles() && win().chatModule.hasActiveRequest(), 2000);
+      cookie('stub_stream', null);
+      (await deleteIt('s-unreadable')).querySelector('.pk-btn--danger').click();
+      await until('the third delete', () => deleted('s-unreadable'), 4000);
+      return declined && failed && cancelled && letGoMeanwhile && keptTheOther && keptAfterPick
+        && await hits('cancel:r-live-unanswered:force') === 1 && await hits('delete-while-unwinding') === 0 && stored() === null;
+    } finally {
+      cookie('stub_stream', null);
+      cookie('stub_cancel', null);
+      forgetRun();
+      await loadShell();  // the run with files still streams
+    }
+  });
+
+  await check('a restored message names image and audio parts stored without their data', async () => {
+    await stub('/__stub/sessions', { session_id: 's-files', title: 'Files session', attachments: true, has_children: false });
+    await win().sessionManager.loadSessions();
+    sessionButton('s-files', 'open').click();
+    await until('the audio placeholder', () => $('.user-audio-previews .pk-badge')?.textContent.includes('briefing.wav'));
+    const image = $('.user-image-previews .pk-badge')?.textContent.includes('sketch.png') && !$('.user-image-previews img');
+    sessionButton('s-1', 'open').click();
+    await until('the kit session again', () => $('#headerSessionId').textContent === 'Refactor the kit');
+    return image;
+  });
+
+  await check('the theme button cycles the theme and every panel follows', async () => {
+    $('#themeButton').click();
+    await until('pk:theme at the probe', () => received('pk:theme').at(-1)?.theme === 'light');
+    return doc().documentElement.dataset.theme === 'light' && doc().cookie.includes('ui_theme=light')
+      && probeFrame().contentDocument.documentElement.dataset.theme === 'light';
+  });
+
+  await check('an open settings panel shows the theme chosen in the header', async () => {
+    const panel = panelFrame('/ui/panels/settings').contentDocument;
+    await until('the light radio', () => panel.querySelector('input[name="theme"][value="light"]').checked);
+    return !panel.querySelector('input[name="theme"][value="system"]').checked;
+  });
+
+  await check('the palette finds a panel and opens it', async () => {
+    const input = await openPalette('health status');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await until('the System tab', () => $$('.dock-tab').some((t) => t.textContent.includes('System')));
+    return !$('#palette').open;
+  });
+
+  await check('Ctrl+K in the open palette starts its search afresh', async () => {
+    const input = await openPalette('health status');
+    doc().dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    await sleep(100);
+    const afresh = $('#palette').open && input.value === '';
+    $('#palette').close();
+    return afresh;
+  });
+
+  await check('the palette does not open over an open question', async () => {
+    sessionButton('s-1', 'delete').click();
+    const question = await until('the delete question', () => $('dialog.pk-dialog[open]'));
+    doc().dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    await sleep(200);
+    const closed = !$('#palette').open;
+    [...question.querySelectorAll('[data-index]')].find((button) => !button.classList.contains('pk-btn--danger')).click();
+    return closed;
+  });
+
+  await check('the system panel asks for a tab it may not show only once', async () => {
+    const system = await until('the system panel', () => panelFrame('/ui/panels/system')?.contentDocument?.querySelector('[data-tab="requests"]')
+      && panelFrame('/ui/panels/system').contentDocument);
+    system.querySelector('[data-tab="requests"]').click();
+    await until('the refusal', () => system.getElementById('tab-requests').textContent.includes('Not available on this server'));
+    system.querySelector('pk-refresh [data-act="now"]').click();
+    await sleep(300);
+    const hits = await (await stub('/__stub/hits')).json();
+    return hits['active-sessions'] === 1;
+  });
+
+  await check('a cancel on its way stays disabled when the request list is drawn anew', async () => {
+    cookie('stub_requests', 'running');
+    try {
+      // a fresh panel: the open one was refused the tab for good
+      $$('.dock-tab').find((t) => t.textContent.includes('System')).querySelector('[data-act="close"]').click();
+      $('#launcherButton').click();
+      (await until('the system entry', () => $('#launcherList [data-panel="system"]'))).click();
+      const system = await until('the system panel', () => panelFrame('/ui/panels/system')?.contentDocument?.querySelector('[data-tab="requests"]')
+        && panelFrame('/ui/panels/system').contentDocument);
+      system.querySelector('[data-tab="requests"]').click();
+      const button = await until('the cancel button', () => system.querySelector('[data-cancel="r-cancel-me"]'));
+      button.click();
+      (await until('the cancel question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+      await until('the cancel under way', () => button.disabled);
+      system.querySelector('pk-refresh [data-act="now"]').click();
+      const redrawn = await until('the redrawn table', () => {
+        const current = system.querySelector('[data-cancel="r-cancel-me"]');
+        return current !== button && current;
+      });
+      const disabled = redrawn.disabled;
+      await until('the answer', () => $$('.pk-toast--ok').some((t) => t.textContent.includes('Request cancelled')));
+      return disabled;
+    } finally {
+      cookie('stub_requests', null);
+    }
+  });
+
+  await check('the palette lists instances of one plugin once and narrows to them', async () => {
+    const input = await openPalette('');
+    const labels = () => $$('#paletteList .palette-item .pk-truncate').map((l) => l.textContent);
+    const unfiltered = labels();
+    $$('#paletteList .palette-item').find((row) => row.textContent.includes('2 instances')).click();
+    await until('the narrowed list', () => input.value === 'Sub-Agents' && labels().length === 2);
+    const narrowed = labels().sort().join('|');
+    const stillOpen = $('#palette').open;
+    $('#palette').close();
+    return unfiltered.filter((l) => l.startsWith('Sub-Agents')).join('|') === 'Sub-Agents'
+      && narrowed === 'Sub-Agents · sam_skills|Sub-Agents · sam_writer' && stillOpen;
+  });
+
+  await check('a session offers the panels that open on a session', async () => {
+    sessionButton('s-1', 'info').click();
+    const item = await until('the context menu', () => $('#contextMenu [data-panel="session"]'));
+    const offered = $$('#contextMenu [data-panel]').map((i) => i.dataset.panel).sort().join(',');
+    item.click();
+    const session = await until('the session panel', () => panelFrame('/ui/panels/session'));
+    return offered === 'probe,session' && session.src.endsWith('/ui/panels/session?session_id=s-1')
+      && $('.dock-tab[aria-selected="true"]') !== null && !$('#contextMenu').matches(':popover-open');
+  });
+
+  await check('a session panel pinned from a link can follow the chat again', async () => {
+    const panel = await until('the pinned panel', () => panelFrame('/ui/panels/session').contentDocument.querySelector('[data-act="follow"]')
+      && panelFrame('/ui/panels/session').contentDocument);
+    panel.querySelector('[data-act="follow"]').click();
+    await until('the following panel', () => panelFrame('/ui/panels/session').contentWindow.location.search === '');
+    const saved = JSON.parse(localStorage.getItem('scarabhive.layout.v1')).items.find((item) => item.panelId === 'session');
+    // navigated there itself: no longer where a link sent it
+    return saved.path === '/ui/panels/session' && saved.linked === false;
+  });
+
+  await check('a request id in the chat offers the panels that take a request', async () => {
+    const row = doc().createElement('div');
+    row.className = 'message-request-id';
+    row.innerHTML = 'Request: <span>req 42</span>';
+    $('#chat').appendChild(row);
+    row.click();
+    const item = await until('the context menu', () => $('#contextMenu [data-panel="probe"]'));
+    const offered = $$('#contextMenu [data-panel]').map((i) => i.dataset.panel);
+    item.click();
+    await until('the probe on the request', () => probeFrame().contentDocument.getElementById('location').textContent
+      === '/tests/ui/shell_probe_panel.html?request_id=req%2042');
+    return offered.length === 1;
+  });
+
+  await check('the plugin panels follow the session the chat switches to, not a slower answer for the one before, and New', async () => {
+    // what each panel shows of the stub's answers: 7 for s-1, 3 for another session or none --
+    // every figure of one answer agreeing, or nothing
+    const agree = (...values) => values.every((value) => value === values[0]) ? values[0] : undefined;
+    const panels = [
+      { id: 'context_engineer', pause: 'autoRefreshBtn', shows: (page) => agree(
+        page.querySelector('#storage-stats .value')?.textContent, page.querySelector('#memory-list strong')?.textContent) },
+      { id: 'memory', pause: 'auto-refresh-btn', shows: (page) => page.getElementById('total-memories').textContent },
+      { id: 'todo', pause: 'auto-refresh-btn', shows: (page) => page.getElementById('total-tasks').textContent },
+      { id: 'context_usage_tracker', pause: 'autoBtn', shows: (page) => page.querySelectorAll('#statsGrid .value')[2]?.textContent },
+      { id: 'sam_writer', shows: (page) => {
+        const agent = page.querySelector('#agentsList .agent-id')?.textContent;
+        if (agent) {
+          return agree(agent.replace('agent-s-1', '7').replace('agent-s-lagging', '3'), page.getElementById('statTotal').textContent,
+            page.getElementById('currentPhaseValue').textContent.replace('phase-', ''));
+        }
+        return page.getElementById('agentsList').textContent.includes('No session open') ? '3' : undefined;
+      } },
+    ];
+    const header = () => $('#headerSessionId').textContent;
+    const pick = async (id, title) => {
+      sessionButton(id, 'open').click();
+      await until(`the session ${title}`, () => header() === title);
+    };
+    await stub('/__stub/sessions', { session_id: 's-lagging', title: 'Lagging session', has_children: false });
+    await win().sessionManager.loadSessions();
+    const failures = [];
+    // one panel at a time: a few slow answers leave the browser's six connections free for the fast ones
+    for (const panel of panels) {
+      if (panel.id === 'sam_writer') {
+        $('#sessionsPane [data-act="new"]').click();  // opened on no session
+        await until('no session', () => header() === 'New session');
+      } else {
+        await pick('s-1', 'Refactor the kit');
+      }
+      $('#launcherButton').click();
+      (await until(`the ${panel.id} entry`, () => $(`#launcherList [data-panel="${panel.id}"]`))).click();
+      try {
+        const page = await until(`the ${panel.id} panel`, () => {
+          const loaded = panelFrame(`/plugins/${panel.id}/`)?.contentDocument;
+          return loaded?.readyState === 'complete' && panel.shows(loaded) && loaded;
+        });
+        if (panel.id === 'sam_writer') {
+          if (page.getElementById('sessionIdInput').checkVisibility()) failures.push('sam_writer offers a session field inside the shell');
+          await pick('s-1', 'Refactor the kit');
+        }
+        await until(`${panel.id} on the kit session`, () => panel.shows(page) === '7');
+        if (panel.pause) page.getElementById(panel.pause).click();  // its own refresh stops
+        if (panel.id === 'memory') {
+          page.getElementById('search-input').value = 'kit';
+          page.defaultView.performSearch();
+          await until('the search result', () => page.querySelector('#memory-list .memory-title')?.textContent === 'found-7');
+        }
+        await pick('s-lagging', 'Lagging session');  // what the panel asks for about it is answered late
+        if (panel.id === 'memory') {
+          await until('the search gone with its session', () => page.getElementById('search-input').value === '');
+          page.getElementById('search-input').value = 'kit';
+          page.defaultView.performSearch();  // answered late as well
+        }
+        await pick('s-1', 'Refactor the kit');
+        await sleep(1700);  // the answers for the lagging session have come in by now
+        if (panel.shows(page) !== '7') failures.push(`${panel.id} shows a late answer`);
+        if (panel.id === 'memory' && page.querySelector('#memory-list .memory-title')) failures.push('memory shows a late search');
+        $('#sessionsPane [data-act="new"]').click();
+        await until(`${panel.id} on no session`, () => panel.shows(page) === '3', 3000);
+      } finally {
+        $(`.dock-tab[data-key^="${panel.id}:"] [data-act="close"]`)?.click();
+      }
+    }
+    if (failures.length) throw new Error(failures.join('; '));
+    return true;
+  });
+
+  await check('a docked panel leaves the header on screen at laptop widths', async () => {
+    const fits = (width) => withWidth(`${width}px`, async () => {
+      await until(`the ${width}px layout`, () => win().innerWidth === width);
+      await sleep(100);
+      const room = doc().documentElement.clientWidth;
+      return $('#userButton').getBoundingClientRect().right <= room && $('#dock').getBoundingClientRect().right <= room
+        && $('#dock').getBoundingClientRect().width >= 320 && $('#chatScroll').getBoundingClientRect().width >= 360;
+    });
+    // at 940px the sessions pane (open), the chat and the dock no longer fit side by side
+    return $('.app-body').dataset.sessions === 'open' && await fits(1100) && await fits(940);
+  });
+
+  await check('a stored session that is gone starts a new one', async () => {
+    sessionStorage.setItem('lastSessionId', 's-gone');
+    await loadShell();
+    return $('#chatWelcome') !== null && sessionStorage.getItem('lastSessionId') === null
+      && $('#headerSessionId').textContent === 'New session';
+  });
+
+  await check('a session picked while the shell restores the stored one wins', async () => {
+    const header = () => $('#headerSessionId').textContent;
+    // picked before the restore began and still loading when it would: the catalogue takes 1 s, the pick 2 s
+    await stub('/__stub/sessions', { session_id: 's-picked', title: 'Picked session', delay: 2, has_children: false });
+    sessionStorage.setItem('lastSessionId', 's-1');
+    cookie('stub_catalog', 'slow');
+    try {
+      await go(`/?load=${performance.now()}`);
+      (await until('the session list', () => sessionButton('s-picked', 'open'))).click();
+    } finally {
+      cookie('stub_catalog', null);
+    }
+    await until('the picked session', () => header() === 'Picked session', 5000);
+    await sleep(300);
+    const before = header() === 'Picked session';
+    // picked while the stored session is on its way
+    sessionStorage.setItem('lastSessionId', 's-slow');
+    await reloadUntilAsked('session:s-slow');
+    sessionButton('s-1', 'open').click();
+    await sleep(1500);
+    return before && header() === 'Refactor the kit' && sessionStorage.getItem('lastSessionId') === 's-1';
+  });
+
+  await check('/new while the stored session is on its way leaves nothing of it to continue', async () => {
+    sessionStorage.setItem('lastSessionId', 's-slow');
+    await reloadUntilAsked('session:s-slow');
+    const waiting = win().chatModule.getCurrentSessionId() === null;  // not continued before it is shown
+    await win().chatModule.runCommand('new');
+    await sleep(1500);  // the stored session has answered by now
+    return waiting && $('#headerSessionId').textContent === 'New session'
+      && sessionStorage.getItem('lastSessionId') === null && win().chatModule.getCurrentSessionId() === null;
+  });
+
+  await check('a message sent while the stored session is on its way stays in the chat', async () => {
+    sessionStorage.setItem('lastSessionId', 's-unsaved');  // answers 404 after a second
+    await reloadUntilAsked('session:s-unsaved');
+    $('#task').value = 'Keep going';
+    $('#f').requestSubmit();
+    await sleep(1500);
+    const posted = await (await stub('/__stub/posted')).json();
+    return $$('#chat .msg.user').some((m) => m.textContent.includes('Keep going')) && !$('#chatWelcome')
+      && posted.at(-1)?.task === 'Keep going' && !('session_id' in posted.at(-1));
+  });
+
+  await check('a pick that fails before the stored session is restored leaves a start page', async () => {
+    await stub('/__stub/sessions', { session_id: 's-vanished', title: 'Vanished session', has_children: false });
+    sessionStorage.setItem('lastSessionId', 's-1');
+    cookie('stub_catalog', 'slow');
+    try {
+      await go(`/?load=${performance.now()}`);
+      const row = await until('the vanished session listed', () => sessionButton('s-vanished', 'open'));
+      await fetch('/api/sessions/s-vanished', { method: 'DELETE' });  // gone on the server, still listed here
+      row.click();
+    } finally {
+      cookie('stub_catalog', null);
+    }
+    await until('the start page', () => $('#chatWelcome'), 5000);
+    await sleep(1300);  // the catalogue has come: a restore of s-1 would show it now
+    return $('#chatWelcome') !== null && $('#headerSessionId').textContent === 'New session'
+      && win().chatModule.getCurrentSessionId() === null;
+  });
+
+  await check('a stored session deleted while the shell restores it does not stay open', async () => {
+    const deleteWhileRestoring = async (session) => {
+      await stub('/__stub/sessions', { session_id: session.session_id, title: session.title, has_children: false, ...session });
+      sessionStorage.setItem('lastSessionId', session.session_id);
+      await reloadUntilAsked(`session:${session.session_id}`);
+      sessionButton(session.session_id, 'delete').click();
+      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+      await until('the start page', () => $('#chatWelcome'));
+      await sleep(1200);  // the stored session has answered by now
+      return $('#headerSessionId').textContent === 'New session' && $('#chatWelcome') !== null
+        && !$('#chat .msg') && sessionStorage.getItem('lastSessionId') === null;
+    };
+    // answered before its delete (the browser holds the delete back until then), and let go again
+    const answeredFirst = await deleteWhileRestoring({ session_id: 's-going', title: 'Going session', delay: 1 });
+    // still coming in when its delete is done: it never opens, and the chat offers a start
+    const stillComing = await deleteWhileRestoring({ session_id: 's-coming', title: 'Coming session', trickle: 1 });
+    return answeredFirst && stillComing;
+  });
+
+  await check('a run still going after a reload keeps the chat and names its session', async () => {
+    storeRun('r-live', 's-unsaved');  // the run's first step is not on disk yet
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', reattached);
+      await sleep(1500);  // a lookup of the stored session would have answered 404 by now
+      return $('#chat .msg.assistant') !== null && $('#headerSessionId').textContent === 'Untitled'
+        && sessionStorage.getItem('lastSessionId') === 's-unsaved' && win().chatModule.getCurrentSessionId() === 's-unsaved';
+    } finally {
+      forgetRun();
+    }
+  });
+
+  await check('while it checks whether a run is still going after a reload, the shell asks the server for no session', async () => {
+    storeRun('r-live-slow', 's-1');  // its status check takes a second; the session would answer at once
+    try {
+      const before = await hits('session-while-checking');
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', reattached, 4000);
+      await sleep(300);
+      return await hits('session-while-checking') === before;
+    } finally {
+      forgetRun();
+    }
+  });
+
+  await check('a session picked while a run reattaches after a reload does not take the chat from the run', async () => {
+    await stub('/__stub/sessions', { session_id: 's-broken', title: 'Broken session', delay: 2, fails: true, has_children: false });
+    storeRun('r-live-slow', 's-unsaved');  // its status check takes a second
+    try {
+      await go(`/?load=${performance.now()}`);
+      (await until('the session list', () => sessionButton('s-broken', 'open'))).click();  // before the run is back
+      // asked for, not held by a question about the run: it was not back yet
+      await until('the pick asked for', async () => await hits('session:s-broken') > 0, 2000);
+      await until('the reattached run', reattached, 4000);
+      await sleep(1800);  // the pick has failed by now
+      const failedPick = $('#chat .msg.assistant') !== null && $('#headerSessionId').textContent === 'Untitled'
+        && win().chatModule.getCurrentSessionId() === 's-unsaved';
+      // a pick shown before the run was known gives the chat back to the run, which stays stored for a reload
+      await go(`/?load=${performance.now()}`);
+      (await until('the session list again', () => sessionButton('s-1', 'open'))).click();
+      await until('the picked session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      await until('the run taking the chat', () => $('#headerSessionId').textContent === 'Untitled' && reattached(), 4000);
+      const takenBack = $$('#chat .msg.user').length === 0 && win().chatModule.getCurrentSessionId() === 's-unsaved'
+        && sessionStorage.getItem('activeRequestId') === 'r-live-slow' && sessionStorage.getItem('activeRequestSession') === 's-unsaved';
+      // a pick of the run's own session keeps what it shows
+      storeRun('r-live-slow', 's-1');
+      await go(`/?load=${performance.now()}`);
+      (await until('the session list once more', () => sessionButton('s-1', 'open'))).click();
+      await until('the run in its session', reattached, 4000);
+      return failedPick && takenBack && $$('#chat .msg.user').length === 1 && win().chatModule.getCurrentSessionId() === 's-1';
+    } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a message to a run reattached after a reload goes to that run', async () => {
+    storeRun('r-live', 's-unsaved');
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', () => reattached() && $('#headerSessionId').textContent === 'Untitled');
+      const runs = await runsPosted();
+      $('#task').value = 'One more thing';
+      $('#f').requestSubmit();
+      await until('the append', async () => await hits('append:r-live') > 0, 4000);
+      return await runsPosted() === runs;
+    } finally {
+      forgetRun();
+    }
+  });
+
+  await check('a message a running request does not take goes back into the input', async () => {
+    storeRun('r-live-refusing', 's-unsaved');  // its appends fail
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', reattached);
+      const runs = await runsPosted();
+      $('#task').value = 'Did this arrive?';
+      $('#f').requestSubmit();
+      await until('the message sent', () => $('#task').value === '');
+      $('#task').value = 'Meanwhile';  // typed while the append is on its way
+      await until('the note', () => $$('#chat .msg.note').some((note) => note.textContent.includes('did not reach')), 3000);
+      return $('#task').value === 'Meanwhile\n\nDid this arrive?' && $$('#chat .msg.user').length === 0
+        && await runsPosted() === runs && win().chatModule.hasActiveRequest();
+    } finally {
+      forgetRun();
+    }
+  });
+
+  await check('a message to a running request that has just finished comes back into the input', async () => {
+    storeRun('r-live-finishing', 's-unsaved');  // an append finds it finished
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', reattached);
+      const runs = await runsPosted();
+      $('#task').value = 'One more round';
+      $('#f').requestSubmit();
+      await until('the note', () => $$('#chat .msg.note').some((note) => note.textContent.includes('had just finished')), 3000);
+      await sleep(300);
+      return $('#task').value === 'One more round' && $$('#chat .msg.user').length === 0 && await runsPosted() === runs;
+    } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a message a run takes only after its stream has ended leaves the controls idle', async () => {
+    storeRun('r-live-closing', 's-unsaved');  // its stream ends after 0.8 s, an append is taken after 1.5 s
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', reattached);
+      $('#task').value = 'Just in time';
+      $('#f').requestSubmit();
+      await until('the stream over', () => !win().chatModule.hasActiveRequest(), 3000);
+      const forgotten = sessionStorage.getItem('activeRequestId') === null;  // the run has ended
+      await until('the append', async () => await hits('append:r-live-closing') > 0, 3000);
+      await sleep(1700);  // the append has been taken by now
+      return forgotten && $('#stopBtn').style.display === 'none' && $$('#chat .msg.user').some((m) => m.textContent.includes('Just in time'));
+    } finally {
+      forgetRun();
+    }
+  });
+
+  await check('while it checks whether a run is still going after a reload, the composer is held', async () => {
+    storeRun('r-live-slow', 's-unsaved');  // its status check takes a second
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the held composer', () => $('#task').disabled && $('#task').placeholder.startsWith('Checking whether a run'));
+      const held = $('#runBtn').disabled && $('#attachButton').disabled && $('#fileInput').disabled;
+      await until('the reattached run', reattached, 4000);
+      return held && !$('#task').disabled && !$('#runBtn').disabled && $('#task').placeholder === 'Message the agent…';
+    } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a read-only session picked while a run reattaches after a reload leaves the run writable', async () => {
+    await stub('/__stub/sessions', { session_id: 's-readonly', title: 'Read-only session', depth: 1, agent_name: 'ghost', has_children: false });
+    storeRun('r-live-slow', 's-unsaved');  // its status check takes a second
+    try {
+      await go(`/?load=${performance.now()}`);
+      (await until('the session list', () => sessionButton('s-readonly', 'open'))).click();
+      await until('the read-only session', () => $('#readOnlyBanner') && $('#task').disabled);
+      await until('the run taking the chat', () => reattached() && !$('#readOnlyBanner'), 4000);
+      return !$('#task').disabled && !$('#runBtn').disabled && !$('#attachButton').disabled;
+    } finally {
+      forgetRun();
+    }
+  });
+
+  await check('the layout comes back after a reload', async () => {
+    await loadShell();
+    await until('the restored tabs', () => $$('.dock-tab').length === 4);
+    const titles = $$('.dock-tab .dock-tab-title').map((t) => t.textContent);
+    await until('pk:init after the reload', () => received('pk:init').length);
+    return titles.includes('Probe') && titles.includes('Settings')
+      && probeFrame().src.endsWith('?request_id=req%2042')
+      && $$('iframe.panel-frame').some((f) => f.src.endsWith('/ui/panels/session'));
+  });
+
+  await check('the sub-agent panel shows the session the shell restores after a reload', async () => {
+    $('#launcherButton').click();
+    (await until('the sub-agent entry', () => $('#launcherList [data-panel="sam_writer"]'))).click();
+    await until('the sub-agent tab', () => $$('.dock-tab').some((t) => t.textContent.includes('sam_writer')));
+    // back 2 s after the panels have loaded: the panel has to wait for it
+    await stub('/__stub/sessions', { session_id: 's-behind', title: 'Behind session', delay: 2, has_children: false });
+    sessionStorage.setItem('lastSessionId', 's-behind');
+    try {
+      await loadShell();
+      await until('the panel to ask for the restored session', async () => await hits('sub-agents:s-behind') > 0, 6000);
+      return true;
+    } finally {
+      $('.dock-tab[data-key^="sam_writer:"] [data-act="close"]')?.click();
+    }
+  });
+
+  await check('from the launcher a panel a link sent somewhere starts over, one that went there itself stays', async () => {
+    const openFromLauncher = async (id) => {
+      $('#launcherButton').click();
+      (await until(`the ${id} entry`, () => $(`#launcherList [data-panel="${id}"]`))).click();
+    };
+    // the probe came back where the request link of an earlier check sent it
+    await openFromLauncher('probe');
+    await until('the probe at its start', () => probeFrame()?.src.endsWith('/tests/ui/shell_probe_panel.html'));
+    const saved = JSON.parse(localStorage.getItem('scarabhive.layout.v1')).items.find((item) => item.panelId === 'probe');
+    // the session panel came back on the path it navigated to itself (following the chat)
+    const session = panelFrame('/ui/panels/session');
+    await openFromLauncher('session');
+    await until('the session tab in front', () => $('.dock-tab[aria-selected="true"]')?.textContent.includes('Session'));
+    await sleep(200);
+    return saved.path === '' && saved.linked === false && panelFrame('/ui/panels/session') === session;
+  });
+
+  await check('on a narrow screen the dock steps aside for the chat and comes back', () => withWidth('600px', async () => {
+    await until('the narrow layout', () => getComputedStyle($('#dockCollapse')).display !== 'none');
+    $('#dockCollapse').click();
+    const collapsed = getComputedStyle($('#dock')).display === 'none' && $$('.dock-tab').length === 4;
+    $('#launcherButton').click();
+    await until('the launcher', () => $('#launcherList [data-panel="system"]'));
+    $('#launcherList [data-panel="system"]').click();
+    await until('the dock again', () => getComputedStyle($('#dock')).display !== 'none');
+    return collapsed;
+  }));
+
+  await check('on a narrow screen restored windows wait behind the chat', () => withWidth('600px', async () => {
+    const remembered = localStorage.getItem('scarabhive.sessionsOpen');
+    const layout = JSON.parse(localStorage.getItem('scarabhive.layout.v1'));
+    layout.items.forEach((item) => { item.place = 'float'; });  // no tab: windows alone cover the chat as well
+    localStorage.setItem('scarabhive.layout.v1', JSON.stringify(layout));
+    await loadShell();
+    await until('the restored windows', () => $$('#floatingLayer .app-window').length === 4);
+    const hidden = (selector) => getComputedStyle($(selector)).display === 'none';
+    const behind = hidden('#floatingLayer') && !hidden('#chatScroll') && localStorage.getItem('scarabhive.sessionsOpen') === remembered;
+    $('#floatingList [data-key]').click();
+    const forward = !hidden('#floatingLayer');
+    $('#floatingLayer .app-window [data-act="aside"]').click();
+    const aside = hidden('#floatingLayer');
+    $$('#floatingLayer .app-window [data-act="dock"]').forEach((button) => button.click());
+    await until('the windows docked again', () => $$('.dock-tab').length === 4 && !$('#floatingLayer .app-window'));
+    return behind && forward && aside;
+  }));
+
+  await check('on a narrow screen the sessions sheet steps aside for the session picked', () => withWidth('600px', async () => {
+    const closed = (what) => until(`the sheet stepping aside ${what}`, () => $('.app-body').dataset.sessions === 'closed');
+    $('#sessionsToggle').click();
+    const input = await openPalette('Refactor the kit');  // picked outside the sheet
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await closed('for a session from the palette');
+    $('#sessionsToggle').click();
+    $('#sessionsPane [data-act="new"]').click();
+    await closed('for a new session');
+    sessionButton('s-1', 'open').click();  // the sheet is closed: this is a script, not a viewer
+    await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+    $('#sessionsToggle').click();
+    await whileRunning(async () => {
+      sessionButton('s-1', 'open').click();  // its run keeps going: nothing new to show
+      await closed('for the session already open');
+    });
+    $('#sessionsToggle').click();
+    sessionButton('s-1', 'info').click();
+    (await until('the context menu', () => $('#contextMenu [data-panel="session"]'))).click();
+    await closed('for a panel opened from it');
+    return getComputedStyle($('#dock')).display !== 'none';
+  }));
+
+  await check('on a narrow screen a sheet opened while the shell starts stays open when the panels come back', () => withWidth('600px', async () => {
+    const remembered = localStorage.getItem('scarabhive.sessionsOpen');
+    cookie('stub_catalog', 'slow');  // the panels come back only after the catalogue (1 s)
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the session list', () => sessionButton('s-1', 'open'));
+      $('#sessionsToggle').click();
+      await until('the restored tabs', () => $$('.dock-tab').length > 0, 5000);
+      await sleep(200);
+      return $('.app-body').dataset.sessions === 'open';
+    } finally {
+      cookie('stub_catalog', null);
+      if (remembered === null) localStorage.removeItem('scarabhive.sessionsOpen');
+      else localStorage.setItem('scarabhive.sessionsOpen', remembered);
+    }
+  }));
+
+  await check('on a narrow screen a window fills the screen: it is not dragged and takes its size on a wide one', async () => {
+    const press = (bar) => bar.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, bubbles: true, cancelable: true }));
+    // settings has never been a window in this browser: it has no rectangle of its own yet
+    const storedRect = () => JSON.parse(localStorage.getItem('scarabhive.layout.v1')).items.find((item) => item.panelId === 'settings').rect;
+    const narrow = await withWidth('600px', async () => {
+      await until('the narrow layout', () => win().innerWidth === 600);
+      $$('.dock-tab').find((t) => t.textContent.includes('Settings')).querySelector('[data-act="float"]').click();
+      const bar = await until('the window bar', () => $('#floatingLayer .app-window .app-window-bar'));
+      return { bar, rectless: storedRect() === null, drags: press(bar) === false };
+    });
+    const window_ = $('#floatingLayer .app-window');
+    await until('the window at the panel size on the wide screen', () => window_.getBoundingClientRect().width === 520);
+    // wide: the bar takes the press for a drag -- the witness that pressing it is measured at all
+    const dragsWide = press(narrow.bar) === false;
+    narrow.bar.dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 1 }));
+    window_.querySelector('[data-act="dock"]').click();
+    await until('the tab again', () => !$('#floatingLayer .app-window'));
+    return narrow.rectless && !narrow.drags && dragsWide;
+  });
+
+  await check("the kit page's theme buttons switch the whole shell", async () => {
+    await until('the wide layout', () => getComputedStyle($('#dock')).display !== 'none');
+    $('#launcherButton').click();
+    (await until('the kit entry', () => $('#launcherList [data-panel="ui_kit"]'))).click();
+    // loaded to the end: its module script, which wires the buttons, has run
+    const kit = await until('the kit page', () => {
+      const page = panelFrame('/ui/kit')?.contentDocument;
+      return page?.readyState === 'complete' && page.querySelector('[data-theme-choice="dark"]');
+    });
+    kit.click();
+    await until('the dark shell', () => doc().documentElement.dataset.theme === 'dark');
+    // posted to the panels in the same task: it arrives in a later one
+    await until('pk:theme at the probe', () => received('pk:theme').at(-1)?.theme === 'dark');
+    return true;
+  });
+
+  await check('a new window takes the first free step down, not the count of windows', async () => {
+    // by panel id: a panel may retitle its tab (the session panel shows the session's title)
+    const float = async (panelId, url) => {
+      $(`.dock-tab[data-key^="${panelId}:"] [data-act="float"]`).click();
+      return until(`the ${panelId} window`, () => $$('#floatingLayer .app-window')
+        .find((w) => w.querySelector('iframe')?.src.includes(url)));
+    };
+    const top = (w) => Math.round(w.getBoundingClientRect().top - $('#floatingLayer').getBoundingClientRect().top);
+    const system = await float('system', '/ui/panels/system');
+    const session = await float('session', '/ui/panels/session');
+    const steps = [top(system), top(session)];
+    system.querySelector('[data-act="close"]').click();
+    const kit = await float('ui_kit', '/ui/kit');
+    const reused = top(kit) === steps[0];
+    for (const window_ of $$('#floatingLayer .app-window')) window_.querySelector('[data-act="dock"]').click();
+    await until('no window left', () => !$('#floatingLayer .app-window'));
+    // after a reload a window without a rectangle of its own takes a step the stored ones leave free --
+    // they were dragged a few pixels off theirs: one above the first step, one below the second
+    const layout = JSON.parse(localStorage.getItem('scarabhive.layout.v1'));
+    layout.items = [
+      { panelId: 'system', place: 'float', path: '', rect: null },
+      { panelId: 'probe', place: 'float', path: '', rect: { x: 600, y: 5, w: 500, h: 400 } },
+      { panelId: 'settings', place: 'float', path: '', rect: { x: 560, y: 49, w: 500, h: 400 } },
+    ];
+    localStorage.setItem('scarabhive.layout.v1', JSON.stringify(layout));
+    await loadShell();
+    const restored = await until('the restored windows', () => $$('#floatingLayer .app-window').length === 3 && $$('#floatingLayer .app-window'));
+    const freeStep = top(restored.find((w) => w.querySelector('iframe').src.includes('/ui/panels/system'))) === 68;
+    for (const window_ of restored) window_.querySelector('[data-act="dock"]').click();
+    await until('no window left again', () => !$('#floatingLayer .app-window'));
+    return steps.join() === '20,44' && reused && freeStep;
+  });
+
+  await check('closing the last panel hides the dock', async () => {
+    // one at a time: closing re-renders the tab bar
+    while ($('.dock-tab')) $('.dock-tab [data-act="close"]').click();
+    await until('the hidden dock', () => $('#dock').hidden && $('#dockResizer').hidden);
+    return $$('iframe.panel-frame').length === 0 && getComputedStyle($('#dock')).display === 'none'
+      && getComputedStyle($('#dockResizer')).display === 'none';
+  });
+
+  await check('a mangled stored layout does not stop the shell', async () => {
+    localStorage.setItem('scarabhive.layout.v1', JSON.stringify({
+      dockWidth: 'wide', active: 7,
+      items: [null, { panelId: 5 }, { panelId: 'probe', place: 'float', path: ['?'], rect: { x: 'left' } }],
+    }));
+    await loadShell();
+    const restored = await until('the probe window', () => $('#floatingLayer .app-window'));
+    const ok = probeFrame().src.endsWith('/tests/ui/shell_probe_panel.html') && restored.getBoundingClientRect().width >= 320;
+    restored.querySelector('[data-act="close"]').click();
+    return ok;
+  });
+
+  await check('a failing catalogue leaves the chat working', async () => {
+    cookie('stub_catalog', 'broken');
+    try {
+      await loadShell();
+      $('#launcherButton').click();
+      await until('the launcher message', () => $('#launcherList').textContent.includes('could not be loaded'));
+      return $('#agentSelector').options.length === 2 && $$('.pk-toast--error').some((t) => t.textContent.includes('catalogue failed'));
+    } finally {
+      cookie('stub_catalog', null);
+    }
+  });
+
+  await check('a signed-in user sees their account and can save the profile', async () => {
+    // what the owner left open in this browser is not the account's layout
+    localStorage.setItem('scarabhive.layout.v1', JSON.stringify({ items: [{ panelId: 'probe', place: 'dock' }] }));
+    account('admin');
+    await loadShell();
+    const shown = $('#userMenuName').textContent === 'Ada Admin · admin' && !$('#logoutButton').hidden
+      && $('#userInitials').textContent === 'AA' && $$('.dock-tab').length === 0;
+    $('#userButton').click();
+    $('#userMenu [data-open-panel="settings"]').click();
+    const panel = await until('the profile', () => {
+      const settings = panelFrame('/ui/panels/settings').contentDocument;
+      return settings.getElementById('username').value === 'ada' && settings;
+    });
+    panel.getElementById('fullName').value = 'Ada Lovelace';
+    panel.getElementById('profileForm').requestSubmit();
+    await until('the saved toast', () => $$('.pk-toast--ok').some((t) => t.textContent.includes('Profile saved')));
+    const patches = await (await stub('/__stub/patches')).json();
+    return shown && patches.at(-1).full_name === 'Ada Lovelace' && panel.getElementById('noAccounts').hidden;
+  });
+
+  await check('logging out forgets the layout of the user who left', async () => {
+    const before = localStorage.getItem('scarabhive.layout.v1:ada') !== null;
+    $('#userButton').click();
+    $('#logoutButton').click();
+    await until('the forgotten layout', () => localStorage.getItem('scarabhive.layout.v1:ada') === null);
+    const hits = await (await stub('/__stub/hits')).json();
+    return before && hits.logout === 1 && localStorage.getItem('scarabhive.layout.v1') !== null;
+  });
+
+  await check('an expired or deactivated sign-in goes to the login page and comes back', async () => {
+    const targets = [];
+    let trap = false;
+    for (const state of ['expired', 'inactive']) {
+      account(state);
+      await go('/?view=chat');
+      await until(`the login page (${state})`, () => win().location.pathname === '/login' && $('form'));
+      targets.push(new URLSearchParams(win().location.search).get('return'));
+      // Back from the login page must not reach the shell that sends it there again
+      trap ||= win().navigation.entries().some((entry) => entry.url.endsWith('/?view=chat'));
+    }
+    account('admin');
+    await go(win().location.href);  // signed in again: the login page sends the user back
+    await until('the shell again', () => win().location.pathname === '/' && $('#chat'));
+    return targets.join(',') === '/,/' && !trap;
+  });
+
+  await check('a server failure at start is shown, not a dead page', async () => {
+    account('broken');
+    await go(`/?load=${performance.now()}`);
+    await until('the startup error', () => $('#chat').textContent.includes('ScarabHive could not start'));
+    return $('#chat').textContent.includes('database is locked') && $('#connectionState').textContent.includes('Offline');
+  });
+
+  await check('the login page returns only to this site', async () => {
+    account('admin');
+    // each is read by the browser's URL parser as a path starting with //, the start of another host
+    for (const smuggled of ['/\t/evil.example', '/..//evil.example', '/%2e//evil.example', `//${location.host}//evil.example`]) {
+      await go(`/login?return=${encodeURIComponent(smuggled)}`);
+      await until(`a page of this site after ${JSON.stringify(smuggled)}`,
+        () => win().location.pathname !== '/login' && win().location.host === location.host);
+    }
+    await go(`/login?return=${encodeURIComponent('/?from=login#chat')}`);
+    await until('the shell with a local target', () => win().location.search === '?from=login');
+    return win().location.hash === '#chat';
+  });
+
+  await check('without authentication the login page lets the owner straight in', async () => {
+    account(null);
+    await go('/login');
+    await until('the shell', () => win().location.pathname === '/');
+    return true;
+  });
+
+  account(null);
+  await report();
+</script>
+</body>
+</html>

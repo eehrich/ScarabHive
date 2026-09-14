@@ -49,7 +49,12 @@ def test_no_click_handler_navigates_to_a_raw_attachment_address(source: str):
     assert not raw, (
         f"{len(raw)} click handler(s) open the attachment address directly — "
         f"a data: URL is refused and a stale blob: URL resolves to nothing")
-    assert source.count("openAttachmentInNewTab(") >= 3,         "both the live preview and the restored history must use the opener"
+    renderer = source[source.index("function renderAttachments("):source.index("function addUser(")]
+    assert "img.onclick = () => openAttachmentInNewTab(url)" in renderer, \
+        "the attachment renderer's images no longer open through the opener"
+    # One renderer, two callers: the message just sent and the restored history.
+    assert len(re.findall(r"(?<!function )renderAttachments\(msgDiv, \{", source)) == 2, \
+        "the live preview and the restored history must share the renderer"
 
 
 def test_wiping_the_chat_releases_them(source: str):

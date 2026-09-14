@@ -120,7 +120,8 @@
 }
 
 /* -------------------------------------------------------------------- base */
-/* Only for documents that opt in with class="pk-root" on <html>. */
+/* Only for documents that opt in with class="pk-root" on <html>. The element
+ * rules sit in :where(), so any component class overrides them. */
 
 .pk-root {
   font-family: var(--font-ui);
@@ -131,20 +132,22 @@
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
-.pk-root *, .pk-root *::before, .pk-root *::after { box-sizing: border-box; }
-.pk-root body { margin: 0; }
-.pk-root :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.pk-root ::selection { background: var(--accent-subtle); }
-.pk-root a { color: var(--accent-text); text-decoration: none; }
-.pk-root a:hover { text-decoration: underline; }
-.pk-root h1, .pk-root h2, .pk-root h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
-.pk-root h1 { font-size: var(--text-xl); }
-.pk-root h2 { font-size: var(--text-lg); }
-.pk-root h3 { font-size: var(--text-md); }
-.pk-root code, .pk-root kbd, .pk-root samp, .pk-root pre { font-family: var(--font-mono); font-size: 0.92em; }
-.pk-root ::-webkit-scrollbar { width: 10px; height: 10px; }
-.pk-root ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
-.pk-root ::-webkit-scrollbar-track { background: transparent; }
+/* hidden hides, whatever display a component sets */
+:where(.pk-root) [hidden] { display: none !important; }
+:where(.pk-root) *, :where(.pk-root) *::before, :where(.pk-root) *::after { box-sizing: border-box; }
+:where(.pk-root) body { margin: 0; }
+:where(.pk-root) :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+:where(.pk-root) ::selection { background: var(--accent-subtle); }
+:where(.pk-root) a { color: var(--accent-text); text-decoration: none; }
+:where(.pk-root a:hover) { text-decoration: underline; }
+:where(.pk-root) :is(h1, h2, h3) { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+:where(.pk-root) h1 { font-size: var(--text-xl); }
+:where(.pk-root) h2 { font-size: var(--text-lg); }
+:where(.pk-root) h3 { font-size: var(--text-md); }
+:where(.pk-root) :is(code, kbd, samp, pre) { font-family: var(--font-mono); font-size: 0.92em; }
+:where(.pk-root) ::-webkit-scrollbar { width: 10px; height: 10px; }
+:where(.pk-root) ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+:where(.pk-root) ::-webkit-scrollbar-track { background: transparent; }
 
 /* A panel document: header row, scrolling body. */
 .pk-panel { min-height: 100vh; display: flex; flex-direction: column; background: var(--surface-2); }
@@ -155,6 +158,10 @@
   position: sticky; top: 0; z-index: 10; background: var(--surface-2);
 }
 .pk-page-title { font-size: var(--text-md); font-weight: 600; margin: 0; }
+/* In a frame the shell's tab or window bar carries the title; the toolbar stays. */
+[data-framed] .pk-page-title { display: none; }
+[data-framed] .pk-page-header { justify-content: flex-end; min-height: 0; }
+[data-framed] .pk-page-header:has(> .pk-toolbar:empty) { display: none; }
 .pk-page-body { flex: 1; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
 
 /* ------------------------------------------------------------------- icons */
@@ -261,7 +268,6 @@
   height: 2px; border-radius: 2px; background: var(--accent);
 }
 .pk-tab-count { font-size: var(--text-xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.pk-tabpanel[hidden] { display: none; }
 
 /* ----------------------------------------------------------------- dialogs */
 

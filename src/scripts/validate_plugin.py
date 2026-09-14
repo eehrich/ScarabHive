@@ -265,14 +265,14 @@ class PluginValidator:
             else:
                 self._validate_hooks_section()
 
-        # Check for web_ui section (if web plugin)
-        if "web" in plugin_types:
-            if "web_ui" in self.schema_yaml:
-                self._validate_web_ui_section()
-            else:
-                self.warnings.append(
-                    f"Web plugin type {plugin_types} should have 'web_ui' section in schema.yaml"
-                )
+        # A web_ui section is checked wherever it is: plugins typed mcp-server
+        # (comfyui, ssh_control) serve panels too.
+        if "web_ui" in self.schema_yaml:
+            self._validate_web_ui_section()
+        elif "web" in plugin_types:
+            self.warnings.append(
+                f"Web plugin type {plugin_types} should have 'web_ui' section in schema.yaml"
+            )
 
     def _validate_tools_section(self) -> None:
         """Validate tools section in schema.yaml."""
@@ -519,58 +519,29 @@ class PluginValidator:
                         )
 
     def _validate_web_ui_section(self) -> None:
-        """Validate web_ui section in schema.yaml."""
-        web_ui = self.schema_yaml.get("web_ui", {})
+        """Validate web_ui: the panel's catalogue entry and the schema-routed endpoints.
 
+        The panel goes through the catalogue's own parser, so a panel this
+        accepts is one the launcher shows.
+        """
+        from agent_system.ui.catalog import PanelSpecError, plugin_panel
+        from agent_system.ui.resources import sprite_icons
+
+        web_ui = self.schema_yaml.get("web_ui", {})
         if not isinstance(web_ui, dict):
             self.errors.append("'web_ui' must be an object")
             return
-
-        # Check recommended fields
-        recommended_fields = [
-            "enabled",
-            "button_text",
-            "button_icon",
-            "panel_title",
-            "panel_endpoint",
-            "panel_type"
-        ]
-
-        for field in recommended_fields:
-            if field not in web_ui:
-                self.warnings.append(
-                    f"web_ui missing recommended field: {field}"
-                )
-
-        # Validate panel_type if present
-        if "panel_type" in web_ui:
-            panel_type = web_ui["panel_type"]
-            if panel_type not in ["fetch", "iframe"]:
-                self.errors.append(
-                    f"web_ui.panel_type must be 'fetch' or 'iframe', got: {panel_type}"
-                )
-
-        # Validate panels section if present
-        if "panels" in web_ui:
-            panels = web_ui["panels"]
-            if not isinstance(panels, list):
-                self.errors.append("web_ui.panels must be a list")
-            else:
-                self._validate_panels(panels)
-
-    def _validate_panels(self, panels: list[dict[str, Any]]) -> None:
-        """Validate panel definitions."""
-        for idx, panel in enumerate(panels):
-            if not isinstance(panel, dict):
-                self.errors.append(f"Panel at index {idx} must be an object")
-                continue
-
-            required_fields = ["id", "title", "url"]
-            for field in required_fields:
-                if field not in panel:
-                    self.errors.append(
-                        f"Panel at index {idx} missing required field: {field}"
-                    )
+        # YAML reads keys like `on:` as booleans: named as text, so they sort with the rest
+        unknown = sorted(str(key) for key in set(web_ui) - {"panel", "endpoints"})
+        if unknown:
+            self.errors.append(f"web_ui has unknown keys {unknown}; known: endpoints, panel")
+        if not isinstance(web_ui.get("endpoints", []), list):
+            self.errors.append("web_ui.endpoints must be a list")
+        if "panel" in web_ui:
+            try:
+                plugin_panel(self.plugin_path.name, web_ui["panel"], sprite_icons())
+            except PanelSpecError as error:
+                self.errors.append(str(error))
 
     def _cross_validate_configs(self) -> None:
         """Cross-validate plugin.toml and schema.yaml."""

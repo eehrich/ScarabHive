@@ -225,17 +225,17 @@ name: my_plugin
 description: My plugin description
 
 web_ui:
-  button:
-    enabled: true  # REQUIRED: Defaults to false! Button is hidden unless explicitly enabled
-    text: "My Plugin"
-    icon: "🔧"
-  
   panel:
-    title: "My Plugin Panel"
-    endpoint: "/plugins/my_plugin/panel"
-    type: "iframe"
-    width: "800px"
-    height: "600px"
+    endpoint: "/plugins/{{ name }}/"
+    title: "My Plugin"
+    icon: puzzle
+    category: agents
+
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "render_panel"
+      response_type: "html"
 
 tools:
   # MCP tools (optional)
@@ -247,7 +247,7 @@ config:
   # Plugin configuration (optional)
 ```
 
-**Important**: The `web_ui.button.enabled` field defaults to `false`. Your plugin button will **not appear** in the UI unless you explicitly set `enabled: true`.
+**Important**: `web_ui` has exactly two keys, `panel` and `endpoints`; any other key is an error. The panel appears in the launcher and the command palette when the `panel` block is valid and the plugin is registered as a web plugin. The catalogue (`GET /api/ui/catalog`) reads the block from the schema the registry got from `get_schema_data()`, which this base class provides. Field reference: [Plugin Authoring Guide](plugin_authoring.md#web-ui-fields-reference).
 
 ## Migration Guide
 
@@ -316,23 +316,22 @@ class MyPlugin(SchemaBasedPluginWebInterface):
 
 All plugins using `SchemaBasedPluginWebInterface` should:
 
-1. **Appear in `/api/plugins/ui`** endpoint
-2. **Have correct `web_ui` configuration** from schema.yaml
-3. **Load panels correctly** when button clicked
+1. **Pass the validator**: `python src/scripts/validate_plugin.py src/plugins/my_plugin` (the `web_ui.panel` block goes through the catalogue's parser)
+2. **Appear in `GET /api/ui/catalog`** with the values from `web_ui.panel`
+3. **Load the panel page** at its `endpoint`
 4. **Pass existing tests** without modifications
 
 Example test:
 ```python
-async def test_plugin_appears_in_ui():
-    response = await client.get("/api/plugins/ui")
-    plugins = response.json()
-    
-    # Find our plugin
-    plugin = next(p for p in plugins if p["id"] == "my_plugin")
-    
-    assert plugin["enabled"] is True
-    assert plugin["button_text"] == "My Plugin"
-    assert plugin["panel_endpoint"] == "/plugins/my_plugin/panel"
+async def test_plugin_appears_in_catalog():
+    response = await client.get("/api/ui/catalog")
+    panels = response.json()["panels"]
+
+    # The panel id is the plugin instance name
+    panel = next(p for p in panels if p["id"] == "my_plugin")
+
+    assert panel["title"] == "My Plugin"
+    assert panel["url"] == "/plugins/my_plugin/"
 ```
 
 ## Related Components

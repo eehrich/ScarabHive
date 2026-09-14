@@ -5,41 +5,17 @@ tools: []
 
 # Web UI configuration
 web_ui:
-  # Header button configuration (optional)
-  button:
-    enabled: false  # Don't create a header button - only dropdown menu
-    text: "User Management"
-    icon: "👥"
-    tooltip: "User administration dashboard"
-  
-  # Dropdown menu integration (optional)
-  menu:
-    enabled: true  # Add items to dropdown menus
-    items:
-      - id: "manage_users"
-        menu_id: "user"  # Add to user dropdown
-        section: "admin"  # Admin section within user menu
-        label: "Manage Users"
-        action: "openPanel"
-        panel_id: "{{ name }}"
-        icon: "👥"
-        requires_admin: true
-        order: 50
-        tooltip: "User administration dashboard"
-  
-  # Panel configuration
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "User Management"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"  # Load as iframe - X-Frame-Options set to SAMEORIGIN in endpoints.py
-    description: "Admin dashboard for managing user accounts, roles, and permissions"
-  
-  # Access control
-  requires_auth: true
-  requires_role: "admin"
-  
+    title: "Users"
+    description: "User accounts, roles and permissions"
+    icon: users
+    category: admin
+    keywords: [accounts, roles, permissions]
+    window: {width: 960, height: 680}
+
   endpoints:
     - path: "/"
       method: "GET"

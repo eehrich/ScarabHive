@@ -1,0 +1,630 @@
+"""The shell in a real browser: launcher, dock and windows, the pk:* host side, sessions, layout, sign-in.
+
+The page is the real index.html (and login.html) with the real shell and chat
+scripts; only the server behind it is a stub. The catalogue carries a probe
+panel that records what the host sends, and two instances of one plugin. The
+cookie ``stub_account`` picks what /auth/me answers: absent -- authentication
+is off; ``admin`` -- signed in; ``expired`` -- 401; ``inactive`` -- 403;
+``broken`` -- 500. ``stub_catalog`` makes the catalogue fail (``broken``) or
+answer after a second (``slow``); ``stub_requests=running`` lists one running
+request an administrator may cancel. The requests ``r-live``, ``r-live-busy``,
+``r-live-files``, ``r-live-refusing`` (appends fail after half a second),
+``r-live-finishing`` (an append finds it finished), ``r-live-closing`` (its
+stream ends with the run after 0.8 s, an append to it is taken after 1.5 s),
+``r-live-stopping`` (ends after 1.5 s), ``r-live-dropping`` (its stream drops),
+``r-live-final`` (its final answer, then its stream closes), ``r-live-answered``
+(its final answer, and its end 3 s later), ``r-live-cancelled``
+(cancelled elsewhere), ``r-live-failing`` (its error, then its end),
+``r-live-severed`` (its stream breaks as a cancel is asked for),
+``r-live-honouring`` (honours a cancel at once with its cancelled event and
+end), ``r-live-honouring-late`` (does so a second after the cancel is asked
+for, and saves its session over the 1.5 s before its end), ``r-live-leaving``, every
+``r-live-kept...`` and, after a slower status check, ``r-live-slow`` are still
+running after a reload -- a stream followed again names its run first;
+``r-live-ended`` is done, told after a second, ``r-live-unanswered`` gets no
+answer, any other request is unknown. A cancel of ``r-live-stopping`` (told
+after 3 s) or ``r-ending`` finds nothing; any other is cancelled, and its run
+unwinds 0.8 s longer (``r-live-severed`` 1.5 s) -- its status says running, and
+a session deleted meanwhile is counted; a cancelled run stays cancelled for the
+rest of the page. Every answered cancel is counted. ``stub_cancel=fails``
+makes cancels fail, ``stub_cancel=slow`` and ``slower`` answer them after 1.5
+and 6 s. A session asked for while a status check is being answered is
+counted. Every line typed with a slash resolves as that chat command. A message
+the chat sends starts a run that goes on for a few seconds; with
+``stub_stream=drops``, ``final-drops``, ``cancelled-drops``, ``late-drops``,
+``question-drops``, ``closes``, ``ending`` or ``late-start-drops`` its stream
+names ``r-dropped``, ``r-final-dropped``, ``r-cancelled-dropped``,
+``r-late-dropped``, ``r-question-dropped``, ``r-closed``, ``r-ending`` or --
+after 1.5 s -- ``r-late-started`` in the message's session and is cut off, cut
+off after its final answer or its cancel (1.5 s in; the run goes on, saving, for
+2.5 s from then), cut off after 3 or 1.5 s, closed, brings its final answer
+and end after a second, or is cut off a second after it has started; with
+``stub_stream=refused`` the server refuses the run, with ``refused-late`` after a
+second, with its error and then its end. One
+with files starts half a second later, names ``r-files-ended`` and brings its
+final answer and end -- with ``stub_stream=stale``, ``r-files-stale`` in
+``s-files-new``, and it goes on; with ``final-drops``, ``r-files-final-dropped``,
+cut off after its final answer; ``refused`` refuses it. A session added through
+/__stub/sessions may carry ``delay`` (seconds to answer), ``trickle`` (headers
+at once, the body after that many seconds), ``fails`` (its load fails),
+``delete_delay`` and ``delete_fails`` (how many deletes of it fail). The
+Sub-Agents instance ``sam_writer``, ``context_engineer``, ``memory``, ``todo``
+and ``context_usage_tracker`` are the real plugin panels; what they ask their
+plugin for, memory searches included, is counted by the session it names,
+answered with a number per session in every figure the panels show and, for
+``s-lagging``, late. A message to a running request is appended through
+/events/<id>/append.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import jinja2
+import pytest
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+from agent_system.ui.catalog import Panel, build_catalog, core_panels
+from agent_system.ui.resources import STATIC_DIR, ui_templates
+from agent_system.ui.routes import router
+from tests.ui.browser import find_browser, run_app_test_page
+
+BROWSER = find_browser()
+PAGE_TIMEOUT = 300
+# the whole page runs in the first test's fixture: pytest's default of 120 s would cut it off
+pytestmark = [pytest.mark.skipif(BROWSER is None, reason="no Chromium-based browser installed"),
+              pytest.mark.timeout(PAGE_TIMEOUT + 60)]
+
+UI_TESTS = Path(__file__).resolve().parent
+PLUGINS = UI_TESTS.parents[1] / "src" / "plugins"
+PROBE_PAGE = "/tests/ui/shell_probe_panel.html"
+USER = {"username": "ada", "full_name": "Ada Admin", "email": "ada@example.org", "role": "admin"}
+
+
+def plugin_panels() -> list[Panel]:
+    return [
+        Panel("probe", "Probe", PROBE_PAGE, "bug", "debug", "Records the protocol messages the shell sends", ["probe"],
+              contexts={"request": f"{PROBE_PAGE}?request_id={{request_id}}",
+                        "session": f"{PROBE_PAGE}?session_id={{session_id}}"}),
+        Panel("sam_writer", "Sub-Agents", "/plugins/sam_writer/", "workflow", "agents", "Sub-agent tasks"),
+        Panel("sam_skills", "Sub-Agents", "/tests/ui/missing_panel_b.html", "workflow", "agents", "Sub-agent tasks"),
+        Panel("context_engineer", "Context Engineer", "/plugins/context_engineer/", "brain", "context", "Context archive"),
+        Panel("memory", "Memory", "/plugins/memory/", "database", "context", "Stored memories"),
+        Panel("todo", "Todos", "/plugins/todo/", "list-todo", "agents", "Task lists"),
+        Panel("context_usage_tracker", "Context & Cost Usage", "/plugins/context_usage_tracker/", "chart-column",
+              "context", "Token usage"),
+    ]
+
+
+def plugin_page(folder: str, **values: str) -> HTMLResponse:
+    """A real plugin panel, rendered as its plugin renders it."""
+    environment = jinja2.Environment(loader=jinja2.FileSystemLoader(PLUGINS / folder / "templates"), autoescape=True)
+    return HTMLResponse(environment.get_template("panel.html").render(**values))
+
+
+def stub_app() -> FastAPI:
+    app = FastAPI()
+    templates = ui_templates()
+    now = datetime.now(timezone.utc).isoformat()
+    sessions = [{"session_id": "s-1", "title": "Refactor the kit", "agent_name": "assistant",
+                 "updated_at": now, "depth": 0, "has_children": True, "children": []}]
+    children = {"s-1": [{**sessions[0], "session_id": "s-1-sub", "title": "Research the icons", "depth": 1}]}
+    patches: list[dict] = []
+    posted: list[dict] = []
+    deletes: list[str] = []
+    hits: dict[str, int] = {}
+
+    def account(request: Request) -> dict:
+        state = request.cookies.get("stub_account")
+        if state is None:
+            raise HTTPException(status_code=404)  # authentication off: no /auth routes
+        if state == "expired":
+            raise HTTPException(status_code=401)
+        if state == "inactive":
+            raise HTTPException(status_code=403, detail="Inactive user")
+        if state == "broken":
+            raise HTTPException(status_code=500, detail="database is locked")
+        return USER
+
+    @app.get("/")
+    async def index(request: Request):
+        return templates.TemplateResponse(request, "index.html")
+
+    @app.get("/login")
+    async def login(request: Request):
+        return templates.TemplateResponse(request, "login.html")
+
+    @app.get("/api/ui/catalog")  # registered before the real router: the stub wins
+    async def catalog(request: Request):
+        if request.cookies.get("stub_catalog") == "broken":
+            raise HTTPException(status_code=500, detail="catalogue failed")
+        if request.cookies.get("stub_catalog") == "slow":
+            await asyncio.sleep(1)
+        core = core_panels(audit_enabled=False, profiling_enabled=False, memory_profiling_enabled=False)
+        return build_catalog("admin", core, plugin_panels())
+
+    @app.get("/admin/active-sessions")
+    async def active_sessions(request: Request):
+        if request.cookies.get("stub_requests") == "running":
+            return {"total": 1, "sessions": [{"user_id": "ada", "agent_name": "assistant", "duration_seconds": 12,
+                                              "status": "running", "request_id": "r-cancel-me"}]}
+        hits["active-sessions"] = hits.get("active-sessions", 0) + 1
+        raise HTTPException(status_code=404)  # authentication off: no /admin routes
+
+    @app.post("/admin/active-sessions/{request_id}/cancel")
+    async def cancel_request(request_id: str):
+        await asyncio.sleep(1)  # the server answers once the run has stopped
+        return {"status": "cancelled", "request_id": request_id}
+
+    checking: set[str] = set()  # requests whose status check is still being answered
+    # request id -> until when a cancelled run still unwinds: a force cancel answers before the task has
+    # finished, and a run saves its session after its cancelled event
+    unwinding: dict[str, float] = {}
+
+    def unwind(request_id: str, seconds: float) -> None:
+        unwinding[request_id] = max(unwinding.get(request_id, 0), time.monotonic() + seconds)
+
+    @app.get("/api/requests/{request_id}/status")
+    async def request_status(request_id: str):
+        hits[f"status:{request_id}"] = hits.get(f"status:{request_id}", 0) + 1
+        if request_id in unwinding:
+            return {"status": "running" if time.monotonic() < unwinding[request_id] else "cancelled"}
+        if request_id == "r-live-ended":  # done, told after a second
+            await asyncio.sleep(1)
+            return {"status": "completed", "completed": True}
+        if request_id == "r-live-unanswered":
+            raise HTTPException(status_code=503, detail="The job registry is unavailable")
+        running = {"r-live-slow": 1, **dict.fromkeys(  # how long the check takes
+            ["r-live", "r-live-busy", "r-live-refusing", "r-live-finishing", "r-live-files", "r-live-dropping",
+             "r-live-closing", "r-live-stopping", "r-live-final", "r-live-cancelled", "r-live-failing", "r-live-severed",
+             "r-live-honouring", "r-live-honouring-late", "r-live-leaving", "r-live-answered", "r-dropped"], 0.3)}
+        if request_id.startswith("r-live-kept"):  # one per phase that cancels it: a cancelled run stays cancelled
+            running[request_id] = 0.3
+        if request_id not in running:
+            return {"status": "unknown", "completed": False}  # as app.py answers for a run it does not know
+        checking.add(request_id)
+        try:
+            await asyncio.sleep(running[request_id])
+        finally:
+            checking.discard(request_id)
+        return {"status": "running"}
+
+    def lag(session_id: str) -> float:
+        """What a plugin panel asks for about ``s-lagging`` is answered late."""
+        return 1.5 if session_id == "s-lagging" else 0
+
+    def marker(session_id: str) -> int:
+        """The number the plugin panels show: 7 for ``s-1``, 3 for any other session or none."""
+        return 7 if session_id == "s-1" else 3
+
+    @app.get("/plugins/sam_writer/")
+    async def sub_agent_panel():
+        return plugin_page("sub_agent_manager", plugin_name="sam_writer")
+
+    @app.get("/plugins/sam_writer/sub-agents")
+    async def sub_agents(session_id: str):
+        hits[f"sub-agents:{session_id}"] = hits.get(f"sub-agents:{session_id}", 0) + 1
+        await asyncio.sleep(lag(session_id))
+        return {"instances": [{"instance_id": f"agent-{session_id}", "agent_type": "writer", "status": "active"}]}
+
+    @app.get("/plugins/context_engineer/")
+    async def context_engineer_panel():
+        return plugin_page("context_engineer", plugin_name="context_engineer")
+
+    @app.get("/plugins/context_engineer/session_details")
+    async def context_engineer_session(session_id: str = ""):
+        hits[f"session_details:{session_id}"] = hits.get(f"session_details:{session_id}", 0) + 1
+        await asyncio.sleep(lag(session_id))
+        return {"success": True, "session_id": session_id, "tool_results": {"total_entries": marker(session_id)},
+                "core_memory": {"facts_count": marker(session_id), "token_usage": 0}}
+
+    @app.get("/plugins/memory/")
+    async def memory_panel():
+        return plugin_page("memory", name="memory")
+
+    @app.get("/plugins/todo/")
+    async def todo_panel():
+        return plugin_page("todo", name="todo")
+
+    @app.get("/plugins/context_usage_tracker/")
+    async def usage_panel():
+        return plugin_page("context_usage_tracker")
+
+    @app.post("/plugins/memory/memories/search")
+    async def memory_search(session_id: str = ""):
+        await asyncio.sleep(lag(session_id))
+        return {"results": [{"memory_id": "m-1", "title": f"found-{marker(session_id)}", "content": "", "keywords": [],
+                             "importance": 1, "access_count": 0, "similarity": 0.9}]}
+
+    @app.get("/plugins/{instance}/{call:path}")
+    async def plugin_call(instance: str, call: str, session_id: str = ""):
+        hits[f"{instance}:{session_id}"] = hits.get(f"{instance}:{session_id}", 0) + 1
+        await asyncio.sleep(lag(session_id))
+        count = marker(session_id)
+        return {"total_memories": count, "total_tasks": count, "total": count,
+                "statistics": {"totals": {"completion_tokens": count}},
+                "enabled": True, "current_phase": f"phase-{count}", "all_allowed_agents": [], "filtered_agents": []}
+
+    @app.post("/events/{request_id}/append")
+    async def append(request_id: str):
+        hits[f"append:{request_id}"] = hits.get(f"append:{request_id}", 0) + 1
+        if request_id == "r-live-refusing":
+            await asyncio.sleep(0.5)  # long enough to type something else meanwhile
+            raise HTTPException(status_code=500, detail="The message queue is broken")
+        if request_id == "r-live-finishing":
+            raise HTTPException(status_code=404, detail="Request not active")
+        if request_id == "r-live-closing":  # taken only after the run's stream has ended
+            await asyncio.sleep(1.5)
+        return {"status": "appended"}
+
+    def event(payload: dict) -> str:
+        return f"data: {json.dumps(payload)}\n\n"
+
+    def run_stream():
+        async def stream():
+            yield ": running\n\n"
+            await asyncio.sleep(5)  # the run goes on; the page usually leaves before it ends
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    def started_stream(request_id: str, session_id: str, ending: str, start_after: float = 0):
+        async def stream():
+            yield ":ok\n\n"
+            await asyncio.sleep(start_after)  # a run with files starts once its files are read
+            yield event({"type": "start", "request_id": request_id, "session_id": session_id})
+            await asyncio.sleep({"stale": 5, "ending": 1, "late-drops": 3, "question-drops": 1.5, "final-drops": 1.5,
+                                 "late-start-drops": 1}.get(ending, 0.5))
+            if ending == "ending":
+                yield event({"type": "final", "content": "Done"})
+                yield event({"type": "end"})
+            if ending in ("closes", "stale", "ending"):
+                return
+            if ending in ("final-drops", "cancelled-drops"):
+                unwind(request_id, 2.5)  # it saves its session, and runs its session-end hooks, after its answer or its cancel
+                yield event({"type": "final", "content": "Done"} if ending == "final-drops"
+                            else {"type": "cancelled", "request_id": request_id, "step": 1})
+                await asyncio.sleep(0.2)
+            raise ConnectionAbortedError("the connection is cut off")  # the browser's reader fails mid-stream
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    def refused_stream(after: float = 0):
+        async def stream():  # a refusal the way app.py's event streams send one: `error`, and the stream closes
+            yield ":ok\n\n"
+            await asyncio.sleep(after)
+            yield event({"type": "error", "error": "Session s-1 is currently locked by another request"})
+            if after:  # refused by the run itself once the session lock did not come: its end follows
+                yield event({"type": "end"})
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @app.get("/events")
+    async def reattach(request_id: str = "", session_id: str = ""):
+        async def stream():  # the server names the run first
+            yield event({"type": "reconnect", "request_id": request_id, "session_id": session_id, "message": "Reconnected"})
+            if request_id == "r-live-dropping":  # drops before the run's end
+                await asyncio.sleep(0.5)
+            elif request_id in ("r-live-closing", "r-live-stopping"):  # the run ends
+                await asyncio.sleep(0.8 if request_id == "r-live-closing" else 1.5)
+                yield event({"type": "end"})
+            elif request_id == "r-live-final":  # the final answer, then the connection closes before the end
+                await asyncio.sleep(0.5)
+                yield event({"type": "final", "content": "Done"})
+                await asyncio.sleep(0.5)
+            elif request_id == "r-live-answered":  # the final answer, then the save and the hooks take 3 s
+                await asyncio.sleep(0.5)
+                yield event({"type": "final", "content": "Done"})
+                await asyncio.sleep(3)
+                yield event({"type": "end"})
+            elif request_id == "r-live-cancelled":  # cancelled elsewhere -- another tab, the admin panel
+                await asyncio.sleep(0.5)
+                yield event({"type": "cancelled", "request_id": request_id, "step": 2})
+                await asyncio.sleep(1.5)
+            elif request_id == "r-live-failing":  # the run fails: its error, then its end
+                await asyncio.sleep(0.5)
+                yield event({"type": "error", "message": "Agent incomplete: max steps reached"})
+                yield event({"type": "end"})
+                await asyncio.sleep(0.5)
+            elif request_id == "r-live-severed":  # its connection breaks as it is cancelled
+                await asyncio.wait_for(cancel_asked(request_id).wait(), timeout=5)
+            elif request_id == "r-live-honouring":  # honours a cancel at once: its cancelled event and end
+                await asyncio.wait_for(cancel_asked(request_id).wait(), timeout=5)
+                yield event({"type": "cancelled", "request_id": request_id, "step": 1})
+                yield event({"type": "end"})
+            elif request_id == "r-live-honouring-late":  # honours a cancel at its next step, a second later
+                await asyncio.wait_for(cancel_asked(request_id).wait(), timeout=5)
+                await asyncio.sleep(1)
+                unwind(request_id, 1.5)  # its session is saved after the event, and its end comes after the save
+                yield event({"type": "cancelled", "request_id": request_id, "step": 1})
+                await asyncio.sleep(1.5)
+                yield event({"type": "end"})
+            else:
+                await asyncio.sleep(5)  # the run goes on; the page usually leaves before it ends
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @app.post("/events")
+    async def run(request: Request):
+        body = await request.json()
+        posted.append(body)
+        ending = request.cookies.get("stub_stream", "")
+        if ending in ("refused", "refused-late"):
+            return refused_stream(1 if ending == "refused-late" else 0)
+        started = {"drops": "r-dropped", "final-drops": "r-final-dropped", "cancelled-drops": "r-cancelled-dropped",
+                   "late-drops": "r-late-dropped", "question-drops": "r-question-dropped", "closes": "r-closed",
+                   "ending": "r-ending", "late-start-drops": "r-late-started"}
+        if ending in started:
+            return started_stream(started[ending], body.get("session_id", ""), ending,
+                                  start_after=1.5 if ending == "late-start-drops" else 0)
+        return run_stream()
+
+    @app.post("/run")
+    async def run_with_files(request: Request):
+        form = await request.form()
+        stream = request.cookies.get("stub_stream")
+        if stream == "refused":
+            return refused_stream()
+        session_id = str(form.get("session_id") or "s-files-new")
+        if stream == "stale":
+            return started_stream("r-files-stale", session_id, "stale", start_after=0.5)
+        if stream == "final-drops":
+            return started_stream("r-files-final-dropped", session_id, "final-drops", start_after=0.5)
+        return started_stream("r-files-ended", session_id, "ending", start_after=0.5)
+
+    asked: dict[str, asyncio.Event] = {}  # request id -> set once a cancel of it has been asked for
+
+    def cancel_asked(request_id: str) -> asyncio.Event:
+        return asked.setdefault(request_id, asyncio.Event())
+
+    @app.post("/api/requests/{request_id}/cancel")
+    async def cancel_run(request: Request, request_id: str, force: bool = False):
+        key = f"cancel:{request_id}" + (":force" if force else "")
+        hits[key] = hits.get(key, 0) + 1
+        if request.cookies.get("stub_cancel") == "fails":
+            raise HTTPException(status_code=500, detail="The job manager is unavailable")
+        cancel_asked(request_id).set()  # the run sees its cancel before the answer comes
+        if request.cookies.get("stub_cancel") in ("slow", "slower"):  # as a force cancel waits out its grace
+            await asyncio.sleep(1.5 if request.cookies.get("stub_cancel") == "slow" else 6)
+        if request_id == "r-live-stopping":  # answers once the run has ended, and another one has started
+            await asyncio.sleep(3)
+        hits[f"answered:{request_id}"] = hits.get(f"answered:{request_id}", 0) + 1
+        if request_id in ("r-live-stopping", "r-ending"):
+            return {"status": "not_found", "request_id": request_id}
+        unwind(request_id, 1.5 if request_id == "r-live-severed" else 0.8)
+        return {"status": "cancelled", "request_id": request_id}
+
+    @app.post("/chat/resolve")
+    async def resolve_line(request: Request):  # every line the tests type with a slash is a chat command
+        name, _, payload = (await request.json())["line"][1:].partition(" ")
+        return {"kind": "command", "name": name, "payload": payload}
+
+    @app.get("/__stub/posted")
+    async def recorded_runs():
+        return posted
+
+    @app.get("/__stub/hits")
+    async def recorded_hits():
+        return hits
+
+    @app.get("/__stub/deletes")
+    async def recorded_deletes():
+        return deletes
+
+    @app.get("/auth/me")
+    async def me(request: Request):
+        return account(request)
+
+    @app.patch("/auth/me")
+    async def update_me(request: Request):
+        account(request)
+        patches.append(await request.json())
+        return USER
+
+    @app.post("/auth/logout")
+    async def logout():
+        hits["logout"] = hits.get("logout", 0) + 1
+        response = JSONResponse({"message": "Logged out"})
+        response.delete_cookie("stub_account")  # as the real logout drops its cookie
+        return response
+
+    @app.get("/__stub/patches")
+    async def recorded_patches():
+        return patches
+
+    @app.post("/__stub/sessions")
+    async def add_session(request: Request):
+        sessions.append({**sessions[0], **await request.json()})
+        return {}
+
+    @app.post("/__stub/children")
+    async def add_child(request: Request):
+        child = await request.json()
+        children[child.pop("parent")].append({**children["s-1"][0], **child})
+        return {}
+
+    @app.get("/health")
+    async def health():
+        return {"status": "ok", "version": "9.9.9", "uptime_seconds": 60, "python_version": "3.12", "packages": {}}
+
+    @app.get("/agents")
+    async def agents():
+        return {"agents": ["assistant", "writer"], "default": "assistant"}
+
+    @app.get("/llm/profiles")
+    async def profiles():
+        return {"profiles": [{"name": "default", "description": "Default", "model_ref": "m", "max_steps": 5}],
+                "default": "default"}
+
+    @app.get("/api/sessions/hierarchy")
+    async def hierarchy():
+        return {"sessions": sessions, "root_count": len(sessions)}
+
+    @app.get("/api/sessions/{session_id}/children")
+    async def session_children(session_id: str):
+        return {"sessions": children.get(session_id, [])}
+
+    @app.get("/api/sessions/{session_id}")
+    async def session(session_id: str):
+        hits[f"session:{session_id}"] = hits.get(f"session:{session_id}", 0) + 1
+        if checking:
+            hits["session-while-checking"] = hits.get("session-while-checking", 0) + 1
+        if session_id == "s-unsaved":
+            await asyncio.sleep(1)
+        found = next((s for s in [*sessions, *children["s-1"]] if s["session_id"] == session_id), None)
+        if found is None:
+            raise HTTPException(status_code=404)
+        if not found.get("trickle"):
+            await asyncio.sleep(found.get("delay", 0))
+        if found.get("fails"):
+            raise HTTPException(status_code=500, detail="The session file is unreadable")
+        user_message = {"role": "user", "content": [
+            {"type": "text", "text": "Build the kit"},
+            # stored without their data
+            {"type": "image", "name": "sketch.png"},
+            {"type": "audio", "name": "briefing.wav"},
+        ]} if found.get("attachments") else {"role": "user", "content": "Build the kit"}
+        stored = {**found, "llm_profile": "default", "created_at": now, "context_vars": {},
+                  "messages": [user_message, {"role": "assistant", "content": "Done", "content_format": "text"}]}
+        if not found.get("trickle"):
+            return stored
+
+        async def body():  # a large session: the headers come at once, the body takes its time
+            yield b" "
+            await asyncio.sleep(found["trickle"])
+            yield json.dumps(stored).encode()
+        return StreamingResponse(body(), media_type="application/json")
+
+    @app.delete("/api/sessions/{session_id}")
+    async def delete_session(session_id: str):
+        if any(time.monotonic() < until for until in unwinding.values()):  # its save may still write the session back
+            hits["delete-while-unwinding"] = hits.get("delete-while-unwinding", 0) + 1
+        doomed = next((s for s in sessions if s["session_id"] == session_id), {})
+        await asyncio.sleep(doomed.get("delete_delay", 0))
+        if doomed.get("delete_fails", 0) > 0:
+            doomed["delete_fails"] -= 1
+            raise HTTPException(status_code=500, detail="The session file is locked")
+        deletes.append(session_id)
+        sessions[:] = [s for s in sessions if s["session_id"] != session_id]
+        return {}
+
+    app.include_router(router)
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.mount("/tests/ui", StaticFiles(directory=UI_TESTS), name="ui-tests")
+    return app
+
+
+@pytest.fixture(scope="module")
+def results():
+    return run_app_test_page(BROWSER, stub_app(), "tests/ui/shell_tests.html", timeout=PAGE_TIMEOUT)
+
+
+EXPECTED = [
+    'the shell starts for the owner when auth is off',
+    'an empty message leaves the welcome in place',
+    'the message form never reloads the page, not even before the chat has taken it over',
+    'attaching files is a button the keyboard reaches',
+    'a mangled pin or recent list leaves the launcher working',
+    'the launcher lists the catalogue by category under its button',
+    'instances of one plugin fold into one launcher row',
+    'the launcher search matches description and keywords',
+    'a panel opens docked and the host answers pk:ready with pk:init',
+    "a panel's dialog is shown over the whole app",
+    "a panel's title, badge and toast reach the shell",
+    'a second docked panel takes the front and the first is told it is hidden',
+    'a dock tab is chosen with the keyboard',
+    'a framed kit panel leaves its title to the tab and keeps its content',
+    'a docked panel detaches into a window and docks back',
+    'a window gets its size back once the browser window grows again',
+    'loading a session names it in the header and tells the panels',
+    'an open branch of the session tree stays open and current when the list refreshes',
+    'a session started from the chat is named once the server has named it',
+    'the last session clicked wins, not the last answer',
+    'a session still loading does not replace a newer choice',
+    'clicking the open session during a run does not stop the run',
+    'deleting the open session asks about its run before anything is deleted',
+    'the open session is deleted once its run has stopped, and the welcome does not offer it',
+    'the start page forgets a session deleted while it shows',
+    'deleting a session is a choice: a pick after it wins, a pick of it does not stay open',
+    'a delete that fails takes nothing from a session on its way',
+    'a load of the open session still on its way does not open it again once it is deleted',
+    'a message sent while the open session is being deleted does not bring it back',
+    'a note written while the open session is being deleted stays',
+    'after a failed delete of the open session, deleting it again leaves the chat alone',
+    'while the run of a session being deleted stops, a pick elsewhere keeps its place and a message keeps the session',
+    'a stream naming the open session while its delete asks about the run does not keep the session',
+    'a session opened and written into while it is being deleted keeps its run in the chat',
+    'after New, deleting the session left behind leaves the chat alone',
+    'a message sent while a pick is on its way stays when that pick is deleted',
+    '/new during a run asks about the run and stays in the session while it goes on',
+    'a slash command that ends while a newer line resolves leaves that line its guard against a second Send',
+    'files sent while a request runs stay attached, and so does their message',
+    'a message sent before the running request has started stays in the input',
+    'a run whose stream was cut off is left to a reload, which follows it again',
+    'a run whose stream was cut off is let go once the chat shows another session',
+    'a reattached run whose stream drops is left to a reload',
+    'a run that ends -- a final answer, a cancel, an error, a stream that closes -- is forgotten without a connection notice, and offers no Stop and takes no message while its stream stays open',
+    'a run with files shows its answer, is not stored for a reload and leaves the stored run alone; files it did not send stay attached, and a cut after its answer is no failure',
+    'after a reload a stored run that has ended is forgotten, one the server could not tell about stays stored',
+    'Stop leaves the end of a run to its stream and holds the messages sent meanwhile; a late answer leaves the next run alone',
+    'deleting the open session whose run loses its stream while it stops waits until the server no longer runs it',
+    'deleting a session waits for its run: one named and cut off while the run question is open is cancelled first, one cut off past its answer -- asked about or not, or followed by a run elsewhere -- is waited for without a cancel',
+    'a session written into while its delete waits for its run to save stays, even opened again; a message into another session keeps no session',
+    'leaving a session during its run: past its answer a pick asks nothing and takes the chat, a later choice wins, and a message sent while the run stops keeps the session',
+    'while a run stops for a pick: a later pick wins, a declined one is no pick, a click on the open session keeps it',
+    'while the viewer is asked: a start that arrives is no choice, a run that ends is not cancelled, a stream that breaks still has its run cancelled, a refused request leaves a lost run to the pick; a delete started after a cancel asks nothing and waits for the save',
+    'deleting the session of a run whose connection was lost cancels that run first',
+    'a restored message names image and audio parts stored without their data',
+    'the theme button cycles the theme and every panel follows',
+    'an open settings panel shows the theme chosen in the header',
+    'the palette finds a panel and opens it',
+    'Ctrl+K in the open palette starts its search afresh',
+    'the palette does not open over an open question',
+    'the system panel asks for a tab it may not show only once',
+    'a cancel on its way stays disabled when the request list is drawn anew',
+    'the palette lists instances of one plugin once and narrows to them',
+    'a session offers the panels that open on a session',
+    'a session panel pinned from a link can follow the chat again',
+    'a request id in the chat offers the panels that take a request',
+    'the plugin panels follow the session the chat switches to, not a slower answer for the one before, and New',
+    'a docked panel leaves the header on screen at laptop widths',
+    'a stored session that is gone starts a new one',
+    'a session picked while the shell restores the stored one wins',
+    '/new while the stored session is on its way leaves nothing of it to continue',
+    'a message sent while the stored session is on its way stays in the chat',
+    'a pick that fails before the stored session is restored leaves a start page',
+    'a stored session deleted while the shell restores it does not stay open',
+    'a run still going after a reload keeps the chat and names its session',
+    'while it checks whether a run is still going after a reload, the shell asks the server for no session',
+    'a session picked while a run reattaches after a reload does not take the chat from the run',
+    'a message to a run reattached after a reload goes to that run',
+    'a message a running request does not take goes back into the input',
+    'a message to a running request that has just finished comes back into the input',
+    'a message a run takes only after its stream has ended leaves the controls idle',
+    'while it checks whether a run is still going after a reload, the composer is held',
+    'a read-only session picked while a run reattaches after a reload leaves the run writable',
+    'the layout comes back after a reload',
+    'the sub-agent panel shows the session the shell restores after a reload',
+    'from the launcher a panel a link sent somewhere starts over, one that went there itself stays',
+    'on a narrow screen the dock steps aside for the chat and comes back',
+    'on a narrow screen restored windows wait behind the chat',
+    'on a narrow screen the sessions sheet steps aside for the session picked',
+    'on a narrow screen a sheet opened while the shell starts stays open when the panels come back',
+    'on a narrow screen a window fills the screen: it is not dragged and takes its size on a wide one',
+    "the kit page's theme buttons switch the whole shell",
+    'a new window takes the first free step down, not the count of windows',
+    'closing the last panel hides the dock',
+    'a mangled stored layout does not stop the shell',
+    'a failing catalogue leaves the chat working',
+    'a signed-in user sees their account and can save the profile',
+    'logging out forgets the layout of the user who left',
+    'an expired or deactivated sign-in goes to the login page and comes back',
+    'a server failure at start is shown, not a dead page',
+    'the login page returns only to this site',
+    'without authentication the login page lets the owner straight in',
+]
+
+
+@pytest.mark.parametrize("name", EXPECTED)
+def test_shell(results, name):
+    assert results.get(name) == "ok", results

@@ -44,6 +44,10 @@
   // Backend now handles all formatting via plugins
   // Frontend displays content as-is
 
+  function kitIcon(name) {
+    return `<svg class="pk-icon" aria-hidden="true"><use href="/static/kit/icons.svg#${name}"/></svg>`;
+  }
+
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
@@ -70,9 +74,14 @@
   // user has scrolled up to read older content and we leave them alone.
   const NEAR_BOTTOM_THRESHOLD_PX = 150;
 
+  // The chat scrolls inside the shell's #chatScroll, not the page.
+  function scroller() {
+    return document.getElementById('chatScroll');
+  }
+
   function isNearBottom() {
-    const scrolled = window.innerHeight + window.scrollY;
-    return scrolled >= document.body.scrollHeight - NEAR_BOTTOM_THRESHOLD_PX;
+    const el = scroller();
+    return el.scrollTop + el.clientHeight >= el.scrollHeight - NEAR_BOTTOM_THRESHOLD_PX;
   }
 
   // force=true: scroll regardless of current position (e.g. user just sent a
@@ -82,7 +91,10 @@
   // the user has scrolled up.
   function scrollBottom(force = false) {
     if (!force && !isNearBottom()) return;
-    requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+    requestAnimationFrame(() => {
+      const el = scroller();
+      el.scrollTop = el.scrollHeight;
+    });
   }
 
   /**
@@ -134,15 +146,8 @@
   // commands exist: that is the shared catalogue in chat_commands.py.
   // ---------------------------------------------------------------------
 
-  function authHeaders() {
-    // The browser also carries the access_token cookie; the header is what
-    // makes a token kept in localStorage work the same way.
-    const token = localStorage.getItem('token');
-    return token ? { 'Authorization': 'Bearer ' + token } : {};
-  }
-
   async function getJSON(url) {
-    const resp = await fetch(url, { headers: authHeaders(), credentials: 'include' });
+    const resp = await fetch(url, { credentials: 'include' });
     if (!resp.ok) {
       let detail = resp.status + ' ' + resp.statusText;
       try {
@@ -159,7 +164,7 @@
   async function postJSON(url, body) {
     const resp = await fetch(url, {
       method: 'POST',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify(body),
     });
@@ -420,7 +425,7 @@
       addNote(container, 'Session switching is not available in this window.');
       return;
     }
-    // Ask first: loadSession answers an unknown id with a browser alert, which
+    // Ask first: loadSession answers an unknown id with an error toast, which
     // is the wrong voice for something the person typed into the chat.
     await getJSON('/api/sessions/' + encodeURIComponent(id));
     await window.sessionManager.loadSession(id);
@@ -699,11 +704,8 @@
       return;
     }
     if (name === 'new') {
-      currentSessionId = null;
-      try { global.currentSessionId = null; } catch (e) { /* ignore */ }
-      sessionStorage.removeItem('lastSessionId');
-      updateHeaderSessionId();
-      addNote(container, 'New session: the next message starts a fresh one.');
+      // the New button: a running request is cancelled first
+      await window.sessionManager.newConversation();
       return;
     }
     if (name === 'session') {
@@ -754,6 +756,95 @@
     updateActionButton();
   }
 
+  /** A part the session kept without its data: named, not shown. */
+  function missingAttachment(iconMarkup, name) {
+    const placeholder = document.createElement('span');
+    placeholder.className = 'pk-badge';
+    placeholder.innerHTML = `${iconMarkup} ${escapeHtml(name)}`;
+    return placeholder;
+  }
+
+  /**
+   * Image, audio and text-file attachments under a user message -- the same
+   * markup for a message just sent (object URLs) and one restored from the
+   * session (data URLs). Images open full size through openAttachmentInNewTab.
+   */
+  function renderAttachments(msgDiv, { images = [], audio = [], textFiles = [] }) {
+    if (images.length) {
+      const box = document.createElement('div');
+      box.className = 'user-image-previews';
+      images.forEach(({ url, name }) => {
+        if (!url) {
+          box.appendChild(missingAttachment(kitIcon('image'), name || 'Image'));
+          return;
+        }
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = name || 'Attached image';
+        img.title = name || 'Open full size';
+        img.onclick = () => openAttachmentInNewTab(url);
+        box.appendChild(img);
+      });
+      msgDiv.appendChild(box);
+    }
+    if (audio.length) {
+      const box = document.createElement('div');
+      box.className = 'user-audio-previews';
+      audio.forEach(({ url, name }) => {
+        if (!url) {
+          box.appendChild(missingAttachment(kitIcon('music'), name));
+          return;
+        }
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'pk-btn pk-btn--sm attachment-toggle';
+        const player = document.createElement('audio');
+        player.src = url;
+        const label = (playing) => {
+          button.innerHTML = `${kitIcon(playing ? 'square' : 'play')} ${escapeHtml(name)}`;
+        };
+        label(false);
+        button.onclick = () => {
+          if (player.paused) player.play(); else player.pause();
+        };
+        player.onplay = () => label(true);
+        player.onpause = () => label(false);
+        player.onended = () => label(false);
+        box.appendChild(button);
+        box.appendChild(player);
+      });
+      msgDiv.appendChild(box);
+    }
+    if (textFiles.length) {
+      const box = document.createElement('div');
+      box.className = 'user-text-file-previews';
+      textFiles.forEach(({ name, file, content }) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'pk-btn pk-btn--sm attachment-toggle';
+        button.innerHTML = `${kitIcon('file-text')} ${escapeHtml(name)}`;
+        button.setAttribute('aria-expanded', 'false');
+        const pre = document.createElement('pre');
+        pre.className = 'pk-code attachment-text';
+        pre.hidden = true;
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (e) => { pre.textContent = e.target.result; };
+          reader.readAsText(file);
+        } else {
+          pre.textContent = content || '';
+        }
+        button.onclick = () => {
+          pre.hidden = !pre.hidden;
+          button.setAttribute('aria-expanded', String(!pre.hidden));
+        };
+        box.appendChild(button);
+        box.appendChild(pre);
+      });
+      msgDiv.appendChild(box);
+    }
+  }
+
   function addUser(chatContainer, text, images = [], audioFiles = [], textFiles = []) {
     // Ensure text is always a string
     const displayText = typeof text === 'string' ? text : String(text);
@@ -769,125 +860,17 @@
     msgDiv.appendChild(textSpan);
     
     // Add image previews if any
-    if (images && images.length > 0) {
-      const previewContainer = document.createElement('div');
-      previewContainer.className = 'user-image-previews';
-      
-      images.forEach(file => {
-        const img = document.createElement('img');
-        img.src = trackedObjectUrl(file);
-        img.alt = file.name;
-        img.title = file.name;
+    renderAttachments(msgDiv, {
+      images: (images || []).map((file) => ({ url: trackedObjectUrl(file), name: file.name })),
+      audio: (audioFiles || []).map((file) => ({ url: trackedObjectUrl(file), name: file.name })),
+      textFiles: (textFiles || []).map((file) => ({ name: file.name, file })),
+    });
 
-        // Click to view full size
-        img.onclick = () => openAttachmentInNewTab(img.src);
-        
-        previewContainer.appendChild(img);
-      });
-      
-      msgDiv.appendChild(previewContainer);
-    }
-    
-    // Add audio previews if any
-    if (audioFiles && audioFiles.length > 0) {
-      const audioContainer = document.createElement('div');
-      audioContainer.className = 'user-audio-previews';
-      audioContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
-      
-      audioFiles.forEach((file, index) => {
-        const audioWrapper = document.createElement('div');
-        audioWrapper.style.cssText = 'display: flex; align-items: center; gap: 8px;';
-        
-        // Create object URL for the audio file
-        const audioUrl = trackedObjectUrl(file);
-        
-        // Create play button
-        const playBtn = document.createElement('button');
-        playBtn.textContent = '▶️ ' + file.name;
-        playBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em;';
-        playBtn.title = 'Click to play';
-        
-        // Create hidden audio element
-        const audioEl = document.createElement('audio');
-        audioEl.src = audioUrl;
-        audioEl.style.display = 'none';
-        
-        let isPlaying = false;
-        playBtn.onclick = () => {
-          if (isPlaying) {
-            audioEl.pause();
-            playBtn.textContent = '▶️ ' + file.name;
-            isPlaying = false;
-          } else {
-            audioEl.play();
-            playBtn.textContent = '⏸️ ' + file.name;
-            isPlaying = true;
-          }
-        };
-        
-        audioEl.onended = () => {
-          playBtn.textContent = '▶️ ' + file.name;
-          isPlaying = false;
-        };
-        
-        audioWrapper.appendChild(playBtn);
-        audioWrapper.appendChild(audioEl);
-        audioContainer.appendChild(audioWrapper);
-      });
-      
-      msgDiv.appendChild(audioContainer);
-    }
-    
-    // Add text file previews if any
-    if (textFiles && textFiles.length > 0) {
-      const textContainer = document.createElement('div');
-      textContainer.className = 'user-text-file-previews';
-      textContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
-      
-      textFiles.forEach((file, index) => {
-        const textWrapper = document.createElement('div');
-        textWrapper.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
-        
-        // Create view button
-        const viewBtn = document.createElement('button');
-        viewBtn.textContent = '📄 ' + file.name;
-        viewBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em; text-align: left;';
-        viewBtn.title = 'Click to view';
-        
-        // Create hidden content div
-        const contentDiv = document.createElement('pre');
-        contentDiv.style.cssText = 'display: none; margin: 0; padding: 10px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; max-height: 300px; overflow: auto; font-size: 0.85em; white-space: pre-wrap; word-wrap: break-word;';
-        
-        viewBtn.onclick = () => {
-          // Toggle content display
-          if (contentDiv.style.display === 'none') {
-            contentDiv.style.display = 'block';
-            viewBtn.textContent = '📄 ' + file.name + ' ▼';
-          } else {
-            contentDiv.style.display = 'none';
-            viewBtn.textContent = '📄 ' + file.name;
-          }
-        };
-        
-        // Read file content
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          contentDiv.textContent = e.target.result;
-        };
-        reader.readAsText(file);
-        
-        textWrapper.appendChild(viewBtn);
-        textWrapper.appendChild(contentDiv);
-        textContainer.appendChild(textWrapper);
-      });
-      
-      msgDiv.appendChild(textContainer);
-    }
-    
     row.appendChild(msgDiv);
     chatContainer.appendChild(row);
     // User just sent a message - always scroll so they see what they sent.
     scrollBottom(true);
+    return row;
   }
 
   function addAssistantBlock(chatContainer) {
@@ -897,15 +880,11 @@
     box.className = 'msg assistant';
     box.style.position = 'relative'; // Enable absolute positioning for request ID
     box.innerHTML = `
-      <div class="container-section">
+      <div class="container-section" style="display: none;">
         <div class="container-header" data-toggle="thinking">
-          <span class="toggle-arrow">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </span>
-          <span class="type-icon">🤔</span>
-          <span class="container-label">Thinking...</span>
+          <span class="toggle-arrow">${kitIcon('chevron-right')}</span>
+          <span class="type-icon">${kitIcon('brain')}</span>
+          <span class="container-label">Thinking</span>
         </div>
         <div class="container-body" id="thinking" style="display: none;">
           <pre id="thinkingContent"></pre>
@@ -913,37 +892,16 @@
       </div>
       <div class="container-section" style="display: none;">
         <div class="container-header" data-toggle="status">
-          <span class="toggle-arrow">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </span>
-          <span class="type-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">     
-              <rect x="3" y="4" width="18" height="16" rx="2" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
-              <path d="M7 9l2 2 4-4" stroke="#56d364" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </span>
+          <span class="toggle-arrow">${kitIcon('chevron-right')}</span>
+          <span class="type-icon">${kitIcon('activity')}</span>
           <span class="container-label">Status</span>
         </div>
         <div class="container-body" id="statusBody" style="display: block;"></div>
       </div>
       <div class="container-section" style="display: none;">
         <div class="container-header" data-toggle="response">
-          <span class="toggle-arrow">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </span>
-          <span class="type-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"> 
-              <rect x="2" y="3" width="20" height="14" rx="3" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
-              <circle cx="8.5" cy="9" r="1.1" fill="#cbd5e1" />
-              <circle cx="15.5" cy="9" r="1.1" fill="#cbd5e1" />
-              <path d="M7 13c1 0 2 0.8 3 0.8s2-0.8 3-0.8" stroke="#9fb8d9" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round" />
-              <rect x="6" y="15.5" width="6" height="3" rx="0.8" fill="#071028" />
-            </svg>
-          </span>
+          <span class="toggle-arrow">${kitIcon('chevron-right')}</span>
+          <span class="type-icon">${kitIcon('message-square')}</span>
           <span class="container-label">Response</span>
         </div>
         <div class="container-body" id="assistantText" style="display: block;"></div>
@@ -956,23 +914,12 @@
     const headers = box.querySelectorAll('.container-header');
     headers.forEach(header => {
       const body = header.nextElementSibling;
-      const arrow = header.querySelector('.toggle-arrow svg');
-      if (body && arrow) {
-        // Right (0deg) when collapsed, down (90deg) when expanded
-        arrow.style.transform = (body.style.display === 'none') ? 'rotate(0deg)' : 'rotate(90deg)';
-      }
-
+      // data-open drives the arrow (chat.css); the body's display stays the state
+      header.parentElement.dataset.open = String(body.style.display !== 'none');
       header.addEventListener('click', () => {
-        const body = header.nextElementSibling;
-        if (body && body.classList.contains('container-body')) {
-          const isHidden = body.style.display === 'none';
-          body.style.display = isHidden ? 'block' : 'none';
-          const arrow = header.querySelector('.toggle-arrow svg');
-          if (arrow) {
-            // rotate to down when expanded
-            arrow.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)';
-          }
-        }
+        const isHidden = body.style.display === 'none';
+        body.style.display = isHidden ? 'block' : 'none';
+        header.parentElement.dataset.open = String(isHidden);
       });
     });
 
@@ -1368,27 +1315,24 @@
 
   // Event source tracking (shared across init calls and cleanup)
   let currentEventSource = null;
-  let currentStatusEventSource = null;
   // True while a fetch()-based SSE stream (POST /events or POST /run) is live.
-  // currentEventSource is ONLY set on the page-refresh EventSource reconnect
-  // path, never for the normal fetch+getReader() streams - so it cannot be
-  // used to detect an active request. This flag closes that gap: it gates
-  // hasActiveRequest(), the session:loaded clobber guard, and the
+  // currentEventSource is only set for a run reattached after a reload (followRun),
+  // never for the normal fetch+getReader() streams - so it cannot detect an active
+  // request alone. This flag closes that gap: it
+  // gates hasActiveRequest(), the session:loaded clobber guard, and the
   // append-to-running-request branch.
   let streamActive = false;
   // Block object the live stream consumer renders into (same object identity
   // as the blk passed to handleSSEEvent). Mid-run appends rebind its fields to
   // a fresh block so the agent's reaction renders below the injected message.
   let activeStreamBlk = null;
-  let closeEventSourceTimer = null; // Timer to delay closing EventSource after final/end
-  
-  // SSE Reconnection state for long-running requests
-  let sseReconnectAttempts = 0;
-  const SSE_MAX_RECONNECT_ATTEMPTS = 5;
-  const SSE_BASE_RECONNECT_DELAY_MS = 1000; // Start with 1s, doubles each retry
-  let sseReconnectTimer = null;
-  let sseReceivedFinalOrEnd = false; // Track if we've completed normally
-  
+
+  // While init checks whether a run of this tab is still going, the composer is held: a
+  // message would start a second run beside it (see followRun).
+  let holding = false;
+  // The session shown is a sub-agent's the selector cannot pick: the composer stays off.
+  let readOnlyShown = false;
+
   // Streaming state tracking
   let currentStreamingContent = '';
   let currentStreamingStep = null;
@@ -1446,104 +1390,161 @@
     runBtn.setAttribute('aria-label', runActive ? 'Send to running agent' : 'Run');
   }
   
-  // Session and request tracking (shared across init and event listeners)
-  let currentRequestId = null;
-  // Initialize from sessionStorage to handle page refresh before session:loaded event fires
-  let currentSessionId = sessionStorage.getItem('lastSessionId') || null;
-  
-  // Store/retrieve active request ID for reconnect after browser refresh
-  // Using sessionStorage (not localStorage) so each tab has its own request ID
-  const ACTIVE_REQUEST_KEY = 'activeRequestId';
-  
-  function storeActiveRequest(requestId) {
-    if (requestId) {
-      sessionStorage.setItem(ACTIVE_REQUEST_KEY, requestId);
-    } else {
-      sessionStorage.removeItem(ACTIVE_REQUEST_KEY);
-    }
-  }
-  
-  function getStoredActiveRequest() {
-    return sessionStorage.getItem(ACTIVE_REQUEST_KEY);
+  // The run the chat follows, or followed last -- before the first, one that never started. `requestId` and
+  // `sessionId` once its start (after a reload: its reconnect) has named them; `over` once its own stream said it is
+  // over (final, end, cancelled): it answers no more messages, and a connection that breaks afterwards is no lost
+  // connection, though the run may still be saving its session. Nothing else says so -- a cancelled run ends in its
+  // own time. Each run has its own: what a question about one learns never comes from another.
+  let run = { requestId: null, sessionId: null, over: false };
+  // session id -> the last run in it that brought its answer or its cancel: it saves the session after them, and a
+  // delete of the session waits until the server has let it go (runSaved) -- whatever the chat follows meanwhile
+  const settling = new Map();
+  // The session the next message continues. The shell's session manager puts
+  // one here (session:loaded / session:new) -- after a reload too, once it
+  // has restored it; a run reattached after a reload continues the session it
+  // was stored with, and a stream's start or reconnect event names its own.
+  let currentSessionId = null;
+
+  // The run of this tab a reload follows again: its request and the session it runs in.
+  // sessionStorage, not localStorage, so each tab has its own.
+  const RUN_KEY = 'activeRequestId';
+  const RUN_SESSION_KEY = 'activeRequestSession';
+
+  function storeRun(requestId, sessionId) {
+    sessionStorage.setItem(RUN_KEY, requestId);
+    sessionStorage.setItem(RUN_SESSION_KEY, sessionId);
   }
 
-  // Helper functions to update UI displays (module-level for handleSSEEvent access)
-  function updateHeaderSessionId() {
-    const sessionElement = document.getElementById('headerSessionId');
-    if (sessionElement) {
-      const sessionId = currentSessionId || '';
-      // No 'Session:' prefix per design; leave empty when no session
-      sessionElement.textContent = sessionId;
-      const container = document.querySelector('.session-id-bottom');
-      if (container) {
-        container.style.display = currentSessionId ? 'block' : 'none';
-        // set title to full id so users can hover to see it
-        container.title = sessionId || '';
-      }
-    } else {
-      console.warn('headerSessionId element not found');
-    }
+  function storedRun() {
+    const requestId = sessionStorage.getItem(RUN_KEY);
+    return requestId && { requestId, sessionId: sessionStorage.getItem(RUN_SESSION_KEY) };
   }
-  
+
+  function clearStoredRun() {
+    const stored = storedRun();
+    if (stored) unmarkStopping(stored.requestId);
+    sessionStorage.removeItem(RUN_KEY);
+    sessionStorage.removeItem(RUN_SESSION_KEY);
+  }
+
+  // A run the chat has asked the server to end -- by Stop, or by leaving its session. It ends in its own
+  // time and takes no more messages, which it would save unanswered; an ask whose answer failed or went
+  // missing may have been taken all the same. Kept per request for a reload of the tab, until the run
+  // is forgotten.
+  const STOPPING_KEY_PREFIX = 'stoppingRequest:';
+
+  function markStopping(requestId) {
+    sessionStorage.setItem(STOPPING_KEY_PREFIX + requestId, '1');
+  }
+
+  function isStopping(requestId) {
+    return Boolean(requestId) && sessionStorage.getItem(STOPPING_KEY_PREFIX + requestId) !== null;
+  }
+
+  function unmarkStopping(requestId) {
+    sessionStorage.removeItem(STOPPING_KEY_PREFIX + requestId);
+  }
+
+  // A reload no longer follows the chat's run. Only that run is forgotten: a run the server refused
+  // never got an id, and a run with files is never stored -- the run stored for a reload is another one.
+  function forgetRun() {
+    if (!run.requestId) return;
+    if (storedRun()?.requestId === run.requestId) clearStoredRun();
+    unmarkStopping(run.requestId);
+  }
+
+  // The controls go back to idle: a message starts a run, and Stop is reset for it.
+  function idleControls() {
+    runActive = false; updateActionButton();
+    stopBtn.setAttribute('title', 'Stop');
+    stopBtn.setAttribute('aria-label', 'Stop');
+    stopBtn.disabled = false;
+    stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+  }
+
+  // The chat lets go of its run: the controls go back to idle, and unless `keep` a reload
+  // no longer follows it.
+  function endRun(keep = false) {
+    idleControls();
+    if (!keep) forgetRun();
+  }
+
+  /**
+   * Ask the server to cancel a run: true when it has cancelled it or no longer runs it. A cancelled run
+   * still ends in its own time -- its stream, or the server's status, tells when.
+   */
+  async function cancelRun(requestId, { force }) {
+    const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/cancel${force ? '?force=true' : ''}`,
+      { method: 'POST', signal: AbortSignal.timeout(60000) });
+    const { status } = await response.json();
+    return status === 'cancelled' || status === 'not_found';
+  }
+
+  /**
+   * Resolves true once the server no longer runs the request, false when it still does after 15 s. A run
+   * saves its session as it ends, so what would undo that -- deleting the session -- waits for this.
+   */
+  async function serverLetGo(requestId) {
+    for (let waited = 0; waited < 15000; waited += 300) {
+      const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/status`,
+        { signal: AbortSignal.timeout(10000) });
+      if (response.ok && (await response.json()).status !== 'running') return true;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    return false;
+  }
+
+  // A lasting row about the run's connection in the block's status (a status without a
+  // phase renders nothing; the synthetic request_id keeps it off the run's own row).
+  function connectionNotice(blk, message) {
+    addStatusEvent(blk.status, {
+      type: 'status',
+      phase: 'error',
+      message,
+      request_id: `${run.requestId}_connection`,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  const LOST = 'Connection lost -- the run may still be going; reload the page to follow it.';
+
   function updateRequestId() {
-    if (currentRequestId) {
-      // Find the latest assistant message
-      const latestAssistant = document.querySelector('.chat .row:last-child .msg.assistant');
-      if (latestAssistant) {
-        // Avoid inserting duplicate request id elements
-        let existing = latestAssistant.querySelector('.message-request-id');
-        if (!existing) {
-          const requestIdElement = document.createElement('div');
-          requestIdElement.className = 'message-request-id';
-          requestIdElement.innerHTML = `Request: <span>${currentRequestId}</span>`;
-          requestIdElement.title = `Request ID: ${currentRequestId}`;
-          latestAssistant.appendChild(requestIdElement);
-        } else {
-          existing.innerHTML = `Request: <span>${currentRequestId}</span>`;
-          existing.title = `Request ID: ${currentRequestId}`;
-        }
-      }
+    if (!run.requestId) return;
+    const latestAssistant = document.querySelector('.chat .row:last-child .msg.assistant');
+    if (!latestAssistant) return;
+    let element = latestAssistant.querySelector('.message-request-id');
+    if (!element) {
+      element = document.createElement('div');
+      element.className = 'message-request-id';
+      element.append('Request: ', document.createElement('span'));
+      latestAssistant.appendChild(element);
     }
-
-    // Also update the global request display (keep for compatibility)
-    const requestElement = document.getElementById('currentRequestId');
-    const requestContainer = document.getElementById('requestIdDisplay');
-    if (requestElement && requestContainer) {
-      requestElement.textContent = currentRequestId || '--';
-      requestContainer.style.display = 'none'; // Hide the global one, we use per-message now
-    }
+    element.querySelector('span').textContent = run.requestId;
+    element.title = `Request ID: ${run.requestId} -- click to open it in a panel`;
   }
 
   // Shared SSE event handler for both EventSource and manual fetch() parsing
-  // Module-level so it can be used by both normal requests and reconnect logic
+  // Module-level so it can be used by both normal requests and a run reattached after a reload
   function handleSSEEvent(data, blk) {
     switch (data.type) {
       case 'start':
-        currentRequestId = data.request_id;
+        run.requestId = data.request_id;
+        run.sessionId = data.session_id;
         currentSessionId = data.session_id;
-        // Store for reconnect after browser refresh
-        storeActiveRequest(currentRequestId);
-        // update exported values
-        try { global.currentSessionId = currentSessionId; } catch (e) {}
-        
+
         // Notify session manager about new/updated session
         if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
           window.sessionManager.onSessionUpdated(currentSessionId);
         }
         
-        // Update header session ID display
-        updateHeaderSessionId();
-        
-        // Update request ID display  
         updateRequestId();
         break;
       case 'reconnect':
         // Reconnected to existing running job (after browser refresh)
-        currentRequestId = data.request_id;
+        run.requestId = data.request_id;
+        run.sessionId = data.session_id;
         currentSessionId = data.session_id;
-        // update exported values
-        try { global.currentSessionId = currentSessionId; } catch (e) {}
-        
+
         // Update agent selector to match the job's agent
         if (data.agent_name && window.selectorModule && typeof window.selectorModule.setAgent === 'function') {
           window.selectorModule.setAgent(data.agent_name);
@@ -1559,17 +1560,13 @@
           window.sessionManager.onSessionUpdated(currentSessionId);
         }
         
-        // Update header session ID display
-        updateHeaderSessionId();
-        
-        // Update request ID display  
         updateRequestId();
-        
+
         // Show reconnect info in response area
         showSection(blk.t);
         // Both escaped: last_status is a plugin's status line and carries
         // tool arguments the model chose ("Searching: <query>").
-        blk.t.innerHTML = `<div class="response-text reconnect-info">🔄 ${escapeHtml(data.message)}${data.last_status ? '<br><em>Last status: ' + escapeHtml(data.last_status) + '</em>' : ''}</div>`;
+        blk.t.innerHTML = `<div class="response-text reconnect-info">${escapeHtml(data.message)}${data.last_status ? '<br><em>Last status: ' + escapeHtml(data.last_status) + '</em>' : ''}</div>`;
         break;
       case 'heartbeat':
         // Keep-alive heartbeat during long LLM calls - ignore but log in debug mode
@@ -1641,10 +1638,10 @@
           }
           
           if (data.assistant.content) {
-            blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
+            blk.think.textContent += `Step ${data.step}: ${data.assistant.content}\n\n`;
           }
           if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
-            blk.think.textContent += `🧠 Step ${data.step}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
+            blk.think.textContent += `Step ${data.step}: planning ${data.assistant.tool_calls.length} tool call(s):\n`;
             data.assistant.tool_calls.forEach((tc, i) => {
               const func = tc.function || {};
               blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
@@ -1675,13 +1672,13 @@
       case 'status':
         // Status events are now delivered through /events stream
         // Show status events for this request AND all hierarchical children (sub-agents)
-        // e.g., if currentRequestId is "abc123", also show "abc123_sub_001", "abc123_001_sub_002", etc.
+        // e.g., if the run's request id is "abc123", also show "abc123_sub_001", "abc123_001_sub_002", etc.
         if (blk && blk.status) {
           const eventRequestId = data.request_id || '';
           // Check if this event belongs to current request hierarchy
           // Either exact match OR starts with current request_id followed by underscore (child operation)
-          const matches = eventRequestId === currentRequestId || 
-              (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'));
+          const matches = eventRequestId === run.requestId ||
+              (eventRequestId && run.requestId && eventRequestId.startsWith(run.requestId + '_'));
           
           if (matches) {
             addStatusEvent(blk.status, data);
@@ -1694,8 +1691,8 @@
         if (blk && blk.status && data.events && Array.isArray(data.events)) {
           data.events.forEach(statusEvent => {
             const eventRequestId = statusEvent.request_id || '';
-            const matches = eventRequestId === currentRequestId || 
-                (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'));
+            const matches = eventRequestId === run.requestId ||
+                (eventRequestId && run.requestId && eventRequestId.startsWith(run.requestId + '_'));
             
             if (matches) {
               addStatusEvent(blk.status, statusEvent);
@@ -1711,7 +1708,7 @@
           contRow.className = 'row';
           const contMsg = document.createElement('div');
           contMsg.className = 'msg user continuation-msg';
-          contMsg.innerHTML = `<div class="continuation-badge">🔄 Auto-Continue #${data.count || '?'}</div><div class="continuation-reason">${escapeHtml(data.reason || '')}</div><div class="continuation-text">${formatTextWithLineBreaks(data.message || '')}</div>`;
+          contMsg.innerHTML = `<div class="continuation-badge">${kitIcon('rotate-ccw')} Auto-continue #${escapeHtml(String(data.count || '?'))}</div><div class="continuation-reason">${escapeHtml(data.reason || '')}</div><div class="continuation-text">${formatTextWithLineBreaks(data.message || '')}</div>`;
           contRow.appendChild(contMsg);
           chatContainer.appendChild(contRow);
           // Create a new assistant block for the next response and update blk
@@ -1721,9 +1718,8 @@
         }
         break;
       case 'final':
-        // Mark completion for reconnect logic
-        sseReceivedFinalOrEnd = true;
-        sseReconnectAttempts = 0;
+        run.over = true;
+        settling.set(run.sessionId, run.requestId);
         if (pendingAppendRebind) {
           // Edge (e.g. max-steps): the run finalizes without another step. The
           // final would be suppressed against the old block's non-empty content
@@ -1731,9 +1727,11 @@
           pendingAppendRebind = false;
           rebindLiveBlock(blk);
         }
-        // Clear stored request (job finished)
-        storeActiveRequest(null);
-        
+        // Its answer is here: nothing is left to stop -- a cancel would take its session-end hooks and background
+        // sub-agents along -- and a reload shows the answer from the session the run saves, following the run no more.
+        idleControls();
+        forgetRun();
+
         // Only show final if content box is still empty (no streaming happened)
         // or if it's a different format
         const finalContent = data.summary || data.content || '';
@@ -1752,13 +1750,11 @@
         // If streaming already filled the content, skip this (content already there)
         break;
       case 'end':
-        // Mark completion for reconnect logic
-        sseReceivedFinalOrEnd = true;
-        sseReconnectAttempts = 0;
+        run.over = true;
         pendingAppendRebind = false;
-        // Clear stored request (job finished)
-        storeActiveRequest(null);
-        
+        // a reload no longer follows it -- a refused run's end leaves another one's alone
+        forgetRun();
+
         // Close EventSource immediately to prevent auto-reconnect attempts
         // EventSource will try to reconnect if the server closes the connection,
         // which causes spurious "Connection failed" errors in the onerror handler
@@ -1766,88 +1762,39 @@
           currentEventSource.close();
           currentEventSource = null;
         }
-        if (closeEventSourceTimer) {
-          clearTimeout(closeEventSourceTimer);
-          closeEventSourceTimer = null;
-        }
-        
-        // Clear any pending reconnect timer
-        if (sseReconnectTimer) {
-          clearTimeout(sseReconnectTimer);
-          sseReconnectTimer = null;
-        }
-        
-        runActive = false; updateActionButton(); // back to idle 'Run'
-        stopBtn.style.display = 'none'; // Hide stop button
-        // Reset stop button state
-        stopBtn.setAttribute('title', 'Stop');
-        stopBtn.setAttribute('aria-label', 'Stop');
-        stopBtn.disabled = false;
-        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-        
+
+        idleControls();
+
         // Reload sessions after conversation completes
         if (window.sessionManager && typeof window.sessionManager.loadSessions === 'function') {
           window.sessionManager.loadSessions();
         }
         break;
       case 'error':
+        // Shown only: a run's error is followed by its end, the server's refusals (a busy session,
+        // a request id in use) close the stream -- either one ends the run in the chat.
         showSection(blk.t);
-        blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(data.message)}</div>`;
-        // Clear any pending close timer
-        if (closeEventSourceTimer) {
-          clearTimeout(closeEventSourceTimer);
-          closeEventSourceTimer = null;
-        }
-        if (currentEventSource) {
-          currentEventSource.close();
-          currentEventSource = null;
-        }
-        if (currentStatusEventSource) {
-          currentStatusEventSource.close();
-          currentStatusEventSource = null;
-        }
-        runActive = false; updateActionButton(); // back to idle 'Run'
-        stopBtn.style.display = 'none'; // Hide stop button
-        // Reset stop button state
-        stopBtn.setAttribute('title', 'Stop');
-        stopBtn.setAttribute('aria-label', 'Stop');
-        stopBtn.disabled = false;
-        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+        blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(data.message || data.error)}</div>`;
         break;
       case 'cancelled':
         // Request was cancelled - clean up and reset UI
         console.log('Request cancelled:', data.request_id, 'at step', data.step);
-        // Clear any pending close timer
-        if (closeEventSourceTimer) {
-          clearTimeout(closeEventSourceTimer);
-          closeEventSourceTimer = null;
-        }
-        if (currentEventSource) {
-          currentEventSource.close();
-          currentEventSource = null;
-        }
-        if (currentStatusEventSource) {
-          currentStatusEventSource.close();
-          currentStatusEventSource = null;
-        }
+        run.over = true;
+        settling.set(run.sessionId, run.requestId);
+        // a reload no longer follows it; its stream stays open -- the run saves its session before its end
+        forgetRun();
         // Show cancelled status with step number
         showSection(blk.t);
         const stepInfo = data.step ? ` at step ${data.step}` : '';
         blk.t.innerHTML = `<div class="response-text" style="opacity: 0.6;">Request cancelled${stepInfo}</div>`;
-        runActive = false; updateActionButton(); // back to idle 'Run'
-        stopBtn.style.display = 'none'; // Hide stop button
-        // Reset stop button state
-        stopBtn.setAttribute('title', 'Stop');
-        stopBtn.setAttribute('aria-label', 'Stop');
-        stopBtn.disabled = false;
-        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+        idleControls();
         break;
     }
     scrollBottom();
   }
 
   // Public init function that wires the chat form behavior
-  chatModule.init = function (opts) {
+  chatModule.init = function () {
     const chatForm = document.getElementById('f');
     const taskInput = document.getElementById('task');
     runBtn = document.getElementById('runBtn');
@@ -1856,21 +1803,6 @@
     
     // Expose current session id for other modules (fallback for UI)
     chatModule.getCurrentSessionId = function() { return currentSessionId; };
-    Object.defineProperty(chatModule, 'currentSessionId', {
-      get: function() { return currentSessionId; }
-    });
-    // Also export to global window for older modules
-    try { global.currentSessionId = currentSessionId; } catch (e) { /* ignore */ }
-    
-    // Clear session function (called on logout)
-    chatModule.clearSession = function() {
-      currentSessionId = null;
-      try { global.currentSessionId = null; } catch (e) { /* ignore */ }
-      sessionStorage.removeItem('lastSessionId');
-      updateHeaderSessionId();
-    };
-    
-    // Event sources are now declared at module level (above init function)
 
     if (!chatForm || !taskInput || !runBtn || !stopBtn || !chatContainer) {
       console.warn('Chat form elements not found');
@@ -1883,116 +1815,45 @@
       window.slashCommands.attach(taskInput);
     }
 
-    // Initialize UI displays
-    updateHeaderSessionId();
-    updateRequestId();
-
     // While a run is active the action button is Stop — but as soon as the user
     // types something it becomes Send, so the text can be injected into the
     // running agent. Clearing the input flips it back to Stop.
     taskInput.addEventListener('input', updateActionButton);
     updateActionButton();
 
-    // Stop button event listener
+    // Stop asks the server to cancel the run; the run's stream brings its end, as it would without.
     stopBtn.addEventListener('click', async function() {
-      if (currentRequestId) {
-        // Sofortiges Feedback geben: preserve icon, update accessible label and tooltip
-        stopBtn.setAttribute('title', 'Canceling');
-        stopBtn.setAttribute('aria-label', 'Canceling');
-        stopBtn.disabled = true;
-        stopBtn.classList.add('cancelling');
+      // the run clicked on: an answer that comes after another run has taken the chat leaves that one alone
+      const clicked = run;
+      const requestId = clicked.requestId;
+      if (!requestId) return;
+      markStopping(requestId);
+      // immediate feedback: the icon stays, label and tooltip change
+      stopBtn.setAttribute('title', 'Canceling');
+      stopBtn.setAttribute('aria-label', 'Canceling');
+      stopBtn.disabled = true;
+      stopBtn.classList.add('cancelling');
 
-        // Timeout: Nach 60 Sekunden automatisch zurücksetzen falls Backend nicht antwortet
-        const timeoutId = setTimeout(() => {
-          console.warn('Cancel request timeout after 60 seconds');
-          stopBtn.setAttribute('title', 'Timeout');
-          stopBtn.setAttribute('aria-label', 'Timeout');
-          stopBtn.classList.remove('cancelling');
-          stopBtn.classList.add('cancel-failed');
-          
-          // Nach weiteren 2 Sekunden komplett zurücksetzen und UI wiederherstellen
-          setTimeout(() => {
-            stopBtn.setAttribute('title', 'Stop');
-            stopBtn.setAttribute('aria-label', 'Stop');
-            stopBtn.disabled = false;
-            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-            
-            // Clear any pending close timer
-            if (closeEventSourceTimer) {
-              clearTimeout(closeEventSourceTimer);
-              closeEventSourceTimer = null;
-            }
-            
-            // UI zurücksetzen: Run-Button anzeigen, Stop-Button verstecken
-            runActive = false; updateActionButton();
-            stopBtn.style.display = 'none';
-            currentRequestId = null;
-            currentEventSource = null;
-          }, 2000);
-        }, 60000); // 60 Sekunden
-
-        try {
-          const response = await fetch(`/api/requests/${currentRequestId}/cancel`, { method: 'POST' });
-          const result = await response.json();
-          console.log('Cancel request result:', result);
-          
-          // Timeout abbrechen da Antwort erhalten
-          clearTimeout(timeoutId);
-
-          // Wenn Request nicht gefunden wurde (z.B. nach Server-Neustart), State clearen
-          if (result.status === 'not_found') {
-            console.warn('Request not found - clearing stale state (possible server restart)');
-            // Clear any pending close timer
-            if (closeEventSourceTimer) {
-              clearTimeout(closeEventSourceTimer);
-              closeEventSourceTimer = null;
-            }
-            currentRequestId = null;
-            currentEventSource = null;
-            // UI zurücksetzen
-            runActive = false; updateActionButton();
-            stopBtn.style.display = 'none';
-            stopBtn.classList.remove('cancelling');
-            stopBtn.disabled = false;
-            return; // Frühzeitig beenden
-          }
-
-          // Kurze Verzögerung für besseres UX-Feedback
-          setTimeout(() => {
-            if (result.status === 'cancelled') {
-              stopBtn.setAttribute('title', 'Done');
-              stopBtn.setAttribute('aria-label', 'Done');
-              stopBtn.classList.remove('cancelling');
-              stopBtn.classList.add('cancelled');
-            } else {
-              stopBtn.setAttribute('title', 'Failed');
-              stopBtn.setAttribute('aria-label', 'Failed');
-              stopBtn.classList.remove('cancelling');
-              stopBtn.classList.add('cancel-failed');
-            }
-          }, 500);
-
-        } catch (error) {
-          console.error('Failed to cancel request:', error);
-          // Timeout abbrechen da Fehler erhalten
-          clearTimeout(timeoutId);
-          
-          stopBtn.setAttribute('title', 'Failed');
-          stopBtn.setAttribute('aria-label', 'Failed');
-          stopBtn.classList.remove('cancelling');
-          stopBtn.classList.add('cancel-failed');
-        }
-
-        // Nach 2 Sekunden wieder zurücksetzen (falls Anfrage noch läuft)
-        setTimeout(() => {
-          if (stopBtn.style.display !== 'none') { // Nur zurücksetzen wenn Button noch sichtbar
-            stopBtn.setAttribute('title', 'Stop');
-            stopBtn.setAttribute('aria-label', 'Stop');
-            stopBtn.disabled = false;
-            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-          }
-        }, 2000);
+      let over = false;
+      try {
+        over = await cancelRun(requestId, { force: false });
+      } catch (error) {
+        console.error('Failed to cancel request:', error);
       }
+      if (run !== clicked || !chatModule.hasActiveRequest()) return;  // the run has ended meanwhile, and its controls with it
+      const outcome = over ? 'Done' : 'Failed';
+      stopBtn.setAttribute('title', outcome);
+      stopBtn.setAttribute('aria-label', outcome);
+      stopBtn.classList.remove('cancelling');
+      stopBtn.classList.add(over ? 'cancelled' : 'cancel-failed');
+      // Stop again after a moment, while the run's stream is still open
+      setTimeout(() => {
+        if (run !== clicked || !chatModule.hasActiveRequest()) return;
+        stopBtn.setAttribute('title', 'Stop');
+        stopBtn.setAttribute('aria-label', 'Stop');
+        stopBtn.disabled = false;
+        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+      }, 2000);
     });
 
     // Guards ONLY the window between reading the input and clearing it. The
@@ -2005,20 +1866,24 @@
     // swallowed every mid-run injection for the whole run -- the one thing you
     // reach for when a turn is taking too long.
     let submitting = false;
+    let submissions = 0;
 
     chatForm.addEventListener('submit', async function(e) {
       e.preventDefault();
       if (submitting) return;
       submitting = true;
+      const submission = ++submissions;
       try {
         await handleSubmit();
       } finally {
-        submitting = false;  // safety net; the handler releases it far earlier
+        // safety net; the handler releases it far earlier -- and a submission started since holds its own
+        if (submission === submissions) submitting = false;
       }
     });
 
     async function handleSubmit() {
-      let task = taskInput.value.trim();
+      const written = taskInput.value;
+      let task = written.trim();
 
       // Slash commands and skills. The server resolves them with the same
       // parser the terminal chat uses, so "/writer x" means the same thing on
@@ -2033,18 +1898,18 @@
           return;
         }
         if (resolved.kind === 'command') {
-          // Awaited: the commands that ask the server for their answer take a
-          // round trip, and letting the caller finish first re-armed the input
-          // before the note appeared.
+          // Awaited, so the command's note is there when the submit is done. The guard
+          // goes with the input: a command can wait long (/new asks about a running
+          // request and stops it), and a message meanwhile must get its answer.
           clearInput(taskInput);
-          await runChatCommand(resolved.name, resolved.payload);
           submitting = false;
+          await runChatCommand(resolved.name, resolved.payload);
           return;
         }
         if (resolved.kind === 'plugin') {
           clearInput(taskInput);
-          await runPluginCommand(resolved.name, resolved.payload);
           submitting = false;
+          await runPluginCommand(resolved.name, resolved.payload);
           return;
         }
         if (resolved.kind === 'unknown') {
@@ -2071,7 +1936,24 @@
       
       // Require either task text or files
       if (!task && !hasFiles) return;
-      
+
+      // A running request takes text only, and only once its start has named it: the
+      // server refuses a second run in its session, and that refusal would end the
+      // running one's stream in this chat. A run being stopped, or past its answer or
+      // its cancel, takes nothing: it would save the message unanswered.
+      if (chatModule.hasActiveRequest() && (hasFiles || !run.requestId || run.over || isStopping(run.requestId))) {
+        addNote(chatContainer, hasFiles
+          ? 'Files can be sent once the running request has finished -- they stay attached.'
+          : !run.requestId
+            ? 'The request is still starting -- the message stays here until it runs.'
+            : run.over
+              ? 'The request is finishing -- the message stays here; send it once it has.'
+              : 'The request is being stopped -- the message stays here; send it once it has.');
+        // still written into this session: a pick, New or a delete waiting for the run leaves it where it is
+        window.sessionManager.messageWritten(currentSessionId);
+        return;
+      }
+
       // Add user message to chat. For a skill it is what the user TYPED --
       // pasting the expanded body back at them would bury the conversation.
       let displayText = typed || task || '';
@@ -2079,7 +1961,10 @@
       const filesByType = window.fileUploadModule ? window.fileUploadModule.getFilesByType() : { images: [], audio: [], text: [] };
       
       // Pass images, audio and text files separately to addUser
-      addUser(chatContainer, displayText, filesByType.images, filesByType.audio, filesByType.text);
+      const sent = addUser(chatContainer, displayText, filesByType.images, filesByType.audio, filesByType.text);
+      // The message belongs to this chat's session: a session still loading must not take its
+      // place, and a delete waiting for the session's run keeps it.
+      window.sessionManager.messageWritten(currentSessionId);
       taskInput.value = '';
       // The input is consumed -- everything below is the run itself, during
       // which the user must be able to type the next message.
@@ -2093,68 +1978,73 @@
         taskInput.dispatchEvent(document.createEvent('Event'));
       }
 
-      // If there's an active request, append the user message to it
-      // Note: Multimodal append not yet supported, only text append
-      // (streamActive, not currentEventSource: fetch streams never set the latter)
-      if (currentRequestId && streamActive && !hasFiles) {
-        let appended = false;
+      // If there's an active request, append the user message to it (a fetch stream, or
+      // a run reattached after a reload: hasActiveRequest covers both) -- its start has named it,
+      // or the message would have been held above
+      if (chatModule.hasActiveRequest()) {
+        const requestId = run.requestId;
+        let status = 0;  // no answer at all
         try {
-          const appendHeaders = { 'Content-Type': 'application/json' };
-          const appendToken = localStorage.getItem('token');
-          if (appendToken) {
-            appendHeaders['Authorization'] = `Bearer ${appendToken}`;
-          }
-          // fallback=none: if the run just finished, start a new request below
-          // instead of parking the message unanswered in the session.
-          const resp = await fetch(`/events/${encodeURIComponent(currentRequestId)}/append?fallback=none`, {
+          // fallback=none: a run that has just finished answers 404 instead of the
+          // message being parked unanswered in its session
+          const resp = await fetch(`/events/${encodeURIComponent(requestId)}/append?fallback=none`, {
             method: 'POST',
-            headers: appendHeaders,
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: task })
           });
-          appended = resp.ok;
-          if (!appended) {
-            console.warn(`Append rejected (${resp.status}), starting a new request instead`);
-          }
+          status = resp.status;
         } catch (err) {
           console.error('Failed to append to active request:', err);
-          // fall through to starting a new request
         }
 
-        if (appended) {
-          // The running agent picks the message up at its NEXT step. Do NOT
-          // rebind the stream block yet — the current step is usually still
-          // streaming into it, and thinking_delta re-renders the full
-          // accumulated text into whatever block blk points at, which would
-          // teleport the in-flight answer below the injected message.
-          // handleSSEEvent performs the rebind when the next step starts.
-          pendingAppendRebind = true;
-          if (activeStreamBlk && activeStreamBlk.status) {
-            // Visible confirmation — without it the UI looks stalled until the
-            // agent's current step finishes and the reaction starts.
-            // phase 'end' renders a persistent completed (✓) row; the synthetic
-            // unique request_id keeps it from mutating the agent's own
-            // operation row (operationKey = request_id in addStatusEvent).
-            addStatusEvent(activeStreamBlk.status, {
-              type: 'status',
-              phase: 'end',
-              message: 'Message delivered to the running agent — it reacts at its next step',
-              request_id: `${currentRequestId}_user_append_${Date.now()}`,
-              timestamp: new Date().toISOString()
-            });
-            scrollBottom();
-          }
-          runActive = true; updateActionButton();
-          stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-          stopBtn.disabled = false;
-          stopBtn.setAttribute('title', 'Stop');
-          stopBtn.setAttribute('aria-label', 'Stop');
+        if (status < 200 || status >= 300) {
+          // Not confirmed: the server did not take it, or did not answer. The message goes back
+          // rather than being lost -- a run still going would refuse a second run in its session,
+          // and one that has just finished leaves starting the next to the person.
+          sent.remove();
+          // after anything typed, or given back, meanwhile
+          taskInput.value = [taskInput.value, written].filter((text) => text.trim()).join('\n\n');
+          taskInput.dispatchEvent(new Event('input', { bubbles: true }));
+          addNote(chatContainer, status === 404
+            ? 'The run had just finished -- the message is back in the input; send it again to start a new run.'
+            : status
+              ? `The message did not reach the running request (HTTP ${status}) -- it is back in the input.`
+              : 'No answer from the server -- the message may not have reached the running request; it is back in the input.');
           return;
         }
-        // Run no longer active: fall through to starting a new request with
-        // this message as the task (the message was NOT stored server-side).
+
+        // The running agent picks the message up at its NEXT step. Do NOT
+        // rebind the stream block yet — the current step is usually still
+        // streaming into it, and thinking_delta re-renders the full
+        // accumulated text into whatever block blk points at, which would
+        // teleport the in-flight answer below the injected message.
+        // handleSSEEvent performs the rebind when the next step starts.
+        pendingAppendRebind = true;
+        if (activeStreamBlk && activeStreamBlk.status) {
+          // Visible confirmation — without it the UI looks stalled until the
+          // agent's current step finishes and the reaction starts.
+          // phase 'end' renders a persistent completed (✓) row; the synthetic
+          // unique request_id keeps it from mutating the agent's own
+          // operation row (operationKey = request_id in addStatusEvent).
+          addStatusEvent(activeStreamBlk.status, {
+            type: 'status',
+            phase: 'end',
+            message: 'Message delivered to the running agent — it reacts at its next step',
+            request_id: `${requestId}_user_append_${Date.now()}`,
+            timestamp: new Date().toISOString()
+          });
+          scrollBottom();
+        }
+        // back to Stop for the emptied input -- unless the run ended while the append was on its way
+        updateActionButton();
+        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+        stopBtn.disabled = false;
+        stopBtn.setAttribute('title', 'Stop');
+        stopBtn.setAttribute('aria-label', 'Stop');
+        return;
       }
 
-      // No active request or has files: start a new request
+      // No active request: start a new request
       const blk = addAssistantBlock(chatContainer);
       activeStreamBlk = blk;
       runActive = true; updateActionButton();  // -> Stop (empty input)
@@ -2162,7 +2052,7 @@
       stopBtn.disabled = false;
       stopBtn.setAttribute('title', 'Stop');
       stopBtn.setAttribute('aria-label', 'Stop');
-      currentRequestId = null; // Will be set when SSE 'start' event arrives
+      run = { requestId: null, sessionId: null, over: false };  // named by its start event
       pendingAppendRebind = false; // stale flag from a previous run must not leak
 
       // Use FormData for all requests (supports both text-only and multimodal)
@@ -2186,24 +2076,11 @@
         }
         
         // Add current session ID if exists (to continue existing session)
-        // Fallback to sessionStorage if currentSessionId not yet set (race condition on page load)
-        const effectiveSessionId = currentSessionId || sessionStorage.getItem('lastSessionId');
-        if (effectiveSessionId) {
-          formData.append('session_id', effectiveSessionId);
+        if (currentSessionId) {
+          formData.append('session_id', currentSessionId);
         }
 
         try {
-          showSection(blk.t);
-          blk.t.innerHTML = '<div class="response-text">Processing images...</div>';
-
-          // Close any existing status event source before starting a new one
-          if (currentStatusEventSource) {
-            currentStatusEventSource.close();
-            currentStatusEventSource = null;
-          }
-          
-          // Status events now come through /events SSE stream - no separate connection needed
-
           // Mark a live stream so hasActiveRequest()/guards work (fetch streams
           // never set currentEventSource).
           streamActive = true;
@@ -2225,17 +2102,10 @@
             }
             showSection(blk.t);
             blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
-            runActive = false; updateActionButton();
-            stopBtn.style.display = 'none';
-            // Reset stop button state
-            stopBtn.setAttribute('title', 'Stop');
-            stopBtn.setAttribute('aria-label', 'Stop');
-            stopBtn.disabled = false;
-            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
             return;
           }
 
-                    // Response is SSE stream - parse it manually
+          // Response is SSE stream - parse it manually
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
           let buffer = '';
@@ -2263,6 +2133,9 @@
                 try {
                   const ev = JSON.parse(jsonStr);
                   handleSSEEvent(ev, blk);
+                  // the server took the message: its files are sent (a refusal leaves them attached, and
+                  // files attached since stay)
+                  if (ev.type === 'start') window.fileUploadModule.removeFiles(files);
                 } catch (e) {
                   console.error('Failed to parse SSE data:', e);
                 }
@@ -2274,87 +2147,41 @@
             showSection(blk.t);
             blk.t.innerHTML = '<div class="response-text error">SSE connection failed</div>';
           }
-
-          // Clear files after successful send
-          if (window.fileUploadModule) {
-            window.fileUploadModule.clearFiles();
-          }
-
         } catch (err) {
-          showSection(blk.t);
-          blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Request failed: ' + String(err))}</div>`;
-          // Clear any pending close timer
-          if (closeEventSourceTimer) {
-            clearTimeout(closeEventSourceTimer);
-            closeEventSourceTimer = null;
-          }
-          if (currentStatusEventSource) {
-            currentStatusEventSource.close();
-            currentStatusEventSource = null;
+          // a connection that breaks after the run's answer takes nothing from it
+          if (!run.over) {
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Request failed: ' + String(err))}</div>`;
           }
         } finally {
-          // Clear any pending close timer
-          if (closeEventSourceTimer) {
-            clearTimeout(closeEventSourceTimer);
-            closeEventSourceTimer = null;
-          }
-          runActive = false; updateActionButton();
-          stopBtn.style.display = 'none';
-          // Reset stop button state
-          stopBtn.setAttribute('title', 'Stop');
-          stopBtn.setAttribute('aria-label', 'Stop');
-          stopBtn.disabled = false;
-          stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-          currentRequestId = null;
-          currentEventSource = null;
           streamActive = false;
+          // The run ran inline in this request, not as a job a reload could follow: it was never stored,
+          // and the run stored for a reload is another one.
+          endRun();
         }
         return;
       }
 
       // Text-only SSE-based request via POST fetch (avoids URL length limits)
-      
-      // Reset reconnect state for new request
-      sseReceivedFinalOrEnd = false;
-      sseReconnectAttempts = 0;
-      if (sseReconnectTimer) {
-        clearTimeout(sseReconnectTimer);
-        sseReconnectTimer = null;
-      }
-      
+
       // Get current agent and LLM profile selections
       const selectedAgent = window.selectorModule && window.selectorModule.getCurrentAgent ? window.selectorModule.getCurrentAgent() : null;
       const selectedLLMProfile = window.selectorModule && window.selectorModule.getCurrentLLMProfile ? window.selectorModule.getCurrentLLMProfile() : null;
       
-      // Fallback to sessionStorage if currentSessionId not yet set (race condition on page load)
-      const effectiveSessionId = currentSessionId || sessionStorage.getItem('lastSessionId');
-      
       // Build POST body
       const postBody = { task: task };
-      if (effectiveSessionId) postBody.session_id = effectiveSessionId;
+      if (currentSessionId) postBody.session_id = currentSessionId;
       if (selectedAgent) postBody.agent_name = selectedAgent;
       if (selectedLLMProfile) postBody.llm_profile = selectedLLMProfile;
-      
-      // Build headers
-      const postHeaders = { 'Content-Type': 'application/json' };
-      const token = localStorage.getItem('token');
-      if (token) {
-        postHeaders['Authorization'] = `Bearer ${token}`;
-      }
-      
-      // Close any existing status event source before starting a new one
-      if (currentStatusEventSource) {
-        currentStatusEventSource.close();
-        currentStatusEventSource = null;
-      }
 
+      let lost = false;  // the connection broke before the run's end
       try {
         // Mark a live stream so hasActiveRequest()/guards work (fetch streams
         // never set currentEventSource).
         streamActive = true;
         const response = await fetch('/events', {
           method: 'POST',
-          headers: postHeaders,
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(postBody)
         });
 
@@ -2364,9 +2191,9 @@
           try {
             const errorJson = JSON.parse(errorText);
             if (errorJson.status_code === 401 || response.status === 401) {
-              errorMsg = '🔒 ' + (errorJson.detail || 'Authentication required') + ' - Please log in';
+              errorMsg = (errorJson.detail || 'Authentication required') + ' -- please log in';
             } else if (errorJson.status_code === 403 || response.status === 403) {
-              errorMsg = '🚫 ' + (errorJson.detail || 'Access denied');
+              errorMsg = errorJson.detail || 'Access denied';
             } else {
               errorMsg = errorJson.detail || errorJson.error || errorMsg;
             }
@@ -2375,12 +2202,6 @@
           }
           showSection(blk.t);
           blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
-          runActive = false; updateActionButton();
-          stopBtn.style.display = 'none';
-          stopBtn.setAttribute('title', 'Stop');
-          stopBtn.setAttribute('aria-label', 'Stop');
-          stopBtn.disabled = false;
-          stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           return;
         }
 
@@ -2410,6 +2231,8 @@
               try {
                 const ev = JSON.parse(jsonStr);
                 handleSSEEvent(ev, blk);
+                // runs as a background job: a reload of this tab follows it again
+                if (ev.type === 'start') storeRun(run.requestId, run.sessionId);
               } catch (e) {
                 console.error('Failed to parse SSE data:', e);
               }
@@ -2418,173 +2241,117 @@
         }
 
       } catch (err) {
-        // Connection error - attempt reconnect if we have a request ID
-        if (currentRequestId && sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS && !sseReceivedFinalOrEnd) {
-          sseReconnectAttempts++;
-          const delay = SSE_BASE_RECONNECT_DELAY_MS * Math.pow(2, sseReconnectAttempts - 1);
-          console.debug(`[SSE] Connection error, will attempt reconnect #${sseReconnectAttempts} in ${delay}ms`);
-          
-          if (blk && blk.status) {
-            addStatusEvent(blk.status, {
-              type: 'status',
-              message: `Connection lost, reconnecting (attempt ${sseReconnectAttempts}/${SSE_MAX_RECONNECT_ATTEMPTS})...`,
-              request_id: currentRequestId,
-              timestamp: new Date().toISOString()
-            });
-          }
-          
-          // Poll for completion
-          sseReconnectTimer = setTimeout(async function pollStatus() {
-            if (!currentRequestId || sseReceivedFinalOrEnd) return;
-            try {
-              const statusUrl = `/api/requests/${currentRequestId}/status`;
-              const r = await fetch(statusUrl);
-              const status = await r.json();
-              if (status.completed) {
-                sseReceivedFinalOrEnd = true;
-                if (status.result) {
-                  showSection(blk.t);
-                  const content = status.result.summary || status.result.content || JSON.stringify(status.result);
-                  const contentFormat = status.result.content_format || 'text';
-                  blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
-                }
-                runActive = false; updateActionButton();
-                stopBtn.style.display = 'none';
-                sseReconnectAttempts = 0;
-              } else if (status.error) {
-                showSection(blk.t);
-                blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(status.error)}</div>`;
-                runActive = false; updateActionButton();
-                stopBtn.style.display = 'none';
-                sseReconnectAttempts = 0;
-              } else if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
-                sseReconnectAttempts++;
-                sseReconnectTimer = setTimeout(pollStatus, SSE_BASE_RECONNECT_DELAY_MS * 2);
-              } else {
-                showSection(blk.t);
-                const errorNotice = document.createElement('div');
-                errorNotice.className = 'response-text error';
-                errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ Connection lost after ' + SSE_MAX_RECONNECT_ATTEMPTS + ' reconnect attempts');
-                blk.t.appendChild(errorNotice);
-                runActive = false; updateActionButton();
-                stopBtn.style.display = 'none';
-                sseReconnectAttempts = 0;
-              }
-            } catch (pollErr) {
-              console.warn('[SSE] Status poll failed:', pollErr);
-              if (sseReconnectAttempts < SSE_MAX_RECONNECT_ATTEMPTS) {
-                sseReconnectAttempts++;
-                sseReconnectTimer = setTimeout(pollStatus, SSE_BASE_RECONNECT_DELAY_MS * 2);
-              }
-            }
-          }, delay);
-          return; // Don't reset UI yet, reconnecting
+        // The connection was lost mid-run: the run may still be going, and a reload follows it.
+        if (run.requestId && !run.over) {
+          connectionNotice(blk, LOST);
+          lost = true;
+          return;
         }
-        
-        // No reconnect possible
-        if (!sseReceivedFinalOrEnd) {
-          const errorMessage = currentRequestId ? 'Connection lost - possible timeout or network issue' : 'Connection failed - server may be unreachable';
+
+        // No run to follow
+        if (!run.over) {
+          const errorMessage = 'Connection failed - server may be unreachable';
           showSection(blk.t);
           const currentContent = blk.t.textContent || '';
-          if (!currentContent.trim() || currentContent.includes('Thinking')) {
+          if (!currentContent.trim()) {
             blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMessage)}</div>`;
           } else {
             const errorNotice = document.createElement('div');
             errorNotice.className = 'response-text error';
-            errorNotice.innerHTML = formatTextWithLineBreaks('\n\n⚠️ ' + errorMessage);
+            errorNotice.innerHTML = formatTextWithLineBreaks('\n\n' + errorMessage);
             blk.t.appendChild(errorNotice);
           }
         }
       } finally {
-        // Clear any pending close timer
-        if (closeEventSourceTimer) {
-          clearTimeout(closeEventSourceTimer);
-          closeEventSourceTimer = null;
-        }
-        if (currentStatusEventSource) {
-          currentStatusEventSource.close();
-          currentStatusEventSource = null;
-        }
-        runActive = false; updateActionButton();
-        stopBtn.style.display = 'none';
-        stopBtn.setAttribute('title', 'Stop');
-        stopBtn.setAttribute('aria-label', 'Stop');
-        stopBtn.disabled = false;
-        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-        currentEventSource = null;
         streamActive = false;
-        // Clear stale request ID unless actively reconnecting
-        // Without this, currentRequestId stays set after a completed request,
-        // which can interfere with subsequent submissions
-        if (!sseReconnectTimer) {
-          currentRequestId = null;
-          storeActiveRequest(null);
-        }
-        sseReconnectAttempts = 0;
+        // The run is over for this chat; a lost one stays stored for a reload to follow.
+        endRun(lost);
       }
     }
-    
-    // Check for active request to reconnect after page refresh
-    (async function reconnectToActiveJob() {
-      const storedRequestId = getStoredActiveRequest();
-      if (!storedRequestId) {
-        return;
-      }
-      
-      try {
-        // Check if job is still running
-        const response = await fetch(`/api/requests/${storedRequestId}/status`);
-        const status = await response.json();
-        
-        if (status.status === 'running') {
-          // Use the SAME setup as normal request - addAssistantBlock, etc.
-          const blk = addAssistantBlock(chatContainer);
-          activeStreamBlk = blk;
-          
-          runActive = true; updateActionButton();
-          stopBtn.disabled = false;
-          stopBtn.setAttribute('title', 'Stop');
-          stopBtn.setAttribute('aria-label', 'Stop');
-          stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-          
-          // Build SSE URL - only pass request_id, backend uses job's agent
-          const session = sessionStorage.getItem('lastSessionId') || '';
-          // No token in the URL: the server does not accept one, and the
-          // access_token cookie goes along with this same-origin request.
-          const sseUrl = `/events?task=&request_id=${encodeURIComponent(storedRequestId)}&session_id=${encodeURIComponent(session)}`;
 
-          // Create EventSource and use THE SAME handleSSEEvent as normal flow
-          const es = new EventSource(sseUrl, { withCredentials: true });
-          currentEventSource = es;
-          currentRequestId = storedRequestId;
-          
-          es.onmessage = (ev) => {
-            try {
-              const data = JSON.parse(ev.data);
-              handleSSEEvent(data, blk);
-            } catch (err) {
-              console.warn('[chat_module] SSE reconnect parse error:', err);
-            }
-          };
-          
-          es.onerror = () => {
-            es.close();
-            currentEventSource = null;
-            runActive = false; updateActionButton();
-            stopBtn.style.display = 'none';
-            stopBtn.disabled = false;
-            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-            storeActiveRequest(null);
-          };
-          
-        } else {
-          storeActiveRequest(null);
+    /**
+     * After a reload a run of this tab may still be going: follow it. The status is checked
+     * first -- GET /events with an id the server no longer holds would start a new, empty run.
+     * The composer is held meanwhile, so no message starts a second run beside it.
+     */
+    async function followRun() {
+      const stored = storedRun();
+      if (!stored) return;
+      holding = true;
+      updateComposer();
+      try {
+        let status = null;
+        try {
+          const response = await fetch(`/api/requests/${encodeURIComponent(stored.requestId)}/status`,
+            { signal: AbortSignal.timeout(10000) });
+          if (response.ok) status = await response.json();
+        } catch (error) {
+          console.warn('[chat_module] Failed to check active job status:', error);
         }
-      } catch (error) {
-        console.warn('[chat_module] Failed to check active job status:', error);
-        storeActiveRequest(null);
+        if (!status) return;  // the server could not be asked: the run stays stored, and a later reload asks again
+        if (status.status !== 'running') {
+          clearStoredRun();
+          return;
+        }
+        attachRun(stored);
+      } finally {
+        holding = false;
+        updateComposer();
       }
-    })();
+    }
+
+    function attachRun({ requestId, sessionId: session }) {
+      // The live run takes the chat -- over a session picked meanwhile (a read-only one too:
+      // the run's session takes messages). A chat that shows that session keeps it.
+      if (currentSessionId !== session) {
+        chatContainer.innerHTML = '';
+        releasePreviewObjectUrls();
+        readOnlyShown = false;
+      }
+      // stored again: a pick or New while the reload checked for the run has let it go
+      storeRun(requestId, session);
+      const blk = addAssistantBlock(chatContainer);
+      activeStreamBlk = blk;
+      runActive = true; updateActionButton();
+      stopBtn.disabled = false;
+      stopBtn.setAttribute('title', 'Stop');
+      stopBtn.setAttribute('aria-label', 'Stop');
+      stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+
+      // The chat continues the run's session and tells the session manager,
+      // so no pick or restore takes its place.
+      window.sessionManager.setCurrentSession(session);
+      currentSessionId = session;
+      run = { requestId, sessionId: session, over: false };
+      // Only request_id: the backend uses the job's agent. No token in the URL either:
+      // the server does not accept one, and the access_token cookie goes along.
+      const es = new EventSource(`/events?task=&request_id=${encodeURIComponent(requestId)}&session_id=${encodeURIComponent(session || '')}`,
+        { withCredentials: true });
+      currentEventSource = es;
+
+      es.onmessage = (ev) => {
+        try {
+          handleSSEEvent(JSON.parse(ev.data), blk);
+        } catch (err) {
+          console.warn('[chat_module] SSE reconnect parse error:', err);
+        }
+      };
+
+      // A stream that stops before the run's end -- closed, broken or refused, which EventSource does
+      // not tell apart -- may leave the run going: a reload asks the server again.
+      es.onerror = () => {
+        es.close();
+        currentEventSource = null;
+        if (run.over) {
+          endRun();
+        } else {
+          connectionNotice(blk, LOST);
+          endRun(true);
+        }
+      };
+    }
+
+    return followRun();
   };
   
   function showSection(element) {
@@ -2599,10 +2366,6 @@
     if (currentEventSource) {
       currentEventSource.close();
       currentEventSource = null;
-    }
-    if (currentStatusEventSource) {
-      currentStatusEventSource.close();
-      currentStatusEventSource = null;
     }
     streamActive = false;
   }
@@ -2628,30 +2391,29 @@
   window.addEventListener('beforeunload', cleanup);
   
   // Listen for new conversation events
-  window.addEventListener('session:new', () => {
-    console.log('New conversation event received - clearing session');
-    // Clear current session ID
+  window.addEventListener('session:new', (event) => {
     currentSessionId = null;
-    try { global.currentSessionId = null; } catch (e) {}
-    
-    // Update header to clear session ID display
-    if (typeof updateHeaderSessionId === 'function') {
-      updateHeaderSessionId();
-    }
+    const chatEl = document.getElementById('chat');
+    chatEl.innerHTML = '';
+    releasePreviewObjectUrls();
+    // not chosen, but all that is left when the stored session cannot be shown: a lost run of it stays
+    if (event.detail.chosen) leaveLostRun(null);
+    readOnlyShown = false;
+    updateComposer();
   });
-  
+
   // Listen for session load events
   window.addEventListener('session:loaded', (event) => {
     const { session, readOnly, reason } = event.detail;
-    
-    // CRITICAL: Don't override chat if an SSE request is currently streaming!
-    // This prevents race condition where session restore overwrites live streaming output.
-    // streamActive covers fetch streams; currentEventSource covers the refresh-reconnect path.
-    if (streamActive || currentEventSource) {
-      console.warn('[session:loaded] Ignoring session load - SSE stream is active');
+
+    // A run the chat follows keeps the chat until its answer or its cancel: a load would overwrite its live output.
+    // Past them its stream only waits for the run's save, and a session picked meanwhile takes the chat.
+    if (chatModule.activeRun()) {
+      console.warn('[session:loaded] Ignoring session load - a run is still streaming');
       return;
     }
-    
+    leaveLostRun(session.session_id);
+
     if (session && session.messages) {
       // Clear current chat
       const chatEl = document.getElementById('chat');
@@ -2712,134 +2474,15 @@
           textSpan.innerHTML = formatTextWithLineBreaks(displayText);
           msgDiv.appendChild(textSpan);
           
-          // Add image previews if any
-          if (images.length > 0) {
-            const previewContainer = document.createElement('div');
-            previewContainer.className = 'user-image-previews';
-            
-            images.forEach(item => {
-              const img = document.createElement('img');
-              const imageUrl = item.image_url?.url || item.url;
-              img.src = imageUrl;
-              img.alt = 'Uploaded image';
-              img.title = 'Click to view full size';
-              
-              // Click to view full size
-              img.onclick = () => openAttachmentInNewTab(imageUrl);
-              
-              previewContainer.appendChild(img);
-            });
-            
-            msgDiv.appendChild(previewContainer);
-          }
-          
-          // Add audio previews if any
-          if (audioFiles.length > 0) {
-            const audioContainer = document.createElement('div');
-            audioContainer.className = 'user-audio-previews';
-            audioContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
-            
-            audioFiles.forEach((item, index) => {
-              const audioWrapper = document.createElement('div');
-              audioWrapper.style.cssText = 'display: flex; align-items: center; gap: 8px;';
-              
-              // Extract audio data URL - handle different formats
-              // Format 1: item.audio_url (from session storage)
-              // Format 2: item.audio.data (alternative format)
-              // Format 3: item.data (fallback)
-              const audioData = item.audio_url || item.audio?.data || item.data;
-              const mediaType = item.audio?.media_type || item.media_type || 'audio/flac';
-              const audioName = item.name || `Audio ${index + 1}`;
-              
-              if (audioData) {
-                // Create play button that plays audio directly
-                const playBtn = document.createElement('button');
-                playBtn.textContent = '▶️ ' + audioName;
-                playBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em;';
-                playBtn.title = 'Click to play';
-                
-                // Create hidden audio element
-                const audioEl = document.createElement('audio');
-                audioEl.src = audioData;
-                audioEl.style.display = 'none';
-                
-                let isPlaying = false;
-                playBtn.onclick = () => {
-                  if (isPlaying) {
-                    audioEl.pause();
-                    playBtn.textContent = '▶️ ' + audioName;
-                    isPlaying = false;
-                  } else {
-                    audioEl.play();
-                    playBtn.textContent = '⏸️ ' + audioName;
-                    isPlaying = true;
-                  }
-                };
-                
-                audioEl.onended = () => {
-                  playBtn.textContent = '▶️ ' + audioName;
-                  isPlaying = false;
-                };
-                
-                audioWrapper.appendChild(playBtn);
-                audioWrapper.appendChild(audioEl);
-              } else {
-                // Fallback: Show audio indicator if data not found
-                const indicator = document.createElement('span');
-                indicator.textContent = `🔊 Audio ${index + 1}`;
-                indicator.style.cssText = 'color: #888; font-size: 0.95em;';
-                audioWrapper.appendChild(indicator);
-              }
-              
-              audioContainer.appendChild(audioWrapper);
-            });
-            
-            msgDiv.appendChild(audioContainer);
-          }
-          
-          // Add text file previews if any
-          if (textFiles.length > 0) {
-            const textContainer = document.createElement('div');
-            textContainer.className = 'user-text-file-previews';
-            textContainer.style.cssText = 'margin-top: 10px; display: flex; flex-direction: column; gap: 8px;';
-            
-            textFiles.forEach((item, index) => {
-              const textWrapper = document.createElement('div');
-              textWrapper.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
-              
-              const fileName = item.name || `File ${index + 1}`;
-              const fileContent = item.content || '';
-              
-              // Create view button
-              const viewBtn = document.createElement('button');
-              viewBtn.textContent = '📄 ' + fileName;
-              viewBtn.style.cssText = 'background: #444; color: #ddd; border: 1px solid #666; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em; width: fit-content;';
-              viewBtn.title = 'Click to view';
-              
-              // Create hidden content div
-              const contentDiv = document.createElement('pre');
-              contentDiv.style.cssText = 'display: none; margin: 0; padding: 10px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; max-height: 300px; overflow: auto; font-size: 0.85em; white-space: pre-wrap;';
-              contentDiv.textContent = fileContent;
-              
-              viewBtn.onclick = () => {
-                // Toggle content display
-                if (contentDiv.style.display === 'none') {
-                  contentDiv.style.display = 'block';
-                  viewBtn.textContent = '📄 ' + fileName + ' ▼';
-                } else {
-                  contentDiv.style.display = 'none';
-                  viewBtn.textContent = '📄 ' + fileName;
-                }
-              };
-              
-              textWrapper.appendChild(viewBtn);
-              textWrapper.appendChild(contentDiv);
-              textContainer.appendChild(textWrapper);
-            });
-            
-            msgDiv.appendChild(textContainer);
-          }
-          
+          renderAttachments(msgDiv, {
+            images: images.map((item) => ({ url: item.image_url?.url || item.url, name: item.name })),
+            audio: audioFiles.map((item, index) => ({
+              url: item.audio_url || item.audio?.data || item.data,
+              name: item.name || `Audio ${index + 1}`,
+            })),
+            textFiles: textFiles.map((item, index) => ({ name: item.name || `File ${index + 1}`, content: item.content })),
+          });
+
           row.appendChild(msgDiv);
           chatEl.appendChild(row);
         } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
@@ -2847,7 +2490,7 @@
           if (msg === lastAssistantMsg && !msg.content) {
             const blk = addAssistantBlock(chatEl);
             showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text"><em style="color: #888;">⚙️ Tool calls in progress...</em></div>`;
+            blk.t.innerHTML = `<div class="response-text pk-muted"><em>Tool calls in progress…</em></div>`;
           }
           // Skip all other tool-call-only messages (they're intermediate steps)
         } else if (msg.role === 'assistant' && msg.content) {
@@ -2875,21 +2518,24 @@
         window.selectorModule.setLLMProfile(session.llm_profile);
       }
       
-      // Update session ID in header
-      if (typeof updateHeaderSessionId === 'function') {
-        updateHeaderSessionId(session.session_id);
-      }
     }
     
     // Handle read-only mode AFTER rendering messages
+    readOnlyShown = readOnly;
     if (readOnly) {
       showReadOnlyBanner(reason);
-      disableInput();
     } else {
       removeReadOnlyBanner();
-      enableInput();
     }
+    updateComposer();
   });
+
+  // A run whose connection was lost stays stored for a reload of its session; showing
+  // another one lets it go.
+  function leaveLostRun(sessionId) {
+    const run = storedRun();
+    if (run && run.sessionId !== sessionId) clearStoredRun();
+  }
   
   // Helper functions for read-only mode
   function showReadOnlyBanner(reason) {
@@ -2900,10 +2546,10 @@
     banner.className = 'read-only-banner';
     banner.innerHTML = `
       <div class="banner-content">
-        <span class="banner-icon">🔒</span>
+        <span class="banner-icon">${kitIcon('eye')}</span>
         <div class="banner-text">
-          <strong>Read-Only Session</strong>
-          <p>${reason || 'This session cannot be edited.'}</p>
+          <strong>Read-only session</strong>
+          <p>${escapeHtml(reason || 'This session cannot be edited.')}</p>
         </div>
       </div>
     `;
@@ -2922,63 +2568,105 @@
     }
   }
   
-  function disableInput() {
+  // The composer takes messages unless the session shown is read-only or init is still
+  // checking for a run of this tab.
+  function updateComposer() {
+    const enabled = !readOnlyShown && !holding;
     const taskInput = document.getElementById('task');
-    const runBtn = document.getElementById('runBtn');
-    const fileInput = document.getElementById('fileInput');
-    const fileUploadBtn = document.querySelector('.file-upload-btn');
-    
-    if (taskInput) {
-      taskInput.disabled = true;
-      taskInput.placeholder = 'This session is read-only';
-      taskInput.style.opacity = '0.5';
-    }
-    if (runBtn) {
-      runBtn.disabled = true;
-      runBtn.style.opacity = '0.5';
-    }
-    if (fileInput) {
-      fileInput.disabled = true;
-    }
-    if (fileUploadBtn) {
-      fileUploadBtn.style.opacity = '0.5';
-      fileUploadBtn.style.pointerEvents = 'none';
-    }
+    taskInput.disabled = !enabled;
+    taskInput.placeholder = holding ? 'Checking whether a run of this tab is still going…'
+      : readOnlyShown ? 'This session is read-only' : 'Message the agent…';
+    document.getElementById('runBtn').disabled = !enabled;
+    document.getElementById('fileInput').disabled = !enabled;
+    document.getElementById('attachButton').disabled = !enabled;
   }
-  
-  function enableInput() {
-    const taskInput = document.getElementById('task');
-    const runBtn = document.getElementById('runBtn');
-    const fileInput = document.getElementById('fileInput');
-    const fileUploadBtn = document.querySelector('.file-upload-btn');
-    
-    if (taskInput) {
-      taskInput.disabled = false;
-      taskInput.placeholder = 'Ask the agent…';
-      taskInput.style.opacity = '1';
+
+  // The run of the session whose connection was lost, and so may still be going: its request id, or null.
+  chatModule.lostRunIn = function(sessionId) {
+    const stored = storedRun();
+    const followed = chatModule.hasActiveRequest() && stored?.requestId === run.requestId;
+    return stored?.sessionId === sessionId && !followed ? stored.requestId : null;
+  };
+
+  // Cancel a run the chat no longer follows, and resolve true once the server no longer runs it -- deleting
+  // its session must not leave the run to write the session back.
+  chatModule.cancelLostRun = async function(requestId) {
+    try {
+      if (!await cancelRun(requestId, { force: true }) || !await serverLetGo(requestId)) return false;
+    } catch (error) {
+      console.error('Cancel request failed:', error);
+      return false;
     }
-    if (runBtn) {
-      runBtn.disabled = false;
-      runBtn.style.opacity = '1';
+    // a run stored meanwhile is another one
+    if (storedRun()?.requestId === requestId) clearStoredRun();
+    return true;
+  };
+
+  /**
+   * Cancel `asked` -- the run activeRun() named when the viewer was asked -- as they confirmed, and resolve once
+   * its stream has brought its cancel, or has ended and the server no longer runs it: a session switch must not
+   * leave the old run writing into the new chat, and a delete of a run cut off before its cancel must not come
+   * before the run's own save (past the cancel, runSaved waits for that). A run whose stream brought its answer
+   * or its cancel while the viewer was asked is not cancelled -- that would take its background sub-agents and
+   * session-end hooks along -- and one whose stream was cut off meanwhile is. Resolves 'stopped'; 'starting'
+   * when its start has not named it yet, so there is nothing to cancel; 'unconfirmed' when the server did not
+   * confirm the run has stopped.
+   */
+  chatModule.cancelActiveRequest = async function(asked) {
+    try {
+      // brought its answer or its cancel while the viewer was asked: nothing is left to cancel
+      if (asked.over) return 'stopped';
+      if (!chatModule.hasActiveRequest()) {
+        return !asked.requestId || await chatModule.cancelLostRun(asked.requestId) ? 'stopped' : 'unconfirmed';
+      }
+      if (!asked.requestId) return 'starting';
+      markStopping(asked.requestId);
+      // force: a run stuck in blocking I/O only ends when its task is cancelled
+      if (!await cancelRun(asked.requestId, { force: true })) return 'unconfirmed';
+      // its own stream, until the run's cancel -- a run started once that stream has ended is not this one
+      for (let waited = 0; chatModule.hasActiveRequest() && run === asked && !asked.over; waited += 200) {
+        if (waited >= 15000) return 'unconfirmed';
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      // past its cancel a delete waits for the save (runSaved); a stream cut off before it leaves the run to the server
+      return asked.over || await serverLetGo(asked.requestId) ? 'stopped' : 'unconfirmed';
+    } catch (error) {
+      console.error('Cancel request failed:', error);
+      return 'unconfirmed';
     }
-    if (fileInput) {
-      fileInput.disabled = false;
+  };
+
+  // The run the chat follows while there is something to cancel -- until its stream has brought its answer or its
+  // cancel -- for a question about it to hand back to cancelActiveRequest; null otherwise.
+  chatModule.activeRun = function() {
+    return chatModule.hasActiveRequest() && !run.over ? run : null;
+  };
+
+  /**
+   * Resolves true once the server no longer runs a run of the session that has brought its answer or its cancel:
+   * it saves the session after them and runs its session-end hooks, a delete must not come before the save, and
+   * its stream may have stopped before either. False when it still runs after 15 s. A run cut off before its
+   * answer is left to the stored run (lostRunIn).
+   */
+  chatModule.runSaved = async function(sessionId) {
+    const requestId = settling.get(sessionId);
+    if (!requestId) return true;
+    try {
+      if (!await serverLetGo(requestId)) return false;
+    } catch (error) {
+      console.error('Status check failed:', error);
+      return false;
     }
-    if (fileUploadBtn) {
-      fileUploadBtn.style.opacity = '1';
-      fileUploadBtn.style.pointerEvents = 'auto';
-    }
-  }
+    if (settling.get(sessionId) === requestId) settling.delete(sessionId);
+    return true;
+  };
 
   // Public method to check if a request is active
   chatModule.hasActiveRequest = function() {
-    // streamActive covers the normal fetch-based streams; the EventSource refs
-    // cover the page-refresh reconnect path.
-    return streamActive || currentEventSource !== null || currentStatusEventSource !== null;
+    // streamActive covers the normal fetch-based streams, the EventSource ref a run
+    // reattached after a reload.
+    return streamActive || currentEventSource !== null;
   };
-
-  // Export chatModule to window
-  global.chatModule = chatModule;
 
 })(window);
 

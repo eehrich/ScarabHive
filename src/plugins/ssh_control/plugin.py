@@ -76,10 +76,6 @@ class SSHControlHybridPlugin:
         """Delegate to web endpoints."""
         return self.web_endpoints.get_static_assets()
     
-    def get_panels(self):
-        """Delegate to web endpoints."""
-        return self.web_endpoints.get_panels()
-    
     def get_security_config(self):
         """Delegate to web endpoints."""
         return self.web_endpoints.get_security_config()

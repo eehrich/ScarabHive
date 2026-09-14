@@ -16,6 +16,8 @@
   <title>{% block title %}{% endblock %} · ScarabHive</title>
   <link rel="icon" href="/static/kit/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/kit/kit.css">
+  {#- Before the first paint, so a framed panel never flashes a second title. #}
+  <script>if (window.parent !== window) document.documentElement.dataset.framed = '';</script>
   <script type="module" src="/static/kit/panel-kit.js"></script>
   {% block head %}{% endblock %}
 </head>

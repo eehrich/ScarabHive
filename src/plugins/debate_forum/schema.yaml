@@ -256,20 +256,17 @@ tools:
 
 # Web UI configuration
 web_ui:
-  button:
-    enabled: true
-    text: "Debate Forum"
-    icon: "💬"
-    tooltip: "View LLM debate channels and discussion threads"
-  
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Debate Forum"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    description: "Discord-style debate forum showing agent discussions"
-  
+    title: "Debate Forum"
+    description: "Agent debate channels and discussion threads"
+    icon: messages-square
+    category: agents
+    keywords: [debate, discussion, panel]
+    window: {width: 900, height: 680}
+
   endpoints:
     - path: "/"
       method: "GET"

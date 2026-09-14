@@ -104,38 +104,16 @@ tools:
 
 # Web UI configuration
 web_ui:
-  button:
-    enabled: true
-    text: "Sub-Agent Manager"
-    icon: "🤖"
-
-  # Dropdown menu integration
-  menu:
-    enabled: true
-    items:
-      - id: "sub_agents"
-        menu_id: "user"
-        section: "Tools"
-        label: "Sub-Agent Manager"
-        action: "openPanel"
-        icon: "🤖"
-        requires_admin: false
-        order: 100
-        tooltip: "Sub-Agent Manager"
-
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Sub-Agent Manager"  # Shared title for grouped panel
-    panel_id: "sub_agent_manager"  # Shared ID for all instances
-    panel_group: "sub_agent_manager"  # Enables tab grouping
-    endpoint: "/plugins/{{ name }}/"  # Instance-specific endpoint
-    type: "iframe"
-    width: "1000px"
-    height: "800px"
-
-  # Access control
-  requires_auth: true
-  requires_role: null  # No role restriction - all authenticated users
+    endpoint: "/plugins/{{ name }}/"
+    title: "Sub-Agents"
+    description: "Running and finished sub-agent tasks"
+    icon: workflow
+    category: agents
+    keywords: [sub-agents, tasks, spawn]
+    window: {width: 1000, height: 760}
 
   endpoints:
     - path: "/"

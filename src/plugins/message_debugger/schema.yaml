@@ -113,22 +113,17 @@ config:
 
 # Web UI configuration
 web_ui:
-  # Header button configuration
-  button:
-    enabled: true
-    text: "Message Debug"
-    icon: "🔍"
-    tooltip: "View captured LLM messages and API requests"
-  
-  # Panel configuration
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Message Debugger"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    description: "View captured message turns and raw API request/response logs"
-  
+    title: "Message Debugger"
+    description: "Captured message turns and raw API requests and responses"
+    icon: bug
+    category: debug
+    keywords: [requests, responses, llm, hooks]
+    window: {width: 1000, height: 700}
+
   endpoints:
     - path: "/turns"
       method: "GET"

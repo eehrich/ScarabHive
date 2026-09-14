@@ -519,9 +519,6 @@ class MyServer(SchemaBasedMCPServer):
 - **Better maintainability**: Your code focuses only on the template variables, not infrastructure
 - **Future-proof**: Benefits from base class improvements automatically
 
-### Web UI Configuration (For Hybrid/Web Plugins)
-```
-
 ### Parameter Types and Validation
 
 ```yaml
@@ -606,32 +603,29 @@ tools:
 
 # Web UI configuration for hybrid plugins
 web_ui:
-  enabled: true
-  button_text: "Web Scraper"
-  button_icon: "🌐"
-  panel_title: "Web Scraping Dashboard"
-  panel_endpoint: "/plugins/web_scraper/dashboard"
-  panel_type: "fetch"
-  description: "Web scraping tools with real-time monitoring"
-
-  panels:
-    - id: "scraper_panel"
-      title: "Scraping Status"
-      icon: "activity"
-      position: "right"
-      width: "400px"
-      height: "300px"
-      url: "/plugins/{name}/status"
+  panel:
+    endpoint: "/plugins/{{ name }}/dashboard"
+    title: "Web Scraper"
+    description: "Web scraping tools with real-time monitoring"
+    icon: globe
+    category: agents
+    keywords: [scraping, jobs]
 
   endpoints:
     - path: "/api/scrape"
       method: "POST"
+      handler: "start_scrape"
+      response_type: "json"
       description: "Start scraping job"
     - path: "/api/jobs"
       method: "GET"
+      handler: "list_jobs"
+      response_type: "json"
       description: "List active scraping jobs"
     - path: "/dashboard"
       method: "GET"
+      handler: "dashboard"
+      response_type: "html"
       description: "Main scraping dashboard"
 ```
 
@@ -649,63 +643,69 @@ tools:
 
 # Web UI configuration
 web_ui:
-  # Button registration in main interface
-  enabled: true
-  button_text: "My Plugin"
-  button_icon: "🔧"  # Optional emoji or icon
-  panel_title: "My Plugin Dashboard"
-  panel_endpoint: "/plugins/my_plugin/panel"
-  panel_type: "fetch"  # "fetch" or "iframe"
-  description: "Plugin description for UI"
+  # The panel's entry in the panel catalogue (launcher, command palette, chat links)
+  panel:
+    endpoint: "/plugins/{{ name }}/"          # required: URL of the panel page
+    title: "My Plugin"                        # required
+    description: "Plugin description for UI"  # shown and searched in the launcher
+    icon: wrench                              # required: a symbol id in static/kit/icons.svg
+    category: agents                          # required: session, writer, context, agents, debug, system, admin
+    keywords: [dashboard, data]               # optional search words
+    window: {width: 800, height: 600}         # optional: size of the detached window
+    contexts:                                 # optional entry points from the chat: session, request
+      session: "/plugins/{{ name }}/?session_id={session_id}"   # must start with the endpoint
 
-  # Panel configuration
-  panels:
-    - id: "my_plugin_panel"
-      title: "Main Panel"
-      icon: "dashboard"
-      position: "center"  # "top", "bottom", "left", "right", "center"
-      width: "800px"
-      height: "600px"
-      url: "/plugins/{name}/panel.html"
-
-  # Document your endpoints for API discovery
+  # The routes generated from the schema
   endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "render_panel"
+      response_type: "html"
+      description: "Main dashboard interface"
     - path: "/api/data"
       method: "GET"
+      handler: "get_data"
+      response_type: "json"
       description: "Retrieve plugin data"
     - path: "/api/action"
       method: "POST"
+      handler: "perform_action"
+      response_type: "json"
       description: "Perform plugin action"
-    - path: "/dashboard"
+    - path: "/static/{file_path:path}"
       method: "GET"
-      description: "Main dashboard interface"
-    - path: "/static/{file_path}"
-      method: "GET"
+      handler: "serve_static"
+      response_type: "response"
       description: "Static assets (CSS, JS, images)"
 ```
 
 ### Web UI Fields Reference
 
-**Button Registration:**
-- `enabled`: Enable/disable web UI integration
-- `button_text`: Text for plugin button in main interface
-- `button_icon`: Emoji or icon for the button
-- `panel_title`: Title for the plugin panel
-- `panel_endpoint`: URL endpoint for the main panel
-- `panel_type`: How to load content (`fetch` or `iframe`)
+`web_ui` has exactly two keys, `panel` and `endpoints`. `src/scripts/validate_plugin.py`
+refuses any other key in `web_ui` or in `panel`. At runtime a `panel` block that does
+not parse is left out of the catalogue with an error log.
 
-**Panel Configuration:**
-- `id`: Unique panel identifier
-- `title`: Panel display title
-- `icon`: Icon name or emoji for the panel
-- `position`: Where to position the panel
-- `width`/`height`: Panel dimensions
-- `url`: Panel URL (supports `{name}` placeholder)
+**`panel`** (optional) — the plugin's entry in the panel catalogue, parsed by
+`plugin_panel()` in `src/agent_system/ui/catalog.py`:
+- `endpoint` (required): URL of the panel page; `{{ name }}` is the plugin instance
+- `title` (required): name in the launcher, on the tab and in the window bar
+- `icon` (required): a symbol id from `static/kit/icons.svg` (all of them render at `/ui/kit`)
+- `category` (required): one of `session`, `writer`, `context`, `agents`, `debug`, `system`, `admin`
+- `description`: one sentence, shown and searched in the launcher
+- `keywords`: search words that are not in the title
+- `window`: `{width, height}` of the detached window
+- `contexts`: entry points from the chat, `session` and `request`. The URL must start
+  with `endpoint`; the shell fills in `{session_id}` / `{request_id}`. Declare a context
+  only if the panel reads that parameter
 
-**Endpoint Documentation:**
-- Documents all web endpoints your plugin provides
-- Used for API discovery and debugging
-- Include path, method, and clear description
+Who sees the panel is not declared here: the catalogue lists it for the roles both
+layers of route security in `config/config.yaml` let open its `endpoint` -- the
+app-wide `auth.endpoint_security` rules and `auth.plugin_security`. An admin-only
+route is an admin-only panel.
+
+**`endpoints`** — the routes `SchemaRouterGenerator` builds from the schema (`path`,
+`method`, `handler`, `response_type`, `description`); see
+[Schema-Based Web Routing](./schema_based_web_routing.md).
 
 ### Slash Commands (`commands:`)
 
@@ -924,33 +924,26 @@ For plugins that only provide web endpoints (no MCP tools), you can use **schema
 """Web-only plugin - provides dashboard endpoints using schema-based routing"""
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse, FileResponse
 from pathlib import Path
-from agent_system.plugins.web_adapter import PluginWebInterface
 from agent_system.plugins.schema_router import create_schema_router
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.ui.resources import ui_templates
 
-class DashboardWebEndpoints(PluginWebInterface):
+class DashboardWebEndpoints:
     """Web endpoints for dashboard plugin"""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
-        """Modern constructor signature for web-only plugins."""
+    def __init__(self, name: str, schema: dict):
         self.name = name
-        self.system_config = system_config
-        self.mcp_config = mcp_config
-
-        # Setup templates
-        template_dir = Path(__file__).parent / "templates"
-        self.templates = Jinja2Templates(directory=str(template_dir))
+        self.schema = schema
+        # the plugin's own templates first, then the UI kit (kit/panel_base.html)
+        self.templates = ui_templates(Path(__file__).parent / "templates")
 
     def get_web_router(self) -> APIRouter:
-        """Return FastAPI router generated from schema"""
-        schema_path = Path(__file__).parent / "schema.yaml"
+        """Return FastAPI router generated from web_ui.endpoints"""
         return create_schema_router(
+            plugin_name=self.name,
+            schema=self.schema,
             handler_class=self,
-            schema_path=schema_path,
-            router_prefix=f"/plugins/{self.name}"
         )
 
     # Handler methods (called by schema router)
@@ -987,60 +980,35 @@ class DashboardWebEndpoints(PluginWebInterface):
             raise HTTPException(status_code=404)
 
         return FileResponse(file_full_path)
-    async def serve_static(self, request: Request, file_path: str) -> FileResponse:
-        """Serve static assets (CSS, JS, images)"""
-        from fastapi import HTTPException
-
-        static_dir = Path(__file__).parent / "static"
-        file_full_path = static_dir / file_path
-
-        if not file_full_path.exists():
-            raise HTTPException(status_code=404)
-
-        return FileResponse(file_full_path)
-
-    def get_panels(self):
-        """Register dashboard panel in main UI"""
-        return [{
-            "id": f"{self.name}",
-            "title": "System Dashboard",
-            "url": f"/plugins/{self.name}/",
-            "icon": "dashboard",
-            "position": "center",
-            "width": "800px",
-            "height": "600px"
-        }]
 
 # src/plugins/my_dashboard/plugin.py
 from .web_endpoints import DashboardWebEndpoints
 from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 
-class DashboardPlugin:
-    """Web-only plugin (no MCP server)"""
+class DashboardPlugin(SchemaBasedPluginWebInterface):
+    """Web-only plugin (no MCP server). The base class loads schema.yaml and
+    provides get_schema_data(), from which the registry reads web_ui."""
 
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
-        """Modern constructor - matches MCP server signature."""
-        self.web_endpoints = DashboardWebEndpoints(name, system_config, mcp_config)
+        super().__init__(name, system_config, mcp_config)
+        self.web_endpoints = DashboardWebEndpoints(name, self.get_schema_data())
 
-    # Web interface delegation
     def get_web_router(self):
         return self.web_endpoints.get_web_router()
-
-    def get_panels(self):
-        return self.web_endpoints.get_panels()
 
 PLUGIN_FACTORY = DashboardPlugin
 ```
 
 **Plugin Configuration:**
-```yaml
+```toml
 # plugin.toml
-name: my_dashboard
-version: 1.0.0
-description: "System dashboard web interface"
-type:
-  - web
-entrypoint: plugin:PLUGIN_FACTORY
+[plugin]
+name = "my_dashboard"
+version = "1.0.0"
+description = "System dashboard web interface"
+type = ["web"]
+entrypoint = "plugin:PLUGIN_FACTORY"
 ```
 
 **Schema with Endpoints (schema.yaml):**
@@ -1050,51 +1018,41 @@ name: "{{ name }}"
 version: "1.0.0"
 description: "System dashboard web interface"
 
-# Define all endpoints with handlers
-endpoints:
-  - path: "/"
-    method: "GET"
-    handler: "dashboard_home"
-    response_type: "html"
-    description: "Main dashboard page"
-
-  - path: "/api/metrics"
-    method: "GET"
-    handler: "get_metrics"
-    response_type: "json"
-    description: "System metrics data"
-
-  - path: "/api/status"
-    method: "GET"
-    handler: "get_status"
-    response_type: "json"
-    description: "System status information"
-
-  - path: "/static/{file_path:path}"
-    method: "GET"
-    handler: "serve_static"
-    response_type: "response"
-    description: "Serve static assets"
-
 # Web UI configuration
 web_ui:
-  enabled: true
-  button_text: "System Dashboard"
-  button_icon: "📊"
-  panel_title: "System Monitoring Dashboard"
-  panel_id: "{{ name }}"
-  endpoint: "/plugins/{{ name }}/"
-  panel_type: "iframe"
-  description: "Real-time system monitoring and metrics"
+  panel:
+    endpoint: "/plugins/{{ name }}/"
+    title: "System Dashboard"
+    description: "Real-time system monitoring and metrics"
+    icon: gauge
+    category: system
+    keywords: [metrics, monitoring]
 
-  panels:
-    - id: "main_dashboard"
-      title: "System Overview"
-      icon: "monitor"
-      position: "center"
-      width: "100%"
-      height: "600px"
-      url: "/plugins/{{ name }}/"
+  # Define all endpoints with handlers
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "dashboard_home"
+      response_type: "html"
+      description: "Main dashboard page"
+
+    - path: "/api/metrics"
+      method: "GET"
+      handler: "get_metrics"
+      response_type: "json"
+      description: "System metrics data"
+
+    - path: "/api/status"
+      method: "GET"
+      handler: "get_status"
+      response_type: "json"
+      description: "System status information"
+
+    - path: "/static/{file_path:path}"
+      method: "GET"
+      handler: "serve_static"
+      response_type: "response"
+      description: "Serve static assets"
 ```
 
 > **Note:** For more details on schema-based routing, see [Schema-Based Web Routing](./schema_based_web_routing.md).
@@ -1127,7 +1085,7 @@ However, **schema-based routing is preferred** because:
 **Web-Only Plugin Features:**
 - Provides web endpoints at `/plugins/<name>/`
 - Can serve static assets, templates, APIs
-- Registers UI panels in the main interface
+- Declares its panel as `web_ui.panel`; the launcher and the command palette list it
 - No MCP server or tools required
 - Uses `web_ui` schema for interface configuration
 - Can still have CLI support
@@ -1177,15 +1135,6 @@ class MyWebEndpoints(PluginWebInterface):
 
         return router
 
-    def get_panels(self):
-        """Register UI panels"""
-        return [{
-            "id": f"{self.name}_panel",
-            "title": "My Plugin Dashboard",
-            "url": f"/plugins/{self.name}/dashboard",
-            "icon": "dashboard"
-        }]
-
 class MyHybridPlugin:
     """Hybrid plugin combining MCP and web capabilities."""
 
@@ -1208,9 +1157,9 @@ class MyHybridPlugin:
         """Delegate to web endpoints for router."""
         return self.web_endpoints.get_web_router()
 
-    def get_panels(self):
-        """Delegate to web endpoints for UI panels."""
-        return self.web_endpoints.get_panels()
+    def get_schema_data(self):
+        """Delegate to MCP server: the panel catalogue reads web_ui.panel from this schema."""
+        return self.mcp_server.get_schema_data()
 
 PLUGIN_FACTORY = MyHybridPlugin
 ```
@@ -1827,26 +1776,37 @@ async def _tool_with_background_tasks(self, params: dict):
 
 Plugins can provide custom web interfaces and API endpoints accessible at `/plugins/<plugin_name>/`. This pattern allows plugins like `log_viewer` to serve web dashboards, APIs, and static assets:
 
-#### WebUI Button Configuration
+#### Panels in the WebUI
 
-**Important**: To make your plugin appear in the WebUI header, you must explicitly enable the button in `schema.yaml`:
+The WebUI finds panels through one catalogue: the shell loads `GET /api/ui/catalog`,
+which lists the core panels plus the `web_ui.panel` block of every registered web
+plugin, filtered by the viewer's role. Users open a panel from the launcher (grid
+button in the header), the command palette (Ctrl+K) or a context link in the chat.
+It opens as a tab docked beside the chat and can be detached into a floating window;
+every panel runs in an iframe.
 
 ```yaml
 web_ui:
-  button:
-    enabled: true  # REQUIRED! Defaults to false - button will be hidden if not set
-    text: "My Plugin"
-    icon: "🔧"
-
   panel:
-    title: "My Plugin Panel"
-    endpoint: "/plugins/my_plugin/panel"
-    type: "iframe"  # or "fetch" for JSON APIs
-    width: "800px"
-    height: "600px"
+    endpoint: "/plugins/{{ name }}/"
+    title: "My Plugin"
+    icon: wrench
+    category: agents
 ```
 
-**Common Mistake**: Forgetting `enabled: true` will cause the button to not appear, even if all other configuration is correct. The system defaults to `false` to allow plugins to provide web endpoints without UI buttons.
+A plugin's panel appears when:
+
+1. its `schema.yaml` has a valid `web_ui.panel` block (fields: [Web UI Fields Reference](#web-ui-fields-reference)),
+2. the plugin is registered as a web plugin, i.e. it provides `get_web_router()`,
+3. the registered plugin object returns that schema from `get_schema_data()`.
+   `SchemaBasedPluginWebInterface` and `SchemaBasedMCPServer` provide it; a wrapper
+   delegates to the component that owns the schema. Without it the catalogue sees no
+   `web_ui` block, and the panel is missing without an error.
+
+Check it with `python src/scripts/validate_plugin.py src/plugins/my_plugin` (the panel
+block goes through the catalogue's own parser) and with `GET /api/ui/catalog` on the
+running API. A panel block that does not parse is left out of the catalogue with an
+error log.
 
 #### Basic Web Endpoints
 
@@ -1879,15 +1839,6 @@ class MyWebEndpoints(PluginWebInterface):
             return "<h1>Custom Dashboard</h1><p>Plugin interface here</p>"
 
         return router
-
-    def get_panels(self) -> List[Dict[str, Any]]:
-        """Register UI panels in the main interface"""
-        return [{
-            "id": f"{self.name}_panel",
-            "title": "My Plugin Dashboard",
-            "url": f"/plugins/{self.name}/dashboard",
-            "icon": "dashboard"
-        }]
 ```
 
 #### Static Assets and Templates
@@ -1895,7 +1846,7 @@ class MyWebEndpoints(PluginWebInterface):
 ```python
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+from agent_system.ui.resources import ui_templates
 
 class MyWebEndpoints(PluginWebInterface):
     def __init__(self, name: str, config: dict):
@@ -1904,7 +1855,8 @@ class MyWebEndpoints(PluginWebInterface):
         # Setup templates and static files
         self.templates_dir = Path(__file__).parent / "templates"
         self.static_dir = Path(__file__).parent / "static"
-        self.templates = Jinja2Templates(directory=str(self.templates_dir))
+        # Searches the plugin's templates first, then the shared kit templates
+        self.templates = ui_templates(self.templates_dir)
 
     def get_web_router(self) -> APIRouter:
         router = APIRouter(prefix=f"/plugins/{self.name}")
@@ -1935,6 +1887,12 @@ class MyWebEndpoints(PluginWebInterface):
         """Return path to static assets directory"""
         return self.static_dir if self.static_dir.exists() else None
 ```
+
+Panel templates build on the UI kit: they extend `kit/panel_base.html`
+(`{% extends "kit/panel_base.html" %}`, blocks `title`, `toolbar`, `content`, `scripts`),
+and panel scripts import from `/static/kit/panel-kit.js`. `ui_templates()` is what lets
+a plugin template reach the kit templates. The component catalogue renders at `/ui/kit`;
+the full guide is `.claude/skills/panel-authoring/SKILL.md`.
 
 ### CLI Support (Required)
 
@@ -2481,8 +2439,8 @@ PLUGIN_FACTORY = MyPluginServer
 **Required for hybrid plugins:**
 - [ ] All MCP plugin requirements (above)
 - [ ] Web endpoints class extending `PluginWebInterface`
-- [ ] `web_ui` section in `schema.yaml` with panel/endpoint configuration
-- [ ] `get_web_router()` and `get_panels()` implementation
+- [ ] `web_ui` section in `schema.yaml`: `panel` (catalogue entry) and `endpoints`
+- [ ] `get_web_router()` implementation; the plugin object delegates `get_schema_data()`
 - [ ] Static assets handling (CSS, JS, images)
 - [ ] `plugin.toml` with `type: [mcp-server, web]` and `category` metadata
 
@@ -2492,7 +2450,7 @@ PLUGIN_FACTORY = MyPluginServer
 - [ ] `get_web_router()` returning FastAPI router with `/plugins/<name>/` prefix
 - [ ] `plugin.toml` with `type: [web]` and `category` metadata
 - [ ] Static assets handling (CSS, JS, images)
-- [ ] UI panels registration via `get_panels()`
+- [ ] Panel declared as `web_ui.panel`; `python src/scripts/validate_plugin.py <plugin dir>` passes and `GET /api/ui/catalog` lists it
 - [ ] Security considerations for web access
 
 **Required for CLI-only plugins:**

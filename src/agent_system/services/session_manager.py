@@ -1192,62 +1192,6 @@ class SessionManager:
         self._annotate_children_flag(user_id, children)
         return children
 
-    async def find_sessions(
-        self,
-        user_id: str,
-        *,
-        session_id: Optional[str] = None,
-        query: Optional[str] = None,
-        limit: int = 50,
-    ) -> List[Dict[str, Any]]:
-        """Server-side session lookup/search over the indices.
-
-        ``session_id``: existence + metadata for one session in O(1) (the
-        session file itself is the proof; no index scan). Lets the UI resolve a
-        session that is not currently loaded in the sidebar tree.
-
-        ``query``: case-insensitive substring match on the title across ALL
-        partitions. This is the expensive path (reads every sub-index), so it
-        only runs when the caller actually searches.
-        """
-        if session_id:
-            path = self._get_session_path(user_id, session_id)  # validates the id
-            if not path.exists():
-                return []
-            main = (await self._read_main_index_async(user_id)) or {}
-            meta = main.get(session_id)
-            if meta is None:
-                def read_meta() -> Optional[Dict[str, Any]]:
-                    try:
-                        with open(path, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("Failed to read session %s: %s", path, e)
-                        return None
-                    # Metadata only — never ship the message history here.
-                    return {k: v for k, v in data.items() if k != "messages"}
-                meta = await asyncio.to_thread(read_meta)
-            if not meta:
-                return []
-            meta = dict(meta)
-            meta["has_children"] = self._has_children(user_id, session_id)
-            return [meta]
-
-        if not query:
-            return []
-        needle = query.strip().lower()
-        if not needle:
-            return []
-        index_data = await self._read_all_indexes_async(user_id)
-        matches = [
-            meta for meta in index_data.values()
-            if needle in str(meta.get("title", "")).lower()
-        ]
-        matches.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
-        matches = matches[: max(1, limit)]
-        self._annotate_children_flag(user_id, matches)
-        return matches
-
     async def rename_session(self, user_id: str, session_id: str, new_title: str) -> None:
         """Rename a session.
         

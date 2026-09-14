@@ -81,7 +81,7 @@
     <button class="pk-tab" role="tab" aria-selected="false" aria-controls="kit-tab-b">Hooks</button>
     <button class="pk-tab" role="tab" aria-selected="false" aria-controls="kit-tab-c">Settings</button>
   </div>
-  <div id="kit-tab-a" class="pk-tabpanel" role="tabpanel">
+  <div id="kit-tab-a" role="tabpanel">
     <div class="pk-table-wrap">
       <table class="pk-table">
         <thead><tr><th>Time</th><th>Agent</th><th>Status</th><th class="pk-num">Duration</th></tr></thead>
@@ -93,10 +93,10 @@
       </table>
     </div>
   </div>
-  <div id="kit-tab-b" class="pk-tabpanel" role="tabpanel" hidden>
+  <div id="kit-tab-b" role="tabpanel" hidden>
     <div class="pk-empty">{{ icon('activity') }}<div class="pk-empty-title">No hook activity</div><div>Hooks show up here as soon as a request runs.</div></div>
   </div>
-  <div id="kit-tab-c" class="pk-tabpanel" role="tabpanel" hidden>
+  <div id="kit-tab-c" role="tabpanel" hidden>
     <dl class="pk-kv"><dt>Retention</dt><dd>5 GB</dd><dt>Capture</dt><dd>requests, responses, hooks</dd></dl>
   </div>
 </section>
@@ -165,14 +165,11 @@
 {% endblock %}
 {% block scripts %}
 <script type="module">
-  import { alert, confirm, prompt, toast, jsonView, render } from '/static/kit/panel-kit.js';
+  import { alert, confirm, prompt, toast, jsonView, render, setTheme } from '/static/kit/panel-kit.js';
 
+  // setTheme: remembered in the cookie, and in the shell every panel follows
   document.querySelectorAll('[data-theme-choice]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const theme = button.dataset.themeChoice;
-      document.documentElement.dataset.theme = theme;
-      document.cookie = `ui_theme=${theme}; path=/; max-age=31536000; samesite=lax`;
-    });
+    button.addEventListener('click', () => setTheme(button.dataset.themeChoice));
   });
 
   const demos = {

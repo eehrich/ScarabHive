@@ -644,7 +644,7 @@ CREATE TABLE users (
 - Sliding window implementation
 
 ### Security Headers
-- X-Frame-Options: DENY
+- X-Frame-Options: DENY -- except for the pages the shell shows in frames (`/ui/`, `/plugins/`, `/debug/`, `/api/security/audit`), which get SAMEORIGIN
 - X-Content-Type-Options: nosniff
 - X-XSS-Protection: 1; mode=block
 - Strict-Transport-Security (HSTS)
@@ -731,83 +731,46 @@ The system includes a comprehensive web-based user management interface accessib
 **Access:**
 1. Navigate to `http://127.0.0.1:8000/` (web UI home)
 2. Login with admin credentials
-3. Click on the user profile dropdown (top-right corner)
-4. Select "Manage Users" from the dropdown menu
+3. Open the panel launcher (grid button in the header) or the command palette (Ctrl+K)
+4. Choose "Users"
 
 **Plugin Configuration:**
 
-The user management plugin is configured via `src/plugins/user_management/schema.yaml`:
+The user management plugin declares its panel in `src/plugins/user_management/schema.yaml`:
 
 ```yaml
 web_ui:
-  button:
-    enabled: false  # No header button
-  
-  menu:
-    enabled: true
-    items:
-      - id: "manage_users"
-        menu_id: "user_dropdown"
-        section: "admin"
-        label: "Manage Users"
-        action: "openPanel"
-        panel_id: "user_management"
-        icon: "users"
-        requires_admin: true
-        order: 10
-  
   panel:
-    enabled: true
-    title: "User Management"
-    endpoint: "/plugins/user_management/"
-    type: "iframe"
+    endpoint: "/plugins/{{ name }}/"
+    title: "Users"
+    description: "User accounts, roles and permissions"
+    icon: users
+    category: admin
+    keywords: [accounts, roles, permissions]
+    window: {width: 960, height: 680}
 ```
 
-### Dropdown Menu System
+### Panels and Roles
 
-The web UI features a flexible dropdown menu system that supports:
+Plugins contribute panels to the web UI. The shell loads the panel catalogue from `GET /api/ui/catalog`: the core panels plus the `web_ui.panel` block of every registered web plugin, filtered by the viewer's role. The launcher, the command palette and the context links in the chat all read this list.
 
-- **User Profile Menu**: Account settings, profile, logout
-- **Admin Menu**: User management, system settings (admin-only items)
-- **Dynamic Menu Items**: Plugins can contribute menu items via schema configuration
-- **Role-Based Filtering**: Menu items automatically hidden based on user role
-- **Real-time Updates**: Menu reflects authentication state changes
-
-**Menu Configuration in Plugins:**
-
-Plugins can add menu items by defining them in `schema.yaml`:
-
-```yaml
-web_ui:
-  menu:
-    enabled: true
-    items:
-      - id: "my_feature"
-        menu_id: "user_dropdown"  # or "admin_dropdown"
-        section: "tools"
-        label: "My Feature"
-        action: "openPanel"  # or "navigate"
-        panel_id: "my_plugin_panel"
-        icon: "wrench"
-        requires_admin: false
-        order: 20
-```
+- **Account Menu**: the avatar in the header opens a menu with the user's name and role, Settings, System and Log out
+- **Role-Based Filtering**: a plugin panel is listed for the roles that may open its endpoint -- the same rules in `config/config.yaml` that guard the plugin's routes decide, app-wide `auth.endpoint_security` and `auth.plugin_security` together, so an admin-only route (like the `endpoint_rules` entry for `/plugins/user_management/*`) is an admin-only panel. With authentication disabled the viewer counts as admin and sees every panel
 
 ### Authentication Flow in Web UI
 
 1. **Login Page**: `http://127.0.0.1:8000/login`
    - Username/password authentication
-   - JWT token stored in cookie and localStorage
+   - JWT token stored in an HttpOnly `access_token` cookie
    - Automatic redirect to home page on success
 
 2. **Authenticated Session**:
-   - User profile dropdown appears in header
-   - Admin-only menu items visible for admin users
-   - All API requests include Bearer token
+   - The account menu in the header shows the user's name and role
+   - Admin-only panels appear in the launcher and the command palette for admins only
+   - API requests from the shell and its panels carry the cookie (same origin)
 
 3. **Logout**:
-   - Token cleared from browser
-   - Real-time UI update (dropdown menu disappears)
+   - `POST /auth/logout` removes the cookie
    - Redirect to login page
 
 ## Future Enhancements

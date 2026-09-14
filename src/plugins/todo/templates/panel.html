@@ -447,26 +447,10 @@
                 console.log('[TODO Manager] Cannot access parent sessionManager:', e.message);
             }
             
-            // Method 2: Parse from parent's DOM
-            try {
-                if (window.parent && window.parent !== window) {
-                    const headerEl = window.parent.document.getElementById('headerSessionId');
-                    if (headerEl && headerEl.textContent && headerEl.textContent !== '--') {
-                        return headerEl.textContent;
-                    }
-                }
-            } catch (e) {
-                console.log('[TODO Manager] Cannot access parent DOM:', e.message);
-            }
-            
-            // Method 3: URL parameter
+            // Method 2: URL parameter
             const urlParams = new URLSearchParams(window.location.search);
             const urlSessionId = urlParams.get('session_id');
             if (urlSessionId) return urlSessionId;
-            
-            // Method 4: LocalStorage fallback
-            const storedSessionId = localStorage.getItem('currentSessionId');
-            if (storedSessionId) return storedSessionId;
             
             return null;
         }
@@ -498,13 +482,17 @@
         
         async function refreshData() {
             try {
-                const sessionId = currentSessionOnly ? getCurrentSessionId() : null;
-                
-                // Fetch stats
-                const statsUrl = `/plugins/{{ name }}/stats${sessionId ? '?session_id=' + sessionId : ''}`;
-                const statsResp = await fetch(statsUrl);
-                const stats = await statsResp.json();
-                
+                const scope = () => currentSessionOnly ? getCurrentSessionId() : null;
+                const sessionId = scope();
+                const query = sessionId ? '?session_id=' + sessionId : '';
+                const json = (url) => fetch(url).then((response) => response.json());
+                const [stats, tasksData] = await Promise.all([
+                    json(`/plugins/{{ name }}/stats${query}`),
+                    json(`/plugins/{{ name }}/tasks${query}`),
+                ]);
+                // the session or scope switched to meanwhile has its own refresh on the way
+                if (scope() !== sessionId) return;
+
                 // Update stats
                 document.getElementById('total-tasks').textContent = stats.total_tasks || 0;
                 document.getElementById('not-started-tasks').textContent = stats.not_started || 0;
@@ -518,11 +506,6 @@
                 const progressFill = document.getElementById('progress-fill');
                 progressFill.style.width = `${completionRate}%`;
                 progressBar.setAttribute('data-progress', `${completionRate.toFixed(1)}%`);
-                
-                // Fetch tasks
-                const tasksUrl = `/plugins/{{ name }}/tasks${sessionId ? '?session_id=' + sessionId : ''}`;
-                const tasksResp = await fetch(tasksUrl);
-                const tasksData = await tasksResp.json();
                 
                 // Store all tasks
                 allTasks = Object.values(tasksData.tasks || {});
@@ -721,6 +704,12 @@
         // Initialize
         refreshData();
         autoRefreshInterval = setInterval(refreshData, 5000);
+
+        // the shell names its session on every change, after a reload a moment after this panel loaded
+        window.addEventListener('message', (event) => {
+            if (event.source === window.parent && event.origin === window.location.origin
+                && event.data?.type === 'pk:session') refreshData();
+        });
     </script>
 </body>
 </html>

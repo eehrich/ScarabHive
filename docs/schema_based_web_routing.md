@@ -59,10 +59,11 @@ schema.yaml
 ```yaml
 # schema.yaml
 web_ui:
-  panel:
-    enabled: true
+  panel:                              # catalogue entry, see plugin_authoring.md
     title: "My Plugin"
     endpoint: "/plugins/{{ name }}/"
+    icon: puzzle
+    category: agents
   
   endpoints:
     - path: "/"
