@@ -1553,6 +1553,20 @@ class TestFollowups:
         assert not done.metadata.get("continue")
 
     @pytest.mark.asyncio
+    async def test_followups_can_be_limited_to_the_first_request_of_a_session(self):
+        plugin = _make_plugin()
+        first = await plugin.evaluate_completion(_followup_context(_history(), followups_on_continue=False))
+        assert first.metadata["continue_message"] == FOLLOWUPS[0]
+        second = await plugin.evaluate_completion(
+            _followup_context(_history("followup"), followups_on_continue=False))
+        assert second.metadata["continue_message"] == FOLLOWUPS[1], "the first request keeps its whole list"
+        continued = await plugin.evaluate_completion(
+            _followup_context(_history("followup", "followup", "person"), followups_on_continue=False))
+        assert not continued.metadata.get("continue"), "a continued session gets no follow-up"
+        default = await plugin.evaluate_completion(_followup_context(_history("followup", "followup", "person")))
+        assert default.metadata["continue_message"] == FOLLOWUPS[0], "default unchanged"
+
+    @pytest.mark.asyncio
     async def test_followups_count_against_the_budget(self):
         plugin = _make_plugin()
         await plugin.evaluate_completion(_followup_context(_history()))

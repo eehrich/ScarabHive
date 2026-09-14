@@ -112,6 +112,11 @@ user → tools → final → follow-up 1 → tools → final → follow-up 2 →
   `injected_by: agent_continuation.followup` since the last message a person
   wrote. Every new request — also a pipeline continuing a sub-agent — starts
   the list again.
+- `followups_on_continue: false` sends the list only on the **first** request
+  of a session. A request that continues a session (an earlier assistant
+  answer precedes it) gets none — a pipeline can then continue the instance
+  for a narrow question ("which beat does this belong to?") without the
+  follow-up replacing that answer. A new session still gets the list.
 - Follow-ups count against `max_continuations`, and none is sent once it is
   reached: the ceiling on a history that lost its markers.
 - Each round costs steps; `max_steps` must leave room for them.

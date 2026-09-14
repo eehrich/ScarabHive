@@ -297,6 +297,11 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         FOLLOWUP_MARKER after the last user message a person wrote (one with
         no ``injected_by``). A new request starts the list again; a cancelled
         run leaves nothing behind.
+
+        ``followups_on_continue: false`` limits the list to the first request
+        of a session: when an assistant answer precedes that user message, the
+        request continues an earlier one (a pipeline asking a scorer to
+        re-check or to assign ids) and gets no follow-up.
         """
         raw = agent_cfg.get("followups") or []
         if isinstance(raw, str):
@@ -306,15 +311,23 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         followups = [str(item).strip() for item in raw if str(item).strip()]
         if not followups:
             return None
+        messages = list(context.messages or [])
         sent = 0
-        for msg in reversed(context.messages or []):
+        request_start = 0
+        for pos in range(len(messages) - 1, -1, -1):
+            msg = messages[pos]
             if getattr(msg, "role", None) != "user":
                 continue
             marker = getattr(msg, "injected_by", None)
             if marker is None:
+                request_start = pos
                 break
             if marker == FOLLOWUP_MARKER:
                 sent += 1
+        if agent_cfg.get("followups_on_continue") is False and any(
+            getattr(msg, "role", None) == "assistant" for msg in messages[:request_start]
+        ):
+            return None
         if sent >= len(followups):
             return None
         return sent, followups[sent]

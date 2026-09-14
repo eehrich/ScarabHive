@@ -75,5 +75,5 @@ config:
     description: >
       Per-agent configuration.  Keys are agent names, values are objects
       with optional keys: strategy, continue_message, default, rules,
-      llm_prompt, max_continuations, followups.
+      llm_prompt, max_continuations, followups, followups_on_continue.
       Agents that don't appear here use the global strategy/defaults.
