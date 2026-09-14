@@ -91,6 +91,28 @@ def _allow_bare_skills_list(defs: dict) -> None:
             0, {"type": "array", "items": {"type": "string"}})
 
 
+def _allow_empty_hook_keys(hooks: dict, defs: dict) -> None:
+    """Mirror models.strip_empty_yaml_keys: an empty YAML key is "nothing set".
+
+    A key whose lines are all commented out loads as null -- ``enabled:``,
+    ``overrides:``, ``some.hook:`` or ``before:`` with nothing under it. The
+    loader drops those at every depth of ``hooks:`` (a before-validator,
+    invisible to model_json_schema()); without this the editor would flag
+    them. The fields of an override are Optional already.
+    """
+    for name, prop in list(hooks["properties"].items()):
+        hooks["properties"][name] = _null_or(prop)
+    overrides = hooks["properties"]["overrides"]["anyOf"][0]
+    overrides["additionalProperties"] = _null_or(overrides["additionalProperties"])
+    order = defs["HookOrderConfig"]["properties"]
+    for name, prop in list(order.items()):
+        order[name] = _null_or(prop)
+
+
+def _null_or(schema: dict) -> dict:
+    return {"anyOf": [schema, {"type": "null"}]}
+
+
 def _require_server_type(defs: dict) -> None:
     """A server entry must name its ``type``.
 
@@ -167,6 +189,8 @@ def build_main_schema() -> dict:
     _forbid_unknown_keys(schema)
     defs = _hoist_defs(schema)
     _require_server_type(defs)
+    _allow_empty_hook_keys(defs["GlobalHooksConfig"], defs)
+    schema["properties"]["hooks"] = _null_or(schema["properties"]["hooks"])
     schema.update({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Main Configuration Schema",
@@ -180,55 +204,19 @@ def build_main_schema() -> dict:
 
 
 def build_plugins_schema() -> dict:
-    """Schema for config/plugins.yaml: plugins: (PluginsConfig) + hooks:.
-
-    The hooks: section is loaded by hooks/config.py::HooksConfig — a plain
-    class, not a Pydantic model, so its (three-field) shape is spelled out
-    here by hand. If HooksConfig grows a field, add it here; the anti-drift
-    test validates the REAL plugins.yaml, so a used-but-missing field goes
-    red there.
-    """
-    from agent_system.config.models import PluginsConfig
+    """Schema for config/plugins.yaml: plugins: (PluginsConfig) + hooks:
+    (GlobalHooksConfig -- a model since load_settings merges the section)."""
+    from agent_system.config.models import GlobalHooksConfig, PluginsConfig
 
     plugins_inner = PluginsConfig.model_json_schema()
     _forbid_unknown_keys(plugins_inner)
     defs = _hoist_defs(plugins_inner)
     _require_server_type(defs)
 
-    hook_override = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "enabled": {"type": "boolean"},
-            "timeout": {"type": "number", "exclusiveMinimum": 0},
-            "order": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "before": {"type": "array", "items": {"type": "string"}},
-                    "after": {"type": "array", "items": {"type": "string"}},
-                },
-            },
-        },
-    }
-    hooks_section = {
-        "type": "object",
-        "description": (
-            "Global hook settings (hooks/config.py::HooksConfig). Override "
-            "keys: plugin_name.hook_name (exact, wins) or plugin_name "
-            "(all hooks of that plugin)."
-        ),
-        "additionalProperties": False,
-        "properties": {
-            "enabled": {"type": "boolean", "default": True},
-            "default_timeout": {"type": "number", "exclusiveMinimum": 0,
-                                "default": 30.0},
-            "overrides": {
-                "type": "object",
-                "additionalProperties": hook_override,
-            },
-        },
-    }
+    hooks_section = GlobalHooksConfig.model_json_schema()
+    _forbid_unknown_keys(hooks_section)
+    defs.update(_hoist_defs(hooks_section))
+    _allow_empty_hook_keys(hooks_section, defs)
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Plugins Configuration Schema",
@@ -239,28 +227,24 @@ def build_plugins_schema() -> dict:
         "type": "object",
         "required": ["plugins"],
         "additionalProperties": False,
-        "properties": {"plugins": plugins_inner, "hooks": hooks_section},
+        "properties": {"plugins": plugins_inner, "hooks": _null_or(hooks_section)},
         "$defs": defs,
     }
 
 
 #: Sections settings.py lifts out of an included file. Everything else in a
-#: part is dropped without a word — `hooks:` included, which HooksConfig reads
-#: straight out of config/plugins.yaml and nowhere else.
-_MERGED_PART_SECTIONS = ("llm_system", "plugins", "external_servers")
+#: part is dropped without a word.
+_MERGED_PART_SECTIONS = ("llm_system", "plugins", "external_servers", "hooks")
 
 
 def build_config_part_schema() -> dict:
     """Schema for an included config file (config/config.yaml -> ``includes:``).
 
     That is where the agents live: config/agents/*.yaml and the 85 files under
-    src/plugins*/*/agents/. A part carries any of the three merged sections,
-    none of them required — an agent file has ``plugins:``, mcp_servers.yaml
-    has ``external_servers:``, llm_openrouter.yaml has ``llm_system:``.
-
-    Deliberately NOT the plugins schema: that one permits ``hooks:``, which
-    only config/plugins.yaml is read for. In a part it would look right and do
-    nothing.
+    src/plugins*/*/agents/. A part carries any of the merged sections, none of
+    them required — an agent file has ``plugins:``, mcp_servers.yaml has
+    ``external_servers:``, llm_openrouter.yaml has ``llm_system:``, and
+    ``hooks:`` is merged from a part like from config/plugins.yaml.
     """
     from agent_system.config.models import AgentSystemConfig
 
@@ -269,6 +253,8 @@ def build_config_part_schema() -> dict:
     defs = _hoist_defs(schema)
     _add_model_inheritance(schema, defs)
     _require_server_type(defs)
+    _allow_empty_hook_keys(defs["GlobalHooksConfig"], defs)
+    schema["properties"]["hooks"] = _null_or(schema["properties"]["hooks"])
 
     properties = {name: schema["properties"][name] for name in _MERGED_PART_SECTIONS}
     return {
@@ -277,7 +263,7 @@ def build_config_part_schema() -> dict:
         "description": (
             "JSON Schema for a config file pulled in by config/config.yaml's "
             "includes: (agent configs, mcp_servers.yaml). Only llm_system, "
-            "plugins and external_servers are merged out of it. " + _GENERATED_NOTE
+            "plugins, external_servers and hooks are merged out of it. " + _GENERATED_NOTE
         ),
         "type": "object",
         "additionalProperties": False,

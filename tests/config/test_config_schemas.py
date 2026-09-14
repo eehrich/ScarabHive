@@ -136,18 +136,40 @@ def test_every_config_part_the_editor_maps_validates():
 
 
 def test_a_part_file_may_not_carry_a_section_the_loader_drops():
-    """settings.py lifts llm_system, plugins and external_servers out of an
-    included file and drops the rest silently. `hooks:` is the trap: valid in
-    config/plugins.yaml, which HooksConfig reads by path, and dead anywhere
-    else -- which is why a part gets its own schema instead of the plugins one.
+    """settings.py lifts llm_system, plugins, external_servers and hooks out
+    of an included file and drops the rest silently. `network:` is valid in
+    config/config.yaml and dead in a part -- which is why a part gets its own
+    schema instead of the main one.
     """
     data = yaml.safe_load(
         (REPO_ROOT / "config/agents/agents.yaml").read_text(encoding="utf-8"))
-    data["hooks"] = {"enabled": True}
     validator = Draft202012Validator(_schema_from_file("config-part.schema.json"))
-    assert list(validator.iter_errors(data)), (
-        "a hooks: section in an included part validated cleanly — the editor "
-        "would confirm a section nothing reads")
+
+    dropped = dict(data, network={"host": "127.0.0.1"})
+    assert list(validator.iter_errors(dropped)), (
+        "a network: section in an included part validated cleanly — the "
+        "editor would confirm a section nothing reads")
+
+    # hooks: IS merged from a part now (it used to be read from
+    # config/plugins.yaml by path), so the editor must accept it
+    merged = dict(data, hooks={"enabled": True})
+    assert list(validator.iter_errors(merged)) == []
+
+
+@pytest.mark.parametrize("filename", ["plugins-config.schema.json",
+                                      "config-part.schema.json",
+                                      "main-config.schema.json"])
+def test_an_empty_hooks_key_is_accepted_like_the_loader_does(filename):
+    """A key whose lines are all commented out is null; the models read it as
+    "nothing set", so the editor must not flag it."""
+    validator = Draft202012Validator(_schema_from_file(filename))
+    base = {"plugins": {"servers": {}}} if filename == "plugins-config.schema.json" else {}
+    for hooks in (None, {"enabled": None, "default_timeout": None},
+                  {"overrides": None}, {"overrides": {"p.h": None}},
+                  {"overrides": {"p.h": {"order": None, "enabled": None}}},
+                  {"overrides": {"p.h": {"order": {"before": None, "after": None}}}}):
+        errors = [e.message for e in validator.iter_errors(dict(base, hooks=hooks))]
+        assert errors == [], (hooks, errors)
 
 
 def test_a_server_entry_must_name_its_type():

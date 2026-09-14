@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Config Part Schema",
-  "description": "JSON Schema for a config file pulled in by config/config.yaml's includes: (agent configs, mcp_servers.yaml). Only llm_system, plugins and external_servers are merged out of it. GENERATED from agent_system.config.models by src/scripts/generate_config_schemas.py — do not edit by hand.",
+  "description": "JSON Schema for a config file pulled in by config/config.yaml's includes: (agent configs, mcp_servers.yaml). Only llm_system, plugins, external_servers and hooks are merged out of it. GENERATED from agent_system.config.models by src/scripts/generate_config_schemas.py — do not edit by hand.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -37,6 +37,16 @@
         }
       ],
       "default": null
+    },
+    "hooks": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GlobalHooksConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "$defs": {
@@ -685,6 +695,60 @@
       "type": "object",
       "additionalProperties": false
     },
+    "GlobalHooksConfig": {
+      "additionalProperties": false,
+      "description": "Global hook settings: the top-level ``hooks:`` section of\nconfig/plugins.yaml or any included file, merged by load_settings like\n``plugins:``. Not the per-agent ``agent_config.hooks``.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "default": true,
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "default_timeout": {
+          "anyOf": [
+            {
+              "default": 30.0,
+              "exclusiveMinimum": 0,
+              "title": "Default Timeout",
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overrides": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/HookOverrideConfig"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": "Overrides",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "GlobalHooksConfig",
+      "type": "object"
+    },
     "HTTPXTimeoutConfig": {
       "description": "HTTPX timeout configuration",
       "properties": {
@@ -712,6 +776,86 @@
       "title": "HTTPXTimeoutConfig",
       "type": "object",
       "additionalProperties": false
+    },
+    "HookOrderConfig": {
+      "additionalProperties": false,
+      "description": "Where a hook runs relative to others (names, or the virtual begin/end).",
+      "properties": {
+        "before": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "title": "Before",
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "title": "After",
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "HookOrderConfig",
+      "type": "object"
+    },
+    "HookOverrideConfig": {
+      "additionalProperties": false,
+      "description": "Operator override for one hook. Only the fields that are set apply.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "order": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HookOrderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "HookOverrideConfig",
+      "type": "object"
     },
     "HooksConfig": {
       "description": "Hook system configuration for individual agents.",

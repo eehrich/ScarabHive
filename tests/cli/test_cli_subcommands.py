@@ -150,6 +150,30 @@ def test_bad_llm_params_are_refused_before_the_bootstrap(monkeypatch, capsys, ll
     assert "--llm-params" in capsys.readouterr().err
 
 
+def test_a_mistyped_llm_profile_is_refused_before_the_bootstrap(monkeypatch, capsys):
+    """It was checked only after the whole plugin start."""
+    from agent_system.config.models import LLMModelConfig, LLMProfile, LLMSystemConfig
+    from agent_system.services import initialization_service
+
+    cfg = AgentSystemConfig(llm_system=LLMSystemConfig(
+        models={"m": LLMModelConfig(provider="openai", model="m")},
+        profiles={"normal": LLMProfile(model_ref="m")}))
+    monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
+
+    def no_bootstrap_expected(self):
+        raise AssertionError("bootstrapped -- the refusal came too late")
+
+    monkeypatch.setattr(initialization_service.InitializationService,
+                        "initialize_for_cli", no_bootstrap_expected)
+    monkeypatch.setattr("sys.argv", ["agent-cli", "run", "task", "--llm", "nromal"])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "'nromal' not found" in err and "normal" in err
+
+
 def test_users_short_help_is_help(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["agent-cli", "users", "-h"])
     with pytest.raises(SystemExit) as exit_info:

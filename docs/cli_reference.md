@@ -342,8 +342,7 @@ agent-cli hooks inspect PLUGIN.HOOK                # alle Angaben als JSON
 
 ENABLED ist der Stand der Registry nach `schema.yaml`, `hooks.overrides` und
 dem `hook_config` der Instanz — nicht die Überschreibung einzelner Agenten.
-`hooks.overrides` kommt aus `config/plugins.yaml` relativ zum
-Arbeitsverzeichnis, unabhängig von `--config`.
+`hooks.overrides` kommt aus der geladenen Config (`--config`).
 Ausführungsstatistiken gibt es hier nicht: sie liegen im Speicher des
 Prozesses, der die Hooks ausführt (API-Server), den ein CLI-Aufruf nie sieht.
 

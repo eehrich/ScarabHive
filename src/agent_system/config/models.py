@@ -1222,6 +1222,64 @@ class AuthConfig(BaseModel):
     plugin_security: PluginSecurityConfig = Field(default_factory=PluginSecurityConfig)
 
 
+class HookOrderConfig(BaseModel):
+    """Where a hook runs relative to others (names, or the virtual begin/end)."""
+    model_config = ConfigDict(extra="forbid")
+
+    before: List[str] = Field(default_factory=list)
+    after: List[str] = Field(default_factory=list)
+
+
+def strip_empty_yaml_keys(section: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop what YAML leaves behind when every line under a key is commented
+    out: a null, and a mapping that held nothing else. Nothing set -- at any
+    depth. Lists are left alone: `before: [null]` is a mistake, not a comment.
+
+    Without it a null reached hook registration as `order: None` (the hook was
+    lost without a word), an emptied `p.h:` hid the plugin-wide `p` override,
+    and a later file's empty `enabled:` switched hooks back on over an
+    earlier file's `enabled: false`.
+    """
+    kept: Dict[str, Any] = {}
+    for key, value in section.items():
+        if value is None:
+            continue
+        if isinstance(value, dict) and value:
+            value = strip_empty_yaml_keys(value)
+            if not value:
+                continue
+        kept[key] = value
+    return kept
+
+
+class HookOverrideConfig(BaseModel):
+    """Operator override for one hook. Only the fields that are set apply."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: Optional[bool] = None
+    timeout: Optional[float] = Field(default=None, gt=0)
+    order: Optional[HookOrderConfig] = None
+
+
+class GlobalHooksConfig(BaseModel):
+    """Global hook settings: the top-level ``hooks:`` section of
+    config/plugins.yaml or any included file, merged by load_settings like
+    ``plugins:``. Not the per-agent ``agent_config.hooks``."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True  # Master switch for all hooks
+    default_timeout: float = Field(default=30.0, gt=0)
+    # Keys: plugin_name.hook_name (exact, wins) or plugin_name (all its hooks)
+    overrides: Dict[str, HookOverrideConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_empty_keys(cls, data: Any) -> Any:
+        if data is None:  # `hooks:` with everything under it commented out
+            return {}
+        return strip_empty_yaml_keys(data) if isinstance(data, dict) else data
+
+
 class AgentSystemConfig(BaseModel):
     """Main configuration model for the entire AgentSystem"""
     # Basic metadata
@@ -1251,3 +1309,4 @@ class AgentSystemConfig(BaseModel):
     # New structure (Epic 0044) - matches YAML keys
     plugins: Optional[PluginsConfig] = None  # From config/plugins.yaml -> plugins:
     external_servers: Optional[MCPServersConfig] = None  # From config/mcp_servers.yaml -> external_servers:
+    hooks: GlobalHooksConfig = Field(default_factory=GlobalHooksConfig)  # From config/plugins.yaml -> hooks:

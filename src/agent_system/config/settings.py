@@ -16,7 +16,7 @@ import yaml
 from agent_system.utils import yaml_io
 import glob as glob_module
 
-from .models import AgentSystemConfig, MCPConfig
+from .models import AgentSystemConfig, MCPConfig, strip_empty_yaml_keys
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +239,27 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                     if "external_servers" in part:
                         # mcp_servers.yaml uses "external_servers" key
                         data["external_servers"] = part["external_servers"]
+
+                    # Global hook settings (plugins.yaml). Dropped here, they
+                    # were re-read from config/plugins.yaml relative to the
+                    # working directory -- ignoring --config.
+                    if "hooks" in part:
+                        section, current = part["hooks"], data.get("hooks")
+                        if isinstance(section, dict):
+                            # Before the merge: an empty key sets nothing, it
+                            # must not overwrite an earlier file's value with
+                            # null (which the model then turns into a default)
+                            section = strip_empty_yaml_keys(section)
+                        if section is None:
+                            pass  # every line commented out: nothing set here
+                        elif isinstance(section, dict) and isinstance(current, dict):
+                            data["hooks"] = deep_merge(current, section)
+                        elif current is None or isinstance(current, dict):
+                            # The first section -- or a wrong shape (`hooks: []`),
+                            # kept as it is so GlobalHooksConfig rejects it by
+                            # name. deep_merge on it raised inside the per-file
+                            # except and logged the whole file as skipped.
+                            data["hooks"] = section
                     
                 except yaml.YAMLError as e:
                     # Log YAML syntax errors and continue (allows other configs to load)

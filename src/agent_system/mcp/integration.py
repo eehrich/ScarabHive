@@ -172,8 +172,9 @@ class MCPIntegration:
         from ..hooks import load_hooks_config
         from ..config.settings import get_mcp_config_by_name
         
-        hooks_config = load_hooks_config()
-        
+        # From the config this integration runs on, not from a file path
+        hooks_config = load_hooks_config(config)
+
         for server_name in self.plugin_registry.list_servers():
             server = self.plugin_registry.get_server(server_name)
             

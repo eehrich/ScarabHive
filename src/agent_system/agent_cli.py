@@ -419,6 +419,18 @@ def close_cli_loop() -> None:
         asyncio.set_event_loop(None)
 
 
+def _exit_on_unknown_profile(config: AgentSystemConfig, profile: str) -> None:
+    """Exit 1 with the available profiles when `profile` is not configured."""
+    profiles = config.llm_system.profiles if config.llm_system else {}
+    if profile in profiles:
+        return
+    error_msg = f"ERROR: LLM profile '{profile}' not found in configuration."
+    if profiles:
+        error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(sorted(profiles))
+    print(error_msg, file=sys.stderr)
+    sys.exit(1)
+
+
 def _run_users_cli(users_args: List[str], config_path: Optional[str]) -> None:
     """Hand `agent-cli users ...` to the typer app, tokens as typed."""
     from .cli_utils import users as users_cli
@@ -706,6 +718,14 @@ def main() -> None:
     vprint("[cli] verbose mode on")
     vprint(f"[cli] loading config: {args.config or os.environ.get('AGENT_CONFIG_PATH') or 'config/config.yaml'}")
     config = load_settings(args.config)
+    # A mistyped --llm needs only the config to be recognised -- behind the
+    # bootstrap it cost the whole plugin start before the error. Not with
+    # --list-sessions: the listing needs no profile and must not be hidden
+    # by a broken one.
+    if (getattr(args, "llm_profile_override", None)
+            and getattr(args, "list_sessions", None) is None
+            and config.llm_system and config.llm_system.profiles):
+        _exit_on_unknown_profile(config, args.llm_profile_override)
     # If user requested plugin listing, handle and exit early (no heavy bootstrap)
     if args.subcommand == "reload":
         # NB: kein lokales `import os` hier — das würde `os` zu einer lokalen
@@ -1233,13 +1253,9 @@ def main() -> None:
             llm_profile_override or agent.agent_config.default_llm_profile
         )
         if config.llm_system and config.llm_system.profiles:
-            if effective_profile not in config.llm_system.profiles:
-                available_profiles = sorted(config.llm_system.profiles.keys())
-                error_msg = f"ERROR: LLM profile '{effective_profile}' not found in configuration."
-                if available_profiles:
-                    error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
-                print(error_msg, file=sys.stderr)
-                sys.exit(1)
+            # An explicit --llm was checked before the bootstrap already; this
+            # catches the agent's own default profile.
+            _exit_on_unknown_profile(config, effective_profile)
 
             try:
                 # Use factory function that properly handles batch mode

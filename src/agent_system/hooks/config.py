@@ -1,24 +1,25 @@
 """
-Hook configuration loading and management.
+Hook configuration and management.
 
-Loads hook configuration from config/plugins.yaml and provides
-utilities for applying global overrides to plugin hooks.
+Turns the global ``hooks:`` section of the loaded configuration
+(AgentSystemConfig.hooks) into a HooksConfig and provides utilities for
+applying its overrides to plugin hooks.
 """
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent_system.utils import yaml_io
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentSystemConfig
 
 logger = logging.getLogger(__name__)
 
 
 class HooksConfig:
     """
-    Configuration for plugin hooks loaded from config/plugins.yaml.
-    
+    Global hook settings, as load_hooks_config reads them from the config.
+
     Provides global hook settings and per-hook overrides that can be applied
     during plugin bootstrap to customize hook behavior.
     """
@@ -121,71 +122,25 @@ class HooksConfig:
         
         return updated
     
-    @classmethod
-    def from_yaml(cls, config_path: str | Path) -> "HooksConfig":
-        """
-        Load hooks configuration from YAML file.
-        
-        Args:
-            config_path: Path to config/plugins.yaml
-            
-        Returns:
-            HooksConfig instance
-            
-        Raises:
-            FileNotFoundError: If config file doesn't exist
-            ValueError: If hooks section is invalid
-        """
-        config_path = Path(config_path)
-        
-        if not config_path.exists():
-            logger.warning(f"Hooks config not found at {config_path}, using defaults")
-            return cls()
-        
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                data = yaml_io.safe_load(f) or {}
-            
-            hooks_section = data.get("hooks", {})
-            
-            return cls(
-                enabled=hooks_section.get("enabled", True),
-                default_timeout=hooks_section.get("default_timeout", 30.0),
-                overrides=hooks_section.get("overrides", {})
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to load hooks config from {config_path}: {e}", exc_info=True)
-            return cls()  # Return defaults on error
-    
-    @classmethod
-    def from_plugins_config(cls, plugins_config_path: str | Path = "config/plugins.yaml") -> "HooksConfig":
-        """
-        Convenience method to load from default plugins config location.
-        
-        Args:
-            plugins_config_path: Path to plugins.yaml (default: config/plugins.yaml)
-            
-        Returns:
-            HooksConfig instance
-        """
-        return cls.from_yaml(plugins_config_path)
+def load_hooks_config(settings: Optional["AgentSystemConfig"] = None) -> HooksConfig:
+    """The global hook settings of an already loaded configuration.
 
-
-def load_hooks_config(config_path: Optional[str | Path] = None) -> HooksConfig:
+    They come from the ``hooks:`` section that load_settings merged -- the
+    config the caller runs on. This used to open config/plugins.yaml relative
+    to the working directory instead, whatever --config or AGENT_CONFIG_PATH
+    named. No file is read here: without ``settings`` the defaults apply.
     """
-    Load hooks configuration from file.
-    
-    Args:
-        config_path: Optional path to config file (default: config/plugins.yaml)
-        
-    Returns:
-        HooksConfig instance
-    """
-    if config_path is None:
-        config_path = Path("config/plugins.yaml")
-    
-    return HooksConfig.from_yaml(config_path)
+    if settings is None:
+        return HooksConfig()
+    section = settings.hooks
+    return HooksConfig(
+        enabled=section.enabled,
+        default_timeout=section.default_timeout,
+        # Unset fields stay absent: register_plugin_hooks asks
+        # `'timeout' in override` -- a dumped None would count as set.
+        overrides={name: override.model_dump(exclude_unset=True)
+                   for name, override in section.overrides.items()},
+    )
 
 
 def validate_hook_references(

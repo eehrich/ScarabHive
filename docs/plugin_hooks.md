@@ -577,9 +577,17 @@ hooks:
 ```
 
 Ein globaler Override kennt genau diese drei Keys (`enabled`, `timeout`,
-`order`) — der Loader liest nichts anderes. Plugin-spezifische Parameter
-gehören in die Hook-Metadaten des Plugins bzw. die Agent-Overrides
+`order`) — ein anderer Key (Tippfehler wie `timout`) lässt `load_settings`
+scheitern, statt still wirkungslos zu bleiben. Ein leerer Schlüssel (alle
+Zeilen darunter auskommentiert) heißt „nichts gesetzt“. Plugin-spezifische
+Parameter gehören in die Hook-Metadaten des Plugins bzw. die Agent-Overrides
 (`agent_config.hooks.overrides`), nicht hierher.
+
+Der `hooks:`-Abschnitt wird wie `plugins:` beim Laden der Config
+zusammengeführt (`AgentSystemConfig.hooks`) — aus `config/plugins.yaml` oder
+jeder anderen per `includes` geladenen Datei, und zwar der Config, mit der der
+Prozess läuft (`--config`, `AGENT_CONFIG_PATH`), unabhängig vom
+Arbeitsverzeichnis.
 
 ### Agent-Level Config
 

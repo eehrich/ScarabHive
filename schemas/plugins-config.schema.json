@@ -34,54 +34,65 @@
       "additionalProperties": false
     },
     "hooks": {
-      "type": "object",
-      "description": "Global hook settings (hooks/config.py::HooksConfig). Override keys: plugin_name.hook_name (exact, wins) or plugin_name (all hooks of that plugin).",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "default": true
-        },
-        "default_timeout": {
-          "type": "number",
-          "exclusiveMinimum": 0,
-          "default": 30.0
-        },
-        "overrides": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "enabled": {
-                "type": "boolean"
-              },
-              "timeout": {
-                "type": "number",
-                "exclusiveMinimum": 0
-              },
-              "order": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "before": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  "after": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  }
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "description": "Global hook settings: the top-level ``hooks:`` section of\nconfig/plugins.yaml or any included file, merged by load_settings like\n``plugins:``. Not the per-agent ``agent_config.hooks``.",
+          "properties": {
+            "enabled": {
+              "anyOf": [
+                {
+                  "default": true,
+                  "title": "Enabled",
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
                 }
-              }
+              ]
+            },
+            "default_timeout": {
+              "anyOf": [
+                {
+                  "default": 30.0,
+                  "exclusiveMinimum": 0,
+                  "title": "Default Timeout",
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "overrides": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/HookOverrideConfig"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "title": "Overrides",
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
-          }
+          },
+          "title": "GlobalHooksConfig",
+          "type": "object"
+        },
+        {
+          "type": "null"
         }
-      }
+      ]
     }
   },
   "$defs": {
@@ -564,6 +575,86 @@
       "title": "ToolConfig",
       "type": "object",
       "additionalProperties": false
+    },
+    "HookOrderConfig": {
+      "additionalProperties": false,
+      "description": "Where a hook runs relative to others (names, or the virtual begin/end).",
+      "properties": {
+        "before": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "title": "Before",
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "title": "After",
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "HookOrderConfig",
+      "type": "object"
+    },
+    "HookOverrideConfig": {
+      "additionalProperties": false,
+      "description": "Operator override for one hook. Only the fields that are set apply.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "order": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HookOrderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "HookOverrideConfig",
+      "type": "object"
     }
   }
 }

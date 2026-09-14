@@ -484,7 +484,8 @@ async def register_plugin_hooks(
         plugin_instance: Instantiated plugin server (should implement PluginHook for hook-enabled plugins)
         metadata: Plugin metadata from plugin.toml (optional, will use _plugin_metadata attribute if not provided)
         registry: Hook registry to use (optional, will use global registry if not provided)
-        hooks_config: Global hooks configuration (optional, will load from config/plugins.yaml if not provided)
+        hooks_config: Global hooks configuration, ``load_hooks_config(settings)``
+            (optional; defaults -- no overrides -- if not provided)
         instance_hook_config: The server INSTANCE's ``hook_config`` mapping from
             its (merged) MCPConfig. ``enabled: false`` disables every hook of
             this instance at registration (below the operator's global
@@ -511,7 +512,7 @@ async def register_plugin_hooks(
         logger.debug(f"Plugin '{plugin_name}' has no metadata, skipping hook registration")
         return registered_hooks
     
-    # Load global hooks configuration if not provided
+    # Defaults when the caller passes no global hook settings
     if hooks_config is None:
         hooks_config = load_hooks_config()
     
@@ -688,8 +689,9 @@ async def register_bootstrapped_plugin_hooks(settings: Any | None = None) -> Lis
     behaviour. Subsequent calls are no-ops.
 
     ``settings`` is the caller's already-loaded AgentSystemConfig; it supplies
-    each instance's ``hook_config`` registration default. Without it hooks
-    register on schema defaults alone -- no config file is re-read here.
+    the global ``hooks:`` overrides and each instance's ``hook_config``
+    registration default. Without it hooks register on schema defaults
+    alone -- no config file is re-read here.
 
     Returns:
         List of all registered hook names (full ``plugin.hook`` form).
@@ -702,7 +704,7 @@ async def register_bootstrapped_plugin_hooks(settings: Any | None = None) -> Lis
     from ..hooks import load_hooks_config
     from ..config.settings import get_mcp_config_by_name
 
-    hooks_config = load_hooks_config()
+    hooks_config = load_hooks_config(settings)
     all_registered: List[str] = []
 
     for server_name in plugin_mcp_registry.list_servers():
