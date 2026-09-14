@@ -1,0 +1,250 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Todos panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
+  const cards = () => [...doc().querySelectorAll('#tasks article[data-task]')];
+  const ids = () => cards().map((card) => card.dataset.task).join();
+  const card = (id) => $(`#tasks article[data-task="${id}"]`);
+  const acts = (id) => [...card(id).querySelectorAll('button[data-act]')].map((button) => button.dataset.act).join();
+  const setFilter = (id, value) => {
+    const select = $(`#${id}`);
+    select.value = value;
+    select.dispatchEvent(new Event('change'));
+  };
+  const question = () => $('dialog.pk-dialog[open]');
+  // no tick: what the check waits for has to come from what it drives, not from the next auto refresh
+  const autoOff = async () => {
+    const toggle = await until('the refresh control', () => $('pk-refresh [data-act="auto"]'));
+    if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+  };
+  const serverTasks = async (session) => (await (await fetch(`/plugins/todo/tasks?session_id=${session}`)).json()).tasks;
+  const noCookie = () => { document.cookie = 'td_tasks=; path=/; max-age=0'; };
+
+  await check('opened on a session, the panel counts its tasks by status and draws each with what can be done to it', async () => {
+    await go('/plugins/todo/?session_id=s-1');
+    await until('the tasks of s-1', () => statValue('total') === '6');
+    const counts = statValue('not-started') === '2' && statValue('in-progress') === '1' && statValue('blocked') === '1'
+      && statValue('cancelled') === '1' && statValue('completed') === '1 17%' && $('#shown').textContent === '6 of 6 tasks';
+    // task_006 is not started but waits on task_002: marked so, and completed like a blocked one rather than started
+    const head = (id) => card(id).querySelector('.pk-card-head').textContent;
+    const actions = acts('task_001') === '' && acts('task_002') === 'complete' && acts('task_003') === 'complete,delete'
+      && acts('task_004') === 'delete' && acts('task_005') === 'start,delete' && acts('task_006') === 'complete,delete'
+      && head('task_006').includes('waiting') && !head('task_005').includes('waiting');
+    const blocked = card('task_003');
+    const drawn = blocked.dataset.status === 'blocked' && blocked.querySelector('.pk-badge').textContent.trim() === 'Blocked'
+      && blocked.textContent.includes('Depends on task_002') && blocked.textContent.includes('Unit and browser tests')
+      && [...blocked.querySelectorAll('.td-meta .pk-badge')].map((tag) => tag.textContent).join() === 'qa,backend';
+    const model = card('task_002');
+    const progress = model.querySelector('.td-progress progress').value === 40 && model.textContent.includes('Blocks task_003, task_006')
+      && model.querySelector('.pk-card-head').textContent.includes('critical')
+      && model.querySelector('.td-meta').textContent.includes('started') && !card('task_005').querySelector('.td-meta').textContent.includes('started');
+    return ids() === 'task_001,task_002,task_003,task_004,task_005,task_006' && counts && actions && drawn && progress;
+  });
+
+  await check('the filters narrow the tasks by status and priority and say how many are shown', async () => {
+    setFilter('statusFilter', 'blocked');
+    const byStatus = ids() === 'task_003' && $('#shown').textContent === '1 of 6 tasks';
+    setFilter('statusFilter', '');
+    setFilter('priorityFilter', 'low');
+    const byPriority = ids() === 'task_004,task_006';
+    setFilter('statusFilter', 'not-started');
+    const both = ids() === 'task_006';
+    setFilter('statusFilter', 'completed');
+    const none = ids() === '' && $('#tasks').textContent.includes('No task matches the filters') && $('#shown').textContent === '0 of 6 tasks';
+    setFilter('statusFilter', '');
+    setFilter('priorityFilter', '');
+    return byStatus && byPriority && both && none && cards().length === 6;
+  });
+
+  await check('an action acts on the session whose task was clicked, also while the list switches', async () => {
+    await go('/plugins/todo/');  // no link: the session is the host's, and this page is the host
+    await autoOff();
+    const tell = (message) => frame.contentWindow.postMessage({ v: 1, ...message }, location.origin);
+    const showing = (name) => card('task_001')?.textContent.includes(`${name} session task 1`);
+    const asked = async (session) => (await (await fetch('/__stub/asked')).json())[session] || 0;
+    tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-2', title: 'Second' } });
+    await until('the tasks of s-2', () => showing('Second'));
+    // a click while the tasks of s-3 are on their way: the cards are still those of s-2
+    const before = await asked('s-3');
+    document.cookie = 'td_tasks=slow; path=/';
+    try {
+      tell({ type: 'pk:session', session: { id: 's-3', title: 'Third' } });
+      await until('the tasks of s-3 asked for', async () => (await asked('s-3')) > before);
+      card('task_001').querySelector('[data-act="start"]').click();
+      await until('the tasks of s-3', () => showing('Third'));
+    } finally {
+      noCookie();
+    }
+    // a delete confirmed after the list has switched under the question, which named the task of s-2
+    tell({ type: 'pk:session', session: { id: 's-2', title: 'Second' } });
+    await until('the tasks of s-2 again', () => showing('Second'));
+    let hostAsked = null;  // the kit's question to its host, which this page is
+    const listen = (event) => { if (event.data?.type === 'pk:dialog') hostAsked = event.data; };
+    window.addEventListener('message', listen);
+    try {
+      card('task_002').querySelector('[data-act="delete"]').click();
+      await until('the question to the host', () => hostAsked);
+    } finally {
+      window.removeEventListener('message', listen);
+    }
+    tell({ type: 'pk:session', session: { id: 's-3', title: 'Third' } });
+    await until('the tasks of s-3 under the question', () => showing('Third'));
+    const thirdAsked = await asked('s-3');
+    tell({ type: 'pk:dialog-result', id: hostAsked.id, value: true });
+    await until('the delete done', async () => (await serverTasks('s-2')).length === 2);
+    // loaded anew after the delete: the session open now, not the one acted on
+    await until('the tasks of s-3 loaded anew', async () => (await asked('s-3')) > thirdAsked);
+    const second = await serverTasks('s-2');
+    const third = await serverTasks('s-3');
+    return hostAsked.dialog.message.includes('Second session task 2') && second.every((task) => task.task_id !== 'task_002')
+      && second.find((task) => task.task_id === 'task_001').status === 'in-progress'
+      && third.length === 3 && third.every((task) => task.status === 'not-started');
+  });
+
+  await check('start and complete change the task on the server, and a completed dependency unblocks the next', async () => {
+    await go('/plugins/todo/?session_id=s-1');
+    await until('the tasks of s-1', () => statValue('total') === '6');
+    await autoOff();
+    const twice = (button) => { button.click(); button.click(); };  // two clicks before the card is drawn anew: once
+    twice(card('task_005').querySelector('[data-act="start"]'));
+    await until('task_005 started', () => card('task_005')?.dataset.status === 'in-progress');
+    // the second click of a double click, landing on the card drawn anew: on Complete, now where Start was
+    card('task_005').querySelector('.td-actions button').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+    twice(card('task_002').querySelector('[data-act="complete"]'));
+    await until('task_002 completed', () => card('task_002')?.dataset.status === 'completed');
+    await sleep(300);
+    const unrefused = !$('.pk-toast--error') && card('task_005').dataset.status === 'in-progress';
+    // task_003 was blocked, task_006 waited: both can be started now
+    return unrefused && statValue('in-progress') === '1' && statValue('completed') === '2 33%' && statValue('blocked') === '0'
+      && statValue('not-started') === '2' && card('task_003').dataset.status === 'not-started' && acts('task_003') === 'start,delete'
+      && acts('task_006') === 'start,delete' && !card('task_006').querySelector('.pk-card-head').textContent.includes('waiting')
+      && acts('task_002') === '' && card('task_002').querySelector('.td-progress progress').value === 100;
+  });
+
+  await check('deleting asks first: cancelled the task stays, confirmed it goes', async () => {
+    card('task_004').querySelector('[data-act="delete"]').click();
+    let asked = await until('the question', question);
+    const named = asked.textContent.includes('Delete task') && asked.textContent.includes('Drop the legacy importer');
+    asked.querySelector('[data-index="0"]').click();  // Cancel
+    await sleep(500);
+    const kept = Boolean(card('task_004')) && statValue('total') === '6';
+    card('task_004').querySelector('[data-act="delete"]').click();
+    asked = await until('the question again', question);
+    asked.querySelector('[data-index="1"]').click();
+    await until('task_004 gone', () => !card('task_004') && statValue('total') === '5');
+    return named && kept && (await serverTasks('s-1')).every((task) => task.task_id !== 'task_004');
+  });
+
+  await check('a refusal of the server is shown and the list loaded anew', async () => {
+    const refusal = (text) => until(`the refusal "${text}"`,
+      () => [...doc().querySelectorAll('.pk-toast--error')].some((toast) => toast.textContent.includes(text)));
+    await autoOff();  // what the panel shows stays as it was before each change behind its back
+    await fetch('/__stub/gone', { method: 'POST' });
+    card('task_003').querySelector('[data-act="start"]').click();
+    await refusal("404: Task 'task_003' not found");
+    await until('the list without it', () => !card('task_003'));
+    await fetch('/__stub/depend', { method: 'POST' });
+    card('task_005').querySelector('[data-act="delete"]').click();  // task_007 depends on it by now
+    (await until('the question', question)).querySelector('[data-index="1"]').click();
+    await refusal('409: Other tasks depend on task_005: task_007');
+    await until('the list with the dependent', () => card('task_007') && acts('task_005') === 'complete');
+    const blockedShown = card('task_007').dataset.status === 'blocked';
+    await fetch('/__stub/finish', { method: 'POST' });
+    card('task_006').querySelector('[data-act="start"]').click();  // completed by now: not to be reopened
+    await refusal("409: Task 'task_006' is completed now");
+    await until('the list with it completed', () => card('task_006')?.dataset.status === 'completed');
+    await fetch('/__stub/cancel', { method: 'POST' });
+    card('task_007').querySelector('[data-act="complete"]').click();  // cancelled by now: not to be completed
+    await refusal("409: Task 'task_007' is cancelled now");
+    await until('the list with it cancelled', () => card('task_007')?.dataset.status === 'cancelled');
+    const onServer = Object.fromEntries((await serverTasks('s-1')).map((task) => [task.task_id, task.status]));
+    return blockedShown && onServer.task_005 === 'in-progress' && onServer.task_006 === 'completed'
+      && onServer.task_007 === 'cancelled';
+  });
+
+  await check('a failed load shows the error and none of the tasks shown before, also through a filter', async () => {
+    document.cookie = 'td_tasks=fails; path=/';
+    try {
+      $('pk-refresh [data-act="now"]').click();
+      await until('the error', () => $('#stats').textContent.includes('Tasks could not be loaded'));
+      const shown = $('#stats').textContent.includes('The task store is locked') && cards().length === 0 && $('#shown').textContent === '';
+      setFilter('statusFilter', 'in-progress');  // the list drawn anew: still nothing, and no word of an empty session
+      const filtered = cards().length === 0 && $('#tasks').textContent.trim() === '';
+      setFilter('statusFilter', '');
+      noCookie();
+      $('pk-refresh [data-act="now"]').click();
+      await until('the tasks again', () => statValue('total') === '5');
+      return shown && filtered;
+    } finally {
+      noCookie();
+    }
+  });
+
+  await check('a tick of the auto refresh leaves a load still on its way alone', async () => {
+    const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+    let ticking = null;
+    document.cookie = 'td_tasks=fails; path=/';
+    try {
+      $('pk-refresh [data-act="now"]').click();
+      await until('the error', () => $('#stats').textContent.includes('Tasks could not be loaded'));
+      document.cookie = 'td_tasks=slow; path=/';
+      $('pk-refresh [data-act="now"]').click();  // answered after 1.5 s
+      ticking = setInterval(tick, 200);
+      await until('the tasks while the ticks go on', () => statValue('total') === '5', 4000);
+      return true;
+    } finally {
+      clearInterval(ticking);
+      noCookie();
+    }
+  });
+
+  await check('with no session open the panel says so', async () => {
+    await go('/plugins/todo/');  // no shell, no link: no session
+    await until('the empty state', () => $('#stats')?.textContent.includes('No session open'));
+    await sleep(300);
+    return !statValue('total') && cards().length === 0 && $('#shown').textContent === '' && $('#tasks').textContent.trim() === '';
+  });
+
+  await check('the auto refresh runs from the start and brings a task an agent adds', async () => {
+    await go('/plugins/todo/?session_id=s-1');
+    await until('the tasks of s-1', () => statValue('total') === '5');
+    const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
+    await fetch('/__stub/add', { method: 'POST' });
+    await until('the added task, brought by a tick', () => statValue('total') === '6', 8000);
+    return running && cards().some((one) => one.textContent.includes('Added by an agent'));
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

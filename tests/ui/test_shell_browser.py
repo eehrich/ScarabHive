@@ -234,18 +234,14 @@ def stub_app() -> FastAPI:
     async def memory_panel():
         return plugin_page("memory", name="memory")
 
-    @app.get("/plugins/todo/")
-    async def todo_panel():
-        return plugin_page("todo", name="todo")
+    @app.get("/plugins/{plugin}/")
+    async def kit_panel(request: Request, plugin: str):  # a panel on the kit: rendered as its plugin renders it
+        panel_templates = ui_templates(PLUGINS / plugin / "templates")
+        return panel_templates.TemplateResponse(request, "panel.html", {"plugin": plugin})
 
-    @app.get("/plugins/context_usage_tracker/")
-    async def usage_panel(request: Request):  # on the kit: rendered as the plugin renders it
-        panel_templates = ui_templates(PLUGINS / "context_usage_tracker" / "templates")
-        return panel_templates.TemplateResponse(request, "panel.html", {"plugin": "context_usage_tracker"})
-
-    @app.get("/plugins/context_usage_tracker/static/{name}")
-    async def usage_panel_static(name: str):
-        return FileResponse(PLUGINS / "context_usage_tracker" / "static" / name)
+    @app.get("/plugins/{plugin}/static/{name}")
+    async def kit_panel_static(plugin: str, name: str):
+        return FileResponse(PLUGINS / plugin / "static" / name)
 
     @app.post("/plugins/memory/memories/search")
     async def memory_search(session_id: str = ""):
@@ -258,7 +254,10 @@ def stub_app() -> FastAPI:
         hits[f"{instance}:{session_id}"] = hits.get(f"{instance}:{session_id}", 0) + 1
         await asyncio.sleep(lag(session_id))
         count = marker(session_id)
-        return {"total_memories": count, "total_tasks": count, "total": count,
+        tasks = [{"task_id": f"task_{number}", "title": f"Task {number}", "status": "not-started", "priority": "medium",
+                  "progress": 0, "created_at": now, "started_at": None, "description": None, "tags": [],
+                  "depends_on": [], "blocks": [], "is_blocked": False} for number in range(count)]
+        return {"total_memories": count, "tasks": tasks, "total": count,
                 "statistics": {"totals": {"completion_tokens": count}},
                 "enabled": True, "current_phase": f"phase-{count}", "all_allowed_agents": [], "filtered_agents": []}
 

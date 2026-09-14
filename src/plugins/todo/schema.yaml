@@ -11,43 +11,39 @@ web_ui:
     category: agents
     keywords: [todo, tasks]
     window: {width: 900, height: 700}
+    contexts:
+      session: "/plugins/{{ name }}/?session_id={session_id}"
 
   endpoints:
     - path: "/"
       method: "GET"
       handler: "get_panel"
       response_type: "html"
-      description: "Render the TODO management dashboard"
-    
+      description: "The Todos panel"
+
     - path: "/tasks"
       method: "GET"
       handler: "get_tasks"
       response_type: "json"
-      description: "Get tasks with filters (session_id, status, priority, tags)"
-    
-    - path: "/stats"
-      method: "GET"
-      handler: "get_stats"
-      response_type: "json"
-      description: "Get summary statistics"
-    
+      description: "The tasks of a session (session_id)"
+
     - path: "/tasks/{task_id}/start"
       method: "POST"
       handler: "start_task"
       response_type: "json"
-      description: "Start task (set status to in-progress)"
-    
+      description: "Start a task (in-progress)"
+
     - path: "/tasks/{task_id}/complete"
       method: "POST"
       handler: "complete_task"
       response_type: "json"
-      description: "Complete task (set status to completed)"
-    
+      description: "Complete a task"
+
     - path: "/tasks/{task_id}"
       method: "DELETE"
       handler: "delete_task"
       response_type: "json"
-      description: "Delete task"
+      description: "Delete a task no other task depends on"
 
 hooks:
   - name: inject_todo_tasks

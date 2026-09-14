@@ -1123,6 +1123,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         set_depends_on: Optional[List[str]] = None,
         add_depends_on: Optional[List[str]] = None,
         remove_depends_on: Optional[List[str]] = None,
+        only_from: Optional[List[str]] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -1139,6 +1140,8 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             set_depends_on: Replace all dependencies (None = no change)
             add_depends_on: Dependencies to add (incremental)
             remove_depends_on: Dependencies to remove (incremental)
+            only_from: Statuses the task must be in, else nothing changes and the answer is
+                ``status_changed`` -- for a change decided on a view of the task that may be out of date
             context: MCP tool call context
 
         Returns:
@@ -1170,6 +1173,18 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 }
 
             task = collection.tasks[task_id]
+            # no await between this check and the changes below: nothing else in the process changes the task in between
+            if only_from is not None and task.status.value not in only_from:
+                msg = f"Task '{task_id}' is {task.status.value} now"
+                logger.info(f"Update rejected (status changed): {task_id}")
+                if status:
+                    await status.error(msg)
+                return {
+                    "task_id": task_id,
+                    "status": "status_changed",
+                    "message": msg,
+                }
+
             changes = {}
 
             # Save old values BEFORE any updates (for accurate change tracking)

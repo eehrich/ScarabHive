@@ -209,6 +209,22 @@ async def test_update_todo_invalid_transition(server: TodoServer, mock_context: 
 
 
 @pytest.mark.asyncio
+async def test_update_todo_only_from_changes_nothing_in_another_status(server: TodoServer, mock_context: Dict[str, Any]):
+    """A change decided on an out-of-date view: the task finished meanwhile stays finished, and says what it is now."""
+    task_id = (await server.create_todo(title="Finished meanwhile", context=mock_context))["task_id"]
+    await server.update_todo(task_id=task_id, new_status="completed", context=mock_context)
+
+    refused = await server.update_todo(task_id=task_id, new_status="in-progress", progress=10, only_from=["not-started"],
+                                       context=mock_context)
+    assert refused == {"task_id": task_id, "status": "status_changed", "message": f"Task '{task_id}' is completed now"}
+    task = (await server.get_todo(task_id, context=mock_context))["task"]
+    assert (task["status"], task["progress"]) == ("completed", 100)
+
+    applied = await server.update_todo(task_id=task_id, new_status="in-progress", only_from=["completed"], context=mock_context)
+    assert applied["task"]["status"] == "in-progress"
+
+
+@pytest.mark.asyncio
 async def test_update_todo_progress(server: TodoServer, mock_context: Dict[str, Any]):
     """Test progress update"""
     created = await server.create_todo(title="Test", context=mock_context)

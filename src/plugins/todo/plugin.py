@@ -11,6 +11,7 @@ Exports PLUGIN_FACTORY for AgentSystem plugin discovery.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter
@@ -109,6 +110,10 @@ class TodoManagementHybridPlugin:
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router for web UI"""
         return self.web_factory.get_web_router()
+
+    def get_static_assets(self) -> Path:
+        """The panel's script and stylesheet, served under /plugins/<name>/static/."""
+        return Path(__file__).parent / "static"
 
 
 def PLUGIN_FACTORY(

@@ -1,0 +1,10 @@
+/* Todos: only what the kit has no component for. Tokens only. */
+
+.td-filter { width: auto; max-width: 14rem; }
+.td-share { font-size: var(--text-sm); font-weight: 400; }
+.td-task[data-status="completed"] .pk-card-title,
+.td-task[data-status="cancelled"] .pk-card-title { color: var(--text-muted); text-decoration: line-through; }
+.td-meta { font-size: var(--text-xs); margin-bottom: var(--space-2); }
+.td-description { margin: 0 0 var(--space-2); color: var(--text-secondary); white-space: pre-wrap; }
+.td-progress { margin-bottom: var(--space-2); }
+.td-actions { margin-top: var(--space-2); }

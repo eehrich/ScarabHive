@@ -567,6 +567,25 @@ meta_agent:
           enabled: false
 ```
 
+## The panel
+
+**Todos** in the launcher under **Agents & tools**; a session's info button offers it too, opened on that session.
+
+- The task list of the session open in the chat, or of the one the link names (`?session_id=`); with no session open
+  it says so. Auto refresh runs every 5 s.
+- Figures: all tasks, and how many are not started, in progress, blocked, cancelled and completed (with the share
+  completed). Filters by status and priority.
+- Each task shows its status, id, title, priority, age, tags, description, progress, what it depends on and what it
+  blocks; a task not started that waits on another is marked `waiting`. **Start** a task not started that waits on
+  no other, **Complete** one in progress, blocked or waiting, **Delete** one no other task depends on (asks first).
+  What the server refuses -- a task gone meanwhile, a dependent added, a task an agent finished -- is shown as an
+  error, and the list is loaded anew.
+
+Under `/plugins/todo/`: `GET tasks?session_id=`, `POST tasks/{task_id}/start?session_id=` (only a task not started),
+`POST tasks/{task_id}/complete?session_id=` (only one not completed or cancelled), `DELETE tasks/{task_id}?session_id=`,
+`GET /` (the panel). A refusal answers 404 (task not found) or 409 (a task others depend on, or one no longer in a
+status the action takes).
+
 ## Troubleshooting
 
 **Task stuck in BLOCKED:**

@@ -1680,8 +1680,10 @@
       { id: 'context_engineer', pause: (page) => page.getElementById('autoRefreshBtn').click(), shows: (page) => agree(
         page.querySelector('#storage-stats .value')?.textContent, page.querySelector('#memory-list strong')?.textContent) },
       { id: 'memory', pause: (page) => page.getElementById('auto-refresh-btn').click(), shows: (page) => page.getElementById('total-memories').textContent },
-      { id: 'todo', pause: (page) => page.getElementById('auto-refresh-btn').click(), shows: (page) => page.getElementById('total-tasks').textContent },
-      // on the kit: the output tokens of the session, and with no session open it says so and asks nothing
+      // on the kit: a figure of the session, and with no session open the panel says so and asks nothing
+      { id: 'todo', asksNothingWithoutSession: true, pause: (page) => page.querySelector('pk-refresh [data-act="auto"]').click(),
+        shows: (page) => page.querySelector('#stats [data-stat="total"] .pk-stat-value')?.textContent
+          ?? (page.getElementById('stats').textContent.includes('No session open') ? '3' : undefined) },
       { id: 'context_usage_tracker', asksNothingWithoutSession: true, pause: (page) => page.querySelector('pk-refresh [data-act="auto"]').click(),
         shows: (page) => page.querySelector('#stats [data-stat="output"] .pk-stat-value')?.textContent
           ?? (page.getElementById('stats').textContent.includes('No session open') ? '3' : undefined) },
@@ -1738,11 +1740,14 @@
         await sleep(1700);  // the answers for the lagging session have come in by now
         if (panel.shows(page) !== '7') failures.push(`${panel.id} shows a late answer`);
         if (panel.id === 'memory' && page.querySelector('#memory-list .memory-title')) failures.push('memory shows a late search');
-        const askedWithoutSession = await hits(`${panel.id}:`);
+        // every call of the panel, whatever session it names: with none open it has nothing to ask
+        const calls = async () => Object.entries(await (await stub('/__stub/hits')).json())
+          .filter(([key]) => key.startsWith(`${panel.id}:`)).reduce((sum, [, count]) => sum + count, 0);
+        const askedBefore = await calls();
         $('#sessionsPane [data-act="new"]').click();
         await until(`${panel.id} on no session`, () => panel.shows(page) === '3', 3000);
         await sleep(300);
-        if (panel.asksNothingWithoutSession && await hits(`${panel.id}:`) !== askedWithoutSession) {
+        if (panel.asksNothingWithoutSession && await calls() !== askedBefore) {
           failures.push(`${panel.id} asks the server about no session`);
         }
       } finally {
