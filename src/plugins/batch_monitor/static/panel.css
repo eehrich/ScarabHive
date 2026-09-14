@@ -1,0 +1,6 @@
+/* Batch Queues: only what the kit has no component for. Tokens only. */
+
+.bm-updated { font-size: var(--text-xs); }
+.bm-more { font-size: var(--text-xs); }
+.bm-failed { color: var(--danger); }
+#queues .pk-table td { white-space: nowrap; vertical-align: middle; }
