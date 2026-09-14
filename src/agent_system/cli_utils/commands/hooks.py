@@ -71,102 +71,31 @@ def _hooks_list(args: Any) -> None:
             print("No hooks registered")
 
 
-def _hooks_inspect(hook_name: str, args: Any) -> None:
+def _hooks_inspect(hook_name: str, args: Any) -> bool:
     """Show detailed information about a specific hook."""
     registry = get_hook_registry()
     info = registry.get_hook_info(hook_name)
     
     if not info:
         print(json.dumps({"error": f"Hook '{hook_name}' not found"}, ensure_ascii=False))
-        return
+        return False
     
     print(json.dumps(info, indent=2, ensure_ascii=False))
+    return True
 
 
-def _hooks_stats(args: Any) -> None:
-    """Show execution statistics for hooks."""
-    registry = get_hook_registry()
-    hook_name = getattr(args, 'name', None)
-    
-    if hook_name:
-        # Stats for specific hook
-        stats = registry.get_stats(hook_name)
-        if stats is None:
-            print(json.dumps({"error": f"Hook '{hook_name}' not found"}, ensure_ascii=False))
-            return
-        print(json.dumps({hook_name: stats}, indent=2, ensure_ascii=False))
-    else:
-        # Stats for all hooks
-        all_stats = {}
-        hooks_dict = registry.list_hooks()
-        for hook_type, hook_names in hooks_dict.items():
-            for name in hook_names:
-                stats = registry.get_stats(name)
-                if stats:
-                    all_stats[name] = stats
-        
-        if args.out_format == "json":
-            print(json.dumps(all_stats, indent=2, ensure_ascii=False))
-        else:
-            if tabulate is None:
-                print(json.dumps(all_stats, indent=2, ensure_ascii=False))
-                return
-            
-            # Table output. Direct key access on purpose: these are the keys
-            # HookRegistry._update_stats writes -- .get() with defaults hid a
-            # long-standing mismatch (the table showed zeros for every hook).
-            table_data = []
-            for name, stats in all_stats.items():
-                avg_time = f"{stats['avg_time']:.3f}s" if stats['executions'] > 0 else "-"
-                table_data.append([
-                    name,
-                    stats['executions'],
-                    stats['successes'],
-                    stats['failures'],
-                    avg_time,
-                    f"{stats['total_time']:.3f}s"
-                ])
-            
-            if table_data:
-                headers = ["HOOK NAME", "EXECUTIONS", "SUCCESS", "ERRORS", "AVG TIME", "TOTAL TIME"]
-                print(tabulate(table_data, headers=headers, tablefmt="grid"))
-            else:
-                print("No hook statistics available")
-
-
-def _hooks_clear_stats(args: Any) -> None:
-    """Clear execution statistics."""
-    registry = get_hook_registry()
-    hook_name = getattr(args, 'name', None)
-    
-    if hook_name:
-        # Clear stats for specific hook
-        info = registry.get_hook_info(hook_name)
-        if not info:
-            print(json.dumps({"error": f"Hook '{hook_name}' not found"}, ensure_ascii=False))
-            return
-        registry.clear_stats(hook_name)
-        print(json.dumps({"message": f"Stats cleared for hook: {hook_name}"}, ensure_ascii=False))
-    else:
-        registry.clear_stats()
-        print(json.dumps({"message": "All hook statistics cleared"}, ensure_ascii=False))
-
-
-def handle_hooks_command(args: Any) -> None:
-    """Handle hooks subcommands."""
+def handle_hooks_command(args: Any) -> bool:
+    """Handle hooks subcommands. False means failed: the caller exits 1."""
     action = getattr(args, 'action', 'list')
     
     if action == "list":
         _hooks_list(args)
-    elif action == "inspect":
+        return True
+    if action == "inspect":
         hook_name = getattr(args, 'name', None)
         if not hook_name:
             print(json.dumps({"error": "Hook name required for inspect action"}, ensure_ascii=False))
-            return
-        _hooks_inspect(hook_name, args)
-    elif action == "stats":
-        _hooks_stats(args)
-    elif action == "clear-stats":
-        _hooks_clear_stats(args)
-    else:
-        print(json.dumps({"error": f"Unknown hooks action: {action}"}, ensure_ascii=False))
+            return False
+        return _hooks_inspect(hook_name, args)
+    print(json.dumps({"error": f"Unknown hooks action: {action}"}, ensure_ascii=False))
+    return False

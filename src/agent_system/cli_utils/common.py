@@ -182,8 +182,11 @@ def get_output_format() -> str:
     if mode in ("ansi", "html", "text", "markdown"):
         return mode
     
-    # Auto mode: ANSI only where it will actually render as colour
+    # Auto mode: ANSI only where it will actually render as colour, and not
+    # when NO_COLOR is set (no-color.org; an explicit --color still wins).
     if mode == "auto":
+        if os.environ.get("NO_COLOR"):
+            return "text"
         return "ansi" if ansi_capable_stdout() else "text"
     
     # Default fallback
@@ -307,69 +310,6 @@ async def status_subscriber(
         return
     except Exception as e:
         logger.debug(f"Status subscriber loop error: {e}")
-        return
-
-
-async def sse_subscriber(
-    url: str,
-    verbose: bool = False,
-    use_color: bool = True
-) -> None:
-    """Subscribe to SSE (Server-Sent Events) status stream.
-    
-    This is an optional feature for environments where status events
-    are streamed via HTTP SSE.
-    
-    Args:
-        url: SSE stream URL
-        verbose: Whether to show debug messages
-        use_color: Whether to use color formatting
-    """
-    try:
-        try:
-            import aiohttp
-        except ImportError:
-            logger.debug("aiohttp not available, SSE subscriber disabled")
-            return
-            
-        timeout = aiohttp.ClientTimeout(total=None)
-        async with aiohttp.ClientSession(timeout=timeout) as sess:
-            async with sess.get(url) as resp:
-                if resp.status != 200:
-                    logger.debug(f"SSE stream returned status {resp.status}")
-                    return
-                    
-                async for line in resp.content:
-                    try:
-                        text = line.decode("utf-8").strip()
-                    except Exception:
-                        continue
-                        
-                    if not text or not text.startswith("data:"):
-                        continue
-                        
-                    payload = text[len("data:"):].strip()
-                    try:
-                        import json
-                        obj = json.loads(payload)
-                    except Exception as e:
-                        if verbose:
-                            logger.debug(f"Failed to parse SSE payload: {e}")
-                        obj = {"raw": payload}
-                    
-                    # Print SSE messages
-                    msg = f"[SSE] {obj.get('server','?')}: {obj.get('message','')}"
-                    if use_color and supports_color():
-                        msg = colorize(msg, "34")
-                    print(msg)
-                    
-    except asyncio.CancelledError:
-        if verbose:
-            logger.debug("SSE subscriber cancelled")
-        return
-    except Exception as e:
-        if verbose:
-            logger.debug(f"SSE subscriber error: {e}")
         return
 
 

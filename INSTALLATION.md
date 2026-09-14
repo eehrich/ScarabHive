@@ -297,14 +297,11 @@ agent-cli chat
 # Single query
 agent-cli "What is the weather in Berlin?"
 
-# With specific agent
-agent-cli --agent research_agent "Research quantum computing"
+# With specific agent (run options follow the task)
+agent-cli run "Research quantum computing" --agent research_agent
 
-# List available agents
-agent-cli agents list
-
-# View plugin status
-agent-cli plugins status
+# Plugins, agents among them as instances
+agent-cli plugins list
 ```
 
 ### VS Code Tasks
@@ -519,8 +516,8 @@ llm_system:
 # List available plugins
 agent-cli plugins list
 
-# Check plugin status
-agent-cli plugins status
+# Details of one plugin, including ENABLED
+agent-cli plugins info PLUGIN_NAME
 
 # Verify plugin directories in config/plugins.yaml
 plugins:

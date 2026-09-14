@@ -139,10 +139,10 @@ auth:
   secret_key: "test-key-min-32-chars-long-secure"
 
 # Start API
-agent-cli run-api
+agent-api
 
-# Create admin user
-agent-cli users create --email admin@test.com --admin
+# Create admin user (USERNAME EMAIL; prompts for the password)
+agent-cli users create admin admin@test.com --admin
 
 # Login and access dashboard
 curl -X POST http://127.0.0.1:8000/auth/login \
@@ -183,7 +183,7 @@ auth:
 **Solution**: Promote user to admin:
 
 ```bash
-agent-cli users update --email user@example.com --admin
+agent-cli users update USERNAME --role admin
 ```
 
 ### Users Not Loading
@@ -201,7 +201,7 @@ agent-cli users update --email user@example.com --admin
 **Solution**: Create users via CLI or API:
 
 ```bash
-agent-cli users create --email newuser@example.com
+agent-cli users create newuser newuser@example.com
 ```
 
 ## Related Documentation

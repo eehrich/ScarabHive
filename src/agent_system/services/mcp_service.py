@@ -23,7 +23,6 @@ class MCPService:
     This service eliminates duplicated MCP management code between
     CLI and API interfaces, providing a clean abstraction for:
     - Server listing and status
-    - Server connection/disconnection
     - Tool listing
     - Server testing and health checks
     """
@@ -188,93 +187,6 @@ class MCPService:
                 status["tool_count"] = 0
 
         return status
-
-    async def connect_server(self, server_name: str) -> dict[str, Any]:
-        """Connect to an MCP server.
-
-        Args:
-            server_name: Name of the server to connect.
-
-        Returns:
-            Result dictionary with keys:
-            - success: Boolean indicating success
-            - message: Status message
-            - error: Error message (if failed)
-        """
-        # Check if server exists
-        if server_name not in self._mcp.configured_external_servers:
-            return {
-                "success": False,
-                "error": f"Server '{server_name}' not found in configuration"
-            }
-
-        # Check if already connected
-        try:
-            client = await self._get_client_safe(server_name)
-            if client:
-                return {
-                    "success": True,
-                    "message": f"Server '{server_name}' is already connected"
-                }
-        except Exception as e:
-            logger.debug(f"Connection check for {server_name} failed (expected if not connected): {e}")
-
-        # Attempt connection.
-        #
-        # This used to probe for a method named connect_external_server that
-        # has never existed on MCPIntegration, so it always fell through to a
-        # "fallback" that only fetched a client and then raised -- connecting a
-        # server from the CLI or the API could not succeed at all.
-        try:
-            if not await self._mcp.retry_connect_server(server_name):
-                raise RuntimeError("Failed to establish connection")
-
-            return {
-                "success": True,
-                "message": f"Successfully connected to '{server_name}'"
-            }
-        except Exception as e:
-            logger.error(f"Failed to connect to {server_name}: {e}")
-            return {
-                "success": False,
-                "error": f"Connection failed: {str(e)}"
-            }
-
-    async def disconnect_server(self, server_name: str) -> dict[str, Any]:
-        """Disconnect from an MCP server.
-
-        Args:
-            server_name: Name of the server to disconnect.
-
-        Returns:
-            Result dictionary with keys:
-            - success: Boolean indicating success
-            - message: Status message
-            - error: Error message (if failed)
-        """
-        try:
-            # Check if client exists
-            client = await self._get_client_safe(server_name)
-            if not client:
-                return {
-                    "success": True,
-                    "message": f"Server '{server_name}' is not connected"
-                }
-
-            # Disconnect. Same story as connect: the method this probed for
-            # never existed. The client plugin owns the connections now.
-            await self._mcp.remove_external_server(server_name)
-
-            return {
-                "success": True,
-                "message": f"Successfully disconnected from '{server_name}'"
-            }
-        except Exception as e:
-            logger.error(f"Failed to disconnect from {server_name}: {e}")
-            return {
-                "success": False,
-                "error": f"Disconnection failed: {str(e)}"
-            }
 
     async def test_server(self, server_name: str) -> dict[str, Any]:
         """Test connectivity and basic functionality of an MCP server.

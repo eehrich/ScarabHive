@@ -102,7 +102,7 @@ class TestCLIMCP:
         
         # Call the _mcp_list_servers helper directly to avoid full CLI bootstrapping
         from agent_system.agent_cli import _mcp_list_servers
-        args_obj = type('Args', (), {'out_format': 'json', 'no_probe': True})()
+        args_obj = type('Args', (), {'out_format': 'json'})()
         import asyncio
         asyncio.run(_mcp_list_servers(mock_mcp_integration, args_obj))
         
@@ -124,57 +124,57 @@ class TestCLIMCP:
 
     @patch('agent_system.agent_cli.load_settings')
     @patch('agent_system.agent_cli.MCPIntegration')
-    @patch('builtins.print')
-    def test_mcp_connect_server_not_found(self, mock_print, mock_integration_class, mock_load_settings, mock_config, mock_mcp_integration):
-        """Test mcp connect command with nonexistent server."""
+    def test_mcp_without_action_prints_help(self, mock_integration_class, mock_load_settings, mock_config, capsys):
+        """A bare `mcp` used to connect everything and then print nothing."""
         mock_load_settings.return_value = mock_config
-        mock_integration_class.return_value = mock_mcp_integration
-        
-        # Test the command
-        with patch('sys.argv', ['cli', 'mcp', 'connect', 'nonexistent']):
+
+        with patch('sys.argv', ['cli', 'mcp']):
             main()
-        
-        # Should print error message
-        printed_args = [call.args[0] for call in mock_print.call_args_list]
-        error_output = None
-        for arg in printed_args:
-            try:
-                error_output = json.loads(arg)
-                if 'error' in error_output:
-                    break
-            except Exception:
-                continue
-        
-        assert error_output is not None
-        assert 'error' in error_output
-        assert 'not found in configuration' in error_output['error']
+
+        assert 'list,status,test,tools' in capsys.readouterr().out
+        mock_integration_class.assert_not_called()
 
     @patch('agent_system.agent_cli.load_settings')
     @patch('agent_system.agent_cli.MCPIntegration')
-    @patch('builtins.print')
-    def test_mcp_connect_missing_server_name(self, mock_print, mock_integration_class, mock_load_settings, mock_config):
-        """Test mcp connect command without server name."""
+    def test_mcp_tools_lists_through_the_tool_service(self, mock_integration_class, mock_load_settings, mock_config, mock_mcp_integration, capsys):
         mock_load_settings.return_value = mock_config
-        mock_integration_class.return_value = AsyncMock()
-        
-        # Test the command
-        with patch('sys.argv', ['cli', 'mcp', 'connect']):
+        mock_integration_class.return_value = mock_mcp_integration
+        # The shape ToolService.list_tools returns
+        listing = {"server": "test_server", "available_tools": ["hello", "secret"],
+                   "effective_tools": ["hello"],
+                   "filtering": {"blocked_tools": ["secret"]}}
+
+        with patch('agent_system.agent_cli.ToolService.list_tools', AsyncMock(return_value=listing)) as list_tools, \
+                patch('sys.argv', ['cli', 'mcp', 'tools', 'test_server', '--format', 'json']):
             main()
-        
-        # Should print error message
-        printed_args = [call.args[0] for call in mock_print.call_args_list]
-        error_output = None
-        for arg in printed_args:
-            try:
-                error_output = json.loads(arg)
-                if 'error' in error_output:
-                    break
-            except Exception:
-                continue
-        
-        assert error_output is not None
-        assert 'error' in error_output
-        assert 'server name required' in error_output['error']
+
+        list_tools.assert_awaited_once_with('test_server', include_filtering=True)
+        assert json.loads(capsys.readouterr().out) == listing
+        mock_mcp_integration.shutdown.assert_awaited()
+
+        # The default table read a key the service does not have and
+        # reported every server as having no tools.
+        with patch('agent_system.agent_cli.ToolService.list_tools', AsyncMock(return_value=listing)), \
+                patch('sys.argv', ['cli', 'mcp', 'tools', 'test_server']):
+            main()
+        table = capsys.readouterr().out
+        assert "secret [BLOCKED]" in table
+        assert "No tools available" not in table
+
+    @patch('agent_system.agent_cli.load_settings')
+    @patch('agent_system.agent_cli.MCPIntegration')
+    def test_mcp_tools_table_shows_an_error_as_an_error(self, mock_integration_class, mock_load_settings, mock_config, mock_mcp_integration, capsys):
+        mock_load_settings.return_value = mock_config
+        mock_integration_class.return_value = mock_mcp_integration
+        error = {"error": "Server nope not found in configuration"}
+
+        with patch('agent_system.agent_cli.ToolService.list_tools', AsyncMock(return_value=error)), \
+                patch('sys.argv', ['cli', 'mcp', 'tools', 'nope']), \
+                pytest.raises(SystemExit) as exit_info:
+            main()
+
+        assert exit_info.value.code == 1
+        assert json.loads(capsys.readouterr().out) == error
 
     @patch('agent_system.agent_cli.load_settings')  
     @patch('agent_system.agent_cli.MCPIntegration')
@@ -224,10 +224,12 @@ class TestCLIMCP:
         mock_mcp_integration.all_configured_external_servers['disabled_server'] = disabled_server
         mock_integration_class.return_value = mock_mcp_integration
         
-        # Test the command
-        with patch('sys.argv', ['cli', 'mcp', 'test', 'disabled_server']):
+        # A failed test exits 1 -- it used to print its error and exit 0
+        with patch('sys.argv', ['cli', 'mcp', 'test', 'disabled_server']), \
+                pytest.raises(SystemExit) as exit_info:
             main()
-        
+        assert exit_info.value.code == 1
+
         # Should print error about disabled server
         printed_args = [call.args[0] for call in mock_print.call_args_list]
         error_output = None
@@ -243,6 +245,19 @@ class TestCLIMCP:
         assert 'error' in error_output
         assert 'is disabled' in error_output['error']
 
+    @patch('agent_system.agent_cli.load_settings')
+    @patch('agent_system.agent_cli.MCPIntegration')
+    def test_mcp_status_of_an_unknown_server_is_an_error(self, mock_integration_class, mock_load_settings, mock_config, mock_mcp_integration, capsys):
+        """The service answers None for an unknown name; the CLI printed `null`."""
+        mock_load_settings.return_value = mock_config
+        mock_integration_class.return_value = mock_mcp_integration
+
+        with patch('sys.argv', ['cli', 'mcp', 'status', 'nope']), pytest.raises(SystemExit) as exit_info:
+            main()
+
+        assert exit_info.value.code == 1
+        assert "not found" in json.loads(capsys.readouterr().out)["error"]
+
     def test_mcp_help_command(self, capsys):
         """Test mcp help command shows correct usage."""
         with patch('sys.argv', ['cli', 'mcp', '--help']):
@@ -251,6 +266,4 @@ class TestCLIMCP:
         
         captured = capsys.readouterr()
         assert 'Action to perform on external MCP servers' in captured.out
-        assert 'list,connect,disconnect,status,test' in captured.out
-        assert '--format' in captured.out
-        assert '--timeout' in captured.out
+        assert 'list,status,test,tools' in captured.out

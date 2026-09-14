@@ -21,8 +21,15 @@ from agent_system.auth.models import UserCreate, UserUpdate, UserRole
 from agent_system.config.settings import load_settings
 
 
-app = typer.Typer(help="User management commands")
+# add_completion=False: the completion installer targets a program named after
+# this module, not `agent-cli users`, and its options broke the `list` default.
+app = typer.Typer(help="User management commands", add_completion=False,
+                  context_settings={"help_option_names": ["-h", "--help"]})
 logger = logging.getLogger(__name__)
+
+#: The agent-cli --config path, set before the app runs. Without it the user
+#: commands read the default config whatever --config said.
+CONFIG_PATH: Optional[str] = None
 
 
 def _supports_color() -> bool:
@@ -55,7 +62,7 @@ def _colorize(text: str, color_code: str) -> str:
 def get_configured_db() -> UserDatabase:
     """Get database instance from configuration."""
     try:
-        config = load_settings()
+        config = load_settings(CONFIG_PATH)
         if config.auth and config.auth.database_path:
             db_path = Path(config.auth.database_path)
         else:

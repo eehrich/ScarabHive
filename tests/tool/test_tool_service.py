@@ -5,8 +5,6 @@ Comprehensive test suite for tool management service.
 """
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from pathlib import Path
-import yaml
 
 from agent_system.services.tool_service import ToolService
 from agent_system.utils.io import atomic_write_text
@@ -91,19 +89,19 @@ class TestListTools:
         mock_tool2.name = "tool2"
         mock_tool3 = MagicMock()
         mock_tool3.name = "tool3"
-        mock_client.list_tools = AsyncMock(return_value=[mock_tool1, mock_tool2, mock_tool3])
+        mock_tool4 = MagicMock()
+        mock_tool4.name = "tool4"
+        mock_client.list_tools = AsyncMock(return_value=[mock_tool1, mock_tool2, mock_tool3, mock_tool4])
         
         with patch.object(tool_service, '_get_client_safe', new=AsyncMock(return_value=mock_client)):
             result = await tool_service.list_tools("test_server")
         
-        assert "available_tools" in result
-        assert len(result["available_tools"]) == 3
-        assert "effective_tools" in result
-        # Only tool1 and tool2 should be in effective (allowed list)
-        assert len(result["effective_tools"]) == 2
-        assert "tool1" in result["effective_tools"]
-        assert "tool2" in result["effective_tools"]
-        assert "tool3" not in result["effective_tools"]
+        assert len(result["available_tools"]) == 4
+        # Only the blocked list filters: it is what mcp_client refuses to call.
+        # tool4 is outside the server's allowed list and still callable,
+        # because nothing enforces that list -- it must not look filtered.
+        assert result["effective_tools"] == ["tool1", "tool2", "tool4"]
+        assert result["filtering"] == {"blocked_tools": ["tool3"]}
 
     @pytest.mark.asyncio
     async def test_list_tools_no_filtering(self, tool_service):
@@ -171,211 +169,6 @@ class TestListTools:
         assert tool_service._mcp.retry_connect_server.called
         assert tool_service._mcp.remove_external_server.called
         assert "available_tools" in result
-
-
-class TestBlockTool:
-    """Test tool blocking functionality."""
-
-    @pytest.mark.asyncio
-    async def test_block_tool_server_not_found(self, tool_service):
-        """Test blocking tool on non-existent server."""
-        result = await tool_service.block_tool("nonexistent", "tool1")
-        
-        assert result["success"] is False
-        assert "not found" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_block_tool_config_not_found(self, tool_service):
-        """Test blocking tool when config file doesn't exist."""
-        with patch('pathlib.Path.exists', return_value=False):
-            result = await tool_service.block_tool("test_server", "tool1", Path("nonexistent.yaml"))
-        
-        assert result["success"] is False
-        assert "not found" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_block_tool_success(self, tool_service, tmp_path):
-        """Test successful tool blocking."""
-        # Create temporary config file
-        config_file = tmp_path / "mcp.yaml"
-        config_data = {
-            "external_servers": {
-                "remote_servers": {
-                    "test_server": {
-                        "enabled": True,
-                        "transport": "http",
-                        "url": "http://localhost:8000",
-                        "tools": {
-                            "allowed": ["tool1", "tool2"],
-                            "blocked": []
-                        }
-                    }
-                }
-            }
-        }
-        config_file.write_text(yaml.safe_dump(config_data))
-        
-        result = await tool_service.block_tool("test_server", "tool1", config_file)
-        
-        assert result["success"] is True
-        assert result["tool"] == "tool1"
-        
-        # Verify file was updated
-        updated = yaml.safe_load(config_file.read_text())
-        server_tools = updated["external_servers"]["remote_servers"]["test_server"]["tools"]
-        assert "tool1" in server_tools["blocked"]
-        assert "tool1" not in server_tools["allowed"]
-
-    @pytest.mark.asyncio
-    async def test_block_tool_already_blocked(self, tool_service, tmp_path):
-        """Test blocking tool that's already blocked."""
-        config_file = tmp_path / "mcp.yaml"
-        config_data = {
-            "external_servers": {
-                "remote_servers": {
-                    "test_server": {
-                        "tools": {
-                            "blocked": ["tool1"]
-                        }
-                    }
-                }
-            }
-        }
-        config_file.write_text(yaml.safe_dump(config_data))
-        
-        result = await tool_service.block_tool("test_server", "tool1", config_file)
-        
-        assert result["success"] is True
-        assert "already blocked" in result["message"]
-
-
-class TestAllowTool:
-    """Test tool allowing functionality."""
-
-    @pytest.mark.asyncio
-    async def test_allow_tool_server_not_found(self, tool_service):
-        """Test allowing tool on non-existent server."""
-        result = await tool_service.allow_tool("nonexistent", "tool1")
-        
-        assert result["success"] is False
-        assert "not found" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_allow_tool_success(self, tool_service, tmp_path):
-        """Test successful tool allowing."""
-        config_file = tmp_path / "mcp.yaml"
-        config_data = {
-            "external_servers": {
-                "remote_servers": {
-                    "test_server": {
-                        "enabled": True,
-                        "transport": "http",
-                        "url": "http://localhost:8000",
-                        "tools": {
-                            "allowed": [],
-                            "blocked": ["tool1"]
-                        }
-                    }
-                }
-            }
-        }
-        config_file.write_text(yaml.safe_dump(config_data))
-        
-        result = await tool_service.allow_tool("test_server", "tool1", config_file)
-        
-        assert result["success"] is True
-        assert result["tool"] == "tool1"
-        
-        # Verify file was updated
-        updated = yaml.safe_load(config_file.read_text())
-        server_tools = updated["external_servers"]["remote_servers"]["test_server"]["tools"]
-        assert "tool1" in server_tools["allowed"]
-        assert "tool1" not in server_tools["blocked"]
-
-    @pytest.mark.asyncio
-    async def test_allow_tool_already_allowed(self, tool_service, tmp_path):
-        """Test allowing tool that's already allowed."""
-        config_file = tmp_path / "mcp.yaml"
-        config_data = {
-            "external_servers": {
-                "remote_servers": {
-                    "test_server": {
-                        "tools": {
-                            "allowed": ["tool1"]
-                        }
-                    }
-                }
-            }
-        }
-        config_file.write_text(yaml.safe_dump(config_data))
-        
-        result = await tool_service.allow_tool("test_server", "tool1", config_file)
-        
-        assert result["success"] is True
-        assert "already allowed" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_allow_tool_creates_tools_section(self, tool_service, tmp_path):
-        """Test allowing tool when tools section doesn't exist."""
-        config_file = tmp_path / "mcp.yaml"
-        config_data = {
-            "external_servers": {
-                "remote_servers": {
-                    "test_server": {
-                        "enabled": True
-                    }
-                }
-            }
-        }
-        config_file.write_text(yaml.safe_dump(config_data))
-        
-        result = await tool_service.allow_tool("test_server", "tool1", config_file)
-        
-        assert result["success"] is True
-        
-        # Verify tools section was created
-        updated = yaml.safe_load(config_file.read_text())
-        assert "tools" in updated["external_servers"]["remote_servers"]["test_server"]
-
-
-class TestGetToolStatus:
-    """Test tool status retrieval."""
-
-    @pytest.mark.asyncio
-    async def test_get_status_blocked(self, tool_service):
-        """Test getting status of blocked tool."""
-        result = await tool_service.get_tool_status("test_server", "tool3")
-        
-        assert result["status"] == "blocked"
-        assert result["tool"] == "tool3"
-
-    @pytest.mark.asyncio
-    async def test_get_status_allowed(self, tool_service):
-        """Test getting status of allowed tool."""
-        result = await tool_service.get_tool_status("test_server", "tool1")
-        
-        assert result["status"] == "allowed"
-
-    @pytest.mark.asyncio
-    async def test_get_status_neutral(self, tool_service):
-        """Test getting status of neutral tool (no filtering)."""
-        result = await tool_service.get_tool_status("no_filter_server", "any_tool")
-        
-        assert result["status"] == "neutral"
-
-    @pytest.mark.asyncio
-    async def test_get_status_blocked_by_allowed_list(self, tool_service):
-        """Test that tool not in allowed list is considered blocked."""
-        result = await tool_service.get_tool_status("test_server", "tool_not_in_list")
-        
-        assert result["status"] == "blocked"
-
-    @pytest.mark.asyncio
-    async def test_get_status_server_not_found(self, tool_service):
-        """Test getting status for non-existent server."""
-        result = await tool_service.get_tool_status("nonexistent", "tool1")
-        
-        assert "error" in result
 
 
 class TestAtomicWrite:

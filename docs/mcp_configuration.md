@@ -87,14 +87,12 @@ owns a task, see `src/plugins/mcp_client/README.md`.
 
 ## CLI Management
 
-Use the built-in CLI commands to manage MCP servers:
+Die CLI liest nur. Jeder Aufruf verbindet die eingeschalteten Server und trennt
+danach wieder; eingeschaltet und gefiltert wird in dieser Datei.
 
 ```bash
 # List all configured servers
 agent-cli mcp list
-
-# Connect to a server
-agent-cli mcp connect weather_service
 
 # Check connection status
 agent-cli mcp status weather_service
@@ -102,8 +100,8 @@ agent-cli mcp status weather_service
 # Test server functionality
 agent-cli mcp test weather_service
 
-# Disconnect from a server
-agent-cli mcp disconnect weather_service
+# Tools, blocked ones marked
+agent-cli mcp tools weather_service
 ```
 
 ## Authentication Types
@@ -168,9 +166,12 @@ Control which tools are available from external servers:
 ```yaml
 tools:
   prefix: "external_"          # Add prefix to all tool names
-  allowed: ["search", "analyze"] # Only these tools allowed
   blocked: ["delete", "admin"]   # These tools blocked
 ```
+
+`blocked` ist die einzige Liste, die bei einem externen Server wirkt:
+`mcp_client` verweigert den Aufruf. Ein `allowed` am Server wertet niemand aus —
+welche Tools ein Agent aufrufen darf, regelt dessen `agent_config.tools.allowed`.
 
 ### Resources Filtering
 

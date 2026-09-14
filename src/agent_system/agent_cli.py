@@ -144,11 +144,6 @@ def parse_llm_params_args(raw_items: Optional[List[str]]) -> Optional[Dict[str, 
     return params or None
 
 
-def _get_plugins_config(config: AgentSystemConfig):
-    """Get plugins configuration."""
-    return config.plugins
-
-
 def _build_entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCPRegistry,
                        session_service) -> Agent:
     """Build the entry agent when bootstrap did not register it, from its
@@ -188,33 +183,7 @@ def _build_entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCP
 logger = logging.getLogger(__name__)
 
 
-async def _maybe_await_get_client(mcp_integration: MCPIntegration, name: str):
-    """Call client_manager.get_client(name) and await if it returns a coroutine.
-
-    Some implementations expose `get_client` as a coroutine (tests may use
-    AsyncMock), while others provide a synchronous method. This helper
-    abstracts that difference so callers can `await _maybe_await_get_client(..)`.
-    """
-    try:
-        provider = getattr(mcp_integration, "external_provider", None)
-        pool = getattr(provider, "pool", None) if provider else None
-        if pool is None:
-            return None
-        res = pool.get(name)
-    except Exception as e:
-        logger.debug(f"Failed to get client {name}: {e}")
-        return None
-    import inspect
-    if inspect.isawaitable(res):
-        try:
-            return await res
-        except Exception as e:
-            logger.debug(f"Failed to await client {name}: {e}")
-            return None
-    return res
-
-
-async def _mcp_list_servers(mcp_service: MCPService, args: Any) -> None:
+async def _mcp_list_servers(mcp_service: MCPService, args: Any) -> bool:
     """List configured external MCP servers using MCPService."""
     try:
         servers = await mcp_service.list_servers()
@@ -225,7 +194,7 @@ async def _mcp_list_servers(mcp_service: MCPService, args: Any) -> None:
             # Table format
             if not servers:
                 print("No external MCP servers configured.")
-                return
+                return True
 
             rows = []
             for server in servers:
@@ -267,147 +236,82 @@ async def _mcp_list_servers(mcp_service: MCPService, args: Any) -> None:
     except Exception as e:
         logger.exception("Failed to list MCP servers: %s", e)
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
+        return False
+    return True
 
 
-async def _mcp_connect_server(mcp_service: MCPService, server_name: str, args: Any) -> None:
-    """Connect to an external MCP server using MCPService."""
-    try:
-        result = await mcp_service.connect_server(server_name)
-        print(json.dumps(result, ensure_ascii=False))
-    except Exception as e:
-        logger.exception("Failed to connect to server: server=%s, error=%s", server_name, e)
-        print(json.dumps({"error": str(e)}, ensure_ascii=False))
-
-
-async def _mcp_disconnect_server(mcp_service: MCPService, server_name: str, args: Any) -> None:
-    """Disconnect from an external MCP server using MCPService."""
-    try:
-        result = await mcp_service.disconnect_server(server_name)
-        print(json.dumps(result, ensure_ascii=False))
-    except Exception as e:
-        logger.exception("Failed to disconnect from server: server=%s, error=%s", server_name, e)
-        print(json.dumps({"error": str(e)}, ensure_ascii=False))
-
-
-async def _mcp_status_servers(mcp_service: MCPService, server_name: str | None, args: Any) -> None:
+# The _mcp_* helpers answer whether the action succeeded; the caller turns a
+# failure into exit code 1. They printed their error and exited 0, so a
+# script could not tell `mcp test` of a dead server from a live one.
+async def _mcp_status_servers(mcp_service: MCPService, server_name: str | None, args: Any) -> bool:
     """Show status of external MCP servers using MCPService."""
     try:
         if server_name:
             status_info = await mcp_service.get_server_status(server_name)
+            if status_info is None:
+                # The service answers None for an unknown name; this printed `null`
+                status_info = {"error": f"Server '{server_name}' not found in configuration"}
             print(json.dumps(status_info, indent=2, ensure_ascii=False))
-        else:
-            # Status for all servers - just list them
-            await _mcp_list_servers(mcp_service, args)
+            return "error" not in status_info
+        # Status for all servers - just list them
+        return await _mcp_list_servers(mcp_service, args)
     except Exception as e:
         logger.exception("Failed to get server status: server=%s, error=%s", server_name, e)
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
+        return False
 
 
-async def _mcp_test_server(mcp_service: MCPService, server_name: str, args: Any) -> None:
+async def _mcp_test_server(mcp_service: MCPService, server_name: str, args: Any) -> bool:
     """Test connectivity and basic functionality of an external MCP server using MCPService."""
     try:
         result = await mcp_service.test_server(server_name)
         print(json.dumps(result, indent=2, ensure_ascii=False))
+        return bool(result.get("success"))
     except Exception as e:
         logger.exception("Failed to test server: server=%s, error=%s", server_name, e)
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
+        return False
 
 
-async def _mcp_tool_management(tool_service: ToolService, server_name: str, args: Any) -> None:
-    """Manage tools for a specific MCP server (list, allow, block) using ToolService."""
-    # Tool action is in the 'key' argument
-    tool_action = getattr(args, 'key', None)
-    if not tool_action:
-        print(json.dumps({"error": "Tool action required: list, allow, or block"}, ensure_ascii=False))
-        return
-
-    if tool_action == "list":
-        await _list_server_tools_via_service(tool_service, server_name, args)
-    elif tool_action == "allow":
-        tool_name = getattr(args, 'value', None)
-        if not tool_name:
-            print(json.dumps({"error": "Tool name required for allow action"}, ensure_ascii=False))
-            return
-        await _allow_server_tool(tool_service, server_name, tool_name)
-    elif tool_action == "block":
-        tool_name = getattr(args, 'value', None)
-        if not tool_name:
-            print(json.dumps({"error": "Tool name required for block action"}, ensure_ascii=False))
-            return
-        await _block_server_tool(tool_service, server_name, tool_name)
-    else:
-        print(json.dumps({"error": f"Unknown tool action: {tool_action}. Use list, allow, or block"}, ensure_ascii=False))
-
-
-async def _list_server_tools_via_service(tool_service: ToolService, server_name: str, args: Any) -> None:
+async def _list_server_tools_via_service(tool_service: ToolService, server_name: str, args: Any) -> bool:
     """List all available tools for a server using ToolService."""
     try:
         result = await tool_service.list_tools(server_name, include_filtering=True)
 
-        # Handle output format
-        if getattr(args, 'out_format', 'json') == "table":
-            # Table format output
+        # An error has no tools to tabulate; the table used to report it as
+        # "No tools available".
+        if args.out_format == "table" and "error" not in result:
             print(f"\nServer: {server_name}")
             print("=" * (len(server_name) + 8))
 
-            available_tools = result.get("tools", [])
+            # ToolService names the key available_tools. Reading "tools" made
+            # every server look empty in the table.
+            available_tools = result.get("available_tools", [])
             if not available_tools:
                 print("No tools available")
             else:
-                filtering = result.get("filtering", {})
-                blocked = set(filtering.get("blocked_tools") or [])
-                allowed = set(filtering.get("allowed_tools") or [])
+                # Only `blocked` filters an external server (ToolService.list_tools)
+                blocked = set(result.get("filtering", {}).get("blocked_tools") or [])
 
                 print(f"\nAvailable Tools ({len(available_tools)}):")
                 print("-" * 30)
                 for tool in available_tools:
-                    status = ""
-                    if tool in blocked:
-                        status = " [BLOCKED]"
-                    elif allowed and tool not in allowed:
-                        status = " [NOT ALLOWED]"
-                    print(f"  {tool}{status}")
+                    print(f"  {tool}{' [BLOCKED]' if tool in blocked else ''}")
 
                 effective = result.get("effective_tools", available_tools)
                 print(f"\nEffective Tools ({len(effective)}):")
                 print("-" * 30)
                 for tool in effective:
                     print(f"  {tool}")
-
-                if blocked or allowed:
-                    print("\nFiltering Configuration:")
-                    print("-" * 30)
-                    if allowed:
-                        print(f"  Allowed: {', '.join(sorted(allowed))}")
-                    if blocked:
-                        print(f"  Blocked: {', '.join(sorted(blocked))}")
         else:
             # JSON format output
             print(json.dumps(result, indent=2, ensure_ascii=False))
+        return "error" not in result
 
     except Exception as e:
         logger.exception("Failed to list tools: server=%s, error=%s", server_name, e)
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
-
-
-async def _allow_server_tool(tool_service: ToolService, server_name: str, tool_name: str) -> None:
-    """Allow a tool for a server using ToolService."""
-    try:
-        result = await tool_service.allow_tool(server_name, tool_name)
-        print(json.dumps(result, ensure_ascii=False))
-    except Exception as e:
-        logger.exception("Failed to allow tool: server=%s, tool=%s, error=%s", server_name, tool_name, e)
-        print(json.dumps({"error": str(e)}, ensure_ascii=False))
-
-
-async def _block_server_tool(tool_service: ToolService, server_name: str, tool_name: str) -> None:
-    """Block a tool for a server using ToolService."""
-    try:
-        result = await tool_service.block_tool(server_name, tool_name)
-        print(json.dumps(result, ensure_ascii=False))
-    except Exception as e:
-        logger.exception("Failed to block tool: server=%s, tool=%s, error=%s", server_name, tool_name, e)
-        print(json.dumps({"error": str(e)}, ensure_ascii=False))
+        return False
 
 
 #: The CLI runs a SEQUENCE of coroutines with plain synchronous code between
@@ -515,6 +419,17 @@ def close_cli_loop() -> None:
         asyncio.set_event_loop(None)
 
 
+def _run_users_cli(users_args: List[str], config_path: Optional[str]) -> None:
+    """Hand `agent-cli users ...` to the typer app, tokens as typed."""
+    from .cli_utils import users as users_cli
+    users_cli.CONFIG_PATH = config_path
+    # `list` is the default, also when only its options are given
+    # (`users --limit 5`); -h/--help stay with the group.
+    if not users_args or (users_args[0].startswith("-") and users_args[0] not in ("-h", "--help")):
+        users_args = ["list", *users_args]
+    users_cli.app(users_args, prog_name="agent-cli users")
+
+
 def main() -> None:
     global logger
     # Windows-Konsolen/Pipes laufen oft mit cp1252 — Unicode in Ausgaben
@@ -548,7 +463,10 @@ def main() -> None:
     # then parse the remaining args (subcommand + subargs). This avoids confusing option values
     # with subcommands when we need to insert an implicit 'run'.
     prelim = argparse.ArgumentParser(add_help=False)
-    prelim.add_argument("--config", dest="config", default=str(Path("config/config.yaml")))
+    # No default path here: load_settings(None) reads AGENT_CONFIG_PATH before
+    # falling back to config/config.yaml. A default of that path shadowed the
+    # environment variable for every subcommand.
+    prelim.add_argument("--config", dest="config", default=None)
     prelim.add_argument("-v", "--verbose", dest="verbose", action="store_true")
     # color can be set to auto/always/never/ansi/html/text.
     # Default 'auto', not 'always': 'always' emitted escape sequences into
@@ -559,6 +477,24 @@ def main() -> None:
     prelim.add_argument("--no-status", dest="no_status", action="store_true")
     prelim.add_argument("--raw", dest="raw", action="store_true")
     orig_args = sys.argv[1:]
+
+    # users: typer owns its arguments, help and exit codes. The argparse copy
+    # of them had drifted -- `update --admin` and `create --force` reached
+    # typer as options it does not have (a traceback), the EMAIL of
+    # `update USER EMAIL` was dropped without a word, and every failure
+    # exited 0.
+    #
+    # Split off BEFORE the preliminary parser sees the line: it reads option
+    # VALUES as well -- `-p -vS3cret` arrived as `-p -S3cret`, `-p --no` died
+    # as an ambiguous option, `-p --conf x` became the config path. Only what
+    # precedes `users` is global; after it, typer refuses global options out
+    # loud.
+    if "users" in orig_args:
+        at = orig_args.index("users")
+        ns_before, stray = prelim.parse_known_args(orig_args[:at])
+        if not stray:  # nothing but global options before it: it is the subcommand
+            return _run_users_cli(orig_args[at + 1:], ns_before.config)
+
     ns, rest = prelim.parse_known_args(orig_args)
 
     # decide color mode early so helpers behave predictably
@@ -608,14 +544,14 @@ def main() -> None:
     argv = [sys.argv[0]] + final_args + rest
 
     parser = argparse.ArgumentParser(description="Agent System CLI")
-    parser.add_argument("--config", dest="config", default=str(Path("config/config.yaml")), help="Path to config")
+    parser.add_argument("--config", dest="config", default=None, help="Path to config (default: AGENT_CONFIG_PATH, else config/config.yaml)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print progress messages")
     parser.add_argument("--color", dest="color", choices=["auto", "always", "never", "ansi", "html", "text"], default="auto",
                         help="Output format: auto=ANSI where it renders, always/ansi=force ANSI, html=HTML, never/text=plain text")
     parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output (alias for --color never)")
     parser.add_argument("--show-mcp", dest="show_mcp", action="store_true", help="Show MCP call/result details (for debugging)")
     parser.add_argument("--no-status", dest="no_status", action="store_true", help="Hide status messages during execution")
-    parser.add_argument("--raw", dest="raw", action="store_true", help="Output raw JSON result instead of pretty printing")
+    parser.add_argument("--raw", dest="raw", action="store_true", help="Output raw JSON result instead of pretty printing (plugins info: add factory details)")
     subparsers = parser.add_subparsers(dest="subcommand")
 
     def _add_agent_session_args(p: argparse.ArgumentParser) -> None:
@@ -679,15 +615,15 @@ def main() -> None:
 
 
 
-    # plugins subcommand
-    plugins_parser = subparsers.add_parser("plugins", help="Manage plugins")
-    plugins_parser.add_argument("action", choices=["list", "info", "enable", "disable", "search", "status"], nargs="?", default="list", help="Action to perform on plugins")
-    plugins_parser.add_argument("name", nargs="?", help="Plugin name for the 'info', 'enable', 'disable' actions or search term for 'search'")
-    plugins_parser.add_argument("--yes", dest="yes", action="store_true", help="Assume yes for confirmations")
-    plugins_parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Don't persist changes; show preview")
+    # plugins subcommand -- read-only. Switching a plugin on is an edit in
+    # plugins.yaml (enabled, plus the agent's tool allowlist), not a command.
+    # No --raw here: a subparser's default overwrites the global flag, so a
+    # second definition made `plugins info --raw` read False.
+    plugins_parser = subparsers.add_parser("plugins", help="Inspect discovered plugins")
+    plugins_parser.add_argument("action", choices=["list", "info", "search"], nargs="?", default="list", help="Action to perform on plugins")
+    plugins_parser.add_argument("name", nargs="?", help="Plugin name for 'info', search term for 'search'")
     plugins_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for plugin listing")
     plugins_parser.add_argument("--show-metadata", dest="show_metadata", action="store_true", help="Also display plugin._plugin_metadata in listing (JSON output only)")
-    plugins_parser.add_argument("--raw", dest="raw", action="store_true", help="Show raw factory information for 'info' action")
 
     # reload subcommand: deliberately tell the RUNNING server to re-read the
     # on-disk config and refresh live plugin instances (no restart). agent-cli
@@ -704,84 +640,35 @@ def main() -> None:
     reload_parser.add_argument("--timeout", dest="timeout", type=float, default=None,
                                help="Request timeout seconds (default: network.cli_request_timeout or 30)")
 
-    # mcp subcommand for external server management (use subparsers so each
-    # action can provide its own help output). We keep argument names that
-    # the existing handler expects (`server`, `key`, `value`) for
-    # backwards-compatibility with the rest of the code.
-    mcp_parser = subparsers.add_parser("mcp", help="Manage external MCP servers")
-    # Global options for mcp
-    mcp_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for server listing")
-    mcp_parser.add_argument("--timeout", dest="timeout", type=int, default=30, help="Timeout in seconds for connection operations")
-    mcp_parser.add_argument("--no-probe", dest="no_probe", action="store_true", help="When listing features, don't probe the live server for reported capabilities; only show configured values")
-
-    # Per-action subparsers
-    # Provide a description so `mcp --help` shows a helpful line expected by tests.
+    # mcp subcommand: inspect external MCP servers. Read-only, and nothing
+    # that holds state -- a connection opened here dies with this process, so
+    # connect/disconnect could not mean anything. Configuration is an edit in
+    # mcp_servers.yaml. --format sits on the actions only: a subparser's
+    # default overwrites the parent's, so an mcp-level --format was ignored.
+    mcp_parser = subparsers.add_parser("mcp", help="Inspect external MCP servers")
     mcp_subparsers = mcp_parser.add_subparsers(dest="action", description="Action to perform on external MCP servers")
 
-    # Helper to add mcp-level options to individual action subparsers so
-    # users may place them after the action (e.g. `mcp list --format json`).
-    def _add_mcp_common_opts(p):
-        try:
-            p.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for server listing")
-        except Exception as e:
-            logger.warning(f"Failed to add --format argument to parser: {e}", exc_info=True)
-        try:
-            p.add_argument("--timeout", dest="timeout", type=int, default=30, help="Timeout in seconds for connection operations")
-        except Exception as e:
-            logger.warning(f"Failed to add --timeout argument to parser: {e}", exc_info=True)
-        try:
-            p.add_argument("--no-probe", dest="no_probe", action="store_true", help="When listing features, don't probe the live server for reported capabilities; only show configured values")
-        except Exception as e:
-            logger.warning(f"Failed to add --no-probe argument to parser: {e}", exc_info=True)
+    def _add_mcp_format(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format")
 
-    # list
     list_p = mcp_subparsers.add_parser("list", help="List configured external MCP servers")
-    _add_mcp_common_opts(list_p)
+    _add_mcp_format(list_p)
 
-    # connect / disconnect
-    connect_p = mcp_subparsers.add_parser("connect", help="Connect to an external MCP server")
-    _add_mcp_common_opts(connect_p)
-    connect_p.add_argument("server", nargs="?", help="Server name to connect")
-    disconnect_p = mcp_subparsers.add_parser("disconnect", help="Disconnect from an external MCP server")
-    _add_mcp_common_opts(disconnect_p)
-    disconnect_p.add_argument("server", nargs="?", help="Server name to disconnect")
-
-    # status
     status_p = mcp_subparsers.add_parser("status", help="Show status for a server or all servers")
-    _add_mcp_common_opts(status_p)
+    _add_mcp_format(status_p)
     status_p.add_argument("server", nargs="?", help="Optional server name to show status for")
 
-    # test
     test_p = mcp_subparsers.add_parser("test", help="Test connectivity and basic functionality of an external MCP server")
-    _add_mcp_common_opts(test_p)
-    test_p.add_argument("server", nargs="?", help="Server name for test action")
+    test_p.add_argument("server", help="Server name to test")
 
-    # enable / disable (persisted to config)
-    enable_p = mcp_subparsers.add_parser("enable", help="Enable a configured external MCP server")
-    _add_mcp_common_opts(enable_p)
-    enable_p.add_argument("server", nargs="?", help="Server name to enable")
-    disable_p = mcp_subparsers.add_parser("disable", help="Disable a configured external MCP server")
-    _add_mcp_common_opts(disable_p)
-    disable_p.add_argument("server", nargs="?", help="Server name to disable")
+    tools_p = mcp_subparsers.add_parser("tools", help="List a server's tools and which of them are blocked")
+    _add_mcp_format(tools_p)
+    tools_p.add_argument("server", help="Server name")
 
-    # feature (keeps key/value semantics)
-    feature_p = mcp_subparsers.add_parser("feature", help="Manage MCP feature flags")
-    _add_mcp_common_opts(feature_p)
-    feature_p.add_argument("server", nargs="?", help="Server name for feature actions")
-    feature_p.add_argument("key", nargs="?", help="Feature subcommand or feature name (for feature set)")
-    feature_p.add_argument("value", nargs="?", help="Feature value (on|off) for feature set)")
-
-    # tool subcommand: provide natural help for tool usage
-    tool_p = mcp_subparsers.add_parser("tool", help="Manage individual tools on an MCP server")
-    _add_mcp_common_opts(tool_p)
-    tool_p.add_argument("server", nargs="?", help="Server name for tool actions")
-    tool_p.add_argument("key", nargs="?", choices=["list", "allow", "block"], help="Tool action: list, allow, or block")
-    tool_p.add_argument("value", nargs="?", help="Tool name for allow/block actions")
-    # enable/disable always persist; no interactive prompt or dry-run
-
-    # hooks subcommand for hook introspection
-    hooks_parser = subparsers.add_parser("hooks", help="Hook introspection and debugging")
-    hooks_parser.add_argument("action", choices=["list", "inspect", "stats", "clear-stats"], nargs="?", default="list", help="Action to perform")
+    # hooks subcommand for hook introspection. No stats: they live in the
+    # memory of the process that ran the hooks, which this one never is.
+    hooks_parser = subparsers.add_parser("hooks", help="Hook introspection")
+    hooks_parser.add_argument("action", choices=["list", "inspect"], nargs="?", default="list", help="Action to perform")
     hooks_parser.add_argument("name", nargs="?", help="Hook name for 'inspect' action")
     from agent_system.hooks import HookType as _HookType
     hooks_parser.add_argument("--type", dest="hook_type", choices=[t.value for t in _HookType],
@@ -789,29 +676,9 @@ def main() -> None:
     hooks_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format")
 
     # users subcommand for user management
-    users_parser = subparsers.add_parser(
-        "users",
-        help="Manage users (admin)",
-        description="User management commands. Examples:\n"
-                    "  agent-cli users list\n"
-                    "  agent-cli users info admin\n"
-                    "  agent-cli users update admin --activate\n"
-                    "  agent-cli users create newuser user@example.com --password secret",
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    users_parser.add_argument("action", choices=["list", "create", "delete", "update", "info", "generate-api-key", "revoke-api-key"], nargs="?", default="list", help="Action to perform (default: list)")
-    users_parser.add_argument("username", nargs="?", help="Target username to operate on")
-    users_parser.add_argument("email", nargs="?", help="Email address (required for 'create' action)")
-    users_parser.add_argument("--password", "-p", dest="password", help="User password (for create/update)")
-    users_parser.add_argument("--name", "-n", dest="full_name", help="User's full display name (e.g., 'John Doe')")
-    users_parser.add_argument("--role", "-r", dest="role", choices=["user", "admin", "guest"], help="User role (for create/update)")
-    users_parser.add_argument("--admin", dest="admin", action="store_true", help="Make user an admin (shortcut for --role admin)")
-    users_parser.add_argument("--inactive", dest="inactive", action="store_true", help="Create user as inactive (for 'create' action)")
-    users_parser.add_argument("--activate", dest="activate", action="store_true", help="Activate user (for 'update' action)")
-    users_parser.add_argument("--deactivate", dest="deactivate", action="store_true", help="Deactivate user (for 'update' action)")
-    users_parser.add_argument("--force", "-f", dest="force", action="store_true", help="Skip confirmation prompts")
-    users_parser.add_argument("--limit", dest="limit", type=int, default=100, help="Maximum number of users to show (for 'list' action)")
-    users_parser.add_argument("--skip", dest="skip", type=int, default=0, help="Number of users to skip (for 'list' action)")
+    # Listed for `agent-cli --help` only: `users` is handed to its typer app
+    # before any parser runs (_run_users_cli).
+    subparsers.add_parser("users", help="Manage users (admin) -- see `agent-cli users --help`")
 
     args = parser.parse_args(argv[1:])
 
@@ -825,13 +692,19 @@ def main() -> None:
     # error message fifteen seconds later is the wrong place to learn it.
     if getattr(args, "max_steps", None) is not None and args.max_steps < 1:
         parser.error("--max-steps must be at least 1")
+    # Same place for --llm-params: parsing them needs no config. Behind the
+    # bootstrap a typo was answered late -- and with exit code 0.
+    try:
+        llm_params_override = parse_llm_params_args(getattr(args, "llm_params", None))
+    except ValueError as e:
+        parser.error(str(e))
 
     def vprint(msg: str) -> None:
         if args.verbose:
             print(msg, flush=True)
 
     vprint("[cli] verbose mode on")
-    vprint(f"[cli] loading config: {args.config}")
+    vprint(f"[cli] loading config: {args.config or os.environ.get('AGENT_CONFIG_PATH') or 'config/config.yaml'}")
     config = load_settings(args.config)
     # If user requested plugin listing, handle and exit early (no heavy bootstrap)
     if args.subcommand == "reload":
@@ -844,7 +717,7 @@ def main() -> None:
         except ImportError:
             print(json.dumps({"error": "httpx library not installed",
                               "message": "Install with: pip install httpx"}, indent=2))
-            return
+            sys.exit(1)
 
         base_url = (args.reload_url or os.environ.get("AGENT_SERVER_URL")
                     or "http://127.0.0.1:8000").rstrip("/")
@@ -864,24 +737,29 @@ def main() -> None:
         except httpx.ConnectError:
             print(json.dumps({"error": "cannot connect to server", "url": url,
                               "hint": "is the server running? set --url / AGENT_SERVER_URL"}, indent=2))
-            return
+            sys.exit(1)
         except Exception as e:
             print(json.dumps({"error": str(e), "url": url}, indent=2))
-            return
+            sys.exit(1)
 
         if resp.status_code in (401, 403):
             print(json.dumps({"error": f"auth failed (HTTP {resp.status_code})",
                               "hint": "pass --api-key or set AGENT_ADMIN_API_KEY to an admin user's API key"}, indent=2))
-            return
+            sys.exit(1)
         if resp.status_code != 200:
             print(json.dumps({"error": f"server returned HTTP {resp.status_code}",
                               "body": resp.text[:500]}, indent=2))
-            return
+            sys.exit(1)
 
         data = resp.json()
         report = data.get("report", {})
+        # A server that failed to refresh makes the reload a failure (exit 1)
+        # -- in both formats, so a script sees it.
+        failed = bool(report.get("errors"))
         if args.out_format == "json":
             print(json.dumps(data, indent=2, ensure_ascii=False))
+            if failed:
+                sys.exit(1)
             return
 
         refreshed = report.get("refreshed", [])
@@ -899,6 +777,8 @@ def main() -> None:
                   f"definition there needs a restart)")
         for err in report.get("errors", []):
             print(f"  [ERR] {err.get('server')}: {err.get('error')}")
+        if failed:
+            sys.exit(1)
         return
 
     if args.subcommand == "plugins":
@@ -907,9 +787,23 @@ def main() -> None:
         # config file directory, so we can trust these paths as provided by
         # the user. If no plugin dirs are configured, pass None to
         # `discover_all_plugins()` to discover only entrypoint plugins.
-        plugins_cfg = _get_plugins_config(config)
+        plugins_cfg = config.plugins
         dirs = [Path(p) for p in (plugins_cfg.plugin_dirs or []) if p] if plugins_cfg else []
         plugins = discover_all_plugins(dirs if dirs else None)
+
+        servers = plugins_cfg.servers if plugins_cfg else {}
+
+        def plugin_type_of(instance_name: str) -> str:
+            """The plugin an instance is built from. `type:` may name another
+            server, whose own type then counts -- the chain
+            settings._resolve_server_inheritance follows. Read raw, a child
+            of `base: {type: web_scraper}` was no web_scraper at all."""
+            typ = servers[instance_name].type
+            seen = {instance_name}
+            while typ not in plugins and typ in servers and typ not in seen:
+                seen.add(typ)
+                typ = servers[typ].type
+            return typ
 
         def to_list():
             """Build a list of plugins with their instances grouped by type."""
@@ -919,7 +813,7 @@ def main() -> None:
 
             if plugins_cfg:
                 for instance_name, mcp_config in plugins_cfg.servers.items():
-                    plugin_type = mcp_config.type
+                    plugin_type = plugin_type_of(instance_name)
                     if plugin_type not in type_to_instances:
                         type_to_instances[plugin_type] = []
                     type_to_instances[plugin_type].append({
@@ -952,17 +846,18 @@ def main() -> None:
             target = getattr(args, "name", None)
             if not target:
                 print(json.dumps({"error": "missing plugin name"}, ensure_ascii=False))
-                return
+                sys.exit(1)
             factory = plugins.get(target)
             if not factory:
                 print(json.dumps({"error": "plugin not found", "name": target}, ensure_ascii=False))
-                return
+                sys.exit(1)
             meta = getattr(factory, "_plugin_metadata", None) or {}
-            # raw output: include factory repr and module path
-            # Accept either the parsed flag or fallback to detecting '--raw'
-            # in sys.argv to be resilient to argument ordering and parser quirks.
-            raw_flag = getattr(args, "raw", False) or ("--raw" in sys.argv)
-            if raw_flag:
+            # A plugin is a TYPE; what plugins.yaml enables are its instances,
+            # whose names need not match the type (writer_audio_ops is an
+            # audio_ops). Same rule as the listing: enabled when any is.
+            enabled_flag = any(
+                v.enabled for k, v in servers.items() if plugin_type_of(k) == target)
+            if args.raw:
                 # Ensure we always include these keys so downstream callers/tests
                 # can rely on stable JSON shape. Use safe fallbacks if repr()
                 # or attribute access fails.
@@ -975,10 +870,7 @@ def main() -> None:
                     "factory_repr": fr,
                     "factory_module": fm,
                 }
-                out = {"name": target, "metadata": meta, **factory_info}
-                plugins_cfg = _get_plugins_config(config)
-                enabled_servers = [k for k, v in plugins_cfg.servers.items() if v.enabled] if plugins_cfg else []
-                out["enabled"] = target in enabled_servers
+                out = {"name": target, "metadata": meta, **factory_info, "enabled": enabled_flag}
                 if args.out_format == "table":
                     # Print header and key/value lines
                     print(f"NAME: {target}")
@@ -997,10 +889,6 @@ def main() -> None:
                 # Always print DESCRIPTION and VERSION lines (may be blank) to keep output stable
                 print(f"DESCRIPTION: {meta.get('description', '')}")
                 print(f"VERSION: {meta.get('version', '')}")
-                # show enabled status for this plugin
-                plugins_cfg = _get_plugins_config(config)
-                enabled_servers = [k for k, v in plugins_cfg.servers.items() if v.enabled] if plugins_cfg else []
-                enabled_flag = target in enabled_servers
                 enabled_text = "YES" if enabled_flag else "NO"
                 display_enabled = enabled_text
                 if _supports_color():
@@ -1010,17 +898,7 @@ def main() -> None:
                         display_enabled = _colorize(enabled_text, "31")
                 print(f"ENABLED: {display_enabled}")
                 return
-            print(json.dumps({"name": target, "metadata": meta}, indent=2, ensure_ascii=False))
-            return
-
-        # REMOVED: enable/disable actions (Task #9265 - Epic 0044)
-        # Config mutation removed - users should edit config files directly
-        if getattr(args, "action", None) in ("enable", "disable"):
-            print(json.dumps({
-                "error": "enable/disable commands removed",
-                "message": "Please edit config files directly (config/plugins.yaml)",
-                "info": "Set 'enabled: true/false' for the specific plugin server in plugins.yaml"
-            }, ensure_ascii=False))
+            print(json.dumps({"name": target, "metadata": meta, "enabled": enabled_flag}, indent=2, ensure_ascii=False))
             return
 
         # search action: filter plugins by name or description
@@ -1029,13 +907,6 @@ def main() -> None:
             listing = to_list()
             filtered = [p for p in listing if term in (p["name"] or "").lower() or term in (p.get("description") or "").lower()]
             print(json.dumps(filtered, indent=2, ensure_ascii=False))
-            return
-
-        # status action: show discovered plugins and whether they're enabled in config
-        if getattr(args, "action", None) == "status":
-            # use the properly loaded config (with includes processed) instead of reading file directly
-            listing = to_list()
-            print(json.dumps(listing, indent=2, ensure_ascii=False))
             return
 
         # list action: either json or simple table
@@ -1113,206 +984,70 @@ def main() -> None:
 
     # Handle hooks introspection subcommand
     if args.subcommand == "hooks":
-        handle_hooks_command(args)
-        return
-
-    # Handle MCP external server management subcommand
-    if args.subcommand == "mcp":
-        # Use config loaded via settings.py - no direct YAML access
-        # All config mutations removed - users should edit config files directly
-
-        async def handle_mcp_command():
-            # Use direct AgentConfig approach for consistency with main CLI bootstrapping
+        # Hooks register while the plugins load. Without loading them the
+        # registry was empty, and `hooks list` answered "No hooks registered"
+        # on every installation. Costs about two seconds (measured 2026-09-14).
+        # Enabled external MCP servers get connected on the way, which adds
+        # their connect time.
+        async def handle_hooks_with_plugins() -> bool:
             mcp_integration = MCPIntegration(config=config)
-            # Ensure MCPIntegration sets up external clients and plugins
             try:
                 try:
                     await mcp_integration.initialize(config)
                 except Exception as e:
-                    # Non-fatal: continue without live clients if initialization fails
-                    logger.warning(f"MCP integration initialization failed, continuing without live clients: {e}", exc_info=True)
-
-                # Initialize services for clean separation of concerns
-                mcp_service = MCPService(mcp_integration, config)
-                tool_service = ToolService(mcp_integration, config)
-
-                action = getattr(args, "action", "list")
-                server_name = getattr(args, "server", None)
-                if action == "list":
-                    result = await _mcp_list_servers(mcp_service, args)
-                    return
-                elif action in ("enable", "disable"):
-                    # Config mutation removed - edit config files directly
-                    print(json.dumps({
-                        "error": "enable/disable commands removed",
-                        "message": "Please edit config files directly (config/mcp_servers.yaml)",
-                        "info": "Set 'enabled: true/false' for the specific server in mcp_servers.yaml"
-                    }, ensure_ascii=False))
-                    return
-                elif action == "feature":
-                    # Config mutation removed - edit config files directly
-                    sub = getattr(args, "key", None)
-                    if not server_name:
-                        print(json.dumps({"error": "server name required for feature action"}, ensure_ascii=False))
-                        return
-
-                    # LIST features: query server capabilities via client if connected
-                    if sub == "list" or sub is None:
-                        # Try client if available to get actual capabilities
-                        # honor --no-probe: skip live query if requested
-                        if getattr(args, "no_probe", False):
-                            client = None
-                        else:
-                            client = await _maybe_await_get_client(mcp_integration, server_name)
-                        capabilities = None
-                        if client:
-                            try:
-                                # A live connection has already completed the
-                                # handshake -- its capabilities come from that
-                                # initialize response, so there is nothing to
-                                # re-initialize here.
-                                capabilities = (
-                                    getattr(client, 'capabilities', None)
-                                    or getattr(client, 'server_capabilities', None)
-                                )
-                            except Exception as e:
-                                logger.debug(f"Failed to get capabilities for {server_name}: {e}")
-                                capabilities = None
-
-                        # Get configured features from config object (read-only)
-                        # Get MCP servers config
-                        mcp_servers_cfg = config.external_servers
-                        conf_features = {}
-                        if mcp_servers_cfg and hasattr(mcp_servers_cfg, 'remote_servers'):
-                            server_cfg = mcp_servers_cfg.remote_servers.get(server_name, {})
-                            conf_features = server_cfg.get('features', {}) if isinstance(server_cfg, dict) else {}
-
-                        out = {
-                            'server': server_name,
-                            'configured_features': conf_features,
-                            'reported_capabilities': capabilities
-                        }
-                        print(json.dumps(out, indent=2, ensure_ascii=False))
-                        result = None
-                        return
-
-                    # SET feature: Config mutation removed
-                    print(json.dumps({
-                        "error": "feature set command removed",
-                        "message": "Please edit config files directly (config/mcp_servers.yaml)",
-                        "info": "Update 'features' section for the specific server in mcp_servers.yaml"
-                    }, ensure_ascii=False))
-                    return
-                elif action == "connect":
-                    if not server_name:
-                        print(json.dumps({"error": "server name required for connect action"}, ensure_ascii=False))
-                        result = None
-                        return
-                    result = await _mcp_connect_server(mcp_service, server_name, args)
-                    return
-                elif action == "disconnect":
-                    if not server_name:
-                        print(json.dumps({"error": "server name required for disconnect action"}, ensure_ascii=False))
-                        result = None
-                        return
-                    result = await _mcp_disconnect_server(mcp_service, server_name, args)
-                    return
-                elif action == "status":
-                    result = await _mcp_status_servers(mcp_service, server_name, args)
-                    return
-                elif action == "test":
-                    if not server_name:
-                        print(json.dumps({"error": "server name required for test action"}, ensure_ascii=False))
-                        result = None
-                        return
-                    result = await _mcp_test_server(mcp_service, server_name, args)
-                    return
-                elif action == "tool":
-                    if not server_name:
-                        print(json.dumps({"error": "server name required for tool action"}, ensure_ascii=False))
-                        result = None
-                        return
-                    result = await _mcp_tool_management(tool_service, server_name, args)
-                    return
+                    # Not "continue anyway" as in `mcp`: nothing of what
+                    # registers would be trustworthy. A SINGLE plugin that
+                    # fails is skipped and logged as an error on stderr --
+                    # the list then shows what the server would register too.
+                    print(f"Error: loading the plugins failed: {e}", file=sys.stderr)
+                    return False
+                return handle_hooks_command(args)
             finally:
-                # Ensure we always attempt to shutdown the integration so any
-                # created aiohttp client sessions are closed and we don't leak
-                # resources when the CLI command exits.
-                try:
-                    logging.getLogger(__name__).debug("MCPIntegration: calling shutdown()")
-                    await mcp_integration.shutdown()
-                    logging.getLogger(__name__).debug("MCPIntegration: shutdown() completed")
-                except Exception as e:
-                    logging.getLogger(__name__).debug(f"Error shutting down MCPIntegration: {e}")
-            # Return the captured result (if any) after shutdown completes.
-            # Use locals().get to avoid UnboundLocalError when `result` was
-            # never assigned due to early returns inside the try/finally.
-            return locals().get('result', None)
+                await mcp_integration.shutdown()
 
-        # Run the async MCP handler
-        try:
-            run_async(handle_mcp_command())
-        except Exception as e:
-            print(json.dumps({"error": str(e)}, ensure_ascii=False))
+        if not run_async(handle_hooks_with_plugins()):
+            sys.exit(1)
         return
 
-    # Handle users management subcommand
-    if args.subcommand == "users":
-        # Import typer-based user CLI using importlib to avoid package/module name conflict
-        # (cli.py and cli/ directory both exist)
-        import importlib.util
-
-        # Dynamically import users module from cli_utils/ directory
-        users_module_path = Path(__file__).parent / "cli_utils" / "users.py"
-        spec = importlib.util.spec_from_file_location("agent_system.agent_cli.users", users_module_path)
-        if spec and spec.loader:
-            users_module = importlib.util.module_from_spec(spec)
-            sys.modules["agent_system.agent_cli.users"] = users_module
-            spec.loader.exec_module(users_module)
-            users_app = users_module.app
-        else:
-            print("ERROR: Could not load users module", file=sys.stderr)
+    # Handle MCP external server inspection subcommand
+    if args.subcommand == "mcp":
+        if not args.action:
+            mcp_parser.print_help()
             return
 
-        # Build arguments for typer command
-        typer_args = [args.action] if args.action else []
+        async def handle_mcp_command() -> bool:
+            mcp_integration = MCPIntegration(config=config)
+            try:
+                try:
+                    await mcp_integration.initialize(config)
+                except Exception as e:
+                    # Non-fatal: list/status still report the configuration
+                    logger.warning(f"MCP integration initialization failed, continuing without live clients: {e}", exc_info=True)
 
-        # Add positional arguments (username, email for create command)
-        if args.username:
-            typer_args.append(args.username)
-        if hasattr(args, 'email') and args.email and args.action == 'create':
-            typer_args.append(args.email)
+                mcp_service = MCPService(mcp_integration, config)
+                if args.action == "list":
+                    return await _mcp_list_servers(mcp_service, args)
+                if args.action == "status":
+                    return await _mcp_status_servers(mcp_service, args.server, args)
+                if args.action == "test":
+                    return await _mcp_test_server(mcp_service, args.server, args)
+                return await _list_server_tools_via_service(
+                    ToolService(mcp_integration, config), args.server, args)
+            finally:
+                # Close the aiohttp sessions and stdio children the
+                # initialization opened, however the action ended.
+                try:
+                    await mcp_integration.shutdown()
+                except Exception as e:
+                    logger.debug(f"Error shutting down MCPIntegration: {e}")
 
-        # Add optional arguments
-        if hasattr(args, 'password') and args.password:
-            typer_args.extend(['--password', args.password])
-        if hasattr(args, 'full_name') and args.full_name:
-            typer_args.extend(['--name', args.full_name])
-        if hasattr(args, 'role') and args.role:
-            typer_args.extend(['--role', args.role])
-        if hasattr(args, 'admin') and args.admin:
-            typer_args.append('--admin')
-        if hasattr(args, 'inactive') and args.inactive:
-            typer_args.append('--inactive')
-        if hasattr(args, 'activate') and args.activate:
-            typer_args.append('--activate')
-        if hasattr(args, 'deactivate') and args.deactivate:
-            typer_args.append('--deactivate')
-        if hasattr(args, 'force') and args.force:
-            typer_args.append('--force')
-        # limit and skip are only for 'list' action
-        if args.action == 'list':
-            if hasattr(args, 'limit') and args.limit:
-                typer_args.extend(['--limit', str(args.limit)])
-            if hasattr(args, 'skip') and args.skip:
-                typer_args.extend(['--skip', str(args.skip)])
-
-        # Execute typer command
         try:
-            users_app(typer_args, standalone_mode=False)
-        except SystemExit:
-            # Typer raises SystemExit, catch it to prevent full CLI exit
-            pass
+            ok = run_async(handle_mcp_command())
+        except Exception as e:
+            print(json.dumps({"error": str(e)}, ensure_ascii=False))
+            ok = False
+        if not ok:
+            sys.exit(1)
         return
 
     # Setup logging from config; file handler is created here. Console level is adjusted below.
@@ -1489,12 +1224,9 @@ def main() -> None:
     if llm_profile_override and not requested_profile:
         vprint(f"[cli] continuing session with its own LLM profile: "
                f"{llm_profile_override}")
-    try:
-        llm_params_override = parse_llm_params_args(getattr(args, "llm_params", None))
-    except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return
-
+    # Exit 1 on the profile errors below, not 0: a caller checking the code
+    # took a refused run for a finished one. Same for a session that cannot
+    # be loaded further down.
     if llm_profile_override or llm_params_override:
         # --llm-params without --llm: apply them to the agent's default profile.
         effective_profile = (
@@ -1507,7 +1239,7 @@ def main() -> None:
                 if available_profiles:
                     error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
                 print(error_msg, file=sys.stderr)
-                return
+                sys.exit(1)
 
             try:
                 # Use factory function that properly handles batch mode
@@ -1537,7 +1269,7 @@ def main() -> None:
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
                 print(f"ERROR: Failed to apply LLM profile '{effective_profile}': {str(e)}", file=sys.stderr)
-                return
+                sys.exit(1)
 
     # Process multimodal attachments -- the kind comes from the file, not from
     # which flag was typed (cli_utils.attachments), same as /attach in the chat.
@@ -1764,7 +1496,7 @@ def main() -> None:
         if presence and not is_chat:
             presence.release(actual_session_id, session_user)
         shut_down_runtime()
-        return
+        sys.exit(1)
 
     async def _stream_and_run_with_status(
         agent: Agent,
@@ -1805,10 +1537,6 @@ def main() -> None:
         if show_status:
             status_queue = await status_bus.subscribe()
 
-        # Optionally auto-subscribe to external SSE status stream
-        sse_task = None
-        sse_url = os.environ.get("AGENT_STATUS_SSE_STREAM_URL")
-
         async def _status_subscriber():
             """Subscribe to local status events and display them"""
             if not status_queue:
@@ -1843,53 +1571,11 @@ def main() -> None:
                 logger.debug(f"Status subscriber error: {e}")
                 return
 
-        async def _sse_subscriber(url: str):
-            try:
-                try:
-                    import aiohttp
-                except Exception:
-                    return
-                timeout = aiohttp.ClientTimeout(total=None)
-                async with aiohttp.ClientSession(timeout=timeout) as sess:
-                    async with sess.get(url) as resp:
-                        if resp.status != 200:
-                            return
-                        async for line in resp.content:
-                            try:
-                                text = line.decode("utf-8").strip()
-                            except Exception:
-                                continue
-                            if not text:
-                                continue
-                            if text.startswith("data:"):
-                                payload = text[len("data:"):].strip()
-                                try:
-                                    obj = json.loads(payload)
-                                except Exception as e:
-                                    logger.debug(f"Failed to parse SSE payload: {e}")
-                                    obj = {"raw": payload}
-                                # Print SSE messages in short form
-                                if _supports_color():
-                                    print(_colorize(f"[SSE] {obj.get('server','?')}: {obj.get('message','')}", "34"))
-                                else:
-                                    print(f"[SSE] {obj.get('server','?')}: {obj.get('message','')}")
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
-                logger.debug(f"SSE subscriber error: {e}")
-                return
-
         # Start status subscriber task if enabled
         status_task = None
         if show_status and status_queue:
             status_task = asyncio.create_task(_status_subscriber())
 
-        if sse_url:
-            try:
-                sse_task = asyncio.create_task(_sse_subscriber(sse_url))
-            except Exception as e:
-                logger.warning(f"Failed to create SSE subscriber task: {e}", exc_info=True)
-                sse_task = None
         # Track whether thinking/reasoning tokens were actually streamed this step.
         # The terminating newline on thinking_complete must only print when content
         # was streamed - non-streaming LLMs emit thinking_complete with no thinking_delta,
@@ -2074,12 +1760,6 @@ def main() -> None:
                     status_task.cancel()
                 except Exception as e:
                     logger.debug(f"Failed to cancel status task: {e}")
-                    pass
-            if sse_task and not sse_task.done():
-                try:
-                    sse_task.cancel()
-                except Exception:
-                    pass
 
     # Execute with new status-aware streaming
     show_mcp = getattr(args, "show_mcp", False)
@@ -2199,7 +1879,9 @@ def main() -> None:
         shut_down_runtime()
 
     # Human-readable final output
-    def _pretty_print_result(res: dict, show_mcp: bool = False, agent_instance=None, session_id_val: str = "unknown", skip_summary: bool = False) -> None:
+    def _pretty_print_result(res: dict, show_mcp: bool = False) -> None:
+        """Tool calls and errors after the run. The summary is not repeated:
+        the stream printed it when the final event arrived."""
         # Calls (print first so summary appears at the end, only when show_mcp is True)
         calls = res.get("calls", []) or []
         if calls and show_mcp:
@@ -2228,52 +1910,6 @@ def main() -> None:
                         logger.debug(f"Failed to JSON dump result: {e2}")
                         print(f"    {str(result_obj)}")
 
-        # Summary (print after calls so it is the final user-visible result)
-        # Skip if skip_summary=True (already printed during streaming)
-        summary = None
-        if not skip_summary:
-            summary = res.get("summary")
-
-        if summary:
-            # Format summary using FORMAT_OUTPUT hooks if available (ANSI for terminal)
-            formatted_summary = summary
-            content_format = 'text'
-
-            try:
-                # Use central ANSI formatting function (respects --color flag)
-                import asyncio
-
-                # Get or create event loop
-                try:
-                    loop = asyncio.get_event_loop()
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-
-                formatted_summary, content_format = loop.run_until_complete(
-                    format_output_with_hooks(
-                        output=summary,
-                        agent_instance=agent_instance,
-                        session_id=session_id_val,
-                        request_id="cli_display"
-                    )
-                )
-                logger.info(f"Formatted summary: format={content_format}, length={len(formatted_summary)}")
-                vprint(f"[cli] Formatted summary: format={content_format}, length={len(formatted_summary)}")
-
-            except Exception as e:
-                logger.warning(f"Failed to format summary with ANSI: {e}", exc_info=True)
-                vprint(f"[cli] ERROR formatting summary: {e}")
-
-            print("")
-            if content_format == 'ansi':
-                render_with_rich(formatted_summary)
-            else:
-                line = f"Summary: {formatted_summary}"
-                if _supports_color():
-                    line = _colorize(line, "33")
-                print(line)
-
         # Errors
         errors = res.get("errors") or []
         if errors:
@@ -2295,8 +1931,7 @@ def main() -> None:
         # not turn a finished run into exit 1 at the very last print.
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str), flush=True)
     else:
-        # Skip summary in pretty print since it was already printed during streaming
-        _pretty_print_result(result, show_mcp=show_mcp, agent_instance=agent, session_id_val=actual_session_id, skip_summary=True)
+        _pretty_print_result(result, show_mcp=show_mcp)
         try:
             sys.stdout.flush()
         except Exception:

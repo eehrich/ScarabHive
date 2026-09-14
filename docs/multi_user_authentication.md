@@ -76,7 +76,7 @@ The `EndpointSecurityEnforcer` class (`src/agent_system/auth/enforcement.py`) pr
    - **Auth Endpoints** (`src/api/auth_endpoints.py`): `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`, API key management
    - **Admin Endpoints** (`src/api/admin_endpoints.py`): `/admin/users/*` for user management (admin-only)
 
-8. **CLI Commands (`src/agent_system/cli/users.py`)**
+8. **CLI Commands (`src/agent_system/cli_utils/users.py`)**
    - `agent-cli users list`: List all users
    - `agent-cli users create`: Create a new user
    - `agent-cli users delete`: Delete a user
@@ -444,42 +444,46 @@ ID  USERNAME    EMAIL              FULL_NAME       ROLE   ACTIVE
 3   janedoe     jane@example.com   Jane Doe        GUEST  ✗
 ```
 
+Die Befehle adressieren Benutzer über den **Benutzernamen** (Positionsargument),
+nicht über `--email`. Hilfe: `agent-cli users BEFEHL --help`. Fehler enden mit
+Exit-Code 1.
+
 ### Create User
 
 ```bash
 # Interactive (prompts for password securely)
-agent-cli users create --email john@example.com --name "John Doe" --admin
+agent-cli users create johndoe john@example.com --name "John Doe" --admin
 
 # With password (not recommended for scripts)
-agent-cli users create --email john@example.com --password SecurePass123! --name "John Doe"
+agent-cli users create johndoe john@example.com --password SecurePass123! --name "John Doe"
 
 # As regular user (default role)
-agent-cli users create --email user@example.com
+agent-cli users create janedoe user@example.com
 ```
 
 ### Delete User
 
 ```bash
-agent-cli users delete --email john@example.com
+agent-cli users delete johndoe          # -f skips the confirmation
 ```
 
 ### Update User
 
 ```bash
 # Update name
-agent-cli users update --email john@example.com --name "John Smith"
+agent-cli users update johndoe --name "John Smith"
 
 # Change role
-agent-cli users update --email john@example.com --admin
+agent-cli users update johndoe --role admin
 
 # Deactivate user
-agent-cli users update --email john@example.com --deactivate
+agent-cli users update johndoe --deactivate
 ```
 
 ### Show User Info
 
 ```bash
-agent-cli users info --email john@example.com
+agent-cli users info johndoe
 ```
 
 Example output:
@@ -500,10 +504,10 @@ Last Login: 2025-10-10 20:30:00
 
 ```bash
 # Generate API key
-agent-cli users generate-api-key --email john@example.com
+agent-cli users generate-api-key johndoe
 
 # Revoke API key
-agent-cli users revoke-api-key --email john@example.com
+agent-cli users revoke-api-key johndoe
 ```
 
 ## Migration Guide
@@ -539,12 +543,12 @@ agent-cli users revoke-api-key --email john@example.com
      -d '{"username": "admin", "password": "CHANGE_THIS_PASSWORD"}'
    
    # Use CLI to update password
-   agent-cli users update --email admin@example.com --password NewSecurePassword
+   agent-cli users update admin --password NewSecurePassword
    ```
 
 5. **Create Additional Users**
    ```bash
-   agent-cli users create --email user@example.com --name "Regular User"
+   agent-cli users create regular user@example.com --name "Regular User"
    ```
 
 ### Backward Compatibility

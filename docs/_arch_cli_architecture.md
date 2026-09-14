@@ -1,922 +1,173 @@
-# Software Architecture Document: CLI Architecture
+# CLI-Architektur
 
-**Document Type:** Software Architecture Document (SAD)  
-**Component:** Command-Line Interface (CLI)  
-**Version:** 1.0  
-**Last Updated:** 2025-01-15  
-**Status:** Active
+Wie `agent-cli` und `agent-run` gebaut sind. Die Befehle selbst stehen in der
+[CLI Reference](cli_reference.md); hier steht, was dahinter passiert und
+welche Fallen der Code bereits kennt.
 
----
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Architectural Goals](#architectural-goals)
-3. [Component Architecture](#component-architecture)
-4. [Command Structure](#command-structure)
-5. [CLI Tools](#cli-tools)
-6. [Output Formatting](#output-formatting)
-7. [Key Design Decisions](#key-design-decisions)
-8. [Data Flow](#data-flow)
-9. [Related Documents](#related-documents)
+Stand: 2026-09-14 (Aufräumrunde: tote Befehle, Config-Schreiber und
+Doppel-Implementierungen entfernt).
 
 ---
 
-## 1. Overview
+## 1. Einstiegspunkte
 
-### 1.1 Purpose
+| Befehl | Modul | Zweck |
+|--------|-------|-------|
+| `agent-cli` | `src/agent_system/agent_cli.py:main` | Agent-Läufe (`run`, `chat`) und Inspektion (`plugins`, `mcp`, `hooks`), Benutzer (`users`), `reload` des Servers |
+| `agent-run` | `src/agent_system/agent_run.py:main` | schlanker Einmal-Lauf mit dem Default-Agenten; teilt Session-Logik und Anhänge mit `agent-cli` |
 
-The CLI provides command-line access to AgentSystem functionality:
-- Quick agent execution (`agent-run`)
-- Comprehensive system management (`agent-cli`)
-- Plugin/server inspection and management
-- Session management
-- Configuration validation
+Beide sind in `pyproject.toml` unter `[project.scripts]` eingetragen.
 
-### 1.2 Scope
-
-This document covers:
-- CLI entry points (`agent_cli.py`, `agent_run.py`)
-- Command structure and argument parsing
-- Output formatting (JSON, table, color)
-- CLI utilities (`cli_utils/`)
-
-### 1.3 CLI Tools
-
-| Tool | Purpose | Use Case |
-|------|---------|----------|
-| **agent-run** | Quick agent execution | One-off questions, scripting |
-| **agent-cli** | Full system management | Server mgmt, plugin inspection, admin tasks |
+**Grundsatz: Die CLI schreibt keine Konfiguration.** Ein Plugin oder MCP-Server
+wird eingeschaltet, indem man die YAML bearbeitet — `enabled` allein reicht
+auch nicht, der Agent braucht die Tools in seiner Allowlist. Die früheren
+Schreib-Befehle (`plugins enable`, `mcp enable`, `mcp tool allow/block`,
+`mcp feature set`) sind entfernt; `allow/block` hatte `mcp_servers.yaml` per
+`yaml.safe_dump` neu geschrieben und dabei alle Kommentare verloren.
 
 ---
 
-## 2. Architectural Goals
+## 2. Argumente parsen (`agent_cli.main`)
 
-### 2.1 Design Principles
+Drei Stufen, jede aus einem gemessenen Grund:
 
-| Principle | Description | Priority |
-|-----------|-------------|----------|
-| **Simplicity** | Easy to use, minimal required arguments | High |
-| **Scriptability** | JSON output for automation | High |
-| **Discoverability** | Help text, command listing, examples | High |
-| **Consistency** | Common patterns across commands | Medium |
-| **Performance** | Fast startup, minimal overhead | Medium |
+1. **Vorparser** (`parse_known_args`): holt die globalen Optionen (`--config`,
+   `-v`, `--color`, `--no-color`, `--show-mcp`, `--no-status`, `--raw`) von
+   *überall* aus der Zeile und setzt sie vor das Subcommand. Ist das erste
+   übrige Wort kein Subcommand, wird `run` eingefügt — `agent-cli "Frage"`
+   funktioniert deshalb ohne `run`.
+2. **`users` geht an Typer**, bevor der Hauptparser läuft
+   (`cli_utils/users.py`) — mit den *ursprünglichen* Tokens hinter `users`,
+   denn der Vorparser liest auch Optionswerte (`-p -vS3cret` kam als
+   `-p -S3cret` an). Typer besitzt Argumente, Hilfe und Exit-Codes. Die
+   frühere argparse-Kopie war auseinandergelaufen: Optionen landeten bei
+   Befehlen, die sie nicht kennen (Traceback), `update USER EMAIL` verwarf die
+   E-Mail, jeder Fehler endete mit 0.
+3. **Hauptparser** mit Subparsern für den Rest.
 
-### 2.2 Quality Goals
+**Falle — ein Flag nur an einer Stelle definieren.** Definiert ein Subparser
+dieselbe `dest` wie der Elternparser, überschreibt sein *Default* den Wert des
+Elternparsers (Python 3.12, gemessen). So las `plugins info --raw` früher
+`False`, und ein `mcp --format json list` lieferte eine Tabelle. Deshalb:
+`--raw` nur global, `--format` nur an den Aktionen.
 
-- **Startup Time:** < 500ms (cold start)
-- **UX:** Intuitive, minimal keystrokes
-- **Compatibility:** Works on Windows, Linux, macOS
-- **Error Handling:** Clear error messages
-
----
-
-## 3. Component Architecture
-
-### 3.1 CLI Structure
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         CLI Layer                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌────────────────────┐         ┌────────────────────┐         │
-│  │    agent-run       │         │    agent-cli       │         │
-│  │  (agent_run.py)    │         │  (agent_cli.py)    │         │
-│  │                    │         │                    │         │
-│  │  - Quick exec      │         │  - Full commands   │         │
-│  │  - Simple args     │         │  - Subcommands     │         │
-│  │  - Streaming       │         │  - Admin ops       │         │
-│  └────────────────────┘         └────────────────────┘         │
-│           │                              │                       │
-│           └──────────────┬───────────────┘                       │
-│                          ▼                                       │
-│  ┌───────────────────────────────────────────────────┐          │
-│  │           CLI Utilities (cli_utils/)              │          │
-│  ├───────────────────────────────────────────────────┤          │
-│  │  - common.py (colors, formatting, hooks)          │          │
-│  │  - agent_runner.py (shared agent creation)        │          │
-│  │  - commands/ (hooks, status, sessions)            │          │
-│  └───────────────────────────────────────────────────┘          │
-│                          │                                       │
-└──────────────────────────┼───────────────────────────────────────┘
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Service Layer                                 │
-│  ConfigService │ MCPService │ AgentService │ ToolService        │
-└─────────────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Domain Layer                                  │
-│  Agent │ MCPRegistry │ Plugin System │ LLM Clients              │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 3.2 Core Components
-
-#### 3.2.1 agent-run (`agent_run.py`)
-
-**File:** `src/agent_system/agent_run.py`
-
-**Purpose:** Lightweight CLI for quick agent execution
-
-**Responsibilities:**
-- Minimal argument parsing
-- Agent initialization
-- Request execution
-- Output formatting
-
-**Usage:**
-```bash
-# Basic usage
-agent-run "What is the weather in Berlin?"
-
-# Specify agent
-agent-run "Translate to German: Hello" --agent translator
-
-# Specify LLM profile
-agent-run "Complex task" --llm-profile gpt4
-
-# JSON output
-agent-run "Question?" --json
-
-# Show status events
-agent-run "Task" --show-status
-
-# No colors
-agent-run "Task" --no-color
-```
-
-**Key Features:**
-- Single-command execution
-- Session persistence (auto session-id)
-- Status streaming to stderr
-- Hook-based output formatting
-- Bootstraps registry and shared session service via `InitializationService.initialize_for_cli()`
-
-**Code Structure:**
-```python
-async def main_async(
-    request: str,
-    agent_name: str | None = None,
-    llm_profile: str | None = None,
-    show_status: bool = True,
-    ...
-) -> None:
-    """Main async execution logic"""
-    
-    # 1. Load configuration
-    config = load_settings()
-    
-    # 2. Initialize system (delegates to InitializationService)
-    registry, session_service = await initialize_system(config)
-    
-    # 3. Create agent
-    agent = await create_agent(
-        config,
-        registry,
-        agent_name,
-        session_service=session_service,
-    )
-    
-    # 4. Execute request (with status subscriber)
-    result = await run_agent_request(
-        agent, request, session_id, ...
-    )
-    
-    # 5. Format output (hooks applied)
-    output = await format_output_with_hooks(result, ...)
-    
-    # 6. Print to stdout
-    print_agent_response(output, ...)
-
-def main() -> None:
-    """Entry point (parses args, runs async)"""
-    parser = argparse.ArgumentParser(...)
-    args = parser.parse_args()
-    
-    asyncio.run(main_async(args.request, ...))
-```
-
-#### 3.2.2 agent-cli (`agent_cli.py`)
-
-**File:** `src/agent_system/agent_cli.py`
-
-**Purpose:** Full-featured CLI for system management
-
-**Responsibilities:**
-- Multi-command interface
-- Plugin/server management
-- Session operations
-- Configuration inspection
-- Admin tasks
-- Reuses `InitializationService` to keep CLI bootstrap identical to API entry points
-
-**Command Categories:**
-
-| Category | Commands | Description |
-|----------|----------|-------------|
-| **Agent** | `chat`, `run` | Execute agent tasks |
-| **MCP** | `mcp list-servers`, `mcp connect`, `mcp disconnect` | External MCP server management |
-| **Tools** | `tools list`, `tools info` | Tool discovery and inspection |
-| **Sessions** | `sessions list`, `sessions show`, `sessions delete` | Session management |
-| **Plugins** | `plugins list`, `plugins info` | Plugin inspection |
-| **Config** | `config-agents list`, `config-agents validate` | Config-based agent management |
-| **Hooks** | `hooks list`, `hooks test` | Hook system inspection |
-| **Status** | `status`, `status metrics` | System status |
-
-**Usage Examples:**
-```bash
-# List all MCP servers
-agent-cli mcp list-servers
-
-# Connect to external MCP server
-agent-cli mcp connect context7
-
-# List available tools
-agent-cli tools list --agent default
-
-# Show session history
-agent-cli sessions show sess_abc123
-
-# List config-based agents
-agent-cli config-agents list
-
-# Validate config agents
-agent-cli config-agents validate
-
-# List hooks
-agent-cli hooks list
-
-# Test hook execution
-agent-cli hooks test format_output --data '{"result": "test"}'
-```
-
-**Code Structure:**
-```python
-def main() -> None:
-    """Entry point with subcommand parsing"""
-    
-    # Preliminary parser (for --color, --json)
-    prelim = argparse.ArgumentParser(add_help=False)
-    prelim.add_argument("--no-color", ...)
-    prelim.add_argument("--out-format", ...)
-    prelim_args, _ = prelim.parse_known_args()
-    
-    # Set global color mode
-    set_color_mode(not prelim_args.no_color)
-    
-    # Main parser with subcommands
-    parser = argparse.ArgumentParser(...)
-    subparsers = parser.add_subparsers(dest="command")
-    
-    # Add subcommands
-    _add_chat_command(subparsers)
-    _add_mcp_commands(subparsers)
-    _add_tools_commands(subparsers)
-    _add_sessions_commands(subparsers)
-    _add_plugins_commands(subparsers)
-    _add_config_agents_commands(subparsers)
-    _add_hooks_commands(subparsers)
-    _add_status_commands(subparsers)
-    
-    # Parse and execute
-    args = parser.parse_args()
-    
-    # Dispatch to command handler
-    asyncio.run(execute_command(args))
-
-async def execute_command(args):
-    """Execute the selected command"""
-    # Load config and initialize services
-    config = load_settings()
-    mcp_service = MCPService(config)
-    tool_service = ToolService(config, mcp_service)
-    
-    # Dispatch based on args.command
-    if args.command == "mcp":
-        await _mcp_list_servers(mcp_service, args)
-    elif args.command == "tools":
-        await _tools_list(tool_service, args)
-    # ... more commands
-```
-
-#### 3.2.3 CLI Utilities (`cli_utils/`)
-
-**Directory:** `src/agent_system/cli_utils/`
-
-**Structure:**
-```
-cli_utils/
-├── common.py           # Colors, formatting, hooks, output
-├── agent_runner.py     # Shared agent creation logic
-└── commands/
-    ├── hooks.py        # Hook command handlers
-    ├── status.py       # Status command handlers
-    └── sessions.py     # Session command handlers
-```
-
-**Key Utilities:**
-
-##### common.py
-
-```python
-# Color Support
-def supports_color() -> bool:
-    """Detect terminal color support"""
-
-def colorize(text: str, code: str) -> str:
-    """Apply ANSI color codes"""
-
-# Output Formatting
-async def format_output_with_hooks(
-    result: str,
-    registry: MCPRegistry,
-    hooks_config: dict
-) -> str:
-    """Apply format_output hooks"""
-
-def print_agent_response(
-    output: str,
-    json_mode: bool,
-    result_dict: dict
-) -> None:
-    """Print formatted output"""
-
-# Status Subscriber
-async def status_subscriber(
-    request_id: str,
-    verbose: bool = False
-) -> None:
-    """Subscribe to status events and print to stderr"""
-```
-
-##### agent_runner.py
-
-```python
-from agent_system.services.session_service import SessionService
-
-async def create_and_register_agent(
-    config: AgentSystemConfig,
-    registry: MCPRegistry,
-    agent_name: str,
-    session_service: SessionService | None = None,
-) -> Agent:
-    """Shared logic to create and register an agent"""
-    
-    # Find agent config
-    agent_config = config.agents.get(agent_name)
-    
-    # Create agent instance
-    agent = Agent(
-        name=agent_name,
-        llm_profile=agent_config.llm_profile,
-        system_template=agent_config.system_template,
-        ...
-    )
-
-    if session_service is not None:
-        agent._session_service = session_service
-    
-    # Register in MCP registry
-    registry.register(agent_name, agent)
-    
-    return agent
-```
+**`--config` ohne Default.** Fehlt das Flag, bekommt `load_settings(None)` die
+Wahl: `AGENT_CONFIG_PATH`, sonst `config/config.yaml`. Ein Default
+`config/config.yaml` im Parser hatte die Umgebungsvariable für alle
+Subcommands verdeckt.
 
 ---
 
-## 4. Command Structure
+## 3. Subcommands und was sie hochfahren
 
-### 4.1 Command Hierarchy
+| Subcommand | Bootstrap | Hinweis |
+|------------|-----------|---------|
+| `plugins` | nur `discover_all_plugins` über `plugins.plugin_dirs` | `enabled` roh aus `plugins.servers` — wie `MCPIntegration` beim Registrieren; der Typ folgt der `type:`-Kette bis zum Plugin. Ein Plugin gilt als eingeschaltet, wenn eine seiner Instanzen es ist |
+| `mcp` | `MCPIntegration.initialize` → Aktion → `shutdown` | nur lesend; eine Verbindung überlebt den Prozess nicht, darum kein `connect`/`disconnect` |
+| `hooks` | `MCPIntegration.initialize` → Registry lesen → `shutdown` (~2 s plus Verbindungsaufbau externer Server) | Hooks registrieren sich beim Laden der Plugins; ohne das war die Registry immer leer. Scheitert `initialize` als Ganzes → Exit 1; ein einzelnes kaputtes Plugin fehlt (Fehler auf stderr), wie im Server. Keine Statistik: die liegt im Speicher des ausführenden Prozesses |
+| `users` | nur die Benutzer-Datenbank (`auth.database_path`) | kein Login nötig, direkter DB-Zugriff |
+| `reload` | nichts; `POST /admin/reload-config` am laufenden Server | Admin-Schlüssel nötig |
+| `run`, `chat` | voll: Logging, `InitializationService.initialize_for_cli`, `initialize_mcp`, `init_batch_system` | siehe 4 |
 
-```
-agent-cli
-├── chat                    # Execute agent task (interactive)
-├── run                     # Execute agent task (one-shot)
-├── mcp
-│   ├── list-servers        # List external MCP servers
-│   ├── connect <name>      # Connect to MCP server
-│   └── disconnect <name>   # Disconnect from MCP server
-├── tools
-│   ├── list                # List available tools
-│   └── info <tool-name>    # Tool details
-├── sessions
-│   ├── list                # List all sessions
-│   ├── show <id>           # Show session messages
-│   └── delete <id>         # Delete session
-├── plugins
-│   ├── list                # List plugins
-│   └── info <plugin-name>  # Plugin details
-├── config-agents
-│   ├── list                # List config-based agents
-│   ├── show <name>         # Agent definition
-│   └── validate            # Validate all agents
-├── hooks
-│   ├── list                # List available hooks
-│   └── test <hook> <data>  # Test hook execution
-└── status
-    └── metrics             # System metrics
-```
-
-### 4.2 Global Options
-
-Available for all commands:
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--no-color` | Disable colored output | Color enabled |
-| `--out-format <fmt>` | Output format (json, table, plain) | `table` |
-| `--verbose` | Enable verbose logging | `false` |
-| `--config <path>` | Configuration file path | `config/config.yaml` |
-
-### 4.3 Common Patterns
-
-**List Commands:**
-```bash
-# Table format (default)
-agent-cli tools list
-agent-cli plugins list
-
-# JSON format
-agent-cli tools list --out-format json
-agent-cli sessions list --json
-```
-
-**Detail Commands:**
-```bash
-# Show details about specific item
-agent-cli tools info web_search
-agent-cli plugins info basic_operations
-agent-cli sessions show sess_abc123
-```
-
-**Action Commands:**
-```bash
-# Perform action on resource
-agent-cli mcp connect context7
-agent-cli sessions delete sess_abc123
-```
+`mcp` nutzt `MCPService` (`list_servers`, `get_server_status`, `test_server`)
+und `ToolService.list_tools`; beide Services bedient auch die API.
 
 ---
 
-## 5. CLI Tools
+## 4. Ablauf von `run` und `chat`
 
-### 5.1 agent-run
+In dieser Reihenfolge, alles in `main`:
 
-**Entry Point:** `agent-run` (console script)
+1. **Logging** in eine rollenspezifische Datei (`logging.file_cli`, sonst
+   `<logfile>-cli.log`), damit CLI und API nicht dieselbe Datei beschreiben.
+   Ohne `-v` sieht die Konsole nur Warnungen.
+2. **Bootstrap** (Registry, Session-Service, MCP, Batch-System).
+3. **Session-Defaults**: wird `--session` fortgesetzt, gelten Agent und
+   LLM-Profil, mit denen sie begonnen wurde — `--agent`/`--llm` schlagen sie
+   (`cli_utils/session_defaults.py`).
+4. **Einstiegs-Agent**: aus der Registry oder über `_build_entry_agent` aus der
+   *aufgelösten* Config (`get_mcp_config_by_name`); der rohe Eintrag trüge
+   Pydantic-Defaults statt geerbter Werte.
+5. `--max-steps` (Kopie der `agent_config`, nur dieser Prozess),
+   `--list-sessions` (listet und endet, noch vor dem LLM-Override).
+6. **LLM-Override** aus `--llm`/`--llm-params` — vor den Anhängen, damit die
+   Fähigkeitsprüfung das tatsächlich genutzte Modell sieht. `--llm-params`
+   selbst prüft schon der Parser (Exit 2, vor dem Bootstrap).
+7. **Anhänge** (`cli_utils/attachments.py`): die Art kommt aus der Datei, nicht
+   aus dem Flag; Bild/Audio gegen die Modellfähigkeit geprüft; Fehler → Exit 1.
+8. **Session-Presence** (`core/session_presence.py`): die Session wird
+   *gehalten, bevor* sie geladen wird. Belegt → Fehler (Exit 1), `--force`
+   übergeht einen verwaisten Halt, `--woken` (vom Weck-Befehl gesetzt) tritt
+   still zurück.
+9. Session laden oder anlegen, `template_vars` aus der Agent-Config und `--vars`.
+10. **Lauf**: `chat` übergibt an `cli_utils/chat.py:run_chat_loop`; `--raw`
+    sammelt über `collect_final_result`; sonst streamt
+    `_stream_and_run_with_status` die Events von `agent.run_events`
+    (Denken grau, Statuszeilen, Zusammenfassung sobald `final` kommt).
+11. Session speichern (nicht bei Abbruch), im `finally` Halt freigeben und
+    Batch-System und MCP herunterfahren.
 
-**Arguments:**
-```
-positional arguments:
-  request               The task/question for the agent
+**Ein Event-Loop für den ganzen Prozess** (`run_async`, `get_cli_loop`).
+`asyncio.run` pro Schritt schloss den Loop danach — und mit ihm die Tasks der
+externen MCP-Verbindungen aus dem Bootstrap. Der Agent bekam still null
+externe Tools, während `mcp test` funktionierte (gemessen 2026-09-01). Der Chat
+leiht sich denselben Loop; `close_cli_loop` räumt ihn bei Prozessende ab.
 
-optional arguments:
-  --agent AGENT         Agent name (default: from config)
-  --llm-profile PROFILE LLM profile to use
-  --session-id ID       Session ID (default: auto-generated)
-  --json                Output as JSON
-  --no-color            Disable colors
-  --show-status         Show status events (default: true)
-  --no-status           Hide status events
-  --verbose             Verbose logging
-```
-
-**Output:**
-```bash
-# Default (formatted, with colors)
-$ agent-run "What is 2+2?"
-Starting agent 'default' with gpt-3.5-turbo...
-▶ Step 1/10: Processing request
-✓ Complete
-
-The answer is 4.
-
-# JSON mode
-$ agent-run "What is 2+2?" --json
-{
-  "result": "The answer is 4.",
-  "usage_stats": { "total_tokens": 15 },
-  "session_id": "sess_xyz"
-}
-
-# No status events
-$ agent-run "What is 2+2?" --no-status
-The answer is 4.
-```
-
-**Exit Codes:**
-- `0` - Success
-- `1` - Error (agent failure, config error, etc.)
-- `130` - Interrupted (Ctrl+C)
-
-### 5.2 agent-cli
-
-**Entry Point:** `agent-cli` (console script)
-
-**Subcommands:**
-
-#### 5.2.1 MCP Commands
-
-```bash
-# List external MCP servers
-$ agent-cli mcp list-servers
-NAME        ADDRESS                  STATUS       DESCRIPTION
-context7    http://localhost:8001    Connected    Context7 docs
-memory      http://localhost:8002    Disconnected Memory system
-
-# Connect to server
-$ agent-cli mcp connect context7
-{"status": "connected", "server": "context7"}
-
-# Disconnect from server
-$ agent-cli mcp disconnect context7
-{"status": "disconnected", "server": "context7"}
-```
-
-#### 5.2.2 Tools Commands
-
-```bash
-# List all tools
-$ agent-cli tools list
-NAME              SOURCE          DESCRIPTION
-web_search        basic_ops       Search the web
-calculator        basic_ops       Perform calculations
-get_weather       weather_plugin  Get weather data
-
-# List tools for specific agent
-$ agent-cli tools list --agent researcher
-NAME              SOURCE          DESCRIPTION
-web_search        basic_ops       Search the web
-read_file         basic_ops       Read file contents
-
-# Tool details
-$ agent-cli tools info web_search --json
-{
-  "name": "web_search",
-  "description": "Search the web",
-  "source": "basic_operations",
-  "parameters": {
-    "query": {"type": "string", "required": true}
-  }
-}
-```
-
-#### 5.2.3 Session Commands
-
-```bash
-# List all sessions (for current user)
-$ agent-cli sessions list
-SESSION_ID         CREATED              MESSAGES  LAST_ACCESSED
-sess_abc123        2025-01-15 10:00     5         2025-01-15 10:05
-sess_def456        2025-01-14 15:30     12        2025-01-14 16:00
-
-# Show session messages
-$ agent-cli sessions show sess_abc123
-[2025-01-15 10:00:00] user: Hello
-[2025-01-15 10:00:02] assistant: Hi! How can I help?
-[2025-01-15 10:00:10] user: What is 2+2?
-[2025-01-15 10:00:12] assistant: The answer is 4.
-
-# Delete session
-$ agent-cli sessions delete sess_abc123
-{"status": "deleted", "session_id": "sess_abc123"}
-```
-
-#### 5.2.4 Config Agents Commands
-
-```bash
-# List config-based agents
-$ agent-cli config-agents list
-NAME          ENABLED  LLM_PROFILE  TOOLS             DESCRIPTION
-researcher    true     gpt4         web_search, ...   Research assistant
-translator    true     gpt3.5       none              Translation agent
-summarizer    false    claude       none              Summarization agent
-
-# Show agent details
-$ agent-cli config-agents show researcher
-name: researcher
-enabled: true
-llm_profile: gpt4
-max_steps: 10
-system_template: prompts/researcher.md
-tools:
-  include: [web_search, calculator]
-hooks:
-  format_output: [markdown_formatter]
-metadata:
-  visibility: ui
-
-# Validate all config agents
-$ agent-cli config-agents validate
-Validating config-based agents...
-✓ researcher - valid
-✓ translator - valid
-✗ summarizer - error: LLM profile 'claude' not found
-
-Total: 3, Passed: 2, Failed: 1
-```
-
-#### 5.2.5 Hooks Commands
-
-```bash
-# List available hooks
-$ agent-cli hooks list
-HOOK_TYPE         PLUGIN            ORDER
-pre_llm_call      token_counter     10
-post_llm_call     token_counter     10
-format_output     markdown_fmt      20
-format_output     html_fmt          30
-
-# Test hook execution
-$ agent-cli hooks test format_output \
-  --data '{"result": "**bold**"}'
-{
-  "result": "<strong>bold</strong>",
-  "hook": "markdown_fmt"
-}
-```
+**stdout trägt das Ergebnis.** Meta-Zeilen („Session saved“, Warnungen)
+gehen nach stderr. Statuszeilen und gestreamtes Denken stehen bei `agent-cli`
+auf stdout; `--no-status` hält stdout sauber. `agent-run` schreibt Status nach
+stderr.
 
 ---
 
-## 6. Output Formatting
+## 5. `cli_utils/`
 
-### 6.1 Output Formats
+| Modul | Inhalt |
+|-------|--------|
+| `common.py` | Farbmodus (`set_color_mode`, `supports_color`), Windows-VT-Modus, Statuszeilen, `format_output_with_hooks`, `render_with_rich` |
+| `chat.py` | die REPL: Renderer, Eingabe/Tastatur, Slash-Befehle, Usage-Summen |
+| `session_defaults.py` | Agent/LLM einer fortgesetzten Session |
+| `session_listing.py` | `--list-sessions` |
+| `attachments.py` | Anhänge nach Dateiart sortieren |
+| `agent_runner.py` | Agent-Erzeugung für `agent-run` |
+| `users.py` | Typer-App für `agent-cli users` |
+| `commands/hooks.py` | `hooks list` / `hooks inspect` |
 
-| Format | Description | Use Case |
-|--------|-------------|----------|
-| **table** | Formatted table (tabulate) | Human-readable lists |
-| **json** | JSON output | Scripting, automation |
-| **plain** | Plain text (no formatting) | Logs, simple output |
-
-### 6.2 Color Support
-
-**Detection:**
-- Check `TERM` environment variable
-- Check `NO_COLOR` environment variable
-- Check `--no-color` flag
-
-**Color Codes:**
-```python
-COLORS = {
-    "red": "31",
-    "green": "32",
-    "yellow": "33",
-    "blue": "34",
-    "magenta": "35",
-    "cyan": "36",
-    "gray": "90",
-}
-
-def colorize(text: str, color: str) -> str:
-    """Apply ANSI color"""
-    if not supports_color():
-        return text
-    code = COLORS.get(color, "0")
-    return f"\033[{code}m{text}\033[0m"
-```
-
-**Usage:**
-```python
-# Status indicators
-print(colorize("✓ Success", "green"))
-print(colorize("✗ Failed", "red"))
-print(colorize("▶ Running", "blue"))
-
-# Server status
-if status == "connected":
-    print(colorize("Connected", "green"))
-elif status == "disconnected":
-    print(colorize("Disconnected", "red"))
-```
-
-### 6.3 Hook-Based Formatting
-
-**Flow:**
-```
-Agent Result (text)
-    │
-    ▼
-format_output hooks (in order)
-    │
-    ├─► Hook 1: markdown_formatter
-    ├─► Hook 2: html_formatter
-    ├─► Hook 3: custom_formatter
-    │
-    ▼
-Final Output
-    │
-    ▼
-Print to stdout
-```
-
-**Example:**
-```python
-async def format_output_with_hooks(
-    result: str,
-    registry: MCPRegistry,
-    hooks_config: dict
-) -> str:
-    """Apply format_output hooks"""
-    
-    # Get format_output hooks
-    hooks = hooks_config.get("format_output", [])
-    
-    output = result
-    for hook_name in hooks:
-        # Execute hook
-        plugin = registry.get(hook_name)
-        if hasattr(plugin, "format_output"):
-            output = await plugin.format_output(output)
-    
-    return output
-```
+Slash-Befehle des Chats liegen außerhalb: `agent_system/chat_commands.py`
+(eingebaut) und `agent_system/plugin_commands.py` (von Plugins deklariert,
+laufen immer über `dispatch_tool_call`).
 
 ---
 
-## 7. Key Design Decisions
+## 6. Ausgabe
 
-### ADR-001: Two CLI Tools
-
-**Context:** Need both quick execution and comprehensive management  
-**Decision:** Provide `agent-run` (simple) and `agent-cli` (full-featured)  
-**Rationale:**
-- agent-run: Minimal keystrokes for common use case
-- agent-cli: Full control for admin/power users
-- Avoid bloat in simple tool
-
-**Status:** Accepted
-
----
-
-### ADR-002: Argparse over Click
-
-**Context:** Need CLI argument parsing  
-**Decision:** Use argparse (stdlib)  
-**Rationale:**
-- No external dependency
-- Good enough for our needs
-- Familiar to Python developers
-
-**Status:** Accepted
+- `--color auto` (Default) schreibt ANSI nur, wo es gerendert wird;
+  `always`/`ansi` erzwingen es, `never`/`text` schalten es ab, `html` für
+  eingebettete Anzeige. Windows-Konsolen bekommen Encoding-Fehler ersetzt,
+  Pipes UTF-8.
+- `--format table|json` gibt es pro Subcommand (`plugins`, `mcp`-Aktionen,
+  `hooks`, `reload`).
+- Exit-Codes: 0 Erfolg, 1 Fehler (auch fachliche von `plugins`, `mcp`,
+  `hooks`, `reload`, `users`), 2 falscher Aufruf. `ERROR:`-Events des Agenten
+  während eines Laufs ändern den Code nicht. Die `_mcp_*`-Helfer und
+  `handle_hooks_command` melden dafür Erfolg als `bool`.
 
 ---
 
-### ADR-003: JSON Output Mode
+## 7. Tests
 
-**Context:** Need scriptable CLI  
-**Decision:** Add `--out-format json` flag to all commands  
-**Rationale:**
-- Enables scripting and automation
-- Machine-readable output
-- Consistent across commands
-
-**Status:** Accepted
+`tests/cli/` — gezielt laufen lassen, die Gruppe dauert gut eine Minute.
+Einstiege: `test_cli_subcommands.py` (hooks, users, entfernte Befehle),
+`test_cli_mcp.py`, `test_cli_plugins_*.py`, `test_cli_event_loop.py`
+(ein Loop), `test_cli_session_resume_end_to_end.py`, `test_cli_chat.py`.
 
 ---
 
-### ADR-004: Status on stderr
+## 8. Verwandte Dokumente
 
-**Context:** Status events vs. final result  
-**Decision:** Status events → stderr, final result → stdout  
-**Rationale:**
-- Allows piping output without noise
-- Status is informational, not result
-- Common Unix pattern
-
-**Status:** Accepted
-
----
-
-## 8. Data Flow
-
-### 8.1 agent-run Flow
-
-```
-User Command
-    │
-    ▼
-Parse Arguments (argparse)
-    │
-    ├─► request (positional)
-    ├─► agent_name (--agent)
-    ├─► llm_profile (--llm-profile)
-    ├─► options (--json, --no-color, etc.)
-    │
-    ▼
-main_async()
-    │
-    ├─► Load configuration (ConfigService)
-    ├─► Initialize system (InitializationService bootstrap + injection)
-    ├─► Create agent (Agent factory)
-    │
-    ▼
-run_agent_request()
-    │
-    ├─► Subscribe to status events (stderr)
-    ├─► Execute agent (Agent.run_events)
-    ├─► Collect final result
-    │
-    ▼
-format_output_with_hooks()
-    │
-    ├─► Apply format_output hooks
-    │
-    ▼
-print_agent_response()
-    │
-    ├─► Format as JSON or plain text
-    ├─► Print to stdout
-    │
-    ▼
-Exit (code 0 or 1)
-```
-
-### 8.2 agent-cli Flow
-
-```
-User Command
-    │
-    ▼
-Preliminary Parser (--no-color, --out-format)
-    │
-    ├─► Set global color mode
-    │
-    ▼
-Main Parser (subcommands)
-    │
-    ├─► Parse subcommand (mcp, tools, sessions, etc.)
-    ├─► Parse subcommand args
-    │
-    ▼
-execute_command()
-    │
-    ├─► Load configuration
-    ├─► Initialize services (MCPService, ToolService)
-    │
-    ▼
-Command Handler
-    │
-    ├─► mcp list-servers → _mcp_list_servers()
-    ├─► tools list → _tools_list()
-    ├─► sessions show → _sessions_show()
-    │
-    ▼
-Service Call
-    │
-    ├─► MCPService.list_servers()
-    ├─► ToolService.list_tools()
-    │
-    ▼
-Format Output
-    │
-    ├─► JSON or table format
-    ├─► Apply colors if enabled
-    │
-    ▼
-Print to stdout
-    │
-    ▼
-Exit
-```
-
----
-
-## 9. Related Documents
-
-### 9.1 Architecture Documents
-
-- [System Architecture](agent_system_architecture.md) - Overall system
-- [App Architecture](app_architecture.md) - FastAPI application
-- [Plugin Architecture](plugin_architecture.md) - Plugin system
-
-### 9.2 User Guides
-
-- [CLI Reference](cli_reference.md) - Detailed command reference
-- [Configuration Guide](../config/README.md) - Config files
-- [Plugin Authoring](plugin_authoring.md) - Creating plugins
-
-### 9.3 Design Documents
-
-- [Session Management](session_management.md) - Sessions
-- [Status System](status_design.md) - Real-time status
-- [Hook System](plugin_hooks.md) - Lifecycle hooks
-
----
-
-**Document Changelog:**
-
-| Version | Date | Author | Changes |
-|---------|------|--------|---------|
-| 1.0 | 2025-01-15 | AgentSystem Team | Initial CLI architecture SAD |
-
----
-
-**Approval:**
-
-| Role | Name | Date | Signature |
-|------|------|------|-----------|
-| Architect | - | - | - |
-| Tech Lead | - | - | - |
-| Product Owner | - | - | - |
+- [CLI Reference](cli_reference.md) — alle Befehle und Optionen
+- [System Architecture](_arch_agent_system_architecture.md)
+- [App Architecture](_arch_app_architecture.md) — die API, die `reload` anspricht
+- [Plugin Architecture](_arch_plugin_architecture.md), [Plugin Hooks](plugin_hooks.md)
+- [Session Management](session_management.md)
+- [MCP Configuration](mcp_configuration.md)
