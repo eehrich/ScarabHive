@@ -398,6 +398,46 @@
     return card !== null;
   });
 
+  await check('a session list asked for before a delete and answered after it does not bring the session back', async () => {
+    await stub('/__stub/sessions', { session_id: 's-listed-late', title: 'Listed late', has_children: false });
+    // a fresh page: no request of an earlier check still queued for a connection -- a cookie goes along when a
+    // request is sent, not when it is made
+    await loadShell();
+    cookie('stub_list', 'held');
+    const late = win().sessionManager.loadSessions();  // answered on release, with the session still listed
+    try {
+      await until('the held list', async () => (await (await stub('/__stub/lists')).json()).held === 1);
+    } finally {
+      cookie('stub_list', null);
+    }
+    sessionButton('s-listed-late', 'delete').click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    await until('the list without it', async () => (await (await stub('/__stub/deletes')).json()).includes('s-listed-late')
+      && !$('.session-item[data-id="s-listed-late"]'));
+    await stub('/__stub/lists/release', {});
+    await late;
+    if ($('.session-item[data-id="s-listed-late"]')) return false;
+    // with a branch open, a reload that has its list waits for the branch too: a delete's reload meanwhile wins
+    await stub('/__stub/sessions', { session_id: 's-listed-later', title: 'Listed later', has_children: false });
+    await win().sessionManager.loadSessions();
+    sessionButton('s-1', 'expand').click();
+    await until('the branch', () => $('.session-item[data-id="s-1-sub"]'));
+    cookie('stub_children', 'held');
+    const waiting = win().sessionManager.loadSessions();  // its list has the session; its branch is held
+    try {
+      await until('the held branch', async () => (await (await stub('/__stub/lists')).json()).held === 1);
+    } finally {
+      cookie('stub_children', null);
+    }
+    sessionButton('s-listed-later', 'delete').click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    await until('the list without it', async () => (await (await stub('/__stub/deletes')).json()).includes('s-listed-later')
+      && !$('.session-item[data-id="s-listed-later"]'));
+    await stub('/__stub/lists/release', {});
+    await waiting;
+    return !$('.session-item[data-id="s-listed-later"]') && $('.session-item[data-id="s-1-sub"]') !== null;
+  });
+
   await check('deleting a session is a choice: a pick after it wins, a pick of it does not stay open', async () => {
     const header = () => $('#headerSessionId').textContent;
     const confirmDelete = async (id) => {
@@ -516,7 +556,7 @@
     return note.isConnected;
   });
 
-  await check('while the run of a session being deleted stops, a pick elsewhere keeps its place and a message keeps the session', async () => {
+  await check('while the run of a session being deleted stops, a pick elsewhere and a message there keep their place and a message keeps the session', async () => {
     const header = () => $('#headerSessionId').textContent;
     const deleted = async () => (await (await stub('/__stub/deletes')).json());
     const confirmDeleteAndCancel = async (id) => {
@@ -545,7 +585,9 @@
       await confirmDeleteAndCancel('s-busy');
       await until('the stopped run', () => !running);
       sessionButton('s-1', 'open').click();  // picked and shown before the delete goes on
-      await until('the kit session', () => header() === 'Refactor the kit');
+      await until('the kit session', () => header() === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
+      $('#task').value = 'Meanwhile, here';  // written into the session picked, not into the one being deleted
+      $('#f').requestSubmit();
       await sleep(800);
       pickKept = header() === 'Refactor the kit' && (await deleted()).includes('s-busy');
     } finally {
@@ -588,27 +630,25 @@
     return !$$('.pk-toast--warn').some((t) => t.textContent.includes('stays'));
   });
 
-  await check('a session opened and written into while it is being deleted keeps its run in the chat', async () => {
+  await check('a session opened by a load on its way while its delete runs takes no message', async () => {
     const header = () => $('#headerSessionId').textContent;
     await stub('/__stub/sessions', { session_id: 's-reborn', title: 'Reborn session', delay: 0.8, delete_delay: 1.5, has_children: false });
     await win().sessionManager.loadSessions();
     sessionButton('s-1', 'open').click();
     await until('the kit session', () => header() === 'Refactor the kit');
-    try {
-      sessionButton('s-reborn', 'open').click();  // answers after 0.8 s
-      sessionButton('s-reborn', 'delete').click();
-      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();  // before it has answered
-      await until('the session opening while its delete runs', () => header() === 'Reborn session', 3000);
-      $('#task').value = 'Bring it back';
-      $('#f').requestSubmit();
-      await until('its run', () => win().chatModule.hasActiveRequest(), 2000);
-      await until('the delete', async () => (await (await stub('/__stub/deletes')).json()).includes('s-reborn'), 4000);
-      await sleep(300);
-      return header() === 'Reborn session' && win().chatModule.hasActiveRequest()
-        && $$('#chat .msg.user').some((m) => m.textContent.includes('Bring it back'));
-    } finally {
-      await loadShell();  // the run's stream ends with the page
-    }
+    sessionButton('s-reborn', 'open').click();  // answers after 0.8 s
+    sessionButton('s-reborn', 'delete').click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();  // before it has answered
+    await until('the session opening while its delete runs', () => header() === 'Reborn session', 3000);
+    const runs = await runsPosted();
+    $('#task').value = 'Bring it back';
+    $('#f').requestSubmit();
+    await until('the note', () => $$('#chat .msg.note').some((note) => note.textContent.includes('being deleted')), 1000);
+    const held = $('#task').value === 'Bring it back' && await runsPosted() === runs;
+    await until('the delete', async () => (await (await stub('/__stub/deletes')).json()).includes('s-reborn'), 4000);
+    await until('the chat letting go of it', () => header() === 'New session', 2000);
+    $('#task').value = '';
+    return held;
   });
 
   await check('after New, deleting the session left behind leaves the chat alone', async () => {
@@ -962,7 +1002,7 @@
       await until('the append to the next run', async () => await hits('append:r-late-dropped') > 0, 2000);
       const lostNotices = () => ($('#chat').textContent.match(/Connection lost/g) || []).length;
       await until('the next run lost', () => lostNotices() === 1, 3000);
-      // a run Stop was answered for, whose stream breaks before the run's own end: it may still be unwinding
+      // a run Stop was answered for, whose stream breaks before the run's own end: it may still be going
       cookie('stub_stream', 'late-drops');
       $('#task').value = 'Once more';
       $('#f').requestSubmit();
@@ -988,9 +1028,9 @@
     }
   });
 
-  await check('deleting the open session whose run loses its stream while it stops waits until the server no longer runs it', async () => {
+  await check('deleting the open session whose run loses its stream while it stops cancels the run and goes', async () => {
     await stub('/__stub/sessions', { session_id: 's-severed', title: 'Severed session', has_children: false });
-    storeRun('r-live-severed', 's-severed');  // its stream breaks as it is cancelled; it unwinds 1.5 s longer
+    storeRun('r-live-severed', 's-severed');  // its stream breaks as it is cancelled
     try {
       await go(`/?load=${performance.now()}`);
       await until('the reattached run', () => reattached() && sessionButton('s-severed', 'delete'), 4000);
@@ -1001,18 +1041,17 @@
         return open && open.textContent.includes('still running') && open.querySelector('.pk-btn--danger');
       }, 2000)).click();
       await until('the delete', async () => (await (await stub('/__stub/deletes')).json()).includes('s-severed'), 5000);
-      return await hits('delete-while-unwinding') === 0 && $('#chatWelcome') !== null;
+      return await hits('cancel:r-live-severed:force') === 1 && $('#chatWelcome') !== null;
     } finally {
       forgetRun();
       await loadShell();
     }
   });
 
-  await check('deleting a session waits for its run: one named and cut off while the run question is open is cancelled first, one cut off past its answer -- asked about or not, or followed by a run elsewhere -- is waited for without a cancel', async () => {
+  await check('deleting a session cancels the run it asks about: one named and cut off while the run question is open is cancelled, one past its answer -- asked about or not -- is not', async () => {
     await stub('/__stub/sessions', { session_id: 's-late-start', title: 'Late start', has_children: false });
     await stub('/__stub/sessions', { session_id: 's-answered', title: 'Answered session', has_children: false });
     await stub('/__stub/sessions', { session_id: 's-saving', title: 'Saving session', has_children: false });
-    await stub('/__stub/sessions', { session_id: 's-overtaken', title: 'Overtaken session', has_children: false });
     await win().sessionManager.loadSessions();
     const deleteOpen = async (id) => {
       sessionButton(id, 'delete').click();
@@ -1039,27 +1078,19 @@
       await until('the lost connection', () => $('#chat').textContent.includes('reload the page to follow it'), 4000);
       first.click();
       await until('the first delete', () => deleted('s-late-start'), 5000);
-      // cut off past its answer while the viewer is asked: it is still saving its session
+      // cut off past its answer while the viewer is asked
       await runIn('s-answered', 'Answered session', 'final-drops');
       const second = await deleteOpen('s-answered');
       await until('its cut', () => !win().chatModule.hasActiveRequest(), 4000);
       second.click();
       await until('the second delete', () => deleted('s-answered'), 5000);
-      // cut off past its answer before the delete is asked for: no question about it, and still the save comes first
+      // cut off past its answer before the delete is asked for: no question about it
       await runIn('s-saving', 'Saving session', 'final-drops');
       await until('its cut before the delete', () => !win().chatModule.hasActiveRequest(), 4000);
       sessionButton('s-saving', 'delete').click();
       (await until('the third delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
       await until('the third delete', () => deleted('s-saving'), 5000);
-      // cut off past its answer, then a run in another session: deleting the session still waits for its save
-      await runIn('s-overtaken', 'Overtaken session', 'final-drops');
-      await until('its cut before the run elsewhere', () => !win().chatModule.hasActiveRequest(), 4000);
-      await runIn('s-2', 'Fresh session', null);  // a run that goes on for five seconds
-      sessionButton('s-overtaken', 'delete').click();
-      (await until('the fourth delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
-      await until('the fourth delete', () => deleted('s-overtaken'), 5000);
-      return await hits('cancel:r-late-started:force') === 1 && await hits('cancel:r-final-dropped:force') === 0
-        && await hits('delete-while-unwinding') === 0;
+      return await hits('cancel:r-late-started:force') === 1 && await hits('cancel:r-final-dropped:force') === 0;
     } finally {
       cookie('stub_stream', null);
       forgetRun();
@@ -1067,59 +1098,23 @@
     }
   });
 
-  await check('a session written into while its delete waits for its run to save stays, even opened again; a message into another session keeps no session', async () => {
-    await stub('/__stub/sessions', { session_id: 's-reopened', title: 'Reopened session', has_children: false });
-    await stub('/__stub/sessions', { session_id: 's-written-elsewhere', title: 'Written elsewhere', has_children: false });
+  await check('a session being deleted does not open again', async () => {
+    await stub('/__stub/sessions', { session_id: 's-going', title: 'Going session', delete_delay: 1.5, has_children: false });
     await win().sessionManager.loadSessions();
-    const header = () => $('#headerSessionId').textContent;
     const deleted = async (id) => (await (await stub('/__stub/deletes')).json()).includes(id);
-    const deleteIt = async (id) => {
-      sessionButton(id, 'delete').click();
-      (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
-    };
-    // a run in the session, cut off past its answer: its save takes 2.5 s from the answer, and a delete waits for it
-    const answeredIn = async (id, title) => {
-      sessionButton(id, 'open').click();
-      await until(`the session ${title}`, () => header() === title && $$('#chat .msg.user').length === 1);
-      cookie('stub_stream', 'final-drops');
-      $('#task').value = 'Answer me';
-      $('#f').requestSubmit();
-      await until('its run', () => win().chatModule.hasActiveRequest(), 1000);
-      cookie('stub_stream', null);
-      await until('its cut', () => !win().chatModule.hasActiveRequest(), 4000);
-    };
-    try {
-      // deleted from another session, opened again and written into while the delete waits
-      await answeredIn('s-reopened', 'Reopened session');
-      sessionButton('s-2', 'open').click();
-      await until('another session', () => header() === 'Fresh session');
-      await deleteIt('s-reopened');
-      sessionButton('s-reopened', 'open').click();
-      await until('the session opened again', () => header() === 'Reopened session' && $$('#chat .msg.user').length === 1);
-      $('#task').value = 'Still needed';
-      $('#f').requestSubmit();  // its run goes on for five seconds
-      await until('the session staying', () => $$('.pk-toast--warn').some((t) => t.textContent.includes('stays')), 4000);
-      const kept = !await deleted('s-reopened') && header() === 'Reopened session' && win().chatModule.hasActiveRequest()
-        && $$('#chat .msg.user').some((message) => message.textContent.includes('Still needed'));
-      await loadShell();  // the run of that message ends with the page
-      // deleted while open, then another session picked and written into while the delete waits: it goes
-      await answeredIn('s-written-elsewhere', 'Written elsewhere');
-      await deleteIt('s-written-elsewhere');
-      sessionButton('s-2', 'open').click();
-      await until('the session elsewhere', () => header() === 'Fresh session');
-      $('#task').value = 'Something else';
-      $('#f').requestSubmit();
-      if (await deleted('s-written-elsewhere')) return false;  // not before the save it waits for
-      await until('the delete', () => deleted('s-written-elsewhere'), 5000);
-      return kept && header() === 'Fresh session' && await hits('delete-while-unwinding') === 0;
-    } finally {
-      cookie('stub_stream', null);
-      forgetRun();
-      await loadShell();  // the run of the last message ends with the page
-    }
+    sessionButton('s-2', 'open').click();
+    await until('another session', () => $('#headerSessionId').textContent === 'Fresh session');
+    sessionButton('s-going', 'delete').click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
+    await sleep(100);  // its DELETE is on its way for 1.5 s
+    sessionButton('s-going', 'open').click();
+    await until('the refusal', () => $$('.pk-toast--warn').some((t) => t.textContent.includes('being deleted')), 1000);
+    await until('the delete', () => deleted('s-going'), 4000);
+    await sleep(300);
+    return $('#headerSessionId').textContent === 'Fresh session' && await hits('session:s-going') === 0;
   });
 
-  await check('leaving a session during its run: past its answer a pick asks nothing and takes the chat, a later choice wins, and a message sent while the run stops keeps the session', async () => {
+  await check('leaving a session during its run: past its answer a pick or New asks nothing and takes the chat with its composer, and the last click wins; a later choice wins, and a message sent while the run stops keeps the session', async () => {
     await stub('/__stub/sessions', { session_id: 's-later', title: 'Later pick', has_children: false });
     const header = () => $('#headerSessionId').textContent;
     const runQuestion = () => until('the run question', () => {
@@ -1127,13 +1122,47 @@
       return open && open.textContent.includes('still running') && open.querySelector('.pk-btn--danger');
     }, 2000);
     try {
-      // past its answer, while its stream waits for the save: the pick asks nothing and takes the chat at once
+      // Past its answer, while its stream waits for the save: a pick asks nothing and takes the chat at once, the
+      // chat follows that stream no more, and whatever the stream still brings leaves the new session alone.
+      // a run followed again after a reload, and a pick
       storeRun('r-live-answered', 's-1');  // its final answer after half a second, its end 3 s later
       await go(`/?load=${performance.now()}`);
       await until('the answered run', () => reattached() && sessionStorage.getItem('activeRequestId') === null, 3000);
       sessionButton('s-2', 'open').click();
       await until('the pick at once', () => header() === 'Fresh session' && !reattached() && $$('#chat .msg.user').length === 1, 1500);
-      if (!win().chatModule.hasActiveRequest() || $('dialog.pk-dialog[open]')) return false;
+      if (win().chatModule.hasActiveRequest() || $('dialog.pk-dialog[open]')) return false;
+      $('#task').value = 'Over here';
+      $('#f').requestSubmit();  // a run that goes on for five seconds
+      await sleep(3200);  // the old stream has brought its end by now
+      if (!win().chatModule.hasActiveRequest() || $('#stopBtn').style.display === 'none') return false;
+      await loadShell();  // that run's stream ends with the page
+      // a message's run, and New: a message there starts its own run, which the old stream's end leaves alone
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => header() === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
+      cookie('stub_stream', 'answered');  // its final answer after half a second, its end 3 s later
+      $('#task').value = 'Answer me';
+      $('#f').requestSubmit();
+      await until('its answer', () => win().chatModule.hasActiveRequest() && $$('#chat .message-request-id').some((id) => id.textContent.includes('r-answered'))
+        && sessionStorage.getItem('activeRequestId') === null, 2000);
+      cookie('stub_stream', null);
+      $('#sessionsPane [data-act="new"]').click();
+      await until('a new session', () => $('#chatWelcome') && !win().chatModule.hasActiveRequest(), 1000);
+      const runs = await runsPosted();
+      $('#task').value = 'Here instead';
+      $('#f').requestSubmit();  // a run that goes on for five seconds
+      await until('its own run', async () => await runsPosted() === runs + 1, 1500);
+      await sleep(3200);  // the old stream has brought its end by now
+      if ($$('#chat .msg.note').some((note) => note.textContent.includes('finishing')) || !win().chatModule.hasActiveRequest()
+        || $('#stopBtn').style.display === 'none') return false;
+      // a run followed again, and a slow pick then a click on the open session: the last click wins
+      storeRun('r-live-answered', 's-1');
+      await go(`/?load=${performance.now()}`);
+      await until('the answered run again', () => reattached() && sessionStorage.getItem('activeRequestId') === null, 3000);
+      sessionButton('s-late', 'open').click();  // answers after 2 s
+      await sleep(100);
+      sessionButton('s-1', 'open').click();
+      await sleep(2500);
+      if (header() !== 'Refactor the kit') return false;
       // a pick whose run honours the cancel at once, while the answer takes its time: a pick after that wins
       storeRun('r-live-honouring', 's-1');
       await go(`/?load=${performance.now()}`);
@@ -1204,6 +1233,95 @@
     }
   });
 
+  await check('a run let go of past its answer is read to its end, and its save shows in the session list: a message, one with files beside a new run, and a run followed again after a reload', async () => {
+    const header = () => $('#headerSessionId').textContent;
+    const saved = (id, request) => $(`.session-item[data-id="${id}"]`)?.textContent.includes(`Saved by ${request}`);
+    const streamOf = async (request) => (await (await stub('/__stub/streams')).json())[request];
+    const upload = () => win().fileUploadModule;
+    for (const id of ['s-saving-text', 's-saving-files', 's-saving-live']) {
+      await stub('/__stub/sessions', { session_id: id, title: `Unsaved ${id}`, has_children: false });
+    }
+    await loadShell();
+    try {
+      // a message: past its answer a pick takes the chat, and the stream reads on to the run's save and end
+      sessionButton('s-saving-text', 'open').click();
+      await until('its session', () => header() === 'Unsaved s-saving-text');
+      cookie('stub_stream', 'saving');
+      $('#task').value = 'Save this';
+      $('#f').requestSubmit();
+      win().dispatchEvent(new Event('beforeunload'));  // a page that stays -- a link turned download -- follows its run on
+      await until('its answer', () => $$('#chat .message-request-id').some((id) => id.textContent.includes('r-saving'))
+        && win().chatModule.hasActiveRequest() && !win().chatModule.activeRun(), 2000);
+      cookie('stub_stream', null);
+      sessionButton('s-1', 'open').click();
+      await until('the pick', () => header() === 'Refactor the kit', 1500);
+      await until('the save in the list', () => saved('s-saving-text', 'r-saving'), 5000);
+      if (await streamOf('r-saving') !== 'read') return false;
+      // one with files, while a message in the picked session runs: the old stream's end leaves that run alone
+      sessionButton('s-saving-files', 'open').click();
+      await until('its session', () => header() === 'Unsaved s-saving-files');
+      cookie('stub_stream', 'saving');
+      upload().addFiles([new (win().File)(['a plan'], 'plan.txt', { type: 'text/plain' })]);
+      $('#task').value = 'Read and save';
+      $('#f').requestSubmit();
+      await until('its answer', () => $$('#chat .message-request-id').some((id) => id.textContent.includes('r-files-saving'))
+        && win().chatModule.hasActiveRequest() && !win().chatModule.activeRun(), 3000);
+      cookie('stub_stream', null);
+      sessionButton('s-1', 'open').click();
+      await until('the pick', () => header() === 'Refactor the kit', 1500);
+      const runs = await runsPosted();
+      $('#task').value = 'Meanwhile';
+      $('#f').requestSubmit();  // a run that goes on for five seconds
+      await until('its own run', async () => await runsPosted() === runs + 1, 1500);
+      await until('the save in the list', () => saved('s-saving-files', 'r-files-saving'), 5000);
+      if (await streamOf('r-files-saving') !== 'read' || !win().chatModule.activeRun()
+        || $('#stopBtn').style.display === 'none') return false;
+      await loadShell();  // that run's stream ends with the page
+      // a run followed again after a reload
+      storeRun('r-live-saving', 's-saving-live');
+      await go(`/?load=${performance.now()}`);
+      await until('its answer', () => reattached() && win().chatModule.hasActiveRequest() && !win().chatModule.activeRun(), 3000);
+      sessionButton('s-1', 'open').click();
+      await until('the pick', () => header() === 'Refactor the kit', 1500);
+      await until('the save in the list', () => saved('s-saving-live', 'r-live-saving'), 5000);
+      return await streamOf('r-live-saving') === 'read' && header() === 'Refactor the kit';
+    } finally {
+      cookie('stub_stream', null);
+      upload().removeFiles(upload().getFiles());
+      forgetRun();
+    }
+  });
+
+  await check('a run let go of whose stream breaks while it saves leaves the session list alone: a message, and one with files', async () => {
+    const header = () => $('#headerSessionId').textContent;
+    const upload = () => win().fileUploadModule;
+    try {
+      for (const [request, files] of [['r-saving-dropped', []], ['r-files-saving-dropped', ['plan.txt']]]) {
+        sessionButton('s-2', 'open').click();
+        await until('its session', () => header() === 'Fresh session');
+        cookie('stub_stream', 'saving-drops');
+        upload().addFiles(files.map((name) => new (win().File)(['a plan'], name, { type: 'text/plain' })));
+        $('#task').value = 'Save, then break';
+        $('#f').requestSubmit();
+        await until(`the answer of ${request}`, () => $$('#chat .message-request-id').some((id) => id.textContent.includes(request))
+          && win().chatModule.hasActiveRequest() && !win().chatModule.activeRun(), 3000);
+        cookie('stub_stream', null);
+        sessionButton('s-1', 'open').click();
+        await until('the pick', () => header() === 'Refactor the kit', 1500);
+        cookie('stub_list', 'broken');  // the server goes down: a reload of the list would fail
+        await sleep(2500);  // the stream has broken by now
+        cookie('stub_list', null);
+        if ($('.sessions-list .pk-empty') || !$('.session-item[data-id="s-1"]') || header() !== 'Refactor the kit') return false;
+      }
+      return true;
+    } finally {
+      cookie('stub_stream', null);
+      cookie('stub_list', null);
+      upload().removeFiles(upload().getFiles());
+      forgetRun();
+    }
+  });
+
   await check('while a run stops for a pick: a later pick wins, a declined one is no pick, a click on the open session keeps it', async () => {
     const header = () => $('#headerSessionId').textContent;
     const runQuestion = () => until('the run question', () => {
@@ -1252,7 +1370,7 @@
     }
   });
 
-  await check('while the viewer is asked: a start that arrives is no choice, a run that ends is not cancelled, a stream that breaks still has its run cancelled, a refused request leaves a lost run to the pick; a delete started after a cancel asks nothing and waits for the save', async () => {
+  await check('while the viewer is asked: a start that arrives is no choice, a run that ends is not cancelled, a stream that breaks still has its run cancelled, a refused request leaves a lost run to the pick; a delete started after a cancel asks nothing', async () => {
     const header = () => $('#headerSessionId').textContent;
     const runQuestion = () => until('the run question', () => {
       const open = $('dialog.pk-dialog[open]');
@@ -1320,8 +1438,8 @@
       refused.click();
       await until('the pick after the refusal', () => header() === 'Fresh session', 3000);
       if (await hits('cancel:r-dropped:force') !== lostCancels || sessionStorage.getItem('activeRequestId') !== null) return false;
-      // a delete started once a stopped run has brought its cancelled event: its stream stays open for the save, and
-      // the session goes only after that -- the run is not cancelled again
+      // a delete started once a stopped run has brought its cancelled event: nothing asked, the run is not cancelled
+      // again, and the session goes
       await stub('/__stub/sessions', { session_id: 's-honour', title: 'Honouring session', has_children: false });
       storeRun('r-live-honouring-late', 's-honour');  // honours a cancel a second after it is asked, then saves
       await go(`/?load=${performance.now()}`);
@@ -1331,7 +1449,7 @@
       sessionButton('s-honour', 'delete').click();
       (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
       await until('the delete', async () => (await (await stub('/__stub/deletes')).json()).includes('s-honour'), 5000);
-      return await hits('delete-while-unwinding') === 0 && await hits('cancel:r-live-honouring-late:force') === 0;
+      return await hits('cancel:r-live-honouring-late:force') === 0 && $('#chatWelcome') !== null;
     } finally {
       cookie('stub_stream', null);
       forgetRun();
@@ -1392,8 +1510,7 @@
       cookie('stub_cancel', null);
       const keptTheOther = await cancels() === before + 3 && stored() === 'r-other';
       // a stored run of a session the shell could not show after a reload: neither a failed pick of that session
-      // nor a run with files elsewhere lets it go, and deleting the session cancels it -- its session goes only
-      // once the run has unwound, since it saves its session as it does
+      // nor a run with files elsewhere lets it go, and deleting the session cancels it
       await stub('/__stub/sessions', { session_id: 's-unreadable', title: 'Unreadable session', fails: true, has_children: false });
       storeRun('r-live-unanswered', 's-unreadable');
       await go(`/?load=${performance.now()}`);
@@ -1411,7 +1528,7 @@
       (await deleteIt('s-unreadable')).querySelector('.pk-btn--danger').click();
       await until('the third delete', () => deleted('s-unreadable'), 4000);
       return declined && failed && cancelled && letGoMeanwhile && keptTheOther && keptAfterPick
-        && await hits('cancel:r-live-unanswered:force') === 1 && await hits('delete-while-unwinding') === 0 && stored() === null;
+        && await hits('cancel:r-live-unanswered:force') === 1 && stored() === null;
     } finally {
       cookie('stub_stream', null);
       cookie('stub_cancel', null);

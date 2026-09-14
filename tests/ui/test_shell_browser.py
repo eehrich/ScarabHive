@@ -6,7 +6,11 @@ panel that records what the host sends, and two instances of one plugin. The
 cookie ``stub_account`` picks what /auth/me answers: absent -- authentication
 is off; ``admin`` -- signed in; ``expired`` -- 401; ``inactive`` -- 403;
 ``broken`` -- 500. ``stub_catalog`` makes the catalogue fail (``broken``) or
-answer after a second (``slow``); ``stub_requests=running`` lists one running
+answer after a second (``slow``); ``stub_list=held`` and ``stub_children=held``
+hold the answer of the session list and of a branch, as they were when asked,
+until POST /__stub/lists/release (GET /__stub/lists counts the held ones),
+``stub_list=broken`` fails the list;
+``stub_requests=running`` lists one running
 request an administrator may cancel. The requests ``r-live``, ``r-live-busy``,
 ``r-live-files``, ``r-live-refusing`` (appends fail after half a second),
 ``r-live-finishing`` (an append finds it finished), ``r-live-closing`` (its
@@ -18,33 +22,39 @@ stream ends with the run after 0.8 s, an append to it is taken after 1.5 s),
 ``r-live-severed`` (its stream breaks as a cancel is asked for),
 ``r-live-honouring`` (honours a cancel at once with its cancelled event and
 end), ``r-live-honouring-late`` (does so a second after the cancel is asked
-for, and saves its session over the 1.5 s before its end), ``r-live-leaving``, every
+for, and brings its end 1.5 s after the cancelled event), ``r-live-leaving``, every
 ``r-live-kept...`` and, after a slower status check, ``r-live-slow`` are still
 running after a reload -- a stream followed again names its run first;
 ``r-live-ended`` is done, told after a second, ``r-live-unanswered`` gets no
 answer, any other request is unknown. A cancel of ``r-live-stopping`` (told
-after 3 s) or ``r-ending`` finds nothing; any other is cancelled, and its run
-unwinds 0.8 s longer (``r-live-severed`` 1.5 s) -- its status says running, and
-a session deleted meanwhile is counted; a cancelled run stays cancelled for the
-rest of the page. Every answered cancel is counted. ``stub_cancel=fails``
+after 3 s) or ``r-ending`` finds nothing; any other is cancelled and stays
+cancelled for the rest of the page. Every answered cancel is counted. ``stub_cancel=fails``
 makes cancels fail, ``stub_cancel=slow`` and ``slower`` answer them after 1.5
 and 6 s. A session asked for while a status check is being answered is
 counted. Every line typed with a slash resolves as that chat command. A message
 the chat sends starts a run that goes on for a few seconds; with
 ``stub_stream=drops``, ``final-drops``, ``cancelled-drops``, ``late-drops``,
-``question-drops``, ``closes``, ``ending`` or ``late-start-drops`` its stream
+``question-drops``, ``closes``, ``ending``, ``answered`` or ``late-start-drops`` its stream
 names ``r-dropped``, ``r-final-dropped``, ``r-cancelled-dropped``,
-``r-late-dropped``, ``r-question-dropped``, ``r-closed``, ``r-ending`` or --
+``r-late-dropped``, ``r-question-dropped``, ``r-closed``, ``r-ending``, ``r-answered`` or --
 after 1.5 s -- ``r-late-started`` in the message's session and is cut off, cut
-off after its final answer or its cancel (1.5 s in; the run goes on, saving, for
-2.5 s from then), cut off after 3 or 1.5 s, closed, brings its final answer
-and end after a second, or is cut off a second after it has started; with
+off after its final answer or its cancel (1.5 s in), cut off after 3 or 1.5 s, closed, brings its final answer
+and end after a second, brings its final answer after half a second and its end 3 s later, or is cut off a
+second after it has started; with
 ``stub_stream=refused`` the server refuses the run, with ``refused-late`` after a
 second, with its error and then its end. One
 with files starts half a second later, names ``r-files-ended`` and brings its
 final answer and end -- with ``stub_stream=stale``, ``r-files-stale`` in
 ``s-files-new``, and it goes on; with ``final-drops``, ``r-files-final-dropped``,
-cut off after its final answer; ``refused`` refuses it. A session added through
+cut off after its final answer; ``refused`` refuses it. With ``stub_stream=saving``
+a message's run ``r-saving``, one with files ``r-files-saving``, and the run
+``r-live-saving`` followed after a reload bring their final answer, word a
+second later and, 3 s after the answer, their save -- the session's title in
+the list names the run -- and their end; the request of the message and of the
+one with files works on half a second after it; ``saving-drops`` names
+``r-saving-dropped`` (with files ``r-files-saving-dropped``), brings its final
+answer and word a second later, and is cut off a second after that. /__stub/streams tells of each run's stream whether
+it was read to its end or cut off by the browser. A session added through
 /__stub/sessions may carry ``delay`` (seconds to answer), ``trickle`` (headers
 at once, the body after that many seconds), ``fails`` (its load fails),
 ``delete_delay`` and ``delete_fails`` (how many deletes of it fail). The
@@ -59,7 +69,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -118,6 +127,8 @@ def stub_app() -> FastAPI:
     posted: list[dict] = []
     deletes: list[str] = []
     hits: dict[str, int] = {}
+    streams: dict[str, str] = {}  # request id -> "read" (to its end) or "cut" (by the browser)
+    held_lists: list[asyncio.Event] = []  # session lists asked for with stub_list=held, answered on release
 
     def account(request: Request) -> dict:
         state = request.cookies.get("stub_account")
@@ -162,18 +173,13 @@ def stub_app() -> FastAPI:
         return {"status": "cancelled", "request_id": request_id}
 
     checking: set[str] = set()  # requests whose status check is still being answered
-    # request id -> until when a cancelled run still unwinds: a force cancel answers before the task has
-    # finished, and a run saves its session after its cancelled event
-    unwinding: dict[str, float] = {}
-
-    def unwind(request_id: str, seconds: float) -> None:
-        unwinding[request_id] = max(unwinding.get(request_id, 0), time.monotonic() + seconds)
+    cancelled: set[str] = set()  # a cancelled run stays cancelled for the rest of the page
 
     @app.get("/api/requests/{request_id}/status")
     async def request_status(request_id: str):
         hits[f"status:{request_id}"] = hits.get(f"status:{request_id}", 0) + 1
-        if request_id in unwinding:
-            return {"status": "running" if time.monotonic() < unwinding[request_id] else "cancelled"}
+        if request_id in cancelled:
+            return {"status": "cancelled"}
         if request_id == "r-live-ended":  # done, told after a second
             await asyncio.sleep(1)
             return {"status": "completed", "completed": True}
@@ -182,7 +188,8 @@ def stub_app() -> FastAPI:
         running = {"r-live-slow": 1, **dict.fromkeys(  # how long the check takes
             ["r-live", "r-live-busy", "r-live-refusing", "r-live-finishing", "r-live-files", "r-live-dropping",
              "r-live-closing", "r-live-stopping", "r-live-final", "r-live-cancelled", "r-live-failing", "r-live-severed",
-             "r-live-honouring", "r-live-honouring-late", "r-live-leaving", "r-live-answered", "r-dropped"], 0.3)}
+             "r-live-honouring", "r-live-honouring-late", "r-live-leaving", "r-live-answered", "r-live-saving",
+             "r-dropped"], 0.3)}
         if request_id.startswith("r-live-kept"):  # one per phase that cancels it: a cancelled run stays cancelled
             running[request_id] = 0.3
         if request_id not in running:
@@ -271,6 +278,32 @@ def stub_app() -> FastAPI:
             await asyncio.sleep(5)  # the run goes on; the page usually leaves before it ends
         return StreamingResponse(stream(), media_type="text/event-stream")
 
+    async def saving(session_id: str, request_id: str, request_goes_on: bool):
+        """What a run past its answer sends while it saves and runs its hooks -- word after a second, its end
+        after 3 s -- and what its save does to the session list: the session is titled by the run. The request of
+        a fetch stream (``request_goes_on``) works on after the end: app.py saves once more and releases the run."""
+        await asyncio.sleep(1)
+        yield ": saving\n\n"
+        await asyncio.sleep(2)
+        for listed in sessions:
+            if listed["session_id"] == session_id:
+                listed["title"] = f"Saved by {request_id}"
+        yield event({"type": "end"})
+        if request_goes_on:
+            await asyncio.sleep(0.5)
+
+    def recorded(request_id: str, body):
+        """The stream of a run, recorded as read to its end or cut off by the browser."""
+        async def stream():
+            try:
+                async for chunk in body:
+                    yield chunk
+            except asyncio.CancelledError:
+                streams[request_id] = "cut"
+                raise
+            streams[request_id] = "read"
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
     def started_stream(request_id: str, session_id: str, ending: str, start_after: float = 0):
         async def stream():
             yield ":ok\n\n"
@@ -281,15 +314,27 @@ def stub_app() -> FastAPI:
             if ending == "ending":
                 yield event({"type": "final", "content": "Done"})
                 yield event({"type": "end"})
-            if ending in ("closes", "stale", "ending"):
+            if ending == "answered":  # its save and hooks take 3 s after the answer
+                yield event({"type": "final", "content": "Done"})
+                await asyncio.sleep(3)
+                yield event({"type": "end"})
+            if ending == "saving":
+                yield event({"type": "final", "content": "Done"})
+                async for chunk in saving(session_id, request_id, request_goes_on=True):
+                    yield chunk
+            if ending == "saving-drops":  # word from the save a second after the answer, then the connection breaks
+                yield event({"type": "final", "content": "Done"})
+                await asyncio.sleep(1)
+                yield ": saving\n\n"
+                await asyncio.sleep(1)
+            if ending in ("closes", "stale", "ending", "answered", "saving"):
                 return
             if ending in ("final-drops", "cancelled-drops"):
-                unwind(request_id, 2.5)  # it saves its session, and runs its session-end hooks, after its answer or its cancel
                 yield event({"type": "final", "content": "Done"} if ending == "final-drops"
                             else {"type": "cancelled", "request_id": request_id, "step": 1})
                 await asyncio.sleep(0.2)
             raise ConnectionAbortedError("the connection is cut off")  # the browser's reader fails mid-stream
-        return StreamingResponse(stream(), media_type="text/event-stream")
+        return recorded(request_id, stream())
 
     def refused_stream(after: float = 0):
         async def stream():  # a refusal the way app.py's event streams send one: `error`, and the stream closes
@@ -318,6 +363,11 @@ def stub_app() -> FastAPI:
                 yield event({"type": "final", "content": "Done"})
                 await asyncio.sleep(3)
                 yield event({"type": "end"})
+            elif request_id == "r-live-saving":
+                await asyncio.sleep(0.5)
+                yield event({"type": "final", "content": "Done"})
+                async for chunk in saving(session_id, request_id, request_goes_on=False):
+                    yield chunk
             elif request_id == "r-live-cancelled":  # cancelled elsewhere -- another tab, the admin panel
                 await asyncio.sleep(0.5)
                 yield event({"type": "cancelled", "request_id": request_id, "step": 2})
@@ -336,13 +386,12 @@ def stub_app() -> FastAPI:
             elif request_id == "r-live-honouring-late":  # honours a cancel at its next step, a second later
                 await asyncio.wait_for(cancel_asked(request_id).wait(), timeout=5)
                 await asyncio.sleep(1)
-                unwind(request_id, 1.5)  # its session is saved after the event, and its end comes after the save
                 yield event({"type": "cancelled", "request_id": request_id, "step": 1})
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(1.5)  # it saves its session before its end
                 yield event({"type": "end"})
             else:
                 await asyncio.sleep(5)  # the run goes on; the page usually leaves before it ends
-        return StreamingResponse(stream(), media_type="text/event-stream")
+        return recorded(request_id, stream())
 
     @app.post("/events")
     async def run(request: Request):
@@ -353,7 +402,8 @@ def stub_app() -> FastAPI:
             return refused_stream(1 if ending == "refused-late" else 0)
         started = {"drops": "r-dropped", "final-drops": "r-final-dropped", "cancelled-drops": "r-cancelled-dropped",
                    "late-drops": "r-late-dropped", "question-drops": "r-question-dropped", "closes": "r-closed",
-                   "ending": "r-ending", "late-start-drops": "r-late-started"}
+                   "ending": "r-ending", "late-start-drops": "r-late-started", "answered": "r-answered",
+                   "saving": "r-saving", "saving-drops": "r-saving-dropped"}
         if ending in started:
             return started_stream(started[ending], body.get("session_id", ""), ending,
                                   start_after=1.5 if ending == "late-start-drops" else 0)
@@ -370,6 +420,9 @@ def stub_app() -> FastAPI:
             return started_stream("r-files-stale", session_id, "stale", start_after=0.5)
         if stream == "final-drops":
             return started_stream("r-files-final-dropped", session_id, "final-drops", start_after=0.5)
+        if stream in ("saving", "saving-drops"):
+            return started_stream("r-files-saving" if stream == "saving" else "r-files-saving-dropped", session_id, stream,
+                                  start_after=0.5)
         return started_stream("r-files-ended", session_id, "ending", start_after=0.5)
 
     asked: dict[str, asyncio.Event] = {}  # request id -> set once a cancel of it has been asked for
@@ -391,7 +444,7 @@ def stub_app() -> FastAPI:
         hits[f"answered:{request_id}"] = hits.get(f"answered:{request_id}", 0) + 1
         if request_id in ("r-live-stopping", "r-ending"):
             return {"status": "not_found", "request_id": request_id}
-        unwind(request_id, 1.5 if request_id == "r-live-severed" else 0.8)
+        cancelled.add(request_id)
         return {"status": "cancelled", "request_id": request_id}
 
     @app.post("/chat/resolve")
@@ -406,6 +459,32 @@ def stub_app() -> FastAPI:
     @app.get("/__stub/hits")
     async def recorded_hits():
         return hits
+
+    @app.get("/__stub/streams")
+    async def recorded_streams():
+        return streams
+
+    def held(payload: dict) -> StreamingResponse:
+        """An answer held until POST /__stub/lists/release. Its headers go at once and it is not cacheable: the
+        browser's cache lock would hold back the next request for the same URL until this answer is complete."""
+        gate = asyncio.Event()
+        held_lists.append(gate)
+
+        async def body():
+            await asyncio.wait_for(gate.wait(), timeout=10)
+            yield json.dumps(payload).encode()
+        return StreamingResponse(body(), media_type="application/json", headers={"Cache-Control": "no-store"})
+
+    @app.get("/__stub/lists")
+    async def held_list_count():
+        return {"held": len(held_lists)}
+
+    @app.post("/__stub/lists/release")
+    async def release_lists():
+        for gate in held_lists:
+            gate.set()
+        held_lists.clear()
+        return {}
 
     @app.get("/__stub/deletes")
     async def recorded_deletes():
@@ -457,12 +536,20 @@ def stub_app() -> FastAPI:
                 "default": "default"}
 
     @app.get("/api/sessions/hierarchy")
-    async def hierarchy():
-        return {"sessions": sessions, "root_count": len(sessions)}
+    async def hierarchy(request: Request):
+        listed = list(sessions)  # the list as it is when asked
+        if request.cookies.get("stub_list") == "held":
+            return held({"sessions": listed, "root_count": len(listed)})
+        if request.cookies.get("stub_list") == "broken":
+            raise HTTPException(status_code=502, detail="The server is restarting")
+        return {"sessions": listed, "root_count": len(listed)}
 
     @app.get("/api/sessions/{session_id}/children")
-    async def session_children(session_id: str):
-        return {"sessions": children.get(session_id, [])}
+    async def session_children(request: Request, session_id: str):
+        listed = list(children.get(session_id, []))  # the branch as it is when asked
+        if request.cookies.get("stub_children") == "held":
+            return held({"sessions": listed})
+        return {"sessions": listed}
 
     @app.get("/api/sessions/{session_id}")
     async def session(session_id: str):
@@ -497,8 +584,6 @@ def stub_app() -> FastAPI:
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str):
-        if any(time.monotonic() < until for until in unwinding.values()):  # its save may still write the session back
-            hits["delete-while-unwinding"] = hits.get("delete-while-unwinding", 0) + 1
         doomed = next((s for s in sessions if s["session_id"] == session_id), {})
         await asyncio.sleep(doomed.get("delete_delay", 0))
         if doomed.get("delete_fails", 0) > 0:
@@ -545,15 +630,16 @@ EXPECTED = [
     'deleting the open session asks about its run before anything is deleted',
     'the open session is deleted once its run has stopped, and the welcome does not offer it',
     'the start page forgets a session deleted while it shows',
+    'a session list asked for before a delete and answered after it does not bring the session back',
     'deleting a session is a choice: a pick after it wins, a pick of it does not stay open',
     'a delete that fails takes nothing from a session on its way',
     'a load of the open session still on its way does not open it again once it is deleted',
     'a message sent while the open session is being deleted does not bring it back',
     'a note written while the open session is being deleted stays',
     'after a failed delete of the open session, deleting it again leaves the chat alone',
-    'while the run of a session being deleted stops, a pick elsewhere keeps its place and a message keeps the session',
+    'while the run of a session being deleted stops, a pick elsewhere and a message there keep their place and a message keeps the session',
     'a stream naming the open session while its delete asks about the run does not keep the session',
-    'a session opened and written into while it is being deleted keeps its run in the chat',
+    'a session opened by a load on its way while its delete runs takes no message',
     'after New, deleting the session left behind leaves the chat alone',
     'a message sent while a pick is on its way stays when that pick is deleted',
     '/new during a run asks about the run and stays in the session while it goes on',
@@ -567,12 +653,14 @@ EXPECTED = [
     'a run with files shows its answer, is not stored for a reload and leaves the stored run alone; files it did not send stay attached, and a cut after its answer is no failure',
     'after a reload a stored run that has ended is forgotten, one the server could not tell about stays stored',
     'Stop leaves the end of a run to its stream and holds the messages sent meanwhile; a late answer leaves the next run alone',
-    'deleting the open session whose run loses its stream while it stops waits until the server no longer runs it',
-    'deleting a session waits for its run: one named and cut off while the run question is open is cancelled first, one cut off past its answer -- asked about or not, or followed by a run elsewhere -- is waited for without a cancel',
-    'a session written into while its delete waits for its run to save stays, even opened again; a message into another session keeps no session',
-    'leaving a session during its run: past its answer a pick asks nothing and takes the chat, a later choice wins, and a message sent while the run stops keeps the session',
+    'deleting the open session whose run loses its stream while it stops cancels the run and goes',
+    'deleting a session cancels the run it asks about: one named and cut off while the run question is open is cancelled, one past its answer -- asked about or not -- is not',
+    'a session being deleted does not open again',
+    'leaving a session during its run: past its answer a pick or New asks nothing and takes the chat with its composer, and the last click wins; a later choice wins, and a message sent while the run stops keeps the session',
+    'a run let go of past its answer is read to its end, and its save shows in the session list: a message, one with files beside a new run, and a run followed again after a reload',
+    'a run let go of whose stream breaks while it saves leaves the session list alone: a message, and one with files',
     'while a run stops for a pick: a later pick wins, a declined one is no pick, a click on the open session keeps it',
-    'while the viewer is asked: a start that arrives is no choice, a run that ends is not cancelled, a stream that breaks still has its run cancelled, a refused request leaves a lost run to the pick; a delete started after a cancel asks nothing and waits for the save',
+    'while the viewer is asked: a start that arrives is no choice, a run that ends is not cancelled, a stream that breaks still has its run cancelled, a refused request leaves a lost run to the pick; a delete started after a cancel asks nothing',
     'deleting the session of a run whose connection was lost cancels that run first',
     'a restored message names image and audio parts stored without their data',
     'the theme button cycles the theme and every panel follows',

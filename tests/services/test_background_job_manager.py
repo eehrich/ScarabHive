@@ -713,6 +713,51 @@ class TestCleanupLoop:
         assert job_manager._cleanup_task is None
 
 
+class TestCancelSession:
+    """Deleting a session cancels its runs that have not answered: its background jobs -- by the session they were
+    started for or the one their start named -- and the requests an agent runs inline for it."""
+
+    @pytest.mark.asyncio
+    async def test_cancels_the_jobs_and_inline_requests_of_the_session_only(self, job_manager):
+        from unittest.mock import MagicMock
+
+        async def waiting_runner():
+            await asyncio.sleep(30)
+            yield {"type": "end"}
+
+        async def answered_runner():
+            yield {"type": "final", "summary": "done"}
+            await asyncio.sleep(30)  # its save and session-end hooks
+            yield {"type": "end"}
+
+        for request_id, session_id in (("job-of-s1", "s1"), ("job-of-s2", "s2"), ("job-named-s1", None)):
+            await job_manager.create_job(request_id=request_id, user_id="user1", agent_name="test_agent",
+                                         session_id=session_id, agent_runner=waiting_runner)
+        job_manager._jobs["job-named-s1"].actual_session_id = "s1"
+        answered = await job_manager.create_job(request_id="answered-of-s1", user_id="user1", agent_name="test_agent",
+                                                session_id="s1", agent_runner=answered_runner)
+        final = await asyncio.wait_for(answered.event_queue.get(), timeout=2)
+        assert final["type"] == "final" and answered.status == JobStatus.RUNNING, "fixture: the job is not finishing"
+        inline = _agent_owning({"inline-of-s1", "inline-of-s2"})
+        inline._session_tracker = MagicMock()
+        inline._session_tracker.get_session_for_request = MagicMock(
+            side_effect={"inline-of-s1": "s1", "inline-of-s2": "s2"}.get)
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["inline"])
+        registry.get = MagicMock(return_value=inline)
+        job_manager.set_agent_registry(registry=registry, default_agent=None)
+        cancelled = []
+
+        async def recording_cancel(request_id, force_timeout=0.0):
+            cancelled.append(request_id)
+            return True
+
+        job_manager.cancel_job = recording_cancel
+
+        assert await job_manager.cancel_session("s1") == ["inline-of-s1", "job-named-s1", "job-of-s1"]
+        assert sorted(cancelled) == ["inline-of-s1", "job-named-s1", "job-of-s1"]
+
+
 # --------------------------------------------------------------------------- #
 # 2026-06-27 — registry-aware cancel_job
 # --------------------------------------------------------------------------- #

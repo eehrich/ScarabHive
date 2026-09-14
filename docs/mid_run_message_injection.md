@@ -95,18 +95,31 @@ in-place rebind pattern as the `continuation` event handler).
   Showing another session, New or `/new` lets the stored run go; the start page
   the tab falls back to when a session cannot be shown does not, but a message
   sent there starts a run that takes the stored run's place -- a tab stores one
-  run. Deleting the session cancels the run first and waits until the server no
-  longer runs it, since a run saves its session as it ends. Leaving or deleting
-  a session whose request is running asks first, cancels it, and waits for its
-  stream to bring the cancel -- or, cut off before that, for the server to let
-  the run go -- and a choice made meanwhile -- a later pick, New, a message
-  into the session -- wins. What is cancelled is the run the viewer was asked
-  about: cut off while they were asked, it is cancelled all the same; past its
-  answer or its cancel meanwhile, it is not -- a cancel would take its
-  background sub-agents and session-end hooks along -- and neither is a stored
-  run of an earlier message. A message sent in the session before a reload
-  starts a new run, which the server refuses while the old one still holds the
-  session -- the refusal keeps the stored run.
+  run. Deleting the session cancels the run first. Leaving or deleting a
+  session whose request is running asks first, cancels it, and waits for its
+  stream to bring the cancel or end, and a choice made meanwhile -- a later
+  pick, New, a message into the session -- wins. What is cancelled is the run
+  the viewer was asked about: cut off while they were asked, it is cancelled
+  all the same; past its answer or its cancel meanwhile, it is not -- a cancel
+  would take its background sub-agents and session-end hooks along -- and
+  neither is a stored run of an earlier message. A message sent in the session
+  before a reload starts a new run, which the server refuses while the old one
+  still holds the session -- the refusal keeps the stored run.
+- A run saves its session at its end, and its request handler once more after
+  it, so a delete could come before either. The server (SessionManager) never
+  writes a session again that it has deleted, refuses a new run or a message to
+  an idle session for it, and a delete cancels every run of the session the
+  server process holds that has not answered yet -- another tab's too, which
+  sees the run cancelled -- so no delete waits for a save. A run past its answer
+  only finishes, its save refused: as when the viewer leaves, a cancel would
+  take its background sub-agents along. A message
+  appended to a cancelled run in the moment before its cancel takes is lost
+  with it. Once a delete is past its questions,
+  the session opens no more, and a message into it -- shown again by a load that
+  was on its way -- waits in the composer. The server forgets a deleted session
+  when it restarts, or when another process (agent-cli, a woken run) writes the
+  session again; without session presence a run of the server still going may
+  then save over it, as two processes on one session do anyway.
 - Stop, or leaving the session, asks the server to cancel the run; the run's
   stream still brings its end, and a message sent meanwhile waits in the
   composer -- the stopping run would save it unanswered. That holds even when
@@ -117,20 +130,19 @@ in-place rebind pattern as the `continuation` event handler).
   idle, with nothing left to stop, a message sent after it waits in the composer
   as well, a reload no longer follows the run -- it shows the answer from the
   session the run saves -- and a stream that stops afterwards is no lost
-  connection. Leaving the session then asks nothing and takes the chat at once,
-  while the stream waits for the run's save and session-end hooks. The run saves
-  the session only after that event, so deleting the session waits until the
-  server no longer runs it -- also after a run in another session -- and a slow
-  hook can outlast that wait: the session then stays. Only those events, `end`,
-  or the server closing its stream end a run for the chat: a stream that breaks
-  before them is a lost connection -- for a run followed again after a reload,
-  whose EventSource does not tell a closed stream from a broken one, any stop
-  before them is.
+  connection. Leaving the session then asks nothing: the chosen session takes
+  the chat at once, and the chat follows the stream no more -- it would only
+  wait for the run's save and session-end hooks. The stream still reads on to
+  its end, its events ignored: closing it would cut the end of its request
+  short -- a run with files saves in its request, and a message's request saves
+  once more and releases the run after it. A stream that ends so loads the
+  session list again, which the save has changed; one that breaks does not. Only those events, `end`, or the
+  server closing its stream end a run for the chat: a stream that breaks before
+  them is a lost connection -- for a run followed again after a reload, whose
+  EventSource does not tell a closed stream from a broken one, any stop before
+  them is.
 - A connection that dies without the browser noticing (no reset) leaves the chat
   following it until the browser gives up on the read; a reload recovers.
-- The server stops reporting a run with files as running just before it saves
-  the session; a delete whose files-run stream broke in that moment can come
-  before the save.
 - Only a run started as a background job (a text message) is stored: a run with
   files runs inline in its request, a reload does not follow it, and it leaves
   the stored run alone. Files attached while it starts stay attached, and a

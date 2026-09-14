@@ -5,6 +5,7 @@ import pytest
 from pathlib import Path
 
 from agent_system.services.session_manager import (
+    SessionDeletedError,
     SessionManager,
     SessionNotFoundError,
     SessionPermissionError
@@ -606,6 +607,60 @@ async def test_changed_on_disk_only_reports_what_another_process_wrote(temp_stor
     await woken.save_session(written)
 
     assert api.changed_on_disk("user1", sid) is True
+
+
+@pytest.mark.asyncio
+async def test_a_delete_waits_for_a_save_of_the_session_already_under_way(session_manager):
+    """The save writes first and the delete comes after it -- not a delete that the save then undoes."""
+    session = await session_manager.create_session(user_id="user1", session_id="saving_one")
+    entered, release = asyncio.Event(), asyncio.Event()
+    write = session_manager._atomic_write_async
+
+    async def slow_write(path, data):
+        if Path(path).name == "saving_one.json":
+            entered.set()
+            await release.wait()
+        await write(path, data)
+
+    session_manager._atomic_write_async = slow_write
+    session["messages"].append({"role": "user", "content": "late"})
+    save = asyncio.create_task(session_manager.save_session(session))
+    await entered.wait()
+    delete = asyncio.create_task(session_manager.delete_session("user1", "saving_one"))
+    await asyncio.sleep(0.05)
+    assert not delete.done(), "the delete did not wait for the save under way"
+    release.set()
+    await save
+    await delete
+    with pytest.raises(SessionNotFoundError):
+        await session_manager.load_session("user1", "saving_one", bypass_cache=True)
+
+
+@pytest.mark.asyncio
+async def test_a_save_that_had_the_session_before_its_delete_does_not_write_it_again(session_manager):
+    session = await session_manager.create_session(user_id="user1", session_id="loaded_before")
+    session["messages"].append({"role": "user", "content": "from a run still going"})
+    await session_manager.delete_session("user1", "loaded_before")
+
+    with pytest.raises(SessionDeletedError):
+        await session_manager.save_session(session)
+    with pytest.raises(SessionNotFoundError):
+        await session_manager.load_session("user1", "loaded_before", bypass_cache=True)
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_session_written_again_by_another_process_is_a_session_again(temp_storage):
+    api = SessionManager(storage_path=temp_storage)
+    await api.create_session(user_id="user1", session_id="written_again")
+    await api.delete_session("user1", "written_again")
+    assert api.is_deleted("written_again")
+
+    cli = SessionManager(storage_path=temp_storage)  # agent-cli, say
+    await cli.create_session(user_id="user1", session_id="written_again")
+
+    assert not api.is_deleted("written_again")
+    await api.update_session_metadata("user1", "written_again", {"tags": ["kept"]})
+    assert (await api.load_session("user1", "written_again", bypass_cache=True))["metadata"]["tags"] == ["kept"]
 
 
 @pytest.mark.asyncio

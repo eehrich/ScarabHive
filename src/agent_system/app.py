@@ -587,6 +587,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         held = None
         if not sid:
             return None, None
+        # A session deleted in this process takes no run: nothing writes it again, so what the run answers would
+        # be lost without a word (force does not change that).
+        if _session_service and _session_service.session_manager and _session_service.session_manager.is_deleted(sid):
+            return f"Session {sid} has been deleted", None
         presence = presence_for(getattr(target_agent, "system_config", None))
         if presence is not None:
             try:

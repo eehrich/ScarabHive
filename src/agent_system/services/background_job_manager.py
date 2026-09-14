@@ -22,6 +22,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The events that end a run's answer, as the chat reads them too: after them the run only finishes. An `error` is
+# none, as in the chat, which keeps such a run stoppable until its end.
+ANSWER_EVENTS = ("final", "cancelled")
+
 
 class DuplicateRequestIdError(RuntimeError):
     """A job is already RUNNING under this request_id.
@@ -71,6 +75,8 @@ class BackgroundJob:
     task_description: Optional[str] = None
     # LLM profile used for this job
     llm_profile: Optional[str] = None
+    # The run has sent its answer (ANSWER_EVENTS) and only finishes now: saves, session-end hooks
+    answered: bool = False
 
 
 class BackgroundJobManager:
@@ -220,6 +226,8 @@ class BackgroundJobManager:
             """Wrapper that runs the agent and captures events/errors."""
             try:
                 async for event in agent_runner():
+                    if own_job is not None and isinstance(event, dict) and event.get("type") in ANSWER_EVENTS:
+                        own_job.answered = True
                     # Put event in queue (non-blocking, drop old if full)
                     try:
                         event_queue.put_nowait(event)
@@ -445,6 +453,56 @@ class BackgroundJobManager:
                     "treating as not-found",
                 )
         return False
+
+    async def cancel_session(self, session_id: str) -> list[str]:
+        """Cancel every run of ``session_id`` in this process that has not answered yet -- its background jobs, and
+        the requests an agent runs for it inline (a /run with files is no job) -- and return their request ids.
+
+        For a deleted session: those runs would answer for nothing, since the session manager writes a deleted
+        session no more. A run past its answer is not cancelled: it only finishes, and a cancel would take its
+        background sub-agents along (their cancellation tokens share the run's id as a prefix) -- as the chat
+        spares it when the viewer leaves. Graceful cancels only, so the delete answers at once; each run ends at
+        its next step.
+        """
+        async with self._lock:
+            request_ids = {
+                job.request_id for job in self._jobs.values()
+                if job.status == JobStatus.RUNNING and not job.answered
+                and session_id in (job.session_id, job.actual_session_id)
+            }
+        for server in self._agent_servers():
+            try:
+                active = server._request_manager.get_active_requests()
+            except Exception:  # noqa: BLE001 -- an agent without a request manager runs nothing here
+                continue
+            request_ids.update(
+                request_id for request_id in active
+                if server._session_tracker.get_session_for_request(request_id) == session_id
+            )
+        for request_id in request_ids:
+            await self.cancel_job(request_id)
+        return sorted(request_ids)
+
+    def _agent_servers(self):
+        """The Agent servers of this process: every registered one, then the default agent."""
+        try:
+            from agent_system.servers.agent.server import Agent as _Agent
+        except Exception:  # noqa: BLE001
+            _Agent = None  # type: ignore[assignment]
+        if _Agent is not None and self._agent_registry is not None:
+            try:
+                names = self._agent_registry.list()
+            except Exception:  # noqa: BLE001
+                names = []
+            for name in names:
+                try:
+                    server = self._agent_registry.get(name)
+                except Exception:  # noqa: BLE001
+                    continue
+                if isinstance(server, _Agent):
+                    yield server
+        if self._default_agent is not None:
+            yield self._default_agent
 
     async def is_request_active_anywhere(self, request_id: str) -> bool:
         """True when ``request_id`` is live on ANY tracked surface.

@@ -29,6 +29,10 @@ class SessionPermissionError(Exception):
     pass
 
 
+class SessionDeletedError(Exception):
+    """Raised when a write would bring back a session this manager has deleted."""
+
+
 class SessionManager:
     """Manages persistent agent conversation sessions.
     
@@ -67,7 +71,11 @@ class SessionManager:
         # Per-session locks to prevent concurrent writes to the same session
         self._session_locks: Dict[str, asyncio.Lock] = {}
         self._session_locks_lock = asyncio.Lock()  # Lock for accessing _session_locks dict
-        
+
+        # Sessions deleted in this process. A run that was still going -- or its request handler, or a checkpoint
+        # -- saves its session after the delete; that save must not bring the session back.
+        self._deleted: set[str] = set()
+
         logger.info("SessionManager initialized with storage_path=%s", self.storage_path)
     
     async def _get_session_lock(self, session_id: str) -> asyncio.Lock:
@@ -341,6 +349,31 @@ class SessionManager:
                     temp_path.unlink()
                 logger.error("Failed to write session %s: %s", path, e)
                 raise IOError(f"Failed to write session: {e}") from e
+
+    def is_deleted(self, session_id: str) -> bool:
+        """Whether this manager has deleted the session and its file is still gone: nothing here writes it again.
+
+        Written again by another process -- agent-cli, a woken run -- it is a session again. With session presence
+        on, that process could only take it once the runs of this one had let it go, so none of their saves is still
+        to come. Without presence, or for a run started with force, a run of this process still going may save over
+        it -- as two processes on one session overwrite each other's saves anyway.
+        """
+        if session_id not in self._deleted:
+            return False
+        if self._session_id_exists_globally(session_id):
+            self._deleted.discard(session_id)
+            return False
+        return True
+
+    async def _write_session_file(self, path: Path, session_data: Dict[str, Any]) -> None:
+        """Write a session file -- never one of a deleted session (see ``is_deleted``).
+
+        Every caller holds the session's lock or ``_lock``; delete_session holds both, so no write slips between
+        the check and the delete.
+        """
+        if self.is_deleted(session_data["session_id"]):
+            raise SessionDeletedError(f"Session {session_data['session_id']} has been deleted")
+        await self._atomic_write_async(path, session_data)
 
     async def _atomic_write_async(self, path: Path, data: Dict[str, Any]) -> None:
         """Async wrapper for atomic write to avoid blocking event loop."""
@@ -669,7 +702,7 @@ class SessionManager:
                     "created_at": now,
                 }
 
-            await self._atomic_write_async(path, session_data)
+            await self._write_session_file(path, session_data)
             
             # Cache the new session (with cleanup if needed)
             self._cleanup_cache()
@@ -848,7 +881,7 @@ class SessionManager:
                     if isinstance(content, str):
                         session_data["metadata"]["last_agent_response"] = content[:200]
             
-            await self._atomic_write_async(path, session_data)
+            await self._write_session_file(path, session_data)
             
             # Update cache
             self._cache[session_id] = (session_data, time.time())
@@ -924,7 +957,7 @@ class SessionManager:
             session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
             
             # Save back
-            await self._atomic_write_async(path, session_data)
+            await self._write_session_file(path, session_data)
             
             # Update cache
             self._cache[session_id] = (session_data, time.time())
@@ -968,7 +1001,7 @@ class SessionManager:
 
             session_data["context_vars"] = dict(context_vars)
             session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-            await self._atomic_write_async(path, session_data)
+            await self._write_session_file(path, session_data)
             self._cache[session_id] = (session_data, time.time())
             logger.debug("Replaced context_vars for session %s: keys=%s",
                          session_id, sorted(context_vars))
@@ -986,9 +1019,11 @@ class SessionManager:
             SessionNotFoundError: If session doesn't exist
             SessionPermissionError: If user doesn't own the session
         """
-        async with self._lock:
+        # the session's lock first, as save_session takes it: a save of this session waits until it is gone
+        session_lock = await self._get_session_lock(session_id)
+        async with session_lock, self._lock:
             path = self._get_session_path(user_id, session_id)
-            
+
             # Check if session exists anywhere first (to distinguish NotFound vs PermissionDenied)
             # Try to find it in the actual owner's directory
             actual_owner_found = False
@@ -1035,7 +1070,8 @@ class SessionManager:
             
             # Delete file
             path.unlink()
-            
+            self._deleted.add(session_id)
+
             # Remove from cache
             self._cache.pop(session_id, None)
             

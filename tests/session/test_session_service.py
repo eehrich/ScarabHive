@@ -237,7 +237,7 @@ class TestEstimateMessageTokens:
 import asyncio
 from unittest.mock import MagicMock, patch
 from agent_system.services.session_service import SessionService
-from agent_system.services.session_manager import SessionManager, SessionNotFoundError
+from agent_system.services.session_manager import SessionDeletedError, SessionManager, SessionNotFoundError
 
 
 def _make_mock_agent(messages_dicts, runtime_template_vars=None):
@@ -535,6 +535,28 @@ async def test_checkpoint_session_skips_when_nothing_safe(session_service_env):
     # Session file must not have been created
     with pytest.raises(SessionNotFoundError):
         await sm.load_session("user1", "ckpt_empty")
+
+
+@pytest.mark.asyncio
+async def test_saves_after_a_delete_do_not_bring_the_session_back(session_service_env):
+    """A run still going when its session is deleted saves it later -- at its end, from its request handler, in a
+    checkpoint. None of those writes the deleted session again; another session saves as before."""
+    svc, sm = session_service_env
+    msgs = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+    agent = _make_mock_agent(msgs)
+    assert await svc.save_session(agent, "user1", "deleted_mid_run", "test_agent", "normal", was_new_session=True)
+    await sm.delete_session("user1", "deleted_mid_run")
+
+    assert await svc.save_session(agent, "user1", "deleted_mid_run", "test_agent", "normal", was_new_session=False) is False
+    checkpointing = _make_checkpoint_agent(msgs, metadata={"user_id": "user1", "agent_name": "test_agent"})
+    assert await svc.checkpoint_session(checkpointing, "user1", "deleted_mid_run") is False
+    with pytest.raises(SessionDeletedError):
+        await sm.create_session(user_id="user1", session_id="deleted_mid_run")
+    with pytest.raises(SessionNotFoundError):
+        await sm.load_session("user1", "deleted_mid_run", bypass_cache=True)
+
+    assert await svc.save_session(agent, "user1", "still_here", "test_agent", "normal", was_new_session=True)
+    assert (await sm.load_session("user1", "still_here", bypass_cache=True))["messages"][-1]["content"] == "hi"
 
 
 @pytest.mark.asyncio

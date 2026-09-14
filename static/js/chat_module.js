@@ -1313,15 +1313,13 @@
     }
   }
 
-  // Event source tracking (shared across init calls and cleanup)
+  // The EventSource of a run the chat follows again after a reload (followRun)
   let currentEventSource = null;
-  // True while a fetch()-based SSE stream (POST /events or POST /run) is live.
-  // currentEventSource is only set for a run reattached after a reload (followRun),
-  // never for the normal fetch+getReader() streams - so it cannot detect an active
-  // request alone. This flag closes that gap: it
-  // gates hasActiveRequest(), the session:loaded clobber guard, and the
-  // append-to-running-request branch.
-  let streamActive = false;
+  // The fetch stream (POST /events or POST /run) the chat follows: one object per stream, null when none. Together
+  // with currentEventSource it gates hasActiveRequest(). A stream the chat lets go of (letGoOfFinishedRun) reads on
+  // to its end with its events ignored: closing it would cut the end of its request short (a run with files saves
+  // there, a message's request saves once more and releases the run). `ended`: it was read to its end.
+  let followedStream = null;
   // Block object the live stream consumer renders into (same object identity
   // as the blk passed to handleSSEEvent). Mid-run appends rebind its fields to
   // a fresh block so the agent's reaction renders below the injected message.
@@ -1396,9 +1394,6 @@
   // connection, though the run may still be saving its session. Nothing else says so -- a cancelled run ends in its
   // own time. Each run has its own: what a question about one learns never comes from another.
   let run = { requestId: null, sessionId: null, over: false };
-  // session id -> the last run in it that brought its answer or its cancel: it saves the session after them, and a
-  // delete of the session waits until the server has let it go (runSaved) -- whatever the chat follows meanwhile
-  const settling = new Map();
   // The session the next message continues. The shell's session manager puts
   // one here (session:loaded / session:new) -- after a reload too, once it
   // has restored it; a run reattached after a reload continues the session it
@@ -1471,7 +1466,7 @@
 
   /**
    * Ask the server to cancel a run: true when it has cancelled it or no longer runs it. A cancelled run
-   * still ends in its own time -- its stream, or the server's status, tells when.
+   * still ends in its own time -- its stream tells when.
    */
   async function cancelRun(requestId, { force }) {
     const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/cancel${force ? '?force=true' : ''}`,
@@ -1480,18 +1475,14 @@
     return status === 'cancelled' || status === 'not_found';
   }
 
-  /**
-   * Resolves true once the server no longer runs the request, false when it still does after 15 s. A run
-   * saves its session as it ends, so what would undo that -- deleting the session -- waits for this.
-   */
-  async function serverLetGo(requestId) {
-    for (let waited = 0; waited < 15000; waited += 300) {
-      const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/status`,
-        { signal: AbortSignal.timeout(10000) });
-      if (response.ok && (await response.json()).status !== 'running') return true;
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
-    return false;
+  // A session takes the chat from a run past its answer or its cancel: the chat follows its stream no more -- the
+  // stream only waits for the run's save and session-end hooks, and would hold the messages of the session now shown
+  // until then. It reads on to its end, its events ignored.
+  function letGoOfFinishedRun() {
+    if (!chatModule.hasActiveRequest() || !run.over) return;
+    followedStream = null;
+    currentEventSource = null;
+    endRun();
   }
 
   // A lasting row about the run's connection in the block's status (a status without a
@@ -1719,7 +1710,6 @@
         break;
       case 'final':
         run.over = true;
-        settling.set(run.sessionId, run.requestId);
         if (pendingAppendRebind) {
           // Edge (e.g. max-steps): the run finalizes without another step. The
           // final would be suppressed against the old block's non-empty content
@@ -1780,7 +1770,6 @@
         // Request was cancelled - clean up and reset UI
         console.log('Request cancelled:', data.request_id, 'at step', data.step);
         run.over = true;
-        settling.set(run.sessionId, run.requestId);
         // a reload no longer follows it; its stream stays open -- the run saves its session before its end
         forgetRun();
         // Show cancelled status with step number
@@ -1937,6 +1926,12 @@
       // Require either task text or files
       if (!task && !hasFiles) return;
 
+      // The session is being deleted -- shown again by a load that was on its way: the server keeps no run of it.
+      if (window.sessionManager.isBeingDeleted(currentSessionId)) {
+        addNote(chatContainer, 'The session is being deleted -- the message stays here.');
+        return;
+      }
+
       // A running request takes text only, and only once its start has named it: the
       // server refuses a second run in its session, and that refusal would end the
       // running one's stream in this chat. A run being stopped, or past its answer or
@@ -2080,10 +2075,9 @@
           formData.append('session_id', currentSessionId);
         }
 
+        const stream = {};
         try {
-          // Mark a live stream so hasActiveRequest()/guards work (fetch streams
-          // never set currentEventSource).
-          streamActive = true;
+          followedStream = stream;
 
           // Stream SSE response from /run endpoint
           const response = await fetch('/run', {
@@ -2113,7 +2107,11 @@
 
           while (true) {
             const {done, value} = await reader.read();
-            if (done) break;
+            if (done) {
+              stream.ended = true;
+              break;
+            }
+            if (followedStream !== stream) continue;  // let go of: read on to its end, and nothing more
 
             buffer += decoder.decode(value, {stream: true});
             const lines = buffer.split('\n');
@@ -2149,15 +2147,19 @@
           }
         } catch (err) {
           // a connection that breaks after the run's answer takes nothing from it
-          if (!run.over) {
+          if (followedStream === stream && !run.over) {
             showSection(blk.t);
             blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Request failed: ' + String(err))}</div>`;
           }
         } finally {
-          streamActive = false;
           // The run ran inline in this request, not as a job a reload could follow: it was never stored,
           // and the run stored for a reload is another one.
-          endRun();
+          if (followedStream === stream) {
+            followedStream = null;
+            endRun();
+          } else if (stream.ended) {
+            window.sessionManager.loadSessions();  // let go of and read to its end: the run has saved its session
+          }
         }
         return;
       }
@@ -2175,10 +2177,9 @@
       if (selectedLLMProfile) postBody.llm_profile = selectedLLMProfile;
 
       let lost = false;  // the connection broke before the run's end
+      const stream = {};
       try {
-        // Mark a live stream so hasActiveRequest()/guards work (fetch streams
-        // never set currentEventSource).
-        streamActive = true;
+        followedStream = stream;
         const response = await fetch('/events', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2212,7 +2213,11 @@
 
         while (true) {
           const {done, value} = await reader.read();
-          if (done) break;
+          if (done) {
+            stream.ended = true;
+            break;
+          }
+          if (followedStream !== stream) continue;  // let go of: read on to its end, and nothing more
 
           buffer += decoder.decode(value, {stream: true});
           const lines = buffer.split('\n');
@@ -2241,6 +2246,7 @@
         }
 
       } catch (err) {
+        if (followedStream !== stream) return;  // let go of before its connection broke
         // The connection was lost mid-run: the run may still be going, and a reload follows it.
         if (run.requestId && !run.over) {
           connectionNotice(blk, LOST);
@@ -2263,9 +2269,13 @@
           }
         }
       } finally {
-        streamActive = false;
         // The run is over for this chat; a lost one stays stored for a reload to follow.
-        endRun(lost);
+        if (followedStream === stream) {
+          followedStream = null;
+          endRun(lost);
+        } else if (stream.ended) {
+          window.sessionManager.loadSessions();  // let go of and read to its end: the run has saved its session
+        }
       }
     }
 
@@ -2331,7 +2341,17 @@
 
       es.onmessage = (ev) => {
         try {
-          handleSSEEvent(JSON.parse(ev.data), blk);
+          const data = JSON.parse(ev.data);
+          if (currentEventSource !== es) {
+            // let go of: read on to its end, and close it then rather than have it reconnect -- the run has
+            // saved its session by then
+            if (data.type === 'end') {
+              es.close();
+              window.sessionManager.loadSessions();
+            }
+            return;
+          }
+          handleSSEEvent(data, blk);
         } catch (err) {
           console.warn('[chat_module] SSE reconnect parse error:', err);
         }
@@ -2341,6 +2361,7 @@
       // not tell apart -- may leave the run going: a reload asks the server again.
       es.onerror = () => {
         es.close();
+        if (currentEventSource !== es) return;  // let go of already
         currentEventSource = null;
         if (run.over) {
           endRun();
@@ -2361,19 +2382,9 @@
     }
   }
 
-  // Cleanup function to close all event sources
-  function cleanup() {
-    if (currentEventSource) {
-      currentEventSource.close();
-      currentEventSource = null;
-    }
-    streamActive = false;
-  }
-  
   // Expose functions for testing
   chatModule.addStatusEvent = addStatusEvent;
   chatModule.toggleTreeNode = toggleTreeNode;
-  chatModule.cleanup = cleanup;
   // The command grammar is shared with the terminal (chat_commands.py), and
   // this surface renders what that catalogue advertises -- so what the browser
   // DOES with an argument has to be measurable from outside. Without this the
@@ -2386,12 +2397,12 @@
   // Also attach to AgentSystem namespace for consistency with other modules
   global.AgentSystem = global.AgentSystem || {};
   global.AgentSystem.ChatModule = chatModule;
-  
-  // Cleanup on page unload
-  window.addEventListener('beforeunload', cleanup);
-  
+  // No cleanup on beforeunload: the browser ends the streams of a page that unloads, and a page that stays -- a
+  // link that turns into a download -- follows its run on.
+
   // Listen for new conversation events
   window.addEventListener('session:new', (event) => {
+    letGoOfFinishedRun();
     currentSessionId = null;
     const chatEl = document.getElementById('chat');
     chatEl.innerHTML = '';
@@ -2407,11 +2418,12 @@
     const { session, readOnly, reason } = event.detail;
 
     // A run the chat follows keeps the chat until its answer or its cancel: a load would overwrite its live output.
-    // Past them its stream only waits for the run's save, and a session picked meanwhile takes the chat.
+    // Past them a session picked meanwhile takes the chat.
     if (chatModule.activeRun()) {
       console.warn('[session:loaded] Ignoring session load - a run is still streaming');
       return;
     }
+    letGoOfFinishedRun();
     leaveLostRun(session.session_id);
 
     if (session && session.messages) {
@@ -2588,11 +2600,11 @@
     return stored?.sessionId === sessionId && !followed ? stored.requestId : null;
   };
 
-  // Cancel a run the chat no longer follows, and resolve true once the server no longer runs it -- deleting
-  // its session must not leave the run to write the session back.
+  // Cancel a run the chat no longer follows: false when the server did not confirm the cancel. Deleting its
+  // session cancels it -- the server does not write a deleted session again, but the run would go on for nothing.
   chatModule.cancelLostRun = async function(requestId) {
     try {
-      if (!await cancelRun(requestId, { force: true }) || !await serverLetGo(requestId)) return false;
+      if (!await cancelRun(requestId, { force: true })) return false;
     } catch (error) {
       console.error('Cancel request failed:', error);
       return false;
@@ -2604,13 +2616,11 @@
 
   /**
    * Cancel `asked` -- the run activeRun() named when the viewer was asked -- as they confirmed, and resolve once
-   * its stream has brought its cancel, or has ended and the server no longer runs it: a session switch must not
-   * leave the old run writing into the new chat, and a delete of a run cut off before its cancel must not come
-   * before the run's own save (past the cancel, runSaved waits for that). A run whose stream brought its answer
-   * or its cancel while the viewer was asked is not cancelled -- that would take its background sub-agents and
-   * session-end hooks along -- and one whose stream was cut off meanwhile is. Resolves 'stopped'; 'starting'
-   * when its start has not named it yet, so there is nothing to cancel; 'unconfirmed' when the server did not
-   * confirm the run has stopped.
+   * its stream has brought the cancel or ended: the old run must not keep writing into the chat that leaves its
+   * session. A run whose stream brought its answer or its cancel while the viewer was asked is not cancelled --
+   * that would take its background sub-agents and session-end hooks along -- and one whose stream was cut off
+   * meanwhile is. Resolves 'stopped'; 'starting' when its start has not named it yet, so there is nothing to
+   * cancel; 'unconfirmed' when the server did not confirm the cancel or the run's stream did not bring it in 15 s.
    */
   chatModule.cancelActiveRequest = async function(asked) {
     try {
@@ -2628,8 +2638,7 @@
         if (waited >= 15000) return 'unconfirmed';
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
-      // past its cancel a delete waits for the save (runSaved); a stream cut off before it leaves the run to the server
-      return asked.over || await serverLetGo(asked.requestId) ? 'stopped' : 'unconfirmed';
+      return 'stopped';
     } catch (error) {
       console.error('Cancel request failed:', error);
       return 'unconfirmed';
@@ -2642,30 +2651,9 @@
     return chatModule.hasActiveRequest() && !run.over ? run : null;
   };
 
-  /**
-   * Resolves true once the server no longer runs a run of the session that has brought its answer or its cancel:
-   * it saves the session after them and runs its session-end hooks, a delete must not come before the save, and
-   * its stream may have stopped before either. False when it still runs after 15 s. A run cut off before its
-   * answer is left to the stored run (lostRunIn).
-   */
-  chatModule.runSaved = async function(sessionId) {
-    const requestId = settling.get(sessionId);
-    if (!requestId) return true;
-    try {
-      if (!await serverLetGo(requestId)) return false;
-    } catch (error) {
-      console.error('Status check failed:', error);
-      return false;
-    }
-    if (settling.get(sessionId) === requestId) settling.delete(sessionId);
-    return true;
-  };
-
-  // Public method to check if a request is active
+  // Whether the chat follows a run's stream: a fetch stream, or the EventSource of a run followed again after a reload.
   chatModule.hasActiveRequest = function() {
-    // streamActive covers the normal fetch-based streams, the EventSource ref a run
-    // reattached after a reload.
-    return streamActive || currentEventSource !== null;
+    return followedStream !== null || currentEventSource !== null;
   };
 
 })(window);

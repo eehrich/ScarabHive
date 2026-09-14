@@ -269,6 +269,52 @@ async def test_events_refuses_a_session_another_process_has(api, monkeypatch):
     assert api.at_save == [], "the job ran on it anyway"
 
 
+async def test_a_session_deleted_in_this_process_takes_no_run_and_no_append(api, monkeypatch):
+    """Its saves would not write it again: a run or an append on it would be lost without a word."""
+    from agent_system.servers.agent import result_utils
+
+    await _stored(api, messages=[{"role": "user", "content": "first question"}])
+    ran = []
+
+    async def run(agent, task, **kwargs):
+        ran.append(task)
+        return {"summary": "done"}
+
+    monkeypatch.setattr(result_utils, "collect_final_result", run)
+    _fake_run(monkeypatch)
+    await api.manager.delete_session(USER, "s1")
+
+    async with _client(api.app) as client:
+        refused = await client.post("/run", json={"task": "go", "session_id": "s1", "force": True}, timeout=60.0)
+        events = await client.get("/events", params={"task": "go", "session_id": "s1"}, timeout=60.0)
+        append = await client.post("/sessions/s1/append", json={"content": "follow-up"}, timeout=60.0)
+
+    assert refused.status_code == 409 and "has been deleted" in refused.text, refused.text
+    assert "has been deleted" in events.text, events.text
+    assert append.status_code == 409 and "has been deleted" in append.text, append.text
+    assert ran == [] and api.at_save == [], "a run reached the deleted session anyway"
+
+
+async def test_deleting_a_session_cancels_its_runs(api, monkeypatch):
+    """Nothing writes a deleted session again: its runs -- another tab's too -- would go on for nothing. (The
+    session router is mounted with authentication only, so its endpoint is called as the router calls it.)"""
+    from agent_system.api.session_endpoints import delete_session
+    from agent_system.services.background_job_manager import BackgroundJobManager
+
+    await _stored(api)
+    asked = []
+
+    async def cancel_session(self, session_id):
+        asked.append((session_id, api.manager.is_deleted(session_id)))
+        return ["r1"]
+
+    monkeypatch.setattr(BackgroundJobManager, "cancel_session", cancel_session)
+    answer = await delete_session("s1", current_user=None, session_manager=api.manager, create_backup=False)
+
+    assert answer == {"status": "deleted", "session_id": "s1", "cancelled_requests": ["r1"]}
+    assert asked == [("s1", True)], "the runs were not cancelled once the session was gone"
+
+
 async def test_an_append_to_a_session_another_process_has_is_refused(api, monkeypatch):
     await _stored(api, messages=[{"role": "user", "content": "first question"}])
     _busy(monkeypatch)

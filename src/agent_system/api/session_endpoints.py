@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from agent_system.auth.models import User
 from agent_system.auth.dependencies import get_current_active_user, get_optional_user
 from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_mcp_registry
+from agent_system.services.background_job_manager import get_background_job_manager
 
 logger = logging.getLogger(__name__)
 
@@ -544,7 +545,11 @@ async def delete_session(
     session_manager=Depends(get_session_manager),
     create_backup: bool = True
 ):
-    """Delete a session (with optional backup) - works for authenticated and anonymous users."""
+    """Delete a session (with optional backup) - works for authenticated and anonymous users.
+
+    Its runs are cancelled too: the session manager writes a deleted session no more, so they would go on for
+    nothing -- also those another tab or client follows.
+    """
     # session_manager injected via dependency
 
     # Determine user_id: use username if authenticated, otherwise "anonymous"
@@ -558,8 +563,9 @@ async def delete_session(
             session_id,
             create_backup=create_backup
         )
+        cancelled = await get_background_job_manager().cancel_session(session_id)
 
-        return {"status": "deleted", "session_id": session_id}
+        return {"status": "deleted", "session_id": session_id, "cancelled_requests": cancelled}
 
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")

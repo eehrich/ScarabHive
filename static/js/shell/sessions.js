@@ -1,7 +1,7 @@
 // Sessions: the pane beside the chat and the one owner of "which session is open".
 //
 // Keeps the contract the chat and older panels use: window.sessionManager with
-// loadSession / loadSessions / newConversation / leaveRunningRequest /
+// loadSession / loadSessions / newConversation / leaveRunningRequest / isBeingDeleted /
 // setCurrentSession / messageWritten / onSessionUpdated / getCurrentSessionId, and
 // the window events session:loaded and session:new (detail.chosen: the viewer chose it).
 import { api, html, render, icon, confirm, prompt, toast } from '/static/kit/panel-kit.js';
@@ -64,6 +64,10 @@ export class SessionManager {
     this.chatChoices = 0;
     /** session id -> the messages the chat has written into it, sent or held */
     this.written = new Map();
+    /** the sessions whose delete is past its questions and has not answered yet: they go */
+    this.going = new Set();
+    /** counted up by every reload of the list; an older reload's answer is dropped */
+    this.listLoads = 0;
     render(this.pane, html`
       <div class="sessions-head">
         <h2 class="pk-grow">Sessions</h2>
@@ -87,16 +91,19 @@ export class SessionManager {
   }
 
   async loadSessions() {
+    const load = ++this.listLoads;
     const data = await api('/api/sessions/hierarchy', { quiet: true }).catch(() => null);
+    // open branches come along: runs add sub-sessions, renames and deletes change them
+    const open = [...this.expanded.keys()];
+    const branches = data ? await Promise.all(open.map((id) => this.children(id, { quiet: true }))) : [];
+    // the latest reload wins: an older one answering after it may still list a session deleted since
+    if (load !== this.listLoads) return;
     if (!data) {
       render(this.list, html`<div class="pk-empty">${icon('circle-alert')}<div>Sessions could not be loaded</div></div>`);
       return;
     }
     this.sessions = data.sessions || [];
     this.remember(this.sessions);
-    // open branches come along: runs add sub-sessions, renames and deletes change them
-    const open = [...this.expanded.keys()];
-    const branches = await Promise.all(open.map((id) => this.children(id, { quiet: true })));
     open.forEach((id, index) => {
       if (!this.expanded.has(id)) return;  // closed meanwhile
       if (branches[index]) this.expanded.set(id, branches[index]);
@@ -204,51 +211,56 @@ export class SessionManager {
     const ok = await confirm(`"${session?.title || 'Untitled'}" and its messages will be deleted. This cannot be undone.`,
       { title: 'Delete session', confirmLabel: 'Delete', danger: true });
     if (!ok) return;
-    // Its runs are stopped, and one past its answer has saved the session, first: a refusal leaves the session
-    // untouched. That takes a while -- a message written into the session meanwhile keeps it, even one written after
-    // opening it again; a pick of another session, and a message there, do not.
+    // Its runs are stopped first: a refusal leaves the session untouched. That takes a while -- a message
+    // written into the session meanwhile keeps it; a pick of another session, and a message there, do not.
     const written = this.written.get(id);
     if (!await this.cancelLostRun(id)) return;
     if (id === this.currentSessionId && !await this.leaveRunningRequest('Deleting it')) return;
-    if (!await window.chatModule.runSaved(id)) {
-      toast('The server did not confirm that the run has saved the session; the session stays', { kind: 'error' });
-      return;
-    }
     if (this.written.get(id) !== written) {
       toast('The session was written into while it was being deleted; it stays', { kind: 'warn' });
       return;
     }
-    if (id === this.currentSessionId) {
-      // The chat lets go of it before it is deleted, so neither a message sent meanwhile
-      // nor a load of it still on its way brings it back; a pick of another one may take the chat over.
-      if (this.requested === id) this.startNew();
-      else this.showNew();
-    }
+    // From here the session goes: it opens no more, and a message into it -- shown again by a load that was on
+    // its way -- waits in the composer, since the server does not keep a run of a deleted session.
+    this.going.add(id);
     try {
-      await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    } catch {
-      return;  // api() has shown the failure; a pick of another session on its way still opens
-    }
-    this.expanded.delete(id);
-    // It was asked for before or during the DELETE: picked or restored, or picked again
-    // after the chat let go of it. Its answer may be on its way still -- it must not open
-    // the session -- or have opened it already: a browser holds the DELETE back until that
-    // load has its response headers. Opened meanwhile, with a run still going when the
-    // DELETE answers, it stays in the chat: that run brings it back.
-    if (id === this.requested && !(id === this.currentSessionId && window.chatModule.hasActiveRequest())) {
-      if (id === this.currentSessionId || !this.currentSessionId) {
-        this.startNew();
-      } else {
-        this.requested = null;
-        this.loading++;
+      if (id === this.currentSessionId) {
+        // The chat lets go of it before it is deleted, so neither a message sent meanwhile
+        // nor a load of it still on its way brings it back; a pick of another one may take the chat over.
+        if (this.requested === id) this.startNew();
+        else this.showNew();
       }
+      try {
+        await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      } catch {
+        return;  // api() has shown the failure; a pick of another session on its way still opens
+      }
+      this.expanded.delete(id);
+      // A pick or the restore asked for it before the delete: its answer may be on its way still -- it must not
+      // open the session -- or have opened it already, since a browser holds the DELETE back until that load has
+      // its response headers.
+      if (id === this.requested) {
+        if (id === this.currentSessionId || !this.currentSessionId) {
+          this.startNew();
+        } else {
+          this.requested = null;
+          this.loading++;
+        }
+      }
+    } finally {
+      this.going.delete(id);
     }
     await this.loadSessions();
   }
 
+  /** Whether the session is being deleted past its questions: it takes no message. */
+  isBeingDeleted(id) {
+    return this.going.has(id);
+  }
+
   /**
-   * A run of the session whose connection was lost may still be going, and would write the
-   * session back: deleting the session cancels it first.
+   * A run of the session whose connection was lost may still be going, for a session that is about to be gone:
+   * deleting the session cancels it first.
    */
   async cancelLostRun(id) {
     // taken before asking: the chat may let the run go while the question is open
@@ -258,7 +270,7 @@ export class SessionManager {
       { title: 'Run may still be going', confirmLabel: 'Cancel the run', danger: true });
     if (!ok) return false;
     if (await window.chatModule.cancelLostRun(run)) return true;
-    toast('The server did not confirm that the run has stopped; the session stays', { kind: 'error' });
+    toast('The server did not confirm that the run was cancelled; the session stays', { kind: 'error' });
     return false;
   }
 
@@ -325,9 +337,13 @@ export class SessionManager {
 
   /** Open a session in the chat. Resolves true when it is shown. Clicked twice quickly, the last click wins, not the last answer. */
   async loadSession(id) {
-    // the open session while it works: nothing to switch to, nothing to cancel -- and a pick still
+    if (this.going.has(id)) {
+      toast('The session is being deleted', { kind: 'warn' });
+      return false;
+    }
+    // the open session while its run works: nothing to switch to, nothing to cancel -- and a pick still
     // waiting for the run to stop gives way to it
-    if (id === this.currentSessionId && window.chatModule.hasActiveRequest()) {
+    if (id === this.currentSessionId && window.chatModule.activeRun()) {
       this.navigations++;
       this.onShown();
       return true;

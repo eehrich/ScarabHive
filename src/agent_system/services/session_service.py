@@ -9,7 +9,7 @@ import asyncio
 import logging
 from typing import List, Dict, Any, Optional
 
-from agent_system.services.session_manager import SessionPermissionError, SessionNotFoundError
+from agent_system.services.session_manager import SessionDeletedError, SessionPermissionError, SessionNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -364,6 +364,9 @@ class SessionService:
             logger.debug(f"[SESSION] Session {session_id} saved with {len(messages_dicts)} messages")
             return True
 
+        except SessionDeletedError:
+            logger.info(f"[SESSION] Session {session_id} was deleted while its run went on; not saving it again")
+            return False
         except Exception as save_err:
             logger.error(f"[SESSION] Failed to save session {session_id}: {save_err}", exc_info=True)
             return False
