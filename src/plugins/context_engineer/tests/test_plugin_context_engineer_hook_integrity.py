@@ -549,10 +549,11 @@ class TestBookkeeping:
         """Measured as the budget is: the formatted fact, not the bare text."""
         from agent_system.llm.token_utils import estimate_content_tokens
 
-        fact = " ".join(["word"] * 46)
+        # A fact whose bare text fits the budget exactly and whose formatted line does not.
+        fact = next(text for text in (" ".join(["word"] * k) for k in range(10, 80))
+                    if estimate_content_tokens(f"- {text}") > estimate_content_tokens(text))
         memory = plugin._get_session_components("tight")["core_memory"]
-        memory.max_tokens = estimate_content_tokens(f"- {fact}") - 1
-        assert estimate_content_tokens(fact) < memory.max_tokens, "fixture: the bare text does not fit"
+        memory.max_tokens = estimate_content_tokens(fact)
 
         answer = await plugin._handle_store_fact(fact, session_id="tight")
 

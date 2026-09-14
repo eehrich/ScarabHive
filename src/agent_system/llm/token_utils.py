@@ -1,7 +1,6 @@
 """Token estimation utilities for LLM interactions."""
 
 import logging
-import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +20,22 @@ TOKENS_PER_VIDEO_SECOND = 263  # Gemini: video = 263 tokens/second
 TOKENS_PER_BASE64_CHAR = 0.25  # 4 base64 chars ≈ 1 token
 # File path estimation for images (base64 fallback): bytes * 0.33
 TOKENS_PER_FILE_BYTE = 0.33
+
+# Text: characters per token, fitted 2026-09-14 against real prompt_tokens of
+# 2,770 production requests (DeepSeek v4, Gemini flash, GPT-5.6; message_debugger
+# on the writer host). Held-out median error 2-5 % per model, 9 % for GPT, which
+# it overestimates. The word ratios this replaces (1.3 / 1.5 / 1.8 tokens per word,
+# "calibrated for cl100k") read real/estimate 1.36-1.47 on every one of them:
+# 97 % of requests were underestimated by more than 10 %, largely because German
+# prose splits into more tokens per word than English. Content type barely moves
+# the per-character rate (prose, code and structured text fitted 0.29-0.31),
+# JSON a little. Claude tokenizes denser still (real/estimate ~1.5); where it
+# matters, the caller's provider count covers it. The fit is dominated by German
+# prose: plain English, code and indented JSON come out about 25-35 % too high
+# on OpenAI-style tokenizers. That errs on the safe side — the budgets built on
+# this estimate trim a little early rather than overflow.
+CHARS_PER_TOKEN = 3.3
+JSON_CHARS_PER_TOKEN = 2.85
 
 # Audio file extensions
 AUDIO_EXTENSIONS = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac', '.wma', '.aiff', '.opus'}
@@ -495,11 +510,10 @@ def estimate_tools_token_count(tools_schema: List[Dict[str, Any]]) -> int:
     significant context window space. This function estimates their token cost
     based on name, description, and parameter schema sizes.
 
-    Based on empirical measurement against OpenAI's cl100k_base tokenizer:
     - Each tool has ~10 tokens base overhead (type wrapper, function key, etc.)
     - Function name: ~1 token per 4 characters
-    - Description: word-based estimation at 1.3 tokens/word (natural language)
-    - Parameters JSON schema: JSON-aware estimation (structural + content tokens)
+    - Description: estimate_content_tokens (CHARS_PER_TOKEN)
+    - Parameters JSON schema: estimate_json_tokens (JSON_CHARS_PER_TOKEN)
 
     Args:
         tools_schema: List of OpenAI-format tool definitions, each like:
@@ -523,11 +537,9 @@ def estimate_tools_token_count(tools_schema: List[Dict[str, Any]]) -> int:
             if name:
                 tool_tokens += max(1, len(name) // 4)
 
-            # Description - use word-based estimation (natural language)
             description = func.get("description", "")
             if description:
-                words = len(description.split())
-                tool_tokens += int(words * 1.3)
+                tool_tokens += estimate_content_tokens(description)
 
             # Parameters schema - JSON structure with keys, types, descriptions
             params = func.get("parameters", {})
@@ -640,14 +652,15 @@ def estimate_token_count(
                 if args_str:
                     msg_tokens += estimate_json_tokens(args_str)
 
-        # Count tool results (these can be the biggest consumers)
+        # A tool result's content is already counted above, like any message's.
+        # It used to be counted a second time here (estimate_tool_result_tokens).
+        # Measured 2026-09-14 on 2,500 production requests: real prompt_tokens
+        # per estimated token were 0.82 for tool-heavy requests and 1.36 for
+        # text on DeepSeek v4 flash (0.85 vs 1.46 on v4 pro) — counted once, 1.39
+        # vs 1.36 (1.46 vs 1.46). Only Claude, which tokenizes JSON densely,
+        # came closer with the double count; it is not what production runs.
         if msg_tool_call_id:
-            # Tool call ID overhead
-            msg_tokens += 8
-            # Tool result content - extract text for multimodal
-            content = extract_text_from_content(msg_content) if msg_content else ""
-            if content:
-                msg_tokens += estimate_tool_result_tokens(content)
+            msg_tokens += 8  # tool call id overhead
 
         total_tokens += msg_tokens
 
@@ -659,142 +672,20 @@ def estimate_token_count(
 
 
 def estimate_content_tokens(content: str) -> int:
-    """Estimate tokens for message content using word-based ratios.
+    """Estimate tokens for text content (see CHARS_PER_TOKEN).
 
-    Args:
-        content: Text content to estimate
-
-    Returns:
-        Estimated token count
+    Characters, not words: the word ratios this replaced were blind to how a
+    tokenizer splits long German words and punctuation-dense text, and they
+    scored a whole text by one content type — the class switched as soon as a
+    single "from " or "class " appeared, and the same text jumped by 20 %.
     """
     if not content:
         return 0
-
-    # Word-based estimation (more accurate than character-based for formatted text)
-    words = len(content.split())
-    content_len = len(content)
-    
-    # Sanity check: if content is large but word count is suspiciously low,
-    # it's likely minified JSON/code without whitespace. Fall back to char-based.
-    # Typical text has ~5 chars/word, so if ratio > 50, content lacks whitespace.
-    if content_len > 1000 and words > 0:
-        chars_per_word = content_len / words
-        if chars_per_word > 50:
-            # Minified content: use character-based estimate
-            # ~4 characters per token for cl100k_base tokenizer
-            return content_len // 4
-
-    # Detect content type for better estimation
-    # Ratios calibrated for OpenAI cl100k_base tokenizer (GPT-4/5)
-    if is_code_content(content):
-        # Code: higher token density due to symbols, operators, keywords
-        # Ratio: ~1.5 tokens per word (empirically measured)
-        return int(words * 1.5)
-    elif is_structured_data(content):
-        # JSON/XML: compact structure, many punctuation tokens
-        # Ratio: ~1.8 tokens per word (empirically measured)
-        return int(words * 1.8)
-    else:
-        # Natural language: standard ratio
-        # Ratio: ~1.3 tokens per word for cl100k_base (was 0.75, too low)
-        return int(words * 1.3)
+    return int(len(content) / CHARS_PER_TOKEN)
 
 
 def estimate_json_tokens(json_str: str) -> int:
-    """Estimate tokens for JSON content using word and structure analysis.
-
-    Args:
-        json_str: JSON string to estimate
-
-    Returns:
-        Estimated token count
-    """
+    """Estimate tokens for JSON content: tool call arguments, tool schemas."""
     if not json_str:
         return 0
-
-    # Remove JSON structural characters to count actual content words
-    content_only = re.sub(r'[{}\[\]":,]', ' ', json_str)
-    words = len(content_only.split())
-
-    # Count structural tokens (each structural char is usually a token)
-    structural_chars = json_str.count('{') + json_str.count('}') + \
-                      json_str.count('[') + json_str.count(']') + \
-                      json_str.count('"') + json_str.count(':') + \
-                      json_str.count(',')
-
-    # JSON tokens = structural tokens + content words * ratio
-    # Increased ratio from 0.8 to 1.3 for cl100k_base accuracy
-    return structural_chars + int(words * 1.3)
-
-
-def estimate_tool_result_tokens(content: str) -> int:
-    """Estimate tokens for tool results using content-aware word counting.
-
-    Args:
-        content: Tool result content to estimate
-
-    Returns:
-        Estimated token count
-    """
-    if not content:
-        return 0
-
-    # Tool results can be JSON, plain text, HTML, etc.
-    if content.strip().startswith('{') or content.strip().startswith('['):
-        # Likely JSON response
-        return estimate_json_tokens(content)
-    elif '<' in content and '>' in content:
-        # Likely HTML/XML - high token density due to tags
-        words = len(content.split())
-        return int(words * 1.7)  # HTML has many tag tokens (increased from 1.4)
-    elif is_code_content(content):
-        # Code output
-        words = len(content.split())
-        return int(words * 1.5)  # Increased from 1.2
-    else:
-        # Plain text tool results
-        words = len(content.split())
-        return int(words * 1.3)  # Increased from 0.75 for cl100k_base
-
-
-def is_code_content(content: str) -> bool:
-    """Detect if content is likely code.
-
-    Args:
-        content: Text content to check
-
-    Returns:
-        True if content appears to be code
-    """
-    code_indicators = [
-        'def ', 'function ', 'class ', 'import ', 'from ',
-        '=>', '&&', '||', '{}', '[]', '()', 'const ', 'let ', 'var ',
-        'if (', 'for (', 'while (', 'switch (', 'catch (', 'try {'
-    ]
-
-    # Count code-like patterns
-    code_score = sum(1 for indicator in code_indicators if indicator in content)
-
-    # Also check character density of symbols common in code
-    symbol_chars = sum(1 for c in content if c in '{}[]();=+-*/<>!')
-    symbol_ratio = symbol_chars / len(content) if content else 0
-
-    return code_score >= 2 or symbol_ratio > 0.15
-
-
-def is_structured_data(content: str) -> bool:
-    """Detect if content is structured data like JSON, XML, YAML.
-
-    Args:
-        content: Text content to check
-
-    Returns:
-        True if content appears to be structured data
-    """
-    content = content.strip()
-    return (
-        (content.startswith('{') and content.endswith('}')) or
-        (content.startswith('[') and content.endswith(']')) or
-        content.startswith('<') and content.endswith('>') or
-        '\n- ' in content  # YAML-like lists
-    )
+    return int(len(json_str) / JSON_CHARS_PER_TOKEN)

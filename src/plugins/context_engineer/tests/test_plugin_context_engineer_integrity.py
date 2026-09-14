@@ -293,6 +293,41 @@ class TestCoreMemoryEviction:
         assert reloaded.facts[0].importance == 0.9
 
     @pytest.mark.asyncio
+    async def test_a_file_over_budget_loads_trimmed_in_eviction_order(self, tmp_path):
+        """Saved under a larger budget (or counted by an older estimator), it loaded
+        over budget, and the first new fact then evicted a whole batch."""
+        memory = CoreMemory(storage_path=tmp_path / "m.json", max_tokens=500)
+        for content, importance in [("the deploy target is the api1 host", 0.9),
+                                    ("old minor fact about the colours", 0.2),
+                                    ("new minor fact about the colours", 0.2),
+                                    ("the database is books.db on disk", 0.9)]:
+            await memory.add_fact(content, importance=importance)
+        budget = memory._current_tokens - memory._fact_tokens(memory.facts[1])
+
+        reloaded = CoreMemory(storage_path=tmp_path / "m.json", max_tokens=budget)
+
+        assert [f.content for f in reloaded.facts] == [
+            "the deploy target is the api1 host", "new minor fact about the colours",
+            "the database is books.db on disk"]
+        assert reloaded._current_tokens <= budget
+        again = CoreMemory(storage_path=tmp_path / "m.json", max_tokens=500)
+        assert len(again.facts) == 3, "the trim was not saved"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_save_of_the_trim_keeps_the_loaded_facts(self, tmp_path, monkeypatch):
+        memory = CoreMemory(storage_path=tmp_path / "m.json", max_tokens=500)
+        for i in range(4):
+            await memory.add_fact(f"fact number {i} about the project", importance=0.5)
+        budget = memory._current_tokens - memory._fact_tokens(memory.facts[0])
+
+        def locked(self):
+            raise PermissionError("locked by a virus scanner")
+        monkeypatch.setattr(CoreMemory, "_save_sync", locked)
+        reloaded = CoreMemory(storage_path=tmp_path / "m.json", max_tokens=budget)
+
+        assert len(reloaded.facts) == 3
+
+    @pytest.mark.asyncio
     async def test_the_total_is_the_sum_of_the_facts_and_stays_in_budget(self, tmp_path):
         """Lines were added as prose, the total recounted as the whole section: two scales."""
         memory = CoreMemory(storage_path=tmp_path / "m.json", max_tokens=300)

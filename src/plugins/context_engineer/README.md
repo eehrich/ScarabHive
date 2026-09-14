@@ -377,7 +377,7 @@ data/context_engineer/
 
 ## Token Estimation
 
-The plugin uses `estimate_content_tokens()` from `agent_system.llm.token_utils` which provides word-based estimation (~1.3 tokens per word). For more accurate counting, the LLM provider's tokenizer can be used.
+The plugin uses `estimate_content_tokens()` from `agent_system.llm.token_utils`, a character-based estimate (3.3 characters per token, 2.85 for JSON) fitted to real prompt tokens of the production models. The hook compares it with the provider's count of the previous call and uses the larger of the two.
 
 ## Best Practices
 

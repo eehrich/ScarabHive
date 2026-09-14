@@ -2,119 +2,41 @@
 
 import pytest
 from agent_system.llm.token_utils import (
+    CHARS_PER_TOKEN,
+    JSON_CHARS_PER_TOKEN,
     estimate_token_count,
     estimate_content_tokens,
     estimate_json_tokens,
-    estimate_tool_result_tokens,
     estimate_inline_data_tokens,
     estimate_tools_token_count,
-    is_code_content,
-    is_structured_data,
 )
 from agent_system.llm.models import ChatMessage
 
 
-class TestContentTypeDetection:
-    """Test content type detection functions."""
-
-    def test_is_code_content_python(self):
-        """Test detection of Python code."""
-        python_code = """
-def hello_world():
-    print("Hello, World!")
-    return True
-"""
-        assert is_code_content(python_code) is True
-
-    def test_is_code_content_javascript(self):
-        """Test detection of JavaScript code."""
-        js_code = """
-const myFunc = () => {
-    if (x > 0) {
-        return x * 2;
-    }
-}
-"""
-        assert is_code_content(js_code) is True
-
-    def test_is_code_content_symbols(self):
-        """Test detection based on symbol density."""
-        code_with_symbols = "x = (a + b) * (c - d) / e;"
-        assert is_code_content(code_with_symbols) is True
-
-    def test_is_code_content_plain_text(self):
-        """Test that plain text is not detected as code."""
-        plain_text = "This is a simple sentence with no code indicators."
-        assert is_code_content(plain_text) is False
-
-    def test_is_structured_data_json_object(self):
-        """Test detection of JSON object."""
-        json_obj = '{"name": "John", "age": 30}'
-        assert is_structured_data(json_obj) is True
-
-    def test_is_structured_data_json_array(self):
-        """Test detection of JSON array."""
-        json_arr = '[1, 2, 3, 4, 5]'
-        assert is_structured_data(json_arr) is True
-
-    def test_is_structured_data_xml(self):
-        """Test detection of XML."""
-        xml = '<root><item>value</item></root>'
-        assert is_structured_data(xml) is True
-
-    def test_is_structured_data_yaml_list(self):
-        """Test detection of YAML-like lists."""
-        yaml_list = """
-- item1
-- item2
-- item3
-"""
-        assert is_structured_data(yaml_list) is True
-
-    def test_is_structured_data_plain_text(self):
-        """Test that plain text is not detected as structured data."""
-        plain_text = "This is just plain text"
-        assert is_structured_data(plain_text) is False
-
-
 class TestContentTokenEstimation:
-    """Test token estimation for different content types."""
+    """Characters per token, fitted to production prompt_tokens (see CHARS_PER_TOKEN)."""
 
     def test_estimate_content_tokens_empty(self):
         """Test estimation for empty content."""
         assert estimate_content_tokens("") == 0
         assert estimate_content_tokens(None) == 0
 
-    def test_estimate_content_tokens_natural_language(self):
-        """Test estimation for natural language text."""
-        text = "The quick brown fox jumps over the lazy dog"
-        # 9 words * 1.3 = 11.7 -> 11 tokens
-        tokens = estimate_content_tokens(text)
-        assert tokens == 11  # int(9 * 1.3)
+    @pytest.mark.parametrize("text", [
+        "The quick brown fox jumps over the lazy dog",
+        "def function(): return True",
+        '{"key": "value", "number": 123}',
+        "Die Verwaltungsgerichtsbarkeit prüft Rechtsstreitigkeiten öffentlich-rechtlicher Art.",
+    ])
+    def test_every_kind_of_text_is_counted_by_its_characters(self, text):
+        assert estimate_content_tokens(text) == int(len(text) / CHARS_PER_TOKEN)
 
-    def test_estimate_content_tokens_code(self):
-        """Test estimation for code content."""
-        code = "def function(): return True"
-        # Should be detected as code and use 1.5 ratio
-        tokens = estimate_content_tokens(code)
-        # 4 words * 1.5 = 6.0 -> 6 tokens
-        assert tokens == 6
-
-    def test_estimate_content_tokens_json(self):
-        """Test estimation for JSON content."""
-        json_str = '{"key": "value", "number": 123}'
-        # Should be detected as structured data and use 1.1 ratio
-        tokens = estimate_content_tokens(json_str)
-        # 4 words (key, value, number, 123) * 1.1 = 4.4 -> 4 tokens
-        assert tokens > 0
-
-    def test_estimate_content_tokens_long_text(self):
-        """Test estimation for longer text."""
-        # 100 words of natural language
-        text = " ".join(["word"] * 100)
-        tokens = estimate_content_tokens(text)
-        # 100 * 1.3 = 130
-        assert tokens == 130
+    def test_one_code_word_does_not_rescore_the_whole_text(self):
+        """Scored by content type, a single "from " or "class " switched the class of a
+        whole text and moved its estimate by 20 %."""
+        prose = " ".join(f"plain note number {i} about the project" for i in range(200))
+        with_code_words = prose + " loaded from yaml, the class names"
+        added = estimate_content_tokens(with_code_words) - estimate_content_tokens(prose)
+        assert added <= len(" loaded from yaml, the class names") / CHARS_PER_TOKEN + 1
 
 
 class TestJsonTokenEstimation:
@@ -125,66 +47,14 @@ class TestJsonTokenEstimation:
         assert estimate_json_tokens("") == 0
         assert estimate_json_tokens(None) == 0
 
-    def test_estimate_json_tokens_simple_object(self):
-        """Test estimation for simple JSON object."""
-        json_str = '{"name": "John", "age": 30}'
-        tokens = estimate_json_tokens(json_str)
-        # Structural: { } " " : " " , " " : = 10
-        # Words: name John age 30 = 4 words * 0.8 = 3.2 -> 3
-        # Total: 10 + 3 = 13
-        assert tokens >= 10  # At least the structural tokens
-
-    def test_estimate_json_tokens_nested_object(self):
-        """Test estimation for nested JSON."""
-        json_str = '{"user": {"name": "Alice", "id": 1}, "active": true}'
-        tokens = estimate_json_tokens(json_str)
-        assert tokens > 20  # Should have many structural tokens
-
-    def test_estimate_json_tokens_array(self):
-        """Test estimation for JSON array."""
-        json_str = '[1, 2, 3, 4, 5]'
-        tokens = estimate_json_tokens(json_str)
-        # Structural: [ ] , , , , = 6
-        # Words: 1 2 3 4 5 = 5 * 0.8 = 4
-        # Total: 10
-        assert tokens >= 6
-
-
-class TestToolResultTokenEstimation:
-    """Test token estimation for tool results."""
-
-    def test_estimate_tool_result_tokens_empty(self):
-        """Test estimation for empty tool result."""
-        assert estimate_tool_result_tokens("") == 0
-
-    def test_estimate_tool_result_tokens_json(self):
-        """Test estimation for JSON tool result."""
-        json_result = '{"status": "success", "data": [1, 2, 3]}'
-        tokens = estimate_tool_result_tokens(json_result)
-        assert tokens > 0
-
-    def test_estimate_tool_result_tokens_html(self):
-        """Test estimation for HTML tool result."""
-        html = "<html><body><h1>Title</h1><p>Content</p></body></html>"
-        tokens = estimate_tool_result_tokens(html)
-        # HTML detection: needs both < and > plus reasonable content
-        # The function detects it as HTML and uses 1.4 ratio
-        # But with limited actual words, the token count may be lower
-        assert tokens > 0  # Just verify it's estimated
-
-    def test_estimate_tool_result_tokens_code(self):
-        """Test estimation for code tool result."""
-        code = "def test(): return True"
-        tokens = estimate_tool_result_tokens(code)
-        # Should be detected as code with 1.2 ratio
-        assert tokens > 0
-
-    def test_estimate_tool_result_tokens_plain_text(self):
-        """Test estimation for plain text tool result."""
-        text = "This is a simple text response from a tool"
-        tokens = estimate_tool_result_tokens(text)
-        # 9 words * 1.3 = 11.7 -> 11 tokens
-        assert tokens == 11
+    @pytest.mark.parametrize("json_str", [
+        '{"name": "John", "age": 30}',
+        '{"user": {"name": "Alice", "id": 1}, "active": true}',
+        '[1, 2, 3, 4, 5]',
+    ])
+    def test_json_is_counted_denser_than_text(self, json_str):
+        assert estimate_json_tokens(json_str) == int(len(json_str) / JSON_CHARS_PER_TOKEN)
+        assert estimate_json_tokens(json_str) >= estimate_content_tokens(json_str)
 
 
 class TestMessageTokenEstimation:
@@ -198,17 +68,15 @@ class TestMessageTokenEstimation:
         """Test estimation for simple user message."""
         msg = ChatMessage(role="user", content="Hello, how are you?")
         tokens = estimate_token_count([msg])
-        # Base overhead: 4 + content tokens (4 words * 1.3 = 5.2 -> 5)
-        # Total: 4 + 5 = 9
+        # Base overhead 4 + 19 characters / 3.3 = 5
         assert tokens == 9
 
     def test_estimate_token_count_assistant_message(self):
         """Test estimation for assistant message."""
         msg = ChatMessage(role="assistant", content="I am doing well, thank you!")
         tokens = estimate_token_count([msg])
-        # Base overhead: 4 + content tokens (6 words * 1.3 = 7.8 -> 7)
-        # Total: 4 + 7 = 11
-        assert tokens == 11
+        # Base overhead 4 + 27 characters / 3.3 = 8
+        assert tokens == 12
 
     def test_estimate_token_count_system_message(self):
         """Test estimation for system message."""
@@ -253,6 +121,19 @@ class TestMessageTokenEstimation:
         # Tool call ID overhead: 8
         # Content (JSON): should have structural + word tokens
         assert tokens > 15
+
+    @pytest.mark.parametrize("content", [
+        "This is a simple text response from a tool",
+        '{"status": "success", "data": [1, 2, 3], "note": "done"}',
+        "def load(path):\n    import json\n    return json.load(open(path))",
+    ])
+    def test_a_tool_result_counts_its_content_once(self, content):
+        """Counted twice, tool-heavy production requests read 0.82 real tokens per
+        estimated token against 1.36 for text; once, both 1.36-1.39."""
+        as_text = estimate_token_count([ChatMessage(role="assistant", content=content)])
+        as_result = estimate_token_count([ChatMessage(role="tool", content=content,
+                                                      tool_call_id="call_1")])
+        assert as_result == as_text + 8  # the tool call id overhead, nothing more
 
     def test_estimate_token_count_multiple_messages(self):
         """Test estimation for multiple messages."""
@@ -355,13 +236,12 @@ class TestTokenEstimationAccuracy:
 
     def test_estimation_reasonable_ratios(self):
         """Test that estimation ratios are reasonable."""
-        # Natural language should be ~1.3 tokens per word
-        natural = "The quick brown fox jumps over the lazy dog"  # 9 words
+        natural = "The quick brown fox jumps over the lazy dog"  # 43 characters
         msg = ChatMessage(role="user", content=natural)
         tokens = estimate_token_count([msg])
 
-        # 9 words * 1.3 = 11.7 -> 11 + 4 overhead = 15
-        assert tokens == 15
+        # 43 / 3.3 = 13 + 4 overhead
+        assert tokens == 17
 
     def test_code_vs_text_ratio(self):
         """Test that code is estimated higher than text."""
@@ -1000,6 +880,14 @@ class TestToolsTokenEstimation:
         # Should have: 10 base + name tokens + description tokens + params JSON tokens
         assert tokens > 30
         assert tokens < 300  # Reasonable upper bound for a single tool
+
+    def test_a_description_counts_at_the_text_rate(self):
+        without = estimate_tools_token_count([{"type": "function", "function": {}}])
+        with_description = estimate_tools_token_count(
+            [{"type": "function", "function": {"description": "x" * 330}}])
+
+        assert without == 10
+        assert with_description - without == estimate_content_tokens("x" * 330) == 100
 
     def test_estimate_tools_token_count_multiple_tools(self):
         """Test estimation scales with number of tools."""

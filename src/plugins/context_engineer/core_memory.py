@@ -358,6 +358,32 @@ class CoreMemory:
             return
         await asyncio.to_thread(self._save_sync)
     
+    def _trim_to_budget(self) -> None:
+        """Drop what no longer fits, in eviction order: least important, then oldest.
+
+        A file saved under a larger max_tokens, or counted by an older estimator,
+        loads over budget; add_fact would then evict a whole batch at once for
+        its first new fact.
+        """
+        if self._current_tokens <= self.max_tokens:
+            return
+        before = len(self.facts)
+        # sorted() is stable and self.facts is in insertion order: oldest first.
+        for victim in sorted(self.facts, key=lambda f: f.importance):
+            if self._current_tokens <= self.max_tokens:
+                break
+            self.facts.remove(victim)
+            self._current_tokens -= self._fact_tokens(victim)
+        logger.warning(
+            f"Core memory {self.storage_path} was over its budget of {self.max_tokens} tokens: "
+            f"dropped {before - len(self.facts)} of {before} facts")
+        # Its own failure: in _load's handler it would discard the facts that
+        # did load, and the next add_fact would overwrite the file with one.
+        try:
+            self._save_sync()
+        except OSError as e:
+            logger.warning(f"Could not save the trimmed core memory {self.storage_path}: {e}")
+
     def _load(self) -> None:
         """Load from storage path."""
         if not self.storage_path or not self.storage_path.exists():
@@ -369,7 +395,8 @@ class CoreMemory:
             
             self.facts = [Fact.from_dict(fd) for fd in data.get("facts", [])]
             self._recalculate_tokens()
-            
+            self._trim_to_budget()
+
             logger.debug(
                 f"Loaded core memory: {len(self.facts)} facts, "
                 f"{self._current_tokens} tokens"
