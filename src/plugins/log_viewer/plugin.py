@@ -20,20 +20,9 @@ class LogViewerHybridPlugin:
         self.mcp_config = mcp_config
         self.ssl_verify = getattr(system_config.network, 'ssl_verify', True) if hasattr(system_config, 'network') and system_config.network else True
         
-        # Expose configuration properties for compatibility
-        default_log_files = [
-            'logs/agent-cli.log',
-            'logs/api.log',
-            'logs/cli.log',
-            'logs/http_server.log',
-            'logs/llm_router.log'
-        ]
-        self.log_files = getattr(mcp_config, 'log_files', default_log_files)
-        self.max_lines = getattr(mcp_config, 'max_lines', 100)
-        self.refresh_interval = getattr(mcp_config, 'refresh_interval', 1.0)
-        
         # Initialize both components with new signature
         self.mcp_server = LogViewerMCPServer(name, system_config, mcp_config)
+        self.log_files = self.mcp_server.log_files
         self.web_endpoints = LogViewerWebEndpoints(name, system_config, mcp_config, self.mcp_server)
     
     # MCP Server interface methods
@@ -65,6 +54,10 @@ class LogViewerHybridPlugin:
     def get_web_router(self):
         """Delegate to web endpoints"""
         return self.web_endpoints.get_web_router()
+
+    def get_static_assets(self):
+        """Delegate to web endpoints"""
+        return self.web_endpoints.get_static_assets()
 
 
 PLUGIN_FACTORY = LogViewerHybridPlugin

@@ -1,0 +1,379 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Logs panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  // true, or an error naming what is not so
+  const all = (facts) => {
+    const wrong = Object.keys(facts).filter((key) => facts[key] !== true);
+    if (wrong.length) throw new Error(`not so: ${wrong.join(', ')}`);
+    return true;
+  };
+
+  localStorage.clear();
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const entries = () => [...doc().querySelectorAll('#log .lv-entry')];
+  // a folded entry: the summary is its first line, the text after it the rest
+  const messages = () => entries().map((row) => [...row.querySelector('.lv-message').childNodes].map((node) =>
+    node.textContent).join(row.querySelector('details') ? '\n' : ''));
+  const last = () => messages().at(-1);
+  const logText = () => $('#log').textContent;
+  const now = () => $('pk-refresh [data-act="now"]').click();
+  const cookie = (value) => { document.cookie = value ? `lv=${value}; path=/` : 'lv=; path=/; max-age=0'; };
+  const post = (path) => fetch(path, { method: 'POST' });
+  const asked = async () => (await fetch('/__stub/asked')).json();
+  const level = (name) => $(`[data-level="${name}"]`);
+  const pressed = (button) => button.getAttribute('aria-pressed') === 'true';
+  const setLevels = (...on) => {
+    for (const name of ['error', 'warning', 'info', 'debug']) if (pressed(level(name)) !== on.includes(name)) level(name).click();
+  };
+  const search = (text) => {
+    $('#search').value = text;
+    $('#search').dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const choose = (id, value) => {
+    $(id).value = value;
+    $(id).dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const box = () => $('#log');
+  const atBottom = () => Math.abs(box().scrollHeight - box().clientHeight - box().scrollTop) < 2;
+  const APP_NEWEST = ['agent_system.api Loaded 12 plugins', 'Started without a level',
+    'agent_system.api <img src=x onerror="window.parent.injected=1"> & <b>bold</b>', 'agent_system.llm Retrying request',
+    'agent_system.core Tool failed\nTraceback (most recent call last):\n  File "core.py", line 7, in run\nValueError: Bad Budget',
+    'agent_system.app Out of memory'];
+  const seededShown = () => entries().length === 306 && last() === 'agent_system.app Out of memory';
+  const full = () => entries().length >= 306;
+  const kb = (bytes) => `${(bytes / 1024).toFixed(1)} KB`;
+
+  await check('the panel lists the existing files and shows the newest entries of the first with time, level and message', async () => {
+    await go('/plugins/log_viewer/');
+    await until('the entries', seededShown);
+    const logs = (await (await fetch('/plugins/log_viewer/logs/list')).json()).logs;
+    const options = [...$('#file').options].map((option) => option.value).join();
+    const rows = entries().slice(-6);
+    const cells = (row) => [...row.children].map((cell) => cell.textContent.trim());
+    const badge = (row) => row.querySelector('.pk-badge')?.className;
+    // all 300 fillers of the rotation and six entries of app.log: the panel's own request is not one of them
+    return options === 'logs/app.log,logs/other.log,logs/empty.log' && $('#file').value === 'logs/app.log'
+      && messages().slice(-6).join('|') === APP_NEWEST.join('|') && messages()[0] === 'agent_system.seed Filler 0'
+      && cells(rows[0]).slice(0, 2).join('|') === '10:00:00|DEBUG' && rows[0].children[0].title === '2026-01-01 10:00:00,000'
+      && cells(rows[1]).slice(0, 2).join('|') === '10:00:00|' && !rows[1].querySelector('.pk-badge')
+      && cells(rows[3]).slice(0, 2).join('|') === '10:00:03|WARNING' && badge(rows[3]) === 'pk-badge pk-badge--warn'
+      && badge(rows[4]) === 'pk-badge pk-badge--danger' && badge(rows[5]) === 'pk-badge pk-badge--danger'
+      && cells(rows[5])[1] === 'CRITICAL' && badge(rows[2]) === 'pk-badge pk-badge--info' && badge(rows[0]) === 'pk-badge'
+      && $('#shown').textContent === `306 entries · ${kb(logs[0].size)} in 2 files`
+      && /^Updated /.test($('#updated').textContent) && (await asked()).last === 'logs/app.log?lines=500';
+  });
+
+  await check('a traceback folds under its first line', async () => {
+    const folded = () => entries().at(-2).querySelector('details.lv-message');
+    const closed = folded() && !folded().open && folded().querySelector('summary').textContent === 'agent_system.core Tool failed'
+      && entries().filter((row) => row.querySelector('details')).length === 1;
+    folded().open = true;
+    const shown = folded();
+    now();
+    await until('the entries drawn anew', () => folded() !== shown);
+    const staysOpen = folded().open;
+    folded().open = false;
+    return all({ closed, staysOpen });
+  });
+
+  await check('log text is shown as text, never as markup', async () => {
+    const row = entries().at(-4);
+    return !box().querySelector('img, b') && row.querySelector('.lv-message').textContent.includes('<img src=x')
+      && window.injected === undefined;
+  });
+
+  await check('the levels narrow the entries, error takes critical along, none chosen asks nothing', async () => {
+    try {
+      setLevels('error');
+      await until('errors only', () => entries().length === 2);
+      const errors = messages().map((text) => text.split('\n')[0]).join('|') === 'agent_system.core Tool failed|agent_system.app Out of memory'
+        && (await asked()).last === 'logs/app.log?lines=500&levels=error%2Ccritical';
+      setLevels('warning', 'debug');
+      await until('warning and debug', () => entries().length === 2 && last() === 'agent_system.llm Retrying request');
+      const two = messages()[0] === 'agent_system.api Loaded 12 plugins';
+      setLevels();
+      await until('the notice', () => logText().includes('No level chosen'));
+      await sleep(300);
+      const before = (await asked()).content;
+      now();
+      await sleep(500);
+      const none = entries().length === 0 && (await asked()).content === before && $('#shown').textContent === '';
+      setLevels('error', 'warning', 'info', 'debug');
+      // all chosen: no filter, so the entry without a level is back
+      await until('everything again', seededShown);
+      return errors && two && none && messages().includes('Started without a level') && !(await asked()).last.includes('levels');
+    } finally {
+      setLevels('error', 'warning', 'info', 'debug');
+    }
+  });
+
+  await check('the search finds text in tracebacks and says when nothing matches', async () => {
+    try {
+      search('BAD budget');
+      await until('the traceback', () => entries().length === 1);
+      const found = messages()[0].startsWith('agent_system.core Tool failed') && (await asked()).last.endsWith('&search=BAD+budget')
+        && $('#shown').textContent.startsWith('1 entry · ');
+      search('nothing like this');
+      await until('the notice', () => logText().includes('No entries'));
+      return found && logText().includes('Nothing matches the search and levels.');
+    } finally {
+      search('');
+      await until('everything again', seededShown);
+    }
+  });
+
+  await check('the count chooses how many of the newest entries are shown', async () => {
+    try {
+      choose('#lines', '100');
+      await until('100 entries', () => entries().length === 100);
+      const hundred = messages()[0] === 'agent_system.seed Filler 206' && last() === 'agent_system.app Out of memory'
+        && $('#shown').textContent.startsWith('100 entries');
+      choose('#lines', '250');
+      await until('250 entries', () => entries().length === 250);
+      return hundred && messages()[0] === 'agent_system.seed Filler 56' && (await asked()).last === 'logs/app.log?lines=250';
+    } finally {
+      choose('#lines', '500');
+      await until('500 again', seededShown);
+    }
+  });
+
+  await check('another file shows its entries, an empty one says so, a file appearing leaves the choice', async () => {
+    const option = $('#file').options[0];
+    try {
+      choose('#file', 'logs/other.log');
+      await until('the other log', () => entries().length === 1);
+      const size = (await (await fetch('/plugins/log_viewer/logs/list')).json()).logs[1].size;
+      const other = messages()[0] === 'agent_system.other Other started' && $('#shown').textContent === `1 entry · ${size} B`;
+      choose('#file', 'logs/empty.log');
+      await until('the notice', () => logText().includes('No entries'));
+      const empty = logText().includes('The log is empty.') && $('#shown').textContent === '0 entries · 0 B';
+      // the same files listed: the options stay, an open select is not closed under the viewer
+      const sameOptions = $('#file').options[0] === option;
+      choose('#file', 'logs/other.log');
+      await until('the other log again', () => entries().length === 1);
+      await post('/__stub/create');
+      now();
+      await until('the new file listed', () => $('#file').options.length === 4);
+      await sleep(300);
+      const kept = $('#file').value === 'logs/other.log' && messages()[0] === 'agent_system.other Other started';
+      return all({ other, empty, sameOptions, kept });
+    } finally {
+      await post('/__stub/uncreate');
+      choose('#file', 'logs/app.log');
+      await until('app.log again', () => seededShown() && $('#file').options.length === 3);
+    }
+  });
+
+  await check('follow keeps the newest entry in view; off, a refresh keeps the place and a new choice starts at the newest', async () => {
+    const follow = $('#follow');
+    try {
+      const followed = pressed(follow) && atBottom() && box().scrollHeight > box().clientHeight * 2;
+      follow.click();
+      box().scrollTop = 40;
+      await post('/__stub/append');
+      now();
+      await until('the appended entry', () => last() === 'agent_system.api Appended 1');
+      const kept = !pressed(follow) && box().scrollTop === 40;
+      choose('#lines', '100');
+      await until('100 entries', () => entries().length === 100);
+      const newest = atBottom();
+      cookie('fails');
+      now();
+      await until('the error', () => logText().includes('The log could not be loaded'));
+      cookie(null);
+      now();
+      await until('100 entries again', () => entries().length === 100);
+      const afterError = atBottom();  // shown anew after the notice, not where the notice left the scroll
+      box().scrollTop = 40;
+      follow.click();
+      const jumped = pressed(follow) && atBottom();
+      await post('/__stub/append');
+      box().scrollTop = 40;
+      now();
+      await until('the second appended entry', () => last() === 'agent_system.api Appended 2');
+      return all({ followed, kept, newest, afterError, jumped, following: atBottom() });
+    } finally {
+      cookie(null);
+      if (!pressed(follow)) follow.click();
+      choose('#lines', '500');
+      await until('500 again', () => entries().length === 308 && last() === 'agent_system.api Appended 2');
+    }
+  });
+
+  await check('without an existing log file the panel says so', async () => {
+    await post('/__stub/hide');
+    try {
+      now();
+      await until('the notice', () => logText().includes('No log files'));
+      const said = logText().includes('None of the configured log files exists yet.') && $('#file').options.length === 0
+        && $('#file').hidden && $('#shown').textContent === '' && $('#updated').textContent === '';
+      await post('/__stub/unhide');
+      now();
+      await until('the entries again', () => full());
+      return said && !$('#file').hidden && $('#file').options.length === 3 && $('#file').value === 'logs/app.log';
+    } finally {
+      await post('/__stub/unhide');
+    }
+  });
+
+  await check('a failed load shows the error and nothing of before, also when only the file list fails', async () => {
+    const failing = async (mode) => {
+      cookie(mode);
+      try {
+        now();
+        await until(`the error (${mode})`, () => logText().includes('The log could not be loaded'));
+        return logText().includes('The log directory is not readable') && entries().length === 0
+          && $('#shown').textContent === '' && $('#updated').textContent === '' && !$('.pk-toast--error');
+      } finally {
+        cookie(null);
+        now();
+        await until('the entries again', () => full());
+      }
+    };
+    return (await failing('fails')) && (await failing('listfails'));
+  });
+
+  await check('an answer overtaken by a later load is dropped', async () => {
+    const failed = () => logText().includes('The log could not be loaded');
+    try {
+      // a success overtaken by an error
+      cookie('slow');
+      now();  // entries held 1.5 s
+      await sleep(300);
+      cookie('fails');
+      now();  // answered at once, with an error
+      await until('the later error', failed);
+      await sleep(2000);
+      const errorKept = entries().length === 0 && failed();
+      // an error overtaken by a success
+      cookie('slowfail');
+      now();  // held 1.5 s, then an error
+      await sleep(300);
+      cookie(null);
+      now();
+      await until('the later entries', () => full());
+      await sleep(2000);
+      const entriesKept = full() && !failed();
+      // a file list overtaken by one that finds no file
+      cookie('listslow');
+      now();  // the files listed at once, the answer held 1.5 s
+      await sleep(300);
+      await post('/__stub/hide');
+      cookie(null);
+      now();
+      await until('the notice', () => logText().includes('No log files'));
+      await sleep(2000);
+      const noneKept = logText().includes('No log files') && $('#file').options.length === 0 && $('#file').hidden;
+      return all({ errorKept, entriesKept, noneKept });
+    } finally {
+      await post('/__stub/unhide');
+      cookie(null);
+      now();
+      await until('the entries again', () => full());
+    }
+  });
+
+  await check('ticks of the auto refresh ask nothing more while a load is on its way', async () => {
+    const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+    let ticking = null;
+    try {
+      await sleep(500);  // the load the check before started on its way out is counted before, not in between
+      const before = (await asked()).content;
+      cookie('slow');
+      now();  // answered after 1.5 s
+      ticking = setInterval(tick, 150);
+      await sleep(300);
+      cookie('slower');
+      now();  // answered after 3 s: the load of the 1.5 s one is out of date when it ends, this one is still on its way
+      await sleep(200);
+      cookie(null);  // a load a tick would start is answered at once
+      await sleep(2000);
+      clearInterval(ticking);
+      await until('the entries', () => full() && /^Updated /.test($('#updated').textContent), 8000);
+      await sleep(500);
+      // with a server slower than the tick, each tick would start one more load
+      const loads = (await asked()).content - before;
+      return all({ [`two loads, not ${loads}`]: loads === 2 });
+    } finally {
+      clearInterval(ticking);
+      cookie(null);
+    }
+  });
+
+  await check('the auto refresh is off at the start and, switched on, brings new entries', async () => {
+    await go('/plugins/log_viewer/');
+    await until('the entries', () => full());
+    const toggle = $('pk-refresh [data-act="auto"]');
+    const off = toggle.getAttribute('aria-pressed') === 'false';
+    const before = (await asked()).content;
+    await sleep(6000);
+    const quiet = (await asked()).content === before;
+    toggle.click();
+    try {
+      await post('/__stub/append');
+      await until('the appended entry, brought by a tick', () => last() === 'agent_system.api Appended 3', 8000);
+      return off && quiet;
+    } finally {
+      toggle.click();
+    }
+  });
+
+  await check('the settings survive a reload', async () => {
+    try {
+      choose('#file', 'logs/other.log');
+      choose('#lines', '250');
+      level('debug').click();
+      search('Other');
+      await until('the search', async () => (await asked()).last.includes('search=Other'));
+      await sleep(600);  // a load a click started already reads the search typed: saved only after the pause in typing
+      $('#follow').click();  // last: saved by itself, not along with a later change
+      await go('/plugins/log_viewer/');
+      await until('the other log', () => entries().length === 1);
+      const restored = {
+        file: $('#file').value === 'logs/other.log', lines: $('#lines').value === '250', search: $('#search').value === 'Other',
+        levels: !pressed(level('debug')) && pressed(level('error')), follow: !pressed($('#follow')),
+        asked: (await asked()).last === 'logs/other.log?lines=250&levels=error%2Ccritical%2Cwarning%2Cinfo&search=Other',
+      };
+      choose('#lines', '100');  // last: saved by the change itself
+      await until('the count', async () => (await asked()).last.includes('lines=100'));
+      await go('/plugins/log_viewer/');
+      await until('the other log again', () => entries().length === 1);
+      return all({ ...restored, changeSaved: $('#lines').value === '100' });
+    } finally {
+      localStorage.clear();
+    }
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

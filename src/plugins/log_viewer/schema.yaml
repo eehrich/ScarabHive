@@ -61,54 +61,22 @@ web_ui:
   endpoints:
     - path: "/"
       method: "GET"
-      handler: "panel"
+      handler: "get_panel"
       response_type: "html"
-      description: "Main log viewer UI panel"
-    
+      description: "The Logs panel"
+
     - path: "/logs/list"
       method: "GET"
       handler: "list_log_files"
       response_type: "json"
-      description: "List available log files with metadata"
-    
+      description: "The configured log files, with size and rotations of those that exist"
+
     - path: "/logs/content/{log_name:path}"
       method: "GET"
       handler: "get_log_content"
       response_type: "json"
-      description: "Get log file content with optional timestamp filtering (avoids infinite loops)"
-    
-    - path: "/logs/download/{log_name:path}"
-      method: "GET"
-      handler: "download_log_file"
-      response_type: "response"
-      description: "Download entire log file"
-    
-    - path: "/logs/poll/{log_name:path}"
-      method: "GET"
-      handler: "poll_log_updates"
-      response_type: "json"
-      description: "Poll for log updates since last timestamp (non-streaming approach)"
-    
-    - path: "/panel.html"
-      method: "GET"
-      handler: "panel_html"
-      response_type: "html"
-      description: "Main log viewer UI panel"
-    
-    - path: "/panel"
-      method: "GET"
-      handler: "panel"
-      response_type: "html"
-      description: "Main log viewer UI panel (alternate endpoint)"
-    
-    - path: "/static/{file_path:path}"
-      method: "GET"
-      handler: "serve_static"
-      response_type: "response"
-      description: "Static assets (CSS, JS, images)"
+      description: "The last entries of a configured log file and its rotations (lines, levels, search)"
 config:
   log_files:
     - logs/api.log
     - logs/cli.log
-  max_lines: 20
-  refresh_interval: 1.0

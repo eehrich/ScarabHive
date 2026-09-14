@@ -5,7 +5,7 @@
 [plugin]
 name = "log_viewer"
 version = "1.0.0"
-description = "Real-time log streaming and viewing plugin with web UI"
+description = "Lists, tails and searches the configured log files, with the Logs panel"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["mcp-server", "web"]

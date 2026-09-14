@@ -1,249 +1,157 @@
-"""
-Tests for log viewer plugin
-"""
+"""Log Viewer without a browser: discovery, routes, and what the panel's two calls answer, against log files in tmp_path."""
+
+from pathlib import Path
 
 import pytest
-from unittest.mock import patch, Mock
-
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
-from plugins.log_viewer.plugin import LogViewerHybridPlugin
+from agent_system.config.models import AgentConfig, AgentSystemConfig, MCPConfig
 from agent_system.plugins.web_adapter import PluginWebRegistry
+from plugins.log_viewer import endpoints
+from plugins.log_viewer.plugin import PLUGIN_FACTORY, LogViewerHybridPlugin
+
+APP_LOG = """\
+2026-01-01 10:00:00,000 INFO agent_system.api Server started
+2026-01-01 10:00:01,000 DEBUG agent_system.api GET /plugins/log_viewer/logs/list 200
+2026-01-01 10:00:02,000 ERROR agent_system.core Tool failed
+Traceback (most recent call last):
+  File "core.py", line 7, in run
+ValueError: Bad Budget
+2026-01-01 10:00:03,000 WARNING agent_system.llm Retrying request
+2026-01-01 10:00:04,123 CRITICAL agent_system.app Out of memory
+"""
 
 
-class TestLogViewerServer:
-    """Test the LogViewerServer plugin"""
-    
-    @pytest.fixture
-    def plugin(self):
-        """Create a log viewer plugin instance"""
-        system_config = Mock(spec=AgentSystemConfig)
-        system_config.network = Mock()
-        system_config.network.ssl_verify = True
-        
-        mcp_config = MCPConfig(
-            type="log_viewer",
-            enabled=True,
-            log_files=['test.log', 'test2.log'],
-            max_lines=50,
-            refresh_interval=0.1  # Faster for testing
-        )
-        return LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
-    
-    def test_plugin_initialization(self, plugin):
-        """Test plugin initializes correctly"""
-        assert plugin.name == "log_viewer"
-        assert plugin.log_files == ['test.log', 'test2.log']
-        assert plugin.max_lines == 50
-        assert plugin.refresh_interval == 0.1
-    
-    async def test_plugin_call_interface(self, plugin):
-        """Test MCP call interface"""
-        result = await plugin.call()
-        
-        assert result["status"] == "ok"
-        assert result["name"] == "log_viewer"
-        assert result["log_files"] == ['test.log', 'test2.log']
-        assert result["active"] is True
-    
-    def test_web_router_creation(self, plugin):
-        """Test that plugin creates a web router"""
-        router = plugin.get_web_router()
-        
-        assert router is not None
-        assert router.prefix == "/plugins/log_viewer"
-    
-
-class TestLogViewerWebIntegration:
-    """Test log viewer plugin web integration"""
-    
-    def test_plugin_web_endpoints(self):
-        """Test plugin web endpoints work correctly"""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
-        
-        # Create app with plugin
-        app = FastAPI()
-        registry = PluginWebRegistry()
-        
-        # Create plugin and register with proper config objects
-        system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
-        mcp_config.log_files = ['test.log']
-        
-        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
-        registry.register_web_plugin("log_viewer", plugin)
-        
-        # Apply to app
-        registry.apply_to_app(app)
-        
-        client = TestClient(app)
-        
-        # Test that the plugin is registered and endpoints work
-        response = client.get("/plugins/log_viewer/")
-        # Plugin should respond (404 or actual content)
-        assert response.status_code in [200, 404]
-    
-    @patch('pathlib.Path.exists')
-    def test_list_log_files_endpoint(self, mock_exists):
-        """Test the list log files endpoint"""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
-        
-        # Setup mock
-        mock_exists.return_value = True
-        
-        # Create app with plugin
-        app = FastAPI()
-        system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
-        mcp_config.log_files = ['test.log', 'test2.log']
-        
-        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
-        
-        router = plugin.get_web_router()
-        app.include_router(router)
-        
-        client = TestClient(app)
-        
-        # Mock Path.stat() for file stats
-        with patch('pathlib.Path.stat') as mock_stat:
-            mock_stat.return_value.st_size = 1024
-            mock_stat.return_value.st_mtime = 1234567890.0
-            
-            response = client.get("/plugins/log_viewer/logs/list")
-            assert response.status_code == 200
-            
-            data = response.json()
-            assert "logs" in data
-            assert len(data["logs"]) == 2
-            
-            for log in data["logs"]:
-                assert log["exists"] is True
-                assert "size" in log
-                assert "modified" in log
-    
-    def test_panel_html_endpoint(self):
-        """Test the panel HTML endpoint"""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
-        
-        app = FastAPI()
-        system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
-        mcp_config.log_files = ['test.log']
-        
-        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
-        
-        router = plugin.get_web_router()
-        app.include_router(router)
-        
-        client = TestClient(app)
-        
-        response = client.get("/plugins/log_viewer/panel.html")
-        assert response.status_code == 200
-        assert "text/html" in response.headers["content-type"]
-        
-        # Check that HTML contains expected elements
-        html_content = response.text
-        assert "Log Viewer Panel" in html_content  # Check actual title instead of "System Logs"
-        assert "log-container" in html_content
-        assert "log_viewer_module.js" in html_content  # Check for external JavaScript file
-        assert "log_viewer.css" in html_content  # Check for external CSS file
-    
-    def test_download_endpoint_security(self):
-        """Test download endpoint security (only allows configured files)"""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
-        
-        app = FastAPI()
-        system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
-        mcp_config.log_files = ['allowed.log']
-        
-        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
-        
-        router = plugin.get_web_router()
-        app.include_router(router)
-        
-        client = TestClient(app)
-        
-        # Try to access non-allowed file
-        response = client.get("/plugins/log_viewer/logs/download/notallowed.log")
-        assert response.status_code == 200
-        data = response.json()
-        assert "error" in data
-        assert "not allowed" in data["error"].lower()
-    
-    def test_stream_endpoint_security(self):
-        """Test streaming endpoint security"""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
-        
-        app = FastAPI()
-        system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
-        mcp_config.log_files = ['allowed.log']
-        
-        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
-        
-        router = plugin.get_web_router()
-        app.include_router(router)
-        
-        client = TestClient(app)
-        
-        # Try to poll non-allowed file (streaming equivalent)
-        response = client.get("/plugins/log_viewer/logs/poll/notallowed.log")
-        assert response.status_code == 200
-        data = response.json()
-        assert "error" in data
-        assert "not allowed" in data["error"].lower()
-    
-    def test_static_file_serving(self):
-        """Test that static files are served correctly"""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
-        
-        app = FastAPI()
-        system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
-        mcp_config.log_files = ['logs/test.log']
-        
-        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
-        
-        router = plugin.get_web_router()
-        app.include_router(router)
-        
-        client = TestClient(app)
-        
-        # Test CSS file serving
-        response = client.get("/plugins/log_viewer/static/log_viewer.css")
-        assert response.status_code == 200
-        assert "text/css" in response.headers["content-type"]
-        assert ".log-container" in response.text  # Check for CSS content
-        
-        # Test JavaScript file serving
-        response = client.get("/plugins/log_viewer/static/log_viewer.js")
-        assert response.status_code == 200
-        assert "application/javascript" in response.headers["content-type"]
-        assert "EventSource" in response.text  # Check for JS content
-        
-        # Test security - should not allow directory traversal
-        response = client.get("/plugins/log_viewer/static/../endpoints.py")
-        assert response.status_code == 404
+def make_plugin(names):
+    config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
+    if names is not None:
+        config.log_files = names
+    return LogViewerHybridPlugin("log_viewer", AgentSystemConfig(), config)
 
 
-class TestLogViewerPluginFactory:
-    """Test plugin factory and discovery"""
-    
-    def test_plugin_factory_export(self):
-        """Test that PLUGIN_FACTORY is properly exported"""
-        from plugins.log_viewer.plugin import PLUGIN_FACTORY, LogViewerHybridPlugin as PluginClass
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
-        
-        assert PLUGIN_FACTORY is not None
-        
-        # Test factory can create instances
-        system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
-        
-        plugin = PLUGIN_FACTORY("test", system_config, mcp_config)
-        # Use class from same import to avoid isinstance issues with reimports
-        assert isinstance(plugin, PluginClass)
-        assert plugin.name == "test"
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "app.log").write_bytes(APP_LOG.encode())
+    registry = PluginWebRegistry()
+    registry.register_web_plugin("log_viewer", make_plugin(["logs/app.log", "logs/missing.log"]))
+    app = FastAPI()
+    registry.apply_to_app(app)
+    return TestClient(app)
+
+
+def content(client, name="logs/app.log", **params):
+    return client.get(f"/plugins/log_viewer/logs/content/{name}", params=params)
+
+
+def test_log_viewer_plugin_discovered():
+    from agent_system.plugins import discover_all_plugins
+
+    plugins = discover_all_plugins([Path(__file__).resolve().parents[2]])
+    assert plugins["log_viewer"] is PLUGIN_FACTORY
+
+
+def test_router_serves_the_panel_its_two_calls_and_its_static_files(client):
+    router = make_plugin([]).get_web_router()
+    assert sorted(route.path for route in router.routes) == [
+        "/plugins/log_viewer/", "/plugins/log_viewer/logs/content/{log_name:path}", "/plugins/log_viewer/logs/list"]
+    page = client.get("/plugins/log_viewer/")
+    assert page.status_code == 200 and "/static/kit/kit.css" in page.text and "/plugins/log_viewer/static/panel.js" in page.text
+    assert client.get("/plugins/log_viewer/static/panel.js").status_code == 200
+    assert client.get("/plugins/log_viewer/static/panel.css").status_code == 200
+
+
+def test_list_names_every_configured_file(client):
+    logs = client.get("/plugins/log_viewer/logs/list").json()["logs"]
+    assert [(log["name"], log["exists"]) for log in logs] == [("logs/app.log", True), ("logs/missing.log", False)]
+    assert logs[0]["size"] == len(APP_LOG.encode()) and logs[0]["rotation_count"] == 1
+
+
+# slashes encoded: the client would resolve the dot segments before the server sees them
+@pytest.mark.parametrize("name", ["logs%2Fother.log", "..%2Flogs%2Fapp.log", "logs%2F..%2Flogs%2Fapp.log", "logs%2Fapp.log.1",
+                                  "%2Fetc%2Fpasswd"])
+def test_a_name_that_is_not_configured_is_refused_with_404(client, name, tmp_path):
+    (tmp_path / "logs" / "other.log").write_bytes(APP_LOG.encode())
+    (tmp_path / "logs" / "app.log.1").write_bytes(APP_LOG.encode())
+    answer = content(client, name)
+    assert answer.status_code == 404 and "not a configured log file" in answer.json()["detail"]
+
+
+def test_a_configured_file_that_does_not_exist_is_404(client):
+    answer = content(client, "logs/missing.log")
+    assert answer.status_code == 404 and "does not exist" in answer.json()["detail"]
+
+
+@pytest.mark.parametrize("params", [{"lines": 0}, {"lines": 5001}, {"levels": "error,loud"}])
+def test_bad_parameters_are_refused_with_422(client, params):
+    assert content(client, **params).status_code == 422
+
+
+def test_entries_keep_their_continuation_lines_and_skip_the_panels_own_requests(client):
+    entries = content(client).json()["entries"]
+    assert [entry["level"] for entry in entries] == ["info", "error", "warning", "critical"]
+    assert entries[1] == {"timestamp": "2026-01-01 10:00:02,000", "level": "error", "message":
+                          'agent_system.core Tool failed\nTraceback (most recent call last):\n  File "core.py", line 7, in run\nValueError: Bad Budget'}
+    assert entries[3]["timestamp"] == "2026-01-01 10:00:04,123" and entries[3]["message"] == "agent_system.app Out of memory"
+
+
+def test_the_panels_own_requests_are_left_out_only_as_routine(client, tmp_path):
+    (tmp_path / "logs" / "app.log").write_bytes(
+        b"2026-09-14 16:53:40 | INFO | ALLOWED | GET /plugins/log_viewer/logs/list | user=admin\n"
+        b"2026-09-14 16:53:41 | WARNING | DENIED | GET /plugins/log_viewer/logs/list | user=bob\n"
+        b"2026-09-14 16:53:42 ERROR agent_system.api GET /plugins/log_viewer/logs/content/x failed\n"
+        b"2026-09-14 16:53:43 DEBUG uvicorn.access GET /plugins/log_viewer/ 200\n")
+    assert [e["level"] for e in content(client).json()["entries"]] == ["warning", "error"]
+    assert [e["level"] for e in content(client, search="denied").json()["entries"]] == ["warning"]
+
+
+def test_without_configured_files_tools_and_panel_share_one_allowlist():
+    from plugins.log_viewer.mcp_server import DEFAULT_LOG_FILES
+
+    plugin = make_plugin(None)
+    assert plugin.mcp_server.log_files == DEFAULT_LOG_FILES == ["logs/api.log", "logs/cli.log", "logs/profiling.log", "logs/security.log"]
+    assert plugin.web_endpoints.log_files is plugin.mcp_server.log_files and plugin.log_files is plugin.mcp_server.log_files
+
+
+def test_levels_search_and_count_filter_the_newest_entries(client):
+    assert [e["level"] for e in content(client, levels="error,critical").json()["entries"]] == ["error", "critical"]
+    assert [e["level"] for e in content(client, search="bad budget").json()["entries"]] == ["error"]  # found in the traceback
+    assert [e["level"] for e in content(client, lines=2).json()["entries"]] == ["warning", "critical"]
+    assert content(client, levels="debug").json()["entries"] == []  # the only debug entry is the panel's own request
+
+
+@pytest.mark.parametrize("line, expected", [
+    ("2026-01-05 20:47:21 INFO [agent_system.profiling] Profiling started",
+     {"timestamp": "2026-01-05 20:47:21", "level": "info", "message": "[agent_system.profiling] Profiling started"}),
+    ("2025-09-25 00:23:32,790 - agent_system.api - WARNING - Slow answer",
+     {"timestamp": "2025-09-25 00:23:32,790", "level": "warning", "message": "agent_system.api Slow answer"}),
+    ("2026-09-14 16:53:40 | ERROR | DENIED | GET /admin | user=bob",
+     {"timestamp": "2026-09-14 16:53:40", "level": "error", "message": "DENIED | GET /admin | user=bob"}),
+    ("2026-09-14 16:53:40 WARN worker Busy", {"timestamp": "2026-09-14 16:53:40", "level": "warning", "message": "worker Busy"}),
+    ("2026-09-14 16:53:40 FATAL worker Gone", {"timestamp": "2026-09-14 16:53:40", "level": "critical", "message": "worker Gone"}),
+    ("2026-09-14 16:53:40 Information without a level",
+     {"timestamp": "2026-09-14 16:53:40", "level": None, "message": "Information without a level"}),
+])
+def test_every_known_line_format_yields_timestamp_level_and_message(line, expected):
+    assert endpoints.parse_entry(line) == expected
+
+
+def test_rotations_are_read_newest_first_and_returned_oldest_first(client, tmp_path):
+    logs = tmp_path / "logs"
+    (logs / "app.log.2").write_bytes(b"started before logging\n2025-12-31 09:00:00,000 INFO a Oldest\nwithout a timestamp\n")
+    (logs / "app.log.1").write_bytes(b"2025-12-31 10:00:00,000 INFO a Older\n")
+    entries = content(client, lines=100).json()["entries"]
+    assert [e["message"] for e in entries[:3]] == ["started before logging", "a Oldest\nwithout a timestamp", "a Older"]
+    assert len(entries) == 7 and entries[0]["timestamp"] is None
+    assert [e["message"] for e in content(client, lines=5).json()["entries"]][0] == "a Older"
+    assert "started before logging" not in str(content(client, lines=100, levels="info").json())
+    assert client.get("/plugins/log_viewer/logs/list").json()["logs"][0]["rotation_count"] == 3
+
+
+def test_lines_are_read_backwards_across_chunks(tmp_path, monkeypatch):
+    monkeypatch.setattr(endpoints, "CHUNK_BYTES", 7)
+    path = tmp_path / "x.log"
+    path.write_bytes("first line\r\nsecond ünïcode line\r\n\r\nlast without newline".encode())
+    assert list(endpoints.lines_backwards(path)) == ["last without newline", "", "second ünïcode line", "first line"]

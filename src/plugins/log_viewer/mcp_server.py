@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# the allowlist without configuration; tools and panel both read the server's
+DEFAULT_LOG_FILES = ['logs/api.log', 'logs/cli.log', 'logs/profiling.log', 'logs/security.log']
+
 
 class LogViewerMCPServer(SchemaBasedMCPServer):
     """MCP server component for log viewer plugin"""
@@ -23,7 +26,7 @@ class LogViewerMCPServer(SchemaBasedMCPServer):
     def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
         """Initialize with new signature."""
         super().__init__(name, system_config, mcp_config)
-        self.log_files = getattr(mcp_config, 'log_files', ['logs/agent.log', 'logs/api.log'])
+        self.log_files = getattr(mcp_config, 'log_files', DEFAULT_LOG_FILES)
         
         logger.info(f"LogViewerMCPServer initialized: {name}")
     

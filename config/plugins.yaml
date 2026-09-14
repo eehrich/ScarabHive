@@ -830,9 +830,6 @@ plugins:
         - logs/profiling.log
         - logs/security.log
 
-      max_lines: 20           # Maximum lines to return per request
-      refresh_interval: 1.0   # Polling interval in seconds for UI updates
-
     script_interpreter:
       type: script_interpreter
       enabled: true

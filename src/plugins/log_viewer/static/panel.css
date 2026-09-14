@@ -1,0 +1,30 @@
+/* Logs: only what the kit has no component for. Tokens only. */
+
+/* the entries scroll, the filters stay in view */
+.pk-panel { height: 100vh; }
+.pk-page-body { min-height: 0; }
+
+.lv-small { font-size: var(--text-xs); }
+.lv-file, .lv-lines { width: auto; max-width: 16rem; }
+.lv-search { flex: 1; min-width: 9rem; max-width: 18rem; }
+.lv-levels { gap: var(--space-1); }
+
+.lv-log {
+  flex: 1; min-height: 0; overflow: auto; padding: var(--space-2) 0;
+  font: var(--text-xs)/1.6 var(--font-mono);
+  background: var(--surface-0); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+}
+.lv-log > .pk-empty { font-family: var(--font-ui); }
+.lv-entry {
+  display: grid; grid-template-columns: 4.5rem 6rem minmax(0, 1fr); gap: var(--space-2);
+  align-items: baseline; padding: 1px var(--space-3);
+}
+.lv-entry:hover { background: var(--surface-1); }
+.lv-entry[data-level="error"], .lv-entry[data-level="critical"] { background: var(--danger-subtle); }
+.lv-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+.lv-message > summary { cursor: pointer; }
+
+@media (max-width: 520px) {
+  .lv-entry { grid-template-columns: 4.5rem minmax(0, 1fr); gap: 0 var(--space-2); }
+  .lv-message { grid-column: 1 / -1; }
+}

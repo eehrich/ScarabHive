@@ -41,12 +41,16 @@ def mock_mcp_config():
 
 
 @pytest.fixture
-def mock_server():
-    """Create mock MCP server"""
+def mock_server(mock_mcp_config):
+    """Create mock MCP server; its allowlist is the config's, as in the real server"""
     class MockServer:
         def __init__(self):
             self.name = "log_viewer"
-        
+
+        @property
+        def log_files(self):
+            return mock_mcp_config.log_files
+
         def get_schema_data(self):
             return {}
     
