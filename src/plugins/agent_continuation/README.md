@@ -116,7 +116,11 @@ user → tools → final → follow-up 1 → tools → final → follow-up 2 →
   of a session. A request that continues a session (an earlier assistant
   answer precedes it) gets none — a pipeline can then continue the instance
   for a narrow question ("which beat does this belong to?") without the
-  follow-up replacing that answer. A new session still gets the list.
+  follow-up replacing that answer. A new session still gets the list. Only a
+  real boolean counts (a quoted `"false"` logs a warning and leaves the
+  follow-ups on), and the evidence is the history the hook sees: once a
+  summarizer or pruning has replaced the earlier answers, a continued request
+  looks like a first one.
 - Follow-ups count against `max_continuations`, and none is sent once it is
   reached: the ceiling on a history that lost its markers.
 - Each round costs steps; `max_steps` must leave room for them.

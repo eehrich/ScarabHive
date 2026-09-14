@@ -152,6 +152,25 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             return self._max_continuations
         return value
 
+    @staticmethod
+    def _followups_on_continue(agent_cfg: Dict[str, Any], agent_name: str) -> bool:
+        """``followups_on_continue``: only a real boolean counts.
+
+        A quoted ``"false"`` is a string, and a string compared with ``is False``
+        silently leaves the option on — a continued session would then get the
+        follow-up. Anything but a boolean keeps the default and says so.
+        """
+        raw = agent_cfg.get("followups_on_continue")
+        if raw is None:
+            return True
+        if isinstance(raw, bool):
+            return raw
+        logger.warning(
+            "[AgentContinuation] '%s': followups_on_continue=%r is not a boolean — "
+            "follow-ups stay on for continued requests",
+            agent_name, raw)
+        return True
+
     # ------------------------------------------------------------------
     # Hook handler (must match name in schema.yaml)
     # ------------------------------------------------------------------
@@ -301,7 +320,9 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         ``followups_on_continue: false`` limits the list to the first request
         of a session: when an assistant answer precedes that user message, the
         request continues an earlier one (a pipeline asking a scorer to
-        re-check or to assign ids) and gets no follow-up.
+        re-check or to assign ids) and gets no follow-up. The evidence is the
+        history the hook sees: once a summarizer or pruning has replaced the
+        earlier answers, a continued request looks like a first one.
         """
         raw = agent_cfg.get("followups") or []
         if isinstance(raw, str):
@@ -324,7 +345,7 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                 break
             if marker == FOLLOWUP_MARKER:
                 sent += 1
-        if agent_cfg.get("followups_on_continue") is False and any(
+        if not self._followups_on_continue(agent_cfg, context.agent_name) and any(
             getattr(msg, "role", None) == "assistant" for msg in messages[:request_start]
         ):
             return None

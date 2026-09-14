@@ -1554,17 +1554,33 @@ class TestFollowups:
 
     @pytest.mark.asyncio
     async def test_followups_can_be_limited_to_the_first_request_of_a_session(self):
+        from agent_system.llm.models import ChatMessage
+
+        def prompted(*markers):
+            # as the server builds it: system prompt and tool note before the session
+            return [ChatMessage(role="system", content="You score chapters."),
+                    ChatMessage(role="system", content="Tools: none."), *_history(*markers)]
+
         plugin = _make_plugin()
-        first = await plugin.evaluate_completion(_followup_context(_history(), followups_on_continue=False))
+        first = await plugin.evaluate_completion(_followup_context(prompted(), followups_on_continue=False))
         assert first.metadata["continue_message"] == FOLLOWUPS[0]
         second = await plugin.evaluate_completion(
-            _followup_context(_history("followup"), followups_on_continue=False))
+            _followup_context(prompted("followup"), followups_on_continue=False))
         assert second.metadata["continue_message"] == FOLLOWUPS[1], "the first request keeps its whole list"
         continued = await plugin.evaluate_completion(
-            _followup_context(_history("followup", "followup", "person"), followups_on_continue=False))
+            _followup_context(prompted("followup", "followup", "person"), followups_on_continue=False))
         assert not continued.metadata.get("continue"), "a continued session gets no follow-up"
-        default = await plugin.evaluate_completion(_followup_context(_history("followup", "followup", "person")))
+        default = await plugin.evaluate_completion(_followup_context(prompted("followup", "followup", "person")))
         assert default.metadata["continue_message"] == FOLLOWUPS[0], "default unchanged"
+
+    @pytest.mark.asyncio
+    async def test_a_quoted_false_does_not_pass_for_the_boolean(self, caplog):
+        plugin = _make_plugin()
+        continued = _history("followup", "followup", "person")
+        with caplog.at_level("WARNING"):
+            result = await plugin.evaluate_completion(_followup_context(continued, followups_on_continue="false"))
+        assert result.metadata["continue_message"] == FOLLOWUPS[0]
+        assert "followups_on_continue='false' is not a boolean" in caplog.text
 
     @pytest.mark.asyncio
     async def test_followups_count_against_the_budget(self):
