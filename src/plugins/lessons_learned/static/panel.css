@@ -1,0 +1,20 @@
+/* Lessons Learned: only what the kit has no component for. Tokens only. */
+
+.ll-filter { width: auto; max-width: 14rem; }
+.ll-lesson { min-width: 16rem; }
+.ll-title { font-weight: 600; }
+.ll-content {
+  color: var(--text-secondary); white-space: pre-wrap;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.ll-meta { margin-top: var(--space-1); font-size: var(--text-xs); }
+.ll-high { color: var(--ok); }
+.ll-low { color: var(--danger); }
+.ll-actions { white-space: nowrap; text-align: right; }
+.ll-form { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+.ll-wide { grid-column: 1 / -1; }
+.ll-intro { margin: 0; }
+.ll-details { margin: 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
+@media (max-width: 520px) {
+  .ll-form { grid-template-columns: 1fr; }
+}

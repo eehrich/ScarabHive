@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -49,6 +50,46 @@ AUTO_REACTIVATE_THRESHOLD = 0.4
 VALID_EVIDENCE_TYPES = {"confirm", "contradict", "neutral"}
 VALID_LESSON_STATUSES = {"draft", "active", "inactive", "archived"}
 VALID_SOURCE_TYPES = {"auto", "cross_agent", "manual", "reflection"}
+
+# What the tool schema promises: the tool refuses more, what the LLMs write (extraction, a merge) is cut to it.
+MAX_TITLE = 200
+MAX_CONTENT = 2000
+
+
+def _priority(value: Any) -> int:
+    """A whole priority between 1 and 10, whatever number came; a half rounds up."""
+    return min(10, max(1, math.floor(float(value) + 0.5)))
+
+
+def _beyond_tool_schema(params: Dict[str, Any]) -> Optional[str]:
+    """Why the tool refuses these parameters, or None: nothing checks the schema before the tool is called."""
+    if len(str(params.get("title") or "")) > MAX_TITLE:
+        return f"'title' is longer than {MAX_TITLE} characters."
+    if len(str(params.get("content") or "")) > MAX_CONTENT:
+        return f"'content' is longer than {MAX_CONTENT} characters."
+    priority = params.get("priority")
+    if priority is not None:
+        try:
+            within = 1 <= float(priority) <= 10
+        except (TypeError, ValueError):
+            within = False
+        if not within:
+            return f"'priority' must be a number from 1 to 10, not {priority!r}."
+    return None
+
+
+def _tags(value: Any) -> List[str]:
+    """Tags as a list, however they came: a list, a comma-separated string, or a stored row's JSON text of either."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            pass
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        value = str(value).split(",")
+    return [str(tag).strip() for tag in value if str(tag).strip()]
 
 # ==============================================================================
 # SQL Schema
@@ -270,8 +311,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             return {
                 "error": f"Invalid source_type '{source_type}'. Must be one of: {', '.join(sorted(VALID_SOURCE_TYPES))}"
             }
-        if not (1 <= priority <= 10):
-            return {"error": f"Invalid priority {priority}. Must be between 1 and 10."}
+        priority = _priority(priority)
         
         lesson_id = self._generate_lesson_id(agent_name)
         if confidence is None:
@@ -279,7 +319,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         if not (0.0 <= confidence <= 1.0):
             return {"error": f"Invalid confidence {confidence}. Must be between 0.0 and 1.0."}
         
-        tags_json = json.dumps(tags or [])
+        tags_json = json.dumps(_tags(tags))
         now = datetime.now(UTC).isoformat()
 
         conn = self._get_connection()
@@ -306,9 +346,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                 conn.commit()
             except sqlite3.IntegrityError as e:
                 error_msg = str(e)
-                if "priority" in error_msg:
-                    return {"error": f"Database constraint error: priority must be between 1 and 10 (got {priority})"}
-                elif "confidence" in error_msg:
+                if "confidence" in error_msg:
                     return {"error": f"Database constraint error: confidence must be between 0.0 and 1.0 (got {confidence})"}
                 elif "status" in error_msg:
                     return {"error": f"Database constraint error: Invalid status '{status}'. Must be one of: {', '.join(sorted(VALID_LESSON_STATUSES))}"}
@@ -413,7 +451,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             lesson = lessons_by_id.get(r["lesson_id"])
             if lesson:
                 lesson["similarity"] = r["similarity"]
-                lesson["tags"] = json.loads(lesson.get("tags", "[]"))
+                lesson["tags"] = _tags(lesson.get("tags"))
                 results.append(lesson)
 
         return {"query": query, "results": results, "count": len(results)}
@@ -463,7 +501,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             lessons = []
             for r in rows:
                 lesson = dict(r)
-                lesson["tags"] = json.loads(lesson.get("tags", "[]"))
+                lesson["tags"] = _tags(lesson.get("tags"))
                 lessons.append(lesson)
 
             return {"lessons": lessons, "total": total, "limit": limit, "offset": offset}
@@ -478,7 +516,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             if not row:
                 return None
             lesson = dict(row)
-            lesson["tags"] = json.loads(lesson.get("tags", "[]"))
+            lesson["tags"] = _tags(lesson.get("tags"))
             lesson["context_filter"] = json.loads(lesson.get("context_filter", "{}"))
 
             # Get evidence summary
@@ -514,8 +552,11 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         finally:
             conn.close()
 
-        if "tags" in to_update and isinstance(to_update["tags"], list):
-            to_update["tags"] = json.dumps(to_update["tags"])
+        if "tags" in to_update:
+            to_update["tags"] = json.dumps(_tags(to_update["tags"]))
+        if "priority" in to_update:
+            to_update["priority"] = _priority(to_update["priority"])
+
         if "context_filter" in to_update and isinstance(to_update["context_filter"], dict):
             to_update["context_filter"] = json.dumps(to_update["context_filter"])
         to_update["updated_at"] = datetime.now(UTC).isoformat()
@@ -600,6 +641,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         status: Optional[str] = None,
         agent_name: Optional[str] = None,
         dry_run: bool = True,
+        lesson_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Bulk-delete lessons matching filter criteria.
 
@@ -610,6 +652,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             status: Only target lessons with this status.
             agent_name: Only target lessons for this agent.
             dry_run: If True, return matching lessons without deleting.
+            lesson_ids: Only among these lessons (those a preview showed).
 
         Returns:
             Dict with matched count, deleted count, and lesson details.
@@ -639,6 +682,10 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
             if agent_name:
                 sql += " AND agent_name = ?"
                 params.append(agent_name)
+
+            if lesson_ids is not None:
+                sql += f" AND lesson_id IN ({','.join('?' * len(lesson_ids))})"
+                params.extend(lesson_ids)
 
             rows = conn.execute(sql, params).fetchall()
             matched = [dict(r) for r in rows]
@@ -1010,7 +1057,7 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
                     if dry_run:
                         merge_details.append({
                             "action": "would_merge",
-                            "primary": group.get("primary_id"),
+                            "primary_id": group.get("primary_id"),
                             "merged_title": group.get("title"),
                             "deleted": [mid for mid in merge_ids if mid != group.get("primary_id")],
                             "reason": group.get("reason", ""),
@@ -1311,13 +1358,13 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         # Update primary lesson
         update_fields: Dict[str, Any] = {}
         if new_title:
-            update_fields["title"] = new_title[:200]
+            update_fields["title"] = new_title[:MAX_TITLE]
         if new_content:
-            update_fields["content"] = new_content[:2000]
+            update_fields["content"] = new_content[:MAX_CONTENT]
         if new_category:
             update_fields["category"] = new_category
         if new_priority:
-            update_fields["priority"] = min(10, max(1, int(new_priority)))
+            update_fields["priority"] = _priority(new_priority)
 
         if update_fields:
             await self.update_lesson(primary_id, **update_fields)
@@ -1518,6 +1565,8 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         content = params.get("content", "")
         if not title or not content:
             return {"error": "Both 'title' and 'content' are required."}
+        if refused := _beyond_tool_schema(params):
+            return {"error": refused}
 
         # Check for duplicates (both exact and high-similarity)
         dedup = await self.check_duplicate(agent_name, title, content)
@@ -1573,6 +1622,8 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         lesson_id = params.get("lesson_id", "")
         if not lesson_id:
             return {"error": "'lesson_id' is required."}
+        if refused := _beyond_tool_schema(params):
+            return {"error": refused}
         updates = {k: v for k, v in params.items()
                    if k in ("title", "content", "category", "priority", "status", "tags", "confidence", "source_type")}
         return await self.update_lesson(lesson_id, **updates)
@@ -1595,6 +1646,8 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         content = params.get("content", "")
         if not target or not title or not content:
             return {"error": "'target_agent', 'title', and 'content' are required."}
+        if refused := _beyond_tool_schema(params):
+            return {"error": refused}
 
         # Check for duplicates in target agent (both exact and high-similarity)
         dedup = await self.check_duplicate(target, title, content)

@@ -17,7 +17,7 @@ The Lessons Learned plugin enables agents to learn from experience across sessio
 - **Deduplication**: Automatic detection and merging of duplicate lessons (similarity-based)
 - **Prompt Injection Hook**: Injects relevant active lessons into system prompts automatically
 - **Cross-Agent Teaching**: Share lessons between agents with lineage tracking
-- **Web UI**: Visual dashboard for managing, searching, and approving lessons
+- **Panel**: browse, search, edit, consolidate and clean up lessons (see [The panel](#the-panel))
 - **Categories**: Organize lessons by type (style, workflow, error_pattern, domain_knowledge, tool_usage, etc.)
 
 ## Architecture
@@ -48,7 +48,7 @@ confidence = base_confidence × evidence_factor × effectiveness_factor
 ```
 
 **Base Confidence** (by source type):
-- `manual` (Web UI): 0.8
+- `manual` (the panel): 0.8
 - `cross_agent` (taught by another agent): 0.6
 - `reflection` (agent tool): 0.5
 - `auto` (extracted at session end): 0.4
@@ -398,38 +398,38 @@ Automatically extracts lessons from conversation history using LLM analysis.
 - Task-specific details that won't generalize
 - Trivially obvious best practices
 
-## Web UI
+## The panel
 
-Access the Lessons Learned admin panel via the "🎓 Lessons" button in the AgentSystem Web UI.
+**Lessons Learned** in the launcher under **Context**. It shows the lessons of every agent from the plugin's own store;
+what is changed here reaches an agent with the inject hook at its next LLM call.
 
-### Features
+- Figures: all lessons (or those of the agent filtered for), how many are active, draft, inactive and archived, and
+  the number of agents. Filters by agent, status and category, sorted by priority, confidence, evidence, creation or
+  last update, 50 to a page. **Refresh** reloads; its auto refresh runs every 30 s once switched on.
+- **Search** finds lessons by meaning, in every status, narrowed by the agent, status and category filters, with the
+  similarity of each; **Clear** goes back to the list.
+- Each lesson shows its title, content, id, tags, agent, category, priority, confidence (green from 0.7, red below
+  0.4), status, evidence and application counts and source. **Activate** a draft, **Edit** (the lesson is loaded
+  afresh, every field is saved), **Delete** (asks first). **New lesson** opens the same editor.
+- **Consolidate** groups similar lessons of one agent or all and lets the consolidation LLM merge each group into its
+  best lesson, deleting the others; progress is shown while it runs, and the list is loaded anew after a merge, also
+  one that failed. A dry run (the default) only lists what would be merged. A merge runs to its end even when the
+  panel is closed meanwhile, and only one merge runs at a time.
+- **Clean up** deletes the lessons matching every filter set (agent, status, age, evidence at most, confidence at
+  most). **Preview** lists them first; **Delete** takes only the lessons of that preview, never one that came to
+  match since. Changing a filter drops the preview.
+- What the server refuses -- a lesson gone meanwhile, a draft activated by an agent's evidence -- is shown as an
+  error, and the list is loaded anew.
 
-- **Dashboard**: Stats overview (total lessons, active ratio, avg confidence, evidence count)
-- **Lesson List**: Browse all lessons with filters (agent, status, category, search)
-- **Create/Edit**: Add new lessons manually with source type and confidence
-- **Evidence**: View confirms/contradicts count and ratio
-- **Semantic Search**: Find lessons by meaning, not just keywords
-- **Review History**: Full audit log of all reviews with timestamps and details
-- **Bulk Actions**: Activate, archive, delete lessons
-- **Category Management**: Create custom categories per agent
-
-### Interpreting the UI
-
-**Confidence (Conf):** 0.0-1.0 score showing how reliable the lesson is
-- <0.3: Low confidence (red) — needs more evidence
-- 0.3-0.6: Medium confidence (yellow) — uncertain
-- >0.6: High confidence (green) — well-established
-
-**Evidence (Ev):** Count of confirms/contradicts
-- Format: `+5/-1` = 5 confirms, 1 contradict
-- Ratio: `83%` = confirms / total evidence
-
-**When to approve lessons:**
-- Auto-extracted lessons (`source_type=auto`) start at confidence 0.4
-- Review content for accuracy and usefulness
-- Activate (`draft` → `active`) if valuable
-- Add confirming evidence to increase confidence
-- Archive if outdated or incorrect
+Under `/plugins/lessons_learned/`: `GET lessons` (`agent_name`, `status`, `category`, `sort_by`, `limit`, `offset`),
+`POST lessons/search`, `GET|PUT|DELETE lessons/{lesson_id}`, `POST lessons` (create), `POST
+lessons/{lesson_id}/activate`, `GET stats` (`agent_name`), `GET categories`, `POST consolidate` (NDJSON: `progress`
+lines, then one `result` or `error`), `POST cleanup` (`dry_run`, and `lesson_ids` to narrow a delete), `GET /` (the
+panel). A lesson is sent whole and checked (422), without a length limit, so a lesson stored longer before saves back
+unchanged; without `tags` the stored tags stay. The store rounds the priority half up into 1 to 10 and splits tags
+given as text; the agents' tool refuses a title over 200 or content over 2000 characters and a priority outside 1 to
+10. A refusal answers 400 (lesson limit of the agent reached, a cleanup without a filter), 404 (lesson not found) or
+409 (activating a lesson that is no longer a draft, a merge while another runs).
 
 ## Use Cases
 
@@ -572,7 +572,7 @@ When storing a new lesson:
 Confidence is **not static** — it updates based on:
 - **Evidence**: Confirms increase, contradicts decrease
 - **Effectiveness**: Successful applications increase
-- **Manual override**: Web UI allows setting confidence directly
+- **Manual override**: the panel's editor sets confidence directly
 
 **No time-based decay** — lessons don't lose confidence over time. Outdated lessons should be explicitly marked as `contradict` or archived.
 

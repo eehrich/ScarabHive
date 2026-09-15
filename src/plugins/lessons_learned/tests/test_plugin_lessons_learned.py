@@ -1038,3 +1038,93 @@ class TestCleanupLessons:
         result = await server.cleanup_lessons(older_than_days=30, dry_run=True)
         assert result["matched_count"] == 1
         assert result["lessons"][0]["title"] == "Old"
+
+
+# =============================================================================
+# Test: What agents send beyond the tool schema
+# =============================================================================
+
+class TestWhatAgentsSend:
+    """Nothing checks the tool schema before the tool runs: the tool refuses beyond it, the store keeps what it is given."""
+
+    @pytest.mark.asyncio
+    async def test_store_keeps_the_text_rounds_and_splits(self, server: LessonsLearnedServer):
+        r = await server.store_lesson(agent_name="a", title="T" * 250, content="C" * 2500, priority=7.5, tags="x, y,, ")
+        lesson = await server.get_lesson(r["lesson_id"])
+        assert (len(lesson["title"]), len(lesson["content"]), lesson["priority"], lesson["tags"]) == (250, 2500, 8, ["x", "y"])
+        assert stored_tags(server, r["lesson_id"]) == ["x", "y"]  # as the prompt builder reads them
+
+    @pytest.mark.asyncio
+    async def test_store_clamps_priority(self, server: LessonsLearnedServer):
+        low = await server.store_lesson(agent_name="a", title="Low", content="C", priority=0.2)
+        high = await server.store_lesson(agent_name="a", title="High", content="C", priority=12)
+        assert [(await server.get_lesson(r["lesson_id"]))["priority"] for r in (low, high)] == [1, 10]
+
+    @pytest.mark.asyncio
+    async def test_update_keeps_the_text_rounds_and_splits(self, server: LessonsLearnedServer):
+        r = await server.store_lesson(agent_name="a", title="T", content="C", tags=["old"])
+        await server.update_lesson(r["lesson_id"], title="T" * 300, content="C" * 2100, priority=6.5, tags=" p ,q")
+        lesson = await server.get_lesson(r["lesson_id"])
+        assert (len(lesson["title"]), len(lesson["content"]), lesson["priority"], lesson["tags"]) == (300, 2100, 7, ["p", "q"])
+        assert stored_tags(server, r["lesson_id"]) == ["p", "q"]
+
+    @pytest.mark.asyncio
+    async def test_the_tool_refuses_beyond_its_schema(self, server: LessonsLearnedServer):
+        refused = [
+            await server._op_store({"title": "T" * 201, "content": "C"}, "agent", "s-1"),
+            await server._op_store({"title": "T", "content": "C" * 2001}, "agent", "s-1"),
+            await server._op_store({"title": "T", "content": "C", "priority": 15}, "agent", "s-1"),
+            await server._op_store({"title": "T", "content": "C", "priority": "high"}, "agent", "s-1"),
+            await server._op_teach({"target_agent": "pupil", "title": "T", "content": "C" * 2001}, "agent", "s-1"),
+            await server._op_teach({"target_agent": "pupil", "title": "T" * 201, "content": "C"}, "agent", "s-1"),
+            await server._op_teach({"target_agent": "pupil", "title": "T", "content": "C", "priority": 0}, "agent", "s-1"),
+        ]
+        assert [list(result) for result in refused] == [["error"]] * len(refused)
+        assert "longer than 2000" in refused[1]["error"] and "1 to 10" in refused[2]["error"]
+        assert (await server.list_lessons())["total"] == 0
+        kept = await server._op_store({"title": "T" * 200, "content": "C" * 2000, "priority": 10}, "agent", "s-1")
+        for change in ({"content": "C" * 2001}, {"title": "T" * 201}, {"priority": 10.5}):
+            assert "error" in await server._op_update({"lesson_id": kept["lesson_id"], **change})
+        lesson = await server.get_lesson(kept["lesson_id"])
+        assert (len(lesson["title"]), len(lesson["content"]), lesson["priority"]) == (200, 2000, 10)
+
+    @pytest.mark.asyncio
+    async def test_a_merge_rounds_the_priority_half_up(self, server: LessonsLearnedServer):
+        first = await server.store_lesson(agent_name="a", title="One", content="C")
+        second = await server.store_lesson(agent_name="a", title="Two", content="C")
+        lessons = [await server.get_lesson(r["lesson_id"]) for r in (first, second)]
+        await server._execute_merge("a", lessons, {"primary_id": first["lesson_id"], "priority": "8.5"})
+        assert (await server.get_lesson(first["lesson_id"]))["priority"] == 9
+
+    @pytest.mark.asyncio
+    async def test_the_tool_path_splits_tags(self, server: LessonsLearnedServer):
+        r = await server._op_store({"title": "T", "content": "C", "tags": "a, b"}, "agent", "s-1")
+        await server._op_update({"lesson_id": r["lesson_id"], "priority": 7.5})
+        listed = (await server.list_lessons(agent_name="agent"))["lessons"][0]
+        assert (listed["tags"], listed["priority"]) == (["a", "b"], 8)
+
+    @pytest.mark.asyncio
+    async def test_stored_rows_decode_to_lists(self, server: LessonsLearnedServer):
+        """Rows written before the tags were bounded: raw text, JSON text of a string."""
+        raw = await server.store_lesson(agent_name="a", title="Raw", content="C")
+        quoted = await server.store_lesson(agent_name="a", title="Quoted", content="C")
+        conn = server._get_connection()
+        try:
+            conn.execute("UPDATE lessons SET tags = ? WHERE lesson_id = ?", ("a, b", raw["lesson_id"]))
+            conn.execute("UPDATE lessons SET tags = ? WHERE lesson_id = ?", ('"c,d"', quoted["lesson_id"]))
+            conn.commit()
+        finally:
+            conn.close()
+        listed = {one["title"]: one["tags"] for one in (await server.list_lessons(agent_name="a"))["lessons"]}
+        assert listed == {"Raw": ["a", "b"], "Quoted": ["c", "d"]}
+        assert (await server.get_lesson(raw["lesson_id"]))["tags"] == ["a", "b"]
+        found = {one["title"]: one["tags"] for one in (await server.search_lessons("Raw", agent_name="a", status=None))["results"]}
+        assert found == {"Raw": ["a", "b"], "Quoted": ["c", "d"]}
+
+
+def stored_tags(server: LessonsLearnedServer, lesson_id: str):
+    conn = server._get_connection()
+    try:
+        return json.loads(conn.execute("SELECT tags FROM lessons WHERE lesson_id = ?", (lesson_id,)).fetchone()[0])
+    finally:
+        conn.close()
