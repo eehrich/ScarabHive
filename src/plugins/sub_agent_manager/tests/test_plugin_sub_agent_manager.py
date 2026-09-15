@@ -46,7 +46,6 @@ def injector(mock_manager):
         "enabled": True,
         "max_sub_agents_shown": 10,
         "show_completed": False,
-        "show_tool_state": True,
         "format": "markdown"
     }
     return SubAgentContextInjector(mock_manager, "test_sam", config)

@@ -10,6 +10,10 @@ from .manager import SubAgentManager
 
 logger = logging.getLogger(__name__)
 
+# Headers of the injected block (markdown / text format). Only used to find
+# blocks persisted before the block carried an injected_by marker.
+_LEGACY_HEADERS = ("## Active Sub-Agents", "ACTIVE SUB-AGENTS:")
+
 
 class SubAgentContextInjector:
     """Injects active sub-agent information into system prompt before LLM calls."""
@@ -40,8 +44,10 @@ class SubAgentContextInjector:
         self.enabled = self.config.get("enabled", True)
         self.max_sub_agents_shown = self.config.get("max_sub_agents_shown", 10)
         self.show_completed = self.config.get("show_completed", False)
-        self.show_tool_state = self.config.get("show_tool_state", True)
         self.format = self.config.get("format", "markdown")
+        # Marks the injected message so this instance replaces exactly its own
+        # block -- never a tool result or user text that quotes the header.
+        self.marker = f"sub_agent_manager:{server_name}"
         
         # Phase-based agent filtering (from server's top-level config)
         # Config structure:
@@ -59,8 +65,10 @@ class SubAgentContextInjector:
     async def inject_sub_agent_context(self, context: HookContext) -> HookResult:
         """Inject sub-agent context into messages before LLM call.
 
-        This hook modifies the messages list by appending a system message
-        containing information about active sub-agents for the current session.
+        Keeps one system message with this instance's sub-agents right after the
+        leading system messages. The block sits early in the request, so it must
+        only change when a sub-agent is added, removed or changes status --
+        every change invalidates the provider cache for everything behind it.
 
         Args:
             context: Hook context with session_id and messages
@@ -104,36 +112,36 @@ class SubAgentContextInjector:
                     logger.warning(f"[SubAgentContext] Unexpected error listing sub-agents: {e}")
                 return HookResult(success=True, modified=False, context=context)
 
-            # Skip if no sub-agents
+            # Remove the previous block first, so a list that has become empty
+            # does not leave a stale one behind.
+            messages = [m for m in context.messages if not self._is_own_block(m)]
+            removed = len(messages) != len(context.messages)
+
             if not sub_agents:
                 logger.debug(f"[SubAgentContext] No sub-agents for session {context.session_id}")
-                return HookResult(success=True, modified=False, context=context)
+                if removed:
+                    context.messages = messages
+                return HookResult(success=True, modified=removed, context=context)
 
-            # Sort by last_used (most recent first) - ensure consistent ordering
-            sub_agents.sort(key=lambda x: x.get("last_used", ""), reverse=True)
+            # Newest first by creation time: unlike last_used, it does not move
+            # when a sub-agent is continued, so the block stays byte-identical.
+            sub_agents.sort(key=lambda x: (x.get("created_at", ""), x.get("instance_id", "")),
+                            reverse=True)
 
             # Limit number shown
             if len(sub_agents) > self.max_sub_agents_shown:
                 sub_agents = sub_agents[:self.max_sub_agents_shown]
                 logger.debug(f"[SubAgentContext] Limited to {self.max_sub_agents_shown} sub-agents")
 
-            # Check if already injected and REMOVE old injection to replace it
-            for i, msg in enumerate(context.messages):
-                msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and "## Active Sub-Agents" in msg_content:
-                    # Remove old injection
-                    context.messages.pop(i)
-                    break
-
             # Build context message with phase-aware allowed agents
             context_content = self._build_context_message(sub_agents, phase_allowed_agents, current_phase)
 
-            # Insert after first system message (consistent with other plugins)
-            insert_pos = self._find_system_message_position(context.messages)
-            context.messages.insert(insert_pos, ChatMessage(
+            messages.insert(self._find_system_message_position(messages), ChatMessage(
                 role="system",
-                content=context_content
+                content=context_content,
+                injected_by=self.marker,
             ))
+            context.messages = messages
 
             logger.info(
                 f"[SubAgentContext] Injected {len(sub_agents)} sub-agent(s) into session {context.session_id}"
@@ -154,6 +162,15 @@ class SubAgentContextInjector:
                 context=context,
                 metadata={"error": str(e)}
             )
+
+    def _is_own_block(self, msg: Any) -> bool:
+        """This instance's injected block, or an unmarked one persisted before the marker."""
+        injected_by = getattr(msg, "injected_by", None)
+        if injected_by is not None:
+            return injected_by == self.marker
+        content = getattr(msg, "content", None)
+        return (getattr(msg, "role", None) == "system" and isinstance(content, str)
+                and content.startswith(_LEGACY_HEADERS))
 
     def _get_current_phase(self, context: HookContext) -> Optional[str]:
         """Get the current workflow phase from session template vars.
@@ -254,7 +271,7 @@ class SubAgentContextInjector:
                 lines.append(f"| {agent_type} | `{instance_id}` | {status} |")
             
             lines.append("")
-            lines.append("Continue: `manage_sub_agent(operation='continue', instance_id='...', message='...')`")
+            lines.append(f"Continue: `{self.server_name}_manage_sub_agent(operation='continue', instance_id='...', message='...')`")
         else:
             lines.append("*No active sub-agents*")
 
@@ -268,17 +285,17 @@ class SubAgentContextInjector:
             instance_id = sub_agent.get("instance_id", "unknown")
             agent_type = sub_agent.get("agent_type", "unknown")
             status = sub_agent.get("status", "unknown")
-            message_count = sub_agent.get("message_count", 0)
             task_summary = sub_agent.get("task_summary", "No description")
 
+            # No message count: it grows on every continue and would change the block.
             lines.extend([
                 f"{i}. {agent_type} ({instance_id})",
-                f"   Status: {status} | Messages: {message_count}",
+                f"   Status: {status}",
                 f"   Task: {task_summary}",
                 ""
             ])
 
-        lines.append("Use manage_sub_agent tool with operation='continue' to resume conversations.")
+        lines.append(f"Use the {self.server_name}_manage_sub_agent tool with operation='continue' to resume conversations.")
 
         return "\n".join(lines)
 

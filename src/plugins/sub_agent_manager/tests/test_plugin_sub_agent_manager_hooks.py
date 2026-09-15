@@ -22,7 +22,6 @@ def injector(mock_manager):
     config = {
         "max_sub_agents_shown": 10,
         "show_completed": False,
-        "show_tool_state": True,
         "format": "markdown"
     }
     return SubAgentContextInjector(mock_manager, "test_sam", config)
@@ -121,8 +120,8 @@ async def test_inject_context_with_sub_agents(injector, mock_manager):
 async def test_inject_context_limits_max_shown(mock_manager):
     """Test that hook respects max_sub_agents_shown configuration.
     
-    The hook sorts sub-agents by last_used (most recent first) and shows
-    only the N most recent ones where N = max_sub_agents_shown.
+    The hook sorts sub-agents by created_at (newest first) and shows
+    only the N newest ones where N = max_sub_agents_shown.
     """
     # Create injector with max_shown=2
     config = {
@@ -132,7 +131,9 @@ async def test_inject_context_limits_max_shown(mock_manager):
     }
     injector = SubAgentContextInjector(mock_manager, "test_sam", config)
     
-    # Mock 5 sub-agents with distinct timestamps (index 4 is most recent)
+    # Mock 5 sub-agents with distinct creation times (index 4 is newest), listed
+    # shuffled and with last_used running the other way: neither the input order
+    # nor last_used can pass for the creation order.
     base_time = datetime.now(UTC)
     sub_agents = [
         {
@@ -141,9 +142,10 @@ async def test_inject_context_limits_max_shown(mock_manager):
             "status": "active",
             "message_count": 10,
             "task_summary": f"Task {i}",
-            "last_used": (base_time + timedelta(seconds=i)).isoformat()
+            "created_at": (base_time + timedelta(seconds=i)).isoformat(),
+            "last_used": (base_time - timedelta(seconds=i)).isoformat(),
         }
-        for i in range(5)
+        for i in (2, 4, 0, 3, 1)
     ]
     
     mock_manager.list_sub_sessions.return_value = sub_agents
@@ -299,6 +301,7 @@ async def test_text_context_format(mock_manager):
     # Check text formatting (no Markdown)
     assert "ACTIVE SUB-AGENTS:" in injected_content
     assert "1. test_agent (test_sub_001)" in injected_content
-    assert "Status: active | Messages: 5" in injected_content
+    assert "Status: active" in injected_content
+    assert "Messages" not in injected_content  # grows on every continue
     assert "Task: Test task" in injected_content
     assert "manage_sub_agent" in injected_content

@@ -1503,9 +1503,7 @@ An agent instance is a server entry (see the example under
 **Sub-agents** (spawned through a `sub_agent_manager` instance, the SAM) need in addition:
 
 1. If the **calling** SAM instance sets `allowed_agents` (default `['*']` = all),
-   the instance name listed there. Use exact names: a glob lets the spawn through, but the "Available" list in the
-   SAM tool description filters by exact membership, so the model never sees
-   globbed names.
+   the instance name listed there (exact name or fnmatch glob).
 2. `visibility` other than `private`, or the agent is missing from that list.
 3. The caller allows the SAM instance: `tools.allowed: ["<sam instance>/*"]`.
 4. SAM settings (`allowed_agents`, `blocked_agents`, `allow_advanced_model`, …)

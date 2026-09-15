@@ -63,6 +63,13 @@ def _register_request_user(request_id: str, user_id: str) -> None:
     logger.debug(f"Registered sub-request {request_id} for user {user_id}")
 
 
+def _injector_options(mcp_config: Any) -> dict:
+    """The inject_sub_agent_context options: the server entry's
+    ``hook_config.inject_sub_agent_context`` block."""
+    hook_config = getattr(mcp_config, 'hook_config', None) or {}
+    return dict(hook_config.get("inject_sub_agent_context") or {})
+
+
 class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
     """MCP server for sub-agent management with hook support.
 
@@ -138,6 +145,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             set(raw_create_only) if isinstance(raw_create_only, (list, tuple, set)) else set()
         )
 
+        # Options of the inject_sub_agent_context hook (hook_config block)
+        self._injector_config = _injector_options(mcp_config)
+
         # Phase-based agent filtering (affects both tool schema and create validation)
         # Config is at top-level (same as allowed_agents), not inside hook_config
         phase_config = getattr(mcp_config, 'phase_filtering', {}) or {}
@@ -202,6 +212,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         raw_create_only = getattr(mcp_config, 'advanced_create_only_agents', None)
         _upd("advanced_create_only_agents",
              set(raw_create_only) if isinstance(raw_create_only, (list, tuple, set)) else set())
+
+        _upd("_injector_config", _injector_options(mcp_config))
 
         phase_config = getattr(mcp_config, 'phase_filtering', {}) or {}
         _upd("phase_filtering_enabled", phase_config.get('enabled', False))
@@ -313,9 +325,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 logger.debug(f"SubAgentManagerServer '{self.name}' skipping server '{name}': {type(e).__name__}: {e}")
                 continue
 
-        if self.allowed_agents and '*' not in self.allowed_agents:
-            # Apply allowed_agents filter if specified
-            agent_names = [name for name in agent_names if name in self.allowed_agents]
+        # The same check as a spawn: a glob in allowed_agents must not let an
+        # agent be spawned that the model never sees listed.
+        agent_names = [name for name in agent_names if self._is_agent_allowed(name)]
 
         return {
             'name': self.name,  # CRITICAL: Must include 'name' for {{ name }} template variable in schema.yaml
@@ -542,37 +554,37 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 raise ValueError("No session context available - this tool must be called from an agent")
 
             # Validate agent is allowed by this manager instance (with phase filtering)
+            # The manager's own allow/block lists first: a denial there is not
+            # the phase's doing, even while a phase is active.
             phase_allowed = self._get_phase_allowed_agents(params)
+            if not self._is_agent_allowed(agent_name):
+                allowed_str = ', '.join(self.allowed_agents)
+                error_msg = (
+                    f"Agent '{agent_name}' not allowed by this sub-agent manager. "
+                    f"Allowed agents: {allowed_str}"
+                )
+                logger.info(f"Agent filtering blocked agent: {error_msg}")
+                if status:
+                    await status.error(error_msg)
+                return {
+                    "status": "error",
+                    "error": error_msg,
+                    "error_type": "agent_blocked"
+                }
             if not self._is_agent_allowed_for_phase(agent_name, phase_allowed):
-                # Build helpful error message
-                if phase_allowed:
-                    current_phase = self._get_current_phase(params)
-                    error_msg = (
-                        f"Agent '{agent_name}' not allowed in current phase '{current_phase}'. "
-                        f"Allowed agents for this phase: {', '.join(phase_allowed)}"
-                    )
-                    logger.info(f"Phase filtering blocked agent: {error_msg}")
-                    if status:
-                        await status.error(error_msg)
-                    return {
-                        "status": "error",
-                        "error": error_msg,
-                        "error_type": "phase_blocked"
-                    }
-                else:
-                    allowed_str = ', '.join(self.allowed_agents)
-                    error_msg = (
-                        f"Agent '{agent_name}' not allowed by this sub-agent manager. "
-                        f"Allowed agents: {allowed_str}"
-                    )
-                    logger.info(f"Agent filtering blocked agent: {error_msg}")
-                    if status:
-                        await status.error(error_msg)
-                    return {
-                        "status": "error",
-                        "error": error_msg,
-                        "error_type": "agent_blocked"
-                    }
+                current_phase = self._get_current_phase(params)
+                error_msg = (
+                    f"Agent '{agent_name}' not allowed in current phase '{current_phase}'. "
+                    f"Allowed agents for this phase: {', '.join(phase_allowed)}"
+                )
+                logger.info(f"Phase filtering blocked agent: {error_msg}")
+                if status:
+                    await status.error(error_msg)
+                return {
+                    "status": "error",
+                    "error": error_msg,
+                    "error_type": "phase_blocked"
+                }
 
             if status:
                 await status.progress(f"Creating sub-agent: {agent_name}")
@@ -2395,10 +2407,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             session_service = context.agent._session_service
             manager = self._get_manager(session_service, registry=None)  # No registry needed for hooks
 
-            # Get hook-specific configuration from plugin_config
-            plugin_config = getattr(self.mcp_config, 'plugin_config', {})
-            hooks_config = plugin_config.get("hooks", {})
-            hook_config = hooks_config.get("inject_sub_agent_context", {})
+            hook_config = self._injector_config
 
             # Create fresh injector for this call (each agent has different session_service)
             # Pass self.name so injector only shows sub-agents from THIS manager instance

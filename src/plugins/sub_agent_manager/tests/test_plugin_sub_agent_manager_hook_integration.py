@@ -20,17 +20,15 @@ def mcp_config():
     """Mock MCP configuration with hook settings."""
     return MCPConfig(
         enabled=True,
-        plugin_config={
-            "storage_type": "json",
-            "session_storage_dir": "data/sessions",
-            "sub_agent_configs_dir": "data/sub_agents",
-            "hooks": {
-                "inject_sub_agent_context": {
-                    "enabled": True,
-                    "max_sub_agents_shown": 5,
-                    "show_completed": False,
-                    "format": "markdown"
-                }
+        storage_type="json",
+        session_storage_dir="data/sessions",
+        sub_agent_configs_dir="data/sub_agents",
+        hook_config={
+            "inject_sub_agent_context": {
+                "enabled": True,
+                "max_sub_agents_shown": 5,
+                "show_completed": False,
+                "format": "markdown"
             }
         }
     )
@@ -164,12 +162,10 @@ async def test_on_pre_llm_call_disabled_hook(system_config):
     # Config with hook disabled
     mcp_config = MCPConfig(
         enabled=True,
-        plugin_config={
-            "storage_type": "json",
-            "hooks": {
-                "inject_sub_agent_context": {
-                    "enabled": False  # Disabled!
-                }
+        storage_type="json",
+        hook_config={
+            "inject_sub_agent_context": {
+                "enabled": False  # Disabled!
             }
         }
     )

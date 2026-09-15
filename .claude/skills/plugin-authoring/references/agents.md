@@ -98,12 +98,11 @@ There is no global registry. **All four** must hold:
    `type: sub_agent_manager`, e.g. `src/plugins/coder/agents/tools.yaml`).
    - Exact names or fnmatch; `blocked_agents` is checked first and matches **exactly only**.
    - With a phase filter it must also be in `phase_agents[phase]`.
-   - Otherwise `error_type: "agent_blocked"` / `"phase_blocked"`.
+   - Otherwise `error_type: "agent_blocked"` (allowed/blocked lists) or
+     `"phase_blocked"` (not in the phase's list).
    - Code default without the key is `['*']`; the `config:` block in the SAM
      `schema.yaml` is **not** read.
-   - ⚠️ The "Available" list in the SAM tool description filters `allowed_agents` by
-     **exact** membership: a glob (`coder_*`) lets the spawn through, but the model
-     never sees those names. List sub-agents by exact name.
+   - The "Available" list in the SAM tool description applies the same check.
 3. **The caller allows the SAM instance:** `tools.allowed: ["my_sam/*"]` (tool
    `{name}_manage_sub_agent`).
 4. **`metadata.visibility` is not `private`** (the default) — a private agent is
@@ -113,7 +112,7 @@ There is no global registry. **All four** must hold:
 SAM knobs are **top-level** keys on the SAM entry (not under `config:`):
 `allowed_agents`, `blocked_agents`, `allow_advanced_model` (default true; false drops
 the caller's `use_advanced_model`), `advanced_create_only_agents`.
-`allowed_agents`, limits and `allow_advanced_model` reload via `agent-cli reload`; a
+`allowed_agents`, limits, `allow_advanced_model` and the injector options reload via `agent-cli reload`; a
 **new** agent needs a restart (the user does restarts).
 
 ## Config-only plugin (`type = ["library"]`)

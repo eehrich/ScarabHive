@@ -57,7 +57,6 @@ plugins:
           enabled: true
           max_sub_agents_shown: 6
           show_completed: false
-          show_tool_state: true
           format: markdown
 
     # The harness's own knowledge bundle, rooted at ONE directory so the

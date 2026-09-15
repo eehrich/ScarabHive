@@ -428,7 +428,7 @@ plugins:
           research: [research_agent]
 ```
 
-`allowed_agents`, `blocked_agents`, `allow_advanced_model`, the limits and phase filtering are hot-reloaded by `agent-cli reload` (POST `/admin/reload-config`). A **new agent definition** needs a restart, because the agent must be registered.
+`allowed_agents`, `blocked_agents`, `allow_advanced_model`, the limits, phase filtering and the `inject_sub_agent_context` options are hot-reloaded by `agent-cli reload` (POST `/admin/reload-config`). A **new agent definition** needs a restart, because the agent must be registered.
 
 ### Enabling a New Sub-Agent
 
@@ -439,17 +439,18 @@ A sub-agent is spawnable only when all of these hold:
 3. The calling agent's `agent_config.tools.allowed` contains `<sam instance>/*`.
 4. Its `metadata.visibility` is not `private` (the default) — `ui`, `tool` or `both`. Private agents are left out of the "Available" list in the tool description.
 
-The "Available" list filters `allowed_agents` by **exact** membership. A glob in `allowed_agents` lets spawns through, but hides the matched names from the model.
+The "Available" list applies the same `allowed_agents`/`blocked_agents` check as a spawn, globs included.
 
 ### Hook Configuration
 
-The `inject_sub_agent_context` hook inserts a system message with this SAM instance's active sub-agents before each LLM call (after all leading system messages). The hook is registered with `enabled: false`; an agent turns it on with `hooks.overrides: {<sam instance>.inject_sub_agent_context: {enabled: true}}`. The `enabled` option below is the injector's own switch, not the registration. Its options are read from `plugin_config.hooks.inject_sub_agent_context` on the server entry — a nested `hook_config.inject_sub_agent_context` block is not read by the injector:
+The `inject_sub_agent_context` hook inserts a system message with this SAM instance's active sub-agents before each LLM call (after all leading system messages). The hook is registered with `enabled: false`; an agent turns it on with `hooks.overrides: {<sam instance>.inject_sub_agent_context: {enabled: true}}`. The `enabled` option below is the injector's own switch, not the registration. The options are read from `hook_config.inject_sub_agent_context` on the SAM server entry.
+
+The block is marked with `injected_by: sub_agent_manager:<instance>` and replaced in place on every call. Because it sits right behind the system prompt, it only changes when a sub-agent is added, removed or changes status: rows are ordered newest created first and carry no usage counters or times.
 
 **Options:**
 - `enabled`: Enable/disable context injection (default: true)
-- `max_sub_agents_shown`: Limit sub-agents shown, most recently used first (default: 10)
+- `max_sub_agents_shown`: Limit sub-agents shown, newest created first (default: 10)
 - `show_completed`: Include archived sub-agents (default: false)
-- `show_tool_state`: default true
 - `format`: "markdown" or "text" (default: "markdown")
 
 **Injected Context Example:**
@@ -457,26 +458,13 @@ The `inject_sub_agent_context` hook inserts a system message with this SAM insta
 ```markdown
 ## Active Sub-Agents
 
-You have access to the following persistent sub-agent instances:
+**Available agents:** web_research_agent, financial_analyst_agent
 
-### web_research_agent
-- **Instance ID**: `sub_web_research_001`
-- **Status**: active
-- **Last Used**: 2 minutes ago
-- **Messages**: 5
-- **Task**: Research latest AI developments
+| Type | Instance ID | Status |
+|------|-------------|--------|
+| web_research_agent | `sub_web_research_0001` | active |
 
-**To continue this sub-agent:**
-```json
-{
-  "tool": "sub_agent_manager_manage_sub_agent",
-  "arguments": {
-    "operation": "continue",
-    "instance_id": "sub_web_research_001",
-    "message": "Your follow-up question here"
-  }
-}
-```
+Continue: `sub_agent_manager_manage_sub_agent(operation='continue', instance_id='...', message='...')`
 ```
 
 ## Troubleshooting
@@ -518,7 +506,7 @@ plugins:
 ### Error type `agent_blocked` / `phase_blocked`
 
 - `agent_blocked` ("Agent 'x' not allowed by this sub-agent manager"): the name is not matched by this SAM instance's `allowed_agents`, or is in `blocked_agents`. Add it there — `agent-cli reload` is enough.
-- `phase_blocked` ("Agent 'x' not allowed in current phase"): phase filtering is on and the agent is not allowed in the current phase — either `phase_agents` does not list it, or `allowed_agents`/`blocked_agents` rule it out (while a phase is active both cases report `phase_blocked`).
+- `phase_blocked` ("Agent 'x' not allowed in current phase"): phase filtering is on and `phase_agents` does not list the agent for the current phase. A denial by `allowed_agents`/`blocked_agents` is always `agent_blocked`, phase or not.
 
 See [Enabling a New Sub-Agent](#enabling-a-new-sub-agent) for the full checklist.
 

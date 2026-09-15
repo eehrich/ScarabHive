@@ -35,5 +35,4 @@ plugins:
           enabled: true
           max_sub_agents_shown: 4
           show_completed: false
-          show_tool_state: true
           format: markdown

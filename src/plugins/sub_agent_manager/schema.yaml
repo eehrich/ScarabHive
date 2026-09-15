@@ -173,22 +173,21 @@ config:
       # Gives coordinator agent visibility into available sub-agents for follow-up tasks
       enabled: true
       # Limits number of sub-agents shown to prevent system prompt bloat
-      # Only shows N most recently active sub-agents
+      # Shows the N most recently created sub-agents
       max_sub_agents_shown: 5
       show_completed: false
-      show_tool_state: true
       format: markdown
-      # Phase-based agent filtering (optional)
-      # Filters the "Available agents" list based on a session template variable
-      # Example: Show only planning agents when workflow_phase="planning"
-      phase_filtering:
-        enabled: false
-        phase_variable: "workflow_phase"  # Name of the template variable to read
-        phase_agents:  # Map of phase -> allowed agents for that phase
-          # planning:
-          #   - story_designer
-          #   - story_reviewer
-          # characters:
-          #   - character_designer
-          #   - character_reviewer
-          _default: []  # Fallback if phase not in map (empty = show all allowed_agents)
+  # Phase-based agent filtering (optional, top-level key of the server entry)
+  # Filters the "Available agents" list based on a session template variable
+  # Example: Show only planning agents when workflow_phase="planning"
+  phase_filtering:
+    enabled: false
+    phase_variable: "workflow_phase"  # Name of the template variable to read
+    phase_agents:  # Map of phase -> allowed agents for that phase
+      # planning:
+      #   - story_designer
+      #   - story_reviewer
+      # characters:
+      #   - character_designer
+      #   - character_reviewer
+      _default: []  # Fallback if phase not in map (empty = show all allowed_agents)
