@@ -142,6 +142,7 @@ def compute_cost(
     or_cost: float,
     is_batch: bool,
     path: Path | None = None,
+    cache_write_tokens: int = 0,
 ) -> float:
     """Cost for one (model, agent) group. Prefers the billed OpenRouter cost.
 
@@ -157,7 +158,7 @@ def compute_cost(
     if or_cost and or_cost > 0:
         return or_cost
     cost = estimate_cost(model, prompt_tokens, completion_tokens, cached_tokens,
-                         is_batch=is_batch, path=path)
+                         cache_write_tokens=cache_write_tokens, is_batch=is_batch, path=path)
     # unknown model → uncounted (surfaced as a warning by the caller)
     return cost if cost is not None else 0.0
 
@@ -229,6 +230,9 @@ def calc_tree_costs(
                COALESCE(SUM(json_extract(usage_json, '$.prompt_tokens')), 0) AS pt,
                COALESCE(SUM(json_extract(usage_json, '$.completion_tokens')), 0) AS ct,
                COALESCE(SUM(json_extract(usage_json, '$.prompt_tokens_details.cached_tokens')), 0) AS cached,
+               COALESCE(SUM(COALESCE(json_extract(usage_json, '$.prompt_tokens_details.cache_write_tokens'),
+                                     json_extract(usage_json, '$.prompt_tokens_details.cache_creation_tokens'),
+                                     0)), 0) AS writes,
                COALESCE(SUM(json_extract(usage_json, '$.cost')), 0) AS or_cost
         FROM llm_requests
         WHERE ({where}) AND direction = 'response'
@@ -239,9 +243,10 @@ def calc_tree_costs(
     )
     rows: list[dict] = []
     unpriced: set[str] = set()
-    for model, agent, is_batch, calls, pt, ct, cached, or_cost in cur.fetchall():
+    for model, agent, is_batch, calls, pt, ct, cached, writes, or_cost in cur.fetchall():
         batch = bool(is_batch)
-        cost = compute_cost(pricing, model, pt, ct, cached, or_cost, batch)
+        cost = compute_cost(pricing, model, pt, ct, cached, or_cost, batch,
+                            cache_write_tokens=writes)
         if cost == 0 and (not or_cost or or_cost <= 0) and model not in pricing:
             unpriced.add(model or "(empty)")
         rows.append({
