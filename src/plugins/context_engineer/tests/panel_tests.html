@@ -1,0 +1,234 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Context Engineer panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const MARKUP = '<img src="x" onerror="window.parent.__xss = 1">';
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const tell = (message) => frame.contentWindow.postMessage({ v: 1, ...message }, location.origin);
+  const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
+  const statSub = (key) => $(`#stats [data-stat="${key}"] .ce-sub`)?.textContent;
+  const rows = () => [...doc().querySelectorAll('#events tbody tr')];
+  const column = (index) => rows().map((row) => row.cells[index].textContent.trim()).join('|');
+  const heads = () => [...doc().querySelectorAll('#events thead th')].map((th) => th.textContent).join();
+  const facts = () => [...doc().querySelectorAll('#facts tbody tr')].map((row) => row.cells[2].textContent);
+  const asked = async () => (await fetch('/__stub/asked')).json();
+  const total = async () => Object.values(await asked()).reduce((sum, count) => sum + count, 0);
+  const stub = (path) => fetch(`/__stub/${path}`, { method: 'POST' });
+  const refreshNow = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+  const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+  const errorToast = () => doc().querySelector('.pk-toast--error');
+  // no tick: what the check waits for has to come from what it drives, not from the next auto refresh
+  const autoOff = async () => {
+    const toggle = await until('the refresh control', () => $('pk-refresh [data-act="auto"]'));
+    if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+  };
+  const noCookie = () => { document.cookie = 'ce=; path=/; max-age=0'; };
+  const number = (value) => Number(value).toLocaleString();
+
+  await check('opened on a session, the panel shows its compactions newest first, what its stores hold and its facts, markup as text', async () => {
+    await go('/plugins/context_engineer/?session_id=s-1');
+    await until('the compactions of s-1', () => rows().length === 3 && statValue('facts'));
+    const live = await (await fetch('/__stub/live')).json();
+    const stats = statValue('events') === '3' && statValue('saved') === number(25000) && statValue('reduction') === '20.0%'
+      && statValue('media') === '5' && statSub('media') === '2 window · 3 duplicates · 0 after events'
+      && statValue('tool_results') === '2' && statSub('tool_results') === `${number(live.tool_results)} tokens` && live.tool_results > 0
+      && statValue('archived') === '3' && statSub('archived') === `${number(live.archived)} tokens` && live.archived > 0
+      && statValue('facts') === '4' && statSub('facts') === `${number(live.facts)} / ${number(2000)} tokens` && live.facts > 0;
+    const table = column(1) === `blender|${MARKUP}|writer` && column(2) === `${number(10000)}|${number(40000)}|${number(50000)}`
+      && column(4) === `${number(1000)}|${number(4000)}|${number(20000)}` && column(5) === '10.0%|10.0%|40.0%'
+      && column(6) === '–|–|3' && column(7) === '2|3 (3.0 MB)|–' && column(8) === '|PL1L2|L1'
+      && rows()[1].cells[8].querySelector('.pk-badge--warn')?.textContent === 'L2' && !heads().includes('Session');
+    const listed = facts().join('|') === `Never deploy on Fridays|Use SQLite for the cache|Prefers Python|${MARKUP}`
+      && !$('#factsSection').hidden && $('#shown').hidden;
+    await sleep(200);
+    const inert = !doc().querySelector('#events img, #facts img') && window.__xss === undefined;
+    return stats && table && listed && inert;
+  });
+
+  await check('all sessions show the session of each compaction, the newest 100 of all, and no stores', async () => {
+    await autoOff();
+    const button = $('[data-scope="all"]');
+    button.click();
+    await until('all compactions', () => rows().length === 100);
+    return statValue('events') === '105' && heads().includes('Session') && rows()[0].cells[2].textContent === 's-3'
+      && rows()[0].cells[1].textContent === 'bulk-100' && $('#shown').textContent === 'the newest 100 of 105' && !$('#shown').hidden
+      && !statValue('tool_results') && !statValue('facts') && $('#factsSection').hidden
+      && button.getAttribute('aria-pressed') === 'true' && $('[data-scope="session"]').getAttribute('aria-pressed') === 'false'
+      && (await asked())['session:all'] === undefined;
+  });
+
+  await check('a session without data says so, and looking at it writes nothing', async () => {
+    await go('/plugins/context_engineer/?session_id=s-9');
+    await until('the empty session', () => $('#events').textContent.includes('No compaction yet') && statValue('facts'));
+    const shown = statValue('events') === '0' && statValue('saved') === '0' && statValue('reduction') === '–' && statValue('media') === '0'
+      && !statSub('media') && statValue('tool_results') === '0' && statValue('archived') === '0' && statValue('facts') === '0'
+      && $('#facts').textContent.includes('No facts stored');
+    await go('/plugins/context_engineer/?session_id=s-2');
+    await until('the compaction of s-2', () => rows().length === 1 && statValue('tool_results') === '0');
+    const layer = rows()[0].cells[8].textContent === 'T';
+    const disk = await (await fetch('/__stub/disk')).json();
+    return shown && layer && disk.directories.join() === 's-1,s-8' && disk.open.join() === 's-1';
+  });
+
+  await check('a store that cannot be read is answered 503 with the reason, and shown', async () => {
+    await go('/plugins/context_engineer/?session_id=s-8');
+    await until('the error', () => $('#stats').textContent.includes('could not be loaded'));
+    const answer = await fetch('/plugins/context_engineer/session?session_id=s-8');
+    const detail = (await answer.json()).detail;
+    return answer.status === 503 && detail.includes('s-8') && $('#stats').textContent.includes(detail)
+      && rows().length === 0 && $('#eventsSection').hidden && $('#factsSection').hidden && !errorToast();
+  });
+
+  await check('a failed load shows the error and nothing shown before', async () => {
+    await go('/plugins/context_engineer/?session_id=s-1');
+    await until('the compactions of s-1', () => rows().length === 3);
+    await autoOff();
+    document.cookie = 'ce=fails; path=/';
+    try {
+      $('pk-refresh [data-act="now"]').click();
+      await until('the error', () => $('#stats').textContent.includes('The stores are locked'));
+      const shown = rows().length === 0 && facts().length === 0 && $('#eventsSection').hidden && $('#factsSection').hidden
+        && !statValue('events') && !errorToast();
+      noCookie();
+      $('pk-refresh [data-act="now"]').click();
+      await until('the compactions again', () => rows().length === 3 && facts().length === 4);
+      return shown;
+    } finally {
+      noCookie();
+    }
+  });
+
+  await check('a tick of the auto refresh leaves a load still on its way alone', async () => {
+    let ticking = null;
+    document.cookie = 'ce=fails; path=/';
+    try {
+      $('pk-refresh [data-act="now"]').click();
+      await until('the error', () => $('#stats').textContent.includes('could not be loaded'));
+      document.cookie = 'ce=slow; path=/';
+      $('pk-refresh [data-act="now"]').click();  // answered after 1.5 s
+      ticking = setInterval(tick, 200);
+      await until('the compactions while the ticks go on', () => rows().length === 3, 4000);
+      return true;
+    } finally {
+      clearInterval(ticking);
+      noCookie();
+    }
+  });
+
+  await check('the panel follows the session the chat switches to and draws no late answer of the one before', async () => {
+    await go('/plugins/context_engineer/');  // no link: the session is the host's, and this page is the host
+    await autoOff();
+    tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-1', title: 'First' } });
+    await until('the compactions of s-1', () => rows().length === 3 && statValue('facts') === '4');
+    const before = await asked();
+    document.cookie = 'ce=slow; path=/';
+    try {
+      tell({ type: 'pk:session', session: { id: 's-2', title: 'Second' } });  // answered late
+      await until('s-2 asked for', async () => (await asked())['session:s-2'] > (before['session:s-2'] || 0));
+      tell({ type: 'pk:session', session: { id: 's-8', title: 'Unreadable' } });  // refused late
+      await until('s-8 asked for', async () => (await asked())['session:s-8'] > (before['session:s-8'] || 0));
+    } finally {
+      noCookie();
+    }
+    tell({ type: 'pk:session', session: { id: 's-3', title: 'Third' } });
+    await until('the compactions of s-3', () => statValue('events') === '101');
+    await sleep(2000);  // the answers for s-2 and s-8 are in by now
+    return statValue('events') === '101' && statValue('tool_results') === '0' && rows()[0].cells[1].textContent === 'bulk-100'
+      && $('#shown').textContent === 'the newest 100 of 101' && !$('#stats').textContent.includes('could not be loaded');
+  });
+
+  await check('a link to a session keeps to it, whatever session the chat opens', async () => {
+    await go('/plugins/context_engineer/?session_id=s-2');
+    await until('the compaction of s-2', () => rows().length === 1);
+    await autoOff();
+    const before = await total();
+    tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-1', title: 'First' } });
+    tell({ type: 'pk:session', session: { id: 's-3', title: 'Third' } });
+    await sleep(500);
+    return rows().length === 1 && statValue('events') === '1' && (await total()) === before;
+  });
+
+  await check('with no session open the panel says so and asks for nothing', async () => {
+    const before = await total();
+    await go('/plugins/context_engineer/');  // no shell, no link: no session
+    await until('the empty state', () => $('#stats')?.textContent.includes('No session open'));
+    await sleep(300);
+    const nothing = (await total()) === before && rows().length === 0 && $('#eventsSection').hidden && $('#factsSection').hidden;
+    $('[data-scope="all"]').click();  // all sessions need none
+    await until('all compactions', () => rows().length === 100);
+    return nothing;
+  });
+
+  await check('the server refuses a session id that is no session id', async () => {
+    const status = async (path) => (await fetch(path)).status;
+    const refused = await Promise.all([
+      status('/plugins/context_engineer/session?session_id=..%2F..%2Fescape'),
+      status('/plugins/context_engineer/session?session_id=a.b'),
+      status('/plugins/context_engineer/session?session_id=%2Ftmp%2Fx'),
+      status('/plugins/context_engineer/session'),
+      status('/plugins/context_engineer/history?session_id=..%5Cx'),
+      status('/plugins/context_engineer/history?limit=0'),
+    ]);
+    const disk = await (await fetch('/__stub/disk')).json();
+    return refused.every((code) => code === 422) && (await status('/plugins/context_engineer/session?session_id=s-1')) === 200
+      && disk.directories.join() === 's-1,s-8';
+  });
+
+  await check('an unchanged answer draws nothing, and a click on the scope shown asks nothing', async () => {
+    await go('/plugins/context_engineer/?session_id=s-1');
+    await until('the compactions of s-1', () => rows().length === 3 && facts().length === 4);
+    await autoOff();
+    const drawn = [$('#events table'), $('#facts table'), $('#stats [data-stat="events"]')];
+    const count = (await asked())['history:s-1'];
+    refreshNow();
+    await until('the unchanged answer', async () => (await asked())['history:s-1'] > count);
+    await sleep(300);
+    const kept = drawn[0] === $('#events table') && drawn[1] === $('#facts table') && drawn[2] === $('#stats [data-stat="events"]');
+    const before = await total();
+    $('[data-scope="session"]').click();
+    $('[data-scope="session"]').click();
+    await sleep(300);
+    return kept && (await total()) === before;
+  });
+
+  await check('the auto refresh runs from the start and brings a new compaction', async () => {
+    await go('/plugins/context_engineer/?session_id=s-1');
+    await until('the compactions of s-1', () => statValue('events') === '3');
+    const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
+    await stub('record');
+    await until('the new compaction, brought by a tick', () => statValue('events') === '4' && rows()[0].cells[1].textContent === 'recorded', 15000);
+    return running;
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

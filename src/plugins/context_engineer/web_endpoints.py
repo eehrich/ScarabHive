@@ -1,184 +1,118 @@
-"""Web UI endpoints for Context Engineer plugin.
-
-Provides REST API endpoints for viewing context engineering statistics
-and history, plus an HTML panel for the web interface.
-"""
+"""Web endpoints of the context engineer: the panel and the calls it makes. Read-only: nothing here opens a session's
+stores the way the hook does, which would create their files and register the session."""
 
 from __future__ import annotations
 
-import logging
+import asyncio
+import json
+import sqlite3
+import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
+from urllib.request import pathname2url
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
+from fastapi import APIRouter, HTTPException, Query, Request
 
-logger = logging.getLogger(__name__)
+from agent_system.plugins.schema_router import create_schema_router
+from agent_system.ui.resources import ui_templates
+
+from .core_memory import CoreMemory, Fact
+
+# the session ids the session manager hands out: the id names the session's directory, so nothing else gets in
+SESSION_PATTERN = r"^[A-Za-z0-9_-]+$"
+READ_ATTEMPTS = 20
+READ_PAUSE_SECONDS = 0.01
+
+
+def _table_totals(database: Path, table: str, session_id: str | None = None) -> dict[str, int]:
+    """Rows and tokens of a session's store, opened read-only: every row, or those tagged with the session."""
+    if not database.exists():
+        return {"count": 0, "tokens": 0}
+    # pathname2url, not as_uri: a UNC path must become file:////server/share, which SQLite accepts
+    with closing(sqlite3.connect(f"file:{pathname2url(str(database.absolute()))}?mode=ro", uri=True)) as connection:
+        if not connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
+            return {"count": 0, "tokens": 0}  # a store being created: its file is there before its table
+        count, tokens = connection.execute(
+            f"SELECT COUNT(*), COALESCE(SUM(token_count), 0) FROM {table}" + (" WHERE session_id = ?" if session_id else ""),
+            (session_id,) if session_id else ()).fetchone()
+    return {"count": count, "tokens": tokens}
+
+
+def _read_saved(path: Path) -> str:
+    """A file the hook saves by replacing it: Windows refuses to open it while the replace is under way."""
+    for attempt in range(READ_ATTEMPTS):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if attempt == READ_ATTEMPTS - 1:
+                raise
+            time.sleep(READ_PAUSE_SECONDS)
+
+
+def _core_memory(path: Path, max_tokens: int) -> dict[str, Any]:
+    """The facts as the file holds them, counted as the core memory counts them, without loading it (a load trims and
+    saves a file over its budget)."""
+    memory = CoreMemory(max_tokens=max_tokens)
+    if path.exists():
+        memory.facts = [Fact.from_dict(fact) for fact in json.loads(_read_saved(path)).get("facts", [])]
+        memory._recalculate_tokens()
+    order = {category: index for index, category in enumerate(CoreMemory.CATEGORIES)}
+    facts = sorted(memory.facts, key=lambda fact: (order.get(fact.category, len(order)), -fact.importance))
+    return {
+        "facts": [{"content": fact.content, "category": fact.category, "importance": fact.importance} for fact in facts],
+        "tokens": memory.get_token_usage(),
+        "max_tokens": max_tokens,
+    }
 
 
 class ContextEngineerWebFactory:
-    """Web UI factory for Context Engineer plugin.
-    
-    Provides panel for viewing context engineering statistics including:
-    - Compaction history (tokens saved, layers applied)
-    - Core memory facts
-    - Stored tool results and attached files
-    - Archived messages
-    """
-    
-    def __init__(
-        self,
-        server,  # ContextEngineerServer instance
-        stats_history: list[dict[str, Any]]
-    ):
-        """Initialize web factory.
-        
-        Args:
-            server: ContextEngineerServer instance
-            stats_history: Shared list for tracking compaction events
-        """
+    """The panel over the compactions the hook records and the stores it keeps per session."""
+
+    def __init__(self, server, stats_history: list[dict[str, Any]]):
         self.server = server
-        self.name = server.name if server else "context_engineer"
         self.stats_history = stats_history
-        template_dir = Path(__file__).parent / "templates"
-        self.templates = Jinja2Templates(directory=str(template_dir))
-    
+        self.templates = ui_templates(Path(__file__).parent / "templates")
+
     def get_web_router(self) -> APIRouter:
-        """Create router from schema definition."""
-        from agent_system.plugins.schema_router import create_schema_router
-        
-        schema = self.server.get_schema_data() if self.server and hasattr(self.server, "get_schema_data") else {}
-        return create_schema_router(
-            plugin_name=self.name,
-            schema=schema,
-            handler_class=self
-        )
-    
-    async def get_history(self, request: Request) -> dict[str, Any]:
-        """Get recent compaction events.
-        
-        Args:
-            request: FastAPI request object
-            
-        Returns:
-            Dict with compaction history
-        """
-        limit = int(request.query_params.get("limit", 100))
-        
+        return create_schema_router(plugin_name=self.server.name, schema=self.server.get_schema_data(), handler_class=self)
+
+    async def get_panel(self, request: Request):
+        """Render the panel; its script and stylesheet are the plugin's static assets."""
+        return self.templates.TemplateResponse(request, "panel.html", {"plugin": self.server.name})
+
+    async def get_history(self, request: Request,
+                          session_id: str | None = Query(None, pattern=SESSION_PATTERN),
+                          limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
+        """The newest compactions of a session (of all without one), newest first; the figures count every one asked for."""
+        events = [event for event in self.stats_history if session_id is None or event.get("session_id") == session_id]
+        return {
+            "events": list(reversed(events[-limit:])),
+            "stats": {
+                "events": len(events),
+                "tokens_saved": sum(event.get("tokens_saved", 0) for event in events),
+                "average_reduction": sum(event.get("reduction_percent", 0) for event in events) / len(events) if events else None,
+                "media_always_compacted": sum(event.get("media_always_compacted", 0) for event in events),
+                "media_deduplicated": sum(event.get("media_deduplicated", 0) for event in events),
+                "media_compacted_after_event": sum(event.get("media_compacted_after_event", 0) for event in events),
+            },
+        }
+
+    async def get_session(self, request: Request, session_id: str = Query(..., pattern=SESSION_PATTERN)) -> dict[str, Any]:
+        """What a session's stores hold on disk: tool results, archived messages, core memory facts. A session without
+        a directory holds nothing; a store that cannot be read is answered 503 with the reason."""
+        hooks = self.server._hooks_impl
+        directory = hooks._storage_base / session_id
+
+        def read() -> dict[str, Any]:
+            return {
+                # the archive's rows as list reaches them: an untagged row only once the store has been opened anew
+                "tool_results": _table_totals(directory / "tool_results.db", "tool_results"),
+                "archived": _table_totals(directory / "archive.db", "archived_messages", session_id),
+                "core_memory": _core_memory(directory / "core_memory.json", hooks.core_memory_max_tokens),
+            }
+
         try:
-            # Return most recent events first
-            recent_events = list(reversed(self.stats_history[-limit:]))
-            
-            return {
-                "success": True,
-                "events": recent_events,
-                "total_events": len(self.stats_history)
-            }
-        except Exception as e:
-            logger.exception("Error getting compaction history")
-            return {
-                "success": False,
-                "error": str(e),
-                "events": []
-            }
-    
-    async def get_stats(self, request: Request) -> dict[str, Any]:
-        """Get aggregate statistics.
-        
-        Args:
-            request: FastAPI request object
-            
-        Returns:
-            Dict with aggregate statistics
-        """
-        try:
-            if not self.stats_history:
-                return {
-                    "success": True,
-                    "total_events": 0,
-                    "total_tokens_saved": 0,
-                    "total_tool_results_stored": 0,
-                    "total_messages_archived": 0,
-                    "total_media_deduplicated": 0,
-                    "total_media_compacted": 0,
-                    "average_reduction_percent": 0.0
-                }
-            
-            total_tokens_saved = sum(
-                event.get("tokens_saved", 0) for event in self.stats_history
-            )
-            total_tool_results = sum(
-                event.get("tool_results_stored", 0) for event in self.stats_history
-            )
-            total_archived = sum(
-                event.get("messages_archived", 0) for event in self.stats_history
-            )
-            total_media_deduplicated = sum(
-                event.get("media_deduplicated", 0) for event in self.stats_history
-            )
-            total_media_compacted = sum(
-                event.get("media_compacted_after_event", 0) for event in self.stats_history
-            )
-            avg_reduction = sum(
-                event.get("reduction_percent", 0) for event in self.stats_history
-            ) / len(self.stats_history)
-            
-            return {
-                "success": True,
-                "total_events": len(self.stats_history),
-                "total_tokens_saved": total_tokens_saved,
-                "total_tool_results_stored": total_tool_results,
-                "total_messages_archived": total_archived,
-                "total_media_deduplicated": total_media_deduplicated,
-                "total_media_compacted": total_media_compacted,
-                "average_reduction_percent": round(avg_reduction, 1)
-            }
-        except Exception as e:
-            logger.exception("Error calculating stats")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
-    async def get_session_details(self, request: Request) -> dict[str, Any]:
-        """Get detailed stats for a specific session.
-        
-        Args:
-            request: FastAPI request object with session_id query param
-            
-        Returns:
-            Dict with session-specific statistics
-        """
-        session_id = request.query_params.get("session_id", "default")
-        
-        try:
-            # Get session stats from hooks implementation
-            if hasattr(self.server, "_hooks_impl"):
-                result = await self.server._hooks_impl._handle_stats(session_id)
-                return {
-                    "success": True,
-                    "session_id": session_id,
-                    **result
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": "Server not initialized"
-                }
-        except Exception as e:
-            logger.exception("Error getting session details")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
-    async def get_panel(self, request: Request) -> HTMLResponse:
-        """Render the context engineer panel."""
-        return self.templates.TemplateResponse(
-            "panel.html",
-            {
-                "request": request,
-                "plugin_name": self.name
-            }
-        )
+            return await asyncio.to_thread(read)
+        except (sqlite3.Error, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            raise HTTPException(status_code=503, detail=f"The stores of session {session_id} cannot be read: {error}") from error

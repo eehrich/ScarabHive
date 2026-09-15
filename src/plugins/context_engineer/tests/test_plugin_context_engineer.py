@@ -104,6 +104,85 @@ class TestCoreMemory:
         assert "User likes Python" in section
         assert "Project uses FastAPI" in section
 
+    async def test_a_save_that_fails_midway_leaves_the_saved_facts(self, temp_memory_file, monkeypatch):
+        memory = CoreMemory(temp_memory_file)
+        await memory.add_fact("Saved before", category="facts")
+        from plugins.context_engineer import atomic_json
+
+        def dump_half(data, file, **kwargs):
+            file.write('{"facts": [')
+            file.flush()
+            raise OSError("killed mid-write")
+
+        monkeypatch.setattr(atomic_json.json, "dump", dump_half)
+        with pytest.raises(OSError):
+            await memory.add_fact("Never saved", category="facts")
+        monkeypatch.undo()
+
+        assert [fact.content for fact in CoreMemory(temp_memory_file).facts] == ["Saved before"]
+        assert [path.name for path in temp_memory_file.parent.iterdir()] == ["core_memory.json"], "a temporary file stayed"
+
+    async def test_a_save_that_fails_at_the_flush_leaves_no_temporary_file(self, temp_memory_file, monkeypatch):
+        """A full disk shows when the buffer is written, at close -- not in json.dump."""
+        import io
+        import tempfile
+
+        from plugins.context_engineer import atomic_json
+
+        memory = CoreMemory(temp_memory_file)
+        await memory.add_fact("Saved before", category="facts")
+        real = tempfile.NamedTemporaryFile
+
+        class FullDisk(io.FileIO):
+            def write(self, data):
+                raise OSError(28, "No space left on device")
+
+        def full_disk(*args, **kwargs):
+            file = real(*args, **kwargs)
+            file.file.close()
+            file.file = io.TextIOWrapper(io.BufferedWriter(FullDisk(file.name, "w")), encoding="utf-8")
+            return file
+
+        monkeypatch.setattr(atomic_json.tempfile, "NamedTemporaryFile", full_disk)
+        with pytest.raises(OSError):
+            await memory.add_fact("Never saved", category="facts")
+        monkeypatch.undo()
+
+        assert [path.name for path in temp_memory_file.parent.iterdir()] == ["core_memory.json"], "a temporary file stayed"
+        assert [fact.content for fact in CoreMemory(temp_memory_file).facts] == ["Saved before"]
+
+    async def test_a_save_waits_out_a_reader_holding_the_file(self, temp_memory_file):
+        """Windows refuses to replace an open file; the panel reads it while agents save."""
+        import threading
+
+        memory = CoreMemory(temp_memory_file)
+        await memory.add_fact("First", category="facts")
+        reader = open(temp_memory_file, encoding="utf-8")
+        threading.Timer(0.2, reader.close).start()
+        loop_thread = threading.get_ident()
+        saved_on = []
+        save = memory._save_sync
+        memory._save_sync = lambda: (saved_on.append(threading.get_ident()), save())
+        await memory.add_fact("Second", category="facts")
+
+        assert [fact.content for fact in CoreMemory(temp_memory_file).facts] == ["First", "Second"]
+        assert saved_on and loop_thread not in saved_on, "the waiting save ran on the event loop"
+
+    def test_a_trim_on_loading_does_not_wait_for_a_reader(self, temp_memory_file):
+        """The constructor runs on the event loop: its trim saves once, and a held file stays for the next add_fact."""
+        import json
+        import time
+
+        facts = [{"content": f"fact number {i} " * 20, "category": "facts", "importance": 0.5,
+                  "created_at": "2026-09-01T00:00:00"} for i in range(20)]
+        temp_memory_file.write_text(json.dumps({"facts": facts}), encoding="utf-8")
+        with open(temp_memory_file, encoding="utf-8"):
+            started = time.monotonic()
+            memory = CoreMemory(temp_memory_file, max_tokens=100)
+            took = time.monotonic() - started
+        assert memory.get_token_usage() <= 100, "fixture: nothing was trimmed"
+        assert took < 0.2, f"loading waited {took:.2f} s for the reader"
+
 
 # =============================================================================
 # ToolResultStore Tests
@@ -337,6 +416,42 @@ class TestArchivalMemory:
         assert entry_id.startswith("arch_")
         stats = archive.get_stats()
         assert stats["total_messages"] == 1
+
+    def test_rows_archived_before_the_store_knew_its_session_are_reached(self, temp_archive_path):
+        legacy = ArchivalMemory(temp_archive_path)
+        legacy.store({"role": "user", "content": "archived by an old deploy about blitter code"})
+        legacy.close()
+        assert sqlite3.connect(temp_archive_path).execute(
+            "SELECT session_id FROM archived_messages").fetchall() == [("default",)], "fixture: the row is not legacy"
+
+        archive = ArchivalMemory(temp_archive_path, session_id="s-1")
+
+        assert archive.count_session_messages("s-1") == 1
+        assert [m.content for m in archive.get_session_messages(session_id="s-1")] == [
+            "archived by an old deploy about blitter code"]
+        assert len(archive.search("blitter", session_id="s-1")) == 1
+        # the full-text index holds session_id as well: rebuilt with the rows, or it no longer matches them
+        archive._db.execute("INSERT INTO archived_fts(archived_fts, rank) VALUES('integrity-check', 1)")
+
+    @pytest.mark.parametrize("store", ["archive", "tool_results"])
+    def test_opening_a_store_waits_for_no_other_writer(self, tmp_path, store):
+        """Opened on the event loop: with nothing to re-tag it must not ask for the write lock someone holds."""
+        import time
+
+        path = tmp_path / f"{store}.db"
+        make = (lambda: ArchivalMemory(path, session_id="s-1")) if store == "archive" \
+            else (lambda: ToolResultStore(path, session_id="s-1"))
+        make().close()
+        writer = sqlite3.connect(path, timeout=0)
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            started = time.monotonic()
+            make().close()
+            took = time.monotonic() - started
+        finally:
+            writer.rollback()
+            writer.close()
+        assert took < 1, f"opening waited {took:.1f} s for the other writer"
 
     @pytest.mark.parametrize("store_call", ["one", "many"])
     def test_store_survives_tool_calls_being_present_but_none(
@@ -1589,17 +1704,6 @@ class TestPluginIntegration:
         
         assert result["success"] is True
         assert result["fact_id"] is not None
-    
-    @pytest.mark.asyncio
-    async def test_tool_handler_stats(self, plugin_instance):
-        """Test stats tool handler."""
-        result = await plugin_instance.server._hooks_impl._handle_stats(
-            session_id="test-session"
-        )
-        
-        assert "tool_results" in result
-        assert "core_memory" in result
-        assert "archival_memory" in result
 
 
 # =============================================================================

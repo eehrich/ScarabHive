@@ -99,6 +99,9 @@ class _ShownBlock:
 #: lost its mark that way and compacted again on its next call.
 _MAX_HYSTERESIS_MARKS = 10_000
 
+# Compaction events kept for the panel, in memory and in the history file.
+HISTORY_LIMIT = 1000
+
 
 def _conversation_probe(messages: list[dict[str, Any]]) -> tuple[int, bytes]:
     """Length of the non-system part, and a digest of its first message.
@@ -685,7 +688,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             session_id: Session identifier
             overrides: Optional per-agent overrides for CompactionConfig fields.
                 Sourced from ``context.hook_config`` in ``engineer_context``.
-                A caller without them (stats panel, a tool) keeps what is
+                A caller without them (a tool) keeps what is
                 there; a caller with different ones replaces the compaction
                 config. The stores keep the settings they were created with.
 
@@ -696,10 +699,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             components = self._session_components[session_id]
             components["last_accessed"] = time.time()
             # Whoever creates the components first used to fix their config for
-            # good. The WebUI panel's stats poll and the /compact tool arrive
-            # without the agent's hooks.overrides, so after an API restart with
-            # the panel open, an agent's own thresholds were silently replaced
-            # by the plugin defaults. The hook always brings them; apply them.
+            # good. The tools (/compact, list, read) arrive without the agent's
+            # hooks.overrides, so a tool call before the session's first step
+            # replaced an agent's own thresholds with the plugin defaults. The
+            # hook always brings them; apply them.
             if overrides and overrides != components.get("overrides"):
                 components["strategy"].config = self._compaction_config(overrides)
                 components["overrides"] = dict(overrides)
@@ -1110,7 +1113,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "media_always_compacted": result.media_always_compacted,
                     "media_bytes_saved": result.media_bytes_saved
                 })
-                
+                del self.stats_history[:-HISTORY_LIMIT]
+
                 # Save history to disk (support both sync and async callbacks)
                 if self.history_callback is not None:
                     if asyncio.iscoroutinefunction(self.history_callback):
@@ -1619,50 +1623,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "mime_type": mime_type,
                 "description": f"Restored {content_type}: {file_path.name}"
             }]
-        }
-    
-    async def _handle_stats(
-        self,
-        session_id: str = "default"
-    ) -> dict[str, Any]:
-        """Context engineering statistics. NOT a tool — the stats tool was
-        removed; this serves the web panel via web_endpoints.py.
-        
-        Args:
-            session_id: Session ID
-            
-        Returns:
-            Statistics about stored data
-        """
-        components = self._get_session_components(session_id)
-        
-        tool_store: ToolResultStore = components["tool_store"]
-        core_memory: CoreMemory = components["core_memory"]
-        archival: ArchivalMemory = components["archival_memory"]
-        
-        # Aggregate media compaction stats from history for this session
-        media_deduplicated = 0
-        media_compacted = 0
-        media_always_compacted = 0
-        if self.stats_history:
-            for event in self.stats_history:
-                if event.get("session_id") == session_id:
-                    media_deduplicated += event.get("media_deduplicated", 0)
-                    media_compacted += event.get("media_compacted_after_event", 0)
-                    media_always_compacted += event.get("media_always_compacted", 0)
-        
-        return {
-            "tool_results": tool_store.get_stats(),
-            "core_memory": {
-                "facts": len(core_memory.facts),
-                "facts_count": len(core_memory.facts),  # Added for UI compatibility
-                "categories": core_memory.get_categories(),
-                "token_usage": core_memory.get_token_usage()
-            },
-            "archival_memory": archival.get_stats(),
-            "media_deduplicated": media_deduplicated,
-            "media_compacted": media_compacted,
-            "media_always_compacted": media_always_compacted,
         }
     
     def cleanup_session(self, session_id: str) -> None:

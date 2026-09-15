@@ -416,7 +416,7 @@ class TestCoreMemoryEviction:
             await memory.add_fact(f"fact number {i} about the project", importance=0.5)
         budget = memory._current_tokens - memory._fact_tokens(memory.facts[0])
 
-        def locked(self):
+        def locked(self, *args, **kwargs):
             raise PermissionError("locked by a virus scanner")
         monkeypatch.setattr(CoreMemory, "_save_sync", locked)
         reloaded = CoreMemory(storage_path=tmp_path / "m.json", max_tokens=budget)

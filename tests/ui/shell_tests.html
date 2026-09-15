@@ -1677,8 +1677,12 @@
     // every figure of one answer agreeing, or nothing
     const agree = (...values) => values.every((value) => value === values[0]) ? values[0] : undefined;
     const panels = [
-      { id: 'context_engineer', pause: (page) => page.getElementById('autoRefreshBtn').click(), shows: (page) => agree(
-        page.querySelector('#storage-stats .value')?.textContent, page.querySelector('#memory-list strong')?.textContent) },
+      { id: 'context_engineer', asksNothingWithoutSession: true, pause: (page) => page.querySelector('pk-refresh [data-act="auto"]').click(),
+        shows: (page) => {
+          const events = page.querySelector('#stats [data-stat="events"] .pk-stat-value')?.textContent;
+          if (events) return agree(events, page.querySelector('[data-stat="tool_results"] .pk-stat-value')?.textContent);
+          return page.getElementById('stats').textContent.includes('No session open') ? '3' : undefined;
+        } },
       // on the kit: a figure of the session, and with no session open the panel says so and asks nothing
       { id: 'memory', asksNothingWithoutSession: true, pause: (page) => page.querySelector('pk-refresh [data-act="auto"]').click(),
         shows: (page) => page.querySelector('#stats [data-stat="total"] .pk-stat-value')?.textContent

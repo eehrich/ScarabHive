@@ -252,9 +252,6 @@ store_fact:
   category: "preferences"
   importance: 0.9
 
-# View stats
-stats: {}
-
 # Manual compaction (also /compact at the chat prompt)
 compact: {}
 ```
@@ -313,14 +310,39 @@ context_engineer:
     session_data_ttl_days: 14          # Delete a session's on-disk data (archive, tool results, media) and its vectors after N idle days; 0 (default) = off
 ```
 
-## Web Panel
+## The panel
 
-Access the context engineering dashboard at `/plugins/context_engineer/panel`:
+**Context Engineer** in the panel launcher (category *context*), or from a session's info button
+(`/plugins/context_engineer/?session_id=<id>`: the panel then keeps to that session). It shows either the session open
+in the chat (*This session*) or every session (*All sessions*):
 
-- View current token usage
-- Browse core memory facts
-- Search archived messages
-- See compaction statistics
+- **Figures**: compactions, tokens saved, average reduction and media compacted (evicted by the media window,
+  duplicates, after events). For a session also what its stores hold on disk: stored tool results, archived messages and
+  core memory facts, each with its tokens.
+- **Core memory** (a session only): the facts as `core_memory.json` holds them, by category and importance.
+- **Compactions**: the newest 100, newest first — agent, (for all sessions) session, tokens before and after, saved,
+  reduction, tool results stored, media and the layers applied (hover a badge for what the layer does).
+
+With no session open it says so and asks for nothing; *All sessions* still works. The panel refreshes every 10 s while
+visible (`<pk-refresh>`). The compaction history is the hook's in-memory list (the last 1000 are kept in
+`data/context_engineer/history.json` across restarts).
+
+### Endpoints
+
+| Method and path | Answer |
+|---|---|
+| `GET /plugins/context_engineer/` | the panel |
+| `GET /plugins/context_engineer/history?session_id=&limit=100` | `{events, stats}`: the newest `limit` (1–1000) compactions of the session (all without `session_id`), newest first as the hook records them; `stats` = `events`, `tokens_saved`, `average_reduction` (percent, `null` without events), `media_always_compacted`, `media_deduplicated`, `media_compacted_after_event` over every event asked for |
+| `GET /plugins/context_engineer/session?session_id=` | `{tool_results: {count, tokens}, archived: {count, tokens}, core_memory: {facts: [{content, category, importance}], tokens, max_tokens}}`; `archived` counts the messages tagged with the session (what `list` reaches); a session without a directory holds nothing; a store that cannot be read → 503 with the reason |
+
+`session_id` must match `^[A-Za-z0-9_-]+$` (422 otherwise): it names the session's directory. The endpoints only read:
+the stores are opened read-only and the core memory file is parsed, not loaded — nothing creates a session's files or
+registers the session with the hook.
+
+### Tests
+
+`tests/test_plugin_context_engineer_panel.py` drives the panel in headless Chromium (`tests/panel_tests.html`) against the
+real plugin router and real session stores under pytest's `tmp_path`; the real history file is neither read nor written.
 
 ## Media Management
 
@@ -374,7 +396,7 @@ data/context_engineer/
     │                         # (variables.json may still exist from before
     │                          2026-08; nothing reads it and it can be deleted)
     ├── tool_results.db       # SQLite tool outputs
-    └── archival.db           # SQLite archived messages + FTS
+    └── archive.db            # SQLite archived messages + FTS
 ```
 
 ## Token Estimation
@@ -385,7 +407,7 @@ The plugin uses `estimate_content_tokens()` from `agent_system.llm.token_utils`,
 
 1. **Add facts proactively** - Use `store_fact` to preserve important information before it's compacted
 2. **Reference stored content** - Leave a ref where the content was, so the LLM can fetch it on demand
-3. **Monitor stats** - Use the web panel or `stats` tool to track context usage
+3. **Monitor stats** - Use the web panel to track compactions and what the stores hold
 4. **Tune thresholds** - Adjust compaction thresholds based on your model's context window
 5. **Use semantic search** - Enable ChromaDB for better archival retrieval in long conversations
 

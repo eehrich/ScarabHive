@@ -177,8 +177,10 @@ class ToolResultStore:
         # "default" and are invisible to list/search, which query the real id.
         # The database file is per-session, so every row in it belongs to this
         # session by construction — re-tagging them is safe and turns a
-        # half-populated catalogue back into a complete one.
-        if self.session_id:
+        # half-populated catalogue back into a complete one. Looked for first:
+        # an UPDATE takes the write lock even when it matches nothing.
+        if self.session_id and self._db.execute(
+                "SELECT 1 FROM tool_results WHERE session_id = 'default' LIMIT 1").fetchone():
             self._db.execute(
                 "UPDATE tool_results SET session_id = ? WHERE session_id = 'default'",
                 (self.session_id,),

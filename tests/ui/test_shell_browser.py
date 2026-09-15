@@ -72,10 +72,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import jinja2
 import pytest
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_system.ui.catalog import Panel, build_catalog, core_panels
@@ -108,12 +107,6 @@ def plugin_panels() -> list[Panel]:
         Panel("context_usage_tracker", "Context & Cost Usage", "/plugins/context_usage_tracker/", "chart-column",
               "context", "Token usage"),
     ]
-
-
-def plugin_page(folder: str, **values: str) -> HTMLResponse:
-    """A real plugin panel, rendered as its plugin renders it."""
-    environment = jinja2.Environment(loader=jinja2.FileSystemLoader(PLUGINS / folder / "templates"), autoescape=True)
-    return HTMLResponse(environment.get_template("panel.html").render(**values))
 
 
 def stub_app() -> FastAPI:
@@ -226,16 +219,21 @@ def stub_app() -> FastAPI:
         return {"instances": [{"instance_id": f"agent-{session_id}", "agent_type": "writer", "status": "active"}],
                 "phase": {"variable": "workflow_phase", "current": f"phase-{count}", "agents": [], "allowed_agents": []}}
 
-    @app.get("/plugins/context_engineer/")
-    async def context_engineer_panel():
-        return plugin_page("context_engineer", plugin_name="context_engineer")
-
-    @app.get("/plugins/context_engineer/session_details")
-    async def context_engineer_session(session_id: str = ""):
-        hits[f"session_details:{session_id}"] = hits.get(f"session_details:{session_id}", 0) + 1
+    @app.get("/plugins/context_engineer/history")
+    async def context_engineer_history(session_id: str = ""):
+        hits[f"context_engineer:{session_id}"] = hits.get(f"context_engineer:{session_id}", 0) + 1
         await asyncio.sleep(lag(session_id))
-        return {"success": True, "session_id": session_id, "tool_results": {"total_entries": marker(session_id)},
-                "core_memory": {"facts_count": marker(session_id), "token_usage": 0}}
+        count = marker(session_id)
+        return {"events": [], "stats": {"events": count, "tokens_saved": count, "average_reduction": None,
+                                        "media_always_compacted": 0, "media_deduplicated": 0,
+                                        "media_compacted_after_event": 0}}
+
+    @app.get("/plugins/context_engineer/session")
+    async def context_engineer_session(session_id: str):
+        hits[f"context_engineer:{session_id}"] = hits.get(f"context_engineer:{session_id}", 0) + 1
+        await asyncio.sleep(lag(session_id))
+        return {"tool_results": {"count": marker(session_id), "tokens": 0}, "archived": {"count": 0, "tokens": 0},
+                "core_memory": {"facts": [], "tokens": 0, "max_tokens": 2000}}
 
     @app.get("/plugins/{plugin}/")
     async def kit_panel(request: Request, plugin: str):  # a panel on the kit: rendered as its plugin renders it

@@ -181,33 +181,30 @@ web_ui:
   panel:
     endpoint: "/plugins/{{ name }}/"
     title: "Context Engineer"
-    description: "Compaction history, core memory and token savings of the context engineering"
+    description: "Compactions, stored context and core memory facts of the context engineering"
     icon: brain
     category: context
     keywords: [compaction, memory, tokens]
-    window: {width: 860, height: 640}
+    window: {width: 980, height: 700}
+    contexts:
+      session: "/plugins/{{ name }}/?session_id={session_id}"
 
   endpoints:
     - path: "/"
-      methods: ["GET"]
+      method: "GET"
       handler: "get_panel"
       response_type: "html"
-      description: "Context engineer dashboard panel"
+      description: "The Context Engineer panel"
     - path: "/history"
-      methods: ["GET"]
+      method: "GET"
       handler: "get_history"
       response_type: "json"
-      description: "Get compaction event history with token savings"
-    - path: "/stats"
-      methods: ["GET"]
-      handler: "get_stats"
+      description: "The newest compactions of a session (session_id) or of all, and their figures"
+    - path: "/session"
+      method: "GET"
+      handler: "get_session"
       response_type: "json"
-      description: "Get aggregated context engineering statistics"
-    - path: "/session_details"
-      methods: ["GET"]
-      handler: "get_session_details"
-      response_type: "json"
-      description: "Get detailed statistics for a specific session"
+      description: "What a session's stores hold (session_id): tool results, archived messages, core memory facts"
 
 # Configuration schema for this plugin
 config:

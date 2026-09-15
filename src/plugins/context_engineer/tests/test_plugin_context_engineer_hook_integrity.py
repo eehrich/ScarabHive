@@ -641,7 +641,49 @@ class TestBookkeeping:
         assert with_schema > without
 
     @pytest.mark.asyncio
-    async def test_always_compacted_media_reaches_the_stats(self, plugin, tmp_path):
-        plugin.stats_history.append({"session_id": "m", "media_always_compacted": 3})
-        stats = await plugin._handle_stats("m")
-        assert stats["media_always_compacted"] == 3
+    async def test_the_history_keeps_only_the_newest_events(self, plugin):
+        import threading
+
+        saved_on = []
+        plugin.history_callback = lambda: saved_on.append(threading.get_ident())
+        plugin.stats_history.extend({"session_id": "old", "index": i} for i in range(hooks_mod.HISTORY_LIMIT))
+        big = "a large tool result line with enough words to count " * 60
+        messages = [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None, tool_calls=[
+                {"id": f"c{i}", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+                for i in range(8)]),
+            *[ChatMessage(role="tool", tool_call_id=f"c{i}", name="t", content=big) for i in range(8)],
+        ]
+        await plugin.engineer_context(_context("capped", messages))
+
+        assert plugin.stats_history[-1].get("session_id") == "capped", "fixture: the run recorded no compaction"
+        assert len(plugin.stats_history) == hooks_mod.HISTORY_LIMIT
+        assert plugin.stats_history[0]["index"] == 1, "not the oldest event was dropped"
+        # the save may wait out a reader: never on the loop every agent runs on
+        assert saved_on and saved_on != [threading.get_ident()], "the history was saved on the event loop"
+
+    def test_a_history_save_that_fails_midway_leaves_the_saved_history(self, tmp_path, monkeypatch):
+        import json
+
+        from plugins.context_engineer import atomic_json
+        from plugins.context_engineer.server import ContextEngineerServer
+
+        server = ContextEngineerServer.__new__(ContextEngineerServer)  # its __init__ reads data/context_engineer
+        server._history_file = tmp_path / "history.json"
+        server.stats_history = [{"session_id": "s", "index": 0}]
+        server._save_history_sync()
+        server.stats_history.append({"session_id": "s", "index": 1})
+
+        def dump_half(data, file, **kwargs):
+            file.write('{"events": [')
+            file.flush()
+            raise OSError("killed mid-write")
+
+        monkeypatch.setattr(atomic_json.json, "dump", dump_half)
+        server._save_history_sync()  # logged, not raised
+        monkeypatch.undo()
+
+        assert server._load_history_sync() == [{"session_id": "s", "index": 0}]
+        assert [path.name for path in tmp_path.iterdir()] == ["history.json"], "a temporary file stayed"
+        assert json.loads((tmp_path / "history.json").read_text(encoding="utf-8"))["events"][0]["index"] == 0

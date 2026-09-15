@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from agent_system.hooks.plugin_hook import HookContext, HookResult, PluginHook
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
+from .atomic_json import write_json_atomically
 from .compaction import RETRIEVAL_MARKER
 
 if TYPE_CHECKING:
@@ -123,18 +124,15 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             logger.info(f"Loaded {len(events)} history events from {self._history_file}")
     
     def _save_history_sync(self) -> None:
-        """Save compaction history to persistent storage - sync version."""
-        import json
-        
+        """Save compaction history to persistent storage - sync version, run on a
+        worker thread (the hook calls it through asyncio.to_thread)."""
+        from plugins.context_engineer.hooks import HISTORY_LIMIT
+
         try:
-            self._history_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Keep only last 1000 events to prevent file from growing too large
-            events_to_save = self.stats_history[-1000:] if len(self.stats_history) > 1000 else self.stats_history
-            
-            with open(self._history_file, 'w', encoding='utf-8') as f:
-                json.dump({"events": events_to_save}, f, indent=2)
-                
+            # A copy: the hook appends to and trims the list while this runs in a
+            # thread. Atomically: a kill mid-write left a file the next start
+            # could not read, and it started from an empty history.
+            write_json_atomically(self._history_file, {"events": self.stats_history[-HISTORY_LIMIT:]})
         except Exception as e:
             logger.warning(f"Failed to save history to {self._history_file}: {e}")
     

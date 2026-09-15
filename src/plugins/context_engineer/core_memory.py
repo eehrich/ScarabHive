@@ -24,6 +24,8 @@ from typing import Any
 
 from agent_system.llm.token_utils import estimate_content_tokens
 
+from .atomic_json import REPLACE_ATTEMPTS, write_json_atomically
+
 logger = logging.getLogger(__name__)
 
 
@@ -336,21 +338,17 @@ class CoreMemory:
         """
         self._current_tokens = sum(self._fact_tokens(fact) for fact in self.facts)
     
-    def _save_sync(self) -> None:
+    def _save_sync(self, attempts: int = REPLACE_ATTEMPTS) -> None:
         """Save to storage path - sync version for thread pool."""
         if not self.storage_path:
             return
-        
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        data = {
+        # Atomically: a kill mid-write left an empty file, _load started from no
+        # facts and the next add_fact saved that.
+        write_json_atomically(self.storage_path, {
             "session_id": self.session_id,
             "max_tokens": self.max_tokens,
             "facts": [f.to_dict() for f in self.facts]
-        }
-        
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        }, attempts=attempts)
     
     async def _save(self) -> None:
         """Save to storage path - async wrapper."""
@@ -379,8 +377,11 @@ class CoreMemory:
             f"dropped {before - len(self.facts)} of {before} facts")
         # Its own failure: in _load's handler it would discard the facts that
         # did load, and the next add_fact would overwrite the file with one.
+        # One attempt, no waiting: the constructor runs on the event loop
+        # (_get_session_components); a file held by a reader stays over budget
+        # on disk until the next add_fact saves the trimmed facts.
         try:
-            self._save_sync()
+            self._save_sync(attempts=1)
         except OSError as e:
             logger.warning(f"Could not save the trimmed core memory {self.storage_path}: {e}")
 

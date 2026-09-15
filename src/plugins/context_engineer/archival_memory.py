@@ -236,6 +236,21 @@ class ArchivalMemory:
                 content_rowid='rowid'
             )
         """)
+        # Rows archived before the store knew its session_id are tagged "default",
+        # and list/search/read query the real id: they were in the prompt's count
+        # but out of the agent's reach. The file is per session, so every row is
+        # this session's (as ToolResultStore._init_db re-tags). Looked for first:
+        # an UPDATE takes the write lock even when it matches nothing, and this
+        # runs on every open, on the event loop, behind any other writer.
+        # archived_fts indexes session_id from the rows: rebuilt, or it no
+        # longer matches its content table.
+        if self.session_id and self._db.execute(
+                "SELECT 1 FROM archived_messages WHERE session_id = 'default' LIMIT 1").fetchone():
+            self._db.execute(
+                "UPDATE archived_messages SET session_id = ? WHERE session_id = 'default'",
+                (self.session_id,),
+            )
+            self._db.execute("INSERT INTO archived_fts(archived_fts) VALUES('rebuild')")
         self._db.commit()
     
     def _init_vector_store(self, vector_path: Path) -> None:
