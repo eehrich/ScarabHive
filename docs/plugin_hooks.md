@@ -751,8 +751,9 @@ every step.
 - **Every `role: user` message a hook or the loop inserts carries
   `injected_by`.** `None` means "written by a person"; context_engineer, OKF,
   tool_preload and agent_continuation rely on it to find the last human
-  message. A `post_llm_call` hook that sets `continue` must set
-  `continue_injected_by`.
+  message. A `post_llm_call` hook that sets `continue` should set
+  `continue_injected_by` so it can count its own nudges; without one the loop
+  marks the nudge `post_llm_call_hook`.
 
 Guards: `tests/agent/test_agent_step_budget_note.py`,
 `tests/config/test_prompts_have_no_ticking_clock.py`.

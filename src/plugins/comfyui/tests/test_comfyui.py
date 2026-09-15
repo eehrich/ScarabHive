@@ -903,6 +903,8 @@ class TestComfyUIServer:
         assert result["outputs"]["text"][0]["content"] == "Generated caption"
         for item in result.get("_multimodal_content", []):
             MultimodalToolContent(**item)
+        # Nothing landed on disk, so nothing is recorded for operation='load'.
+        assert not server.job_tracker.get_job("test-text-id").get("outputs")
 
     @pytest.mark.asyncio
     async def test_workflow_result_with_multiple_text_outputs(

@@ -1123,9 +1123,11 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         # Store output paths. A text output that was not saved (download=false,
         # or the write failed) has neither a local path nor a filename.
+        # A type whose outputs all lack a path is left out: an empty list would
+        # tell operation='load' there are outputs to load.
         output_paths = {
-            k: [p for f in v if (p := f.get("local_path") or f.get("filename"))]
-            for k, v in outputs.items() if v
+            k: paths for k, v in outputs.items()
+            if (paths := [p for f in v if (p := f.get("local_path") or f.get("filename"))])
         }
         self.job_tracker.set_outputs(prompt_id, output_paths)
         
