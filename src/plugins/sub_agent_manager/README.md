@@ -14,7 +14,7 @@ and keeping a sub-agent's prompt in sync with the coordinator's state.
 |---|---|
 | Tool | `sub_agent_manager_manage_sub_agent` — one tool, nine operations |
 | Hook | `inject_sub_agent_context` (`pre_llm_call`, off by default) |
-| Web | panel plus `/list`, `/delete`, `/stats`, `/phase-info` |
+| Web | the Sub-Agents panel (see below) |
 
 | Operation | Effect |
 |---|---|
@@ -141,13 +141,48 @@ sub_agent_manager:
 The hook is off by default and enabled per coordinator; `max_sub_agents_shown`
 bounds how much of the list reaches the system prompt on every call.
 
+## The panel
+
+**Sub-Agents** (category `agents`, one per manager instance — `sam_writer`,
+`sam_skills`, …) shows the sub-agents this instance spawned in the session open
+in the chat, or in the one a session link names (`?session_id=`). Without a
+session it says so and asks nothing.
+
+- **Figures:** sub-agents, running, idle, interrupted, archived or ended.
+  *Running* is an active sub-agent reporting an activity that is not over
+  (the rule `list` uses). The panel shows the **stored** state and never
+  writes: unlike the tool's `list`, it does not mark a sub-agent without a run
+  in its own process interrupted — sub-agents run in other processes too (the
+  writer worker), and a refreshing panel would break their running books.
+- **Phase:** with `phase_filtering` on, the session's phase and the agents it
+  lets the tool spawn, by the tool's own rule.
+- **Cards:** state, id, agent type, messages, last use, task and activity.
+  The filter shows the open ones (default), the running ones, or all.
+- **Transcript** opens in a drawer on the tail; *Earlier messages* loads the
+  pages above it.
+- **Archive** (active and interrupted ones) asks first and does what the
+  tool's `delete` does: the history stays, `continue` reactivates it.
+
+The list refreshes every 10 s while the panel is visible.
+
+| Endpoint | Answer |
+|---|---|
+| `GET /plugins/<name>/` | the panel |
+| `GET /sub-agents?session_id=` | `{instances: [...], phase: {variable, current, agents, allowed_agents} \| null}` — every sub-agent, archived included, in `list`'s fields, read-only |
+| `GET /sub-agents/{id}?session_id=&offset=&limit=` | the transcript window, as `info` pages it |
+| `DELETE /sub-agents/{id}?session_id=` | archived, as `delete` |
+
+A sub-agent that does not exist or belongs to another session is a 404.
+
 ## Tests
 
-Thirteen files under `tests/`, split by concern — `_manager` (lifecycle),
+Fourteen files under `tests/`, split by concern — `_manager` (lifecycle),
 `_server` (tool surface), `_hooks` / `_hook_integration` (injection),
 `_e2e_lifecycle`, `_info_pagination`, `_llm_profiles`,
 `_request_id_hierarchy`, `_user_id_injection`, `_context_refresh`,
-`_performance`, `_schemas`.
+`_performance`, `_schemas`, and `_panel`: the panel in headless Chromium
+against the real router and handlers over session files in `tmp_path`
+(`panel_tests.html` holds the checks; skipped without a Chromium browser).
 
 ## License
 

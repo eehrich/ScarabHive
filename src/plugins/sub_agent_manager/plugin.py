@@ -10,6 +10,7 @@ This module provides the PLUGIN_FACTORY function required by the plugin system.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter
@@ -82,6 +83,10 @@ class SubAgentManagerHybridPlugin:
     def get_web_router(self) -> APIRouter | None:
         """Get FastAPI router for web endpoints."""
         return self.web_factory.get_web_router()
+
+    def get_static_assets(self) -> Path:
+        """The panel's script and stylesheet, served under /plugins/<name>/static/."""
+        return Path(__file__).parent / "static"
 
 
 def PLUGIN_FACTORY(name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig") -> SubAgentManagerHybridPlugin:

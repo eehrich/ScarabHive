@@ -1679,22 +1679,25 @@
     const panels = [
       { id: 'context_engineer', pause: (page) => page.getElementById('autoRefreshBtn').click(), shows: (page) => agree(
         page.querySelector('#storage-stats .value')?.textContent, page.querySelector('#memory-list strong')?.textContent) },
-      { id: 'memory', pause: (page) => page.getElementById('auto-refresh-btn').click(), shows: (page) => page.getElementById('total-memories').textContent },
       // on the kit: a figure of the session, and with no session open the panel says so and asks nothing
+      { id: 'memory', asksNothingWithoutSession: true, pause: (page) => page.querySelector('pk-refresh [data-act="auto"]').click(),
+        shows: (page) => page.querySelector('#stats [data-stat="total"] .pk-stat-value')?.textContent
+          ?? (page.getElementById('stats').textContent.includes('No session open') ? '3' : undefined) },
       { id: 'todo', asksNothingWithoutSession: true, pause: (page) => page.querySelector('pk-refresh [data-act="auto"]').click(),
         shows: (page) => page.querySelector('#stats [data-stat="total"] .pk-stat-value')?.textContent
           ?? (page.getElementById('stats').textContent.includes('No session open') ? '3' : undefined) },
       { id: 'context_usage_tracker', asksNothingWithoutSession: true, pause: (page) => page.querySelector('pk-refresh [data-act="auto"]').click(),
         shows: (page) => page.querySelector('#stats [data-stat="output"] .pk-stat-value')?.textContent
           ?? (page.getElementById('stats').textContent.includes('No session open') ? '3' : undefined) },
-      { id: 'sam_writer', shows: (page) => {
-        const agent = page.querySelector('#agentsList .agent-id')?.textContent;
-        if (agent) {
-          return agree(agent.replace('agent-s-1', '7').replace('agent-s-lagging', '3'), page.getElementById('statTotal').textContent,
-            page.getElementById('currentPhaseValue').textContent.replace('phase-', ''));
-        }
-        return page.getElementById('agentsList').textContent.includes('No session open') ? '3' : undefined;
-      } },
+      { id: 'sam_writer', asksNothingWithoutSession: true, pause: (page) => page.querySelector('pk-refresh [data-act="auto"]').click(),
+        shows: (page) => {
+          const agent = page.querySelector('#agents article[data-id]')?.dataset.id;
+          if (agent) {
+            return agree(agent.replace('agent-s-1', '7').replace('agent-s-lagging', '3'),
+              page.querySelector('#phase .pk-badge')?.textContent.replace('phase-', ''));
+          }
+          return page.getElementById('stats').textContent.includes('No session open') ? '3' : undefined;
+        } },
     ];
     const header = () => $('#headerSessionId').textContent;
     const pick = async (id, title) => {
@@ -1719,27 +1722,26 @@
           const loaded = panelFrame(`/plugins/${panel.id}/`)?.contentDocument;
           return loaded?.readyState === 'complete' && panel.shows(loaded) && loaded;
         });
-        if (panel.id === 'sam_writer') {
-          if (page.getElementById('sessionIdInput').checkVisibility()) failures.push('sam_writer offers a session field inside the shell');
-          await pick('s-1', 'Refactor the kit');
-        }
+        if (panel.id === 'sam_writer') await pick('s-1', 'Refactor the kit');
         await until(`${panel.id} on the kit session`, () => panel.shows(page) === '7');
         if (panel.pause) panel.pause(page);  // its own refresh stops
+        const search = () => {
+          page.getElementById('query').value = 'kit';
+          page.getElementById('searchForm').requestSubmit();
+        };
         if (panel.id === 'memory') {
-          page.getElementById('search-input').value = 'kit';
-          page.defaultView.performSearch();
-          await until('the search result', () => page.querySelector('#memory-list .memory-title')?.textContent === 'found-7');
+          search();
+          await until('the search result', () => page.querySelector('#memories .mm-title')?.textContent === 'found-7');
         }
         await pick('s-lagging', 'Lagging session');  // what the panel asks for about it is answered late
         if (panel.id === 'memory') {
-          await until('the search gone with its session', () => page.getElementById('search-input').value === '');
-          page.getElementById('search-input').value = 'kit';
-          page.defaultView.performSearch();  // answered late as well
+          await until('the search gone with its session', () => page.getElementById('query').value === '');
+          search();  // answered late as well
         }
         await pick('s-1', 'Refactor the kit');
         await sleep(1700);  // the answers for the lagging session have come in by now
         if (panel.shows(page) !== '7') failures.push(`${panel.id} shows a late answer`);
-        if (panel.id === 'memory' && page.querySelector('#memory-list .memory-title')) failures.push('memory shows a late search');
+        if (panel.id === 'memory' && page.querySelector('#memories .mm-title')) failures.push('memory shows a late search');
         // every call of the panel, whatever session it names: with none open it has nothing to ask
         const calls = async () => Object.entries(await (await stub('/__stub/hits')).json())
           .filter(([key]) => key.startsWith(`${panel.id}:`)).reduce((sum, [, count]) => sum + count, 0);
@@ -2029,7 +2031,7 @@
     sessionStorage.setItem('lastSessionId', 's-behind');
     try {
       await loadShell();
-      await until('the panel to ask for the restored session', async () => await hits('sub-agents:s-behind') > 0, 6000);
+      await until('the panel to ask for the restored session', async () => await hits('sam_writer:s-behind') > 0, 6000);
       return true;
     } finally {
       $('.dock-tab[data-key^="sam_writer:"] [data-act="close"]')?.click();

@@ -114,38 +114,30 @@ web_ui:
     category: agents
     keywords: [sub-agents, tasks, spawn]
     window: {width: 1000, height: 760}
+    contexts:
+      session: "/plugins/{{ name }}/?session_id={session_id}"
 
   endpoints:
     - path: "/"
       method: "GET"
-      handler: "get_panel"
+      handler: "render_panel"
       response_type: "html"
-      description: "Sub-agent manager web UI panel"
+      description: "The Sub-Agents panel"
     - path: "/sub-agents"
       method: "GET"
-      handler: "get_sub_agents_json"
+      handler: "get_sub_agents"
       response_type: "json"
-      description: "List all sub-agents for current session"
+      description: "Every sub-agent of a session, archived ones included, and its workflow phase"
     - path: "/sub-agents/{agent_id}"
       method: "GET"
-      handler: "get_sub_agent_detail"
+      handler: "get_sub_agent"
       response_type: "json"
-      description: "Get details of specific sub-agent"
+      description: "A sub-agent's transcript, paged"
     - path: "/sub-agents/{agent_id}"
       method: "DELETE"
-      handler: "delete_sub_agent"
+      handler: "archive_sub_agent"
       response_type: "json"
-      description: "Delete/archive sub-agent instance"
-    - path: "/stats"
-      method: "GET"
-      handler: "get_stats"
-      response_type: "json"
-      description: "Get statistics for current session (total, active, archived)"
-    - path: "/phase-info"
-      method: "GET"
-      handler: "get_phase_info"
-      response_type: "json"
-      description: "Get phase filtering info (current phase, allowed agents per phase)"
+      description: "Archive a sub-agent"
 
 # Hook configuration
 hooks:

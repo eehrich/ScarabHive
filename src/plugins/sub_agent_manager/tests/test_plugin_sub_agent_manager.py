@@ -596,8 +596,38 @@ async def test_server_phase_filtering_blocks_wrong_phase_agent():
 
 
 @pytest.mark.asyncio
-async def test_web_endpoint_phase_info():
-    """Test that get_phase_info web endpoint returns correct phase data."""
+async def test_the_tool_list_marks_a_sub_agent_without_a_run_interrupted_and_clears_its_activity(tmp_path):
+    """A sub-agent still reporting an activity with no run in this process: the tool's list answers it interrupted
+    without the stale activity, and stores it so -- a manager made for the call knows no earlier activity to compare."""
+    from agent_system.config.models import AgentConfig, AgentSystemConfig, MCPConfig
+    from agent_system.mcp.base import MCPRegistry
+    from agent_system.services.session_manager import SessionManager
+    from agent_system.services.session_service import SessionService
+    from plugins.sub_agent_manager.server import SubAgentManagerServer
+
+    service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))
+    server = SubAgentManagerServer("sam", AgentSystemConfig(), MCPConfig(allowed_agents=["*"]))
+    registry = MCPRegistry()
+    agent = MagicMock()
+    agent.name = "writer_agent"
+    agent.agent_config = AgentConfig(llm_profile="normal")
+    registry.register("writer_agent", agent)
+    await service.session_manager.create_session(user_id="ada", session_id="parent", agent_name="coordinator", llm_profile="normal")
+    manager = server._get_manager(service, registry)
+    sub_id = await manager.create_sub_session(parent_session_id="parent", agent_type="writer_agent", initial_message="task",
+                                              params={"_creator_plugin": "sam"})
+    await manager.update_sub_session_metadata(parent_session_id="parent", sub_session_id=sub_id, current_activity="Thinking...")
+
+    params = {"_session_id": "parent", "_session_service": service}
+    [listed] = (await server._handle_list(params))["instances"]
+    assert (listed["status"], listed["current_activity"]) == ("interrupted", None)
+    stored = (await service.session_manager.load_session("ada", "parent", bypass_cache=True))["metadata"]["sub_agents"][sub_id]
+    assert (stored["status"], stored["current_activity"]) == ("interrupted", None)
+
+
+@pytest.mark.asyncio
+async def test_the_sub_agent_list_carries_the_phase_of_the_session():
+    """The panel's list names the session's phase and the agents it lets the tool spawn, by the tool's own rule."""
     from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
     from plugins.sub_agent_manager.server import SubAgentManagerServer
     from agent_system.config import MCPConfig, AgentSystemConfig
@@ -641,18 +671,30 @@ async def test_web_endpoint_phase_info():
     mock_session_service.session_manager = mock_session_manager
     
     mock_request = MagicMock(spec=Request)
-    
+
     with patch('plugins.sub_agent_manager.web_endpoints.get_session_service', return_value=mock_session_service):
-        response = await factory.get_phase_info(mock_request, session_id="test_session")
-    
-    # Parse JSON response
-    import json
-    data = json.loads(response.body.decode())
-    
-    assert data["enabled"] is True
-    assert data["phase_variable"] == "workflow_phase"
-    assert data["current_phase"] == "planning"
-    assert data["filtered_agents"] == ["story_designer"]
-    assert "story_designer" in data["all_allowed_agents"]
-    assert "character_designer" in data["all_allowed_agents"]
-    assert "scene_writer" in data["all_allowed_agents"]
+        data = await factory.get_sub_agents(mock_request, session_id="test_session")
+        phase = data["phase"]
+        assert phase["variable"] == "workflow_phase"
+        assert phase["current"] == "planning"
+        assert phase["agents"] == ["story_designer"]
+        assert phase["allowed_agents"] == ["story_designer", "character_designer", "scene_writer"]
+
+        # a phase without agents of its own falls back to _default, and an empty _default to every allowed agent
+        mock_session_manager.load_session.return_value = {"context_vars": {"workflow_phase": "review"}}
+        phase = (await factory.get_sub_agents(mock_request, session_id="test_session"))["phase"]
+        assert phase["current"] == "review" and phase["agents"] == phase["allowed_agents"]
+
+        # a non-empty _default is what such a phase gets
+        server.phase_agents = {"planning": ["story_designer"], "_default": ["scene_writer"]}
+        phase = (await factory.get_sub_agents(mock_request, session_id="test_session"))["phase"]
+        assert phase["current"] == "review" and phase["agents"] == ["scene_writer"]
+
+        # without a phase set, _default does not apply: the tool allows every agent then
+        mock_session_manager.load_session.return_value = {"context_vars": {}}
+        phase = (await factory.get_sub_agents(mock_request, session_id="test_session"))["phase"]
+        assert phase["current"] is None and phase["agents"] == phase["allowed_agents"]
+        assert server._get_phase_allowed_agents({}) is None
+
+        server.phase_filtering_enabled = False
+        assert (await factory.get_sub_agents(mock_request, session_id="test_session"))["phase"] is None

@@ -209,15 +209,22 @@ def stub_app() -> FastAPI:
         """The number the plugin panels show: 7 for ``s-1``, 3 for any other session or none."""
         return 7 if session_id == "s-1" else 3
 
-    @app.get("/plugins/sam_writer/")
-    async def sub_agent_panel():
-        return plugin_page("sub_agent_manager", plugin_name="sam_writer")
+    @app.get("/plugins/sam_writer/")  # an instance of sub_agent_manager: its templates and static files are the plugin's
+    async def sub_agent_panel(request: Request):
+        panel_templates = ui_templates(PLUGINS / "sub_agent_manager" / "templates")
+        return panel_templates.TemplateResponse(request, "panel.html", {"plugin": "sam_writer"})
+
+    @app.get("/plugins/sam_writer/static/{name}")
+    async def sub_agent_static(name: str):
+        return FileResponse(PLUGINS / "sub_agent_manager" / "static" / name)
 
     @app.get("/plugins/sam_writer/sub-agents")
     async def sub_agents(session_id: str):
-        hits[f"sub-agents:{session_id}"] = hits.get(f"sub-agents:{session_id}", 0) + 1
+        hits[f"sam_writer:{session_id}"] = hits.get(f"sam_writer:{session_id}", 0) + 1
         await asyncio.sleep(lag(session_id))
-        return {"instances": [{"instance_id": f"agent-{session_id}", "agent_type": "writer", "status": "active"}]}
+        count = marker(session_id)
+        return {"instances": [{"instance_id": f"agent-{session_id}", "agent_type": "writer", "status": "active"}],
+                "phase": {"variable": "workflow_phase", "current": f"phase-{count}", "agents": [], "allowed_agents": []}}
 
     @app.get("/plugins/context_engineer/")
     async def context_engineer_panel():
@@ -230,10 +237,6 @@ def stub_app() -> FastAPI:
         return {"success": True, "session_id": session_id, "tool_results": {"total_entries": marker(session_id)},
                 "core_memory": {"facts_count": marker(session_id), "token_usage": 0}}
 
-    @app.get("/plugins/memory/")
-    async def memory_panel():
-        return plugin_page("memory", name="memory")
-
     @app.get("/plugins/{plugin}/")
     async def kit_panel(request: Request, plugin: str):  # a panel on the kit: rendered as its plugin renders it
         panel_templates = ui_templates(PLUGINS / plugin / "templates")
@@ -245,6 +248,7 @@ def stub_app() -> FastAPI:
 
     @app.post("/plugins/memory/memories/search")
     async def memory_search(session_id: str = ""):
+        hits[f"memory:{session_id}"] = hits.get(f"memory:{session_id}", 0) + 1
         await asyncio.sleep(lag(session_id))
         return {"results": [{"memory_id": "m-1", "title": f"found-{marker(session_id)}", "content": "", "keywords": [],
                              "importance": 1, "access_count": 0, "similarity": 0.9}]}
@@ -257,7 +261,8 @@ def stub_app() -> FastAPI:
         tasks = [{"task_id": f"task_{number}", "title": f"Task {number}", "status": "not-started", "priority": "medium",
                   "progress": 0, "created_at": now, "started_at": None, "description": None, "tags": [],
                   "depends_on": [], "blocks": [], "is_blocked": False} for number in range(count)]
-        return {"total_memories": count, "tasks": tasks, "total": count,
+        return {"total_memories": count, "avg_importance": None, "total_accesses": count, "memories": [],
+                "tasks": tasks, "total": count,
                 "statistics": {"totals": {"completion_tokens": count}},
                 "enabled": True, "current_phase": f"phase-{count}", "all_allowed_agents": [], "filtered_agents": []}
 

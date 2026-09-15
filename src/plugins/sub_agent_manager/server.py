@@ -1206,16 +1206,14 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                             sub_session_id=instance_id,
                             status="interrupted",
                             completed_at=datetime.now(UTC).isoformat(),
-                            error="Server restarted or crashed while sub-agent was running"
-                        )
-                        # Clear stale activity to prevent WebUI from displaying RUNNING forever.
-                        await manager.update_sub_agent_activity(
-                            parent_session_id=parent_session_id,
-                            sub_session_id=instance_id,
-                            activity=None,
+                            error="Server restarted or crashed while sub-agent was running",
+                            # Clear stale activity to prevent WebUI from displaying RUNNING forever.
+                            current_activity=None,
+                            activity_updated_at=None,
                         )
                         sub_status = "interrupted"
-                
+                        metadata = {**metadata, "current_activity": None, "activity_updated_at": None}
+
                 # Get actual message count from sub-session (not from cached metadata)
                 try:
                     sub_session_data = await session_manager.load_session(user_id, instance_id)

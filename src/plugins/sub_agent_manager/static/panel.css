@@ -1,0 +1,21 @@
+/* Sub-Agents: only what the kit has no component for -- the agent cards and the transcript. Tokens only. */
+
+.sa-show { width: auto; }
+.sa-phase { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.sa-id { overflow-wrap: anywhere; }
+.sa-spinner { width: 0.8em; height: 0.8em; margin-right: var(--space-1); vertical-align: -0.1em; }
+.sa-meta { font-size: var(--text-xs); margin-bottom: var(--space-2); }
+.sa-task { margin: 0 0 var(--space-2); color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.sa-activity { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); padding: var(--space-1) var(--space-2);
+  border-left: 2px solid var(--info); background: var(--info-subtle); border-radius: var(--radius-sm); font-size: var(--text-sm);
+  overflow-wrap: anywhere; }
+.sa-agent:not([data-state="running"]) .sa-activity { border-left-color: var(--border-strong); background: var(--surface-1); color: var(--text-secondary); }
+.sa-actions { margin-top: var(--space-2); }
+
+.sa-drawer { width: min(760px, 100vw); }
+.sa-drawer .pk-dialog-body:focus { outline: none; }
+.sa-heading { margin: var(--space-4) 0 var(--space-2); font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); }
+.sa-message { padding: var(--space-2) var(--space-3); border-left: 2px solid var(--border-strong); background: var(--surface-1); border-radius: var(--radius-sm); }
+.sa-role { font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: var(--space-1); }
+.sa-content { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary); }
+.sa-call { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-secondary); overflow-wrap: anywhere; margin-top: var(--space-1); }
