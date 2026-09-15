@@ -27,7 +27,7 @@ plugins:
         llm_profile: [or-deepseek-flash, deepseek-chat-nostream, or-gemini-flash-unlimited]
         llm_profile_advanced: [or-deepseek-pro, deepseek-pro-nostream, or-gpt-full]
         max_steps: 100
-        system_template: "./prompts/panel_moderator.md"
+        system_template: "./panel_moderator.md"
 
         auto_escalate_on_stuck: true
         escalate_rounds: 2
@@ -71,7 +71,7 @@ plugins:
         llm_profile_advanced: [or-deepseek-pro, deepseek-pro-nostream, or-gpt-full]
 
         max_steps: 5
-        system_template: "./prompts/panel_participant.md"
+        system_template: "./panel_participant.md"
 
         #tools:
         #  allowed:

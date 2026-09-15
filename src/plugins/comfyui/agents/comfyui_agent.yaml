@@ -9,7 +9,7 @@ plugins:
       description: "Generate images, audio, and video using ComfyUI workflows"
       
       agent_config:
-        llm_profile: [or-deepseek-flash, chat]
+        llm_profile: [or-gemini-flash, gemini-flash]
         llm_profile_advanced: []
         max_steps: 30
         
