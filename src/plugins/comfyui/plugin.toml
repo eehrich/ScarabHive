@@ -10,4 +10,4 @@ author = "Enrico Ehrich"
 entrypoint = "server:PLUGIN_FACTORY"
 type = ["mcp-server"]
 category = "media"
-requires = { agent_system = ">=0.6.0" }
+requires = { agent_system = ">=0.7.0" }

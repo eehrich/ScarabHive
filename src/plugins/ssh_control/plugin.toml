@@ -11,7 +11,7 @@ entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["mcp-server"]
 category = "infrastructure"
 tags = ["ssh", "remote", "linux", "automation", "devops"]
-requires = { python = ">=3.11", agent_system = ">=0.6.0" }
+requires = { python = ">=3.11", agent_system = ">=0.7.0" }
 
 # Python package requirements owned by this plugin.
 dependencies = ["asyncssh>=2.13.0"]

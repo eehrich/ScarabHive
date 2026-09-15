@@ -9,4 +9,4 @@ description = "Monitor and query batch queue status"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["web"]
-requires = { agent_system = ">=0.6.0" }
+requires = { agent_system = ">=0.7.0" }

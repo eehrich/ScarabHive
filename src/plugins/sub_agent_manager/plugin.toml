@@ -9,4 +9,4 @@ description = "Manages persistent sub-agent instances for coordinator agents"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["mcp-server", "web"]
-requires = { agent_system = ">=0.6.0" }
+requires = { agent_system = ">=0.7.0" }
