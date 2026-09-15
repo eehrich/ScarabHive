@@ -650,3 +650,19 @@ async def cancel_active_session(
         "request_id": request_id,
         "message": "Request not found or already completed",
     }
+
+
+@router.get("/system")
+async def system_status(
+    admin_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Health of this process with the reasons behind it (admin only).
+
+    ``status`` is the worst of ``checks``: servers that did not start (error),
+    agent config errors found at start (error), LLMs paused after rate limits
+    (warn), a checked-out commit newer than the one the process runs (warn).
+    ``/health`` stays the plain liveness probe.
+    """
+    from agent_system.services.system_status import collect_system_status
+
+    return await collect_system_status()

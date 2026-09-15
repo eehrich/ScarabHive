@@ -1,4 +1,4 @@
-// System panel: health, event bus, running requests (admin), MCP servers (admin).
+// System panel: status with its reasons (admin; others see liveness), running requests (admin), MCP servers (admin).
 // Only the visible tab loads; a tab the viewer may not see is asked once.
 import { api, html, render, icon, confirm, toast, trusted, ApiError } from '/static/kit/panel-kit.js';
 
@@ -31,34 +31,86 @@ function unavailable(target, error) {
   return status === 403 || status === 404;
 }
 
-async function loadOverview() {
+const STATUS = {
+  ok: { label: 'Healthy', badge: 'ok', dot: 'ok' },
+  warn: { label: 'Needs attention', badge: 'warn', dot: 'warn' },
+  error: { label: 'Problems', badge: 'danger', dot: 'danger' },
+};
+const CHECK_NAMES = { servers: 'Servers', config: 'Agent config', llm: 'LLM rate limits', deploy: 'Deployed code' };
+
+/**
+ * Everyone may ask /health: it only says the server answers. The reasons behind a status are
+ * admin data -- refused (403) to others, and absent (404) when the server runs without authentication.
+ */
+async function loadLiveness(why) {
   let health;
   try {
     health = await api('/health', { quiet: true });
   } catch (error) {
-    unavailable($('overviewStats'), error);
+    unavailable($('statusCard'), error);
     return;
   }
-  render($('overviewStats'), [
-    stat('Status', health.status),
-    stat('Uptime', uptime(health.uptime_seconds)),
-    stat('Version', health.version),
-    stat('Python', health.python_version),
-  ]);
-  render($('packages'), Object.entries(health.packages || {})
-    .map(([name, version]) => html`<dt>${name}</dt><dd class="pk-mono">${version}</dd>`));
-  let meta;
+  render($('statusCard'), html`
+    <div class="pk-card-head"><span class="pk-dot pk-dot--ok"></span><h3 class="pk-card-title">Server answers</h3></div>
+    <p class="pk-secondary" style="margin:0">${why}</p>`);
+  render($('overviewStats'), [stat('Uptime', uptime(health.uptime_seconds)), stat('Version', health.version)]);
+}
+
+async function loadOverview() {
+  let data;
   try {
-    meta = await api('/status/meta', { quiet: true });
+    data = await api('/admin/system', { quiet: true });
   } catch (error) {
-    unavailable($('busStats'), error);
+    if (error instanceof ApiError && (error.status === 403 || error.status === 401)) {
+      await loadLiveness('Why the server is healthy or not is shown to administrators.');
+      return;
+    }
+    if (error instanceof ApiError && error.status === 404) {
+      await loadLiveness('Status details are not available on this server (authentication off, or an older server version).');
+      return;
+    }
+    unavailable($('statusCard'), error);
     return;
   }
-  const bus = [
-    ['Subscribers', meta.subscribers], ['Events published', meta.publish_attempted],
-    ['Events delivered', meta.delivered], ['Handlers', meta.handlers_count],
-  ];
-  render($('busStats'), bus.map(([k, v]) => html`<dt>${k}</dt><dd class="pk-mono">${v ?? '—'}</dd>`));
+  const status = STATUS[data.status] || STATUS.error;
+  render($('statusCard'), html`
+    <div class="pk-card-head">
+      <span class="pk-dot pk-dot--${status.dot}"></span>
+      <h3 class="pk-card-title">Status</h3>
+      <span class="pk-badge pk-badge--${status.badge}">${status.label}</span>
+    </div>
+    <dl class="pk-kv">${data.checks.map((check) => html`
+      <dt><span class="pk-dot pk-dot--${(STATUS[check.level] || STATUS.error).dot}"></span> ${CHECK_NAMES[check.name] || check.name}</dt>
+      <dd>${check.detail}</dd>`)}</dl>`);
+
+  const commit = data.build.commit;
+  const running = await api('/admin/active-sessions', { quiet: true }).then((r) => r.total).catch(() => null);
+  render($('overviewStats'), [
+    stat('Uptime', uptime(data.build.uptime_seconds)),
+    stat('Servers', `${data.servers.running} / ${data.servers.declared}`),
+    stat('Agents', data.servers.agents),
+    stat('Hooks on', `${data.hooks.enabled} / ${data.hooks.registered}`),
+    stat('Running requests', running ?? '—'),
+  ]);
+
+  const problems = data.servers.problems;
+  $('problemsCard').hidden = !problems.length;
+  render($('problems'), problems.map((problem) => html`<li class="pk-mono">${problem}</li>`));
+  const findings = data.servers.config_findings || [];
+  $('findingsCard').hidden = !findings.length;
+  render($('findings'), findings.map((finding) => html`<li class="pk-mono">${finding}</li>`));
+
+  $('processCard').hidden = false;
+  const started = data.build.started_at ? new Date(data.build.started_at * 1000).toLocaleString() : '—';
+  render($('process'), [
+    ['Started', started],
+    ['Commit', commit ? `${commit.hash.slice(0, 8)} ${commit.subject}` : '—'],
+    ['Memory', data.process.memory_mb == null ? '—' : `${data.process.memory_mb} MB`],
+    ['Threads', data.process.threads],
+    ['Async tasks', data.process.async_tasks],
+    ['PID', data.process.pid],
+    ['Python', data.build.python],
+  ].map(([k, v]) => html`<dt>${k}</dt><dd class="pk-mono">${v}</dd>`));
 }
 
 async function loadRequests() {

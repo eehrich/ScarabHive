@@ -211,6 +211,19 @@ class ModelHealth:
             block = self._blocks.get(key) if key else None
             return max(0.0, block.until - self._clock()) if block else 0.0
 
+    def blocked(self) -> list[dict]:
+        """The LLMs paused right now: endpoint, model and seconds left.
+
+        The credential fingerprint stays out -- this feeds a status page.
+        """
+        with self._lock:
+            now = self._clock()
+            return [
+                {"endpoint": key[0], "model": key[2],
+                 "seconds_left": round(block.until - now, 1), "pause": block.pause}
+                for key, block in self._blocks.items() if block.until > now
+            ]
+
     def clear(self) -> None:
         with self._lock:
             self._blocks.clear()

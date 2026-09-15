@@ -477,6 +477,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Startup
         global _app_start_time, _shutdown_event
         _app_start_time = time.time()
+        # The commit this process starts from: the System panel compares it
+        # with the checked-out one to say a restart would deploy newer code.
+        from .services.system_status import record_start
+        await asyncio.to_thread(record_start)
 
         logger = logging.getLogger(__name__)
         

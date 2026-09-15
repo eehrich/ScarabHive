@@ -9,9 +9,11 @@
   <button class="pk-tab" role="tab" aria-selected="false" aria-controls="tab-servers" data-tab="servers">MCP servers <span class="pk-tab-count" id="serverCount"></span></button>
 </div>
 <section id="tab-overview" class="pk-stack" role="tabpanel">
-  <div class="pk-stats" id="overviewStats"><span class="pk-skeleton"></span></div>
-  <div class="pk-card"><div class="pk-card-head"><h3 class="pk-card-title">Event bus</h3></div><dl class="pk-kv" id="busStats"></dl></div>
-  <div class="pk-card"><div class="pk-card-head"><h3 class="pk-card-title">Packages</h3></div><dl class="pk-kv" id="packages"></dl></div>
+  <div class="pk-card" id="statusCard"><span class="pk-skeleton"></span></div>
+  <div class="pk-stats" id="overviewStats"></div>
+  <div class="pk-card" id="problemsCard" hidden><div class="pk-card-head"><h3 class="pk-card-title">Servers that did not start</h3></div><ul id="problems" class="pk-stack"></ul></div>
+  <div class="pk-card" id="findingsCard" hidden><div class="pk-card-head"><h3 class="pk-card-title">Agent config errors</h3></div><ul id="findings" class="pk-stack"></ul></div>
+  <div class="pk-card" id="processCard" hidden><div class="pk-card-head"><h3 class="pk-card-title">Process</h3></div><dl class="pk-kv" id="process"></dl></div>
 </section>
 <section id="tab-requests" role="tabpanel" hidden></section>
 <section id="tab-servers" class="pk-stack" role="tabpanel" hidden>

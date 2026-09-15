@@ -167,6 +167,10 @@ class ServerDecl:
 class Runtime:
     """Config in, running servers out -- and the declarations in between."""
 
+    #: The runtime whose start() ran last in this process: the servers the
+    #: process actually runs (read by the system status).
+    last_started: Optional["Runtime"] = None
+
     def __init__(self, config: AgentSystemConfig, *,
                  registry: Optional[MCPRegistry] = None,
                  session_service: Any = None):
@@ -175,6 +179,13 @@ class Runtime:
         self._session_service = session_service
         self._decls: dict[str, ServerDecl] = {}
         self._plugins: dict[str, Callable[..., Any]] = {}
+        #: Servers that did not start (unresolved config, unknown type, a
+        #: failed build), one line each -- the start-up policy logs and carries
+        #: on, so this is the only record a status page can show.
+        self.problems: list[str] = []
+        #: validate()'s findings from the last start(): config errors of lazy
+        #: agents, which may still run (degraded) or fail again as a problem.
+        self.config_findings: list[str] = []
         self._declare_all()
         # Bound registries answer describe()/built() from here; an
         # unbound MCPRegistry keeps behaving exactly as it always did.
@@ -204,6 +215,7 @@ class Runtime:
             merged = get_mcp_config_by_name(name, self.config)
             if not merged:
                 logger.warning("Failed to resolve MCP config for server '%s', skipping", name)
+                self.problems.append(f"server '{name}': config could not be resolved")
                 continue
             logger.debug(f"Bootstrap server '{name}': type={merged.type}, enabled={merged.enabled}")
 
@@ -216,6 +228,7 @@ class Runtime:
                                 name, metadata.get("description") or metadata.get("summary") or "")
             elif merged.type != "agent":
                 logger.warning("Unknown server type '%s' for server '%s'", merged.type, name)
+                self.problems.append(f"server '{name}': unknown type '{merged.type}'")
                 continue
 
             self._decls[name] = ServerDecl(
@@ -370,7 +383,8 @@ class Runtime:
     # ------------------------------------------------------------------
     def start(self) -> "Runtime":
         """Build every declared server, in config order."""
-        self.validate()
+        Runtime.last_started = self
+        self.config_findings = self.validate()
         for name in list(self._decls):
             self._build_logged(name)
         try:
@@ -392,6 +406,7 @@ class Runtime:
                                  decl.type, name, e)
             else:
                 logger.exception("Failed to instantiate agent '%s': %s", name, e)
+            self.problems.append(f"server '{name}': failed to start: {e}")
             if _in_test_cwd():
                 raise
             return None
