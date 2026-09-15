@@ -1540,10 +1540,10 @@ The framework injects these parameters into `params`:
 - **`_request_id`**, **`_session_id`**, **`_user_id`**, **`_agent_name`**: caller context
 - **`_agent`**: the calling Agent instance
 - **`_cancellation_token`**: CancellationToken for cooperative cancellation — only when the call carries a request id
-- **`request_id`/`requestId`**: per-tool request id for correlation and logging (a model-supplied `request_id` becomes the base of this id and of the cancellation/status routing — never declare it as a parameter)
+- **`request_id`/`requestId`**: per-tool request id for correlation and logging (set by the framework; a model-supplied value is dropped)
 
-Model-supplied parameter names starting with `_` are dropped, so never declare
-a tool parameter with a leading underscore (or named `request_id`/`requestId`).
+Model-supplied parameters starting with `_` or named `request_id`/`requestId`
+are dropped, so never declare a tool parameter with those names.
 In tests, the CLI and `dispatch_tool_call` some of these are absent — always use
 `params.get(...)`.
 
@@ -2676,7 +2676,7 @@ In addition to MCP tool plugins, AgentSystem supports **hooks-only plugins** tha
 5. **FORMAT_OUTPUT** - Display formatting only, never history
 6. **SESSION_END** - After saving; no effect
 7. **PRE_LLM_REQUEST** / 8. **POST_LLM_RESPONSE** - At LLM client level, read-only
-9. **PRE_TOOL_CALL** / 10. **POST_TOOL_CALL** - Defined, but nothing calls them: they never fire
+9. **PRE_TOOL_CALL** / 10. **POST_TOOL_CALL** - Defined, but nothing calls them: they never fire (registration logs a warning)
 
 Each hook gets a deep copy of the context. Changes count only with
 `modified=True`; `success=False` discards context and metadata.
@@ -2840,9 +2840,9 @@ hooks:
 ```
 
 A global override knows only `enabled`, `timeout` and `order`; only these field
-names are validated, so a wrong hook name loads fine and does nothing.
-`hooks.default_timeout` is not applied (registration uses 30 s unless the hook
-sets `timeout`).
+names are validated. A key that matches no registered hook has no effect, and
+startup logs a warning for it. `hooks.default_timeout` applies to hooks whose
+schema sets no `timeout`.
 
 Per agent, `agent_config.hooks.enabled: false` switches off all hooks of that
 agent, `agent_config.hooks.overrides["<full name>"].enabled` switches one, and

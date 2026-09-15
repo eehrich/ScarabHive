@@ -226,7 +226,7 @@ class EnhancedSearchServer(SchemaBasedMCPServer, PluginHook):
         return HookResult(success=True, modified=False, context=context)
 ```
 
-**Note:** `pre_tool_call` / `post_tool_call` hooks can be declared but never fire: nothing calls `execute_pre_tool_hooks` / `execute_post_tool_hooks` (`servers/agent/components/hook_integration.py`). Tool-level interception has to happen elsewhere.
+**Note:** `pre_tool_call` / `post_tool_call` hooks can be declared but never fire: nothing calls `execute_pre_tool_hooks` / `execute_post_tool_hooks` (`servers/agent/components/hook_integration.py`). Registering one logs a warning. Tool-level interception has to happen elsewhere.
 
 **Use Cases:**
 - Tools that need lifecycle awareness (context engineering, sequential thinking)

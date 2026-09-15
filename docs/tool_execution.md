@@ -185,8 +185,9 @@ async def execute_tools_streaming(
         # wird NICHT ausgeführt. Keine Validierung gegen das JSON-Schema.
         params, parse_problem = parse_tool_arguments(tc["function"]["arguments"])
         
-        # Vom Modell gelieferte "_"-Keys (Runtime-Parameter) werden verworfen
-        params = {k: v for k, v in params.items() if not k.startswith("_")}
+        # Vom Modell gelieferte Runtime-Parameter ("_"-Keys, request_id/requestId) werden verworfen
+        params = {k: v for k, v in params.items()
+                  if not k.startswith("_") and k not in ("request_id", "requestId")}
         
         if tool_name not in available_tools:
             # Error-Message "ToolNotFoundError"
@@ -289,7 +290,7 @@ async def _execute_plugin_tool(
     return message, events, [{"server": tool_name, "action": openai_tool_name, "result": result, ...}]
 ```
 
-Ein Plugin-Tool sieht damit neben den Modell-Argumenten (jeweils soweit der Wert gesetzt ist): `request_id`/`requestId`, `_request_id`, `_session_id`, `_user_id`, `_agent_name`, `_agent`, `_status` und (bei vorhandener Request-ID) `_cancellation_token`. Vom Modell gelieferte `_`-Keys werden vorher verworfen. Ein vom Modell geliefertes `request_id` dagegen wird zur Basis der Tool-Request-ID und von `main_request_id` — Abbruch und Status-Routing laufen dann auf dem Modell-Wert.
+Ein Plugin-Tool sieht damit neben den Modell-Argumenten (jeweils soweit der Wert gesetzt ist): `request_id`/`requestId`, `_request_id`, `_session_id`, `_user_id`, `_agent_name`, `_agent`, `_status` und (bei vorhandener Request-ID) `_cancellation_token`. Vom Modell gelieferte `_`-Keys sowie `request_id`/`requestId` werden vorher verworfen: die Request-ID gehört dem Framework, sonst liefen Abbruch und Status-Routing auf dem Modell-Wert.
 
 ### 4. External Tool Execution
 

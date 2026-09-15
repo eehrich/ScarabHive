@@ -168,7 +168,7 @@ class MCPIntegration:
 
     async def _register_plugin_hooks(self, config: AgentSystemConfig) -> None:
         """Register hooks from plugins."""
-        from ..plugins.discovery import register_plugin_hooks
+        from ..plugins.discovery import register_plugin_hooks, warn_unknown_hook_overrides
         from ..hooks import load_hooks_config
         from ..config.settings import get_mcp_config_by_name
         
@@ -221,6 +221,8 @@ class MCPIntegration:
                     f"Failed to register hooks for plugin '{server_name}': {e}",
                     exc_info=True
                 )
+
+        warn_unknown_hook_overrides(config)
 
     async def shutdown(self) -> None:
         """Shutdown MCP integration.

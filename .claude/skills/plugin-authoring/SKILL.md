@@ -153,8 +153,9 @@ Scripts in `src/scripts/` (run with `.venv/Scripts/python.exe`; all read-only un
 `validate_plugin.py --merge-config` **writes** missing config keys into schema.yaml.
 
 ⚠️ Measured: the validators do **not** catch the silent failures of the activation
-chain — a dead allowlist pattern (`coder_fs/semantic_search`), a wrong hook name in
-`hooks.overrides`, a sub-agent missing from `allowed_agents`. Check those with
+chain — a dead allowlist pattern (`coder_fs/semantic_search`), a sub-agent missing
+from `allowed_agents`. (A `hooks.overrides` key matching no hook is logged as a
+warning at startup, not by the validators.) Check those with
 `load_settings()` + `get_mcp_config_by_name` in a config test
 (`src/plugins/amiga/tests/test_amiga_config.py`).
 

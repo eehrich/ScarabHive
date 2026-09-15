@@ -26,6 +26,9 @@ from ....utils.json_utils import parse_tool_arguments
 
 logger = logging.getLogger(__name__)
 
+# Per-tool request ids the framework sets on every call (see execute_tools_streaming).
+FRAMEWORK_REQUEST_ID_KEYS = frozenset({"request_id", "requestId"})
+
 
 class ToolDispatchError(Exception):
     """Programmatic tool dispatch failed (unknown tool, not allowed, unsupported
@@ -241,14 +244,18 @@ class ToolExecutionManager:
             # impersonate another agent (e.g. defeat json_store's owner-based write
             # protection whenever no session id is set, since injection only
             # overwrites truthy values). Strip them from model-supplied arguments.
+            # request_id/requestId are framework-owned too: a model-supplied one
+            # would become the base of the tool's request id, so cancelling the
+            # real request would miss the tool and its status would be routed
+            # under the model's value.
             if not json_parse_failed and isinstance(params, dict):
-                forged = [k for k in params if k.startswith("_")]
+                forged = [k for k in params if k.startswith("_") or k in FRAMEWORK_REQUEST_ID_KEYS]
                 if forged:
                     logger.warning(
                         "Dropping model-supplied runtime param(s) %s from tool call %s",
                         forged, tool_name,
                     )
-                    params = {k: v for k, v in params.items() if not k.startswith("_")}
+                    params = {k: v for k, v in params.items() if k not in forged}
 
             # If JSON parsing failed, return an error to the LLM so it can retry
             if json_parse_failed:
@@ -307,7 +314,7 @@ class ToolExecutionManager:
             task_indices: Dict[asyncio.Task, int] = {}  # task -> original index (for ordering responses)
             for i, (tc, tool_name, openai_tool_name, params) in enumerate(valid_tool_executions):
                 # Create tool-specific request_id (same logic as execute_tools)
-                original_request_id = params.get("request_id") or params.get("requestId") or request_id
+                original_request_id = request_id
                 if original_request_id:
                     if self._agent is not None:
                         try:
@@ -747,13 +754,22 @@ class ToolExecutionManager:
             if isinstance(tool_result, dict):
                 raw_multimodal = tool_result.pop("_multimodal_content", None)
                 if raw_multimodal:
+                    from pydantic import ValidationError
                     from ....llm.models import MultimodalToolContent
-                    # Convert to Pydantic models
+                    # Convert to Pydantic models. An invalid item is dropped on its
+                    # own: raising here would replace the whole tool result -- a job
+                    # that already ran -- with an error, and the model would run it again.
                     multimodal_content = []
                     items = raw_multimodal if isinstance(raw_multimodal, list) else [raw_multimodal]
                     for item in items:
                         if isinstance(item, dict):
-                            multimodal_content.append(MultimodalToolContent(**item))
+                            try:
+                                multimodal_content.append(MultimodalToolContent(**item))
+                            except ValidationError as exc:
+                                logger.warning(
+                                    "Dropping invalid multimodal item from tool %s: %s",
+                                    tool_name, exc.errors(include_url=False),
+                                )
                         elif isinstance(item, MultimodalToolContent):
                             multimodal_content.append(item)
                     if multimodal_content:

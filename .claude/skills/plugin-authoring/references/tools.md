@@ -62,9 +62,8 @@ web_ui: {}      # optional, see skill panel-authoring
   `{name}` → `execute`; otherwise the method of the same name. Sync and async both work.
 - **Always prefix `{{ name }}_`** — the model's tool name is the rendered
   `function.name`, and two equal names collide silently. Only `[a-zA-Z0-9_-]`.
-- **Parameter names never start with `_`** (dropped), and never `request_id` /
-  `requestId` — a model-supplied `request_id` becomes the base of the real request
-  id, and cancellation and status routing then work on the model's value.
+- **Parameter names never start with `_` and are never `request_id` / `requestId`** —
+  model-supplied values for those are dropped (the framework sets them).
 - Descriptions are the contract with the model: what, when, return value, write
   protection, recovery (example `json_store/schema.yaml`). Overridable per instance
   via `self_tool_descriptions` (server level).

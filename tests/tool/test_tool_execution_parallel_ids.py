@@ -45,7 +45,6 @@ async def test_parallel_tool_calls_get_unique_request_id_suffixes(tool_execution
                 "name": "web_scraper",
                 "arguments": json.dumps({
                     "url": f"https://example{i}.com",
-                    "request_id": "test_request_123",  # Same base request_id for all
                     "action": "fetch"
                 })
             }
@@ -66,9 +65,9 @@ async def test_parallel_tool_calls_get_unique_request_id_suffixes(tool_execution
     mock_server = tool_execution_manager.registry.get("web_scraper")
     mock_server.call_with_status.side_effect = capture_call_with_status_params
     
-    # Execute the tools
+    # Execute the tools under one request id
     tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
-        tool_calls, tool_name_mapping, available_tools, step
+        tool_calls, tool_name_mapping, available_tools, step, request_id="test_request_123"
     )
     
     print(f"Called params count: {len(called_params)}")
@@ -110,7 +109,6 @@ async def test_single_tool_call_gets_consistent_suffix(tool_execution_manager):
             "name": "web_scraper", 
             "arguments": json.dumps({
                 "url": "https://example.com",
-                "request_id": "single_request_456",
                 "action": "fetch"
             })
         }
@@ -132,7 +130,7 @@ async def test_single_tool_call_gets_consistent_suffix(tool_execution_manager):
     
     # Execute the tool
     tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
-        tool_calls, tool_name_mapping, available_tools, step
+        tool_calls, tool_name_mapping, available_tools, step, request_id="single_request_456"
     )
     
     # Verify single call was made  
@@ -192,6 +190,40 @@ async def test_no_request_id_in_params_handles_gracefully(tool_execution_manager
         assert params.get("requestId") is None
     
     print("✅ Test passed: Tool calls without request_id handled gracefully")
+
+
+@pytest.mark.parametrize("request_id, expected", [("real_request_789", "real_request_789_001"), (None, None)])
+async def test_a_model_supplied_request_id_is_dropped(tool_execution_manager, request_id, expected):
+    """request_id is framework-owned: the model's value must neither reach the tool
+    nor become the base of the tool's request id (cancel/status would miss it)."""
+    tool_calls = [{
+        "id": "call_forged",
+        "function": {
+            "name": "web_scraper",
+            "arguments": json.dumps({
+                "url": "https://example.com",
+                "request_id": "forged_by_model",
+                "requestId": "forged_by_model",
+            }),
+        },
+    }]
+    called_params = []
+
+    def capture(action, params):
+        called_params.append(params.copy())
+        return {"content": "ok"}
+
+    tool_execution_manager.registry.get("web_scraper").call_with_status.side_effect = capture
+
+    await execute_tools_collect(
+        tool_execution_manager, tool_calls, {"web_scraper": "web_scraper"}, ["web_scraper"], 1,
+        request_id=request_id,
+    )
+
+    assert len(called_params) == 1
+    assert called_params[0].get("request_id") == expected
+    assert called_params[0].get("requestId") == expected
+    assert called_params[0]["url"] == "https://example.com"
 
 
 if __name__ == "__main__":

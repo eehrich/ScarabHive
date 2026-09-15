@@ -44,12 +44,12 @@ logger = logging.getLogger(__name__)
 #: Parameter names a command must not bind its argument to, compared with
 #: underscores removed so ``requestId`` and ``request_id`` are the same name.
 #:
-#: Everything with a LEADING underscore is stripped by ``dispatch_tool_call``
-#: before the real runtime params are injected. These three get past that,
-#: because they are read AFTER the strip: ``request_id``/``requestId`` become
-#: ``_request_id`` plus the status channel's routing key
-#: (``MCPServer.call_with_status``), ``session_id`` is read as an alias of
-#: ``_session_id`` by the agent-as-tool path (``Agent.call``), and
+#: Everything with a LEADING underscore, and ``request_id``/``requestId`` (the
+#: status channel's routing key, ``MCPServer.call_with_status``), is dropped by
+#: ``dispatch_tool_call`` before the real runtime params are injected -- a
+#: command bound to one would silently lose its argument. The other two get
+#: past the strip, because they are read AFTER it: ``session_id`` is read as an
+#: alias of ``_session_id`` by the agent-as-tool path (``Agent.call``), and
 #: ``agent_name`` selects the target agent in lessons_learned. Deliberately
 #: NOT here: ``status`` and ``user_id`` -- enumerated the consumers, both are
 #: ordinary tool parameters (todo, lessons_learned, writer_audio), and

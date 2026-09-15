@@ -562,10 +562,17 @@ async def register_plugin_hooks(
                     f"Valid types: {[t.name.lower() for t in HookType]}"
                 )
                 continue
-            
+
+            if hook_type in (HookType.PRE_TOOL_CALL, HookType.POST_TOOL_CALL):
+                logger.warning(
+                    f"Plugin '{plugin_name}' hook '{hook_name}' has type '{hook_type.value}', "
+                    "which never fires: the tool loop does not call tool hooks. "
+                    "The hook is registered but will not run."
+                )
+
             # Get configuration from plugin metadata
             enabled = hook_metadata.get('enabled', True)
-            timeout = hook_metadata.get('timeout', 30.0)
+            timeout = hook_metadata.get('timeout', hooks_config.default_timeout)
             description = hook_metadata.get('description', '')
             category = hook_metadata.get('category', None)  # Optional category/tag
             order_spec = hook_metadata.get('order', {})
@@ -673,6 +680,68 @@ async def register_plugin_hooks(
     return registered_hooks
 
 
+# Override warnings already logged in this process: both registration paths
+# (MCPIntegration and register_bootstrapped_plugin_hooks) may run in one process.
+_REPORTED_OVERRIDE_WARNINGS: Set[str] = set()
+
+
+def warn_unknown_hook_overrides(settings: Any, registry: Any = None) -> List[str]:
+    """Log every ``hooks.overrides`` key that matches no registered hook.
+
+    Overrides are looked up by exact name, so a typo, a short name or the name
+    of a renamed instance silently does nothing -- the hook keeps its default.
+    Global keys may name a hook (``<instance>.<hook>``) or an instance with
+    hooks (``<instance>``, applies to all of them); agent keys only the full
+    hook name. Call after all hooks are registered.
+
+    Each message is logged once per process. Returns all messages (for tests).
+    """
+    from ..hooks import get_hook_registry
+    from ..config.settings import get_mcp_config_by_name
+
+    if registry is None:
+        registry = get_hook_registry()
+    hook_names = {name for names in registry.list_hooks().values() for name in names}
+    instances_with_hooks = {name.rsplit(".", 1)[0] for name in hook_names}
+    warnings: List[str] = []
+
+    global_overrides = getattr(getattr(settings, "hooks", None), "overrides", None) or {}
+    for key in global_overrides:
+        if key not in hook_names and key not in instances_with_hooks:
+            warnings.append(
+                f"hooks.overrides key '{key}' matches no registered hook or hook-owning "
+                "instance -- it has no effect (misspelled, renamed instance, or its server "
+                "is not enabled?)"
+            )
+
+    unknown_agent_keys: Dict[str, List[str]] = {}
+    servers = getattr(getattr(settings, "plugins", None), "servers", None) or {}
+    for server_name, server_cfg in servers.items():
+        if not getattr(server_cfg, "enabled", False):
+            continue
+        try:
+            agent_config = getattr(get_mcp_config_by_name(server_name, settings), "agent_config", None)
+        except Exception:
+            logger.debug("No merged config for '%s'", server_name, exc_info=True)
+            continue
+        agent_hooks = getattr(agent_config, "hooks", None)
+        for key in (getattr(agent_hooks, "overrides", None) or {}):
+            if key not in hook_names:
+                unknown_agent_keys.setdefault(key, []).append(server_name)
+    for key, agents in sorted(unknown_agent_keys.items()):
+        warnings.append(
+            f"agent_config.hooks.overrides key '{key}' (agents: {', '.join(sorted(agents))}) "
+            "matches no registered hook -- it has no effect. Use the full "
+            "'<instance>.<hook>' name of an enabled server."
+        )
+
+    for message in warnings:
+        if message not in _REPORTED_OVERRIDE_WARNINGS:
+            _REPORTED_OVERRIDE_WARNINGS.add(message)
+            logger.warning(message)
+    return warnings
+
+
 _BOOTSTRAPPED_HOOKS_REGISTERED = False
 
 
@@ -741,6 +810,8 @@ async def register_bootstrapped_plugin_hooks(settings: Any | None = None) -> Lis
             )
 
     _BOOTSTRAPPED_HOOKS_REGISTERED = True
+    if settings is not None:
+        warn_unknown_hook_overrides(settings)
     if all_registered:
         logger.info(
             "register_bootstrapped_plugin_hooks: wired %d plugin hooks", len(all_registered)

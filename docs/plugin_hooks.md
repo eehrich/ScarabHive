@@ -109,8 +109,9 @@ async def on_pre_llm_call(self, context: HookContext) -> HookResult:
 `llm_response["assistant"]["tool_calls"]` are read back. Metadata keys the
 loop reads: `content_format`, `continue`, `continue_message`,
 `continue_injected_by`, `continuation_count`, `continuation_reason`.
-A hook that sets `continue` must also set `continue_injected_by` (see
-[Cache Safety](#cache-safety)).
+A hook that sets `continue` should also set `continue_injected_by`, so it can
+count its own nudges; without one the loop marks the nudge `post_llm_call_hook`
+(see [Cache Safety](#cache-safety)).
 
 ```python
 async def on_post_llm_call(self, context: HookContext) -> HookResult:
@@ -160,7 +161,8 @@ async def on_llm_progress(self, context: HookContext) -> HookResult:
 > ⚠️ **Never fires:** The hook type, registry routing and
 > `HookIntegrationManager.execute_pre_tool_hooks` / `execute_post_tool_hooks`
 > exist, but nothing calls them — hooks of type PRE_TOOL_CALL and
-> POST_TOOL_CALL **never fire**. Do not build plugins on them.
+> POST_TOOL_CALL **never fire**. Registering one logs a warning. Do not build
+> plugins on them.
 
 **Trigger:** none (intended: before executing a tool)
 **Intended Use Cases:** Parameter validation, access control, logging
@@ -624,10 +626,10 @@ hooks:
         after: ["other_instance.other_hook"]  # Override order (full names/categories)
 ```
 
-`hooks.default_timeout` is accepted but not applied: the registration
-default timeout is hard-coded to 30.0 s; set `timeout` in the schema or an
-override instead. Only the field names of an override are validated — an
-override key with a wrong hook name loads fine and does nothing.
+`hooks.default_timeout` is the timeout of every hook whose schema sets no
+`timeout`. Only the field names of an override are validated; a key that matches
+no registered hook (or hook-owning instance) has no effect, and startup logs a
+warning for it.
 
 Ein globaler Override kennt genau diese drei Keys (`enabled`, `timeout`,
 `order`) — ein anderer Key (Tippfehler wie `timout`) lässt `load_settings`
@@ -678,10 +680,10 @@ agents:
 4. **Hook globally disabled + agent enables** → Hook executes for this agent only
 5. **Hook globally enabled + agent disables** → Hook skipped for this agent only
 
-⚠️ Agent overrides are **not validated** (`HooksConfig.overrides` is a plain
-dict): a short name, a type name or a typo has no effect, without error or
-warning. `timeout` and `order` in agent overrides are ignored. Copy the full
-name from the registration log.
+⚠️ Agent override keys must be the **full** hook name: a short name, a type
+name, an instance name or a typo has no effect. Startup logs a warning for every
+such key once all hooks are registered. `timeout` and `order` in agent overrides
+are ignored.
 
 **Example Scenario:**
 

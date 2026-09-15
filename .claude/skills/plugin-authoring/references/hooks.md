@@ -15,7 +15,7 @@ step loop in `servers/agent/server.py`.
 | `format_output` | display (HTML) | display only, never history |
 | `session_end` | after saving | nothing; `metadata["persisted"]` |
 | `pre_llm_request` / `post_llm_response` | at client level | read-only, errors swallowed |
-| `pre_tool_call` / `post_tool_call` | **never fire** — no callers | — |
+| `pre_tool_call` / `post_tool_call` | **never fire** — no callers; registration logs a warning | — |
 
 The context is **a deep copy per hook** (`messages`, `llm_response`, `metadata`);
 `agent`, `llm`, `tools_schema`, the token are passed by reference.
@@ -91,15 +91,15 @@ of the same type, `on_*` runs once per registered name.
 - Precedence at registration: schema.yaml < instance `hook_config.enabled: false`
   (can only switch off) < global `hooks.overrides` < `hooks.enabled: false`.
   Global override keys: `<instance>.<hook>` or `<instance>` for all of its hooks.
-  Only the field names are validated — **a wrong hook name loads fine and does nothing.**
+  A key that matches no registered hook has no effect; startup logs a warning for it.
 - Per agent (`agent_config.hooks`):
   - `enabled: false` switches off all hooks of the agent
   - `overrides["<full name>"].enabled` beats the default
   - all other keys arrive as `context.hook_config`
-- ⚠️ **Agent overrides are not validated at all.** Short name, type name, typo →
-  no effect, no error, no warning. `timeout` and `order` have no effect there.
-  Copy the full name from the registration log.
-- `hooks.default_timeout` is not applied (registration hard-codes 30).
+- ⚠️ **Agent override keys must be the full name.** Short name, type name, instance
+  name, typo → no effect; startup logs a warning per key (after all hooks are
+  registered). `timeout` and `order` have no effect there.
+- `hooks.default_timeout` is the timeout for hooks whose schema sets none.
 
 ## Errors and timeout
 
@@ -133,6 +133,6 @@ A hook that breaks this pays for the whole context again on every step.
 - **Every inserted `role: user` message is marked.** `None` means "written by a
   person"; context_engineer (turn age, trigger), OKF, tool_preload, agent_continuation
   find "the last human message" by it.
-- A `post_llm_call` hook that sets `continue` also sets `continue_injected_by` —
-  otherwise an unmarked user message lands in history.
+- A `post_llm_call` hook that sets `continue` also sets `continue_injected_by`, so it
+  can count its own nudges; without one the loop marks the nudge `post_llm_call_hook`.
 - Mark system messages a hook inserts as well (so it can replace them).

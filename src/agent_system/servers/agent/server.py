@@ -749,7 +749,8 @@ class Agent(MCPServer):
         errors are returned as the tool's normal result (callers interpret the
         status convention themselves).
         """
-        from .components.tool_execution import ToolDispatchError, inject_runtime_params
+        from .components.tool_execution import (
+            FRAMEWORK_REQUEST_ID_KEYS, ToolDispatchError, inject_runtime_params)
 
         # External MCP tools (dotted names) take a different execution branch
         # (MCP client sessions) that programmatic dispatch does not replicate.
@@ -773,19 +774,19 @@ class Agent(MCPServer):
         # driven by tool_script, whose call_tool forwards script-authored params
         # verbatim; a script could otherwise pass _session_id to impersonate
         # another agent and defeat json_store's owner-based write protection.
-        forged = [k for k in params if k.startswith("_")]
+        # request_id/requestId likewise: status and cancellation route by them.
+        forged = [k for k in params if k.startswith("_") or k in FRAMEWORK_REQUEST_ID_KEYS]
         if forged:
             logger.warning(
                 "Dropping caller-supplied runtime param(s) %s from programmatic "
                 "dispatch of %s", forged, tool_name)
-            params = {k: v for k, v in params.items() if not k.startswith("_")}
+            params = {k: v for k, v in params.items() if k not in forged}
 
         params = inject_runtime_params(
             params, session_id=session_id, user_id=user_id,
             request_id=request_id, agent=self)
         if request_id:
-            params.setdefault("request_id", request_id)
-            params.setdefault("requestId", request_id)
+            params["request_id"] = params["requestId"] = request_id
 
         logger.info("Invoking tool %s via programmatic dispatch (agent=%s)",
                     tool_name, self.name)
@@ -3313,7 +3314,9 @@ class Agent(MCPServer):
                     timestamp=datetime.now(timezone.utc),
                     # Marks the message as not typed by a person; a hook that
                     # scripts several turns counts its own messages by this.
-                    injected_by=hook_metadata.get("continue_injected_by"),
+                    # A hook that names no marker still gets one: unmarked, the
+                    # nudge would count as a human turn.
+                    injected_by=hook_metadata.get("continue_injected_by") or "post_llm_call_hook",
                 )
                 messages.append(continuation_msg)
                 context.messages = messages

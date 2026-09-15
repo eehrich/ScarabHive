@@ -1121,9 +1121,10 @@ class ComfyUIServer(SchemaBasedMCPServer):
         ):
             self._cleanup_task = asyncio.create_task(self._cleanup_old_files())
         
-        # Store output paths
+        # Store output paths. A text output that was not saved (download=false,
+        # or the write failed) has neither a local path nor a filename.
         output_paths = {
-            k: [f.get("local_path", f["filename"]) for f in v]
+            k: [p for f in v if (p := f.get("local_path") or f.get("filename"))]
             for k, v in outputs.items() if v
         }
         self.job_tracker.set_outputs(prompt_id, output_paths)
@@ -1195,23 +1196,21 @@ class ComfyUIServer(SchemaBasedMCPServer):
                         "description": f"Generated {content_type}: {filename}"
                     })
         
-        # Add text outputs - include content directly for LLM
+        # Add text outputs. Like files, only with a saved file: an attachment
+        # needs a path, and the text itself is already in outputs["text"].
         for text_record in outputs.get("text", []):
-            # Use full_path for multimodal encoding (needs actual file system path)
             full_path = text_record.get("full_path")
-            content = text_record.get("content", "")
+            if not full_path:
+                continue
             filename = text_record.get("filename", f"text_{text_record.get('node_id', 'unknown')}.txt")
-            
-            text_item: dict[str, Any] = {
+
+            multimodal.append({
                 "type": "text",
+                "path": full_path,
                 "mime_type": "text/plain",
                 "description": f"Generated text: {filename}",
-                "content": content,  # Include text content directly
-            }
-            if full_path:
-                text_item["path"] = full_path
-            
-            multimodal.append(text_item)
+                "content": text_record.get("content", ""),  # Include text content directly
+            })
         
         return multimodal
     

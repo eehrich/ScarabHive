@@ -871,7 +871,39 @@ class TestComfyUIServer:
         assert len(text_items) == 1
         assert text_items[0]["content"] == "This is generated text content"
         assert text_items[0]["mime_type"] == "text/plain"
-    
+
+    async def test_a_text_output_without_a_file_attaches_nothing_invalid(
+        self,
+        mock_system_config: MagicMock,
+        mock_mcp_config: MagicMock,
+        workflow_file: Path
+    ) -> None:
+        """download=false leaves text without a file: it must not become an attachment
+        without a path, which the agent cannot validate and turns the result into an error."""
+        from agent_system.llm.models import MultimodalToolContent
+        from plugins.comfyui.server import ComfyUIServer
+
+        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server.job_tracker.register_job("test-text-id", "test_workflow", "Test", {}, "test")
+        server.client.get_history = AsyncMock(return_value={
+            "test-text-id": {
+                "outputs": {"node1": {"text": ["Generated caption"]}},
+                "status": {"status_str": "success"},
+            }
+        })
+
+        result = await server.workflow({
+            "operation": "result",
+            "prompt_id": "test-text-id",
+            "download": False,
+            "include_content": True,
+            "_status": None,
+        })
+
+        assert result["outputs"]["text"][0]["content"] == "Generated caption"
+        for item in result.get("_multimodal_content", []):
+            MultimodalToolContent(**item)
+
     @pytest.mark.asyncio
     async def test_workflow_result_with_multiple_text_outputs(
         self,

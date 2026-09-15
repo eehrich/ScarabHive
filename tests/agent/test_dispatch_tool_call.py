@@ -220,6 +220,22 @@ class TestDispatchToolCall:
         assert params["request_id"] == "rid_ts01"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("request_id", ["rid_ts01", None])
+    async def test_caller_cannot_supply_the_request_id(self, request_id):
+        # call_with_status routes status and cancellation by params["request_id"];
+        # a script-supplied one must neither survive nor win over the real id.
+        srv = FakeServer()
+        agent = make_agent({"v6_json": srv}, allowed=["v6_json/*"])
+        await agent.dispatch_tool_call(
+            "v6_json_manage_json",
+            {"operation": "list", "request_id": "forged", "requestId": "forged"},
+            request_id=request_id)
+        _, _, params = srv.calls[0]
+        assert params.get("request_id") == request_id
+        assert params.get("requestId") == request_id
+        assert params["operation"] == "list"
+
+    @pytest.mark.asyncio
     async def test_caller_supplied_runtime_params_stripped_without_session(self):
         # Finding C: inject_runtime_params overwrites _session_id only when one
         # is set, so WITHOUT a session a forged _session_id would survive and

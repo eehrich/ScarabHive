@@ -367,6 +367,32 @@ async def test_registration_uses_the_hooks_of_its_config(monkeypatch, path):
     assert received == [{"probe.h": {"enabled": False}}]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["mcp_integration", "bootstrapped"])
+async def test_registration_reports_overrides_that_match_no_hook(monkeypatch, path):
+    """Both registration paths check the override keys once all hooks are in."""
+    from agent_system.config.models import AgentSystemConfig
+    from agent_system.plugins import discovery
+
+    settings = AgentSystemConfig()
+    registry = type("Registry", (), {"list_servers": lambda self: [],
+                                     "get_server": lambda self, name: None})()
+    checked = []
+    monkeypatch.setattr(discovery, "warn_unknown_hook_overrides", lambda s, *a: checked.append(s))
+    if path == "mcp_integration":
+        from agent_system.mcp.integration import MCPIntegration
+        integration = MCPIntegration.__new__(MCPIntegration)  # no global side effects
+        integration.plugin_registry = registry
+        await integration._register_plugin_hooks(settings)
+    else:
+        from agent_system.plugins import mcp_adapter
+        monkeypatch.setattr(mcp_adapter, "plugin_mcp_registry", registry)
+        monkeypatch.setattr(discovery, "_BOOTSTRAPPED_HOOKS_REGISTERED", False)
+        await discovery.register_bootstrapped_plugin_hooks(settings)
+
+    assert checked == [settings]
+
+
 def test_validate_hook_references_valid():
     """Test validation with valid hook references."""
     overrides = {
