@@ -451,25 +451,72 @@ export function autoRefresh(fn, ms) {
   return control;
 }
 
+const REFRESH_STEPS = [5, 10, 30, 60];
+let refreshMenus = 0;
+const seconds = (s) => (s >= 60 && s % 60 === 0 ? `${s / 60}m` : `${s}s`);
+
+// The viewer's choice per panel page (interval and on/off) outlives a reload;
+// the template's interval and auto attribute are only the page's defaults.
+function refreshChoice(key) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(key));
+    const interval = Number(stored && stored.interval);
+    if (Number.isFinite(interval) && interval >= 1 && typeof stored.on === 'boolean') return { interval, on: stored.on };
+  } catch { /* no storage or a broken entry: the defaults stand */ }
+  return null;
+}
+
 class RefreshControl extends HTMLElement {
   connectedCallback() {
     const requested = Number(this.getAttribute('interval'));
-    const interval = Number.isFinite(requested) && requested >= 1 ? requested : 5;
+    const fallback = Number.isFinite(requested) && requested >= 1 ? requested : 5;
+    const key = `pk.refresh:${location.pathname}`;
+    const choice = refreshChoice(key) || { interval: fallback, on: this.hasAttribute('auto') };
+    const steps = [...new Set([...REFRESH_STEPS, fallback, choice.interval])].sort((a, b) => a - b);
+    const menuId = `pk-refresh-menu-${++refreshMenus}`;
     render(this, html`
       <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="now" title="Refresh">${icon('refresh-cw')}</button>
-      <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm pk-refresh-auto" data-act="auto" aria-pressed="false"
-              title="Refresh every ${interval}s">${interval}s</button>`);
+      <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm pk-refresh-auto" data-act="auto" aria-pressed="false"></button>
+      <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm pk-refresh-pick" data-act="interval"
+              popovertarget="${menuId}" title="Refresh interval" aria-label="Refresh interval" aria-expanded="false">${icon('chevron-down', { size: 'sm' })}</button>
+      <div id="${menuId}" class="pk-menu pk-refresh-menu" popover>
+        <div class="pk-menu-label">Refresh every</div>
+        ${steps.map((s) => html`<button type="button" class="pk-menu-item" data-interval="${s}" aria-pressed="false">${icon('check', { size: 'sm' })}${seconds(s)}</button>`)}
+        <hr class="pk-menu-separator">
+        <button type="button" class="pk-menu-item" data-interval="off" aria-pressed="false">${icon('check', { size: 'sm' })}Off</button>
+      </div>`);
     // detail.auto: the timer fired, not the viewer -- a costly reload may skip that
     const fire = (auto) => this.dispatchEvent(new CustomEvent('refresh', { bubbles: true, detail: { auto } }));
-    this.auto = autoRefresh(() => fire(true), interval * 1000);
-    this.querySelector('[data-act="now"]').addEventListener('click', () => fire(false));
     const toggle = this.querySelector('[data-act="auto"]');
-    const set = (on) => {
-      if (on) this.auto.start(); else this.auto.stop();
+    const menu = this.querySelector('.pk-menu');
+    const set = ({ interval, on }, remember) => {
+      if (this.auto) this.auto.stop();
+      this.auto = autoRefresh(() => fire(true), interval * 1000);
+      if (on) this.auto.start();
+      toggle.textContent = seconds(interval);
+      toggle.title = on ? `Refreshing every ${seconds(interval)} -- click to pause` : `Refresh every ${seconds(interval)}`;
       toggle.setAttribute('aria-pressed', String(on));
+      menu.querySelectorAll('[data-interval]').forEach((item) => {
+        const value = item.dataset.interval;
+        item.setAttribute('aria-pressed', String(on ? Number(value) === interval : value === 'off'));
+      });
+      this.choice = { interval, on };
+      if (remember) {
+        try { localStorage.setItem(key, JSON.stringify(this.choice)); } catch { /* the choice lasts this page only */ }
+      }
     };
-    toggle.addEventListener('click', () => set(!this.auto.running));
-    if (this.hasAttribute('auto')) set(true);  // <pk-refresh auto>: refreshing from the start
+    this.querySelector('[data-act="now"]').addEventListener('click', () => fire(false));
+    toggle.addEventListener('click', () => set({ ...this.choice, on: !this.choice.on }, true));
+    const pick = this.querySelector('[data-act="interval"]');
+    menu.addEventListener('toggle', (event) => pick.setAttribute('aria-expanded', String(event.newState === 'open')));
+    menu.addEventListener('click', (event) => {
+      const item = event.target.closest('[data-interval]');
+      if (!item) return;
+      const value = item.dataset.interval;
+      set(value === 'off' ? { ...this.choice, on: false } : { interval: Number(value), on: true }, true);
+      if (menu.matches(':popover-open')) menu.hidePopover();  // hidePopover() on a closed popover throws
+    });
+    set(choice, false);
   }
 
   disconnectedCallback() { if (this.auto) this.auto.stop(); }

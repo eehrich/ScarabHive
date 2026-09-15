@@ -229,10 +229,15 @@
         ${Array.from({ length: 80 }, (_, i) => `<button class="pk-menu-item">Item ${i}</button>`).join('')}
       </div>`);
     document.getElementById('menu-edge').click();
-    const menu = document.getElementById('kit-menu-edge').getBoundingClientRect();
-    document.getElementById('kit-menu-edge').hidePopover();
+    const element = document.getElementById('kit-menu-edge');
+    const menu = element.getBoundingClientRect();
+    // the cap is only half of it: the items below it have to be reachable, not painted out of the window
+    element.scrollTop = element.scrollHeight;
+    const last = element.lastElementChild.getBoundingClientRect();
+    const scrolled = element.scrollTop > 0 && last.bottom <= menu.bottom + 1 && last.top >= menu.top - 1;
+    element.hidePopover();
     const room = { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight };
-    return menu.left >= 0 && menu.right <= room.width && menu.top >= 0 && menu.bottom <= room.height;
+    return menu.left >= 0 && menu.right <= room.width && menu.top >= 0 && menu.bottom <= room.height && scrolled;
   });
 
   await check('a theme change reaches its listeners once', () => {
@@ -263,11 +268,64 @@
     toggle.click();
     const stopped = !control.auto.running && toggle.getAttribute('aria-pressed') === 'false';
     control.remove();
+    localStorage.removeItem(`pk.refresh:${location.pathname}`);  // the pause above was remembered: this is a viewer who chose nothing
     const plain = document.createElement('pk-refresh');
     document.body.appendChild(plain);
     const plainOff = !plain.auto.running && plain.querySelector('[data-act="auto"]').getAttribute('aria-pressed') === 'false';
     plain.remove();
     return startedOn && stopped && plainOff;
+  });
+
+  await check('pk-refresh remembers the viewer\'s interval and pause per page', async () => {
+    const key = `pk.refresh:${location.pathname}`;
+    localStorage.removeItem(key);
+    const make = (attrs) => {
+      const control = document.createElement('pk-refresh');
+      for (const [name, value] of Object.entries(attrs)) control.setAttribute(name, value);
+      document.body.appendChild(control);
+      return control;
+    };
+    const state = (control) => ({
+      label: control.querySelector('[data-act="auto"]').textContent,
+      pressed: control.querySelector('[data-act="auto"]').getAttribute('aria-pressed'),
+      running: control.auto.running,
+      checked: [...control.querySelectorAll('[data-interval][aria-pressed="true"]')].map((item) => item.dataset.interval).join(),
+      steps: [...control.querySelectorAll('[data-interval]')].map((item) => item.dataset.interval).join(),
+    });
+    const first = make({ interval: '15', auto: '' });
+    const defaults = state(first);
+    first.querySelector('[data-act="interval"]').click();
+    await nextFrame();
+    const menu = first.querySelector('.pk-menu');
+    const opened = menu.matches(':popover-open');
+    menu.querySelector('[data-interval="60"]').click();
+    const picked = { ...state(first), closed: !menu.matches(':popover-open') };
+    first.remove();
+    const again = make({ interval: '15' });  // no auto: the stored choice wins over the template
+    const restored = state(again);
+    again.querySelector('[data-act="interval"]').click();
+    await nextFrame();
+    again.querySelector('[data-interval="off"]').click();
+    const paused = { ...state(again), closed: !again.querySelector('.pk-menu').matches(':popover-open') };
+    again.remove();
+    const third = make({ interval: '15', auto: '' });
+    const stillPaused = state(third);
+    third.querySelector('[data-act="auto"]').click();
+    const resumed = JSON.parse(localStorage.getItem(key));
+    third.remove();
+    localStorage.setItem(key, '{"interval": 0, "on": true}');
+    const broken = make({ interval: '10' });
+    const brokenState = state(broken);
+    broken.remove();
+    localStorage.removeItem(key);
+    return defaults.label === '15s' && defaults.running && defaults.checked === '15' && defaults.steps === '5,10,15,30,60,off'
+      && opened && picked.label === '1m' && picked.running && picked.checked === '60' && picked.closed
+      && restored.label === '1m' && restored.running && restored.pressed === 'true'
+      && restored.steps === '5,10,15,30,60,off'  // the page's own 15s stays on offer next to the viewer's 1m
+      && !paused.running && paused.checked === 'off' && paused.label === '1m' && paused.closed
+      && !stillPaused.running && stillPaused.label === '1m' && stillPaused.pressed === 'false'
+      && resumed.on === true && resumed.interval === 60
+      && brokenState.label === '10s' && !brokenState.running;
   });
 
   await check('a refresh says whether the viewer or the timer asked', () => {

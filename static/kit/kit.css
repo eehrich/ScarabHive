@@ -304,6 +304,7 @@
 /* ------------------------------------------------------- menus and tooltips */
 
 .pk-menu {
+  /* the height stays capped by placeMenu and scrolls: every menu is a popover, and those scroll by themselves */
   min-width: 180px; padding: var(--space-1); margin: 0;
   color: var(--text-primary); background: var(--surface-2);
   border: 1px solid var(--border-default); border-radius: var(--radius-lg);
@@ -478,4 +479,10 @@
 /* ----------------------------------------------------------- refresh ctrl */
 
 pk-refresh { display: inline-flex; align-items: center; gap: 2px; }
-pk-refresh .pk-refresh-auto { font-variant-numeric: tabular-nums; }
+pk-refresh .pk-refresh-auto { font-variant-numeric: tabular-nums; border-top-right-radius: 0; border-bottom-right-radius: 0; padding-right: var(--space-1); }
+/* the chevron joins the interval into one pill and wears its pressed colour */
+pk-refresh .pk-refresh-pick { width: 16px; padding: 0; margin-left: -2px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+pk-refresh:has(.pk-refresh-auto[aria-pressed="true"]) .pk-refresh-pick { --btn-bg: var(--accent-subtle); --btn-fg: var(--accent-text); }
+.pk-refresh-menu { min-width: 128px; }
+.pk-refresh-menu .pk-menu-item { height: var(--control-h-sm); font-variant-numeric: tabular-nums; }
+.pk-refresh-menu .pk-menu-item[aria-pressed="false"] > .pk-icon { visibility: hidden; }
