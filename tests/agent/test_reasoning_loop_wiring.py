@@ -265,7 +265,7 @@ class TestTheRunLoopRetriesOnce:
         assert agent.agent_config.fallback_profiles, "vacuous: no chain to switch to"
 
         switches = []
-        agent._switch_to_fallback_llm = lambda *a, **kw: switches.append(a) or None
+        agent._create_fallback_llm = lambda profile: switches.append(profile) or None
 
         [event async for event in agent.run_events("do it", session_id="s4")]
 
@@ -307,7 +307,7 @@ class TestTheRunLoopRetriesOnce:
         model_a = _LoopsThenFails()
         agent = _real_agent(with_fallback_chain=True)
         agent.llm = model_a
-        agent._switch_to_fallback_llm = lambda *a, **kw: model_b
+        agent._create_fallback_llm = lambda profile: model_b
 
         [event async for event in agent.run_events("do it", session_id="s6")]
 

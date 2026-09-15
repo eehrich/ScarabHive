@@ -50,7 +50,9 @@ basic_agent:
 **Configuration Rules (chain semantics):**
 - `llm_profile`: **[primary, fallback1, fallback2, ...]** — position 0 is the
   default model; ALL further entries are fallbacks tried in order on rate
-  limits / upstream errors. A **string** means: primary only, no fallbacks.
+  limits / upstream errors — an LLM blocked for every agent (rate limit, quota,
+  refused key) is skipped while a free one is left, see
+  `docs/_arch_agent_architecture.md`, „LLM-Fallback und Sperren". A **string** means: primary only, no fallbacks.
 - `llm_profile_advanced`: same structure for `use_advanced_model=True` —
   `[primary_adv, fallback1_adv, ...]`. Empty/missing = no advanced model
   (`use_advanced_model` is a no-op and runs the normal chain). The chains are

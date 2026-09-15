@@ -566,8 +566,10 @@ class AgentConfig(BaseModel):
     #       or-gpt-full-unlimited: { thinking_level: high }
     #   Unbekannte Keys (in keiner Kette) sind ungueltig. Mischformen ebenso.
     llm_params: Optional[Dict[str, Any]] = None
-    fallback_recovery_seconds: int = 3600  # Seconds before trying original LLM again after rate limit (default: 1 hour)
-    fallback_recovery_jitter_percent: float = 20.0  # Random jitter ±X% to prevent thundering herd when multiple agents recover
+    # Longest block this agent puts on an LLM (llm/model_health.py, for every agent):
+    # a rate limit starts at 60 s and doubles up to this; an exhausted quota or a
+    # refused key (401/402/403/404) blocks this long at once.
+    fallback_recovery_seconds: int = 3600
     max_steps: int = 20  # maximum steps for agents that support multi-step reasoning (default: 20, used if not set in config)
     tools: ToolConfig = Field(default_factory=ToolConfig)
     hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)

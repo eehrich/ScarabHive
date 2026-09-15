@@ -163,11 +163,6 @@
           "title": "Fallback Recovery Seconds",
           "type": "integer"
         },
-        "fallback_recovery_jitter_percent": {
-          "default": 20.0,
-          "title": "Fallback Recovery Jitter Percent",
-          "type": "number"
-        },
         "max_steps": {
           "default": 20,
           "title": "Max Steps",

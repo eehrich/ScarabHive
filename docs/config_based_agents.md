@@ -111,7 +111,7 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 |-------|------|----------|---------|-------------|
 | `llm_profile` | list[string] | Yes | - | Profile CHAIN from `config/llm.yaml`: `[primary, fallback1, ...]` |
 | `llm_profile_advanced` | list[string] | No | [] | Same chain shape for the advanced model |
-| `fallback_recovery_seconds` | integer | No | 3600 | Seconds before retrying the primary after a fallback (1 hour default) |
+| `fallback_recovery_seconds` | integer | No | 3600 | Längste Sperre, die der Agent auf ein LLM setzt (siehe unten) |
 | `max_steps` | integer | Yes | 20 | Maximum reasoning steps |
 | `system_prompt` | string | No* | - | Inline system prompt text |
 | `system_template` | string | No* | - | Path to prompt template file |
@@ -123,14 +123,15 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 
 ### LLM Profile Fallbacks
 
-When the primary LLM profile hits rate limits (HTTP 429) or quota exhaustion, the agent automatically switches to fallback profiles in order:
+Fällt das LLM eines Schritts aus, läuft der Agent auf dem nächsten Profil der
+Kette weiter:
 
 ```yaml
 my_agent:
   type: basic_agent
   agent_config:
-    llm_profile: ["gemini", "openai", "anthropic"]   # chain: primary, then fallbacks
-    fallback_recovery_seconds: 1800                  # retry primary after 30min (default: 3600)
+    llm_profile: ["gemini", "openai", "anthropic"]   # Kette: primär, dann Fallbacks
+    fallback_recovery_seconds: 1800                  # längste Sperre (Default: 3600)
 ```
 
 > `llm_profile_fallbacks` was **removed**. The positional `[standard, advanced]`
@@ -139,33 +140,25 @@ my_agent:
 > `llm_profile_fallbacks` is rejected at load with a migration hint rather than
 > run with `llm_profile[1]` silently meaning something else.
 
-**Behavior:**
-1. Agent tries primary `llm_profile` first
-2. On `LLMRateLimitError` or `LLMQuotaExhaustedError`, tries next fallback profile
-3. Fallback becomes **persistent** - all subsequent requests use fallback LLM
-4. After `fallback_recovery_seconds` elapsed, agent tries original profile again
-5. If recovery succeeds, switches back to primary profile
-6. If recovery fails, re-activates fallback for another recovery period
-7. If all fallbacks exhausted, raises the original error
+**Sperren gehören dem LLM, nicht dem Agenten.** Ein 429, ein erschöpftes
+Kontingent oder ein abgelehnter Key (401/402/403/404) sperrt das LLM für
+**jeden** Agenten im Prozess:
 
-**Automatic Recovery:**
-- **Default:** Retries original profile after 1 hour (3600 seconds)
-- **Configurable:** Set `fallback_recovery_seconds` to custom value
-- **Use Cases:**
-  - Rate limits (TPM/RPM/RPD) - temporary, recovers automatically
-  - Quota exhausted - persistent until daily/monthly reset
-  - API outages - retries when service restored
+1. Ein 429 sperrt 60 s, jede weitere Ablehnung verdoppelt die Pause bis
+   `fallback_recovery_seconds`; Kontingent und abgelehnter Key sperren sofort
+   so lange.
+2. Jeder Schritt nimmt das gewünschte LLM (Eskalation, Auswahl im Chat,
+   Config), wenn es frei ist, sonst das erste freie Profil der Kette, sonst
+   trotzdem das gewünschte.
+3. Eine ausdrückliche Wahl eines gesperrten LLM ist keine Ausnahme; ein
+   anderes, freies LLM läuft sofort.
+4. Die erste Antwort des LLM hebt die Sperre für alle auf.
+5. 5xx, Verbindungsfehler und request-förmige Fehler (400/413/422) sperren
+   nichts — sie retten nur den laufenden Request über die Kette.
+6. Ist die Kette aufgebraucht, geht der Fehler des letzten Versuchs an den Aufrufer.
 
-**Status Updates:**
-- Shows active profile: `gemini:fallback`, `openai:fallback`
-- Recovery info: `"Switched to openai (rate limit hit, retry in 60min)"`
-- Auto-recovery: `"Fallback recovery period elapsed. Trying original LLM again."`
-
-**Use Cases:**
-- Gemini free tier (250 requests/day) → OpenAI fallback
-- Primary API down → Secondary provider
-- Cost optimization (cheaper primary, expensive fallback)
-- Rate limit management (temporary TPM/RPM limits)
+Details, Probe nach Ablauf und Grenzen: `docs/_arch_agent_architecture.md`,
+Abschnitt „LLM-Fallback und Sperren".
 
 ### Tools Configuration
 
