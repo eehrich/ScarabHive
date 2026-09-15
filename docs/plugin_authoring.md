@@ -1,5 +1,7 @@
 # Plugin Authoring Guide
 
+The verified quick reference is the Claude skill `.claude/skills/plugin-authoring/` (`SKILL.md` + `references/`).
+
 This document explains how to create plugins (MCP servers) for AgentSystem. It walks you through the entire process: from the initial idea to implementation and deployment.
 
 ## Table of Contents
@@ -20,7 +22,7 @@ This document explains how to create plugins (MCP servers) for AgentSystem. It w
   - [Status and Progress Reporting](#status-and-progress-reporting)
   - [Cooperative Cancellation](#cooperative-cancellation)
   - [Web Endpoints and UI Integration](#web-endpoints-and-ui-integration)
-  - [CLI Support (Required)](#cli-support-required)
+  - [CLI Support (Optional)](#cli-support-optional)
   - [Background Tasks](#background-tasks)
 - [Configuration and Deployment](#configuration-and-deployment)
 - [Testing and Quality Assurance](#testing-and-quality-assurance)
@@ -34,10 +36,11 @@ A plugin in AgentSystem is an MCP (Model Context Protocol) server that provides 
 
 ### How Plugins Work
 
-1. **Discovery**: AgentSystem automatically finds plugins in `src/plugins/` or as installed Python packages
+1. **Discovery**: AgentSystem finds plugins in the `plugins.plugin_dirs` of `config/plugins.yaml` (`src/plugins`, `src/plugins_writer`, `src/plugins_trading`) and in installed packages via the `agent_system.mcp_plugins` entry point group. LLM providers under `src/plugins_llm/` are found separately by the LLM registry.
 2. **Schema**: Each plugin describes its tools in `schema.yaml` (what parameters, what they do)
-3. **Execution**: The agent calls tools via `call(tool_name, parameters)`
-4. **Response**: The plugin returns structured results
+3. **Activation**: A server entry under `plugins: servers:` with `type: <plugin folder name>` and `enabled: true` (the default is `false`) builds an instance; an agent sees its tools only if its `agent_config.tools.allowed` admits them
+4. **Execution**: The agent calls tools via `call(tool_name, parameters)`
+5. **Response**: The plugin returns structured results
 
 ### Plugin Goals
 - **Small, focused tools** instead of monolithic functions
@@ -69,36 +72,47 @@ AgentSystem now supports **configuration-based agents** that can be defined pure
 - You want to package reusable tools for distribution
 
 **Example Configuration-Based Agent:**
+
+An agent is a server entry whose `type` is `basic_agent` (or another agent it
+inherits from). The file lives under `config/agents*/*.yaml` or
+`src/plugins*/<plugin>/agents/*.yaml` — both globs are included by
+`config/config.yaml`. A top-level `agents:` key is silently ignored.
+
 ```yaml
-# In config/agents.yaml:
-agents:
-  financial_analyst:
-    enabled: true
-    description: "Financial analysis and market research agent"
-    base_type: basic_agent
-    agent_config:
-      llm_profile: turbo
-      # Optional: override LLM parameters on top of the referenced model
-      # config (applies to all llm_profile models of this agent, not to
-      # fallbacks) — see docs/basic_agent_llm_profiles.md
-      llm_params:
-        thinking_level: low
-        max_tokens: 8000
-      max_steps: 20
-      system_template: "config/prompts/financial_analyst_prompt.md"
-      tools:
-        allowed:
-          - "yahoo_finance/*"
-          - "web_scraper/*"
-          - "duckduckgo_search/*"
-        blocked:
-          - "ssh_control/*"
+# e.g. config/agents/financial_analyst.yaml
+plugins:
+  servers:
+    financial_analyst:
+      type: basic_agent
+      enabled: true                     # default: false
+      description: "Financial analysis and market research agent"
+      # server level, NOT under agent_config (agent_config rejects unknown keys)
       self_tool_descriptions:
         financial_analyst_execute_task: "Analyze stocks and market data"
-    metadata:
-      category: "financial"
-      visibility: "both"
+      metadata:
+        visibility: both                # ui | tool | both | private (default)
+      agent_config:
+        llm_profile: [turbo, normal]    # chain: [primary, fallback, ...]
+        # Optional: override LLM parameters on top of the referenced model
+        # config (applies to every member of the chain, fallbacks included)
+        # — see docs/basic_agent_llm_profiles.md
+        llm_params:
+          thinking_level: low
+          max_tokens: 8000
+        max_steps: 20
+        system_template: "./prompts/financial_analyst.md"   # ./ = relative to this YAML
+        tools:
+          allowed:                      # empty = no tools at all
+            - "yahoo_finance/*"
+            - "web_scraper/*"
+            - "duckduckgo_search/*"
+          blocked:
+            - "ssh_control/*"
 ```
+
+Allowlist patterns are `instance/*`, `instance`, `instance/<full tool name>`
+(the rendered name including the instance prefix, e.g.
+`web_scraper/web_scraper_fetch`) and fnmatch globs.
 
 See [Configurable Agents Guide](configurable_agents.md) for complete documentation.
 
@@ -119,7 +133,7 @@ cd src/plugins/hello_world
 tools:
   - type: function
     function:
-      name: say_hello
+      name: "{{ name }}_say_hello"   # rendered with the instance name
       description: "Says hello to a person"
       parameters:
         type: object
@@ -137,12 +151,19 @@ name = "hello_world"
 version = "1.0.0"
 description = "Simple hello world plugin"
 entrypoint = "server:HelloWorldServer"
+type = ["mcp-server"]
+requires = { agent_system = ">=0.6.0" }   # required by the manifest schema
 ```
 
 **Step 3: Create `server.py`**
 ```python
+import logging
+
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.config import AgentSystemConfig, MCPConfig
+
+logger = logging.getLogger(__name__)
+
 
 class HelloWorldServer(SchemaBasedMCPServer):
     """Simple hello world plugin demonstrating modern API."""
@@ -154,34 +175,46 @@ class HelloWorldServer(SchemaBasedMCPServer):
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration (MCPConfig from mcp_servers.yaml)
+            mcp_config: Merged server entry from plugins: servers: (a pydantic
+                model with extra="allow", not a dict)
         """
         super().__init__(name, system_config, mcp_config)
 
-        # Extract plugin-specific configuration from mcp_config
-        self.greeting_prefix = mcp_config.get("greeting_prefix", "Hello")
+        # Flat keys of the server entry arrive as attributes
+        self.greeting_prefix = getattr(mcp_config, "greeting_prefix", "Hello")
 
         # Log effective configuration
-        self.logger.info(f"HelloWorld configured: prefix='{self.greeting_prefix}'")
+        logger.info(f"HelloWorld configured: prefix='{self.greeting_prefix}'")
 
     async def say_hello(self, params: dict) -> dict:
         """
-        Tool method - automatically called by generic dispatcher.
-        Method name MUST match tool name in schema.yaml exactly.
+        Tool method - called for the tool "{name}_say_hello" (the mixin
+        strips the "{name}_" prefix) or for an unprefixed "say_hello".
         """
         name = params.get("name", "World")
         return {
             "status": "success",
             "message": f"{self.greeting_prefix}, {name}!"
         }
-
-PLUGIN_FACTORY = HelloWorldServer
 ```
 
-**CRITICAL**: `PLUGIN_FACTORY` **MUST** be defined in `plugin.py` (not in `server.py`)!
-The plugin discovery mechanism only checks `plugin.py` for this export.
+The `entrypoint` names the module and the factory: `server:HelloWorldServer`
+loads `server.py` from the plugin folder and calls `HelloWorldServer(name,
+system_config, mcp_config)`. Without an `entrypoint`, discovery loads
+`plugin.py` and looks for `PLUGIN_FACTORY`.
 
-That's it! Your plugin is ready to use.
+**Step 4: Enable an instance** (any file included by `config/config.yaml`, e.g. `config/plugins.yaml`):
+```yaml
+plugins:
+  servers:
+    hello_world:              # instance name
+      type: hello_world       # plugin folder name
+      enabled: true
+      greeting_prefix: "Hi"
+```
+
+Then allow `hello_world/*` in the `agent_config.tools.allowed` of the agent that
+should use it.
 
 ## Plugin Structure and Layout
 
@@ -190,33 +223,42 @@ That's it! Your plugin is ready to use.
 **Option 1: Simple (all-in-one)**
 ```
 src/plugins/<plugin_name>/
-  ├── plugin.toml       # Plugin metadata + Python requirements
+  ├── plugin.toml       # Plugin metadata + Python requirements (entrypoint = "server:MyServer")
   ├── schema.yaml       # Tool definitions
-  ├── server.py         # Main server implementation + PLUGIN_FACTORY
+  ├── server.py         # Main server implementation
   ├── tests/            # Colocated tests (test_*.py)
   └── README.md         # Documentation
 ```
 
-**Option 2: Separated (MCP-only plugins)**
+**Option 2: Separated**
 ```
 src/plugins/<plugin_name>/
-  ├── plugin.toml       # Plugin metadata + Python requirements
+  ├── plugin.toml       # Plugin metadata + Python requirements (entrypoint omitted or "plugin:PLUGIN_FACTORY")
   ├── schema.yaml       # Tool definitions
-  ├── plugin.py         # Business logic + PLUGIN_FACTORY export
-  ├── server.py         # MCP server wrapper (SchemaBasedMCPServer)
+  ├── plugin.py         # PLUGIN_FACTORY export
+  ├── server.py         # MCP server (SchemaBasedMCPServer)
   ├── tests/            # Colocated tests (test_*.py)
   └── README.md         # Documentation
 ```
 
-**CRITICAL for Option 2**: `plugin.py` MUST export `PLUGIN_FACTORY`!
 ```python
-# plugin.py (end of file)
+# plugin.py
 from .server import MyPluginServer
 PLUGIN_FACTORY = MyPluginServer
 ```
 
-**Why?** Plugin discovery (`discover_plugins()`) only checks `plugin.py`, not `server.py`!
-If `PLUGIN_FACTORY` is missing from `plugin.py`, your plugin won't be discovered.
+**How discovery loads a plugin** (`agent_system/plugins/discovery.py`):
+- It reads `entrypoint` from `plugin.toml` (default `plugin:PLUGIN_FACTORY`) and
+  loads `<module>.py` **directly in the plugin folder**. Dotted modules
+  (`pkg.mod:X`) are not loaded.
+- A module-level `register()` function wins; it returns `(name, factory)`.
+- Otherwise the named factory is used, falling back to `PLUGIN_FACTORY`.
+- A missing module file or a missing factory skips the folder with a **DEBUG**
+  log only; an import error logs a WARNING.
+- The plugin type is the **folder name** (unless the module sets `PLUGIN_NAME`),
+  not `name` from `plugin.toml`.
+- The runtime calls the factory as `factory(name, system_config, mcp_config)`,
+  plus `registry=` only if the factory carries `_accepts_registry = True`.
 
 ### Test Structure
 
@@ -231,8 +273,9 @@ src/plugins/<plugin_name>/tests/
 
 **Example test file:** `src/plugins/hello_world/tests/test_plugin_hello_world_basic.py`
 
-`pytest.ini` collects these via the `src/plugins/*/tests` and
-`src/plugins_writer/*/tests` testpaths. The shared fixtures (`mock_system_config`,
+`pytest.ini` collects these via the `src/plugins/*/tests`,
+`src/plugins_writer/*/tests`, `src/plugins_trading/*/tests` and
+`src/plugins_llm/*/tests` testpaths. The shared fixtures (`mock_system_config`,
 `reset_global_state`, the fake-LLM patch, …) live in the **root-level
 `conftest.py`**, so colocated tests inherit them exactly like tests under `tests/`.
 
@@ -250,19 +293,17 @@ lives in `<plugin>/tests/`).
 - **`schema.yaml`**: Defines tools, parameters, and validation rules
 - **`plugin.toml`**: Metadata for discovery (name, version, entry point) **and**
   the plugin's own Python requirements
-- **`plugin.py`** (if separated structure): Core business logic + **MUST export PLUGIN_FACTORY**
-- **`server.py`**: MCP protocol implementation and tool routing
+- **`plugin.py`** (if separated structure): exports `PLUGIN_FACTORY` (the default entrypoint)
+- **`server.py`**: Server implementation; tool routing comes from the base class
 - **`tests/`**: Colocated plugin tests
 - **`README.md`**: Usage examples, configuration options, troubleshooting
-
-**IMPORTANT**: If you use a separated structure (plugin.py + server.py), `plugin.py` MUST export `PLUGIN_FACTORY` because that's the only file checked during plugin discovery!
 
 ## Defining Metadata (`plugin.toml`)
 
 The `plugin.toml` file contains essential metadata for plugin discovery and
 management, plus the plugin's Python package requirements. All metadata lives
-under a single `[plugin]` table. (The legacy `plugin.yaml` is still read as a
-fallback, but new plugins use `plugin.toml`.)
+under a single `[plugin]` table. `plugin.toml` is the only manifest format that
+is read.
 
 ### Basic Structure
 
@@ -273,18 +314,25 @@ version = "1.0.0"
 description = "Brief description of what the plugin does"
 author = "Your Name"
 entrypoint = "server:PLUGIN_FACTORY"
+type = ["mcp-server"]
+requires = { agent_system = ">=0.6.0" }
 ```
+
+`name`, `version`, `description` and `requires` are required by
+`schemas/plugin-config.schema.json`.
 
 ### Field Descriptions
 
-- **`name`**: Unique plugin identifier (used in configuration)
+- **`name`**: Plugin name for listings and the validator. The type used in
+  configuration (`type: <x>`) is the plugin **folder name**.
 - **`version`**: Semantic version (x.y.z)
 - **`description`**: Short, clear description for users
 - **`author`**: Plugin author/maintainer
 - **`entrypoint`**: Module and factory name in format `module:FACTORY_NAME`
   - Format: `module:FactoryFunction` (e.g., `plugin:PLUGIN_FACTORY`, `server:MyServer`)
-  - The discovery system loads **only** the specified module file
+  - The discovery system loads **only** the specified module file, which must sit directly in the plugin folder
   - Default if omitted: `plugin:PLUGIN_FACTORY` (loads `plugin.py`)
+  - If the named factory is missing, `PLUGIN_FACTORY` in the same module is tried
   - Examples:
     - `plugin:PLUGIN_FACTORY` → loads `plugin.py`, uses `PLUGIN_FACTORY` function
     - `server:CustomServer` → loads `server.py`, uses `CustomServer` class
@@ -292,7 +340,12 @@ entrypoint = "server:PLUGIN_FACTORY"
 
 ### Plugin Types and Categories
 
-The `type` list declares a plugin's capabilities; combine values for hybrids.
+The `type` list describes a plugin's capabilities; combine values for hybrids.
+The runtime does **not** read it to decide what a plugin can do: tools come from
+`tools:` in `schema.yaml`, hooks from `hooks:` in `schema.yaml`, web routes from a
+`get_web_router()` method. `type` is checked by `src/scripts/validate_plugin.py` —
+and by the LLM registry, which skips every plugin under `src/plugins_llm/` without
+`llm-provider`. Set it correctly anyway.
 
 ```toml
 # MCP-only plugin (provides MCP server/tools)
@@ -330,11 +383,11 @@ Other single-capability examples: `type = ["web"]` (web UI/endpoints only),
   `writer_publish`)
 - `llm-provider`: An LLM/TTS/batch backend under `src/plugins_llm/`. Found by
   `agent_system.llm.registry` through its `provides` / `provides_batch` /
-  `provides_tts` manifest keys and its `provider.py` — also **without an
-  `entrypoint`**
-- `custom`: Plugin has custom capabilities
+  `provides_tts` manifest keys and its `provider.py`, which exports `PROVIDERS`
+  — also **without an `entrypoint`**
+- `custom`: allowed by the schema, used by no plugin
 
-Combine multiple types by listing them (e.g., `[mcp-server, web]` for hybrid plugins).
+Combine multiple types by listing them (e.g., `["mcp-server", "web"]` for hybrid plugins).
 
 `src/scripts/validate_plugin.py <dir>` checks a manifest against
 `schemas/plugin-config.schema.json`, which is strict
@@ -356,15 +409,18 @@ category = "tools"
 # Searchable keywords
 tags = ["web", "scraping", "api"]
 
-# Framework version constraint (not a pip dependency)
-requires = { python = ">=3.11", agent_system = ">=0.4.0" }
+# Framework version constraint (not a pip dependency; agent_system is required)
+requires = { python = ">=3.11", agent_system = ">=0.6.0" }
 
-# Agent plugins only: servers of this type may be built on FIRST USE instead
-# of at start. A promise about the constructor -- config and an LLM client,
-# nothing else: no file, no thread, no socket, no network. The runtime holds
-# you to it (agent_system.runtime refuses to register a lazy type that builds
-# anything other than an Agent), and a contract test builds one of every lazy
-# type. Leave it off unless the __init__ has been read with this in mind.
+# Agent plugins only: a promise that the constructor touches nothing but
+# config and an LLM client -- no file, no thread, no socket, no network.
+# Runtime.start() builds every declared server. What the runtime checks for a
+# lazy type: the instance must be an Agent (TypeError otherwise, the server is
+# dropped); its LLM config and system_template are checked at start and logged
+# as ERROR, but the server is still built. The contract test
+# tests/bootstrap/test_runtime_lazy_contract.py builds every lazy type.
+# Nobody checks the no-I/O promise. Leave it off unless the __init__ has been
+# read with this in mind.
 lazy = true
 
 # Python package requirements OWNED by this plugin (pip specs only — not
@@ -375,7 +431,7 @@ dependencies = ["requests>=2.25.0", "beautifulsoup4>=4.9.0"]
 ### Metadata Field Reference
 
 **Core Fields:**
-- **`name`**: Unique plugin identifier (used in configuration and URLs)
+- **`name`**: Plugin name for listings and validation (configuration uses the folder name as the type)
 - **`version`**: Semantic version (x.y.z) for compatibility tracking
 - **`description`**: Short, clear description for users and UIs
 - **`author`**: Plugin author/maintainer for support
@@ -386,13 +442,15 @@ dependencies = ["requests>=2.25.0", "beautifulsoup4>=4.9.0"]
 **Plugin Classification:**
 - **`type`**: List of plugin capabilities (`mcp-server`, `web`, `hooks`,
   `library`, `llm-provider`, `custom`) — see above; `library` and
-  `llm-provider` need no `entrypoint`
+  `llm-provider` need no `entrypoint`. Read by the validator and the LLM
+  registry, not by the runtime
 - **`category`**: Functional category (`tools`, `monitoring`, `data`, `ui`, `utilities`)
 - **`tags`**: Searchable keywords for discovery
 
 **Framework & dependencies:**
 - **`requires`**: Framework/runtime version constraints (e.g.
-  `{ python = ">=3.11", agent_system = ">=0.4.0" }`). NOT pip packages.
+  `{ python = ">=3.11", agent_system = ">=0.6.0" }`); `agent_system` is
+  required. NOT pip packages.
 - **`dependencies`**: the plugin's own pip requirements, as a list of PEP 508
   specs (`["ruamel.yaml>=0.18"]`). List only real PyPI packages — never other
   plugin names (inter-plugin needs are resolved by discovery, not pip).
@@ -405,7 +463,7 @@ Plugin-owned requirements do **not** live in the root `pyproject.toml`. Instead:
 2. `scripts/aggregate_plugin_deps.py` merges `requirements/core.txt` (framework
    deps shared by many plugins) with every plugin's `dependencies` into
    `requirements/all.txt`. Scanned roots: `src/plugins`, `src/plugins_writer`,
-   `src/plugins_trading` und `src/plugins_llm` (LLM-Provider-Plugins).
+   `src/plugins_trading` and `src/plugins_llm` (LLM provider plugins).
 3. The root `pyproject.toml` reads `requirements/all.txt` via
    `[tool.setuptools.dynamic]`, so `pip install .` installs the full set.
 
@@ -445,8 +503,12 @@ tools:
             maximum: 100
             default: 10
         required: ["query"]
-    additionalProperties: false
+        additionalProperties: false
 ```
+
+The framework does not validate tool arguments against this schema — `required`,
+`enum`, `minimum` and `additionalProperties` are hints to the model. Validate in
+the handler (see [Parameter Validation](#parameter-validation)).
 
 ### Schema Template Variables
 
@@ -757,8 +819,8 @@ The server is the core of your plugin. It handles tool routing, validation, and 
 
 **Key Principles:**
 1. **Modern Constructor**: `(name, system_config, mcp_config)` signature
-2. **No Manual Routing**: Remove `call()` override - `SchemaBasedMixin` handles it
-3. **Tool Methods**: Implement methods matching tool names exactly
+2. **No Manual Routing**: Remove `call()` override - `SchemaBasedToolMixin` handles it
+3. **Tool Methods**: Tool `{name}_x` → method `x`; tool exactly `{name}` → `execute`; any other tool name → the method of the same name
 4. **Type Hints**: Use modern Python type hints (`| None` instead of `Optional[]`)
 5. **Configuration**: Extract from `mcp_config` (plugin-specific) and `system_config` (system-wide)
 
@@ -766,20 +828,25 @@ The server is the core of your plugin. It handles tool routing, validation, and 
 
 Use `SchemaBasedMCPServer` for automatic schema loading and generic dispatching.
 
-**Note:** `SchemaBasedMCPServer` inherits from `SchemaBasedMixin` which provides:
+**Note:** `SchemaBasedMCPServer` inherits from `SchemaBasedToolMixin` (`agent_system/mcp/schema_mixin.py`) which provides:
 - Automatic `schema.yaml` loading and caching
 - Generic `call()` dispatcher (routes tool calls to methods automatically)
 - Template variable support (`{{name}}` in schema.yaml)
 - Development utilities (`get_schema_data()`, `clear_schema_cache()`)
 
 ```python
+import logging
+
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from agent_system.config.models import AgentSystemConfig, MCPServerConfig
+from agent_system.config.models import AgentSystemConfig, MCPConfig
+
+logger = logging.getLogger(__name__)   # MCPServer has no self.logger
+
 
 class WebScrapingServer(SchemaBasedMCPServer):
     """Modern schema-based plugin with automatic tool routing."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPServerConfig):
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         """
         Modern constructor signature.
 
@@ -790,40 +857,38 @@ class WebScrapingServer(SchemaBasedMCPServer):
         """
         super().__init__(name, system_config, mcp_config)
 
-        # Extract plugin-specific configuration from mcp_config.config
-        config = mcp_config.config or {}
+        # Nested `config:` block of the server entry (mcp_config is a pydantic
+        # model with extra="allow" -- no .get(), and the block may be absent)
+        config = getattr(mcp_config, "config", None) or {}
         self.timeout = float(config.get("timeout", 30))
         self.user_agent = config.get("user_agent", "AgentSystem/1.0")
         self.max_retries = int(config.get("max_retries", 3))
 
-        # Validate configuration
+        # Validate configuration -- the framework does not validate plugin config
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
 
-        # System-wide config examples (optional)
-        self.base_url = system_config.api_base_url if hasattr(system_config, 'api_base_url') else None
-
         # Log effective configuration
-        import logging
-        logger = logging.getLogger(__name__)
         logger.info(
             f"WebScraping configured: timeout={self.timeout}, "
             f"user_agent={self.user_agent}, max_retries={self.max_retries}"
         )
 
-    # Tool methods - automatically called by SchemaBasedMixin.call() dispatcher
-    # Method names MUST match tool names in schema.yaml exactly!
+    # Tool methods - routed by SchemaBasedToolMixin.call():
+    # tool "{name}_fetch_url" -> method fetch_url (prefix stripped)
 
     async def fetch_url(self, params: dict) -> dict:
         """
         Fetch content from a URL.
 
-        This method is automatically called when the 'fetch_url' tool is invoked.
-        No manual routing needed - SchemaBasedMixin.call() dispatches automatically.
+        Called for the tool "{name}_fetch_url" (or an unprefixed "fetch_url").
+        No manual routing needed.
         """
-        url = params["url"]
+        url = params.get("url")
+        if not url:
+            return {"status": "error", "error": "url parameter is required"}
 
-        # Extract runtime parameters (automatically injected by framework)
+        # Runtime parameters injected by the framework (may be absent in tests)
         status = params.get("_status")
         token = params.get("_cancellation_token")
         request_id = params.get("request_id")
@@ -833,7 +898,8 @@ class WebScrapingServer(SchemaBasedMCPServer):
 
         # Check cancellation before starting
         if token and token.is_cancelled:
-            return {"status": "cancelled", "request_id": request_id}
+            return {"error": "Tool 'fetch_url' was cancelled.", "cancelled": True,
+                    "forced": token.is_forced}
 
         try:
             import aiohttp
@@ -844,7 +910,7 @@ class WebScrapingServer(SchemaBasedMCPServer):
                     content = await response.text()
 
             if status:
-                await status.complete(f"Fetched {len(content)} bytes from {url}")
+                await status.end(f"Fetched {len(content)} bytes from {url}")
 
             return {
                 "status": "success",
@@ -855,7 +921,7 @@ class WebScrapingServer(SchemaBasedMCPServer):
         except Exception as e:
             if status:
                 await status.error(f"Failed to fetch {url}: {e}")
-            self.logger.error(f"fetch_url failed: {e}", exc_info=True)
+            logger.error(f"fetch_url failed: {e}", exc_info=True)
             return {
                 "status": "error",
                 "error": str(e),
@@ -880,7 +946,7 @@ class WebScrapingServer(SchemaBasedMCPServer):
                 "text": soup.get_text(strip=True)
             }
         except Exception as e:
-            self.logger.error(f"parse_html failed: {e}", exc_info=True)
+            logger.error(f"parse_html failed: {e}", exc_info=True)
             return {"status": "error", "error": str(e)}
 
 PLUGIN_FACTORY = WebScrapingServer
@@ -888,27 +954,22 @@ PLUGIN_FACTORY = WebScrapingServer
 
 **How the Generic Dispatcher Works:**
 
-1. Agent calls tool: `await server.call("fetch_url", {"url": "https://example.com"})`
-2. `SchemaBasedMixin.call()` receives request
-3. Generic dispatcher looks for method named `fetch_url`
-4. Automatically invokes `self.fetch_url(params)`
+1. Agent calls tool: `await server.call_with_status("web_scraper_fetch_url", {"url": "https://example.com"})` — this opens the status scope and injects `_status`
+2. `SchemaBasedToolMixin.call()` receives the request
+3. `_get_method_name()` maps the tool name to a method name
+4. Automatically invokes `self.fetch_url(params)` (sync or async)
 5. Returns result to caller
 
-**No manual `call()` override needed!** The `SchemaBasedMixin` base class handles all routing automatically.
+**No manual `call()` override needed!** The `SchemaBasedToolMixin` base class handles all routing automatically.
 
-**Method Naming Rule:**
-- Tool name in `schema.yaml`: `fetch_url`
-- Method name in server: `async def fetch_url(self, params: dict)`
-- They MUST match exactly for automatic routing to work
-
-**For Agent Plugins (SchemaBasedAgent):**
-Agent tools have the plugin name prefix automatically stripped:
-- Tool in schema.yaml: `{{ name }}_execute_task` → `"basic_agent_execute_task"`
-- Method name: `async def execute_task(self, params: dict)` (no prefix)
-- The `SchemaBasedAgent._get_method_name()` strips the prefix automatically
+**Method Naming Rule** (`SchemaBasedToolMixin._get_method_name`, for every schema-based server and agent):
+- Tool name `{{ name }}_fetch_url` (rendered `web_scraper_fetch_url`) → method `fetch_url`
+- Tool name exactly `{{ name }}` → method `execute` (for an `Agent` subclass: `Agent.call`, which runs a task)
+- Any other tool name → the method of the same name
+- Always prefix tool names with `{{ name }}_`: two instances with equal tool names collide silently
 
 **Architecture Note:**
-Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedMixin`, which provides:
+Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedToolMixin`, which provides:
 - `get_tools()` - loads from schema.yaml with caching
 - `call()` - generic dispatcher with customizable routing
 - `_get_method_name()` - override to customize tool → method mapping
@@ -1185,7 +1246,7 @@ PLUGIN_FACTORY = MyHybridPlugin
    - ❌ Legacy: Access `self.config` dictionary
 
 5. **Method Naming**
-   - ✅ Modern: Method names MUST match tool names in `schema.yaml` exactly
+   - ✅ Modern: Tool `{{ name }}_x` in `schema.yaml` → method `x` (routed by `SchemaBasedToolMixin`)
    - ❌ Legacy: Private methods with manual routing (e.g., `async def _fetch_url(self, params)`)
 
 **Benefits:**
@@ -1220,12 +1281,12 @@ class OldPlugin(SchemaBasedMCPServer):
 class ModernPlugin(SchemaBasedMCPServer):
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         super().__init__(name, system_config, mcp_config)
-        self.timeout = mcp_config.get("timeout", 30)
+        self.timeout = getattr(mcp_config, "timeout", 30)
 
     # No call() override needed - generic dispatcher handles routing!
 
     async def fetch_url(self, params: dict) -> dict:
-        """Method name matches tool name - automatically routed."""
+        """Tool "{name}_fetch_url" - automatically routed."""
         # Implementation...
         pass
 
@@ -1236,14 +1297,13 @@ class ModernPlugin(SchemaBasedMCPServer):
 ```
 
 **Critical Rules:**
-1. Method names MUST match tool names in `schema.yaml` exactly
-2. For agents using `SchemaBasedAgent`, the agent name prefix is automatically stripped
-3. No manual `call()` override - `SchemaBasedMixin` handles routing automatically
-4. Extract config from `mcp_config.config`, not `self.config`
-5. Use modern type hints (`| None` not `Optional[]`)
+1. Tool `{{ name }}_x` routes to method `x` — for `SchemaBasedMCPServer` and `SchemaBasedAgent` alike
+2. No manual `call()` override - `SchemaBasedToolMixin` handles routing automatically
+3. Read config with `getattr(mcp_config, "key", default)` (flat keys) or `getattr(mcp_config, "config", None) or {}` (nested block) — `mcp_config` is not a dict
+4. Use modern type hints (`| None` not `Optional[]`)
 
-**SchemaBasedMixin Architecture:**
-Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedMixin` for shared functionality:
+**SchemaBasedToolMixin Architecture:**
+Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedToolMixin` for shared functionality:
 - Schema loading and caching
 - Generic call dispatcher
 - Template variable support
@@ -1255,7 +1315,7 @@ This eliminates code duplication and ensures consistent behavior across simple t
 
 For plugins that need full agent execution capabilities (conversation, LLM integration, multi-turn interactions), inherit from the `Agent` or `SchemaBasedAgent` class instead of implementing MCP server interfaces manually.
 
-> **📖 See Also:** [Agent Architecture Guide](agent_architecture.md) for detailed explanation of `Agent` vs `SchemaBasedAgent` base classes and when to use each.
+> **📖 See Also:** [Agent Architecture Guide](_arch_agent_architecture.md) for detailed explanation of `Agent` vs `SchemaBasedAgent` base classes and when to use each.
 
 ### When to Use Agent Plugins
 
@@ -1278,40 +1338,45 @@ src/plugins/my_agent/
 ```
 
 **1. Plugin Metadata (`plugin.toml`):**
-```yaml
-name: my_agent
-version: 1.0.0
-description: "Agent-based plugin for complex tasks"
-type:
-  - mcp-server
-entrypoint: plugin:PLUGIN_FACTORY
-dependencies:
-  - agent_system>=0.1.0
+```toml
+[plugin]
+name = "my_agent"
+version = "1.0.0"
+description = "Agent-based plugin for complex tasks"
+type = ["mcp-server"]
+entrypoint = "plugin:PLUGIN_FACTORY"
+requires = { agent_system = ">=0.6.0" }
+dependencies = []   # pip specs only, never agent_system or other plugins
 ```
 
 **2. Tool Schema (`schema.yaml`):**
 ```yaml
-{{ name }}_execute_task:
-  description: "Execute a complex task using agent capabilities"
-  parameters:
-    type: object
-    properties:
-      task:
-        type: string
-        description: "Task description for the agent to execute"
-      context:
-        type: string
-        description: "Optional context for the task"
-        default: ""
-    required:
-      - task
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_execute_task"
+      description: "Execute a complex task using agent capabilities"
+      parameters:
+        type: object
+        properties:
+          task:
+            type: string
+            description: "Task description for the agent to execute"
+          context:
+            type: string
+            description: "Optional context for the task"
+        required: ["task"]
+        additionalProperties: false
 
-{{ name }}_list_tools:
-  description: "List available tools in this agent"
-  parameters:
-    type: object
-    properties: {}
-    required: []
+  - type: function
+    function:
+      # not "{{ name }}_list_tools": it would route to MCPServer.list_tools()
+      name: "{{ name }}_list_available_tools"
+      description: "List the tools this agent may use"
+      parameters:
+        type: object
+        properties: {}
+        additionalProperties: false
 ```
 
 **3. Agent Implementation (`server.py`):**
@@ -1319,80 +1384,50 @@ dependencies:
 > **💡 Choosing the Right Base Class:**
 > - Use `SchemaBasedAgent` (recommended) for agents with declarative `schema.yaml` tool definitions
 > - Use `Agent` only if tools require runtime generation or complex logic
-> - See [Agent Architecture Guide](agent_architecture.md#when-to-use-each-base-class) for decision guide
+> - See [Agent Architecture Guide](_arch_agent_architecture.md#when-to-use-each-base-class) for decision guide
 
 ```python
-# Option 1: SchemaBasedAgent (recommended for most cases)
+# SchemaBasedAgent (recommended for most cases)
 from agent_system.servers.agent.schema_based import SchemaBasedAgent
-from agent_system.config.models import AgentSystemConfig, MCPServerConfig
+from agent_system.servers.agent.result_utils import collect_final_result
+
 
 class MyAgent(SchemaBasedAgent):
     """Agent with schema.yaml tool definitions (automatically loaded)."""
 
-    def __init__(
-        self,
-        system_config: AgentSystemConfig,
-        mcp_config: MCPServerConfig,
-        registry=None
-    ):
-        """Initialize agent with schema-based tools."""
-        super().__init__(
-            system_config=system_config,
-            mcp_config=mcp_config,
-            registry=registry
-        )
+    def __init__(self, name, system_config, mcp_config, registry=None, **kwargs):
+        # Agent.__init__(name, system_config, mcp_config, registry=None,
+        #                llm=None, llm_factory=None, session_service=None)
+        super().__init__(name, system_config, mcp_config, registry, **kwargs)
 
-    # Tool handler methods match tool names in schema.yaml
-    async def handle_execute_task(self, arguments: dict) -> str:
+    # Tool "{name}_execute_task" -> method execute_task (prefix stripped)
+    async def execute_task(self, params: dict) -> dict:
         """Execute complex task using agent capabilities."""
-        task = arguments["task"]
-        context = arguments.get("context", "")
+        task = params.get("task")
+        if not task:
+            return {"status": "error", "error": "Missing required parameter 'task'"}
+        context = params.get("context", "")
+        prompt = f"{task}\n\nContext: {context}" if context else task
 
-        # Use agent's conversation capabilities
-        prompt = f"Execute this task: {task}"
-        if context:
-            prompt += f"\n\nContext: {context}"
+        # Runs the agent loop (LLM + allowed tools) and returns the final result
+        result = await collect_final_result(
+            self, prompt,
+            request_id=params.get("request_id") or params.get("_request_id"),
+            session_id=params.get("_session_id"),
+        )
+        return {"status": "success", "result": result}
 
-        # Process through agent conversation
-        messages = [{"content": prompt, "role": "user"}]
-        response = await self.run_conversation(messages)
-
-        result = response[-1]["content"] if response else "No response"
-        return f"Task completed: {result}"
-
-    async def handle_list_tools(self, arguments: dict) -> str:
-        """List all available tools."""
-        tools = self.get_tools()
-        tool_names = [tool["name"] for tool in tools]
-        return f"Available tools: {', '.join(tool_names)}"
-
-
-# Option 2: Agent (only for programmatic tool definitions)
-from agent_system.servers.agent import Agent
-
-class CustomAgent(Agent):
-    """Agent with programmatically defined tools."""
-
-    def get_tools(self) -> list[dict]:
-        """Define tools programmatically (overrides base implementation)."""
-        return [
-            {
-                "name": "dynamic_tool",
-                "description": f"Dynamic tool for {self.name}",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "input": {"type": "string"}
-                    },
-                    "required": ["input"]
-                }
-            }
-        ]
-
-    async def handle_dynamic_tool(self, arguments: dict) -> str:
-        """Handle dynamically defined tool."""
-        return f"Processed: {arguments['input']}"
+    # Tool "{name}_list_available_tools" -> method list_available_tools
+    async def list_available_tools(self, params: dict) -> list[dict]:
+        """List the tools this agent may use."""
+        return await self._list_usable_tools_with_details(params)
 ```
+
+A plain `Agent` subclass (no `schema.yaml`) is exposed as one tool named after
+the instance; its `call()` takes `task` / `query` / `prompt` and runs the agent.
+Use it only when the tools have to be generated at runtime — then override
+`list_tools()` (or `get_schema()`) and `call()` yourself — a `get_tools()`
+override is only read when `list_tools()` returns nothing.
 
 **4. Factory Function (`plugin.py`):**
 
@@ -1442,59 +1477,85 @@ PLUGIN_FACTORY._accepts_registry = True
 | **Tool Access** | ✅ Can use other agent tools | ❌ Limited to own tools |
 | **Use Cases** | Complex reasoning, planning | Simple utilities, API calls |
 
-> **📚 For More Details:** See [Agent Architecture Guide](agent_architecture.md) for comprehensive comparison of `Agent`, `SchemaBasedAgent`, and `SchemaBasedMCPServer`.
+> **📚 For More Details:** See [Agent Architecture Guide](_arch_agent_architecture.md) for comprehensive comparison of `Agent`, `SchemaBasedAgent`, and `SchemaBasedMCPServer`.
 
 ### Agent Plugin Best Practices
 
-1. **Status Updates**: Always use `status.update()` for long-running tasks
-2. **Cancellation**: Check `token.is_cancelled()` in loops
-3. **Error Handling**: Wrap agent calls in try/catch blocks
+1. **Status Updates**: Use `status.progress()` for long-running tasks and close with one `status.end()` / `status.error()`
+2. **Cancellation**: Check `token.is_cancelled` (a property) in loops
+3. **Error Handling**: Wrap agent calls in try/except blocks
 4. **Resource Management**: Properly clean up agent resources
-5. **Tool Naming**: Use descriptive tool names with plugin prefix
+5. **Tool Naming**: Use descriptive tool names with the `{{ name }}_` prefix
+6. **Factory**: Always `make_agent_plugin_factory(Cls)` — it sets `_accepts_registry`, so the agent gets the shared registry
 
 ### Configuration Requirements
 
-tbd.
+An agent instance is a server entry (see the example under
+[Alternative: Configuration-Based Agents](#alternative-configuration-based-agents)):
+
+- **`enabled: true`** — the default is `false`, and it is checked on the entry itself, not inherited.
+- **`metadata.visibility`** — `private` (default: neither tool nor UI), `tool`
+  or `both` (callable as a tool by other agents), `ui` or `both` (listed in the UI).
+- **`agent_config.tools.allowed`** — the tools this agent may call; empty means none.
+- **`self_tool_descriptions`** — server level, not inside `agent_config`
+  (`agent_config` rejects unknown keys at load).
+
+**Sub-agents** (spawned through a `sub_agent_manager` instance, the SAM) need in addition:
+
+1. If the **calling** SAM instance sets `allowed_agents` (default `['*']` = all),
+   the instance name listed there. Use exact names: a glob lets the spawn through, but the "Available" list in the
+   SAM tool description filters by exact membership, so the model never sees
+   globbed names.
+2. `visibility` other than `private`, or the agent is missing from that list.
+3. The caller allows the SAM instance: `tools.allowed: ["<sam instance>/*"]`.
+4. SAM settings (`allowed_agents`, `blocked_agents`, `allow_advanced_model`, …)
+   are **top-level keys** of the SAM server entry, not under `config:`.
 
 ### Plugin Types Summary
 
 | Plugin Type | MCP Server | Web Endpoints | CLI | Use Cases |
 |-------------|------------|---------------|-----|-----------|
-| **Agent** | ✅ Required (Agent class) | ❌ Optional | ✅ Recommended | Complex reasoning, multi-turn tasks |
-| **MCP-only** | ✅ Required | ❌ Optional | ✅ Recommended | Agent tools, API integrations |
-| **Web-only** | ❌ None | ✅ Required | ✅ Recommended | Dashboards, monitoring, admin tools |
-| **Hybrid** | ✅ Required | ✅ Required | ✅ Required | Full-featured plugins (like log_viewer) |
-| **CLI-only** | ❌ None | ❌ None | ✅ Required | Standalone utilities, converters |
+| **Agent** | ✅ Required (Agent class) | Optional | Optional | Complex reasoning, multi-turn tasks |
+| **MCP-only** | ✅ Required | Optional | Optional | Agent tools, API integrations |
+| **Web-only** | ❌ None | ✅ Required | Optional | Dashboards, monitoring, admin tools |
+| **Hybrid** | ✅ Required | ✅ Required | Optional | Full-featured plugins (like log_viewer) |
+| **Hooks-only** | ❌ None | Optional | Optional | Context management, logging, validation |
+| **Library (config-only)** | ❌ None | ❌ None | ❌ None | Agent YAMLs, prompts, skills — no entrypoint |
 
 ### Server Interface Requirements (MCP Plugins Only)
 
 For MCP-enabled plugins, your server class must implement:
 
 1. **Constructor**: `__init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig)`
-2. **Tool Methods**: Implement methods matching tool names from `schema.yaml` (e.g., `async def fetch_url(self, params: dict)`)
+2. **Tool Methods**: Tool `{{ name }}_fetch_url` → `async def fetch_url(self, params: dict)`
 3. **Tool Discovery**: Inherit from `SchemaBasedMCPServer` for automatic `list_tools()` or implement manually
 
-**No `call()` override needed** - the generic dispatcher in `MCPServer` automatically routes tool calls to matching methods.
+**No `call()` override needed** - `SchemaBasedToolMixin.call()` routes tool calls to the matching methods.
 
 ### Runtime Parameters
 
-The agent passes these special parameters in `params`:
+The framework injects these parameters into `params`:
 
-- **`_status`**: StatusScope for progress updates
-- **`_cancellation_token`**: CancellationToken for cooperative cancellation
-- **`request_id`/`requestId`**: String for correlation and logging
+- **`_status`**: StatusScope for progress updates (injected by `call_with_status`)
+- **`_request_id`**, **`_session_id`**, **`_user_id`**, **`_agent_name`**: caller context
+- **`_agent`**: the calling Agent instance
+- **`_cancellation_token`**: CancellationToken for cooperative cancellation — only when the call carries a request id
+- **`request_id`/`requestId`**: per-tool request id for correlation and logging (a model-supplied `request_id` becomes the base of this id and of the cancellation/status routing — never declare it as a parameter)
 
-Always extract these early in your tool methods:
+Model-supplied parameter names starting with `_` are dropped, so never declare
+a tool parameter with a leading underscore (or named `request_id`/`requestId`).
+In tests, the CLI and `dispatch_tool_call` some of these are absent — always use
+`params.get(...)`.
 
 ```python
-async def _my_tool(self, params: dict):
+async def my_tool(self, params: dict):
     # Extract runtime parameters
     status = params.get("_status")
     token = params.get("_cancellation_token")
     request_id = params.get("request_id") or params.get("requestId")
 
     # Extract tool parameters
-    user_input = params["input"]  # from schema.yaml
+    user_input = params.get("input")  # from schema.yaml
 
     # Your implementation...
 ```
@@ -1503,10 +1564,12 @@ async def _my_tool(self, params: dict):
 
 ### Parameter Validation
 
-Always validate inputs before processing:
+The framework does no JSON-schema validation of tool arguments — it only rejects
+malformed JSON. `required`, `enum` and ranges in `schema.yaml` are hints to the
+model, so validate inputs before processing:
 
 ```python
-async def _my_tool(self, params: dict):
+async def my_tool(self, params: dict):
     # Validate required parameters
     if "query" not in params:
         return {"status": "error", "error": "Missing required parameter: query"}
@@ -1532,7 +1595,7 @@ return {
     "data": {...},
     "metadata": {
         "request_id": request_id,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 }
 
@@ -1540,17 +1603,23 @@ return {
 return {
     "status": "error",
     "error": "Detailed error message",
-    "error_code": "INVALID_INPUT",  # Optional
+    "error_type": "INVALID_INPUT",  # Optional; forwarded as status meta
     "request_id": request_id
 }
 
-# Cancelled response
+# Cancelled response (the shape the framework itself produces)
 return {
-    "status": "cancelled",
-    "request_id": request_id,
+    "error": "Tool 'my_tool' was cancelled.",
+    "cancelled": True,
     "forced": token.is_forced if token else False
 }
 ```
+
+The result reaches the model as JSON. If a handler returns an error without
+reporting it on `_status`, `call_with_status` closes the status line as an error
+itself — it recognizes `"status": "error"`, an `error` key without `status`, and
+`"success": False` together with `error`. `{"status": "failed"}` or
+`{"success": False}` without `error` show up as "completed".
 
 ## Model Experience (required in every plugin README)
 
@@ -1558,7 +1627,8 @@ A plugin's real interface is not its Python signature — it is **what the model
 sees**, and **what that costs**. Both have repeatedly been reconstructed by
 hand during reviews because nobody wrote them down. Three short sections in
 your `README.md` remove that guesswork. They are required for new plugins;
-retrofit an existing plugin only when you are already editing it.
+retrofit an existing plugin only when you are already editing it. No test
+enforces this — reviews do.
 
 **Scope:** plugins whose tools a model calls. A package that exposes no tools
 to a model — `type = ["llm-provider"]` (the LLM clients under
@@ -1634,8 +1704,10 @@ problem it was avoiding.
 Use the `_status` parameter to provide real-time feedback:
 
 ```python
-async def _long_running_tool(self, params: dict):
+async def long_running_tool(self, params: dict):
     status = params.get("_status")
+    items = params.get("items") or []
+    results = []
 
     if status:
         await status.progress("Starting analysis...")
@@ -1648,25 +1720,28 @@ async def _long_running_tool(self, params: dict):
         # Process item...
 
     if status:
-        await status.info("Analysis complete")
+        await status.end(f"Analyzed {len(items)} items, {len(results)} findings")
 
     return {"status": "success", "results": results}
 ```
 
-**Status Methods:**
-- `await status.progress("message")` - Progress updates
-- `await status.info("message")` - Informational messages
-- `await status.error("message")` - Error notifications
-- `await status.warning("message")` - Warning messages
+**Status Methods** (`StatusScope` in `agent_system/mcp/status.py` has exactly these three):
+- `await status.progress(message, meta=None)` - Progress updates
+- `await status.end(message, meta=None)` - Close the scope with a result line
+- `await status.error(message, meta=None)` - Close the scope as failed
 
 **Best Practices:**
-- Keep messages concise and user-friendly
+- Exactly one closing `end` or `error` per call
+- The end line names the result (counts, ids, titles), at most 140 characters —
+  the WebUI shows only that line. `tests/plugins/test_status_end_lines.py`
+  checks this, including an AST scan of every `.end("…")`/`.error("…")` in `src/plugins`
 - Don't spam with too many updates (batch them)
 - Always return a final result; status is supplementary
 
 ### Cooperative Cancellation
 
-**REQUIRED**: All plugins must support cancellation for long-running operations.
+Nothing enforces cancellation support. It is needed for tools with long loops,
+network calls or subprocesses; a short tool can ignore the token.
 
 #### Why Cancellation Matters
 - Users expect "Stop" button to work reliably
@@ -1675,29 +1750,32 @@ async def _long_running_tool(self, params: dict):
 
 #### CancellationToken API
 
+`agent_system.core.cancellation.CancellationToken` — `is_cancelled` and
+`is_forced` are properties.
+
 ```python
-token = params.get("_cancellation_token")
+token = params.get("_cancellation_token")   # None when the call has no request id
 
 # Check if cancellation was requested
 if token and token.is_cancelled:
-    return {"status": "cancelled"}
-
-# Check if forced termination is happening
-if token and token.is_forced:
-    # Stop immediately, no cleanup
-    return {"status": "cancelled", "forced": True}
+    return {"error": "Tool 'my_tool' was cancelled.", "cancelled": True,
+            "forced": token.is_forced}
 ```
+
+Return the cancelled dict; don't raise `CancellationError` from a tool — like any
+exception it reaches the model as a plain `{"error": str(e)}`. After
+`tool_cleanup_timeout` the cancellation manager cancels the task hard.
 
 #### Basic Cancellation Pattern
 
 ```python
-async def _long_operation(self, params: dict):
+async def long_operation(self, params: dict):
     token = params.get("_cancellation_token")
-    request_id = params.get("request_id")
+    cancelled = {"error": "Tool 'long_operation' was cancelled.", "cancelled": True, "forced": False}
 
     # Early exit if already cancelled
     if token and token.is_cancelled:
-        return {"status": "cancelled", "request_id": request_id}
+        return cancelled
 
     # Register cleanup
     async def cleanup():
@@ -1713,7 +1791,7 @@ async def _long_operation(self, params: dict):
             # Check cancellation before each chunk
             if token and token.is_cancelled:
                 await token.cleanup()  # Run cleanup callbacks
-                return {"status": "cancelled", "request_id": request_id}
+                return cancelled
 
             # Do a small amount of work
             await self._process_chunk(i)
@@ -1735,33 +1813,30 @@ async def _long_operation(self, params: dict):
 Register long-running background tasks for force-cancellation:
 
 ```python
-from agent_system.utils.cancellation import get_cancellation_manager
+from agent_system.core.cancellation import get_cancellation_manager
 
-async def _tool_with_background_tasks(self, params: dict):
+async def tool_with_background_tasks(self, params: dict):
     token = params.get("_cancellation_token")
     request_id = params.get("request_id")
+    cancelled = {"error": "Tool 'tool_with_background_tasks' was cancelled.",
+                 "cancelled": True, "forced": False}
 
     # Create background task
     task = asyncio.create_task(self._background_worker())
 
-    # Register with cancellation manager
-    manager = get_cancellation_manager()
-    tool_request_id = f"{request_id}_{self.task_counter:03d}"
-    manager.register_task(tool_request_id, task)
+    # Register with cancellation manager (id prefixed with the tool's request id)
+    if request_id:
+        get_cancellation_manager().register_task(f"{request_id}_bg", task)
 
-    try:
-        # Wait for task or cancellation
-        while not task.done():
-            if token and token.is_cancelled:
-                task.cancel()
-                return {"status": "cancelled"}
-            await asyncio.sleep(0.1)
+    # Wait for task or cancellation
+    while not task.done():
+        if token and token.is_cancelled:
+            task.cancel()
+            return cancelled
+        await asyncio.sleep(0.1)
 
-        result = await task
-        return {"status": "success", "result": result}
-
-    except asyncio.CancelledError:
-        return {"status": "cancelled"}
+    result = await task
+    return {"status": "success", "result": result}
 ```
 
 #### Cancellation Best Practices
@@ -1845,7 +1920,11 @@ class MyWebEndpoints(PluginWebInterface):
 
 ```python
 from pathlib import Path
-from fastapi.staticfiles import StaticFiles
+from typing import Optional
+
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
+from agent_system.plugins.web_adapter import PluginWebInterface
 from agent_system.ui.resources import ui_templates
 
 class MyWebEndpoints(PluginWebInterface):
@@ -1894,9 +1973,11 @@ and panel scripts import from `/static/kit/panel-kit.js`. `ui_templates()` is wh
 a plugin template reach the kit templates. The component catalogue renders at `/ui/kit`;
 the full guide is `.claude/skills/panel-authoring/SKILL.md`.
 
-### CLI Support (Required)
+### CLI Support (Optional)
 
-Every plugin should provide CLI support for development, testing, and standalone use:
+A CLI is optional — some plugins have one (`cli.py` or `__main__.py`, registered
+under `[project.scripts]` in `pyproject.toml`). It helps
+for development, testing, and standalone use:
 
 #### CLI Structure
 
@@ -1908,6 +1989,8 @@ import asyncio
 import json
 import logging
 from argparse import ArgumentParser, Namespace
+
+from agent_system.config.settings import load_settings, get_mcp_config_by_name
 from .server import MyPluginServer
 
 logging.basicConfig(level=logging.INFO)
@@ -1915,7 +1998,9 @@ logger = logging.getLogger(__name__)
 
 async def run_tool(args: Namespace):
     """Execute plugin tool from command line"""
-    server = MyPluginServer("cli", config={"debug": args.debug})
+    system_config = load_settings()
+    mcp_config = get_mcp_config_by_name("my_plugin", system_config)
+    server = MyPluginServer("my_plugin", system_config, mcp_config)
 
     params = {
         "input": args.input,
@@ -1994,11 +2079,10 @@ mcp-my-plugin tool my_tool --input "test data"
 For spawning background tasks that should be cancelled:
 
 ```python
-from agent_system.utils.cancellation import get_cancellation_manager
+from agent_system.core.cancellation import get_cancellation_manager
 import asyncio
 
-async def _tool_with_subtasks(self, params: dict):
-    token = params.get("_cancellation_token")
+async def tool_with_subtasks(self, params: dict):
     request_id = params.get("request_id")
 
     # Create subtasks
@@ -2007,17 +2091,13 @@ async def _tool_with_subtasks(self, params: dict):
 
     for i in range(3):
         task = asyncio.create_task(self._subtask(i))
-        task_id = f"{request_id}_{i:03d}"
-        manager.register_task(task_id, task)
+        if request_id:
+            manager.register_task(f"{request_id}_sub{i:03d}", task)
         tasks.append(task)
 
-    try:
-        # Wait for completion or cancellation
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        return {"status": "success", "results": results}
-
-    except asyncio.CancelledError:
-        return {"status": "cancelled"}
+    # A forced cancellation cancels this coroutine; let CancelledError propagate
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return {"status": "success", "results": results}
 ```
 
 ## Configuration and Deployment
@@ -2036,6 +2116,7 @@ plugins:
   plugin_dirs:
     - src/plugins
     - src/plugins_writer
+    - src/plugins_trading
 
   # Default configuration inherited by all plugins
   default_config:
@@ -2044,14 +2125,18 @@ plugins:
 
   # Individual plugin configurations
   servers:
-    my_plugin:
-      type: my_plugin
-      enabled: true
+    my_plugin:            # instance name
+      type: my_plugin     # plugin folder name
+      enabled: true       # checked on this entry; default false
       config:
-        # Plugin-specific settings
+        # Plugin-specific settings (read via getattr(mcp_config, "config", None) or {})
         timeout: 30
         max_retries: 3
 ```
+
+The framework does not validate plugin settings; the `config:` block in a
+plugin's `schema.yaml` is read only for hook plugins (as defaults). For tool
+servers, defaults belong in code.
 
 **Where to Add Plugin Configurations:**
 
@@ -2094,33 +2179,40 @@ plugins:
 1. **Always use `plugins:` wrapper**: Without it, configs won't be merged correctly
 2. **Configs are deep-merged**: Multiple files can contribute to the `plugins:` section
 3. **Server configs must be under `plugins.servers`**: The `servers` key is required
-4. **Don't reference specific files in code**: Always access via `config.plugins.servers[name]`
+4. **Don't reference specific files in code**: Use the `mcp_config` passed to the constructor, or `get_mcp_config_by_name(name, config)` — the raw `config.plugins.servers[name]` shows pydantic defaults, not the inherited values
 
 
 ### Reading Configuration in Your Plugin
 
+`mcp_config` is the merged server entry — a pydantic model with `extra="allow"`,
+not a dict. Flat keys are attributes; a nested `config:` block is a dict attribute.
+
 ```python
+import logging
+
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.config import AgentSystemConfig, MCPConfig
+
+logger = logging.getLogger(__name__)
+
 
 class WebScraperServer(SchemaBasedMCPServer):
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         super().__init__(name, system_config, mcp_config)
 
-        # Extract plugin-specific configuration from mcp_config
-        self.timeout = float(mcp_config.get("timeout", 30))
-        self.user_agent = mcp_config.get("user_agent", "AgentSystem/1.0")
-        self.max_retries = int(mcp_config.get("max_retries", 3))
+        # Nested `config:` block of the server entry
+        config = getattr(mcp_config, "config", None) or {}
+        self.timeout = float(config.get("timeout", 30))
+        self.user_agent = config.get("user_agent", "AgentSystem/1.0")
+        # Flat key directly on the server entry
+        self.max_retries = int(getattr(mcp_config, "max_retries", 3))
 
         # Validate configuration
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
 
-        # Access system-wide configuration (optional)
-        # system_config.api_base_url, system_config.log_level, etc.
-
         # Log effective configuration
-        self.logger.info(
+        logger.info(
             f"WebScraping configured: timeout={self.timeout}, "
             f"user_agent={self.user_agent}, max_retries={self.max_retries}"
         )
@@ -2145,152 +2237,123 @@ class APIClientServer(SchemaBasedMCPServer):
             raise ValueError("API_CLIENT_KEY environment variable required")
 
         # Non-sensitive config from mcp_config
-        self.base_url = mcp_config.get("base_url", "https://api.example.com")
+        self.base_url = getattr(mcp_config, "base_url", "https://api.example.com")
 ```
 
 ## Testing and Quality Assurance
 
 ### Test Structure
 
-Tests go in the project root `tests/` directory with naming convention:
+Tests live next to the plugin (see [Test Structure](#test-structure) above):
 ```
-tests/
-├── test_plugin_<plugin_name>_basic.py       # Basic functionality
-├── test_plugin_<plugin_name>_integration.py # Integration tests
+src/plugins/<plugin_name>/tests/
+├── test_plugin_<plugin_name>_basic.py        # Basic functionality
+├── test_plugin_<plugin_name>_integration.py  # Integration tests
 ├── test_plugin_<plugin_name>_cancellation.py # Cancellation behavior
-└── test_plugin_<plugin_name>_config.py      # Configuration handling
+└── test_plugin_<plugin_name>_config.py       # Configuration handling
 ```
+
+`tests/plugins/` is for cross-plugin tests only. The root `conftest.py` replaces
+`build_client` with a fake, so no real LLM calls happen; point caches and storage
+at `tmp_path` (otherwise they write to the real `data/`).
 
 ### Basic Plugin Test
 
 ```python
-# tests/test_plugin_web_scraper_basic.py
+# src/plugins/my_scraper/tests/conftest.py — shared by all test files below
 import pytest
-from src.plugins.web_scraper.server import WebScraperServer
 
-@pytest.mark.asyncio
-async def test_fetch_url_success():
-    server = WebScraperServer("web_scraper", {"timeout": 10})
+from agent_system.config.models import MCPConfig
+from plugins.my_scraper.server import WebScrapingServer
 
-    result = await server.call("fetch_url", {
-        "url": "https://httpbin.org/json"
-    })
 
-    assert result["status"] == "success"
-    assert "content" in result
+@pytest.fixture
+def server(mock_system_config):          # mock_system_config comes from the root conftest.py
+    return WebScrapingServer(
+        "my_scraper", mock_system_config,
+        MCPConfig(type="my_scraper", enabled=True, config={"timeout": 10}),
+    )
+```
 
-@pytest.mark.asyncio
-async def test_invalid_tool():
-    server = WebScraperServer("web_scraper", {})
+```python
+# src/plugins/my_scraper/tests/test_plugin_my_scraper_basic.py
+import pytest
 
-    result = await server.call("invalid_tool", {})
+
+async def test_missing_url_is_an_error(server):
+    result = await server.call("my_scraper_fetch_url", {})
 
     assert result["status"] == "error"
-    assert "Unknown tool" in result["error"]
+    assert "url" in result["error"]
+
+
+async def test_unknown_tool_raises(server):
+    with pytest.raises(ValueError, match="not found"):
+        await server.call("my_scraper_invalid_tool", {})
 ```
+
+(`asyncio_mode = auto` in `pytest.ini` makes the `asyncio` marker unnecessary.)
 
 ### Cancellation Testing
 
 ```python
-# tests/test_plugin_web_scraper_cancellation.py
-import asyncio
-import pytest
-from unittest.mock import Mock
-from src.plugins.web_scraper.server import WebScraperServer
-from agent_system.utils.cancellation import CancellationToken
+# src/plugins/my_scraper/tests/test_plugin_my_scraper_cancellation.py
+from agent_system.core.cancellation import CancellationToken
 
-@pytest.mark.asyncio
-async def test_cancellation_during_operation():
-    server = WebScraperServer("web_scraper", {})
 
-    # Create a cancellation token
-    token = CancellationToken()
+async def test_pre_cancelled_token_returns_cancelled_shape(server):
+    token = CancellationToken("test_456")
+    token.cancel()                        # synchronous
 
-    # Start long operation
-    task = asyncio.create_task(
-        server.call("long_operation", {
-            "_cancellation_token": token,
-            "request_id": "test_123"
-        })
-    )
-
-    # Cancel after short delay
-    await asyncio.sleep(0.1)
-    await token.cancel()
-
-    # Should return cancelled status
-    result = await task
-    assert result["status"] == "cancelled"
-    assert result["request_id"] == "test_123"
-
-@pytest.mark.asyncio
-async def test_early_cancellation_check():
-    server = WebScraperServer("web_scraper", {})
-
-    # Pre-cancelled token
-    token = CancellationToken()
-    await token.cancel()
-
-    # Should return immediately
-    result = await server.call("any_tool", {
+    result = await server.call("my_scraper_fetch_url", {
+        "url": "https://example.com",
         "_cancellation_token": token,
-        "request_id": "test_456"
     })
 
-    assert result["status"] == "cancelled"
-    assert result["request_id"] == "test_456"
+    assert result["cancelled"] is True
 ```
 
 ### Status Testing
 
+Drive the tool through `call_with_status`, the path the agent uses — a plain
+`call()` gets no `_status`:
+
 ```python
-# Mock status for testing
-class MockStatus:
-    def __init__(self):
-        self.messages = []
+async def test_status_reporting(server, monkeypatch):
+    events = []
 
-    async def progress(self, msg):
-        self.messages.append(("progress", msg))
+    class Bus:
+        async def publish(self, event):
+            events.append(event)
 
-    async def error(self, msg):
-        self.messages.append(("error", msg))
+    monkeypatch.setattr("agent_system.mcp.status.get_status_bus", lambda: Bus())
 
-@pytest.mark.asyncio
-async def test_status_reporting():
-    server = WebScraperServer("web_scraper", {})
-    status = MockStatus()
+    await server.call_with_status("my_scraper_fetch_url", {"request_id": "r1"})
 
-    await server.call("fetch_url", {
-        "url": "https://example.com",
-        "_status": status
-    })
-
-    # Check that progress was reported
-    assert len(status.messages) > 0
-    assert any("Fetching" in msg for _, msg in status.messages)
+    # the missing url closes the scope as an error
+    assert any(e.phase.value == "error" for e in events)
 ```
 
 ### Integration Testing
 
 ```python
-# tests/test_plugin_web_scraper_integration.py
-import pytest
+# src/plugins/my_scraper/tests/test_plugin_my_scraper_integration.py
 from pathlib import Path
 from agent_system.plugins.discovery import discover_all_plugins
 
 def test_plugin_discovery():
     """Test that the plugin is discovered correctly."""
-    plugins = discover_all_plugins()
+    plugins = discover_all_plugins(dirs=[Path("src/plugins")])
 
-    plugin_names = [p[0] for p in plugins]
-    assert "web_scraper" in plugin_names
+    # dict: plugin type (folder name) -> factory
+    assert "my_scraper" in plugins
 
 def test_plugin_schema_valid():
     """Test that schema.yaml is valid."""
     from agent_system.plugins.schema_loader import load_schema_from_dir
 
-    plugin_dir = Path("src/plugins/web_scraper")
-    schema = load_schema_from_dir(plugin_dir)
+    plugin_dir = Path(__file__).resolve().parents[1]
+    schema = load_schema_from_dir(plugin_dir, {"name": "my_scraper"})
 
     assert "tools" in schema
     assert len(schema["tools"]) > 0
@@ -2306,21 +2369,21 @@ def test_plugin_schema_valid():
 ### Running Tests
 
 ```bash
-# Run all plugin tests
-pytest tests/test_plugin_* -v
+# Run one plugin's tests (test selectively; the full suite takes 20+ minutes)
+pytest src/plugins/my_scraper/tests -v
 
-# Run specific plugin tests
-pytest tests/test_plugin_web_scraper_* -v
-
-# Run with coverage
-pytest tests/test_plugin_web_scraper_* --cov=src.plugins.web_scraper
+# Run one test file
+pytest src/plugins/my_scraper/tests/test_plugin_my_scraper_basic.py -v
 ```
+
+Never run pytest on a server host: on POSIX the root `conftest.py` kills
+processes of the virtualenv (agent-api, workers).
 
 ## Packaging and Distribution
 
 ### For Internal Plugins
 
-Internal plugins live in `src/plugins/` and are discovered automatically. No additional packaging needed.
+Internal plugins live in one of the `plugin_dirs` (`src/plugins/`, `src/plugins_writer/`, `src/plugins_trading/`) and are discovered automatically. No additional packaging needed.
 
 ### For External Distribution
 
@@ -2430,11 +2493,13 @@ PLUGIN_FACTORY = MyPluginServer
 - [ ] `schema.yaml` with proper tool definitions
 - [ ] `plugin.toml` with metadata
 - [ ] Server class extending `SchemaBasedMCPServer`
-- [ ] Support for `_status` parameter
-- [ ] Support for `_cancellation_token` parameter
+- [ ] Support for `_status` parameter (one closing `end`/`error` naming the result)
+- [ ] Support for `_cancellation_token` parameter (long-running tools)
 - [ ] Input validation and structured error responses
-- [ ] CLI support with `cli.py` and pyproject.toml entry point
-- [ ] Tests in `tests/test_plugin_<name>_*.py`
+- [ ] Server entry with `enabled: true` and the tools allowed for the agents that need them
+- [ ] README with the "Model Experience" sections
+- [ ] Tests in `src/plugins/<name>/tests/test_plugin_<name>_*.py`
+- [ ] Optional: CLI (`cli.py` / `__main__.py` and a pyproject.toml script)
 
 **Required for hybrid plugins:**
 - [ ] All MCP plugin requirements (above)
@@ -2442,13 +2507,13 @@ PLUGIN_FACTORY = MyPluginServer
 - [ ] `web_ui` section in `schema.yaml`: `panel` (catalogue entry) and `endpoints`
 - [ ] `get_web_router()` implementation; the plugin object delegates `get_schema_data()`
 - [ ] Static assets handling (CSS, JS, images)
-- [ ] `plugin.toml` with `type: [mcp-server, web]` and `category` metadata
+- [ ] `plugin.toml` with `type = ["mcp-server", "web"]` and `category` metadata
 
 **Required for web-only plugins:**
 - [ ] Web endpoints class extending `PluginWebInterface`
 - [ ] `web_ui` section in `schema.yaml` (no tools section needed)
 - [ ] `get_web_router()` returning FastAPI router with `/plugins/<name>/` prefix
-- [ ] `plugin.toml` with `type: [web]` and `category` metadata
+- [ ] `plugin.toml` with `type = ["web"]` and `category` metadata
 - [ ] Static assets handling (CSS, JS, images)
 - [ ] Panel declared as `web_ui.panel`; `python src/scripts/validate_plugin.py <plugin dir>` passes and `GET /api/ui/catalog` lists it
 - [ ] Security considerations for web access
@@ -2495,16 +2560,12 @@ PLUGIN_FACTORY = MyPluginServer
 ### Common Issues
 
 **Plugin not discovered:**
-- **MOST COMMON**: Missing `PLUGIN_FACTORY` in `plugin.py`
-  - ⚠️ **Discovery ONLY checks `plugin.py`**, not `server.py` or other files!
-  - Fix: Add to END of `plugin.py`:
-    ```python
-    from .server import MyPluginServer
-    PLUGIN_FACTORY = MyPluginServer
-    ```
-- Check `plugin.toml` exists and has correct `entrypoint`
-- Verify plugin directory is listed in `config/plugins.yaml` under `plugin_dirs`
-- Check for syntax errors in `plugin.py` that prevent import
+- The entrypoint module or its factory is missing — discovery skips the folder with a **DEBUG** log only
+  - The module named in `entrypoint` (default `plugin.py`) must sit directly in the plugin folder
+  - It must define the named factory or `PLUGIN_FACTORY`
+- An import error in the entrypoint module logs a WARNING; every server entry of that type then logs "Unknown server type"
+- Verify the plugin directory is listed in `config/plugins.yaml` under `plugin_dirs`
+- The server entry's `type` must be the plugin **folder name**
 - Use `python -m agent_system.agent_cli plugins` to list discovered plugins
 
 **Debug plugin discovery:**
@@ -2514,15 +2575,14 @@ from agent_system.plugins import discover_plugins
 
 # Test if your plugin is discoverable
 plugins = discover_plugins(Path('src/plugins'))
-print(plugins.keys())  # Is your plugin listed?
-
-# If missing, check plugin.py has PLUGIN_FACTORY
+print(plugins.keys())  # Is your plugin listed? (keys are folder names)
 ```
 
-**Tools not working:**
-- Validate `schema.yaml` syntax (use online YAML validator)
-- Check tool names match between schema and `call()` method
-- Verify `list_tools()` returns the correct schema
+**Tools not working / not visible:**
+- Validate `schema.yaml` (it is rendered as Jinja first; a broken schema fails only on the first `get_tools()`)
+- Check the tool → method mapping: `{{ name }}_x` → method `x`
+- The server entry has `enabled: true` (default `false`)
+- The agent's `tools.allowed` admits the tool: `instance/*`, `instance`, or `instance/<full tool name incl. prefix>` — an empty list allows nothing
 
 **Cancellation not working:**
 - Ensure you're checking `token.is_cancelled` in loops
@@ -2531,12 +2591,13 @@ print(plugins.keys())  # Is your plugin listed?
 
 **Status updates not appearing:**
 - Check that you're using `await status.progress()`
-- Verify `_status` parameter is being passed to your tool
+- Verify `_status` parameter is being passed to your tool (only `call_with_status` injects it)
 - Don't send too many rapid updates (batch them)
 
 **Configuration issues:**
 - Log effective configuration in `__init__()`
-- Check `config/mcp_servers.yaml` has your plugin enabled
+- Check the `plugins: servers:` entry (e.g. in `config/plugins.yaml`) has `enabled: true`; `config/mcp_servers.yaml` is for external MCP servers
+- Inspect the merged config with `get_mcp_config_by_name(name, config)`, not the raw `config.plugins.servers[name]`
 - Validate configuration values and provide good defaults
 
 ### Debugging Tips
@@ -2550,8 +2611,11 @@ logging.basicConfig(level=logging.DEBUG)
 **Test plugins in isolation:**
 ```python
 # Quick test without full agent
-server = MyServer("test", {"debug": True})
-result = await server.call("my_tool", {"param": "value"})
+from agent_system.config import load_settings, get_mcp_config_by_name
+
+config = load_settings()
+server = MyServer("my_plugin", config, get_mcp_config_by_name("my_plugin", config))
+result = await server.call("my_plugin_my_tool", {"param": "value"})
 print(result)
 ```
 
@@ -2565,7 +2629,7 @@ python -m agent_system.agent_cli plugins list --format json
 from agent_system.plugins.schema_loader import load_schema_from_dir
 from pathlib import Path
 
-schema = load_schema_from_dir(Path("src/plugins/my_plugin"))
+schema = load_schema_from_dir(Path("src/plugins/my_plugin"), {"name": "my_plugin"})
 print(schema)
 ```
 
@@ -2603,15 +2667,19 @@ In addition to MCP tool plugins, AgentSystem supports **hooks-only plugins** tha
 
 ### Hook Types
 
-Hooks can intercept these lifecycle points:
+`HookType` (`agent_system/hooks/plugin_hook.py`) has ten values:
 
-1. **SESSION_START** - Agent session begins
-2. **SESSION_END** - Agent session ends
-3. **PRE_LLM_CALL** - Before sending messages to LLM
-4. **POST_LLM_CALL** - After receiving LLM response
-5. **PRE_TOOL_CALL** - Before executing a tool
-6. **POST_TOOL_CALL** - After tool execution
-7. **FORMAT_OUTPUT** - Before returning output to user
+1. **SESSION_START** - New session only, before history and user input
+2. **PRE_LLM_CALL** - Every step before the LLM call; a changed `messages` list is sent as-is
+3. **LLM_PROGRESS** - While streaming, every few KB of thinking; no messages, no effect
+4. **POST_LLM_CALL** - After the assistant message is appended
+5. **FORMAT_OUTPUT** - Display formatting only, never history
+6. **SESSION_END** - After saving; no effect
+7. **PRE_LLM_REQUEST** / 8. **POST_LLM_RESPONSE** - At LLM client level, read-only
+9. **PRE_TOOL_CALL** / 10. **POST_TOOL_CALL** - Defined, but nothing calls them: they never fire
+
+Each hook gets a deep copy of the context. Changes count only with
+`modified=True`; `success=False` discards context and metadata.
 
 ### Schema-Based Hooks Pattern
 
@@ -2620,11 +2688,15 @@ The recommended pattern uses `SchemaBasedPluginHook` with declarative YAML confi
 **Directory Structure:**
 ```
 src/plugins/my_hook_plugin/
+├── plugin.toml      # type = ["hooks"], entrypoint = "plugin:PLUGIN_FACTORY"
 ├── plugin.py        # Factory function
 ├── hooks.py         # Hook implementation
 ├── schema.yaml      # Hook definitions + config
 └── README.md        # Documentation
 ```
+
+The hooks are registered only if `schema.yaml` has a `hooks:` key **and** the
+server entry is `enabled: true`.
 
 **Example: schema.yaml**
 ```yaml
@@ -2634,12 +2706,13 @@ hooks:
     type: pre_llm_call
     enabled: true
     timeout: 30.0
+    category: prompt_injection   # order may reference categories
     description: "What this hook does"
     order:
       after: ["begin"]
       before: ["end"]
 
-# Configuration schema
+# Configuration defaults (read for hook plugins only)
 config:
   max_items:
     type: integer
@@ -2660,20 +2733,24 @@ from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 class MyHookPlugin(SchemaBasedPluginHook):
     """Example hooks-only plugin."""
 
-    def __init__(self, plugin_dir: Path | str):
+    def __init__(self, plugin_dir: Path | str, mcp_config=None):
         super().__init__(plugin_dir)
 
-        # Load config from schema
-        config = self.get_config()
-        self.max_items = config.get('max_items', {}).get('default', 100)
-        self.enabled = config.get('enable_feature', {}).get('default', True)
+        # get_config() holds the schema.yaml defaults (plain values);
+        # merging the server entry's config: block is the plugin's job
+        config = dict(self.get_config())
+        if mcp_config is not None and getattr(mcp_config, "config", None):
+            config.update(mcp_config.config)
+        self.max_items = config.get('max_items', 100)
+        self.enabled = config.get('enable_feature', True)
 
     # Handler name MUST match hook name in schema.yaml
     async def my_handler(self, context: HookContext) -> HookResult:
         """Handle pre-LLM call hook.
 
         Args:
-            context: Hook execution context with messages, agent, metadata
+            context: Hook execution context (a deep copy for this hook);
+                messages are ChatMessage objects
 
         Returns:
             HookResult with success status and optionally modified context
@@ -2681,28 +2758,18 @@ class MyHookPlugin(SchemaBasedPluginHook):
         try:
             # Access context data
             messages = context.messages or []
-            session_id = context.session_id
 
             # Perform hook logic
             if self.enabled and len(messages) > self.max_items:
-                # Modify context (example)
+                # Modify the copy in place (example; note that dropping earlier
+                # messages breaks the provider's prompt cache)
                 modified_messages = messages[-self.max_items:]
-
-                # Create modified context
-                modified_context = HookContext(
-                    hook_type=context.hook_type,
-                    request_id=context.request_id,
-                    session_id=context.session_id,
-                    agent=context.agent,
-                    messages=modified_messages,
-                    llm_response=context.llm_response,
-                    metadata=context.metadata
-                )
+                context.messages = modified_messages
 
                 return HookResult(
                     success=True,
                     modified=True,  # We modified the context
-                    context=modified_context,
+                    context=context,
                     metadata={'items_removed': len(messages) - len(modified_messages)}
                 )
 
@@ -2728,87 +2795,86 @@ class MyHookPlugin(SchemaBasedPluginHook):
 from pathlib import Path
 from .hooks import MyHookPlugin
 
-def PLUGIN_FACTORY() -> MyHookPlugin:
-    """Factory function for plugin discovery."""
+def PLUGIN_FACTORY(name=None, system_config=None, mcp_config=None) -> MyHookPlugin:
+    """Called by the runtime as (name, system_config, mcp_config)."""
     plugin_dir = Path(__file__).parent
-    return MyHookPlugin(plugin_dir)
+    return MyHookPlugin(plugin_dir, mcp_config)
 ```
 
 ### Hook Ordering
 
-Hooks can specify execution order using named dependencies:
+A hook's full name is `<server instance name>.<hook name>` (e.g.
+`context_engineer.engineer_context`). `order` resolves **full names, categories
+and `begin`/`end`** only — a short hook name is silently ignored.
 
 ```yaml
 hooks:
   - name: optimize_context
     type: pre_llm_call
     order:
-      after: ["begin"]                    # Run after these hooks
-      before: ["summarize", "validate"]   # Run before these hooks
+      after: ["begin"]                           # virtual node: start
+      before: ["my_summarizer.summarize_context", "validation"]   # full name, category
 ```
 
 **Special Order Names:**
-- `begin`: Virtual hook at start (always first)
-- `end`: Virtual hook at end (always last)
+- `begin`: Virtual hook at start
+- `end`: Virtual hook at end
 
-**Example Chain:**
-```yaml
-# Execution order: begin -> optimize -> summarize -> validate -> end
-hooks:
-  - name: optimize_context
-    order:
-      after: ["begin"]
-      before: ["summarize_context"]
-
-  - name: summarize_context
-    order:
-      after: ["optimize_context"]
-      before: ["validate_messages"]
-
-  - name: validate_messages
-    order:
-      after: ["summarize_context"]
-      before: ["end"]
-```
+Ties sort alphabetically. A cycle is logged as an error and the registration
+order is used; no exception is raised.
 
 ### Global Configuration
 
-Override hook behavior in `config/plugins.yaml`:
+Override hook behavior in the top-level `hooks:` section of `config/plugins.yaml`
+(or any included file):
 
 ```yaml
 hooks:
   enabled: true
-  default_timeout: 30.0
   overrides:
-    my_hook_plugin.my_handler:
-      enabled: false           # Disable this specific hook
-      timeout: 60.0           # Override timeout
+    my_hook_plugin.my_handler:   # <server instance>.<hook>, or <server instance> for all its hooks
+      enabled: false             # Disable this specific hook
+      timeout: 60.0              # Override timeout
       order:
-        after: ["other_hook"] # Override order
+        after: ["other_plugin.other_hook"]
 ```
 
-Mehr Keys kennt ein globaler Override nicht (`enabled`, `timeout`, `order`).
-Plugin-spezifische Parameter setzt man in den Hook-Metadaten des Plugins
-oder pro Agent unter `agent_config.hooks.overrides`.
+A global override knows only `enabled`, `timeout` and `order`; only these field
+names are validated, so a wrong hook name loads fine and does nothing.
+`hooks.default_timeout` is not applied (registration uses 30 s unless the hook
+sets `timeout`).
+
+Per agent, `agent_config.hooks.enabled: false` switches off all hooks of that
+agent, `agent_config.hooks.overrides["<full name>"].enabled` switches one, and
+every other key there arrives as `context.hook_config`. Agent overrides are not
+validated at all — copy the full name from the registration log.
 
 ### HookContext Reference
+
+Main fields (full list in `agent_system/hooks/plugin_hook.py`):
 
 ```python
 @dataclass
 class HookContext:
-    hook_type: HookType              # Type of hook
-    request_id: str                  # Unique request ID
-    session_id: Optional[str]        # Session identifier
-    agent: Optional[Any]             # Agent instance
-    agent_name: Optional[str]        # Agent name
-    messages: Optional[List[Dict]]   # Conversation messages
-    llm_response: Optional[Any]      # LLM response (post-LLM only)
-    tool_call: Optional[Dict]        # Tool info (tool hooks only)
-    tool_result: Optional[Any]       # Tool result (post-tool only)
-    output: Optional[str]            # Output (format hook only)
-    metadata: Optional[Dict]         # Additional metadata
-    step: Optional[int]              # Execution step
-    llm: Optional[Any]               # LLM instance
+    hook_type: HookType
+    request_id: str
+    session_id: str
+    agent: Optional[Agent] = None
+    agent_name: str = ""
+    messages: Optional[List[ChatMessage]] = None   # ChatMessage objects, not dicts
+    tools_schema: Optional[List[Dict]] = None      # per-request tool schema
+    llm_response: Optional[Dict] = None
+    tool_call: Optional[Dict] = None
+    tool_result: Optional[Dict] = None
+    output: Optional[str] = None                   # format_output only
+    output_format: str = "text"
+    metadata: Dict[str, Any] = {}
+    hook_config: Dict[str, Any] = {}               # per-agent keys from hooks.overrides
+    step: int = 0
+    llm: Optional[Any] = None
+    cancellation_token: Optional[Any] = None
+    # plus llm_* fields for pre_llm_request / post_llm_response and
+    # reasoning_* fields for llm_progress
 ```
 
 ### Hook Best Practices
@@ -2840,8 +2906,8 @@ async def validate_messages(self, context: HookContext) -> HookResult:
     """Validate message format."""
     messages = context.messages or []
 
-    for msg in messages:
-        if 'role' not in msg or 'content' not in msg:
+    for msg in messages:                      # ChatMessage objects
+        if not msg.role or (msg.content is None and not msg.tool_calls):
             return HookResult(
                 success=False,
                 modified=False,
@@ -2852,48 +2918,41 @@ async def validate_messages(self, context: HookContext) -> HookResult:
     return HookResult(success=True, modified=False, context=context)
 ```
 
-**Transformation Hook:**
+**Transformation Hook** (inserts a note once and replaces its own earlier insert,
+so the request prefix stays stable for the prompt cache):
 ```python
-async def add_timestamp(self, context: HookContext) -> HookResult:
-    """Add timestamps to messages."""
-    messages = context.messages or []
-    modified_messages = []
+from agent_system.llm.models import ChatMessage
 
-    for msg in messages:
-        if 'timestamp' not in msg:
-            msg['timestamp'] = datetime.now().isoformat()
-        modified_messages.append(msg)
+MARK = "my_hook_plugin"
 
-    modified_context = HookContext(
-        hook_type=context.hook_type,
-        request_id=context.request_id,
-        session_id=context.session_id,
-        agent=context.agent,
-        messages=modified_messages,
-        llm_response=context.llm_response,
-        metadata=context.metadata
-    )
+async def inject_note(self, context: HookContext) -> HookResult:
+    """Insert a system note after the leading system messages."""
+    if context.messages is None:
+        return HookResult(success=True, modified=False, context=context)
 
-    return HookResult(
-        success=True,
-        modified=True,
-        context=modified_context,
-        metadata={'timestamps_added': len(messages)}
-    )
+    msgs = [m for m in context.messages if m.injected_by != MARK]   # drop our previous insert
+    i = next((k for k, m in enumerate(msgs) if m.role != "system"), len(msgs))
+    msgs.insert(i, ChatMessage(role="system", content="Note text", injected_by=MARK))
+    context.messages = msgs
+
+    return HookResult(success=True, modified=True, context=context)
 ```
+
+Every `role: user` message a hook inserts carries `injected_by`; `injected_by is None`
+means "written by a person".
 
 ### Testing Hooks
 
 ```python
 import pytest
 from agent_system.hooks import HookContext, HookType
+from agent_system.llm.models import ChatMessage
 from plugins.my_hook_plugin.plugin import PLUGIN_FACTORY
 
 @pytest.fixture
 def plugin():
-    return PLUGIN_FACTORY()
+    return PLUGIN_FACTORY("my_hook_plugin", None, None)
 
-@pytest.mark.asyncio
 async def test_my_handler(plugin):
     """Test hook handler."""
     context = HookContext(
@@ -2901,8 +2960,8 @@ async def test_my_handler(plugin):
         request_id='test-123',
         session_id='session-1',
         messages=[
-            {'role': 'user', 'content': 'Hello'},
-            {'role': 'assistant', 'content': 'Hi there!'}
+            ChatMessage(role='user', content='Hello'),
+            ChatMessage(role='assistant', content='Hi there!'),
         ]
     )
 
@@ -2917,42 +2976,39 @@ async def test_my_handler(plugin):
 
 See these example implementations:
 
-- **[context_engineer](../src/plugins/context_engineer/)** - Kontext-Kompaktierung in Schichten, schont den Prompt-Cache
+- **[context_engineer](../src/plugins/context_engineer/)** - Layered context compaction that preserves the prompt cache
 - **[context_summarizer](../src/plugins/context_summarizer/)** - Intelligent LLM-based summarization
 - **[message_validator](../src/plugins/message_validator/)** - Message format validation
 - **[request_logger](../src/plugins/request_logger/)** - Request/response logging with timing
 
 ### Hybrid Plugins (Tools + Hooks)
 
-You can combine tools and hooks in a single plugin:
+You can combine tools and hooks in a single plugin. The server's `schema.yaml`
+carries both `tools:` and `hooks:`; the hook handlers are found either on a
+`hooks_plugin` attribute (a `SchemaBasedPluginHook` instance) or on the server
+itself as `on_<hook type>` methods (duck typing, see `src/plugins/okf/server.py`):
 
 ```python
-from agent_system.mcp import MCPServer
-from agent_system.hooks import PluginHook, HookContext, HookResult
+from pathlib import Path
 
-class MyHybridPlugin(MCPServer, PluginHook):
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from .hooks import MyHookPlugin
+
+
+class MyHybridPlugin(SchemaBasedMCPServer):
     """Plugin with both tools and hooks."""
 
-    def __init__(self, name: str, config: dict = None):
-        MCPServer.__init__(self, name, config)
-        PluginHook.__init__(self, name, config)
+    def __init__(self, name, system_config, mcp_config):
+        super().__init__(name, system_config, mcp_config)
+        self.hooks_plugin = MyHookPlugin(Path(__file__).parent, mcp_config)
 
-    # MCP Tools
-    async def call(self, name: str, arguments: dict) -> dict:
-        if name == "my_tool":
-            return await self._my_tool(**arguments)
-        raise ValueError(f"Unknown tool: {name}")
-
-    async def _my_tool(self, param: str) -> dict:
-        """Example tool."""
-        return {"result": f"Processed: {param}"}
-
-    # Hook Handlers
-    async def on_session_start(self, context: HookContext) -> HookResult:
-        """Initialize at session start."""
-        self.session_data = {}
-        return HookResult(success=True, modified=False, context=context)
+    # Tool "{name}_my_tool"
+    async def my_tool(self, params: dict) -> dict:
+        return {"status": "success", "result": f"Processed: {params.get('param')}"}
 ```
+
+With two hooks of the same type on the duck-typed `on_*` path, the `on_*`
+method runs once per registered hook name.
 
 For complete hooks documentation, see [Plugin Hook System](./plugin_hooks.md).
 

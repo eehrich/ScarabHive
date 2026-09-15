@@ -108,6 +108,10 @@ Name of the System is ScarabHive
 
 ## Key Documentation
 
+**Building or changing a plugin, tool, hook, agent YAML or sub-agent: load the
+`plugin-authoring` skill first.** It is verified against the code; the plugin
+docs below are partly stale.
+
 | Document | Purpose |
 |----------|---------|
 | `_arch_agent_system_architecture.md` | Core system architecture |

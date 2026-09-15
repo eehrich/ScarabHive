@@ -1,5 +1,7 @@
 # Plugin Hook System
 
+The verified quick reference is the Claude skill `.claude/skills/plugin-authoring/` (`references/hooks.md`).
+
 **Status:** Production Ready
 **Version:** 1.0
 **Last Updated:** 2025-10-14
@@ -13,6 +15,7 @@
 5. [Schema-Based Hooks](#schema-based-hooks)
 6. [Configuration](#configuration)
 7. [Best Practices](#best-practices)
+   - [Cache Safety](#cache-safety)
 8. [Examples](#examples)
 9. [Troubleshooting](#troubleshooting)
 
@@ -22,7 +25,7 @@ The Plugin Hook System provides lifecycle interception points for extending agen
 
 ### Key Features
 
-- **7 Lifecycle Points**: Pre/post LLM, pre/post tool, format output, session start/end
+- **10 Hook Types**: session start/end, pre/post LLM call, LLM progress, format output, pre LLM request/post LLM response (client level), pre/post tool call (defined but never fired)
 - **Flexible Ordering**: Named dependencies with topological sorting
 - **Schema-Based Pattern**: Declarative hook definitions in YAML
 - **Error Isolation**: Hook failures don't crash the agent
@@ -34,24 +37,34 @@ The Plugin Hook System provides lifecycle interception points for extending agen
 ```
 Agent Execution Flow
   ↓
-  SESSION_START hooks
+  SESSION_START hooks (new sessions only)
   ↓
-  ┌─ PRE_LLM_CALL hooks
+  ┌─ PRE_LLM_CALL hooks (every step)
   │    ↓
-  │  LLM Execution
+  │  LLM call ── PRE_LLM_REQUEST / LLM_PROGRESS / POST_LLM_RESPONSE (client level)
   │    ↓
-  └─ POST_LLM_CALL hooks
+  │  POST_LLM_CALL hooks
+  │    ↓
+  │  FORMAT_OUTPUT hooks (display)
+  │    ↓
+  └─ Tool execution (PRE_TOOL_CALL / POST_TOOL_CALL are not fired)
   ↓
-  ┌─ PRE_TOOL_CALL hooks
-  │    ↓
-  │  Tool Execution
-  │    ↓
-  └─ POST_TOOL_CALL hooks
-  ↓
-  FORMAT_OUTPUT hooks
+  Session saved
   ↓
   SESSION_END hooks
 ```
+
+### What Takes Effect
+
+The registry hands every hook a **deep copy** of the context (`messages`,
+`llm_response`, `metadata`, ...; `agent`, `llm`, `tools_schema` and the
+cancellation token by reference).
+
+- Changes are only taken when the hook returns `success=True, modified=True`
+  with the changed `context`; otherwise they are discarded.
+- `result.metadata` is merged into the context metadata even with
+  `modified=False`.
+- `success=False` → neither context nor metadata is taken.
 
 ### Use Cases
 
@@ -66,9 +79,10 @@ Agent Execution Flow
 
 ### PRE_LLM_CALL
 
-**Trigger:** Before sending messages to LLM
+**Trigger:** Every step before the LLM call, including the final call after `max_steps`
 **Use Cases:** Context optimization, prompt injection, validation
-**Can Modify:** Messages, agent configuration
+**Can Modify:** `messages` — the changed list is sent as-is and synced to the session tracker.
+The context also carries `tools_schema`, `llm`, `step` and `cancellation_token`.
 
 ```python
 async def on_pre_llm_call(self, context: HookContext) -> HookResult:
@@ -89,9 +103,14 @@ async def on_pre_llm_call(self, context: HookContext) -> HookResult:
 
 ### POST_LLM_CALL
 
-**Trigger:** After receiving LLM response
-**Use Cases:** Response validation, logging, statistics
-**Can Modify:** LLM response, metadata
+**Trigger:** After receiving the LLM response
+**Use Cases:** Response validation, logging, statistics, auto-continuation
+**Can Modify:** Only `llm_response["assistant"]["content"]` and
+`llm_response["assistant"]["tool_calls"]` are read back. Metadata keys the
+loop reads: `content_format`, `continue`, `continue_message`,
+`continue_injected_by`, `continuation_count`, `continuation_reason`.
+A hook that sets `continue` must also set `continue_injected_by` (see
+[Cache Safety](#cache-safety)).
 
 ```python
 async def on_post_llm_call(self, context: HookContext) -> HookResult:
@@ -138,16 +157,13 @@ async def on_llm_progress(self, context: HookContext) -> HookResult:
 
 ### PRE_TOOL_CALL
 
-> ⚠️ **Not wired yet:** The hook type, registry routing and
-> `HookIntegrationManager.execute_pre_tool_hooks` all exist, but the agent's
-> tool-execution loop does not call them — hooks of this type currently
-> **never fire**. Same for POST_TOOL_CALL. Kept deliberately as a planned
-> extension point (see `docs/agent_package_architecture_review.md`, Befund E);
-> do not build plugins on it until it is wired into `ToolExecutionManager`.
+> ⚠️ **Never fires:** The hook type, registry routing and
+> `HookIntegrationManager.execute_pre_tool_hooks` / `execute_post_tool_hooks`
+> exist, but nothing calls them — hooks of type PRE_TOOL_CALL and
+> POST_TOOL_CALL **never fire**. Do not build plugins on them.
 
-**Trigger:** Before executing a tool
-**Use Cases:** Parameter validation, access control, logging
-**Can Modify:** Tool parameters, execution decision
+**Trigger:** none (intended: before executing a tool)
+**Intended Use Cases:** Parameter validation, access control, logging
 
 ```python
 async def on_pre_tool_call(self, context: HookContext) -> HookResult:
@@ -163,9 +179,10 @@ async def on_pre_tool_call(self, context: HookContext) -> HookResult:
 
 ### POST_TOOL_CALL
 
-**Trigger:** After tool execution
-**Use Cases:** Result validation, error handling, logging
-**Can Modify:** Tool result, error handling
+> ⚠️ **Never fires** — see PRE_TOOL_CALL.
+
+**Trigger:** none (intended: after tool execution)
+**Intended Use Cases:** Result validation, error handling, logging
 
 ```python
 async def on_post_tool_call(self, context: HookContext) -> HookResult:
@@ -181,9 +198,9 @@ async def on_post_tool_call(self, context: HookContext) -> HookResult:
 
 ### FORMAT_OUTPUT
 
-**Trigger:** Before returning output to user
+**Trigger:** Before returning output to the user
 **Use Cases:** Multi-format rendering (HTML, ANSI, text), filtering
-**Can Modify:** Final output content based on target format
+**Can Modify:** Displayed output only — never the conversation history
 
 ```python
 async def on_format_output(self, context: HookContext) -> HookResult:
@@ -229,9 +246,9 @@ async def on_format_output(self, context: HookContext) -> HookResult:
 
 ### SESSION_START
 
-**Trigger:** When agent session begins
+**Trigger:** When a new session begins (not for resumed sessions)
 **Use Cases:** Initialization, logging, setup
-**Can Modify:** Session metadata, initialization
+**Can Modify:** `messages` — the returned list replaces the session's message list
 
 ```python
 async def on_session_start(self, context: HookContext) -> HookResult:
@@ -250,9 +267,9 @@ async def on_session_start(self, context: HookContext) -> HookResult:
 
 ### SESSION_END
 
-**Trigger:** When agent session ends
+**Trigger:** When the request ends
 **Use Cases:** Cleanup, statistics, logging
-**Can Modify:** Cleanup operations, final statistics
+**Can Modify:** nothing — the return value is ignored
 
 **When:** after the request's conversation has been written to the session
 file, not before. `context.metadata["persisted"]` says whether that write
@@ -274,6 +291,16 @@ async def on_session_end(self, context: HookContext) -> HookResult:
 
 **Example Plugins:**
 - `request_logger`: Logs session duration and statistics
+
+### PRE_LLM_REQUEST / POST_LLM_RESPONSE
+
+**Trigger:** Inside the LLM client, around the raw API request
+**Use Cases:** Capturing exact payloads, responses, usage
+**Can Modify:** nothing — read-only; errors in these hooks are swallowed
+
+Fields: `llm_request_payload`, `llm_response_data`, `llm_provider`,
+`llm_model`, `llm_request_url`, `llm_duration_ms`, `llm_error`, `llm_usage`,
+`llm_finish_reason`, `llm_is_streaming`.
 
 ## PluginHook Interface
 
@@ -305,19 +332,28 @@ Container for hook execution context:
 ```python
 @dataclass
 class HookContext:
-    hook_type: HookType              # Type of hook being executed
-    request_id: str                  # Unique request ID for tracking
-    session_id: Optional[str]        # Session identifier
-    agent: Optional[Any]             # Reference to agent instance
-    agent_name: Optional[str]        # Name of the agent
-    messages: Optional[List[Dict]]   # Conversation messages
-    llm_response: Optional[Any]      # LLM response (post-LLM only)
-    tool_call: Optional[Dict]        # Tool call info (tool hooks only)
-    tool_result: Optional[Any]       # Tool result (post-tool only)
-    output: Optional[str]            # Output text (format hook only)
-    metadata: Optional[Dict]         # Additional context metadata
-    step: Optional[int]              # Execution step number
-    llm: Optional[Any]               # LLM instance for hook use
+    hook_type: HookType
+    request_id: str
+    session_id: str
+    agent: Optional[Agent] = None
+    agent_name: str = ""
+    messages: Optional[List[ChatMessage]] = None          # ChatMessage objects, not dicts
+    tools_schema: Optional[List[Dict[str, Any]]] = None   # per-request tool schema
+    llm_response: Optional[Dict[str, Any]] = None         # post_llm_call: {"assistant": {...}}
+    tool_call: Optional[Dict[str, Any]] = None            # tool hooks (never fired)
+    tool_result: Optional[Dict[str, Any]] = None          # tool hooks (never fired)
+    output: Optional[str] = None                          # format_output
+    output_format: str = "text"                           # 'html', 'ansi', 'text', 'markdown'
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    hook_config: Dict[str, Any] = field(default_factory=dict)  # per-agent override keys
+    target_hook_name: Optional[str] = None                # short hook name being dispatched
+    step: int = 0
+    llm: Optional[Any] = None
+    cancellation_token: Optional[Any] = None
+    # llm_request_payload, llm_response_data, llm_provider, llm_model,
+    # llm_request_url, llm_duration_ms, llm_error, llm_usage,
+    # llm_finish_reason, llm_is_streaming: pre_llm_request / post_llm_response
+    # reasoning_text, reasoning_chars, previous_reasoning_chars: llm_progress
 ```
 
 ### HookResult
@@ -327,48 +363,52 @@ Return value from hook execution:
 ```python
 @dataclass
 class HookResult:
-    success: bool                    # Hook executed successfully
-    modified: bool                   # Context was modified
-    context: HookContext             # Modified (or original) context
-    metadata: Optional[Dict] = None  # Additional result metadata
-    error: Optional[str] = None      # Error message if failed
+    success: bool                                          # Hook executed successfully
+    modified: bool = False                                 # Context was modified
+    context: Optional[HookContext] = None                  # Modified (or original) context
+    error: Optional[str] = None                            # Error message if failed
+    metadata: Dict[str, Any] = field(default_factory=dict) # Merged into context.metadata
 ```
 
 **Important:**
-- Set `modified=True` if you changed the context
+- Set `modified=True` if you changed the context — otherwise the change is discarded
 - Return modified context in `context` field
-- Use `metadata` for statistics, audit info
-- Set `success=False` and provide `error` on failure
+- Use `metadata` for signals and statistics; it is merged even with `modified=False`
+- Set `success=False` and provide `error` on failure — nothing is taken then
 
 ## Hook Ordering
 
 ### Named Dependencies
 
-Hooks use unique names and specify dependencies:
+Hooks specify dependencies in `order`:
 
 ```yaml
 hooks:
   - name: my_hook
     type: pre_llm_call
+    category: prompt_injection
     order:
-      after: ["begin", "optimize_context"]  # Run after these hooks
-      before: ["validate_messages", "end"]  # Run before these hooks
+      after: ["begin", "context_engineer.engineer_context"]  # full name
+      before: ["context_summarization", "end"]               # category or virtual node
 ```
 
-### Special Names
+A reference resolves only to:
 
-- `begin`: Virtual hook at the start of each type
-- `end`: Virtual hook at the end of each type
+- a **full hook name** (`<server instance name>.<hook name>`),
+- a **category** (all registered hooks with that `category`),
+- `begin` / `end`: virtual nodes at the start/end of each type.
+
+A short hook name (`after: ["engineer_context"]`) or a reference to a hook
+that is not registered is **silently ignored** (debug log only).
 
 ### Topological Sort
 
-The `HookRegistry` uses topological sort (Kahn's algorithm) to determine execution order:
+The `HookRegistry` sorts with Kahn's algorithm on every execution:
 
-1. Parse all hooks and their dependencies
-2. Build dependency graph
-3. Detect circular dependencies (raises error)
-4. Sort hooks topologically
-5. Execute in sorted order
+1. Resolve references and build the dependency graph
+2. Sort topologically; ties are broken alphabetically by full name
+3. On a circular dependency: an error is logged and the hooks run in
+   registration order — nothing is raised
 
 ### Example Ordering
 
@@ -380,25 +420,23 @@ hooks:
     request_logger.log_pre_llm:
       order:
         after: ["begin"]
-        before: ["summarize_context"]
+        before: ["context_summarizer.summarize_context"]
 
     context_summarizer.summarize_context:
       order:
-        after: ["log_pre_llm"]
-        before: ["validate_messages"]
+        after: ["request_logger.log_pre_llm"]
+        before: ["message_validator.validate_messages"]
 
     message_validator.validate_messages:
       order:
-        after: ["summarize_context"]
+        after: ["context_summarizer.summarize_context"]
         before: ["end"]
 ```
 
 **Execution Order:**
-1. `begin` (virtual)
-2. `log_pre_llm`
-3. `summarize_context`
-4. `validate_messages`
-5. `end` (virtual)
+1. `request_logger.log_pre_llm`
+2. `context_summarizer.summarize_context`
+3. `message_validator.validate_messages`
 
 ## Schema-Based Hooks
 
@@ -408,6 +446,7 @@ Recommended pattern for new hook plugins.
 
 ```
 src/plugins/my_plugin/
+├── plugin.toml      # Manifest (entrypoint = "plugin:PLUGIN_FACTORY")
 ├── plugin.py        # Factory function
 ├── hooks.py         # Hook implementation
 ├── schema.yaml      # Hook definitions + config
@@ -419,10 +458,11 @@ src/plugins/my_plugin/
 ```yaml
 # Hook definitions
 hooks:
-  - name: my_hook_handler        # Must match method name exactly
+  - name: my_hook_handler        # Must match method name exactly (handler:/priority: are ignored)
     type: pre_llm_call
     enabled: true
-    timeout: 30.0
+    timeout: 30.0                # default 30.0
+    category: prompt_injection   # optional; order may reference categories
     description: "What this hook does"
     order:
       after: ["begin"]
@@ -444,28 +484,32 @@ config:
 ```
 
 
-### Instanz-Default per `hook_config` (seit 2026-09-02)
+### Instance Default via `hook_config`
 
-Das Schema spricht für den Plugin-TYP. Läuft dasselbe Plugin mehrfach als
-Instanz (z. B. `context_summarizer` und `writer_context_summarizer`), setzt
-die Server-Config einer Instanz ihren eigenen Registrier-Default:
+The schema speaks for the plugin type. When the same plugin runs as several
+instances (e.g. `context_summarizer` and `writer_context_summarizer`), an
+instance's server config sets its own registration default:
 
 ```yaml
-# config/plugins.yaml bzw. eingebundene Plugin-Configs
+# config/plugins.yaml or an included plugin config
 servers:
   writer_context_summarizer:
     type: context_summarizer
     hook_config:
-      enabled: false   # diese Instanz startet AUS; Agenten schalten sie
-                       # per hooks.overrides (exakter instanz.hook-Key) an
+      enabled: false   # this instance starts OFF; agents switch it on
+                       # via hooks.overrides (exact <instance>.<hook> key)
 ```
 
-Wirkt **nur absenkend**: `enabled: false` schaltet die Hooks dieser Instanz
-aus; `enabled: true` hebt einen Schema-Default NICHT an (einen Default
-anzuheben ist Operator-Sache — globale `hooks.overrides`). Vorrang bei der
-Registrierung: Schema-Eintrag < Instanz-Absenkung < globale `hooks.overrides`
-< globaler Master-Schalter `hooks.enabled: false`. Zur Laufzeit gewinnt
-darüber der Agent-Override (exakter Key), siehe oben.
+It can **only disable**: `enabled: false` switches this instance's hooks off;
+`enabled: true` does NOT raise a schema default (raising a default is the
+operator's move — global `hooks.overrides`). Precedence at registration:
+schema entry < instance `hook_config.enabled: false` < global
+`hooks.overrides` < global master switch `hooks.enabled: false`. At runtime
+the agent override (exact key) wins over all of these, see
+[Agent-Level Config](#agent-level-config).
+
+A hook is registered only if the plugin's `schema.yaml` has a `hooks:` key and
+the instance is enabled in `config/plugins.yaml`.
 
 ### hooks.py
 
@@ -474,12 +518,15 @@ from pathlib import Path
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 
 class MyPlugin(SchemaBasedPluginHook):
-    def __init__(self, plugin_dir: Path | str):
+    def __init__(self, plugin_dir: Path | str, mcp_config=None):
         super().__init__(plugin_dir)
 
-        # Load config from schema
-        config = self.get_config()
-        self.max_items = config.get('max_items', {}).get('default', 100)
+        # get_config() holds only the schema.yaml defaults: {key: default}
+        config = dict(self.get_config())
+        # Merging the instance config from plugins.yaml is the plugin's job
+        if mcp_config is not None and getattr(mcp_config, 'config', None):
+            config.update(mcp_config.config)
+        self.max_items = config.get('max_items', 100)
 
     # Handler name MUST match hook name in schema.yaml
     async def my_hook_handler(self, context: HookContext) -> HookResult:
@@ -497,9 +544,9 @@ class MyPlugin(SchemaBasedPluginHook):
 from pathlib import Path
 from .hooks import MyPlugin
 
-def PLUGIN_FACTORY() -> MyPlugin:
-    plugin_dir = Path(__file__).parent
-    return MyPlugin(plugin_dir)
+# Called as factory(name, system_config, mcp_config) — a zero-argument factory raises TypeError
+def PLUGIN_FACTORY(name=None, system_config=None, mcp_config=None) -> MyPlugin:
+    return MyPlugin(Path(__file__).parent, mcp_config)
 ```
 
 ### Convention
@@ -517,17 +564,19 @@ hooks:
 
 ### Hook Naming Convention
 
-**CRITICAL:** Hooks are registered and referenced using the **full name** format: `plugin_name.hook_name`
+**CRITICAL:** Hooks are registered and referenced using the **full name** format:
+`<server instance name>.<hook name>` — the instance key under `servers:` in
+`config/plugins.yaml`, not the plugin type or folder name.
 
 **Examples:**
-- `todo_management.inject_todo_tasks`
+- `todo.inject_todo_tasks`
 - `markdown_formatter.format_markdown_output`
 - `context_engineer.engineer_context`
 
 **Why This Matters:**
-- Enables multiple plugins to have hooks with the same base name
-- Required for per-agent hook overrides to work correctly
-- Ensures proper hook filtering and execution control
+- Enables multiple plugins (and instances of one plugin) to have hooks with the same base name
+- Required for global and per-agent hook overrides and for `order` references
+- The registration log shows the exact name: `Registered hook '<full name>' ...`
 
 **Convention Breakdown:**
 ```yaml
@@ -537,14 +586,14 @@ hooks:
     type: pre_llm_call
     enabled: false
 
-# In registry (full name with plugin prefix)
-# Registered as: todo_management.inject_todo_tasks
+# In registry (full name with instance prefix)
+# Registered as: todo.inject_todo_tasks
 
 # In agent config overrides (full name required)
 agent_config:
   hooks:
     overrides:
-      todo_management.inject_todo_tasks:
+      todo.inject_todo_tasks:
         enabled: true
 ```
 
@@ -566,15 +615,19 @@ Override in `config/plugins.yaml`:
 
 ```yaml
 hooks:
-  enabled: true
-  default_timeout: 30.0
+  enabled: true                   # false disables all hooks at registration
   overrides:
-    plugin_name.hook_name:
+    instance_name.hook_name:      # or just instance_name for all its hooks
       enabled: false              # Disable specific hook
       timeout: 60.0               # Override timeout
       order:
-        after: ["other_hook"]     # Override order
+        after: ["other_instance.other_hook"]  # Override order (full names/categories)
 ```
+
+`hooks.default_timeout` is accepted but not applied: the registration
+default timeout is hard-coded to 30.0 s; set `timeout` in the schema or an
+override instead. Only the field names of an override are validated — an
+override key with a wrong hook name loads fine and does nothing.
 
 Ein globaler Override kennt genau diese drei Keys (`enabled`, `timeout`,
 `order`) — ein anderer Key (Tippfehler wie `timout`) lässt `load_settings`
@@ -599,13 +652,13 @@ agents:
   meta_agent:
     agent_config:
       hooks:
-        enabled: true
+        enabled: true   # false disables all hooks for this agent
         overrides:
           # Enable globally disabled hook for this agent
-          todo_management.inject_todo_tasks:
+          todo.inject_todo_tasks:
             enabled: true
-            max_tasks: 20
-            filter_status: ["not-started", "in-progress", "blocked"]
+            # Any other key arrives as context.hook_config; it only has an
+            # effect if the hook reads it (todo does not)
 
           # Disable globally enabled hook for this agent
           markdown_formatter.format_markdown_output:
@@ -619,10 +672,16 @@ agents:
 ```
 
 **Override Logic:**
-1. **Hook has agent override** → Use override value (ignores global state)
-2. **No agent override** → Use global `enabled` state from schema.yaml
-3. **Hook globally disabled + agent enables** → Hook executes for this agent only
-4. **Hook globally enabled + agent disables** → Hook skipped for this agent only
+1. **Agent `hooks.enabled: false`** → no hook runs for this agent
+2. **Hook has agent override with `enabled`** → Use override value (ignores registration state)
+3. **No agent override** → Use the registration state (schema, instance `hook_config`, global overrides)
+4. **Hook globally disabled + agent enables** → Hook executes for this agent only
+5. **Hook globally enabled + agent disables** → Hook skipped for this agent only
+
+⚠️ Agent overrides are **not validated** (`HooksConfig.overrides` is a plain
+dict): a short name, a type name or a typo has no effect, without error or
+warning. `timeout` and `order` in agent overrides are ignored. Copy the full
+name from the registration log.
 
 **Example Scenario:**
 
@@ -636,7 +695,7 @@ hooks:
 meta_agent:
   hooks:
     overrides:
-      todo_management.inject_todo_tasks:
+      todo.inject_todo_tasks:
         enabled: true  # Enabled ONLY for meta_agent
 
 sysadmin_agent:
@@ -665,6 +724,36 @@ sysadmin_agent:
 3. **Don't Raise Exceptions**: Hook system handles errors
 4. **Log Errors**: Use `logger.error()` with traceback
 5. **Graceful Degradation**: Return original context on error
+
+How the registry handles failures:
+
+- **Timeout** (per hook, `asyncio.wait_for`): error log, the hook's changes are
+  discarded, the chain continues. The hook task is cancelled — side effects may
+  be half done.
+- **Exception, invalid result, missing method**: logged, the hook counts as
+  failed, the chain continues.
+- If the whole chain fails, the agent loop continues with the unchanged
+  messages — a broken hook only shows up in the log.
+
+### Cache Safety
+
+Providers cache the request prefix. **Every LLM request must be a prefix of
+the next one**; a hook that breaks this pays for the whole context again on
+every step.
+
+- Nothing ticking (clock, step counter) in the system prompt or at the front of
+  the history — the prompt is re-rendered every step.
+- Don't rewrite earlier messages; append new content at the end.
+- Find your own insert by `ChatMessage.injected_by` and replace it instead of
+  adding a duplicate.
+- **Every `role: user` message a hook or the loop inserts carries
+  `injected_by`.** `None` means "written by a person"; context_engineer, OKF,
+  tool_preload and agent_continuation rely on it to find the last human
+  message. A `post_llm_call` hook that sets `continue` must set
+  `continue_injected_by`.
+
+Guards: `tests/agent/test_agent_step_budget_note.py`,
+`tests/config/test_prompts_have_no_ticking_clock.py`.
 
 ### Testing
 
@@ -696,22 +785,25 @@ See [Plugin Examples](../src/plugins/) for complete implementations:
 ### Hook Not Executing
 
 1. Check that hook is enabled in configuration
-2. Verify plugin is loaded (`GET /hooks` API endpoint)
-3. Check hook type matches execution point
-4. Review log files for errors
+2. Verify the hook is registered (`GET /hooks` API endpoint, or `Registered hook` in the log)
+3. Check the hook type fires at all (`pre_tool_call` / `post_tool_call` never do)
+4. Check `schema.yaml` has a `hooks:` key and the method name equals the hook name
+5. Review log files for errors
 
-### Circular Dependency Error
+### Circular Dependency
 
 ```
-CircularDependencyError: Circular dependency detected: A -> B -> C -> A
+ERROR: Circular dependency in hooks for pre_llm_call: Circular dependency detected in hooks: [...]
 ```
+
+Nothing is raised; the hooks of that type run in registration order.
 
 **Solution:** Review `order` specifications in hooks, remove cycles
 
 ### Hook Timeout
 
 ```
-WARNING: Hook 'my_hook' exceeded timeout (30.0s)
+ERROR: Hook 'my_instance.my_hook' timed out after 30.0s
 ```
 
 **Solutions:**
@@ -738,9 +830,10 @@ result = HookResult(
 **Issue:** Hooks execute in wrong order
 
 **Solution:**
-- Verify `order` specifications are correct
-- Check for conflicting order constraints
-- Use CLI to inspect actual order: `backlog hooks list --type pre_llm_call`
+- Use full hook names or categories in `order` — short names are silently ignored
+- Check for conflicting order constraints (`Hook ordering conflict` warning)
+- Inspect registered hooks via `GET /hooks`; the executed order is logged at
+  debug level (`Executing N hooks for pre_llm_call: [...]`)
 
 ### Agent Override Not Working
 
@@ -750,44 +843,31 @@ result = HookResult(
 
 1. **Incorrect Hook Name Format**
    ```yaml
-   # ❌ WRONG - Missing plugin prefix
+   # ❌ WRONG - Missing instance prefix
    hooks:
      overrides:
        inject_todo_tasks:
          enabled: true
 
-   # ✅ CORRECT - Full plugin.hook_name format
+   # ✅ CORRECT - Full <instance>.<hook> format
    hooks:
      overrides:
-       todo_management.inject_todo_tasks:
+       todo.inject_todo_tasks:
          enabled: true
    ```
 
-2. **Plugin Type Not Hybrid**
-   - Plugin must have hooks in its `type` list (e.g., `type: [hooks]` or `type: [mcp-server, hooks]`)
-   - Check `src/plugins/{plugin}/plugin.yaml`
+2. **Hook Not Registered**
+   - The plugin's `schema.yaml` needs a `hooks:` key and the instance must be enabled in `config/plugins.yaml`
+   - The `type` in `plugin.toml` is not used for hook registration
 
-3. **Missing PLUGIN_FACTORY**
-   - Ensure `plugin.py` exports `PLUGIN_FACTORY` function
-   - Standard pattern: `def PLUGIN_FACTORY(...) -> ServerClass`
-
-4. **Hook Filter Signature**
-   - Filter must accept `(hook_name: str, default_enabled: bool)` parameters
-   - Registry passes global enabled state to allow proper override logic
+3. **Missing or Wrong PLUGIN_FACTORY**
+   - Ensure `plugin.py` exports `PLUGIN_FACTORY`
+   - It is called as `PLUGIN_FACTORY(name, system_config, mcp_config)`
 
 **Debug Steps:**
 ```bash
-# 1. Check hook registration (should show full name)
-grep "Registered hook" logs/cli.log | grep todo_management
-
-# 2. Check agent config loading
-grep "HookIntegrationManager for meta_agent" logs/cli.log
-
-# 3. Check filter execution
-grep "is_hook_enabled called.*todo_management" logs/cli.log
-
-# 4. Verify hook execution
-grep "TodoHook\|inject_todo" logs/cli.log
+# Check hook registration (shows the exact full name to use)
+grep "Registered hook" logs/cli.log | grep inject_todo_tasks
 ```
 
 ---

@@ -17,7 +17,7 @@ The Sub-Agent Manager plugin enables meta-agents to spawn, manage, and coordinat
 Sub-agents are specialized agent instances that:
 - **Maintain persistent state** across multiple interactions
 - **Preserve full conversation history** for continuity
-- **Support nesting** up to 5 levels deep
+- **Support nesting** (by default up to 5 levels below the calling session)
 - **Provide automatic context injection** via hooks
 - **Track relationships** between parent and child agents
 
@@ -44,18 +44,17 @@ Root Session (meta_agent)
 
 - **Root/Parent Session**: The coordinator agent (e.g., `meta_agent`)
 - **Sub-Sessions**: Child agent instances with unique instance IDs
-- **Nesting Depth**: Maximum 5 levels to prevent infinite recursion
+- **Nesting Depth**: `max_nesting_depth` (default 5) is the number of levels a SAM instance grants below its caller. Sub-sessions inherit the remaining budget; a SAM further down can only lower it, never raise it
 
 ### Instance IDs
 
-Format: `sub_{agent_type}_{counter}`
+Format: `sub_{agent_type}_{counter}`, or `sub_{instance_label}_{counter}` when a label is given (label sanitized to `[a-zA-Z0-9_-]`). The counter is 4-digit, shared across all SAM instances in the process, and each generated ID is checked against existing sessions.
 
 Examples:
-- `sub_web_research_001`
-- `sub_financial_analyst_002`
-- `sub_code_reviewer_003`
+- `sub_web_research_agent_4521`
+- `sub_financial_analyst_agent_4522`
 
-Instance IDs are globally unique and auto-incremented.
+Always use the returned `instance_id` for follow-ups, not the label.
 
 ### Session Metadata
 
@@ -81,7 +80,21 @@ Each parent session tracks sub-agents with metadata:
 
 ## Tool Reference
 
-The Sub-Agent Manager provides 5 MCP tools:
+Each Sub-Agent Manager (SAM) instance provides **one** tool, `{{ name }}_manage_sub_agent`, where `name` is the instance name of the SAM server entry (e.g. `sub_agent_manager_manage_sub_agent`). The `operation` parameter selects one of nine operations:
+
+| Operation | Purpose |
+|-----------|---------|
+| `create` | Spawn and run a sub-agent (`blocking=true` by default; `false` = async) |
+| `continue` | Send a new message to an existing instance (`blocking` as above) |
+| `poll` | Check the status of an async run (non-blocking) |
+| `wait` | Wait for one instance to finish (blocking) |
+| `wait_all` | Wait for several instances (`instance_ids`) |
+| `cancel` | Stop a running instance |
+| `list` | List sub-agents of the current session |
+| `info` | Read an instance's transcript (paged via `offset`/`limit`/`max_chars`) |
+| `delete` | Archive one instance (`instance_id`) or several (`instance_ids`) |
+
+The same `instance_id` cannot run concurrently. Pattern for parallel work: several `create` calls with `blocking: false`, then `wait_all`.
 
 ### 1. `manage_sub_agent` (create)
 
@@ -89,7 +102,7 @@ The Sub-Agent Manager provides 5 MCP tools:
 
 ```json
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "create",
     "agent_type": "web_research_agent",
@@ -100,16 +113,21 @@ The Sub-Agent Manager provides 5 MCP tools:
 
 **Parameters:**
 - `operation`: Must be `"create"`
-- `agent_type`: Name of the agent to spawn (must exist in registry)
+- `agent_type`: Instance name of the agent to spawn (must be allowed by this SAM instance)
 - `task`: Initial message/task for the sub-agent
 - `instance_label` (optional): Custom label for the instance
+- `blocking` (optional, default `true`): `false` starts the run in the background (`"status": "running"`)
+- `use_advanced_model` (optional, default `false`): use the agent's advanced LLM chain (ignored if the SAM has `allow_advanced_model: false`)
 
 **Returns:**
 ```json
 {
-  "instance_id": "sub_web_research_001",
+  "instance_id": "sub_web_research_agent_4521",
   "status": "completed",
-  "result": "Research findings: ..."
+  "outcome": "...",
+  "result": "Research findings: ...",
+  "message_count": 2,
+  "agent_type": "web_research_agent"
 }
 ```
 
@@ -119,7 +137,7 @@ The Sub-Agent Manager provides 5 MCP tools:
 
 ```json
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "continue",
     "instance_id": "sub_web_research_001",
@@ -148,7 +166,7 @@ The Sub-Agent Manager provides 5 MCP tools:
 
 ```json
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "list",
     "include_completed": false
@@ -158,36 +176,46 @@ The Sub-Agent Manager provides 5 MCP tools:
 
 **Parameters:**
 - `operation`: Must be `"list"`
-- `include_completed` (optional): Include archived sub-agents (default: false)
+- `include_completed` (optional): Include archived sub-agents (default: false; `active` and `interrupted` are always listed)
 
 **Returns:**
 ```json
 {
-  "sub_agents": [
+  "instances": [
     {
       "instance_id": "sub_web_research_001",
       "agent_type": "web_research_agent",
       "status": "active",
+      "created_at": "2025-11-02T10:30:00Z",
       "last_used": "2025-11-02T10:35:00Z",
-      "task_summary": "Research latest AI developments"
+      "task_summary": "Research latest AI developments",
+      "current_activity": null,
+      "activity_updated_at": null,
+      "message_count": 5
     }
-  ]
+  ],
+  "count": 1
 }
 ```
 
 ### 4. `manage_sub_agent` (info)
 
-**Get detailed information about a sub-agent**
+**Read a sub-agent's transcript**
 
 ```json
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "info",
     "instance_id": "sub_web_research_001"
   }
 }
 ```
+
+**Parameters (optional):**
+- `limit`: Messages per call (default 20, capped at 200)
+- `offset`: 0-based start index; omit for the tail (most recent `limit` messages)
+- `max_chars`: Truncation per message/tool-call argument (default 4000; 0 or negative = none)
 
 **Returns:**
 ```json
@@ -199,7 +227,9 @@ The Sub-Agent Manager provides 5 MCP tools:
   "last_used": "2025-11-02T10:35:00Z",
   "message_count": 5,
   "task_summary": "Research latest AI developments",
-  "recent_messages": [...]
+  "messages": [...],
+  "window": {"mode": "tail", "start_index": 0, "returned": 5, "total": 5,
+             "has_more_before": false, "has_more_after": false}
 }
 ```
 
@@ -209,7 +239,7 @@ The Sub-Agent Manager provides 5 MCP tools:
 
 ```json
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "delete",
     "instance_id": "sub_web_research_001"
@@ -217,7 +247,9 @@ The Sub-Agent Manager provides 5 MCP tools:
 }
 ```
 
-**Note:** This marks the sub-agent as archived but preserves the session file for audit trail.
+**Note:** This marks the sub-agent as archived but preserves the session file for audit trail. Pass `instance_ids` instead of `instance_id` to archive several at once.
+
+`poll`, `wait` and `cancel` take an `instance_id`; `wait_all` takes `instance_ids` (all must exist).
 
 ## Usage Examples
 
@@ -226,7 +258,7 @@ The Sub-Agent Manager provides 5 MCP tools:
 ```python
 # Stage 1: Create sub-agent for initial research
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "create",
     "agent_type": "web_research_agent",
@@ -237,7 +269,7 @@ The Sub-Agent Manager provides 5 MCP tools:
 
 # Stage 2: Follow up with specific question
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "continue",
     "instance_id": "sub_web_research_001",
@@ -247,7 +279,7 @@ The Sub-Agent Manager provides 5 MCP tools:
 
 # Stage 3: Create analysis sub-agent
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "create",
     "agent_type": "financial_analyst_agent",
@@ -275,7 +307,7 @@ tasks = [
 ```python
 # Level 1: Meta-agent creates project manager
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "create",
     "agent_type": "project_manager_agent",
@@ -286,7 +318,7 @@ tasks = [
 # Level 2: Project manager creates design agent
 # (project_manager_agent internally calls manage_sub_agent)
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "create",
     "agent_type": "design_agent",
@@ -332,7 +364,7 @@ create_sub_agent(agent_type="researcher", task="Question 2")
 ```python
 # Archive sub-agents when done
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "delete",
     "instance_id": "sub_web_research_001"
@@ -345,7 +377,7 @@ create_sub_agent(agent_type="researcher", task="Question 2")
 ```python
 # Check what sub-agents are active
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "list",
     "include_completed": false
@@ -355,22 +387,23 @@ create_sub_agent(agent_type="researcher", task="Question 2")
 
 ### 5. Monitor Nesting Depth
 
-Maximum nesting depth is **5 levels**. Design workflows to stay within limits:
+With the default `max_nesting_depth: 5`, five levels of sub-agents fit below the root session. Design workflows to stay within limits:
 
 ```
-Level 1: meta_agent
-Level 2: project_manager_agent
-Level 3: design_agent
-Level 4: asset_creator_agent
-Level 5: image_optimizer_agent
-Level 6: ❌ EXCEEDS LIMIT
+Depth 1: meta_agent (root)
+Depth 2: project_manager_agent
+Depth 3: design_agent
+Depth 4: asset_creator_agent
+Depth 5: image_optimizer_agent
+Depth 6: format_converter_agent
+Depth 7: ❌ EXCEEDS LIMIT
 ```
 
 ## Configuration
 
 ### Plugin Configuration
 
-Configure sub-agent management in the `plugins:` section:
+A SAM is a server entry in the `plugins:` section. All knobs are **top-level keys of that entry** — there is no `config:` block:
 
 ```yaml
 plugins:
@@ -378,24 +411,45 @@ plugins:
     sub_agent_manager:
       type: sub_agent_manager
       enabled: true
-      config:
-        max_nesting_depth: 5
-      
-      hook_config:
-        enabled: true
-        inject_sub_agent_context:
-          enabled: true
-          max_sub_agents_shown: 5
-          format: "markdown"
+      allowed_agents:              # instance names; default ['*'] when unset; fnmatch globs allowed
+        - research_agent
+      blocked_agents: []           # exact names only
+      allow_advanced_model: true   # false = caller's use_advanced_model is ignored
+      advanced_create_only_agents: []  # use_advanced_model honoured on create only, never on continue
+      max_nesting_depth: 5         # levels granted below the caller
+      max_sub_agents_per_session: 10
+      max_sub_agents_per_type: 3
+      auto_archive_on_limit: false # true = archive the oldest instead of failing
+      default_wait_timeout: 3600   # seconds
+      phase_filtering:
+        enabled: false
+        phase_variable: workflow_phase
+        phase_agents:              # phase value -> allowed agents; "_default" as fallback
+          research: [research_agent]
 ```
+
+`allowed_agents`, `blocked_agents`, `allow_advanced_model`, the limits and phase filtering are hot-reloaded by `agent-cli reload` (POST `/admin/reload-config`). A **new agent definition** needs a restart, because the agent must be registered.
+
+### Enabling a New Sub-Agent
+
+A sub-agent is spawnable only when all of these hold:
+
+1. Its server entry has `enabled: true`.
+2. Its instance name is in the calling SAM instance's `allowed_agents` (or matched by `*`/a glob) and not in `blocked_agents`.
+3. The calling agent's `agent_config.tools.allowed` contains `<sam instance>/*`.
+4. Its `metadata.visibility` is not `private` (the default) — `ui`, `tool` or `both`. Private agents are left out of the "Available" list in the tool description.
+
+The "Available" list filters `allowed_agents` by **exact** membership. A glob in `allowed_agents` lets spawns through, but hides the matched names from the model.
 
 ### Hook Configuration
 
-The `inject_sub_agent_context` hook automatically injects active sub-agent information into the system prompt:
+The `inject_sub_agent_context` hook inserts a system message with this SAM instance's active sub-agents before each LLM call (after all leading system messages). The hook is registered with `enabled: false`; an agent turns it on with `hooks.overrides: {<sam instance>.inject_sub_agent_context: {enabled: true}}`. The `enabled` option below is the injector's own switch, not the registration. Its options are read from `plugin_config.hooks.inject_sub_agent_context` on the server entry — a nested `hook_config.inject_sub_agent_context` block is not read by the injector:
 
 **Options:**
 - `enabled`: Enable/disable context injection (default: true)
-- `max_sub_agents_shown`: Limit sub-agents in prompt (default: 5)
+- `max_sub_agents_shown`: Limit sub-agents shown, most recently used first (default: 10)
+- `show_completed`: Include archived sub-agents (default: false)
+- `show_tool_state`: default true
 - `format`: "markdown" or "text" (default: "markdown")
 
 **Injected Context Example:**
@@ -415,7 +469,7 @@ You have access to the following persistent sub-agent instances:
 **To continue this sub-agent:**
 ```json
 {
-  "tool": "manage_sub_agent",
+  "tool": "sub_agent_manager_manage_sub_agent",
   "arguments": {
     "operation": "continue",
     "instance_id": "sub_web_research_001",
@@ -429,13 +483,13 @@ You have access to the following persistent sub-agent instances:
 
 ### Error: "Maximum nesting depth exceeded"
 
-**Cause:** Trying to create a sub-agent beyond level 5
+**Cause:** The calling session has no nesting budget left (`max_nesting_depth` of this SAM, or a smaller budget inherited from an ancestor)
 
 **Solution:** Redesign workflow to reduce nesting or use parallel sub-agents instead of nested ones
 
 ```python
 # Instead of deep nesting:
-meta → project_manager → designer → developer → tester → deployer (TOO DEEP)
+meta → project_manager → designer → developer → tester → deployer → monitor (TOO DEEP with max_nesting_depth: 5)
 
 # Use parallel structure:
 meta → project_manager
@@ -447,19 +501,26 @@ meta → project_manager
 
 ### Error: "Agent type 'xyz' not found in registry"
 
-**Cause:** Specified agent doesn't exist or isn't enabled
+**Cause:** The sub-agent's server was not built: the entry is missing or `enabled: false`, or its `type` cannot be resolved. Visibility does not cause this error.
 
-**Solution:** Check the `plugins:` configuration and ensure agent is enabled with `visibility: "tool"` or `"both"`
+**Solution:** Check the server entry of the sub-agent (a new agent definition needs a restart):
 
 ```yaml
 plugins:
   servers:
     web_research_agent:
-  type: web_research_agent
-  enabled: true
-  metadata:
-    visibility: "both"  # ← Must be "tool" or "both"
+      type: multi_turn_agent
+      enabled: true
+      metadata:
+        visibility: "tool"  # not "private" (default), otherwise hidden from the Available list
 ```
+
+### Error type `agent_blocked` / `phase_blocked`
+
+- `agent_blocked` ("Agent 'x' not allowed by this sub-agent manager"): the name is not matched by this SAM instance's `allowed_agents`, or is in `blocked_agents`. Add it there — `agent-cli reload` is enough.
+- `phase_blocked` ("Agent 'x' not allowed in current phase"): phase filtering is on and the agent is not allowed in the current phase — either `phase_agents` does not list it, or `allowed_agents`/`blocked_agents` rule it out (while a phase is active both cases report `phase_blocked`).
+
+See [Enabling a New Sub-Agent](#enabling-a-new-sub-agent) for the full checklist.
 
 ### Sub-Agent Not Preserving Context
 
@@ -482,12 +543,14 @@ result2 = continue_sub_agent(instance_id=instance_id, message="Follow-up questio
 
 **Solution:**
 1. Archive completed sub-agents: `operation: "delete"`
-2. Reduce `max_sub_agents_shown` in hook config
+2. Reduce `max_sub_agents_shown` in the hook options
 3. Consider splitting into multiple parent sessions
+
+Limits: `max_sub_agents_per_session` (default 10) and `max_sub_agents_per_type` (default 3) count active sub-agents; with `auto_archive_on_limit: true` the oldest one is archived instead of failing.
 
 ## Performance Benchmarks
 
-Based on `tests/performance/test_sub_agent_performance.py`:
+Based on `src/plugins/sub_agent_manager/tests/test_plugin_sub_agent_manager_performance.py`:
 
 | Operation | Target | Actual |
 |-----------|--------|--------|
@@ -508,7 +571,10 @@ from plugins.sub_agent_manager.manager import SubAgentManager
 manager = SubAgentManager(
     session_service=session_service,
     registry=registry,
-    max_nesting_depth=5
+    max_nesting_depth=5,
+    max_sub_agents_per_type=3,
+    max_sub_agents_per_session=10,
+    auto_archive_on_limit=False
 )
 
 # Create sub-session

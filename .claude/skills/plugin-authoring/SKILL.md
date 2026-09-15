@@ -1,0 +1,192 @@
+---
+name: plugin-authoring
+description: How to build or extend a ScarabHive plugin — plugin types (tool server, hooks, web, agent, library/config-only, LLM provider), plugin.toml, schema.yaml, the handler contract, status/cancellation, hooks and cache safety, agent YAMLs and enabling sub-agents in the SAM, the activation chain from plugin to a tool the agent sees, and tests. Load before creating or reworking a plugin, tool, hook, agent YAML or sub-agent under src/plugins*/.
+---
+
+# Building plugins
+
+Talk to the user in German; everything in code, tool descriptions and commit
+messages is English. Agent prompts are English outside `src/plugins_writer/`,
+German inside it.
+
+**Every statement here was checked against the code.** Long form: `docs/plugin_authoring.md`, `docs/plugin_hooks.md`,
+`docs/_arch_plugin_architecture.md`. **When anything disagrees, the code wins.**
+
+## Which type?
+
+The runtime detects tool/hook/web capabilities from the object (tools from
+`schema.yaml tools:`, hooks from `schema.yaml hooks:`, web via `get_web_router`).
+`type` in plugin.toml is otherwise read only by `src/scripts/validate_plugin.py` —
+**except `llm-provider`, which the LLM registry requires** (without it the provider
+is silently not registered). Set it correctly anyway.
+
+| You want … | Type | Base | Details |
+|---|---|---|---|
+| to give the model functions | `mcp-server` | `SchemaBasedMCPServer` | [tools.md](references/tools.md) |
+| to intercept LLM calls / history | `hooks` | `SchemaBasedPluginHook` | [hooks.md](references/hooks.md) |
+| both | `["mcp-server","hooks"]` | server + `on_<hooktype>` or `hooks_plugin` | both |
+| a panel / endpoints | `web` | `get_web_router` | skill `panel-authoring` |
+| an agent without Python | `library` | just `agents/*.yaml` + `prompts/` + `skills/` | [agents.md](references/agents.md) |
+| an agent with its own code | `mcp-server` | `SchemaBasedAgent` + `make_agent_plugin_factory` | [agents.md](references/agents.md) |
+| an LLM provider | `llm-provider` (only `src/plugins_llm/`) | `provider.py` exporting `PROVIDERS` | [agents.md](references/agents.md) §LLM |
+
+**Check whether it already exists first** — about fifty plugins live in
+`src/plugins/`. A second server entry with different config (`type: file_ops`)
+often replaces a new plugin.
+
+## Minimal layout (tool server)
+
+```
+src/plugins/my_plugin/
+  plugin.toml      # required
+  plugin.py        # entrypoint module, sits DIRECTLY in the plugin folder
+  server.py
+  schema.yaml      # required for tools; must sit next to the class's module
+  README.md        # with "Model Experience", see below
+  tests/test_plugin_my_plugin_*.py
+```
+
+```toml
+[plugin]
+name = "my_plugin"
+version = "0.1.0"
+description = "One line."
+entrypoint = "plugin:PLUGIN_FACTORY"   # default; "server:MyServer" works too
+type = ["mcp-server"]
+category = "tools"
+requires = { agent_system = ">=0.6.0" }  # required by the validator
+dependencies = []                        # pip specs only
+```
+
+```python
+# plugin.py
+from .server import MyServer
+PLUGIN_FACTORY = MyServer   # called as (name, system_config, mcp_config)
+```
+
+- **Plugin type = folder name**, not `name` from plugin.toml.
+- No entrypoint file or no factory → folder skipped **at DEBUG only**. Import
+  error → WARNING, the type is missing, every server entry using it logs
+  "Unknown server type".
+- New pip dependency: run `python scripts/aggregate_plugin_deps.py` afterwards
+  (drift guard `tests/pluginsystem/test_plugin_deps_aggregation.py`).
+
+## Activation chain — when does an agent see the tool?
+
+Every link must hold; almost every one fails **silently**:
+
+1. The folder is in `plugins.plugin_dirs` (`src/plugins`, `src/plugins_writer`,
+   `src/plugins_trading`; `config/plugins.yaml`).
+2. An entry `plugins: servers: <instance>: {type: <folder name>, enabled: true}` —
+   `enabled` defaults to **false** and is checked on the **raw** entry, not the
+   inherited one. The entry may live in any included file (`config.yaml` includes
+   `plugins.yaml`, `agents*/*.yaml`, `../src/plugins*/*/agents/*.yaml`). A top-level
+   `agents:` key is silently ignored; a broken YAML file is skipped entirely.
+3. The agent allows it in `agent_config.tools.allowed`. Empty = nothing allowed.
+   Patterns: `instance/*`, `instance`, `instance/<full tool name>`, fnmatch.
+   **The tool name carries the instance prefix:** `coder_fs/coder_fs_semantic_search`
+   — `coder_fs/semantic_search` silently matches nothing.
+4. A second instance (`workspace_file_ops`, `type: file_ops`) has **different tool
+   names** and needs its own allowlist entry.
+5. Lists: without prefixes they replace the inherited list, `+x`/`!x` merge,
+   mixing both → ValueError.
+
+Check inheritance only via `get_mcp_config_by_name` — the raw
+`config.plugins.servers[name]` shows Pydantic defaults, not inheritance.
+
+## Reading config
+
+`mcp_config` is a Pydantic model with `extra="allow"`, **not a dict**:
+
+```python
+self.timeout = float(getattr(mcp_config, "timeout", 30))   # flat keys
+cfg = getattr(mcp_config, "config", None) or {}              # nested config: block
+```
+
+- The framework **does not validate plugin config**. The `config:` block in
+  `schema.yaml` is read only for hook plugins; for tool servers it is
+  documentation — defaults belong in code.
+- `${VAR}` is expanded from the environment / `config/secrets.env`; unset → `""` + WARNING.
+- Hot reload: no watcher. `agent-cli reload` calls `reload_config(new_mcp_config)`
+  only on servers that implement it. New servers need a restart — **the user does
+  restarts.**
+- If a config **model** changes (`src/agent_system/config/models.py`), update the
+  JSON schema under `schemas/` too.
+
+## Rules that have already caused damage
+
+- **Cache: every LLM request must be a prefix of the next.** Nothing ticking
+  (clock, step counter) in the system prompt or at the front of history; never
+  rewrite earlier messages. Guards: `tests/agent/test_agent_step_budget_note.py`,
+  `tests/config/test_prompts_have_no_ticking_clock.py`. → [hooks.md](references/hooks.md)
+- **`injected_by`:** every `role: user` message inserted by the loop or a plugin
+  carries `injected_by="<plugin>"`. `injected_by is None` means "a person wrote
+  this" — context_engineer, OKF, tool_preload, agent_continuation count turns by it.
+- **The status end line names the result** (counts, ids), ≤140 chars, exactly one
+  `end`/`error`. AST guard over all of `src/plugins`: `tests/plugins/test_status_end_lines.py`.
+- **Validate arguments yourself** — the framework does not check tool arguments
+  against the schema; `required`/`enum` are only hints to the model.
+- **Return errors as `{"status": "error", "error": "<what to do>"}`.** A
+  success-looking dict on failure is a silent failure.
+- **Bound tool results yourself.** Only context_engineer (Pre-Layer T) caps them,
+  and only for agents running that hook.
+- **Destructive jobs (cleanup, TTL, sweep) are opt-in** — default off, in
+  `schema.yaml` AND in code. Tests without operator config hit the real `data/` otherwise.
+- **A new sub-agent must be enabled in the SAM, or it cannot be spawned** →
+  [agents.md](references/agents.md) §SAM.
+- **Prompts are read from disk on every render** — an edit takes effect
+  immediately, including in runs already in flight.
+- **No provider tables** (`if provider == "google"`, alias dicts) in LLM plugins.
+
+## Validate before testing
+
+Scripts in `src/scripts/` (run with `.venv/Scripts/python.exe`; all read-only unless noted):
+
+| Script | Checks | Run |
+|---|---|---|
+| `validate_plugin.py` | plugin.toml against `schemas/plugin-config.schema.json` (e.g. missing `requires`), schema.yaml sections per `type`, tool definitions, file layout, hooks, template vars | `validate_plugin.py src/plugins/my_plugin` · `--plugin my_plugin` · `--all` |
+| `validate_all_tool_schemas.py` | every tool in every schema.yaml is valid OpenAI/MCP format **and routes to a method the plugin defines**; templated schemas rendered in both states | `validate_all_tool_schemas.py` · `--plugin my_plugin` |
+| `validate_agent_configs.py` | agent YAML: syntax, `plugins.servers` shape, `tools`/`hooks` at the right level, Pydantic models (`agent_config` typos, `self_tool_descriptions` in the wrong place) | `validate_agent_configs.py src/plugins/my_plugin/agents/*.yaml` (also `validate-agents`) |
+| `analyze_plugin_config.py` | lists the config keys the code reads (`getattr(mcp_config, …)`) | `analyze_plugin_config.py src/plugins/my_plugin` |
+| `generate_config_schemas.py` | **writes** `schemas/*.schema.json` from the config models — run after changing `config/models.py`; drift test `tests/config/test_config_schemas.py` | `generate_config_schemas.py` |
+
+`validate_plugin.py --merge-config` **writes** missing config keys into schema.yaml.
+
+⚠️ Measured: the validators do **not** catch the silent failures of the activation
+chain — a dead allowlist pattern (`coder_fs/semantic_search`), a wrong hook name in
+`hooks.overrides`, a sub-agent missing from `allowed_agents`. Check those with
+`load_settings()` + `get_mcp_config_by_name` in a config test
+(`src/plugins/amiga/tests/test_amiga_config.py`).
+
+## README: "Model Experience"
+
+Required for every new plugin whose tools a model calls (not enforced by a test —
+write it anyway). Three sections:
+
+1. **What the model sees** — tool descriptions, error strings, injected notices, verbatim.
+2. **Token and cache effect** — append-only / prefix-changing (when, how often) / none.
+3. **Known gaps** — deliberate limits with the reason.
+
+Examples: `src/plugins/terminal/README.md`, `media_ops`, `agent_watchdog`.
+
+## Tests
+
+- Next to the plugin: `src/plugins/<name>/tests/test_plugin_<name>_*.py`.
+  `tests/plugins/` is for cross-plugin tests only. Basenames unique repo-wide.
+- `pytest.ini`: `filterwarnings=error`, `asyncio_mode=auto`, 120 s timeout. The root
+  `conftest.py` replaces `build_client` with a fake — no real LLM calls.
+- Test through the real path: tools via `call_with_status` (otherwise `_status` is
+  `None`), config via `load_settings()` + `get_mcp_config_by_name`.
+  Config-only example: `src/plugins/amiga/tests/test_amiga_config.py`.
+- Caches/storage on `tmp_path` (`PluginCache` writes to `data/cache` otherwise).
+- **Mutation-check every new test:** break the production line, the test must go
+  red. Craft: skill `unit-testing`.
+- Test selectively, never the whole suite without reason. **Never run pytest on the
+  server** — the root conftest kills agent-api, workers and audio there.
+
+## Don't forget
+
+- CLI (`cli.py`, `__main__.py`, pyproject script) is **optional**, despite the docs.
+- Web UI/panel: skill `panel-authoring`. Slash commands: `commands:` in
+  schema.yaml → [tools.md](references/tools.md).
+- Writer plugins (`src/plugins_writer/`): load the `writer` skill first.

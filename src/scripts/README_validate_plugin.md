@@ -4,7 +4,7 @@
 
 The `validate_plugin.py` script validates plugin conformity by checking:
 
-- **plugin.yaml** structure and required fields
+- **plugin.toml** structure and required fields
 - **schema.yaml** structure and tool definitions
 - File structure and required files
 - Schema compliance with JSON schemas
@@ -29,6 +29,9 @@ python src/scripts/validate_plugin.py src/plugins/basic_operations
 ```bash
 python src/scripts/validate_plugin.py --all
 ```
+
+`--all` covers every plugin under `src/plugins`, `src/plugins_writer`,
+`src/plugins_trading` and `src/plugins_llm`.
 
 ### Verbose Output
 
@@ -82,15 +85,14 @@ python src/scripts/validate_plugin.py --all --merge-config
 ## What It Checks
 
 ### File Structure
-- ✓ Required files exist (plugin.yaml)
-- ✓ Entrypoint module exists (plugin.py or server.py)
+- ✓ Required files exist (plugin.toml)
+- ✓ Entrypoint module exists (plugin.py or server.py); `library` and `llm-provider` plugins have no entrypoint
 - ✓ schema.yaml exists (warning if missing)
 
-### plugin.yaml Validation
+### plugin.toml Validation
 - ✓ Valid against JSON schema (`schemas/plugin-config.schema.json`)
-- ✓ Required fields: `name`, `version`, `description`, `entrypoint`
-- ✓ Valid plugin type (list of: `mcp-server`, `web`, `hooks`, `custom`)
-- ✓ Valid category (tools, monitoring, data, etc.)
+- ✓ Required fields: `name`, `version`, `description`, `requires.agent_system`
+- ✓ Valid plugin type (list of: `mcp-server`, `web`, `hooks`, `library`, `llm-provider`, `custom`)
 - ✓ Entrypoint format: `module:FACTORY`
 
 ### schema.yaml Validation
@@ -152,8 +154,7 @@ Validation Results: basic_operations
 ======================================================================
 
 [X] ERRORS (1):
-   * plugin.yaml schema validation failed: 'utilities' is not one of
-     ['tools', 'monitoring', 'data', ...] at ['category']
+   * plugin.toml schema validation failed: 'requires' is a required property at []
 
 [!] WARNINGS (1):
    * Factory name 'BasicOperationsServer' doesn't follow conventions
@@ -184,8 +185,7 @@ Failed: 29
 
 ## Common Issues Found
 
-### plugin.yaml Issues
-- Invalid category values (use: tools, monitoring, data, etc.)
+### plugin.toml Issues
 - Missing required fields
 - Invalid plugin type
 - Entrypoint module not found
