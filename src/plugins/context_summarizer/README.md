@@ -1,355 +1,110 @@
-# Context Summarizer Plugin
+# Context Summarizer
 
-**Type:** Triple Hybrid Plugin (Schema-based Hooks + MCP Server + Web UI)
-**Hook Type:** `pre_llm_call`
-**MCP Tools:** `context_summarizer_summarize`, `context_summarizer_check_stats`
-**Pattern:** SchemaBasedPluginHook + SchemaBasedMCPServer + Web UI Panel
+Shrinks a conversation by having an LLM summarize its older messages. It runs
+automatically as a `pre_llm_call` hook when the context grows past a share of
+the answering model's window, and an agent (or a person, through the slash
+commands) can trigger it by tool. System messages and the most recent messages
+stay untouched; assistant messages with `tool_calls` stay paired with their
+tool results.
 
-## Overview
+## How a run works
 
-The Context Summarizer Plugin intelligently reduces conversation context size by using an LLM to create concise summaries of older messages. It provides both **automatic** (via hooks) and **manual** (via MCP tools) summarization capabilities.
+1. **Trigger.** The prompt tokens — the larger of the context usage tracker's
+   last measured count and an estimate of the messages — are compared with
+   `summarization_trigger_percentage` of the answering model's context window.
+   `max_messages` (optionally per agent via `hook_config`) triggers on the
+   message count instead; either condition is enough. A manual run skips the
+   check.
+2. **Rate limit.** An automatic run within `min_time_between_summarizations`
+   seconds of the last applied one in the same session is skipped.
+3. **Split.** Messages become system messages, the last
+   `preserve_recent_count` messages and the older ones. Fewer than two older
+   messages, or older messages too small to ever reach
+   `min_summary_reduction`, end the run as *skipped*.
+4. **Summarize.** The older messages are summarized in chunks of
+   `summarization_chunk_size` (at most `max_chunks` in parallel; the chunk size
+   grows instead) with the `llm_profile` and `summary_prompt_template`. Each
+   summary is marked with `summary_marker_format`.
+5. **Check.** If the new context is not at least `min_summary_reduction`
+   smaller, the original messages stay and the run ends as *rejected*.
+   Otherwise the run is *applied*: the messages are replaced, provider
+   reasoning artifacts over the replaced span are invalidated, and the usage
+   tracker's figures for the session are marked stale.
 
-**Automatic Mode (Hook):** Triggers automatically when context exceeds threshold
-**Manual Mode (MCP Tools):** LLM can call tools to manually summarize when needed
-**Web UI Feature:** Beautiful web panel to view summarization history and statistics
+Progress goes to the status bus (START, PROGRESS, END) under the run's own
+request id.
 
-## Features
+## Tools and commands
 
-- **Automatic Summarization (Hook)**: Activates when context exceeds configurable percentage of LLM window
-- **Manual Summarization (MCP Tool)**: LLM can trigger summarization via tool call
-- **Context Statistics (MCP Tool)**: LLM can check token usage and get recommendations
-- **Intelligent LLM-based Summarization**: Uses configured LLM to create concise, accurate summaries
-- **Smart Message Categorization**: Preserves system messages and recent messages while summarizing older content
-- **Tool Call Preservation**: Ensures `assistant` messages with `tool_calls` stay paired with their `tool` responses
-- **Chunked Processing**: Processes messages in configurable batches for optimal summarization
-- **Quality Guarantees**: Only applies summaries that meet minimum reduction thresholds
-- **Metadata Storage**: Optionally stores original messages for audit trails
-- **Web UI Integration**: Provides visual panel for monitoring summarization history and statistics
+| Tool | Command | What it does |
+|---|---|---|
+| `context_summarizer_summarize` | `/summarize [reason]` | Summarizes now, regardless of the threshold. Optional `chunk_size` and `preserve_recent` override the configuration for this run. |
+| `context_summarizer_check_stats` | `/stats` | Message count, tokens (measured and estimated, tool definitions included), context window, utilization and whether a summarization is recommended. |
 
-## MCP Tools (New!)
-
-### `context_summarizer_summarize`
-
-**Purpose:** Allows LLM to manually trigger context summarization when it detects the conversation history is becoming too long or contains irrelevant information.
-
-**When to Use:**
-- Conversation is getting very long
-- Old information is no longer needed for current task
-- Want to reduce token usage proactively
-- Switching topics and old context is irrelevant
-
-**Parameters:**
-```json
-{
-  "reason": "optional description for logging",
-  "chunk_size": 10,  // optional override
-  "preserve_recent": 10  // optional override
-}
-```
-
-**Returns:**
-```json
-{
-  "status": "success",
-  "original_count": 50,
-  "summarized_count": 15,
-  "tokens_saved": 45000,
-  "summary_preview": "[Summary of 35 messages...]",
-  "modified": true
-}
-```
-
-**Example Usage (LLM perspective):**
-```
-// When LLM notices context is getting cluttered
-context_summarizer_summarize({
-  "reason": "Finished planning phase, moving to implementation"
-})
-
-// Result: Old planning discussion compressed, recent messages preserved
-```
-
-### `context_summarizer_check_stats`
-
-**Purpose:** Check current conversation statistics to decide if manual summarization would be beneficial.
-
-**Parameters:** None (empty object)
-
-**Returns:**
-```json
-{
-  "status": "success",
-  "message_count": 85,
-  "total_tokens": 75000,
-  "context_window": 100000,
-  "utilization_percentage": 75.0,
-  "trigger_threshold": 60.0,
-  "recommendation": "summarize"  // or "ok"
-}
-```
-
-**Example Usage (LLM perspective):**
-```
-// Before deciding if summarization is needed
-context_summarizer_check_stats({})
-
-// If utilization_percentage >= trigger_threshold, consider calling summarize
-```
-
-## Usage Patterns
-
-### Pattern 1: Automatic Only (Default)
-
-Enable the hook, let it automatically trigger:
-
-```yaml
-hooks:
-  enabled: true
-  overrides:
-    context_summarizer.summarize_context:
-      enabled: true
-```
-
-### Pattern 2: Manual Control by LLM
-
-Enable MCP tools, let LLM decide when to summarize:
-
-```yaml
-agent_config:
-  tools:
-    allowed:
-      - "context_summarizer/*"
-```
-
-**LLM can then:**
-1. Check stats periodically: `context_summarizer_check_stats({})`
-2. Decide based on utilization: if > 70%, summarize
-3. Trigger manually: `context_summarizer_summarize({"reason": "switching topics"})`
-
-### Pattern 3: Hybrid (Automatic + Manual)
-
-Enable both hook and tools:
-
-```yaml
-hooks:
-  enabled: true
-  overrides:
-    context_summarizer.summarize_context:
-      enabled: true
-
-agent_config:
-  tools:
-    allowed:
-      - "context_summarizer/*"
-```
-
-**Benefits:**
-- Automatic failsafe if context gets too large
-- LLM can proactively summarize before hitting threshold
-- LLM can summarize for semantic reasons (topic change) not just token limits
-
-## Status Messages
-
-The plugin publishes real-time status messages during summarization via the status bus:
-
-- **START**: Announces beginning of summarization with token count and target reduction
-- **PROGRESS**: Reports number of messages being summarized and preserved
-- **END**: Shows completion statistics (messages reduced, tokens saved, reduction ratio)
-
-Status messages include detailed metadata and can be monitored via the `/events` SSE endpoint.
-
-Example status messages:
-```
-START: Starting context summarization: 85000 tokens → target reduction 30%
-PROGRESS: Summarizing 120 older messages using LLM (preserving 10 recent messages)
-END: Summarization complete: 130 → 20 messages, 62000 tokens saved (73% reduction)
-```
-
-## Web UI
-
-Access the summarization history panel at `/plugins` in your browser when the agent system is running.
-
-### Panel Features
-
-- **Event List**: See all recent summarization events with timestamps
-- **Statistics Dashboard**: View total tokens saved, events count, and average reduction ratio
-- **Message Comparison**: Click any event to see before/after messages
-- **Session Tracking**: Each event shows session ID and request ID
-- **Strategy Display**: Shows "LLM Summarization" strategy used
-- **Summary Stats**: View number of summaries created per event
-
-The panel automatically refreshes every 30 seconds and shows the last 100 events.
+An agent gets the tools through its allowlist (`context_summarizer/*`); the
+commands follow the tools.
 
 ## Configuration
 
-Configuration is defined in `schema.yaml`. All values have sensible defaults.
+Defaults are in `schema.yaml`; `config/plugins.yaml` overrides them.
 
-### Key Configuration Options
+| Key | Default | Meaning |
+|---|---|---|
+| `summarization_trigger_percentage` | 0.60 | share of the context window that triggers a run |
+| `max_messages` | 0 | message count that triggers a run (0: off) |
+| `summarization_chunk_size` | 10 | older messages per summary |
+| `max_chunks` | 10 | parallel summaries per run (0: no limit) |
+| `preserve_recent_count` | 10 | recent messages never summarized |
+| `preserve_system_messages` | true | keep system messages |
+| `llm_profile` | turbo | profile of the summarizing LLM |
+| `summary_prompt_template` | see schema | prompt, with `{messages}`; empty is refused at start |
+| `min_summary_reduction` | 0.3 | reduction a run needs to be applied |
+| `summary_marker_format` | `[Summary of {count} messages from {start_time} to {end_time}]` | heading of a summary |
+| `store_original_metadata` | true | keep the original messages in the summary's metadata |
+| `min_time_between_summarizations` | 200 | seconds between automatic runs per session |
+| `max_tracked_sessions` | 200 | sessions remembered for the rate limit |
 
-```yaml
-config:
-  summarization_trigger_tokens: 50000
-    # Start summarization when context exceeds this token count
+The hook runs after `context_engineer`, which externalizes and archives first.
 
-  summarization_chunk_size: 10
-    # Number of older messages to summarize in one batch
+## The panel
 
-  preserve_recent_count: 10
-    # Always preserve the last N messages without summarization
+**Context Summarizer** in the panel launcher (category *context*), or from a
+session's info in the chat. It shows the runs of the session open in the chat
+— or of the session a link names (`?session_id=`) — or, with *All sessions*,
+of every session.
 
-  llm_profile: "fast"
-    # LLM profile to use for summarization (fast, normal, advanced)
+- **Figures:** runs (applied, rejected, skipped), tokens saved, messages
+  summarized and the average reduction. Tokens, messages and reduction count
+  applied runs only.
+- **Runs:** newest first, the newest 100, with their status, why a run was not
+  applied, messages and tokens before and after, tokens saved and the
+  reduction; with all sessions, the session of each run.
+- **A run** opens in a drawer (click, or Enter on the row): its figures, the
+  summaries it wrote and the messages they replaced.
+- **Clear** (trash icon) forgets every run of every session, after asking.
 
-  min_summary_reduction: 0.3
-    # Minimum reduction ratio (30%) to accept summary
+It refreshes every five seconds. The runs live in the memory of the process
+the hook runs in — at most the last 1000 — and are gone after a restart.
 
-  max_tracked_sessions: 200
-    # Max sessions tracked for summarization timestamps (LRU eviction)
+## Endpoints
 
-  summary_prompt_template: |
-    Summarize the following conversation messages concisely...
-    # Customizable prompt template for summarization
-```
+Under `/plugins/<instance>/`:
 
-## How It Works
+| Method | Path | Answer |
+|---|---|---|
+| GET | `/` | the panel |
+| GET | `/history?session_id=&limit=` | `{events, stats}`: the newest `limit` runs (1–1000, default 100; 422 outside) of the session, of all without it, newest first and without their messages; `stats` counts every run asked for |
+| GET | `/events/{id}` | one run with `before_messages` and `after_messages`; 404 when it is no longer in the history |
+| POST | `/clear` | forgets every run |
 
-1. **Threshold Check**: Estimates token count and compares to trigger threshold
-2. **Message Categorization**: Separates messages into:
-   - System messages (always preserved)
-   - Recent messages (preserved based on `preserve_recent_count`)
-   - Old messages (candidates for summarization)
-3. **Chunked Summarization**: Processes old messages in chunks
-4. **LLM Summarization**: Calls configured LLM to create concise summaries
-5. **Quality Check**: Validates that summary achieves minimum reduction
-6. **Reconstruction**: Builds new message list: `system + summaries + recent`
+## Tests
 
-## Usage
-
-### Basic Setup
-
-The plugin is automatically discovered if placed in `src/plugins/context_summarizer/`.
-
-### Hook Ordering
-
-The plugin is configured to run **after** `context_engineer`:
-
-```yaml
-hooks:
-  - name: summarize_context
-    type: pre_llm_call
-    order:
-      after: ["context_engineering"]
-```
-
-context_engineer externalizes and archives first; summarization runs only if the context is still too large.
-
-### Global Configuration
-
-Override settings in `config/plugins.yaml`:
-
-```yaml
-hooks:
-  enabled: true
-  overrides:
-    context_summarizer.summarize_context:
-      enabled: true
-      timeout: 60.0
-      config:
-        summarization_trigger_tokens: 30000
-        llm_profile: "normal"
-```
-
-## Example Output
-
-**Before Summarization (50 messages, ~60K tokens):**
-```
-[system] You are a helpful assistant
-[user] Question 1...
-[assistant] Answer 1...
-... (46 more messages)
-[user] Recent question
-[assistant] Recent answer
-```
-
-**After Summarization (~15K tokens):**
-```
-[system] You are a helpful assistant
-[summary] [Summary of 46 messages from 10:00 to 11:30]
-          The conversation covered project planning, technical discussions
-          about architecture, and decisions on database choices...
-[user] Recent question
-[assistant] Recent answer
-```
-
-## Metadata
-
-The plugin provides detailed metadata in hook results:
-
-```python
-{
-  'summarization': {
-    'original_message_count': 50,
-    'summarized_message_count': 5,
-    'messages_summarized': 46,
-    'summary_count': 5,  # Number of summary chunks created
-    'original_tokens': 60000,
-    'new_tokens': 15000,
-    'tokens_saved': 45000,
-    'reduction_ratio': 0.75,  # 75% reduction
-    'total_chunks': 5,
-    'successful_chunks': 5,
-    'failed_chunks': 0
-  }
-}
-```
-
-## Best Practices
-
-1. **Set Appropriate Trigger**: Match `summarization_trigger_tokens` to your LLM's context window
-2. **Preserve Enough Recent**: Keep enough recent messages for context continuity
-3. **Choose Right LLM Profile**:
-   - `fast`: Quick, cheaper summarization
-   - `normal`: Better quality summaries
-   - `advanced`: Best quality, slower, more expensive
-4. **Monitor Reduction Ratio**: Adjust `min_summary_reduction` to ensure summaries are worthwhile
-5. **Store Metadata in Development**: Enable `store_original_metadata` for debugging
-
-## Performance Considerations
-
-- **LLM Calls**: Each chunk requires an LLM call (can be slow/expensive)
-- **Timeout**: Default 60s timeout (may need adjustment for large batches)
-- **Chunk Size**: Larger chunks = fewer LLM calls but potentially lower quality
-- **Order**: Runs after `context_engineer` to avoid unnecessary summarization
-
-## Troubleshooting
-
-### Summaries Not Being Created
-
-- Check that token count exceeds `summarization_trigger_tokens`
-- Verify LLM is available in hook context
-- Check logs for "insufficient_reduction" warnings
-
-### Summary Quality Issues
-
-- Try a better LLM profile (`normal` or `advanced`)
-- Adjust `summary_prompt_template` for better instructions
-- Reduce `summarization_chunk_size` for more focused summaries
-
-### Performance Too Slow
-
-- Use `fast` LLM profile
-- Increase `summarization_chunk_size` to reduce LLM calls
-- Increase `summarization_trigger_tokens` to summarize less often
-
-## Testing
-
-Run tests with:
 ```bash
-pytest tests/test_plugin_context_summarizer.py -v
+pytest src/plugins/context_summarizer/tests -q
 ```
 
-## Related Plugins
-
-- **context_engineer**: Layered context compaction (runs first)
-- **message_validator**: Message format validation
-- **request_logger**: Logging of agent lifecycle events
+`test_plugin_context_summarizer_panel.py` drives the panel in a real Chromium
+browser against the real plugin, seeded through the hook with the summarizing
+LLM stubbed; it is skipped without an installed Chromium-based browser.
+`test_plugin_context_summarizer_web_ui.py` covers the endpoints and the
+history.

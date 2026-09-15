@@ -1,0 +1,14 @@
+/* Context Summarizer: only what the kit has no component for -- the run table and the messages in the drawer.
+   Tokens only. */
+
+.cs-sub { margin-top: 2px; font-size: var(--text-xs); }
+.cs-table th, .cs-table td { white-space: nowrap; }
+.cs-table tbody tr { cursor: pointer; }
+.cs-reason { font-size: var(--text-xs); white-space: normal; }
+.cs-session { max-width: 14rem; overflow: hidden; text-overflow: ellipsis; }
+
+.cs-drawer { width: min(720px, 100vw); }
+.cs-heading { margin: var(--space-4) 0 var(--space-2); font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); }
+.cs-message { padding: var(--space-2) var(--space-3); border-left: 2px solid var(--border-strong); background: var(--surface-1); border-radius: var(--radius-sm); }
+.cs-role { font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: var(--space-1); }
+.cs-content { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary); }

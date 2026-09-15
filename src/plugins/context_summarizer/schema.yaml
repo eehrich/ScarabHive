@@ -184,21 +184,28 @@ web_ui:
     icon: scroll-text
     category: context
     keywords: [summary, tokens]
-    window: {width: 820, height: 600}
+    window: {width: 980, height: 700}
+    contexts:
+      session: "/plugins/{{ name }}/?session_id={session_id}"
 
   endpoints:
-    - path: "/history"
-      method: "GET"
-      handler: "get_history"
-      response_type: "json"
-      description: "Get summarization event history with timestamps and statistics"
-    - path: "/stats"
-      method: "GET"
-      handler: "get_stats"
-      response_type: "json"
-      description: "Get aggregated summarization statistics"
     - path: "/"
       method: "GET"
       handler: "render_panel"
       response_type: "html"
-      description: "Main context summarizer UI panel"
+      description: "The Context Summarizer panel"
+    - path: "/history"
+      method: "GET"
+      handler: "get_history"
+      response_type: "json"
+      description: "The newest events of a session (session_id) or of all, without their messages, and their figures"
+    - path: "/events/{event_id}"
+      method: "GET"
+      handler: "get_event"
+      response_type: "json"
+      description: "One event with the messages it removed and the summaries that replaced them"
+    - path: "/clear"
+      method: "POST"
+      handler: "clear_history"
+      response_type: "json"
+      description: "Forget every event of every session"

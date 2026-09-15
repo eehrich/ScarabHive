@@ -6,9 +6,10 @@ reducing context size while preserving key information and decisions.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -45,6 +46,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
         # Session tracking for rate limiting (with LRU eviction)
         self._last_summarization_time: Dict[str, float] = {}  # session_id -> timestamp
+
+        self._event_ids = itertools.count(1)
 
         self.apply_config(None)
 
@@ -110,6 +113,16 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 "summarisation prompt would be empty and the result would "
                 "replace real conversation. Check schema.yaml's default."
             )
+
+    MAX_HISTORY = 1000
+
+    def _record(self, event: Dict[str, Any]) -> None:
+        """Add an event to the panel's history, newest last, bounded: skipped and rejected runs repeat on every call
+        above the threshold."""
+        event['id'] = next(self._event_ids)
+        event['timestamp'] = datetime.now(timezone.utc).isoformat()
+        self.summarization_history.append(event)
+        del self.summarization_history[:-self.MAX_HISTORY]
 
     async def summarize_context(self, context: HookContext) -> HookResult:
         """Summarize older messages when context exceeds token limit.
@@ -260,7 +273,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 # Record in history even when not applied
                 if self.summarization_history is not None:
                     event = {
-                        'timestamp': datetime.now().isoformat(),
                         'session_id': context.session_id,
                         'request_id': context.request_id,
                         'strategy': 'summarize',
@@ -278,7 +290,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         'after_messages': [],
                         'summary_stats': {'summary_count': 0}
                     }
-                    self.summarization_history.append(event)
+                    self._record(event)
                 
                 return HookResult(
                     success=True,
@@ -305,7 +317,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
                 if self.summarization_history is not None:
                     event = {
-                        'timestamp': datetime.now().isoformat(),
                         'session_id': context.session_id,
                         'request_id': context.request_id,
                         'strategy': 'summarize',
@@ -327,7 +338,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'max_possible_reduction': max_possible_reduction,
                         }
                     }
-                    self.summarization_history.append(event)
+                    self._record(event)
 
                 return HookResult(
                     success=True,
@@ -379,7 +390,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     # Record in history even when not applied
                     if self.summarization_history is not None:
                         event = {
-                            'timestamp': datetime.now().isoformat(),
                             'session_id': context.session_id,
                             'request_id': context.request_id,
                             'strategy': 'summarize',
@@ -397,7 +407,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'after_messages': [],
                             'summary_stats': {'summary_count': 0}
                         }
-                        self.summarization_history.append(event)
+                        self._record(event)
                     
                     # Store result instead of returning directly
                     result = HookResult(
@@ -463,7 +473,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     # Record summarization event in history
                     if self.summarization_history is not None:
                         event = {
-                            'timestamp': datetime.now().isoformat(),
                             'session_id': context.session_id,
                             'request_id': context.request_id,
                             'strategy': 'summarize',  # context_summarizer uses LLM summarization
@@ -480,11 +489,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'after_messages': [self._serialize_message(m) for m in summarized_msgs],  # Summary messages created from old_msgs
                             'summary_stats': summary_stats
                         }
-                        self.summarization_history.append(event)
-
-                        # Keep only last 1000 events
-                        if len(self.summarization_history) > 1000:
-                            self.summarization_history.pop(0)
+                        self._record(event)
 
                     # Update last summarization time for rate limiting
                     self._last_summarization_time[session_id] = current_time
