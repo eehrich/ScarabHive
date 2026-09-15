@@ -49,9 +49,10 @@ def _streaming_llm(final_chunk):
     llm = AsyncMock()
     llm.supports_streaming = lambda: True
     llm.chat_tools_streaming = _stream
-    # An auto-generated AsyncMock here would answer the max-steps final-answer
-    # call with a Mock object, and an assertion like `assert errors` could pass
-    # for that reason instead of the one under test. Fail loudly instead.
+    # Every call, the max-steps one included, streams. An auto-generated
+    # AsyncMock here would answer a stray blocking call with a Mock object, and
+    # an assertion like `assert errors` could pass for that reason instead of
+    # the one under test. Fail loudly instead.
     async def _no_blocking_call(*args, **kwargs):
         raise AssertionError(
             "chat_tools() must not be reached in a streaming test")

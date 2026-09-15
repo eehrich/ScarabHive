@@ -412,8 +412,9 @@ class TestTheReportedContextFill:
         assert result["usage"]["prompt_tokens"] == 14000  # cost still sums
 
     async def test_an_extra_final_call_becomes_the_last_one(self):
-        """After max_steps a separate final-answer call runs with no
-        thinking_complete of its own — that one holds the real fill."""
+        """A final whose usage no thinking_complete reported is a call of its
+        own (the max-steps call was one before it became a regular step) —
+        that one holds the real fill."""
         agent = self._agent([
             {"type": "start", "request_id": "r", "session_id": "s"},
             {"type": "thinking_complete", "assistant": {"tool_calls": [{"id": "t"}]},
@@ -2355,8 +2356,9 @@ class TestTurnUsageNotDoubleCounted:
         assert result["usage"]["prompt_tokens"] == 2500     # not 4000
 
     async def test_separate_final_answer_call_still_counts(self):
-        """After max_steps a SEPARATE final-answer call runs which has no
-        thinking_complete of its own -- dropping it would undercount."""
+        """A final whose usage no thinking_complete reported is a SEPARATE call
+        (the max-steps call was one before it became a regular step) --
+        dropping it would undercount."""
         step = {"prompt_tokens": 1000, "completion_tokens": 10}
         final_call = {"prompt_tokens": 1200, "completion_tokens": 30}
         agent = _FakeAgent([

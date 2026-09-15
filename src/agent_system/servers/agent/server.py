@@ -883,7 +883,22 @@ class Agent(MCPServer):
         intervention: sent only at the tail of one call, it would be missing
         from the next call's prefix, and a provider that caches at the last
         message (Anthropic) would find nothing to read back.
+
+        step == max_steps is the final call after the budget, and it gets the
+        max-steps request whatever the budget: it was sent to every agent
+        before that call became a step of its own.
         """
+        if step >= max_steps:
+            return ChatMessage(
+                role="user",
+                content=(
+                    f"You have reached the maximum number of steps ({max_steps}). "
+                    "Please provide your final answer NOW based on the information you have gathered. "
+                    "Do NOT use any tools in this response - just give me your best answer or summary of what you've accomplished."
+                ),
+                timestamp=datetime.now(timezone.utc),
+                injected_by="agent.max_steps",
+            )
         steps_left = max_steps - (step + 1)
         if max_steps < cls._STEP_BUDGET_NOTE_MIN_STEPS or steps_left >= cls._STEP_BUDGET_NOTE_LAST_STEPS:
             return None
@@ -2158,7 +2173,8 @@ class Agent(MCPServer):
 
         Phase 2 of agent execution: Iterative LLM calls with tool execution.
 
-        Loops up to max_steps:
+        Loops up to max_steps, plus one final call that asks for the answer
+        (see _step_budget_note) and goes through the same step machinery:
         1. Check cancellation
         2. Drain appended messages
         3. Call LLM with tools
@@ -2250,7 +2266,33 @@ class Agent(MCPServer):
             for event in context.status_forwarder.get_pending_events():
                 yield event
 
-        for step in range(max_steps):
+        async def cancelled_events(step):
+            logger.info("Request %s cancelled at step %d", request_id, step + 1)
+            # Signal cancellation using status contexts FIRST (so events are queued)
+            await status_worker.error(f"cancelled at step {step + 1}",
+                                      meta={"step": step + 1, "reason": "cancelled"})
+            await status_coordinator.error(f"cancelled at step {step + 1}",
+                                           meta={"step": step + 1, "reason": "cancelled"})
+            # Give status events a moment to be captured by forwarder
+            await asyncio.sleep(0.01)
+            # Yield all pending status events before cancelled event
+            for status_event in context.status_forwarder.get_pending_events():
+                yield status_event
+            yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
+
+        # One iteration past the budget: the final call. It used to be a bare
+        # chat_tools() after the loop, and so it skipped everything a step does
+        # -- the pre-LLM hooks (message_validator dropped no orphaned tool call,
+        # context_engineer capped nothing), the fallback chain, streaming, the
+        # post-LLM hooks. As a step it has all of that; what differs is only
+        # that no step follows it (see final_call below).
+        for step in range(max_steps + 1):
+            final_call = step == max_steps
+            if final_call:
+                logger.warning(
+                    f"Max steps ({max_steps}) reached. Agent may not have completed the task. "
+                    f"Making one final LLM call to attempt completion."
+                )
             # Error-streak bookkeeping (auto-escalation): the streak counts
             # CONSECUTIVE all-error tool steps. Any other step type — text-only,
             # empty response, blocked-tools, cancelled/timeout, or a step where
@@ -2268,24 +2310,13 @@ class Agent(MCPServer):
 
             # Check for cancellation at the start of each step
             if self._is_cancelled(request_id):
-                logger.info("Request %s cancelled at step %d", request_id, step + 1)
-                # Signal cancellation using status contexts FIRST (so events are queued)
-                await status_worker.error(f"cancelled at step {step + 1}",
-                                      meta={"step": step + 1, "reason": "cancelled"})
-                await status_coordinator.error(f"cancelled at step {step + 1}",
-                                            meta={"step": step + 1, "reason": "cancelled"})
-                # Give status events a moment to be captured by forwarder
-                await asyncio.sleep(0.01)
-                # Yield all pending status events before cancelled event
-                for status_event in context.status_forwarder.get_pending_events():
-                    yield status_event
-                # Now yield the cancelled event
-                yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
+                async for event in cancelled_events(step):
+                    yield event
                 return
 
             # Progress heartbeat using status_coordinator
             await status_coordinator.progress(
-                f"step {step + 1}/{max_steps}",
+                "final call after the step budget" if final_call else f"step {step + 1}/{max_steps}",
                 meta={"step": step + 1, "max_steps": max_steps}
             )
 
@@ -2326,7 +2357,10 @@ class Agent(MCPServer):
             # is open — but NOT while a persistent rate-limit fallback is active
             # (we don't escalate on top of a degraded run). The budget round is
             # only spent once it is settled that the advanced client answers.
-            escalated_this_step = escalator.active and self._active_fallback_llm is None
+            # Not the final call: it only asks for the answer, and the old
+            # post-loop call never escalated either.
+            escalated_this_step = (escalator.active and self._active_fallback_llm is None
+                                   and not final_call)
 
             # Check if fallback recovery period has elapsed - try original LLM again.
             # Coming BACK is a model switch too, so it needs the same strip as the
@@ -2602,9 +2636,7 @@ class Agent(MCPServer):
                                 # active_llm: mid-run fallback recovery
                                 # (_check_fallback_recovery on long runs) must be
                                 # able to return to the original client via
-                                # `current_llm = active_llm`. The post-loop
-                                # final-answer call selects the persistent
-                                # fallback itself (see final_llm).
+                                # `current_llm = active_llm`.
                                 if current_llm is active_llm:
                                     display_profile_info = f"{fallback_profile}:fallback"
                                     active_llm = fallback_llm
@@ -2840,12 +2872,7 @@ class Agent(MCPServer):
                             # Request-scoped swap when the BASE failed (like the
                             # upstream-error and 5xx paths): without it, EVERY
                             # following step retries the dead endpoint first
-                            # (~connect timeout x retries per step), and the
-                            # post-loop final-answer call (`final_llm =
-                            # _active_fallback_llm or active_llm`) would hit the
-                            # dead endpoint again — its failure text contains
-                            # "timeout", which the final-call catch-all
-                            # misreports as "cancelled".
+                            # (~connect timeout x retries per step).
                             if current_llm is active_llm:
                                 display_profile_info = f"{fallback_profile}:fallback"
                                 active_llm = fallback_llm
@@ -3078,7 +3105,9 @@ class Agent(MCPServer):
                     yield {"type": "error", "message": error_msg}
                     return
 
-                if consecutive_empty_responses >= max_consecutive_empty:
+                # Not on the final call: no step follows to read the nudge, and
+                # the session would keep it as the conversation's last word.
+                if consecutive_empty_responses >= max_consecutive_empty and not final_call:
                     logger.warning(f"Empty response #{consecutive_empty_responses}: Injecting 'Continue' user message to prompt LLM")
                     # Instead of breaking, inject a "Continue" user message to nudge the LLM
                     # This mimics the user typing "weiter" or "continue" manually
@@ -3140,7 +3169,8 @@ class Agent(MCPServer):
 
                     # Objective stuck signal → open an escalation window so the
                     # NEXT few steps run on the advanced model (budget permitting).
-                    esc_reason = escalator.trigger(
+                    # No step follows the final call to run on it.
+                    esc_reason = None if final_call else escalator.trigger(
                         f"tool-call loop ({loop_result.tool_name})")
                     if esc_reason:
                         logger.warning(
@@ -3164,12 +3194,38 @@ class Agent(MCPServer):
                                 f"[{self.name}] Blocked {original_count - len(tool_calls)} tool calls "
                                 f"due to loop detection. Blocked tools: {blocked_tools}"
                             )
+                            if final_call:
+                                # A blocked call gets no result. After a step the
+                                # next call's message_validator drops it from the
+                                # history; after the final call no call follows,
+                                # and the session would keep it unanswered.
+                                assistant_msg.tool_calls = (
+                                    history_safe_tool_calls(tool_calls) if tool_calls else None)
+                                if (not tool_calls and not (content and content.strip())
+                                        and messages[-1] is assistant_msg):
+                                    messages.pop()
+                                    if (context.messages is not messages and context.messages
+                                            and context.messages[-1] is assistant_msg):
+                                        context.messages.pop()
                             # If all tools were blocked, continue to next iteration
                             # The intervention message will prompt the LLM to try something else
                             if not tool_calls:
                                 # No tool results will follow, so inject now to keep the loop warning.
-                                messages.append(pending_intervention_msg)
-                                context.messages = messages
+                                # Not after the final call, like the empty-response nudge.
+                                if not final_call:
+                                    messages.append(pending_intervention_msg)
+                                    context.messages = messages
+                                elif content and content.strip():
+                                    # What is left is a text answer on the final
+                                    # call: delivered like the no-tool answer below.
+                                    results["summary"] = content
+                                    self._set_live_messages(session_id, messages.copy())
+                                    final_event = {"type": "final", "summary": formatted_content,
+                                                   "content_format": content_format}
+                                    if llm_out and "usage" in llm_out:
+                                        final_event["usage"] = llm_out["usage"]
+                                    yield final_event
+                                    return
                                 continue
                 
                 # Signal tool execution start
@@ -3233,7 +3289,7 @@ class Agent(MCPServer):
                         self._tool_message_is_error(m) for m in tool_messages):
                     consecutive_tool_error_steps += 1
                     prev_step_all_errored = True  # keep the streak alive next step
-                    if consecutive_tool_error_steps >= escalate_error_streak:
+                    if consecutive_tool_error_steps >= escalate_error_streak and not final_call:
                         esc_reason = escalator.trigger(
                             f"{consecutive_tool_error_steps} all-error tool steps")
                         if esc_reason:
@@ -3283,7 +3339,7 @@ class Agent(MCPServer):
                     # Normal case: no tool modified messages, just extend with tool results
                     messages.extend(tool_messages)
 
-                if pending_intervention_msg is not None:
+                if pending_intervention_msg is not None and not final_call:
                     messages.append(pending_intervention_msg)
 
                 # Sync context.messages with the updated messages list
@@ -3304,6 +3360,34 @@ class Agent(MCPServer):
                 for status_event in yield_pending_status_events():
                     yield status_event
 
+                if final_call:
+                    # A step's cancel is reported by the check at the top of the
+                    # next iteration; after the final call there is none.
+                    if self._is_cancelled(request_id):
+                        async for event in cancelled_events(step):
+                            yield event
+                        return
+                    # Tools on the final call run once: an agent that delivers
+                    # through a tool (the v6 auditors) would otherwise lose the
+                    # delivery its whole run was for. The budget stays a cap --
+                    # no call follows to read the results -- and the run says so.
+                    ran = ", ".join(
+                        f"{m.name} ({'error' if self._tool_message_is_error(m) else 'ok'})"
+                        for m in tool_messages) or "none"
+                    logger.warning(
+                        f"[{self.name}] Agent returned tool calls after max_steps limit and they "
+                        f"ran without a further LLM call: {ran}. Increase max_steps or simplify the task."
+                    )
+                    # No final event: callers that read only final take it as
+                    # success (the writer dispatch records ok=True, the job
+                    # manager marks the run answered), whatever the tools
+                    # returned. The results stay in the session.
+                    error_msg = (f"Agent incomplete: max steps ({max_steps}) reached; "
+                                 f"the final call ran tool calls ({ran}) that no step followed.")
+                    results.setdefault("errors", []).append(error_msg)
+                    yield {"type": "error", "message": error_msg}
+                    return
+
                 # Continue to next iteration to let LLM respond to tool results
                 continue
 
@@ -3318,7 +3402,8 @@ class Agent(MCPServer):
             # metadata["continue"] = True to prevent treating a text-only
             # response as the final answer.  This allows autonomous agents
             # to keep working when they emit intermediate status reports.
-            if hook_metadata.get("continue") and content and content.strip():
+            # Not on the final call: no step is left to continue in.
+            if hook_metadata.get("continue") and content and content.strip() and not final_call:
                 cont_count = hook_metadata.get("continuation_count", "?")
                 cont_reason = hook_metadata.get("continuation_reason", "hook signal")
                 logger.info(
@@ -3356,9 +3441,11 @@ class Agent(MCPServer):
             # response (mid-run append). Never finalize past fresh user input —
             # continue the loop so the next LLM call reacts to it. The interim
             # content was already surfaced via the thinking events above.
+            # On the final call no step is left: the message stays in the
+            # history behind the answer, persisted for the session's next run.
             pre_drain_count = len(messages)
             messages = await self._drain_appended_messages(request_id, messages)
-            if len(messages) > pre_drain_count:
+            if len(messages) > pre_drain_count and not final_call:
                 context.messages = messages
                 self._set_live_messages(session_id, messages.copy())
                 consecutive_no_tool_calls = 0
@@ -3381,7 +3468,9 @@ class Agent(MCPServer):
             
             # No tool calls AND (no content OR empty content)
             # Check consecutive no-tool-calls limit to avoid infinite loop
-            if consecutive_no_tool_calls >= max_consecutive_no_tools:
+            # Not on the final call: an empty answer there is a spent budget,
+            # which the error after the loop reports, not an empty success.
+            if consecutive_no_tool_calls >= max_consecutive_no_tools and not final_call:
                 logger.warning(f"Breaking loop: {consecutive_no_tool_calls} consecutive responses without tool calls (empty or no content)")
                 # Treat whatever content we have as final (even if empty)
                 results["summary"] = content or ""
@@ -3392,6 +3481,16 @@ class Agent(MCPServer):
                 yield final_event
                 return
 
+            if final_call and not (content and content.strip()):
+                # A blank answer to the final call is no answer: the error after
+                # the loop reports the spent budget, and the session must not
+                # end on a blank assistant turn. Drained input may follow it.
+                for history in {id(messages): messages, id(context.messages): context.messages}.values():
+                    for i in range(len(history or []) - 1, -1, -1):
+                        if history[i] is assistant_msg:
+                            del history[i]
+                            break
+
             # Update tracked messages at end of each step (per-session)
             self._set_live_messages(session_id, messages.copy())
 
@@ -3400,112 +3499,16 @@ class Agent(MCPServer):
             # Sync context.messages after draining
             context.messages = messages
 
-        # Max steps reached - warning and try to get final answer
-        logger.warning(
-            f"Max steps ({max_steps}) reached. Agent may not have completed the task. "
-            f"Making one final LLM call to attempt completion."
-        )
-
-        # Add explicit user message requesting final answer WITHOUT tools
-        final_user_message = ChatMessage(
-            role="user",
-            content=(
-                f"You have reached the maximum number of steps ({max_steps}). "
-                "Please provide your final answer NOW based on the information you have gathered. "
-                "Do NOT use any tools in this response - just give me your best answer or summary of what you've accomplished."
-            ),
-            timestamp=datetime.now(timezone.utc),
-            injected_by="agent.max_steps",
-        )
-        messages.append(final_user_message)
-
-        # Try final call with tools still available (but instructed not to use them).
-        # Use the persistent fallback if one is active: active_llm may still be
-        # the rate-limited/quota-exhausted original (the per-step selection at
-        # the top of the loop doesn't cover this post-loop call), and calling
-        # the broken client here would fail the whole request in its last step
-        # despite a working fallback.
-        final_llm = self._active_fallback_llm or active_llm
-        if self._step_llms.get(session_id) not in (None, final_llm):
-            # The last step escalated, or another request switched on a
-            # fallback during its tools: the history carries that model's reasoning.
-            strip_all_reasoning_artifacts(messages)
-        try:
-            final_llm_out = await final_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
-            final_assistant = final_llm_out.get("assistant", {})
-            final_content = final_assistant.get("content")
-            final_tool_calls = final_assistant.get("tool_calls", [])
-
-            if final_tool_calls:
-                # Agent still wants to use tools after max_steps!
-                logger.error(
-                    f"Agent returned tool calls after max_steps limit! "
-                    f"Tools: {[tc.get('function', {}).get('name') for tc in final_tool_calls]}. "
-                    f"Increase max_steps or simplify the task."
-                )
-                results.setdefault("errors", []).append(
-                    f"Agent needs more steps to complete task (wanted to call: "
-                    f"{', '.join([tc.get('function', {}).get('name', '?') for tc in final_tool_calls])})"
-                )
-                yield {"type": "error", "message": f"Agent incomplete: max steps ({max_steps}) reached but still has work to do."}
-                return
-
-            if final_content:
-                # Append final assistant message to conversation history
-                assistant_msg = ChatMessage(
-                    role="assistant", content=final_content or "",
-                    # OpenRouter backend of this turn: the next request pins to it.
-                    served_by=final_assistant.get("served_by"),
-                    timestamp=datetime.now(timezone.utc))
-                messages.append(assistant_msg)
-                # By now both names usually point to the same list; appending to
-                # each put the final answer into the history twice.
-                if context.messages is not messages:
-                    context.messages.append(assistant_msg)
-                results["summary"] = final_content
-                # Update tracked messages and emit final event
-                self._set_live_messages(session_id, messages.copy())
-
-                # Format content for display
-                formatted_final = final_content
-                final_format = 'text'  # Default to 'text' if not set by hooks
-                try:
-                    if self._hook_manager:
-                        formatted_final, final_format = await self._hook_manager.execute_format_output_hooks(
-                            output=final_content,
-                            request_id=request_id or "unknown",
-                            session_id=session_id or "unknown",
-                            output_format='html'
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to format final content: {e}", exc_info=True)
-
-                final_event = {"type": "final", "summary": formatted_final, "content_format": final_format}
-                # Include usage data if available from final LLM call
-                if final_llm_out and "usage" in final_llm_out:
-                    final_event["usage"] = final_llm_out["usage"]
-                yield final_event
-            else:
-                results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
-                yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
-        except Exception as e:
-            # Check if this is a cancellation exception in final answer
-            final_error_str = str(e).lower()
-            if "cancelled" in final_error_str or "timeout" in final_error_str:
-                logger.info(f"Request {request_id} cancelled during final LLM call: {e}")
-                # Signal cancellation using status contexts
-                await status_worker.error(f"cancelled during final LLM call: {e}",
-                                        meta={"step": step + 1, "reason": "cancelled"})
-                await status_coordinator.error("cancelled during final LLM call",
-                                             meta={"step": step + 1, "reason": "cancelled"})
-                yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
-                return
-
-            logger.exception("Failed to get final answer: %s", e)
-            results.setdefault("errors", []).append(f"Failed to get final answer: {e}")
-            yield {"type": "error", "message": f"Failed to get final answer: {e}"}
-
-        return
+        # Reached only when the final call ended without text and without a
+        # tool call that ran: empty or blank, or its tool calls all blocked.
+        # A step's cancel is reported at the top of the next iteration; there
+        # is none after the final call.
+        if self._is_cancelled(request_id):
+            async for event in cancelled_events(max_steps):
+                yield event
+            return
+        results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
+        yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
 
     async def _run_events(
         self,

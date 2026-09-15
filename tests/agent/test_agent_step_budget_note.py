@@ -36,18 +36,20 @@ async def test_every_request_is_a_prefix_of_the_next():
     Anthropic caches at the last message of a request. A note sent only at the
     tail of one call is missing from the next call's prefix, and that call
     reads nothing back."""
+    import inspect
     from pathlib import Path
 
     from agent_system.hooks import HookType, PluginHook
     from agent_system.hooks.registry import get_hook_registry
-    from plugins import agent_continuation
     from plugins.agent_continuation.hooks import AgentContinuationPlugin
     from test_reasoning_loop_wiring import _real_agent
 
     class _Followups(PluginHook):
         def __init__(self):
             super().__init__({})
-            self.plugin = AgentContinuationPlugin(Path(agent_continuation.__file__).parent)
+            # The module file, not the package's: imported as a namespace
+            # package in some test orders, plugins.agent_continuation has no __file__.
+            self.plugin = AgentContinuationPlugin(Path(inspect.getfile(AgentContinuationPlugin)).parent)
 
         async def on_post_llm_call(self, context):
             context.hook_config = {"followups": [f"go on {i}" for i in range(4)]}
@@ -96,7 +98,11 @@ async def test_a_run_that_hits_the_cap_marks_what_the_loop_adds():
     """A model that answers empty twice, then keeps calling the same failing tool:
     the "continue" nudge, loop interventions, the step notes and the max-steps
     request all join the history as role user. Unmarked, every hook looking for
-    what a person wrote took them for it."""
+    what a person wrote took them for it.
+
+    The max-steps request is a step of its own: its call starts with the one
+    before it and sends the same tools -- a tool list that changes on the last
+    call breaks the provider cache on the longest request of the run."""
     from test_reasoning_loop_wiring import _real_agent
 
     class _Stuck:
@@ -104,15 +110,17 @@ async def test_a_run_that_hits_the_cap_marks_what_the_loop_adds():
 
         def __init__(self):
             self.seen = []
+            self.tools = []
 
         def supports_streaming(self):
             return True
 
-        def _record(self, messages):
-            self.seen.append([(m.role, str(m.content), m.injected_by) for m in messages])
-
         async def chat_tools_streaming(self, messages, tools, cancellation_token=None, status_scope=None):
-            self._record(messages)
+            self.seen.append([(m.role, str(m.content), m.injected_by) for m in messages])
+            self.tools.append(tools)
+            if messages[-1].injected_by == "agent.max_steps":
+                yield {"type": "final", "assistant": {"role": "assistant", "content": "what I have"}}
+                return
             if len(self.seen) <= 2:
                 yield {"type": "final", "assistant": {"role": "assistant", "content": None}}
                 return
@@ -121,18 +129,28 @@ async def test_a_run_that_hits_the_cap_marks_what_the_loop_adds():
             yield {"type": "final", "assistant": {"role": "assistant", "content": None, "tool_calls": [call]}}
 
         async def chat_tools(self, messages, tools, cancellation_token=None):
-            self._record(messages)
-            return {"assistant": {"role": "assistant", "content": "what I have"}}
+            raise AssertionError("the max-steps request went around the step loop")
 
     agent = _real_agent()
     agent.agent_config.max_steps = 7
     llm = _Stuck()
     agent.llm = llm
-    [event async for event in agent.run_events("the task", session_id="stuck")]
+    schema = [{"type": "function", "function": {"name": "missing_tool", "parameters": {"type": "object"}}}]
+    initialize = agent._initialize_request_and_conversation
+
+    async def with_a_tool(**kwargs):
+        context = await initialize(**kwargs)
+        context.tools_schema = schema
+        return context
+    agent._initialize_request_and_conversation = with_a_tool
+    events = [event async for event in agent.run_events("the task", session_id="stuck")]
 
     assert len(llm.seen) == 8, f"fixture: {len(llm.seen)} calls, the max-steps request never went out"
     for i, (request, following) in enumerate(zip(llm.seen, llm.seen[1:])):
         assert following[:len(request)] == request, f"call {i + 2} does not start with call {i + 1}"
+    assert all(tools == schema for tools in llm.tools), f"the tools changed between calls: {llm.tools}"
+    assert [e.get("summary") for e in events if e.get("type") == "final"] == ["what I have"], (
+        [e for e in events if e.get("type") in ("final", "error")])
     users = [(text, marker) for role, text, marker in llm.seen[-1] if role == "user"]
     assert users[0] == ("the task", None)
     markers = [marker for _, marker in users[1:]]

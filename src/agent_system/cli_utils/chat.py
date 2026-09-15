@@ -541,9 +541,10 @@ async def run_chat_turn(
                 # (server.py: final_event["usage"] = llm_out["usage"]), which
                 # already arrived as thinking_complete -- summing both counted
                 # that call twice and inflated every turn.
-                # But after max_steps a SEPARATE final-answer call runs that has
-                # no thinking_complete of its own, and that one must count. Same
-                # payload => the repeat; anything else => a real extra call.
+                # A final whose usage no thinking_complete reported is a call of
+                # its own and must count (the max-steps call was one, before it
+                # became a regular step). Same payload => the repeat; anything
+                # else => a real extra call.
                 final_usage = ev.get("usage")
                 if final_usage is not None and final_usage != last_call_usage:
                     _accumulate_usage(result["usage"], final_usage,
