@@ -84,6 +84,44 @@ def test_only_the_publicly_visible_agents_are_listed(client, registry_of_agents)
     assert set(response.json()["agents"]) == EXPECTED_IN_UI, response.json()
 
 
+def test_the_listings_carry_what_the_pickers_search_and_group_by(registry_of_agents, monkeypatch):
+    """Agents: description, category and tags from the live merged config (None where it has no entry).
+    Profiles: provider, model and the route's host from the model the profile points at."""
+    from tests.app.test_run_llm_override_uses_live_config import _disable_auth
+    _disable_auth(monkeypatch)  # before build_app: /llm/profiles sits behind a route policy
+    client = TestClient(build_app())
+    live = client.app.state.config.model_copy(deep=True)
+    live.llm_system = LLMSystemConfig(
+            models={"routed": LLMModelConfig(provider="openai", model="vendor/m", api_key="fake",
+                                             base_url="https://openrouter.ai/api/v1"),
+                    "direct": LLMModelConfig(provider="openai", model="m", api_key="fake"),
+                    "broken": LLMModelConfig(provider="openai", model="b", api_key="fake", base_url="http://[fe80::1/v1")},
+            # "a_broken" sorts first: a malformed URL must not end the list before the others
+            profiles={"a_broken": LLMProfile(model_ref="broken"), "normal": LLMProfile(model_ref="direct"),
+                      "routed": LLMProfile(model_ref="routed", description="Via a router")},
+            default_profile="normal",
+    )
+    live.plugins = PluginsConfig(plugin_dirs=[str(REPO / "src" / "plugins")], servers={
+        "probe_ui": MCPConfig(type="basic_agent", enabled=True, description="The UI probe",
+                              agent_config=AgentConfig(llm_profile="normal"),
+                              metadata=AgentMetadata(visibility="ui", category="probes", tags=["one", "two"])),
+    })
+    monkeypatch.setattr(client.app.state, "config", live)
+
+    with patch("agent_system.app._app_registry", registry_of_agents):
+        agents = client.get("/agents").json()
+    profiles = {p["name"]: p for p in client.get("/llm/profiles").json()["profiles"]}
+
+    details = {d["name"]: d for d in agents["details"]}
+    assert set(details) == EXPECTED_IN_UI, agents
+    assert details["probe_ui"] == {"name": "probe_ui", "description": "The UI probe", "category": "probes", "tags": ["one", "two"]}
+    assert details["probe_both"] == {"name": "probe_both", "description": None, "category": None, "tags": []}
+    assert profiles["routed"] == {"name": "routed", "model_ref": "routed", "provider": "openai", "model": "vendor/m",
+                                      "host": "openrouter.ai", "description": "Via a router", "max_steps": None}
+    assert (profiles["normal"]["model"], profiles["normal"]["host"]) == ("m", None)
+    assert (profiles["a_broken"]["model"], profiles["a_broken"]["host"]) == ("b", None)
+
+
 def test_a_registry_without_a_runtime_still_answers(client, registry_of_agents):
     """The fallback branch. Unbinding leaves the instances in place, so the
     answer must not change -- if it does, the two paths disagree and the

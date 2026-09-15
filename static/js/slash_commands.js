@@ -215,14 +215,12 @@
     input = taskInput;
     slash.load();
 
-    // Plugin commands are per agent, so the catalogue has to follow the
-    // selector. The change event covers a person picking one; load() on every
-    // input covers setAgent(), which the session restore calls WITHOUT firing
-    // change -- it returns the cached promise unless the agent really moved.
-    const agentSelector = document.getElementById('agentSelector');
-    if (agentSelector) {
-      agentSelector.addEventListener('change', function () { slash.load(); });
-    }
+    // Plugin commands are per agent, so the catalogue follows the selector:
+    // a pick and a session restore both announce the change. load() returns
+    // the cached promise unless the agent really moved.
+    window.addEventListener('selector:change', function (event) {
+      if (event.detail && event.detail.kind === 'agent') slash.load();
+    });
 
     input.addEventListener('input', function () {
       const value = input.value;

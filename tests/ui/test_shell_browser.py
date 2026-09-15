@@ -6,7 +6,9 @@ panel that records what the host sends, and two instances of one plugin. The
 cookie ``stub_account`` picks what /auth/me answers: absent -- authentication
 is off; ``admin`` -- signed in; ``expired`` -- 401; ``inactive`` -- 403;
 ``broken`` -- 500. ``stub_catalog`` makes the catalogue fail (``broken``) or
-answer after a second (``slow``); ``stub_list=held`` and ``stub_children=held``
+answer after a second (``slow``); ``stub_agents`` makes /agents answer after
+1.5 s with ``writer`` as default (``slow``), fail (``broken``) or name a default it does not list
+(``nodefault``); ``stub_list=held`` and ``stub_children=held``
 hold the answer of the session list and of a branch, as they were when asked,
 until POST /__stub/lists/release (GET /__stub/lists counts the held ones),
 ``stub_list=broken`` fails the list;
@@ -533,14 +535,34 @@ def stub_app() -> FastAPI:
     async def health():
         return {"status": "ok", "version": "9.9.9", "uptime_seconds": 60, "python_version": "3.12", "packages": {}}
 
+    @app.get("/chat/commands")
+    async def chat_commands(agent: str = ""):
+        hits[f"commands:{agent}"] = hits.get(f"commands:{agent}", 0) + 1  # the slash catalogue follows the agent
+        return {"commands": [], "skills": [], "plugin_commands": []}
+
     @app.get("/agents")
-    async def agents():
-        return {"agents": ["assistant", "writer"], "default": "assistant"}
+    async def agents(request: Request):
+        mode = request.cookies.get("stub_agents")
+        if mode == "broken":
+            raise HTTPException(status_code=500, detail="agents failed")
+        if mode == "slow":
+            await asyncio.sleep(1.5)
+        # slow: the default is not the first row, so a picker waiting for the list has to find it
+        default = {"nodefault": "missing", "slow": "writer"}.get(mode, "assistant")
+        return {"agents": ["assistant", "writer"], "default": default,
+                "details": [{"name": "assistant", "description": "General help", "category": "tools", "tags": ["chat"]},
+                            {"name": "writer", "description": "Writes books", "category": None, "tags": ["prose"]}]}
 
     @app.get("/llm/profiles")
     async def profiles():
-        return {"profiles": [{"name": "default", "description": "Default", "model_ref": "m", "max_steps": 5}],
-                "default": "default"}
+        return {"profiles": [
+            {"name": "deep", "description": "Deep", "model_ref": "or-deep", "max_steps": 5,
+             "provider": "openai_responses", "model": "deepseek/pro", "host": "openrouter.ai"},
+            {"name": "default", "description": "Default", "model_ref": "m", "max_steps": 5,
+             "provider": "openai_httpx", "model": "gpt-x", "host": None},
+            {"name": "fast", "description": "Fast", "model_ref": "or-fast", "max_steps": 5,
+             "provider": "openai_responses", "model": "google/flash", "host": "openrouter.ai"},
+        ], "default": "default"}
 
     @app.get("/api/sessions/hierarchy")
     async def hierarchy(request: Request):
@@ -709,6 +731,8 @@ EXPECTED = [
     "the kit page's theme buttons switch the whole shell",
     'a new window takes the first free step down, not the count of windows',
     'the docked tabs sort by drag and drop and by Shift+arrow, keep their order after a reload, and a cancelled drag changes nothing',
+    'the agent and profile pickers open on the current choice, search, group by a remembered grouping and pick by click or keyboard',
+    'a picker says when its list is on its way and shows it when it comes, says when it failed, and falls back only to what it lists',
     'the sessions pane takes the width it was dragged or keyed to, keeps it after a reload, and stays within its bounds',
     'closing the last panel hides the dock',
     'a mangled stored layout does not stop the shell',

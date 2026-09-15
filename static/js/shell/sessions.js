@@ -370,9 +370,7 @@ export class SessionManager {
     const id = session.session_id;
     this.remember([session]);
     this.setCurrent(id, session.title || session.name);
-    const agentSelect = document.getElementById('agentSelector');
-    const agentAvailable = [...agentSelect.options].some((option) => option.value === session.agent_name);
-    const readOnly = Boolean(session.depth) && !agentAvailable;
+    const readOnly = Boolean(session.depth) && !window.selectorModule.hasAgent(session.agent_name);
     window.dispatchEvent(new CustomEvent('session:loaded', {
       detail: {
         session,

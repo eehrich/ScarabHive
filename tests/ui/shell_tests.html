@@ -114,7 +114,7 @@
   await check(STARTS, async () => {
     await loadShell();
     await until('the health poll', () => $('#connectionState').textContent.includes('Connected'));
-    await until('the agents', () => $('#agentSelector').options.length === 2);
+    await until('the agents', () => win().selectorModule.agents().length === 2 && $('#agentLabel').textContent === 'assistant');
     return $('#userMenuName').textContent === 'Owner' && $('#logoutButton').hidden
       && $('#versionLabel').textContent === 'v9.9.9' && $('#chatWelcome') !== null;
   });
@@ -127,6 +127,118 @@
     $('#f').requestSubmit();
     await sleep(300);
     return $('#chatWelcome') !== null;
+  });
+
+  await check('the agent and profile pickers open on the current choice, search, group by a remembered grouping and pick by click or keyboard', async () => {
+    const picker = $('#picker');
+    const names = () => $$('#pickerList [data-index]').map((row) => row.querySelector('.picker-name .pk-truncate').textContent);
+    const headings = () => $$('#pickerList .palette-group').map((h) => h.textContent);
+    const selectedName = () => $('#pickerList [aria-selected="true"] .picker-name .pk-truncate')?.textContent;
+    const key = (k) => $('#pickerInput').dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+    const search = (text) => { $('#pickerInput').value = text; $('#pickerInput').dispatchEvent(new Event('input')); };
+    const announced = [];
+    const listen = (event) => announced.push(event.detail.kind);
+    win().addEventListener('selector:change', listen);
+    try {
+      $('#modelPicker').click();
+      const opened = picker.open && $('#pickerTitle').textContent === 'Choose a model profile' && doc().activeElement === $('#pickerInput')
+        && selectedName() === 'default' && $('#pickerList [aria-selected="true"] .picker-check .pk-icon') !== null
+        && $('#pickerList [aria-selected="true"] .pk-badge')?.textContent === 'default'
+        // by route: the host, else the provider plugin
+        && headings().join('|') === 'openai_httpx|openrouter.ai' && names().join() === 'default,deep,fast';
+      const pointsAtSelected = $('#pickerInput').getAttribute('aria-activedescendant') === $('#pickerList [aria-selected="true"]').id;
+      search('no-such-thing');
+      // nothing listed: the input points at no option that is gone
+      const noneShown = $('#pickerList').textContent.includes('Nothing matches') && !$('#pickerInput').hasAttribute('aria-activedescendant');
+      search('deepseek');  // the model name, not the profile name
+      const found = pointsAtSelected && noneShown && names().join() === 'deep' && selectedName() === 'deep';
+      key('Enter');
+      const byKey = !picker.open && $('#modelLabel').textContent === 'deep' && win().selectorModule.getCurrentLLMProfile() === 'deep';
+      $('#modelPicker').click();
+      const onCurrent = $('#pickerInput').value === '' && selectedName() === 'deep';
+      $('#pickerGroups [data-grouping="model"]').click();
+      const regrouped = headings().join('|') === 'deepseek/pro|google/flash|gpt-x' && selectedName() === 'deep'
+        && $('#pickerGroups [data-grouping="model"]').getAttribute('aria-pressed') === 'true';
+      picker.close();
+      $('#modelPicker').click();
+      const remembered = headings().join('|') === 'deepseek/pro|google/flash|gpt-x';
+      $$('#pickerList [data-index]').find((row) => row.textContent.includes('fast')).click();
+      const byClick = !picker.open && $('#modelLabel').textContent === 'fast';
+
+      $('#agentPicker').click();
+      const agents = $('#pickerTitle').textContent === 'Choose an agent' && selectedName() === 'assistant'
+        && headings().join('|') === 'tools|Other';  // no category: last, though "Other" sorts before "tools"
+      key('ArrowDown');
+      key('Enter');
+      const agentByKey = $('#agentLabel').textContent === 'writer' && win().selectorModule.getCurrentAgent() === 'writer';
+      // the slash commands are per agent: their catalogue is asked for the new one before anything is typed
+      await until('the slash catalogue of the picked agent', async () => await hits('commands:writer') > 0, 3000);
+      $('#pickerList').style.maxHeight = '40px';  // the current one (writer, last) lies below the fold
+      $('#agentPicker').click();
+      const listBox = $('#pickerList').getBoundingClientRect();
+      const currentBox = $('#pickerList [aria-selected="true"]').getBoundingClientRect();
+      // scrolled to: its row starts inside the list's box (a row with a description is taller than 40px)
+      const inView = $('#pickerList').scrollTop > 0 && currentBox.top >= listBox.top - 1 && currentBox.top < listBox.bottom;
+      $('#pickerList').style.maxHeight = '';
+      search('prose');  // a tag
+      const byTag = names().join() === 'writer';
+      picker.close();
+      return opened && found && byKey && onCurrent && regrouped && remembered && byClick && agents && agentByKey && inView && byTag
+        && announced.includes('agent') && announced.includes('profile');
+    } finally {
+      win().removeEventListener('selector:change', listen);
+      if (picker.open) picker.close();
+      win().selectorModule.setAgent('assistant');
+      win().selectorModule.setLLMProfile('default');
+      win().localStorage.removeItem('scarabhive.pickerGrouping');
+    }
+  });
+
+  await check('a picker says when its list is on its way and shows it when it comes, says when it failed, and falls back only to what it lists', async () => {
+    const listText = () => $('#pickerList').textContent.replace(/\s+/g, ' ');
+    try {
+      cookie('stub_agents', 'slow');
+      await go(`/?load=${performance.now()}`);
+      await until('the picker wired', () => $('#agentLabel')?.textContent === 'Agent: Loading…' && win().selectorModule);
+      await until('the picker wired', async () => { $('#agentPicker').click(); return $('#picker').open; });
+      const waiting = listText().includes('Loading');
+      await until('the list arriving in the open picker', () => $$('#pickerList [data-index]').length === 2, 5000);
+      // on the current one (the default here), not on whatever row the empty list left selected
+      const arrived = $('#pickerList [aria-selected="true"]').textContent.includes('writer')
+        && $('#pickerInput').getAttribute('aria-activedescendant') === $('#pickerList [aria-selected="true"]').id;
+      $('#picker').close();
+
+      // set before the list arrived (a reattached run names its agent): taken once it is here, over the default
+      await go(`/?load=${performance.now()}`);
+      await until('the loading agent list', () => $('#agentLabel')?.textContent === 'Agent: Loading…' && win().selectorModule);
+      const pendingAnswer = win().selectorModule.setAgent('assistant');
+      await until('the agents', () => win().selectorModule.agents().length === 2, 5000);
+      const pending = pendingAnswer === false && win().selectorModule.getCurrentAgent() === 'assistant'
+        && $('#agentLabel').textContent === 'assistant';
+
+      cookie('stub_agents', 'broken');
+      await loadShell();
+      await until('the failed agent list', () => $('#agentLabel').textContent === 'Agent: unavailable');
+      $('#modelPicker').click();  // a list that loaded points the input at an option ...
+      const pointed = $('#pickerInput').hasAttribute('aria-activedescendant');
+      $('#picker').close();
+      $('#agentPicker').click();  // ... which the failed one must not keep
+      const failedPointsNowhere = pointed && !$('#pickerInput').hasAttribute('aria-activedescendant');
+      const failed = listText().includes('could not be loaded') && failedPointsNowhere;
+      $('#picker').close();
+
+      cookie('stub_agents', 'nodefault');
+      await loadShell();
+      await until('the agents', () => win().selectorModule.agents().length === 2);
+      const atLoad = $('#agentLabel').textContent === 'assistant';
+      // unknown, and the server's default is not listed either: the first listed, never a name the picker cannot show
+      const known = win().selectorModule.setAgent('nobody');
+      return waiting && arrived && pending && failed && atLoad && known === false && win().selectorModule.getCurrentAgent() === 'assistant';
+    } finally {
+      cookie('stub_agents', null);
+      if ($('#picker')?.open) $('#picker').close();
+      await loadShell();
+    }
   });
 
   await check('the message form never reloads the page, not even before the chat has taken it over', async () => {
@@ -2247,6 +2359,69 @@
     return byDrag && byKey && order().join() === keyed.join();
   });
 
+  await check('the sessions pane takes the width it was dragged or keyed to, keeps it after a reload, and stays within its bounds', async () => {
+    const KEY = 'scarabhive.sessionsWidth';
+    const tabs = $$('.dock-tab').length;
+    const pane = () => Math.round($('#sessionsPane').getBoundingClientRect().width);
+    const handle = () => $('#sessionsResizer');
+    const pointer = (type, clientX) => handle().dispatchEvent(
+      new PointerEvent(type, { button: 0, pointerId: 1, clientX, bubbles: true, cancelable: true }));
+    const drag = (dx) => {
+      const x = pane();
+      pointer('pointerdown', x);
+      pointer('pointermove', x + dx);
+      handle().dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 1 }));
+    };
+    if ($('.app-body').dataset.sessions !== 'open') $('#sessionsToggle').click();
+    const start = pane();
+    // the handle rides the pane's right edge
+    const onEdge = () => Math.abs(handle().getBoundingClientRect().left + 3 - $('#sessionsPane').getBoundingClientRect().right) <= 1;
+    const edgeBefore = onEdge();
+    drag(80);
+    const dragged = pane() === start + 80 && localStorage.getItem(KEY) === String(start + 80) && onEdge();
+    handle().focus();
+    handle().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }));
+    const keyed = pane() === start + 64 && localStorage.getItem(KEY) === String(start + 64);
+    const cap = Math.round(win().innerWidth * 0.4);
+    drag(5000);
+    handle().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    // a key at the cap stores the cap, not a width the pane never shows
+    const capped = Math.abs(pane() - cap) <= 1 && localStorage.getItem(KEY) === String(cap);
+    drag(-5000);
+    const floored = pane() === 200 && localStorage.getItem(KEY) === '200';
+    $('#sessionsToggle').click();
+    // closed wins over the dragged width: the pane's column is gone (the pane itself keeps its 1px border)
+    const closed = getComputedStyle($('.app-body')).gridTemplateColumns.startsWith('0px ') && getComputedStyle(handle()).display === 'none';
+    $('#sessionsToggle').click();
+    localStorage.setItem(KEY, String(start + 40));
+    await loadShell();
+    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
+    const reloaded = pane() === start + 40;
+    // kept from a wider window: this one caps it
+    localStorage.setItem(KEY, '5000');
+    await loadShell();
+    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
+    const cappedOnLoad = Math.abs(pane() - win().innerWidth * 0.4) <= 1;
+    // a window just above the narrow layout: the pane leaves the chat and the open dock their room
+    const midWidth = await withWidth('1000px', async () => {
+      await until('the 1000px window', () => win().innerWidth === 1000 && getComputedStyle(handle()).display !== 'none');
+      // measured before any key: the stored 5000 is capped by shell.css alone
+      const fits = Math.abs(pane() - (1000 - 685)) <= 1 && $('#dock').getBoundingClientRect().right <= 1001;
+      handle().focus();
+      handle().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+      return fits && localStorage.getItem(KEY) === String(1000 - 685);
+    });
+    localStorage.setItem(KEY, 'Infinity');
+    await loadShell();
+    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
+    const garbageIgnored = pane() === start;
+    localStorage.removeItem(KEY);
+    await loadShell();
+    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
+    return edgeBefore && dragged && keyed && capped && floored && closed && reloaded && cappedOnLoad && midWidth && garbageIgnored
+      && pane() === start;
+  });
+
   await check('closing the last panel hides the dock', async () => {
     // one at a time: closing re-renders the tab bar
     while ($('.dock-tab')) $('.dock-tab [data-act="close"]').click();
@@ -2273,7 +2448,7 @@
       await loadShell();
       $('#launcherButton').click();
       await until('the launcher message', () => $('#launcherList').textContent.includes('could not be loaded'));
-      return $('#agentSelector').options.length === 2 && $$('.pk-toast--error').some((t) => t.textContent.includes('catalogue failed'));
+      return win().selectorModule.agents().length === 2 && $$('.pk-toast--error').some((t) => t.textContent.includes('catalogue failed'));
     } finally {
       cookie('stub_catalog', null);
     }
@@ -2357,66 +2532,3 @@
 </script>
 </body>
 </html>
-  await check('the sessions pane takes the width it was dragged or keyed to, keeps it after a reload, and stays within its bounds', async () => {
-    const KEY = 'scarabhive.sessionsWidth';
-    const tabs = $$('.dock-tab').length;
-    const pane = () => Math.round($('#sessionsPane').getBoundingClientRect().width);
-    const handle = () => $('#sessionsResizer');
-    const pointer = (type, clientX) => handle().dispatchEvent(
-      new PointerEvent(type, { button: 0, pointerId: 1, clientX, bubbles: true, cancelable: true }));
-    const drag = (dx) => {
-      const x = pane();
-      pointer('pointerdown', x);
-      pointer('pointermove', x + dx);
-      handle().dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 1 }));
-    };
-    if ($('.app-body').dataset.sessions !== 'open') $('#sessionsToggle').click();
-    const start = pane();
-    // the handle rides the pane's right edge
-    const onEdge = () => Math.abs(handle().getBoundingClientRect().left + 3 - $('#sessionsPane').getBoundingClientRect().right) <= 1;
-    const edgeBefore = onEdge();
-    drag(80);
-    const dragged = pane() === start + 80 && localStorage.getItem(KEY) === String(start + 80) && onEdge();
-    handle().focus();
-    handle().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }));
-    const keyed = pane() === start + 64 && localStorage.getItem(KEY) === String(start + 64);
-    const cap = Math.round(win().innerWidth * 0.4);
-    drag(5000);
-    handle().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
-    // a key at the cap stores the cap, not a width the pane never shows
-    const capped = Math.abs(pane() - cap) <= 1 && localStorage.getItem(KEY) === String(cap);
-    drag(-5000);
-    const floored = pane() === 200 && localStorage.getItem(KEY) === '200';
-    $('#sessionsToggle').click();
-    // closed wins over the dragged width: the pane's column is gone (the pane itself keeps its 1px border)
-    const closed = getComputedStyle($('.app-body')).gridTemplateColumns.startsWith('0px ') && getComputedStyle(handle()).display === 'none';
-    $('#sessionsToggle').click();
-    localStorage.setItem(KEY, String(start + 40));
-    await loadShell();
-    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
-    const reloaded = pane() === start + 40;
-    // kept from a wider window: this one caps it
-    localStorage.setItem(KEY, '5000');
-    await loadShell();
-    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
-    const cappedOnLoad = Math.abs(pane() - win().innerWidth * 0.4) <= 1;
-    // a window just above the narrow layout: the pane leaves the chat and the open dock their room
-    const midWidth = await withWidth('1000px', async () => {
-      await until('the 1000px window', () => win().innerWidth === 1000 && getComputedStyle(handle()).display !== 'none');
-      // measured before any key: the stored 5000 is capped by shell.css alone
-      const fits = Math.abs(pane() - (1000 - 685)) <= 1 && $('#dock').getBoundingClientRect().right <= 1001;
-      handle().focus();
-      handle().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
-      return fits && localStorage.getItem(KEY) === String(1000 - 685);
-    });
-    localStorage.setItem(KEY, 'Infinity');
-    await loadShell();
-    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
-    const garbageIgnored = pane() === start;
-    localStorage.removeItem(KEY);
-    await loadShell();
-    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
-    return edgeBefore && dragged && keyed && capped && floored && closed && reloaded && cappedOnLoad && midWidth && garbageIgnored
-      && pane() === start;
-  });
-

@@ -4,13 +4,14 @@ import { Workspace } from './workspace.js';
 import { SessionManager } from './sessions.js';
 import { Launcher } from './launcher.js';
 import { Palette } from './palette.js';
+import { Picker } from './picker.js';
 
 const SESSIONS_OPEN_KEY = 'scarabhive.sessionsOpen';
-const THEME_ICONS = { system: 'monitor', light: 'sun', dark: 'moon' };
 const SESSIONS_WIDTH_KEY = 'scarabhive.sessionsWidth';
 const SESSIONS_MIN_WIDTH = 200;
 /** As shell.css caps it, which caps it again for a window made smaller later. */
 const sessionsMaxWidth = () => Math.min(window.innerWidth * 0.4, window.innerWidth - 685);
+const THEME_ICONS = { system: 'monitor', light: 'sun', dark: 'moon' };
 
 const $ = (id) => document.getElementById(id);
 /** A narrow screen as shell.css decides it: the sessions pane is a sheet over the chat. */
@@ -106,7 +107,6 @@ function sessionsOpen() {
   return document.querySelector('.app-body').dataset.sessions !== 'closed';
 }
 
-/** On a narrow screen the sessions pane is a sheet over everything: it steps aside for what comes next. */
 function setSessionsWidth(width, { remember = true } = {}) {
   const clamped = Math.round(Math.max(Math.min(width, sessionsMaxWidth()), SESSIONS_MIN_WIDTH));
   document.querySelector('.app-body').style.setProperty('--sessions-open-width', `${clamped}px`);
@@ -136,6 +136,7 @@ function wireSessionsResizer(workspace) {
   });
 }
 
+/** On a narrow screen the sessions pane is a sheet over everything: it steps aside for what comes next. */
 function closeSheet() {
   if (narrow() && sessionsOpen()) setSessionsOpen(false, { remember: false });
 }
@@ -211,9 +212,10 @@ function paletteEntries(sessions) {
       instance: Boolean(p.group), run: () => launcher.open(p.id),
     });
   });
-  [...$('agentSelector').options].forEach((option) => entries.push({
-    group: 'Agents', icon: 'workflow', label: option.value, hint: 'Use this agent', keywords: ['agent'],
-    run: () => window.selectorModule.setAgent(option.value),
+  window.selectorModule.agents().forEach((agent) => entries.push({
+    group: 'Agents', icon: 'workflow', label: agent.name, hint: agent.description || 'Use this agent',
+    keywords: ['agent', agent.category, ...(agent.tags || [])].filter(Boolean),
+    run: () => window.selectorModule.setAgent(agent.name),
   }));
   sessions.sessions.forEach((s) => entries.push({
     group: 'Sessions', icon: 'message-square', label: s.title || 'Untitled', hint: s.agent_name,
@@ -262,13 +264,13 @@ async function start() {
   let stored = null;
   try { stored = localStorage.getItem(SESSIONS_OPEN_KEY); } catch { /* storage unavailable */ }
   setSessionsOpen(stored !== 'false' && !narrow(), { remember: false });
-
-  // header and menus
   let storedWidth = null;
   try { storedWidth = Number(localStorage.getItem(SESSIONS_WIDTH_KEY)); } catch { /* storage unavailable */ }
   // unclamped on purpose: the window may be smaller now than when it was set, and shell.css caps it to this one
   if (Number.isFinite(storedWidth) && storedWidth >= SESSIONS_MIN_WIDTH) document.querySelector('.app-body').style.setProperty('--sessions-open-width', `${storedWidth}px`);
   wireSessionsResizer(workspace);
+
+  // header and menus
   $('sessionsToggle').addEventListener('click', () => setSessionsOpen(!sessionsOpen()));
   $('paletteButton').addEventListener('click', () => palette.open());
   $('themeButton').addEventListener('click', () => {
@@ -314,6 +316,7 @@ async function start() {
   window.addEventListener('session:new', () => showWelcome(sessions.sessions));
 
   const selectors = window.selectorModule.init();  // a restored sub-session checks its agent against the list
+  new Picker();
   window.fileUploadModule.init();
   const reattached = window.chatModule.init();  // a run still going from before the reload comes back first
 

@@ -174,17 +174,13 @@
 #task:disabled { opacity: 0.5; }
 .composer-bar { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-1) var(--space-2) var(--space-2); }
 .composer-select {
-  display: inline-flex; align-items: center; gap: var(--space-1); max-width: 220px;
-  height: var(--control-h-sm); padding: 0 var(--space-1) 0 var(--space-2); color: var(--text-secondary);
-  border-radius: var(--radius-md);
+  display: inline-flex; align-items: center; gap: var(--space-1); min-width: 0; max-width: 220px;
+  height: var(--control-h-sm); padding: 0 var(--space-1) 0 var(--space-2);
+  font: 500 var(--text-xs)/1 var(--font-ui); color: var(--text-secondary);
+  background: transparent; border: 0; border-radius: var(--radius-md); cursor: pointer;
 }
-.composer-select:hover { background: var(--surface-3); }
-.composer-select select {
-  min-width: 0; max-width: 180px; appearance: none; padding: 0 var(--space-2) 0 0;
-  font: 500 var(--text-xs)/1 var(--font-ui); color: inherit; background: transparent; border: 0; cursor: pointer;
-  text-overflow: ellipsis;
-}
-.composer-select select:focus { outline: none; }
+.composer-select:hover { background: var(--surface-3); color: var(--text-primary); }
+.composer-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .stop-btn.cancelling { opacity: 0.6; }
 .stop-btn.cancelled { --btn-fg: var(--ok); }
 .stop-btn.cancel-failed { --btn-fg: var(--danger); }

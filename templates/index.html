@@ -44,8 +44,8 @@
             <textarea id="task" placeholder="Message the agent…" rows="1" aria-label="Message"></textarea>
           </div>
           <div class="composer-bar">
-            <label class="composer-select" title="Agent">{{ icon('workflow', size='sm') }}<select id="agentSelector" aria-label="Agent"></select></label>
-            <label class="composer-select" title="Model profile">{{ icon('cpu', size='sm') }}<select id="modelSelector" aria-label="Model profile"></select></label>
+            <button id="agentPicker" type="button" class="composer-select" title="Agent" aria-haspopup="dialog">{{ icon('workflow', size='sm') }}<span id="agentLabel" class="pk-truncate">Agent</span>{{ icon('chevron-down', size='sm') }}</button>
+            <button id="modelPicker" type="button" class="composer-select" title="Model profile" aria-haspopup="dialog">{{ icon('cpu', size='sm') }}<span id="modelLabel" class="pk-truncate">Model profile</span>{{ icon('chevron-down', size='sm') }}</button>
             <span class="pk-grow"></span>
             <button id="attachButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Attach files" aria-label="Attach files">{{ icon('paperclip') }}</button>
             <input id="fileInput" type="file" multiple hidden>
@@ -91,6 +91,15 @@
   <dialog id="palette" class="pk-dialog app-palette" aria-label="Command palette">
     <div class="pk-search">{{ icon('search') }}<input id="paletteInput" class="pk-input" placeholder="Panels, sessions, agents, actions" autocomplete="off"></div>
     <div id="paletteList" class="app-palette-list" role="listbox"></div>
+  </dialog>
+
+  <dialog id="picker" class="pk-dialog app-palette" aria-labelledby="pickerTitle">
+    <div class="picker-head">
+      <h2 id="pickerTitle" class="pk-dialog-title"></h2>
+      <div id="pickerGroups" class="picker-groups" role="group" aria-label="Group by"></div>
+    </div>
+    <div class="pk-search">{{ icon('search') }}<input id="pickerInput" class="pk-input" autocomplete="off" role="combobox" aria-controls="pickerList" aria-expanded="true" aria-label="Search"></div>
+    <div id="pickerList" class="app-palette-list" role="listbox" aria-labelledby="pickerTitle"></div>
   </dialog>
 
   <script src="/static/vendor/prism/prism.js" data-manual></script>

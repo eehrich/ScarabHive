@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+from urllib.parse import urlparse
 from datetime import datetime  # noqa: F401 - used in health endpoint
 from .utils.id import short_id
 from agent_system.utils import yaml_io
@@ -1353,7 +1354,34 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # The agent /run actually uses without agent_name is this object --
         # not config.default_agent, which a reload can move without moving
         # the entry agent with it.
-        return {"agents": sorted(agents), "default": agent.name}
+        return {"agents": sorted(agents), "details": _agent_details(sorted(agents)), "default": agent.name}
+
+    def _hostname(base_url: Optional[str]) -> Optional[str]:
+        """The host a model's requests go to; a malformed URL ("http://[fe80::1") names none rather than ending the list."""
+        try:
+            return urlparse(base_url).hostname if base_url else None
+        except ValueError:
+            return None
+
+    def _agent_details(names: list[str]) -> list[dict[str, Any]]:
+        """What the agent picker filters and groups by: description, category and tags from the merged config."""
+        from .config.settings import get_mcp_config_by_name
+        live = _live_config()
+        details = []
+        for name in names:
+            try:
+                cfg = get_mcp_config_by_name(name, live)
+            except Exception as e:
+                logger.debug(f"No config details for agent {name}: {e}")
+                cfg = None
+            meta = cfg.metadata if cfg else None
+            details.append({
+                "name": name,
+                "description": cfg.description if cfg else None,
+                "category": meta.category if meta else None,
+                "tags": (meta.tags or []) if meta else [],
+            })
+        return details
 
     @app.get("/llm/profiles")
     def list_llm_profiles(response: Response):
@@ -1367,9 +1395,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         try:
             if live.llm_system and live.llm_system.profiles:
                 for profile_name, profile_config in live.llm_system.profiles.items():
+                    model = live.llm_system.models.get(profile_config.model_ref)
                     profiles.append({
                         "name": profile_name,
                         "model_ref": profile_config.model_ref,
+                        # the picker groups by route (host, else provider) or model and finds a profile by either
+                        "provider": model.provider if model else None,
+                        "model": model.model if model else None,
+                        "host": _hostname(model.base_url) if model else None,
                         "description": profile_config.description or profile_name,
                         "max_steps": profile_config.max_steps
                     })
