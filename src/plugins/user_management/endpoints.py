@@ -20,8 +20,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PASSWORD_MAX_BYTES = 72  # bcrypt refuses longer passwords
-
 
 def public(user: "UserInDB") -> dict:
     """What the panel may see of an account: never the password hash or the API key."""
@@ -36,11 +34,6 @@ def public(user: "UserInDB") -> dict:
         "last_login": user.last_login,
         "has_api_key": bool(user.api_key),
     }
-
-
-def check_password_length(password: str | None) -> None:
-    if password is not None and len(password.encode("utf-8")) > PASSWORD_MAX_BYTES:
-        raise HTTPException(status_code=422, detail=f"The password is longer than {PASSWORD_MAX_BYTES} bytes")
 
 
 class UserManagementWebEndpoints:
@@ -78,7 +71,6 @@ class UserManagementWebEndpoints:
         # A POST without a Content-Type is a simple cross-site request, and FastAPI reads its body as JSON anyway.
         if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
             raise HTTPException(status_code=415, detail="Send the account as JSON")
-        check_password_length(user.password)
         try:
             created = db.create_user(user)
         except ValueError as error:
@@ -91,7 +83,6 @@ class UserManagementWebEndpoints:
         # The requester is an active admin, so refusing to demote or deactivate oneself always leaves one.
         if user_id == admin.id and (update.role not in (None, UserRole.ADMIN) or update.is_active is False):
             raise HTTPException(status_code=409, detail="You cannot take your own admin role or deactivate yourself")
-        check_password_length(update.password)
         try:
             updated = db.update_user(user_id, update)
         except ValueError as error:

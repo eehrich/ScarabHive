@@ -71,7 +71,9 @@ async def get_current_user(
         # mirror condition) -- accepting it would void the short expiry.
         if token_data and token_data.username and token_data.token_type == "access":
             user_in_db = db.get_user_by_username(token_data.username)
-            if user_in_db:
+            # The id binds the token to this account: a later account under a
+            # deleted user's name must not inherit that user's tokens.
+            if user_in_db and user_in_db.id == token_data.user_id:
                 # Convert to User (remove sensitive data)
                 return User(
                     id=user_in_db.id,

@@ -39,8 +39,14 @@ def client(auth_enabled: bool = True) -> TestClient:
     return TestClient(app)
 
 
+def token_claims(name: str) -> dict:
+    """What login signs: the name and the account's id (None for a name without an account)."""
+    account = database.get_db().get_user_by_username(name)
+    return {"sub": name, "user_id": account.id if account else None, "role": "admin"}
+
+
 def as_user(name: str, **claims) -> dict:
-    token = create_access_token({"sub": name, "role": "admin", **claims}, expires_delta=timedelta(minutes=5))
+    token = create_access_token({**token_claims(name), **claims}, expires_delta=timedelta(minutes=5))
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -78,7 +84,7 @@ def test_the_plugin_refuses_everyone_but_an_active_admin(db, who, status):
         "a user": as_user("bob", role="user"),
         "a user whose token claims admin": as_user("bob"),
         "an inactive admin": as_user("idle"),
-        "a refresh token": {"Authorization": "Bearer " + create_access_token({"sub": "root", "role": "admin"}, token_type="refresh")},
+        "a refresh token": {"Authorization": "Bearer " + create_access_token(token_claims("root"), token_type="refresh")},
         "a deleted admin": as_user("gone"),
         "an admin's API key": {"X-API-Key": db.generate_user_api_key(ids(db).root)} if who == "an admin's API key" else {},
     }[who]

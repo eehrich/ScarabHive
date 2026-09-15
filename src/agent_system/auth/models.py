@@ -8,8 +8,20 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from typing import Annotated, Optional
+from pydantic import AfterValidator, BaseModel, EmailStr, Field, ConfigDict
+from pydantic_core import PydanticCustomError
+
+PASSWORD_MAX_BYTES = 72  # bcrypt refuses longer passwords
+
+
+def _check_password_bytes(password: str) -> str:
+    if len(password.encode("utf-8")) > PASSWORD_MAX_BYTES:
+        raise PydanticCustomError("password_too_long", f"The password is longer than {PASSWORD_MAX_BYTES} bytes")
+    return password
+
+
+Password = Annotated[str, Field(min_length=8), AfterValidator(_check_password_bytes)]
 
 
 class UserRole(str, Enum):
@@ -30,7 +42,7 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     """Schema for user creation with password."""
-    password: str = Field(..., min_length=8)
+    password: Password
 
 
 class UserRegister(BaseModel):
@@ -44,7 +56,7 @@ class UserRegister(BaseModel):
     username: str = Field(..., min_length=3, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
     email: EmailStr
     full_name: Optional[str] = None
-    password: str = Field(..., min_length=8)
+    password: Password
 
 
 class UserUpdate(BaseModel):
@@ -53,7 +65,7 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     is_active: Optional[bool] = None
     role: Optional[UserRole] = None
-    password: Optional[str] = Field(None, min_length=8)
+    password: Optional[Password] = None
 
 
 class UserSelfUpdate(BaseModel):
@@ -67,7 +79,7 @@ class UserSelfUpdate(BaseModel):
 
     email: Optional[EmailStr] = None
     full_name: Optional[str] = None
-    password: Optional[str] = Field(None, min_length=8)
+    password: Optional[Password] = None
     current_password: Optional[str] = None
 
 
@@ -122,7 +134,7 @@ class PasswordResetRequest(BaseModel):
 class PasswordReset(BaseModel):
     """Password reset schema with token."""
     token: str
-    new_password: str = Field(..., min_length=8)
+    new_password: Password
 
 
 class APIKeyResponse(BaseModel):

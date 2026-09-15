@@ -236,7 +236,16 @@ async def update_user(
     
     Raises:
         HTTPException: If user not found, or 400 if the email belongs to another user
+            or the admin would demote or deactivate themselves
     """
+    # Same guard as /demote and /deactivate: this route must not be the way around them.
+    if user_id == admin_user.id and (
+        update_data.role not in (None, UserRole.ADMIN) or update_data.is_active is False
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot demote or deactivate your own account"
+        )
     try:
         updated_user = db.update_user(user_id, update_data)
     except ValueError as e:

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Optional
+import functools
 import logging
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from pydantic import BaseModel
@@ -35,6 +37,7 @@ from agent_system.auth.database import get_db, UserDatabase
 from agent_system.auth import security as _security
 from agent_system.auth.security import (
     verify_password,
+    get_password_hash,
     create_access_token,
     decode_access_token,
 )
@@ -43,6 +46,12 @@ from agent_system.auth.dependencies import get_current_active_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["authentication"])
+
+
+@functools.cache
+def _unknown_user_hash() -> str:
+    """A hash to check against when the account does not exist, so that answer costs as long as a wrong password."""
+    return get_password_hash(secrets.token_urlsafe(16))
 
 
 class MessageResponse(BaseModel):
@@ -119,6 +128,8 @@ async def login(
         user = db.get_user_by_email(login_data.username)
 
     # Verify credentials
+    if not user:
+        verify_password(login_data.password, _unknown_user_hash())
     if not user or not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -247,7 +258,7 @@ async def refresh_token(
 
     # Get user from database
     user = db.get_user_by_username(token_data.username)
-    if not user or not user.is_active:
+    if not user or user.id != token_data.user_id or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",

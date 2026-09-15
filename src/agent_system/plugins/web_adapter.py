@@ -414,37 +414,19 @@ class PluginWebRegistry:
                 )
                 return None
             
-            # Try to get current user from cookie or header
+            # Bearer header or access_token cookie, resolved by the core auth
+            # dependency (access tokens only, bound to the account's id).
+            # No API key here: this layer never accepted one.
             user = None
             user_id = None
             try:
-                # Import auth utilities
-                from agent_system.auth.security import decode_access_token
                 from agent_system.auth.database import get_db
-                
-                token = None
-                
-                # 1. Try Bearer token from Authorization header
-                auth_header = request.headers.get("Authorization", "")
-                if auth_header.startswith("Bearer "):
-                    token = auth_header[7:]
-                
-                # 2. Try JWT token from cookie
-                if not token:
-                    token = request.cookies.get("access_token")
-                
-                # Validate token
-                if token:
-                    token_data = decode_access_token(token)
-                    if token_data and token_data.username:
-                        # Get database and user
-                        db = get_db()
-                        user_in_db = db.get_user_by_username(token_data.username)
-                        if user_in_db and user_in_db.is_active:
-                            user = user_in_db
-                            user_id = user.username
-                            #logger.debug(f"Plugin security: Authenticated user {user_id}")
-                
+                from agent_system.auth.dependencies import bearer_scheme, get_optional_user
+
+                found = await get_optional_user(request, await bearer_scheme(request), None, get_db())
+                if found and found.is_active:
+                    user = found
+                    user_id = user.username
             except Exception as e:
                 logger.warning(f"Plugin security auth check failed: {e}")
             

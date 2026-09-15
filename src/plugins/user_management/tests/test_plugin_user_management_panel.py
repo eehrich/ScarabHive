@@ -91,7 +91,7 @@ def panel_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
 
     @app.get("/__stub/token")
     async def token(user: str):
-        return create_access_token({"sub": user, "role": "admin"})
+        return create_access_token({"sub": user, "user_id": db.get_user_by_username(user).id, "role": "admin"})
 
     @app.get("/__stub/users")
     async def users():

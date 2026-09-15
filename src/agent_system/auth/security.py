@@ -16,7 +16,7 @@ import hmac
 import bcrypt
 from jose import JWTError, jwt
 
-from agent_system.auth.models import TokenData, UserRole
+from agent_system.auth.models import PASSWORD_MAX_BYTES, TokenData, UserRole
 
 
 # JWT settings (will be overridden by config)
@@ -42,6 +42,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its bcrypt hash."""
     # bcrypt requires bytes
     password_bytes = plain_password.encode('utf-8')
+    if len(password_bytes) > PASSWORD_MAX_BYTES:
+        # bcrypt raises here; no stored password can be this long, so it is simply wrong.
+        return False
     hashed_bytes = hashed_password.encode('utf-8')
     # Verify password
     return bcrypt.checkpw(password_bytes, hashed_bytes)

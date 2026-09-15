@@ -162,6 +162,44 @@ class TestPluginWebRegistry:
         
 
 
+def test_plugin_route_security_takes_only_access_tokens_of_the_account_they_were_issued_for(tmp_path, monkeypatch):
+    from agent_system.auth import database, security
+    from agent_system.auth.models import UserCreate, UserRole
+    from agent_system.config.models import AuthConfig
+
+    users = database.UserDatabase(tmp_path / "users.db")
+    monkeypatch.setattr(database, "_db", users)
+    monkeypatch.setattr(security, "SECRET_KEY", "test-only-secret-not-the-config-one")
+    for name, role in [("root", UserRole.ADMIN), ("bob", UserRole.USER), ("gone", UserRole.ADMIN)]:
+        users.create_user(UserCreate(username=name, email=f"{name}@example.com", password="correct-horse", role=role))
+    auth = AuthConfig(enabled=True)
+    auth.endpoint_security.audit_enabled = False
+    auth.plugin_security.endpoint_rules = []
+    auth.plugin_security.plugin_overrides = {"probe": {"policy": "require_auth", "min_role": "admin"}}
+    registry = PluginWebRegistry()
+    registry.register_web_plugin("probe", MockWebPlugin("probe", has_static=False))
+    app = FastAPI()
+    registry.apply_to_app(app, auth)
+    web = TestClient(app)
+
+    def token(name, kind="access"):
+        claims = {"sub": name, "user_id": users.get_user_by_username(name).id, "role": "admin"}
+        return {"Authorization": "Bearer " + security.create_access_token(claims, token_type=kind)}
+
+    gone = token("gone")
+    users.delete_user(users.get_user_by_username("gone").id)
+    users.create_user(UserCreate(username="gone", email="gone2@example.com", password="correct-horse", role=UserRole.ADMIN))
+    answers = {
+        "access token": web.get("/plugins/probe/status", headers=token("root")).status_code,
+        "no token": web.get("/plugins/probe/status").status_code,
+        "refresh token": web.get("/plugins/probe/status", headers=token("root", "refresh")).status_code,
+        "user role": web.get("/plugins/probe/status", headers=token("bob")).status_code,
+        "deleted account's token": web.get("/plugins/probe/status", headers=gone).status_code,
+    }
+    assert answers == {"access token": 200, "no token": 401, "refresh token": 401, "user role": 403,
+                       "deleted account's token": 401}
+
+
 class TestPluginWebIntegration:
     """Test integration with existing systems"""
     
