@@ -160,6 +160,44 @@ class TestAnthropicBatchResultParsing:
         assert results[0]["usage"]["prompt_tokens"] == 10
         assert results[0]["usage"]["completion_tokens"] == 5
 
+    def test_parse_succeeded_counts_cache_tokens(self, anthropic_batch_client):
+        """Same usage semantics as the streaming client: prompt_tokens includes
+        cache reads and writes."""
+        jsonl = json.dumps({
+            "custom_id": "req-1",
+            "result": {"type": "succeeded", "message": {
+                "content": [{"type": "text", "text": "Hi"}],
+                "usage": {"input_tokens": 10, "output_tokens": 5,
+                          "cache_read_input_tokens": 80,
+                          "cache_creation_input_tokens": 20},
+            }},
+        })
+
+        (result,) = anthropic_batch_client._parse_results(jsonl)
+
+        assert result["usage"] == {
+            "prompt_tokens": 110, "completion_tokens": 5, "total_tokens": 115,
+            "prompt_tokens_details": {"cached_tokens": 80, "cache_creation_tokens": 20},
+        }
+        assert result["response"]["usage"] == result["usage"]
+
+    def test_parse_succeeded_with_null_usage_fields(self, anthropic_batch_client):
+        """JSON nulls -- for the whole usage or single counts -- must not drop the result."""
+        lines = [
+            json.dumps({"custom_id": "req-1", "result": {"type": "succeeded", "message": {
+                "content": [{"type": "text", "text": "a"}], "usage": None}}}),
+            json.dumps({"custom_id": "req-2", "result": {"type": "succeeded", "message": {
+                "content": [{"type": "text", "text": "b"}],
+                "usage": {"input_tokens": 10, "output_tokens": 5,
+                          "cache_read_input_tokens": None,
+                          "cache_creation_input_tokens": None}}}}),
+        ]
+
+        first, second = anthropic_batch_client._parse_results("\n".join(lines))
+
+        assert first["usage"] == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        assert second["usage"] == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+
     def test_parse_succeeded_with_tool_use(self, anthropic_batch_client):
         """Test parsing of succeeded result with tool calls."""
         jsonl = json.dumps({

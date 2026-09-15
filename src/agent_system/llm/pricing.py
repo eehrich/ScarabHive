@@ -71,12 +71,12 @@ def estimate_cost(
     Callers should mark such costs as ESTIMATES in any display — they come
     from the maintained table, not from provider billing.
 
-    ``cached_tokens`` are cache READS and are assumed to be a subset of
-    ``prompt_tokens`` (true for OpenAI and Gemini, and what the repo's own
-    docs/tests assume for Anthropic). ``cache_write_tokens`` are billed ON TOP
-    at the ``cache_write`` rate — providers charge a premium for writing a
-    cache entry, and without a rate in the table they cost nothing, exactly as
-    before.
+    ``cached_tokens`` (cache READS) and ``cache_write_tokens`` (cache WRITES)
+    are both part of ``prompt_tokens`` for every client — the native Anthropic
+    client converts its separate counts into that shape. Writes are therefore
+    already billed at ``input`` through ``prompt_tokens``; the ``cache_write``
+    rate is only the PREMIUM on top (0.25× input for Anthropic's 5-minute
+    ephemeral cache), and without a rate in the table they cost nothing extra.
     """
     p = load_pricing(path).get(model)
     if not p:
@@ -139,6 +139,11 @@ def normalize_usage(usage: Any) -> CallUsage:
         return CallUsage()
 
     prompt = _first_int(usage, "prompt_tokens", "input_tokens", "promptTokenCount")
+    if not isinstance(usage.get("prompt_tokens"), (int, float)):
+        # Raw Anthropic input_tokens excludes cache reads and writes, which sit
+        # beside it at top level; every other dialect has neither key here.
+        prompt += (_first_int(usage, "cache_read_input_tokens")
+                   + _first_int(usage, "cache_creation_input_tokens"))
     completion = _first_int(usage, "completion_tokens", "output_tokens",
                             "candidatesTokenCount")
 

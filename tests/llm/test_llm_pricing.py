@@ -24,7 +24,7 @@ def table(tmp_path, monkeypatch):
     path.write_text(yaml.safe_dump({
         "cheap": {"input": 1.0, "output": 2.0, "cached_input": 0.1},
         "with_writes": {"input": 1.0, "output": 2.0, "cached_input": 0.1,
-                        "cache_write": 1.25},
+                        "cache_write": 0.25},   # the premium over input, as in the table's format
         "batchy": {"input": 10.0, "output": 20.0, "batch_discount": 0.5},
         "partial": {"input": 3.0},          # no output rate at all
     }), encoding="utf-8")
@@ -56,11 +56,19 @@ class TestNormalizeUsage:
         assert call.cache_write_tokens == 20
 
     def test_anthropic_raw_field_names(self):
+        """Raw input_tokens excludes cache reads and writes; the prompt includes them."""
         call = normalize_usage({"input_tokens": 7, "output_tokens": 3,
                                 "cache_read_input_tokens": 5,
                                 "cache_creation_input_tokens": 2})
         assert (call.prompt_tokens, call.cached_tokens, call.cache_write_tokens) == (
-            7, 5, 2)
+            14, 5, 2)
+
+    def test_prompt_tokens_already_include_top_level_cache_counts(self):
+        """Only the raw input_tokens needs the addition; prompt_tokens is the whole input."""
+        call = normalize_usage({"prompt_tokens": 100, "cache_read_input_tokens": 80,
+                                "cache_creation_input_tokens": 20})
+        assert (call.prompt_tokens, call.cached_tokens, call.cache_write_tokens) == (
+            100, 80, 20)
 
     def test_gemini_camel_case(self):
         call = normalize_usage({"promptTokenCount": 300, "candidatesTokenCount": 10,
@@ -116,14 +124,17 @@ class TestResolveCallCost:
 
     def test_cache_writes_are_billed_on_top(self, table):
         """They were tracked everywhere and priced nowhere -- a systematic
-        undercount for Anthropic and Gemini explicit caches."""
+        undercount for Anthropic and Gemini explicit caches. Writes are part of
+        prompt_tokens (billed at input there); the rate adds only the premium,
+        so a written million costs 1.25x input in total, as Anthropic bills it."""
         without, _ = resolve_call_cost({"prompt_tokens": 1_000_000},
                                        "with_writes", path=table)
         with_writes, _ = resolve_call_cost(
             {"prompt_tokens": 1_000_000,
              "prompt_tokens_details": {"cache_write_tokens": 1_000_000}},
             "with_writes", path=table)
-        assert with_writes == pytest.approx(without + 1.25)
+        assert without == pytest.approx(1.0)
+        assert with_writes == pytest.approx(1.25)
 
     def test_no_cache_write_rate_means_no_extra_charge(self, table):
         """Models without the rate must cost exactly what they did before."""
@@ -158,8 +169,9 @@ class TestResolveCallCost:
 
 class TestEstimateCostGuards:
     def test_cached_larger_than_prompt_never_subtracts(self, table):
-        """Anthropic can report more cache reads than prompt tokens; without
-        the clamp the uncached term goes negative and REMOVES money."""
+        """A usage whose cache reads exceed its prompt tokens (raw Anthropic
+        input_tokens mistaken for the prompt) must never make the uncached term
+        negative and REMOVE money."""
         cost = estimate_cost("cheap", prompt_tokens=100, completion_tokens=0,
                              cached_tokens=5000, path=table)
         assert cost is not None and cost >= 0

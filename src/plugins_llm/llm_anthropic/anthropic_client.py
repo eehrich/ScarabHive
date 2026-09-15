@@ -463,24 +463,7 @@ class AnthropicAsyncClient(LLMClient):
         """Extract usage info in OpenAI-compatible format."""
         if not usage:
             return {}
-        
-        result = {
-            "prompt_tokens": getattr(usage, "input_tokens", 0),
-            "completion_tokens": getattr(usage, "output_tokens", 0),
-            "total_tokens": getattr(usage, "input_tokens", 0) + getattr(usage, "output_tokens", 0),
-        }
-        
-        # Extract cached tokens if present
-        cache_read = getattr(usage, "cache_read_input_tokens", 0)
-        cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
-        
-        if cache_read or cache_creation:
-            result["prompt_tokens_details"] = {
-                "cached_tokens": cache_read,
-                "cache_creation_tokens": cache_creation
-            }
-        
-        return result
+        return anthropic_utils.usage_to_openai(usage)
 
     def _cap_anthropic_cache(
         self,

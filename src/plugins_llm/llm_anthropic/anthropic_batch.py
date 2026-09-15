@@ -559,14 +559,7 @@ class AnthropicBatchClient(BatchProviderClient):
                             },
                             "finish_reason": message.get("stop_reason", "stop")
                         }],
-                        "usage": {
-                            "prompt_tokens": message.get("usage", {}).get("input_tokens", 0),
-                            "completion_tokens": message.get("usage", {}).get("output_tokens", 0),
-                            "total_tokens": (
-                                message.get("usage", {}).get("input_tokens", 0) +
-                                message.get("usage", {}).get("output_tokens", 0)
-                            )
-                        }
+                        "usage": anthropic_utils.usage_to_openai(message.get("usage") or {}),
                     }
                     
                     if tool_calls:

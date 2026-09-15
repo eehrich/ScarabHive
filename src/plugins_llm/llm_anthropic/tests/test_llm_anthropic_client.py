@@ -263,33 +263,78 @@ class TestAnthropicImageConversion:
 
 
 class TestAnthropicClientUsageExtraction:
-    """Test usage info extraction."""
+    """Usage in OpenAI semantics: prompt_tokens is the whole input.
+
+    Real SDK models, not MagicMock: a MagicMock answers every unset attribute
+    with another MagicMock, so the None fields the SDK really sends were never
+    exercised and arithmetic on them passed silently.
+    """
 
     def test_extract_basic_usage(self, anthropic_client):
-        """Test extraction of basic usage info."""
-        usage = MagicMock()
-        usage.input_tokens = 100
-        usage.output_tokens = 50
-        
-        result = anthropic_client._extract_usage(usage)
-        
-        assert result["prompt_tokens"] == 100
-        assert result["completion_tokens"] == 50
-        assert result["total_tokens"] == 150
+        from anthropic.types import Usage
+
+        result = anthropic_client._extract_usage(Usage(input_tokens=100, output_tokens=50))
+
+        assert result == {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
 
     def test_extract_cached_usage(self, anthropic_client):
-        """Test extraction of cached token usage."""
-        usage = MagicMock()
-        usage.input_tokens = 100
-        usage.output_tokens = 50
-        usage.cache_read_input_tokens = 80
-        usage.cache_creation_input_tokens = 20
-        
-        result = anthropic_client._extract_usage(usage)
-        
-        assert result["prompt_tokens"] == 100
-        assert result["prompt_tokens_details"]["cached_tokens"] == 80
-        assert result["prompt_tokens_details"]["cache_creation_tokens"] == 20
+        """Anthropic's input_tokens excludes cache reads and writes; the prompt
+        must include both, or every warm call looks nearly free and >100% cached."""
+        from anthropic.types import Usage
+
+        result = anthropic_client._extract_usage(Usage(
+            input_tokens=100, output_tokens=50,
+            cache_read_input_tokens=80, cache_creation_input_tokens=20))
+
+        assert result["prompt_tokens"] == 200
+        assert result["total_tokens"] == 250
+        assert result["prompt_tokens_details"] == {
+            "cached_tokens": 80, "cache_creation_tokens": 20}
+
+    def test_extract_write_only_usage_keeps_details(self, anthropic_client):
+        """A cold call only writes the cache (first call of every session, every
+        call after the prefix changes); its writes must still reach the pricing layer."""
+        from anthropic.types import Usage
+        from agent_system.llm import pricing
+
+        result = anthropic_client._extract_usage(Usage(
+            input_tokens=50, output_tokens=5,
+            cache_read_input_tokens=0, cache_creation_input_tokens=12000))
+
+        assert result["prompt_tokens"] == 12050
+        assert result["total_tokens"] == 12055
+        assert result["prompt_tokens_details"] == {
+            "cached_tokens": 0, "cache_creation_tokens": 12000}
+        assert pricing.normalize_usage(result).cache_write_tokens == 12000
+
+    def test_extract_usage_delta_without_input_tokens(self, anthropic_client):
+        """MessageDeltaUsage declares input_tokens Optional; None must not raise."""
+        from anthropic.types import MessageDeltaUsage
+
+        result = anthropic_client._extract_usage(MessageDeltaUsage(output_tokens=5))
+
+        assert result == {"prompt_tokens": 0, "completion_tokens": 5, "total_tokens": 5}
+
+    def test_extracted_usage_prices_cache_reads_on_top_of_uncached_input(
+            self, anthropic_client, tmp_path, monkeypatch):
+        """The contract with the pricing layer: reads are a subset of prompt_tokens,
+        so a warm call pays full input for the uncached part plus the read rate."""
+        import yaml
+        from anthropic.types import Usage
+        from agent_system.llm import pricing
+
+        table = tmp_path / "llm_pricing.yaml"
+        table.write_text(yaml.safe_dump(
+            {"cheap": {"input": 1.0, "output": 1.0, "cached_input": 0.1}}), encoding="utf-8")
+        monkeypatch.setattr(pricing, "_cache", {"path": None, "mtime": None, "table": {}})
+
+        usage = anthropic_client._extract_usage(Usage(
+            input_tokens=1_000_000, output_tokens=0,
+            cache_read_input_tokens=1_000_000, cache_creation_input_tokens=0))
+        cost, estimated = pricing.resolve_call_cost(usage, "cheap", path=table)
+
+        assert estimated is True
+        assert cost == pytest.approx(1.1)
 
 
 class TestAnthropicClientStreaming:
@@ -333,6 +378,40 @@ class TestAnthropicClientStreaming:
         # Should have content delta and final
         assert any(c.get("type") == "content_delta" for c in chunks)
         assert any(c.get("type") == "final" for c in chunks)
+
+    @pytest.mark.asyncio
+    async def test_final_usage_counts_cache_reads_and_survives_a_sparse_delta(
+            self, anthropic_client):
+        """A message_delta usage without input_tokens used to raise TypeError after
+        the content had streamed; the final message's usage is the one reported."""
+        from anthropic.types import MessageDeltaUsage, Usage
+
+        delta_event = MagicMock()
+        delta_event.type = "message_delta"
+        delta_event.usage = MessageDeltaUsage(output_tokens=5)
+
+        final_message = MagicMock()
+        final_message.usage = Usage(input_tokens=10, output_tokens=5,
+                                    cache_read_input_tokens=1000,
+                                    cache_creation_input_tokens=0)
+
+        async def events():
+            yield delta_event
+
+        stream = MagicMock()
+        stream.__aenter__ = AsyncMock(return_value=stream)
+        stream.__aexit__ = AsyncMock(return_value=None)
+        stream.__aiter__ = lambda self: events()
+        stream.get_final_message = AsyncMock(return_value=final_message)
+        anthropic_client._client.messages.stream = MagicMock(return_value=stream)
+
+        chunks = [chunk async for chunk in anthropic_client.chat_tools_streaming(
+            [ChatMessage(role="user", content="Hi")], [])]
+
+        final = next(chunk for chunk in chunks if chunk.get("type") == "final")
+        assert final["usage"]["prompt_tokens"] == 1010
+        assert final["usage"]["total_tokens"] == 1015
+        assert final["usage"]["prompt_tokens_details"]["cached_tokens"] == 1000
 
 
 class TestAnthropicToolInputIsNotRepaired:
