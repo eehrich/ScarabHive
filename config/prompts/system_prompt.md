@@ -12,9 +12,6 @@ Operational Constraints:
 
 Ask for clarifications if the task is ambiguous.
 
-## Tools
-Available Tools: {% if tools %}{{ tools | join(', ') }}{% else %}(no tools configured){% endif %}
-
 ## Context
 - Current date: {{ current_date }}
 - Current timezone: {{ current_timezone }}
