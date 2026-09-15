@@ -4,10 +4,12 @@ import pytest
 from agent_system.llm.token_utils import (
     CHARS_PER_TOKEN,
     JSON_CHARS_PER_TOKEN,
+    TOKENS_PER_AUDIO_SECOND,
+    TOKENS_PER_IMAGE,
+    TOKENS_PER_VIDEO_SECOND,
     estimate_token_count,
     estimate_content_tokens,
     estimate_json_tokens,
-    estimate_inline_data_tokens,
     estimate_tools_token_count,
 )
 from agent_system.llm.models import ChatMessage
@@ -301,72 +303,6 @@ class TestMultimodalTokenEstimation:
         result = extract_text_from_content(content)
         assert result == "First part. Second part."
 
-    def test_count_multimodal_items_images(self):
-        """Test counting images in multimodal content."""
-        from agent_system.llm.token_utils import count_multimodal_items
-        
-        content = [
-            {"type": "text", "text": "Describe these images"},
-            {"type": "image", "source": {"type": "base64", "data": "..."}},
-            {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
-        ]
-        counts = count_multimodal_items(content)
-        assert counts['images'] == 2
-        assert counts['audio'] == 0
-        assert counts['video'] == 0
-
-    def test_count_multimodal_items_audio(self):
-        """Test counting audio in multimodal content."""
-        from agent_system.llm.token_utils import count_multimodal_items
-        
-        content = [
-            {"type": "text", "text": "Transcribe this audio"},
-            {"type": "audio", "source": {"type": "base64", "data": "..."}}
-        ]
-        counts = count_multimodal_items(content)
-        assert counts['images'] == 0
-        assert counts['audio'] == 1
-        assert counts['video'] == 0
-
-    def test_count_multimodal_items_string_content(self):
-        """Test that string content returns zero counts."""
-        from agent_system.llm.token_utils import count_multimodal_items
-        
-        counts = count_multimodal_items("Just plain text")
-        assert counts['images'] == 0
-        assert counts['audio'] == 0
-        assert counts['video'] == 0
-
-    def test_estimate_tokens_multimodal_message(self):
-        """Test token estimation for multimodal ChatMessage."""
-        # Use actual base64 data (4000 chars = 1000 tokens)
-        base64_data = "A" * 4000
-        multimodal_content = [
-            {"type": "text", "text": "What is in this image?"},
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64_data}}
-        ]
-        msg = ChatMessage(role="user", content=multimodal_content)
-        tokens = estimate_token_count([msg])
-        
-        # Should include:
-        # - Base overhead: 4
-        # - Text tokens: "What is in this image?" ~ 6 words * 1.3 = 7.8 -> 7
-        # - Image inline data tokens: 4000 * 0.25 = 1000
-        # Total: 4 + 7 + 1000 = ~1011
-        assert tokens > 1000  # At least the image inline data estimate
-
-    def test_estimate_tokens_multimodal_with_audio(self):
-        """Test token estimation for multimodal message with audio."""
-        multimodal_content = [
-            {"type": "text", "text": "Transcribe this"},
-            {"type": "audio", "source": {"type": "base64", "media_type": "audio/wav", "data": "..."}}
-        ]
-        msg = ChatMessage(role="user", content=multimodal_content)
-        tokens = estimate_token_count([msg])
-        
-        # Should include audio token estimate (25 tokens/sec * 10 sec average = 250)
-        assert tokens > 200  # At least the audio token estimate
-
     def test_estimate_tokens_text_only_message_unchanged(self):
         """Test that text-only messages still work correctly."""
         msg = ChatMessage(role="user", content="Hello, how are you?")
@@ -402,131 +338,161 @@ class TestMultimodalTokenEstimation:
         # Total should be meaningful
         assert tokens > 15  # At least overhead + reasonable word count
 
-    def test_estimate_inline_data_tokens_base64_source(self):
-        """Test token estimation for inline base64 data in source format."""
-        from agent_system.llm.token_utils import estimate_inline_data_tokens
-        
-        # Simulating ~1KB of base64 data (1000 chars)
-        base64_data = "A" * 1000
-        item = {"type": "image", "source": {"type": "base64", "data": base64_data}}
-        
-        tokens = estimate_inline_data_tokens(item)
-        # 1000 chars * 0.25 = 250 tokens
-        assert tokens == 250
+    IMAGE_PAYLOAD = "A" * 1_000_044  # a 750 KB picture as base64
 
-    def test_estimate_inline_data_tokens_audio_url(self):
-        """Test token estimation for inline base64 data in audio_url format.
-        
-        Audio uses duration-based estimation (41 tokens/second) instead of
-        base64 character count. Falls back to bytes-based duration estimation
-        when duration_seconds is not available.
-        """
-        from agent_system.llm.token_utils import estimate_inline_data_tokens
-        
-        # Simulating audio data URL with ~2KB of base64 (decodes to ~1500 bytes)
-        # Duration fallback: raw_bytes / 16KB * 41 tokens/s
-        base64_data = "B" * 2000
-        item = {"type": "audio", "audio_url": f"data:audio/wav;base64,{base64_data}"}
-        
-        tokens = estimate_inline_data_tokens(item)
-        # Fallback estimation is much lower than old base64 char count
-        assert tokens < 50  # Much less than old 500 tokens
-        assert tokens >= 1  # But at least some tokens
-        
-    def test_estimate_inline_data_tokens_audio_with_duration(self):
-        """Test token estimation for audio with explicit duration_seconds."""
-        from agent_system.llm.token_utils import estimate_inline_data_tokens, TOKENS_PER_AUDIO_SECOND
-        
-        # Audio item with duration_seconds (set by encode_audio_to_data_url)
-        item = {
-            "type": "audio", 
-            "audio_url": "data:audio/wav;base64,dummydata",
-            "duration_seconds": 45.0  # 45 seconds
-        }
-        
-        tokens = estimate_inline_data_tokens(item)
-        # Should use duration: 45s * 41 tokens/s = 1845 tokens
-        expected = int(45.0 * TOKENS_PER_AUDIO_SECOND)
-        assert tokens == expected
+    @pytest.mark.parametrize("item", [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + IMAGE_PAYLOAD}},
+        {"type": "image_url", "image_url": "data:image/png;base64," + IMAGE_PAYLOAD},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": IMAGE_PAYLOAD}},
+        {"type": "image", "inline_data": {"mime_type": "image/png", "data": IMAGE_PAYLOAD}},
+        {"type": "image", "source": {"media_type": "image/png", "data": IMAGE_PAYLOAD}},
+    ], ids=["image_url_dict", "image_url_string", "source", "inline_data", "source_without_type"])
+    @pytest.mark.parametrize("as_chat_message", [False, True], ids=["dict", "chat_message"])
+    def test_an_inline_image_costs_one_image_not_its_base64_length(self, item, as_chat_message):
+        """0.25 tokens per base64 character made this picture 250,015 tokens in one
+        form and 262 in another; the provider bills one image either way."""
+        from agent_system.llm.token_utils import TOKENS_PER_IMAGE
 
-    def test_estimate_inline_data_tokens_image_url(self):
-        """Test token estimation for inline base64 data in image_url format."""
-        from agent_system.llm.token_utils import estimate_inline_data_tokens
-        
-        # Simulating image data URL with ~4KB of base64
-        base64_data = "C" * 4000
-        item = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_data}"}}
-        
-        tokens = estimate_inline_data_tokens(item)
-        # 4000 chars * 0.25 = 1000 tokens
-        assert tokens == 1000
+        text = {"type": "text", "text": "What is in this image?"}
+        with_image = {"role": "user", "content": [text, item]}
+        without = {"role": "user", "content": [text]}
+        if as_chat_message:
+            with_image, without = ChatMessage(**with_image), ChatMessage(**without)
+            assert not isinstance(with_image.content[1], dict), "fixture stayed a dict"
 
-    def test_estimate_inline_data_tokens_no_inline_data(self):
-        """Test that items without inline data return 0."""
-        from agent_system.llm.token_utils import estimate_inline_data_tokens
-        
-        # Regular URL (not base64)
-        item = {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
-        assert estimate_inline_data_tokens(item) == 0
-        
-        # Text content
-        item = {"type": "text", "text": "Hello world"}
-        assert estimate_inline_data_tokens(item) == 0
+        assert (estimate_token_count([with_image])
+                == estimate_token_count([without]) + TOKENS_PER_IMAGE)
 
-    def test_count_multimodal_items_with_inline_data_tokens(self):
-        """Test that count_multimodal_items returns inline_data_tokens."""
-        from agent_system.llm.token_utils import count_multimodal_items
-        
-        # ~4KB of base64 data
-        base64_data = "D" * 4000
-        content = [
-            {"type": "text", "text": "Describe this image"},
-            {"type": "image", "source": {"type": "base64", "data": base64_data}}
-        ]
-        
-        counts = count_multimodal_items(content)
-        assert counts['images'] == 1
-        assert counts['inline_data_tokens'] == 1000  # 4000 * 0.25
+    # 20 seconds at 16 KB/s: 327,680 bytes. Not 10 seconds — that is the default
+    # of an audio item without a payload, and a lost payload would look right.
+    AUDIO_BYTES = 20 * 16 * 1024
+    AUDIO_B64 = "A" * (-(-AUDIO_BYTES // 3) * 4)
 
-    def test_estimate_tokens_uses_inline_data_over_fallback(self):
-        """Test that token estimation uses actual inline data size over fallback estimates."""
-        # Large base64 data: ~40KB = 40,000 chars = 10,000 tokens
-        base64_data = "E" * 40000
-        multimodal_content = [
-            {"type": "text", "text": "Analyze this audio"},
-            {"type": "audio", "source": {"type": "base64", "data": base64_data}}
-        ]
-        msg = ChatMessage(role="user", content=multimodal_content)
-        tokens = estimate_token_count([msg])
-        
-        # Should use inline_data_tokens (10,000) instead of fallback (250)
-        # Total: 4 (overhead) + ~5 (text) + 10,000 (inline data) = ~10,009
-        assert tokens > 5000  # Much higher than the 250 fallback
+    @pytest.mark.parametrize("item", [
+        {"type": "audio", "source": {"type": "base64", "media_type": "audio/wav", "data": AUDIO_B64}},
+        {"type": "audio", "inline_data": {"mime_type": "audio/wav", "data": AUDIO_B64}},
+        {"type": "audio", "inline_data": {"mime_type": "audio/wav", "data": b"x" * AUDIO_BYTES}},
+        {"type": "audio", "audio_url": "data:audio/wav;base64," + AUDIO_B64},
+    ], ids=["source", "inline_data_base64", "inline_data_bytes", "audio_url"])
+    @pytest.mark.parametrize("as_chat_message", [False, True], ids=["dict", "chat_message"])
+    def test_an_inline_audio_payload_is_counted_by_its_bytes_in_every_form(self, item, as_chat_message):
+        from agent_system.llm.token_utils import TOKENS_PER_AUDIO_SECOND, estimate_media_tokens
 
-    def test_estimate_file_tokens(self, tmp_path):
-        """Test that estimate_file_tokens calculates tokens correctly for different file types."""
-        from agent_system.llm.token_utils import estimate_file_tokens
-        
-        # Test image file (uses size-based estimation: small images = 258 tokens)
-        test_image = tmp_path / "test_image.png"
-        test_image.write_bytes(b"x" * 50_000)  # 50KB < 100KB threshold
-        
-        tokens = estimate_file_tokens(test_image)
-        # Small image (< 100KB) = 258 tokens (single tile)
-        assert tokens == 258
+        if as_chat_message:
+            item = ChatMessage(role="user", content=[item]).content[0]
+            assert not isinstance(item, dict), "fixture stayed a dict"
 
-    def test_estimate_file_tokens_large_image(self, tmp_path):
-        """Test that large images get multiple tile estimation."""
-        from agent_system.llm.token_utils import estimate_file_tokens
-        
-        # Create a 700KB image file (should estimate 2 tiles)
-        # 700KB / 300KB per tile = 2.3 → 2 tiles × 258 = 516 tokens
-        test_image = tmp_path / "large_image.jpg"
-        test_image.write_bytes(b"x" * 700_000)
-        
-        tokens = estimate_file_tokens(test_image)
-        # 700000 // 307200 = 2 tiles × 258 = 516 tokens
-        assert tokens == 516
+        assert estimate_media_tokens(item) == 20 * TOKENS_PER_AUDIO_SECOND
+
+    def test_audio_as_writer_audio_sends_it_is_counted_by_its_bytes(self):
+        """AudioContent(source=ImageSource(...)), the writer audio scorer's form."""
+        from agent_system.llm.models import AudioContent, ImageSource
+        from agent_system.llm.token_utils import TOKENS_PER_AUDIO_SECOND, estimate_media_tokens
+
+        item = AudioContent(source=ImageSource(media_type="audio/wav", data=self.AUDIO_B64))
+        msg = ChatMessage(role="user", content=[item])
+
+        assert estimate_media_tokens(item) == 20 * TOKENS_PER_AUDIO_SECOND
+        assert estimate_token_count([msg]) == 4 + 20 * TOKENS_PER_AUDIO_SECOND
+
+    def test_an_audio_duration_wins_over_its_bytes(self):
+        from agent_system.llm.token_utils import TOKENS_PER_AUDIO_SECOND, estimate_media_tokens
+
+        item = {"type": "audio", "audio_url": "data:audio/wav;base64," + self.AUDIO_B64,
+                "duration_seconds": 45.0}
+        assert estimate_media_tokens(item) == int(45.0 * TOKENS_PER_AUDIO_SECOND)
+
+    @pytest.mark.parametrize("as_chat_message", [False, True], ids=["dict", "chat_message"])
+    def test_a_video_url_payload_is_counted_by_its_bytes(self, as_chat_message):
+        """Never measured before: a video counted 30 seconds at the AUDIO rate."""
+        from agent_system.llm.token_utils import TOKENS_PER_VIDEO_SECOND, estimate_media_tokens
+
+        raw = 5 * 100 * 1024  # 5 seconds at 100 KB/s
+        item = {"type": "video", "video_url": "data:video/mp4;base64," + "A" * (-(-raw // 3) * 4)}
+        if as_chat_message:
+            item = ChatMessage(role="user", content=[item]).content[0]
+            assert not isinstance(item, dict), "fixture stayed a dict"
+
+        assert estimate_media_tokens(item) == 5 * TOKENS_PER_VIDEO_SECOND
+
+    @pytest.mark.parametrize("item, expected", [
+        ({"inline_data": {"mime_type": "audio/wav", "data": AUDIO_B64}},
+         20 * TOKENS_PER_AUDIO_SECOND),
+        ({"source": {"media_type": "video/mp4", "data": "A" * (-(-5 * 100 * 1024 // 3) * 4)}},
+         5 * TOKENS_PER_VIDEO_SECOND),
+        ({"media_type": "audio/wav", "source": {"data": AUDIO_B64}}, 20 * TOKENS_PER_AUDIO_SECOND),
+        ({"inline_data": {"mime_type": "image/png", "data": "QUJD"}}, TOKENS_PER_IMAGE),
+    ], ids=["inline_data_audio", "source_video", "mime_on_the_item", "inline_data_image"])
+    def test_an_item_without_a_type_is_read_by_its_mime(self, item, expected):
+        """Gemini's native inline_data carries no ``type``, and extract_inline_media
+        reads such items; without the mime they cost nothing."""
+        from agent_system.llm.token_utils import estimate_media_tokens
+
+        assert estimate_media_tokens(item) == expected
+
+    def test_every_media_item_in_a_mixed_message_counts(self):
+        """The fallback per image applied only when NO item had a payload: next to a
+        payload image, a remote image was free."""
+        from agent_system.llm.token_utils import TOKENS_PER_IMAGE
+
+        msg = ChatMessage(role="user", content=[
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A" * 40_000}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}},
+        ])
+        assert estimate_token_count([msg]) == 4 + 2 * TOKENS_PER_IMAGE
+
+    def test_a_file_image_and_the_same_bytes_inline_cost_the_same(self, tmp_path):
+        """A file used to count 258 per 300 KB tile, growing without bound."""
+        import base64
+        from agent_system.llm.token_utils import TOKENS_PER_IMAGE, estimate_media_tokens
+
+        raw = b"\x89PNG" + b"x" * 3_000_000
+        image = tmp_path / "large.png"
+        image.write_bytes(raw)
+        as_file = {"type": "image", "path": str(image), "mime_type": "image/png"}
+        inline = {"type": "image_url", "image_url": {
+            "url": "data:image/png;base64," + base64.b64encode(raw).decode()}}
+
+        assert estimate_media_tokens(as_file) == estimate_media_tokens(inline) == TOKENS_PER_IMAGE
+
+    @pytest.mark.parametrize("item", [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJDREVGRw=="}},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJDREVGRw=="}},
+        {"type": "image_url", "image_url": "data:image/webp;base64,QUJDREVGRw=="},
+        {"type": "image", "inline_data": {"mime_type": "image/gif", "data": "QUJDREVGRw=="}},
+        {"type": "audio", "audio_url": "data:audio/mpeg;base64,QUJDREVGRw=="},
+        {"type": "video", "video_url": "data:video/mp4;base64,QUJDREVGRw=="},
+        {"media_type": "audio/wav", "source": {"data": "QUJDREVGRw=="}},
+    ], ids=["source", "image_url_dict", "image_url_string", "inline_data", "audio_url", "video_url",
+            "mime_on_the_item"])
+    def test_the_payload_reader_agrees_with_extract_inline_media(self, item):
+        """Two readers of the same wire shapes, one decoding, one not: a shape only
+        one of them knows is media the estimate or the store cannot see."""
+        from agent_system.llm.token_utils import inline_payload
+        from agent_system.utils.multimodal_tool_content import extract_inline_media
+
+        raw, mime, _ = extract_inline_media(item)
+        found = inline_payload(item)
+
+        assert found is not None, "the non-decoding reader does not know this shape"
+        assert abs(found[0] * 3 // 4 - len(raw)) <= 2
+        assert found[1] == mime
+
+    def test_a_non_media_item_costs_nothing(self):
+        from agent_system.llm.token_utils import estimate_media_tokens
+
+        assert estimate_media_tokens({"type": "text", "text": "Hello world"}) == 0
+        assert estimate_media_tokens("plain string") == 0
+
+    def test_a_type_that_is_no_plain_string_is_still_read(self):
+        """``type`` is not promised to be a str: a ContentType member names the
+        medium, an unhashable value names none and must not raise."""
+        from agent_system.llm.models import ContentType
+        from agent_system.llm.token_utils import TOKENS_PER_IMAGE, estimate_media_tokens
+
+        assert estimate_media_tokens({"type": ContentType.IMAGE_URL,
+                                      "image_url": "https://example.com/a.png"}) == TOKENS_PER_IMAGE
+        assert estimate_media_tokens({"type": ["image"], "image_url": "https://example.com/a.png"}) == 0
 
     def test_estimate_file_tokens_nonexistent_file(self):
         """Test that estimate_file_tokens returns 0 for nonexistent files."""
@@ -548,39 +514,24 @@ class TestMultimodalTokenEstimation:
         # Fallback: 163840 / 16384 = 10 seconds × 41 tokens/s = 410 tokens
         assert tokens == 410
 
-    def test_estimate_inline_data_tokens_with_file_path(self, tmp_path):
-        """Test that estimate_inline_data_tokens works with file path items."""
+    def test_estimate_media_tokens_with_file_path(self, tmp_path):
+        """A path item is counted from its file."""
+        from agent_system.llm.token_utils import estimate_media_tokens
+
         # Create a fake audio file - exact 163840 bytes = 10s at 16KB/s
         audio_file = tmp_path / "audio.wav"
         audio_file.write_bytes(b"x" * 163840)
-        
+
         # MultimodalToolContent dict format
         item = {
             "type": "audio",
             "path": str(audio_file),
             "mime_type": "audio/wav"
         }
-        
-        tokens = estimate_inline_data_tokens(item)
+
+        tokens = estimate_media_tokens(item)
         # Fallback: 163840 / 16384 = 10 seconds × 41 tokens/s = 410 tokens
         assert tokens == 410
-
-    def test_estimate_inline_data_tokens_with_image_path(self, tmp_path):
-        """Test that estimate_inline_data_tokens works with image file paths."""
-        # Create a 200KB image file
-        image_file = tmp_path / "image.png"
-        image_file.write_bytes(b"x" * 200_000)
-        
-        item = {
-            "type": "image",
-            "path": str(image_file),
-            "mime_type": "image/png"
-        }
-        
-        tokens = estimate_inline_data_tokens(item)
-        # 200KB > 100KB threshold, so estimate tiles
-        # 200KB / 300KB per tile = ~0.67 → 1 tile minimum = 258 tokens
-        assert tokens == 258
 
     def test_estimate_tokens_multimodal_content_with_file_paths(self, tmp_path):
         """Test that estimate_token_count counts multimodal_content with file paths."""

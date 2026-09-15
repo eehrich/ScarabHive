@@ -660,6 +660,18 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
 
     def _compaction_config(self, overrides: dict[str, Any]) -> CompactionConfig:
         """Plugin values with an agent's overrides on top, by field name."""
+        # Mapping by name drops a misspelled key without a word; plugins.yaml is
+        # checked in apply_config, an agent's hooks.overrides only here.
+        unknown = unknown_config_keys(overrides)
+        if unknown:
+            logger.warning(
+                "[ContextEngineer] agent override keys that reach no setting "
+                "(misspelled?): %s", ", ".join(unknown))
+        plugin_level = sorted(set(overrides) & PLUGIN_LEVEL_KEYS)
+        if plugin_level:
+            logger.warning(
+                "[ContextEngineer] agent override keys that only plugins.yaml can "
+                "set, ignored per agent: %s", ", ".join(plugin_level))
         return compaction_config_from({
             **{f.name: getattr(self, f.name) for f in fields(CompactionConfig)},
             **{k: v for k, v in overrides.items() if k not in PLUGIN_LEVEL_KEYS},
@@ -1544,11 +1556,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         stat = file_path.stat()
         size_bytes = stat.st_size
         size_mb = size_bytes / (1024 * 1024)
-        
-        # Estimate token cost
-        # Base64 encoding adds ~33% overhead, then ~4 chars per token
-        estimated_tokens = int(size_bytes * 0.33)
-        
+
         # Determine type from extension
         suffix = file_path.suffix.lower()
         if suffix in ('.wav', '.mp3', '.ogg', '.flac', '.m4a', '.aac'):
@@ -1585,7 +1593,13 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "error": f"Unsupported file type: {suffix}",
                 "hint": "Supported types: audio (wav, mp3, ogg, flac, m4a, aac), image (png, jpg, gif, webp, bmp), video (mp4, webm, avi, mov)"
             }
-        
+
+        # What compaction counts the item at once it is back: priced by file
+        # size, a 2 MB cover was announced at ~700k tokens, above the whole
+        # window, for an image that costs about a thousand.
+        from agent_system.llm.token_utils import estimate_file_tokens
+        estimated_tokens = estimate_file_tokens(file_path, file_type=content_type)
+
         # Return multimodal content for injection
         # The _multimodal_content key will be picked up by tool execution
         return {

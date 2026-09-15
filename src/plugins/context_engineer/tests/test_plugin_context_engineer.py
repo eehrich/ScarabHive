@@ -943,6 +943,27 @@ class TestLayeredCompactionStrategy:
         assert len(placeholders) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("url, kept", [
+        ("https://example.com/cover.png", True),
+        ("data:image/png;base64," + "C" * 4000, False),  # fixture: Layer 1 reaches the message
+    ])
+    async def test_layer1_keeps_an_image_it_has_no_payload_of(self, strategy_components, url, kept):
+        """An image counts one image however it is sent, so a remote URL clears the
+        size gate too. There is nothing to store, and the hint would lose the URL."""
+        strategy = strategy_components["strategy"]
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "What's in this image?"},
+                                         {"type": "image_url", "image_url": {"url": url}}]},
+            {"role": "assistant", "content": "A cover."},
+            {"role": "user", "content": "What was the result?"},
+        ]
+        result = await strategy.compact(messages, current_tokens=2000, force=True)
+
+        assert 1 in result.layers_applied
+        images = [i for i in result.modified_messages[0]["content"] if i.get("type") == "image_url"]
+        assert bool(images) is kept
+
+    @pytest.mark.asyncio
     async def test_estimate_messages_tokens_includes_inline_data(self, strategy_components):
         """Test that _estimate_messages_tokens counts inline data tokens."""
         strategy = strategy_components["strategy"]
@@ -1430,6 +1451,16 @@ class TestLayeredCompactionStrategy:
         # Should be at least the size of the inline data
         assert bytes_estimate >= 1_000_000
 
+    @pytest.mark.parametrize("item", [
+        {"type": "audio", "inline_data": {"mime_type": "audio/wav", "data": "A" * 4_000_000}},
+        {"type": "video", "video_url": "data:video/mp4;base64," + "A" * 4_000_000},
+        {"type": "image_url", "image_url": "data:image/png;base64," + "A" * 4_000_000},
+    ], ids=["inline_data_dict", "video_url", "image_url_string"])
+    def test_the_byte_estimate_sees_every_inline_form(self, strategy_components, item):
+        """These counted 2 (len of the dict), 0 and 0 bytes: the request-size gate
+        could not see them."""
+        assert strategy_components["strategy"]._estimate_item_bytes(item) == 4_000_000
+
     @pytest.mark.asyncio
     async def test_compact_for_byte_limit_triggers_media_compaction(self, strategy_components, tmp_path):
         """Test that byte limit triggers aggressive media compaction."""
@@ -1661,6 +1692,21 @@ class TestBoundedReadOfStoredResults:
             ref="TR_doesnotexist", session_id="test-tool-pagination")
         assert page["status"] == "error"
         assert "list(section='tool_results')" in page["hint"]
+
+    @pytest.mark.asyncio
+    async def test_a_media_ref_announces_what_the_image_costs(self, hooks_impl, tmp_path):
+        """The cost read() tells the model is the estimator's, not one per byte:
+        a large cover announced at hundreds of thousands of tokens reads as
+        unaffordable."""
+        from agent_system.llm.token_utils import TOKENS_PER_IMAGE
+
+        cover = tmp_path / "cover.png"
+        cover.write_bytes(b"\x89PNG" + bytes(200_000))
+        page = await hooks_impl._handle_context_read(ref=str(cover), session_id="media-ref")
+
+        assert page["kind"] == "media" and page["status"] == "success", page
+        assert page["file_info"]["estimated_tokens"] == TOKENS_PER_IMAGE
+        assert f"~{TOKENS_PER_IMAGE:,} tokens" in page["message"]
 
 # =============================================================================
 # Pre-Layer P (Message Count Pruning) Tests

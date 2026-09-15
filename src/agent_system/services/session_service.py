@@ -60,56 +60,36 @@ def _msg_to_dict(msg: Any) -> Dict[str, Any]:
 
 
 def _estimate_message_tokens(msg_dict: Dict[str, Any]) -> int:
-    """Estimate token count for a message.
-    
-    Uses ~4 chars per token approximation for text content.
-    Tool calls and multimodal content are handled separately.
-    
+    """Estimate token count for a message, as the session API shows it.
+
+    The shared estimator (token_utils.estimate_token_count), so this number
+    agrees with what the context plugins count — a rule of its own here counted
+    4 characters per token, 1000 per image and nothing for audio or video.
+    Reasoning is added on top: the shared estimator does not count it.
+
     Args:
         msg_dict: Message as dictionary
-        
+
     Returns:
         Estimated token count
     """
-    tokens = 0
-    
-    # Content tokens
-    content = msg_dict.get('content') or ''
-    if isinstance(content, str):
-        tokens += len(content) // 4
-    elif isinstance(content, list):
-        # Multimodal content
-        for part in content:
-            if isinstance(part, dict):
-                if part.get('type') == 'text':
-                    tokens += len(part.get('text', '')) // 4
-                elif part.get('type') in ('image_url', 'image'):
-                    # Images cost ~1000 tokens (approximate)
-                    tokens += 1000
-            elif isinstance(part, str):
-                tokens += len(part) // 4
-    else:
-        # Fallback: serialize to JSON
-        import json
-        tokens += len(json.dumps(content)) // 4
-    
-    # Tool calls tokens (assistant messages with function calls)
-    tool_calls = msg_dict.get('tool_calls')
-    if tool_calls:
-        import json
-        for tc in tool_calls:
-            tc_str = json.dumps(tc) if isinstance(tc, dict) else str(tc)
-            tokens += len(tc_str) // 4
-    
-    # Reasoning content (if present). It sits either on the message or inside
-    # the reasoning artifacts — one home at a time, so ask the shared reader
-    # rather than one field name.
+    from agent_system.llm.token_utils import estimate_content_tokens, estimate_token_count
     from agent_system.utils.reasoning_artifacts import thinking_text
-    reasoning = thinking_text(msg_dict)
-    if reasoning:
-        tokens += len(reasoning) // 4
-    
+
+    tokens = estimate_token_count([msg_dict])
+    # It sits either on the message or inside the reasoning artifacts — one
+    # home at a time, so ask the shared reader rather than one field name.
+    tokens += estimate_content_tokens(thinking_text(msg_dict))
     return max(1, tokens)  # At least 1 token per message
+
+
+def _add_estimated_tokens(messages_dicts: List[Dict[str, Any]]) -> None:
+    """Fill in estimated_tokens where missing. Run it off the event loop: the
+    shared estimator probes media files (a stat, a pydub decode for audio, an
+    ffprobe for video) whenever its duration cache misses."""
+    for msg_dict in messages_dicts:
+        if "estimated_tokens" not in msg_dict:
+            msg_dict["estimated_tokens"] = _estimate_message_tokens(msg_dict)
 
 
 class SessionService:
@@ -267,12 +247,8 @@ class SessionService:
                     msg_dict = msg.dict()
                 else:
                     msg_dict = dict(msg)
-                
-                # Add estimated token count if not already present
-                if 'estimated_tokens' not in msg_dict:
-                    msg_dict['estimated_tokens'] = _estimate_message_tokens(msg_dict)
-                
                 messages_dicts.append(msg_dict)
+            await asyncio.to_thread(_add_estimated_tokens, messages_dicts)
 
             # Explicit title wins; otherwise derive it from the first user message
             explicit_title = title
@@ -417,9 +393,7 @@ class SessionService:
         try:
             messages_list = tracker.get_session_messages(session_id)
             messages_dicts = [_msg_to_dict(m) for m in messages_list]
-            for md in messages_dicts:
-                if "estimated_tokens" not in md:
-                    md["estimated_tokens"] = _estimate_message_tokens(md)
+            await asyncio.to_thread(_add_estimated_tokens, messages_dicts)
 
             safe_messages = _trim_to_safe_boundary(messages_dicts)
             runtime_vars = tracker.get_session_template_vars(session_id) if hasattr(tracker, "get_session_template_vars") else {}

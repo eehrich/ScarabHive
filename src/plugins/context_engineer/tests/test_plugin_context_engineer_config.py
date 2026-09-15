@@ -110,6 +110,57 @@ class TestShippedConfigArrives:
         assert unknown_config_keys({"enable_semantic_search": True}) == []
         assert unknown_config_keys({"max_request_bytes": 1}) == []
 
+    def test_agent_overrides_have_no_dead_keys(self):
+        """The same for every agent's hooks.overrides block: mapped by field
+        name, a misspelled override key reached nothing and said nothing."""
+        def blocks(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key == "context_engineer.engineer_context" and isinstance(value, dict):
+                        yield value
+                    else:
+                        yield from blocks(value)
+            elif isinstance(node, list):
+                for value in node:
+                    yield from blocks(value)
+
+        found, dead = [], []
+        for path in [*Path("config").rglob("*.yaml"), *Path("src").rglob("*.yaml")]:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if "context_engineer.engineer_context" not in text:
+                continue
+            try:
+                data = yaml.safe_load(text)
+            except yaml.YAMLError:
+                continue
+            for block in blocks(data):
+                found.append(path.name)
+                keys = set(block) - {"enabled", "timeout", "order"}
+                # Plugin-level keys are known to plugins.yaml but dropped per agent.
+                dead += [f"{path}: {key}" for key in unknown_config_keys(keys) + sorted(keys & PLUGIN_LEVEL_KEYS)]
+
+        assert "sub_agent_cover_artist.yaml" in found, f"fixture: the scan found only {found}"
+        assert not dead, f"override keys that reach no setting: {dead}"
+
+    def test_a_misspelled_agent_override_is_logged(self, caplog):
+        from plugins.context_engineer.hooks import ContextEngineerPlugin
+
+        plugin = ContextEngineerPlugin(PLUGIN_DIR)
+        with caplog.at_level("WARNING"):
+            config = plugin._compaction_config({"always_compact_media_headrom": 2})
+
+        assert config.always_compact_media_headroom == 0
+        assert "always_compact_media_headrom" in caplog.text
+
+    def test_a_plugin_level_key_in_an_agent_override_is_logged(self, caplog):
+        from plugins.context_engineer.hooks import ContextEngineerPlugin
+
+        key = sorted(PLUGIN_LEVEL_KEYS)[0]
+        with caplog.at_level("WARNING"):
+            ContextEngineerPlugin(PLUGIN_DIR)._compaction_config({key: True})
+
+        assert key in caplog.text and "only plugins.yaml" in caplog.text
+
     def test_plugin_level_keys_are_actually_consumed(self):
         """PLUGIN_LEVEL_KEYS ist eine Ausnahmeliste — sie darf nicht zur
         Muellhalde werden. Jeder Eintrag muss einen abweichenden Wert auch

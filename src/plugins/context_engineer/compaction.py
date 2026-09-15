@@ -36,12 +36,10 @@ from typing import Any, Iterator, NamedTuple
 from agent_system.utils.multimodal_tool_content import extract_inline_media
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 from agent_system.llm.token_utils import (
-    TOKENS_PER_AUDIO_SECOND,
-    TOKENS_PER_IMAGE,
-    TOKENS_PER_VIDEO_SECOND,
     estimate_content_tokens,
-    estimate_inline_data_tokens,
+    estimate_media_tokens,
     estimate_token_count,
+    inline_payload,
 )
 
 from .archival_memory import ArchivalMemory
@@ -104,7 +102,7 @@ class CompactionConfig:
     # hysteresis whenever a compaction gets below the threshold; this covers the
     # case where it cannot, which otherwise compacts on every call. Tokens, not
     # time or turns: the same agent is three times slower on another provider,
-    # and a turn is a user message — a whole agent run is one.
+    # and a turn is a user message nobody injected — a whole agent run is one.
     min_tokens_between_compactions: int = 20000
 
     # Media deduplication settings
@@ -118,7 +116,17 @@ class CompactionConfig:
     # Removes ALL media items except those in the last N messages that contain media
     # Set to 0 to disable, >0 to enable and keep last N media-containing messages
     always_compact_media_keep_last: int = 0  # 0 = disabled, 5 = keep last 5 messages with media
-    
+
+    # How far BELOW keep_last that pass evicts, like max_messages_headroom for
+    # Pre-Layer P. Nothing goes while at most keep_last messages carry media;
+    # past that only the newest max(1, keep_last - headroom) keep theirs.
+    # Without it each new media message evicts the oldest kept one on the next
+    # call: an old message rewritten and the prompt cache broken from there,
+    # every call. With it `headroom` new media messages arrive without a break
+    # after each one (while keep_last - headroom >= 1), and keep_last
+    # stays the most the context carries. 0 = evict down to keep_last.
+    always_compact_media_headroom: int = 0
+
     # Media store settings (for storing inline base64 before compaction)
     store_media_before_compaction: bool = True  # Save inline media to disk before removing
     media_store_ttl_seconds: int = 86400 * 7  # 7 days TTL for stored media
@@ -334,53 +342,6 @@ def _message_shape(msg: dict[str, Any]) -> tuple:
             media, tuple(media) if isinstance(media, list) else None)
 
 
-def _inline_payload(item: dict[str, Any]) -> tuple[int, str] | None:
-    """Length of an inline base64 payload and its mime type, without decoding it.
-
-    The shapes are those of extract_inline_media; that one decodes, and this
-    runs on every call for every media item still in the conversation.
-    """
-    for container, data_key, mime_key in (("source", "data", "media_type"),
-                                          ("inline_data", "data", "mime_type")):
-        box = item.get(container)
-        if isinstance(box, dict) and box.get(data_key):
-            return len(box[data_key]), str(box.get(mime_key) or "")
-    for key in ("image_url", "audio_url", "video_url"):
-        url = item.get(key)
-        if isinstance(url, dict):
-            url = url.get("url")
-        if isinstance(url, str) and ";base64," in url:
-            head, payload = url.split(";base64,", 1)
-            return len(payload), head[5:] if head.startswith("data:") else key[:5] + "/"
-    return None
-
-
-def _media_tokens(item: dict[str, Any]) -> int:
-    """What a media item costs in the prompt — an inline payload as much as a file.
-
-    estimate_inline_data_tokens charges inline images and video 0.25 tokens per
-    base64 character: a 750 KB screenshot 256k tokens, while the same bytes as a
-    file count a few hundred (estimate_file_tokens: 258 per 300 KB tile). The
-    provider sees the same picture either way. With that number an upload held
-    an agent run above Layer 3 for good: every release of the hysteresis ran the
-    cut and trimmed the front of the conversation again. So the inline payload
-    is counted by the file rules, from its decoded size.
-    """
-    if not isinstance(item, dict) or item.get("path") or item.get("duration_seconds") is not None:
-        return estimate_inline_data_tokens(item)
-    payload = _inline_payload(item)
-    if payload is None:
-        return estimate_inline_data_tokens(item)
-    length, mime = payload
-    raw_bytes = length * 3 // 4
-    kind = str(item.get("type") or "")
-    if kind == "audio" or mime.startswith("audio"):
-        return int(raw_bytes / (16 * 1024) * TOKENS_PER_AUDIO_SECOND)
-    if kind == "video" or mime.startswith("video"):
-        return int(raw_bytes / (100 * 1024) * TOKENS_PER_VIDEO_SECOND)
-    return TOKENS_PER_IMAGE * max(1, raw_bytes // (300 * 1024))
-
-
 def _first_changed_index(before: list[tuple], messages: list[dict[str, Any]]) -> int | None:
     """Position of the first message that differs from its shape in ``before``."""
     for i, (old, msg) in enumerate(zip(before, messages)):
@@ -476,14 +437,22 @@ def _arrival_indices(messages: list[dict[str, Any]]) -> range:
     return range(last + 1, len(messages))
 
 
+def _opens_turn(msg: dict[str, Any]) -> bool:
+    """A user message nobody injected: a person, or a pipeline calling the agent,
+    opened a request. The marked user messages the agent loop and the hooks add
+    (step budget note, loop intervention, follow-ups, debate posts) belong to
+    the request before them — counted as turns, every one of them aged that
+    request, and Layers 2 and 3 archived or dropped the task still being worked on."""
+    return msg.get("role") == "user" and msg.get("injected_by") is None
+
+
 def _request_user_indices(messages: list[dict[str, Any]]) -> set[int]:
     """The user messages the current request stands on: the last one (the API
     needs it) and the last one a person wrote. The agent loop adds marked user
     messages after it (step budget note, loop intervention, follow-ups), and
     the task or the image they refer to was compacted like any old turn."""
     last = [i for i, msg in enumerate(messages) if msg.get("role") == "user"][-1:]
-    person = [i for i, msg in enumerate(messages)
-              if msg.get("role") == "user" and msg.get("injected_by") is None][-1:]
+    person = [i for i, msg in enumerate(messages) if _opens_turn(msg)][-1:]
     return {*last, *person}
 
 
@@ -794,7 +763,7 @@ class LayeredCompactionStrategy:
                 # the Layer 2/3 gates below read it (see _scale_offset).
                 result.final_tokens = self._estimate_messages_tokens(result.modified_messages)
                 current_tokens = result.final_tokens + self._scale_offset(result)
-        
+
         # Pre-Layer M: Always compact media (keep last N) - runs regardless of token count
         # This is the most aggressive media compaction, runs first if enabled
         if self.config.always_compact_media_keep_last > 0:
@@ -818,7 +787,14 @@ class LayeredCompactionStrategy:
                 await self._compact_media_after_event(result, trigger="final_response")
         
         # If byte size is the issue, compact media aggressively
-        # Keep only the last 2 messages with inline media, compact all others
+        # Keep media only in the last 2 messages (of any role), evict the large
+        # items (10 KB and up) in all others. Measured again: request_bytes is
+        # from before the passes above, and when they already brought the
+        # request under the limit, this one took every large item outside the
+        # last two messages for nothing.
+        bytes_exceeded = bytes_exceeded and (
+            self._estimate_request_bytes(result.modified_messages)
+            > self.config.max_request_bytes)
         if bytes_exceeded:
             await self._compact_media_for_byte_limit(result)
             # Mark that size-limit compaction was applied (shown as "B" in UI)
@@ -840,13 +816,19 @@ class LayeredCompactionStrategy:
         # the session sat below the automatic trigger. ONLY Layer 1 — it is
         # the reversible one. Layers 2 and 3 take messages out of the view,
         # and below their thresholds that is not what /compact is for.
+        # The bytes as they are after the media passes: when those, Pre-Layer B
+        # included, already took the request under the limit, Layer 1's byte
+        # mode evicted the newest media for nothing. The tokens as they were
+        # before them, on purpose: a media pass that evicted has broken the
+        # cache on this call already, and Layer 1 rides along. Read after it,
+        # a growing loop crossed the threshold again one quiet call later and
+        # paid Layer 1 as a break of its own.
+        bytes_exceeded = bytes_exceeded and (
+            self._estimate_request_bytes(result.modified_messages)
+            > self.config.max_request_bytes)
         layer1_needed = manual or current_tokens >= self.config.layer1_threshold or bytes_exceeded
         if layer1_needed:
-            # Measured again: the media passes above may already have brought the
-            # request under the limit, and then the newest media stays.
-            await self._apply_layer1(result, bytes_exceeded=bytes_exceeded and (
-                self._estimate_request_bytes(result.modified_messages)
-                > self.config.max_request_bytes))
+            await self._apply_layer1(result, bytes_exceeded=bytes_exceeded)
             result.layers_applied.append(1)
 
             # Check both token AND byte targets
@@ -1007,6 +989,12 @@ class LayeredCompactionStrategy:
             return f'[{subject} {reason} read(ref="{path}") loads it again.]'
         return unrecoverable or f"[{subject} {reason}]"
 
+    def _can_evict(self, item: dict[str, Any], in_mm: bool) -> bool:
+        """Whether eviction takes anything out. A content item with no path and
+        no bytes -- an image by remote URL -- has nothing to store, and its hint
+        would replace the only address it has (Layer 1 keeps these too)."""
+        return in_mm or bool(item.get("path")) or bool(self._estimate_item_bytes(item))
+
     async def _evict_media(
         self,
         result: CompactionResult,
@@ -1044,6 +1032,8 @@ class LayeredCompactionStrategy:
 
         for msg_idx, item_idx, item, in_mm, subject, reason in picks:
             path = item.get("path", "")
+            if not self._can_evict(item, in_mm):
+                continue
             if store and not in_mm and not path:
                 source = item.get("source", {})
                 item_type = item.get("type", "")
@@ -1063,9 +1053,7 @@ class LayeredCompactionStrategy:
                 messages[msg_idx]["content"][item_idx] = {"type": "text", "text": hint}
 
             evicted += 1
-            # On the scale of _estimate_messages_tokens, or the savings and the
-            # estimate would disagree by the base64 overcount of every item.
-            result.tokens_saved += _media_tokens(item)
+            result.tokens_saved += estimate_media_tokens(item)
             if count_bytes:
                 result.media_bytes_saved += self._estimate_item_bytes(item)
             logger.debug("Evicted media: %s", hint)
@@ -1257,29 +1245,20 @@ class LayeredCompactionStrategy:
         # Skip already compacted items - they have no data
         if item.get("compacted"):
             return 0
-        
-        # Check various inline data formats first
-        source = item.get("source", {})
-        if isinstance(source, dict):
-            data = source.get("data", "")
-            if data:
-                return len(data) if isinstance(data, str) else len(data)
-        
-        image_url = item.get("image_url", {})
-        if isinstance(image_url, dict):
-            url = image_url.get("url", "")
-            if ";base64," in url:
-                return len(url.split(";base64,", 1)[1])
-        
-        audio_url = item.get("audio_url", "")
-        if isinstance(audio_url, str) and ";base64," in audio_url:
-            return len(audio_url.split(";base64,", 1)[1])
-        
-        # Check various data field names
+
+        # Every wire shape, through the reader the token estimate uses. The
+        # hand-written branches here missed a dict inline_data (it counted as
+        # len(dict) = 2 bytes), video_url and a string image_url, so the
+        # request-size gate could not see those payloads at all.
+        payload = inline_payload(item)
+        if payload is not None:
+            return payload[0]
+
+        # A bare payload on the item itself: older entries and hand-built items.
         for field_name in ("data", "inline_data", "content"):
-            field_data = item.get(field_name, "")
-            if field_data:
-                return len(field_data) if isinstance(field_data, str) else len(field_data)
+            field_data = item.get(field_name)
+            if isinstance(field_data, (str, bytes)) and field_data:
+                return len(field_data)
         
         # Fallback: check file path and get actual file size
         # This is important for multimodal_content items that reference files
@@ -1368,12 +1347,20 @@ class LayeredCompactionStrategy:
         # everywhere else — this is the only rule that lets an item decide
         # whether a whole MESSAGE counts as recent, so a stray attachment must
         # not spend one of the N slots.
-        found = list(self._iter_media(messages, mm_types=("image", "audio", "video")))
+        # Only what can be evicted counts: a message whose sole media is a
+        # remote URL never loses it, and counted it kept the window one over
+        # the limit, so every new image broke the cache again.
+        found = [(msg_idx, item_idx, item, in_mm)
+                 for msg_idx, item_idx, item, in_mm
+                 in self._iter_media(messages, mm_types=("image", "audio", "video"))
+                 if self._can_evict(item, in_mm)]
         with_media = sorted({msg_idx for msg_idx, _, _, _ in found})
-        if not with_media:
+        if len(with_media) <= keep_count:
             return
 
-        protected = set(with_media[-keep_count:])
+        # Past the limit, down to below it (always_compact_media_headroom).
+        headroom = max(0, self.config.always_compact_media_headroom)
+        protected = set(with_media[-max(1, keep_count - headroom):])
         picks = [
             _MediaPick(msg_idx, item_idx, item, in_mm,
                        self._media_subject(item), "compacted.")
@@ -1388,8 +1375,8 @@ class LayeredCompactionStrategy:
             result.final_tokens = self._estimate_messages_tokens(messages)
             logger.info(
                 f"Always-compact media: {compacted_count} items compacted, "
-                f"kept last {keep_count} messages with media "
-                f"({len(protected)} protected)"
+                f"{len(protected)} of {len(with_media)} messages with media kept "
+                f"(keep_last={keep_count}, headroom={headroom})"
             )
 
     async def _compact_multimodal_content(
@@ -1469,8 +1456,11 @@ class LayeredCompactionStrategy:
                     compacted.append(item)
                     continue
 
-                inline_tokens = estimate_inline_data_tokens(item)
-                if inline_tokens >= self.config.tool_result_min_size:
+                inline_tokens = estimate_media_tokens(item)
+                # Only a payload: an image by remote URL costs as much, but
+                # there is nothing to store, and the hint would lose the URL.
+                if (inline_tokens >= self.config.tool_result_min_size
+                        and inline_payload(item) is not None):
                     subject = self._media_subject(item, with_filename=False)
                     # Only steers the stored file's extension — _store_inline_media
                     # re-derives the type from the payload it actually finds.
@@ -1490,7 +1480,7 @@ class LayeredCompactionStrategy:
                             f"[{subject} removed - not recoverable. Ask for it "
                             f"again if you still need it.]"),
                     )})
-                    result.tokens_saved += _media_tokens(item)
+                    result.tokens_saved += inline_tokens
                     result.media_compacted_after_event += 1
                     result.media_bytes_saved += item_bytes
                     logger.debug(
@@ -1541,8 +1531,7 @@ class LayeredCompactionStrategy:
                 compacted.append(item)
                 continue
             
-            # Estimate tokens from file size
-            inline_tokens = estimate_inline_data_tokens(item)
+            inline_tokens = estimate_media_tokens(item)
             
             if inline_tokens >= self.config.tool_result_min_size:
                 # Compact large audio/image/video files
@@ -1747,13 +1736,11 @@ class LayeredCompactionStrategy:
         # Tool calls and their results are archived together
         groups = self._tool_call_groups(messages)
 
-        # Find turn boundaries (user messages)
-        user_indices = [
-            i for i, msg in enumerate(messages) if msg.get("role") == "user"
-        ]
+        # Find turn boundaries (user messages nobody injected)
+        turn_starts = [i for i, msg in enumerate(messages) if _opens_turn(msg)]
 
         # Calculate turn number for each message
-        current_turn = len(user_indices)
+        current_turn = len(turn_starts)
 
         # Collect indices to archive (including tool_call pairs)
         indices_to_archive = set()
@@ -1783,7 +1770,7 @@ class LayeredCompactionStrategy:
                 continue
 
             # Calculate message age in turns
-            message_turn = sum(1 for ui in user_indices if ui <= i)
+            message_turn = sum(1 for ui in turn_starts if ui <= i)
             turns_old = current_turn - message_turn
 
             if turns_old >= self.config.archive_after_turns:
@@ -1869,11 +1856,9 @@ class LayeredCompactionStrategy:
         # Tool calls and their results leave together
         groups = self._tool_call_groups(messages)
 
-        # Find turn boundaries
-        user_indices = [
-            i for i, msg in enumerate(messages) if msg.get("role") == "user"
-        ]
-        current_turn = len(user_indices)
+        # Find turn boundaries (user messages nobody injected)
+        turn_starts = [i for i, msg in enumerate(messages) if _opens_turn(msg)]
+        current_turn = len(turn_starts)
 
         # Collect indices to remove (including tool_call pairs)
         indices_to_remove = set()
@@ -1883,7 +1868,7 @@ class LayeredCompactionStrategy:
                 continue
 
             # Calculate message age
-            message_turn = sum(1 for ui in user_indices if ui <= i)
+            message_turn = sum(1 for ui in turn_starts if ui <= i)
             turns_old = current_turn - message_turn
 
             if turns_old >= self.config.drop_after_turns:
@@ -1935,7 +1920,7 @@ class LayeredCompactionStrategy:
         the working tail — the newest tool_result_keep_last tool-call units or
         messages, the same window Layer 1 leaves inline. Units leave whole.
 
-        The estimate counts inline media by what it costs (_media_tokens): at
+        The estimate counts inline media by what it costs (estimate_media_tokens): at
         0.25 tokens per base64 character an uploaded image in the protected
         last user message "weighed" 256k tokens, and the cut emptied a 40-turn
         chat of 38k real tokens down to five messages on the upload call.
@@ -2522,39 +2507,24 @@ class LayeredCompactionStrategy:
 
         Uses the same estimation path as context_summarizer to avoid drift,
         while skipping media items marked as compacted since they won't be
-        encoded at LLM call time. Inline media payloads are taken out of that
-        path and counted by _media_tokens instead.
+        encoded at LLM call time.
         """
         sanitized_messages: list[dict[str, Any]] = []
-        media_tokens = 0
-
-        def keep(part: Any) -> bool:
-            nonlocal media_tokens
-            if not isinstance(part, dict):
-                return True
-            if part.get("compacted"):
-                return False
-            if (not part.get("path") and part.get("type") in _MEDIA_TYPES
-                    and _inline_payload(part) is not None):
-                media_tokens += _media_tokens(part)
-                return False
-            return True
-
         for msg in messages:
             if not isinstance(msg, dict):
                 sanitized_messages.append(msg)
                 continue
 
             msg_copy = dict(msg)
-            # Placeholders marked compacted leave; inline media is counted apart.
             for key in ("multimodal_content", "content"):
                 parts = msg_copy.get(key)
                 if isinstance(parts, list):
-                    msg_copy[key] = [part for part in parts if keep(part)]
+                    msg_copy[key] = [part for part in parts
+                                     if not (isinstance(part, dict) and part.get("compacted"))]
 
             sanitized_messages.append(msg_copy)
 
-        return estimate_token_count(sanitized_messages) + media_tokens
+        return estimate_token_count(sanitized_messages)
     
     @staticmethod
     def _scale_offset(result: CompactionResult) -> int:

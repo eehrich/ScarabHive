@@ -89,13 +89,27 @@ class TestEstimateMessageTokens:
         tokens = _estimate_message_tokens(msg)
         assert tokens >= 1
 
-    def test_long_text_content(self):
-        """Test token estimation for longer text."""
-        # 400 chars should be ~100 tokens
-        long_text = "a" * 400
-        msg = {"role": "user", "content": long_text}
-        tokens = _estimate_message_tokens(msg)
-        assert 90 <= tokens <= 110
+    @pytest.mark.parametrize("msg", [
+        {"role": "user", "content": "a" * 400},
+        {"role": "system", "content": "You are a helpful assistant. " * 50},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "tool1", "arguments": '{"a": 1}'}},
+            {"id": "call_2", "type": "function", "function": {"name": "tool2", "arguments": '{"b": 2}'}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "text", "text": "Transcribe this"},
+            {"type": "audio", "audio_url": "data:audio/wav;base64,AAAA", "duration_seconds": 30.0},
+        ]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "{}", "multimodal_content": [
+            {"type": "video", "mime_type": "video/mp4", "video_url": "data:video/mp4;base64," + "A" * 400_000},
+        ]},
+    ])
+    def test_the_session_estimate_is_the_shared_one(self, msg):
+        """The session API used a rule of its own (4 characters per token, 1000 per
+        image, audio and video free) and drifted from what the context plugins count."""
+        from agent_system.llm.token_utils import estimate_token_count
+
+        assert _estimate_message_tokens(msg) == estimate_token_count([msg])
 
     def test_multimodal_content_with_text(self):
         """Test token estimation for multimodal content with text."""
@@ -157,38 +171,18 @@ class TestEstimateMessageTokens:
         # Tool call JSON: ~100 chars = ~25 tokens
         assert tokens >= 30
 
-    def test_multiple_tool_calls(self):
-        """Test token estimation with multiple tool calls."""
-        msg = {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "tool1", "arguments": '{"a": 1}'}
-                },
-                {
-                    "id": "call_2",
-                    "type": "function",
-                    "function": {"name": "tool2", "arguments": '{"b": 2}'}
-                }
-            ]
-        }
-        tokens = _estimate_message_tokens(msg)
-        # Two tool calls should add significant tokens
-        assert tokens >= 40
-
     def test_reasoning_content(self):
-        """Test token estimation includes reasoning content."""
+        """Reasoning is counted on top of the shared estimate, which ignores it."""
+        from agent_system.llm.token_utils import estimate_content_tokens, estimate_token_count
+
+        reasoning = "Let me think about this step by step. First I need to consider..."
         msg = {
             "role": "assistant",
             "content": "The answer is 42.",
-            "reasoning_content": "Let me think about this step by step. First I need to consider..."
+            "reasoning_content": reasoning,
         }
-        tokens = _estimate_message_tokens(msg)
-        # Content (~17 chars = ~4 tokens) + reasoning (~65 chars = ~16 tokens)
-        assert tokens >= 15
+        assert _estimate_message_tokens(msg) == (
+            estimate_token_count([msg]) + estimate_content_tokens(reasoning))
 
     def test_tool_result_message(self):
         """Test token estimation for tool result messages."""
@@ -199,14 +193,6 @@ class TestEstimateMessageTokens:
         }
         tokens = _estimate_message_tokens(msg)
         assert tokens >= 10
-
-    def test_system_message(self):
-        """Test token estimation for system messages."""
-        system_prompt = "You are a helpful assistant. " * 50  # ~1500 chars
-        msg = {"role": "system", "content": system_prompt}
-        tokens = _estimate_message_tokens(msg)
-        # ~1500 chars / 4 = ~375 tokens
-        assert 350 <= tokens <= 400
 
     def test_content_as_list_with_strings(self):
         """Test multimodal content that's a list of strings (edge case)."""
@@ -451,6 +437,34 @@ async def test_save_session_runtime_vars_merge_overrides_existing(session_servic
 # ---------------------------------------------------------------------------
 # checkpoint_session tests (orphan-safe periodic save)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["save", "checkpoint"])
+async def test_the_token_estimate_runs_off_the_event_loop(session_service_env, monkeypatch, how):
+    """The shared estimator probes media files (pydub for audio, ffprobe for
+    video) when its duration cache misses; on the loop that stalls every run."""
+    import threading
+
+    from agent_system.services import session_service as module
+
+    svc, sm = session_service_env
+    await sm.create_session(user_id="user1", session_id="off_loop", title="Test",
+                            agent_name="chat_agent", llm_profile="normal")
+    threads = []
+    estimate = module._estimate_message_tokens
+    monkeypatch.setattr(module, "_estimate_message_tokens",
+                        lambda msg: threads.append(threading.current_thread()) or estimate(msg))
+    msgs = [{"role": "user", "content": "task"}, {"role": "assistant", "content": "done"}]
+
+    if how == "save":
+        ok = await svc.save_session(agent=_make_mock_agent(msgs), user_id="user1", session_id="off_loop",
+                                    agent_name="chat_agent", llm_profile="normal", was_new_session=False)
+    else:
+        ok = await svc.checkpoint_session(_make_checkpoint_agent(msgs), "user1", "off_loop")
+
+    assert ok is True and threads, "fixture: nothing was estimated"
+    assert threading.current_thread() not in threads, "the estimate ran on the event loop"
 
 
 def _make_checkpoint_agent(messages_dicts, runtime_template_vars=None, metadata=None):

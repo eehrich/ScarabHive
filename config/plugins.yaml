@@ -1018,10 +1018,12 @@ plugins:
         
         # Always compact media - runs regardless of token count
         # Removes ALL media items except those in the last N messages that contain media
-        # Set to 0 to disable, >0 to enable.
-        # Lowered to 2 (was 5): cover_artist evaluates variants one at a time
-        # and only needs the current image in context, not a back-catalogue.
+        # Set to 0 to disable, >0 to enable. Agents that need more (cover_artist,
+        # cover_feedback_judge) set their own value in their agent YAML.
         always_compact_media_keep_last: 2
+        # Past keep_last, evict down to keep_last - headroom (at least 1): one
+        # cache break per headroom+1 new media messages instead of one per message.
+        always_compact_media_headroom: 1
 
     context_usage_tracker:
       type: context_usage_tracker
