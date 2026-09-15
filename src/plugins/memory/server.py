@@ -619,7 +619,6 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                     "message": "No memories found"
                 }
 
-            # Load metadata for access count updates
             metadata_collection = await self._load_collection(session_id)
 
             # Format results
@@ -627,8 +626,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             for i in range(len(results["ids"][0])):
                 memory_id = results["ids"][0][i]
 
-                # Get full memory from metadata for access count
+                # The JSON metadata is the record: the vector entry keeps the title, keywords and importance
+                # it was indexed with (an update re-indexes only new content), and outlives a memory whose
+                # vector delete failed.
                 memory_meta = metadata_collection.memories.get(memory_id)
+                if memory_meta is None:
+                    continue
 
                 # Calculate similarity score (1 - distance = easier to understand)
                 # ChromaDB distance: 0 = identical, 2 = completely different
@@ -638,12 +641,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
                 memories.append({
                     "memory_id": memory_id,
-                    "title": results["metadatas"][0][i]["title"],
-                    "content": results["documents"][0][i],
+                    "title": memory_meta.title,
+                    "content": memory_meta.content,
                     "similarity": round(similarity, 3),  # 0.0-1.0, higher = better match
-                    "importance": int(results["metadatas"][0][i].get("importance", "5")),
-                    "keywords": results["metadatas"][0][i].get("keywords", "").split(","),
-                    "access_count": memory_meta.access_count if memory_meta else 0
+                    "importance": memory_meta.importance,
+                    "keywords": memory_meta.keywords,
+                    "access_count": memory_meta.access_count
                 })
 
             logger.info(f"Search '{query}' returned {len(memories)} results")

@@ -13,7 +13,7 @@ The Memory Plugin provides long-term memory capabilities for AI agents, allowing
 - **Access Tracking**: Automatic tracking of memory access counts and timestamps
 - **Keyword Extraction**: Auto-extract keywords from memory content (frequency-based)
 - **System Prompt Injection**: Optionally inject relevant memories into LLM context (via hook)
-- **Web UI**: Visual dashboard for browsing, searching, and managing memories
+- **Panel**: browse, search and delete the memories of a session in the shell
 - **Session Isolation**: Memories are scoped to sessions (multi-user support)
 
 ## Installation
@@ -247,18 +247,49 @@ AVAILABLE MEMORIES (use 'memory' tool with operation='recall' to access):
 - [mem_20240131_120030_g7h8i9] Testing Patterns
 ```
 
-## Web UI
+## The panel
 
-Access the Memory Manager dashboard at: `/plugins/memory/panel`
+**Memory** in the shell's panel launcher (category *Context*), served at `/plugins/<instance>/`. Built on the UI kit
+(`templates/panel.html`, `static/panel.js`, `static/panel.css`).
 
-**Features:**
-- Browse all memories for current session
-- Semantic search with live results
-- View memory details (title, content, keywords, tags, importance)
-- Track access counts and timestamps
-- Delete memories
-- Statistics dashboard (total memories, avg importance, top keywords)
-- Auto-refresh every 5 seconds
+- It shows the memories of the session open in the chat and follows the chat when it switches; a link with
+  `?session_id=` (the session context entry, e.g. the info button of a session) keeps it on that session. With no
+  session open it says so and asks the server nothing.
+- Figures: number of memories, average importance, accesses. Below, the 100 most recently accessed memories with
+  title, the start of the content, keywords, importance, accesses and last access; with more, the panel says how many
+  there are.
+- **Search** runs the semantic search in the session and lists the 20 closest memories with their match. A search
+  belongs to its session: switching sessions drops it. The auto refresh (every 5 s, pausable in the toolbar) keeps
+  a search's results and only brings the figures, as each search embeds its query anew; the refresh button runs it
+  again.
+- A row (click, Enter or Space) opens the memory in a drawer with its figures and full content. **Delete** there asks
+  first and deletes in the session the memory belongs to.
+- Viewing or searching in the panel does not count as an access: the access count and the order of the
+  non-semantic prompt injection stay the agents' own.
+
+### Endpoints
+
+All take `session_id` as a query parameter, limited to the characters of a session id (`A-Z a-z 0-9 _ -`,
+otherwise 422): it names the metadata file and the vector collection. A metadata file that cannot be read or
+written, or a failing vector store, is answered 503 with the reason.
+
+| Method | Path | Answer |
+|---|---|---|
+| GET | `/` | the panel |
+| GET | `/memories` | `{memories: [{memory_id, title, content, keywords, importance, created_at, accessed_at, access_count}], total}` — the 100 most recently accessed |
+| GET | `/stats` | `{total_memories, avg_importance, total_accesses}`; `avg_importance` is `null` without memories |
+| POST | `/memories/search` | body `{query}` (1–500 characters); `{query, results: [{memory_id, title, content, similarity, importance, keywords, access_count}], count, message}`, the 20 closest |
+| DELETE | `/memories/{memory_id}` | `{deleted, memory_id, message}`; 404 for a memory not (or no longer) there |
+
+### Tests
+
+`tests/test_plugin_memory_panel.py` drives the real panel in a headless Chromium (`tests/panel_tests.html`) against
+the real plugin and its store under pytest's `tmp_path`; only the vector store is replaced by a word-overlap ranking,
+so no embedding model runs. Skipped without a Chromium-based browser.
+
+```bash
+pytest src/plugins/memory/tests/test_plugin_memory_panel.py -q
+```
 
 ## Storage
 
@@ -332,7 +363,7 @@ Single unified tool with operation-based routing.
 
 **Components:**
 - `MemoryServer`: MCP server + hook implementation
-- `MemoryWebFactory`: Web endpoints + HTML panel
+- `MemoryWebFactory`: the panel and its endpoints
 - `MemoryManagementHybridPlugin`: Plugin factory (hybrid: MCP + hooks + web)
 
 **Data Models:**
@@ -350,10 +381,8 @@ Single unified tool with operation-based routing.
 ### Run Tests
 
 ```bash
-pytest tests/test_plugin_memory.py -v --cov=plugins.memory.server
+pytest src/plugins/memory/tests -q
 ```
-
-**Target Coverage:** >80%
 
 ### Test ChromaDB Integration
 
