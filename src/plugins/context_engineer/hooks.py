@@ -568,7 +568,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
 
         Idle = the newest of the directory's own mtime and its marker files'
         mtimes lies before the cutoff. The directory mtime alone would not do:
-        rewriting a file in place (core_memory.json) leaves it untouched, and
+        rewriting a file in place leaves it untouched, and
         it only moves for the databases because SQLite's default DELETE
         journal adds and removes a -journal entry per commit — switching the
         stores to WAL would freeze it. The file mtimes depend on neither.

@@ -142,6 +142,33 @@
     }
   });
 
+  await check('an overtaken load, when its answer comes, does not let the ticks overtake the load that overtook it', async () => {
+    await go('/plugins/context_engineer/');
+    await autoOff();
+    tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-1', title: 'First' } });
+    await until('the compactions of s-1', () => rows().length === 3 && statValue('facts') === '4');
+    const before = await asked();
+    const askedFor = async (id) => (await asked())[`session:${id}`] || 0;
+    let ticking = null;
+    document.cookie = 'ce=slow; path=/';
+    try {
+      tell({ type: 'pk:session', session: { id: 's-2', title: 'Second' } });  // answered 1.5 s after it arrives
+      await until('s-2 asked for', async () => (await askedFor('s-2')) > (before['session:s-2'] || 0));
+      ticking = setInterval(tick, 100);
+      document.cookie = 'ce=slower; path=/';
+      await sleep(700);
+      tell({ type: 'pk:session', session: { id: 's-3', title: 'Third' } });  // answered 3 s after it arrives
+      await until('s-3 asked for', async () => (await askedFor('s-3')) > (before['session:s-3'] || 0));
+      await sleep(1500);  // s-2's answer is in since 0.7 s, s-3's is 1.5 s away
+      const once = (await askedFor('s-3')) === (before['session:s-3'] || 0) + 1;
+      await until('the compactions of s-3', () => statValue('events') === '101', 4000);
+      return once;
+    } finally {
+      clearInterval(ticking);
+      noCookie();
+    }
+  });
+
   await check('the panel follows the session the chat switches to and draws no late answer of the one before', async () => {
     await go('/plugins/context_engineer/');  // no link: the session is the host's, and this page is the host
     await autoOff();

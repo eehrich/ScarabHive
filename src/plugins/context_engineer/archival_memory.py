@@ -243,8 +243,9 @@ class ArchivalMemory:
         # an UPDATE takes the write lock even when it matches nothing, and this
         # runs on every open, on the event loop, behind any other writer.
         # archived_fts indexes session_id from the rows: rebuilt, or it no
-        # longer matches its content table.
-        if self.session_id and self._db.execute(
+        # longer matches its content table. A session named "default" writes
+        # "default" itself: nothing to re-tag, and it would match on every open.
+        if self.session_id not in (None, "", "default") and self._db.execute(
                 "SELECT 1 FROM archived_messages WHERE session_id = 'default' LIMIT 1").fetchone():
             self._db.execute(
                 "UPDATE archived_messages SET session_id = ? WHERE session_id = 'default'",
@@ -891,66 +892,6 @@ class ArchivalMemory:
             return f"{role.title()}: {first_part}"
         
         return f"{role.title()} message (empty)"
-    
-    @_synchronized
-    def cleanup_old(
-        self,
-        max_age_days: int = 7,
-        session_id: str | None = None
-    ) -> int:
-        """Remove old archived messages.
-        
-        Args:
-            max_age_days: Remove entries older than this
-            session_id: Optional session filter
-            
-        Returns:
-            Number of entries removed
-        """
-        from datetime import timedelta
-        cutoff = (datetime.now() - timedelta(days=max_age_days)).isoformat()
-        
-        # Get IDs to delete (for ChromaDB cleanup)
-        if session_id:
-            cursor = self._db.execute(
-                "SELECT id FROM archived_messages WHERE session_id = ? AND timestamp < ?",
-                (session_id, cutoff)
-            )
-        else:
-            cursor = self._db.execute(
-                "SELECT id FROM archived_messages WHERE timestamp < ?",
-                (cutoff,)
-            )
-        
-        ids_to_delete = [row[0] for row in cursor.fetchall()]
-        
-        if not ids_to_delete:
-            return 0
-        
-        # Delete from SQLite
-        placeholders = ",".join("?" * len(ids_to_delete))
-        self._db.execute(
-            f"DELETE FROM archived_messages WHERE id IN ({placeholders})",
-            ids_to_delete
-        )
-        self._db.execute(
-            f"DELETE FROM archived_fts WHERE id IN ({placeholders})",
-            ids_to_delete
-        )
-        self._db.commit()
-        
-        # Delete from VectorStore
-        if self.enable_semantic_search and self._vector_store:
-            try:
-                self._vector_store.delete(
-                    collection=self._vector_collection,
-                    ids=ids_to_delete
-                )
-            except Exception as e:
-                logger.error(f"Failed to delete from VectorStore: {e}")
-        
-        logger.info(f"Cleaned up {len(ids_to_delete)} old archived messages")
-        return len(ids_to_delete)
     
     @_synchronized
     def close(self) -> None:

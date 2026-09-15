@@ -178,8 +178,9 @@ class ToolResultStore:
         # The database file is per-session, so every row in it belongs to this
         # session by construction — re-tagging them is safe and turns a
         # half-populated catalogue back into a complete one. Looked for first:
-        # an UPDATE takes the write lock even when it matches nothing.
-        if self.session_id and self._db.execute(
+        # an UPDATE takes the write lock even when it matches nothing. A session
+        # named "default" writes "default" itself: nothing to re-tag.
+        if self.session_id not in (None, "", "default") and self._db.execute(
                 "SELECT 1 FROM tool_results WHERE session_id = 'default' LIMIT 1").fetchone():
             self._db.execute(
                 "UPDATE tool_results SET session_id = ? WHERE session_id = 'default'",
@@ -501,42 +502,6 @@ class ToolResultStore:
             "total_tokens_stored": total_tokens,
             "by_tool": by_tool
         }
-    
-    @_synchronized
-    def cleanup_old(self, max_age_hours: int = 24, session_id: str | None = None) -> int:
-        """Remove old entries to save storage space.
-        
-        Args:
-            max_age_hours: Remove entries older than this
-            session_id: Optional session filter
-            
-        Returns:
-            Number of entries removed
-        """
-        cutoff = datetime.now().isoformat()
-        # Calculate cutoff (simplified - SQLite datetime comparison)
-        from datetime import timedelta
-        cutoff_dt = datetime.now() - timedelta(hours=max_age_hours)
-        cutoff = cutoff_dt.isoformat()
-        
-        if session_id:
-            cursor = self._db.execute(
-                "DELETE FROM tool_results WHERE session_id = ? AND timestamp < ?",
-                (session_id, cutoff)
-            )
-        else:
-            cursor = self._db.execute(
-                "DELETE FROM tool_results WHERE timestamp < ?",
-                (cutoff,)
-            )
-        
-        deleted = cursor.rowcount
-        self._db.commit()
-        
-        if deleted > 0:
-            logger.info(f"Cleaned up {deleted} old tool result entries")
-        
-        return deleted
     
     @_synchronized
     def close(self) -> None:

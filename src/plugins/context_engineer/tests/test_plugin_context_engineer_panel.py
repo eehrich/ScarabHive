@@ -9,7 +9,8 @@ an agent named in markup 40,000 → 36,000 with P, L1 and L2, 2 media in the win
 compactions and no stores; ``s-8`` with a core memory file that is no JSON. POST /__stub/record records a compaction in
 ``s-1``; GET /__stub/live answers what the hook's own open stores of ``s-1`` count; GET /__stub/disk lists the session directories and the
 sessions the hook holds open. GET /__stub/asked counts the calls per kind (``history``, ``session``) and session
-(``all`` for none). With the cookie ``ce=fails`` both calls fail, with ``ce=slow`` they are held for 1.5 s.
+(``all`` for none). With the cookie ``ce=fails`` both calls fail, with ``ce=slow`` they are held for 1.5 s, with
+``ce=slower`` for 3 s.
 """
 from __future__ import annotations
 
@@ -35,6 +36,7 @@ TESTS = Path(__file__).resolve().parent
 MARKUP = '<img src="x" onerror="window.parent.__xss = 1">'
 KINDS = {"/plugins/context_engineer/history": "history", "/plugins/context_engineer/session": "session"}
 FACTS = 300
+HOLD_SECONDS = {"slow": 1.5, "slower": 3.0}
 
 
 def event(session, agent, stamp, original, final, layers, stored=0, window=0, duplicates=0, megabytes=0):
@@ -91,13 +93,13 @@ def panel_app(storage: Path, monkeypatch):
         mode = request.cookies.get("ce")
         if mode == "fails":
             return JSONResponse({"detail": "The stores are locked"}, status_code=500)
-        if mode != "slow":
+        if mode not in HOLD_SECONDS:
             return await call_next(request)
         answer = await call_next(request)
         payload = b"".join([chunk async for chunk in answer.body_iterator])
 
         async def body():  # headers at once, not cacheable: an identical request must not queue behind this one
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(HOLD_SECONDS[mode])
             yield payload
         return StreamingResponse(body(), status_code=answer.status_code, media_type="application/json",
                                  headers={"Cache-Control": "no-store"})
@@ -143,6 +145,7 @@ EXPECTED = [
     'a store that cannot be read is answered 503 with the reason, and shown',
     'a failed load shows the error and nothing shown before',
     'a tick of the auto refresh leaves a load still on its way alone',
+    'an overtaken load, when its answer comes, does not let the ticks overtake the load that overtook it',
     'the panel follows the session the chat switches to and draws no late answer of the one before',
     'a link to a session keeps to it, whatever session the chat opens',
     'with no session open the panel says so and asks for nothing',

@@ -125,31 +125,44 @@ class TestCoreMemory:
     async def test_a_save_that_fails_at_the_flush_leaves_no_temporary_file(self, temp_memory_file, monkeypatch):
         """A full disk shows when the buffer is written, at close -- not in json.dump."""
         import io
-        import tempfile
 
         from plugins.context_engineer import atomic_json
 
         memory = CoreMemory(temp_memory_file)
         await memory.add_fact("Saved before", category="facts")
-        real = tempfile.NamedTemporaryFile
 
         class FullDisk(io.FileIO):
             def write(self, data):
                 raise OSError(28, "No space left on device")
 
-        def full_disk(*args, **kwargs):
-            file = real(*args, **kwargs)
-            file.file.close()
-            file.file = io.TextIOWrapper(io.BufferedWriter(FullDisk(file.name, "w")), encoding="utf-8")
-            return file
+        def full_disk(file, mode, encoding):
+            return io.TextIOWrapper(io.BufferedWriter(FullDisk(file, mode)), encoding=encoding)
 
-        monkeypatch.setattr(atomic_json.tempfile, "NamedTemporaryFile", full_disk)
+        monkeypatch.setattr(atomic_json, "open", full_disk, raising=False)
         with pytest.raises(OSError):
             await memory.add_fact("Never saved", category="facts")
         monkeypatch.undo()
 
         assert [path.name for path in temp_memory_file.parent.iterdir()] == ["core_memory.json"], "a temporary file stayed"
         assert [fact.content for fact in CoreMemory(temp_memory_file).facts] == ["Saved before"]
+
+    async def test_a_save_removes_the_temporary_of_a_killed_writer_but_not_a_live_one(self, temp_memory_file):
+        import os
+        import time
+
+        from plugins.context_engineer import atomic_json
+
+        memory = CoreMemory(temp_memory_file)
+        killed = temp_memory_file.with_name(".core_memory.json.killed.tmp")
+        live = temp_memory_file.with_name(".core_memory.json.live.tmp")
+        killed.write_text("{", encoding="utf-8")
+        live.write_text("{", encoding="utf-8")
+        old = time.time() - atomic_json.LEFTOVER_AGE_SECONDS - 60
+        os.utime(killed, (old, old))
+
+        await memory.add_fact("Saved", category="facts")
+
+        assert sorted(path.name for path in temp_memory_file.parent.iterdir()) == [".core_memory.json.live.tmp", "core_memory.json"]
 
     async def test_a_save_waits_out_a_reader_holding_the_file(self, temp_memory_file):
         """Windows refuses to replace an open file; the panel reads it while agents save."""
@@ -433,15 +446,24 @@ class TestArchivalMemory:
         # the full-text index holds session_id as well: rebuilt with the rows, or it no longer matches them
         archive._db.execute("INSERT INTO archived_fts(archived_fts, rank) VALUES('integrity-check', 1)")
 
+    @pytest.mark.parametrize("session_id", ["s-1", "default"])
     @pytest.mark.parametrize("store", ["archive", "tool_results"])
-    def test_opening_a_store_waits_for_no_other_writer(self, tmp_path, store):
-        """Opened on the event loop: with nothing to re-tag it must not ask for the write lock someone holds."""
+    def test_opening_a_store_waits_for_no_other_writer(self, tmp_path, store, session_id):
+        """Opened on the event loop: with nothing to re-tag it must not ask for the write lock someone holds.
+
+        A session named "default" tags its own rows "default": they are not rows to re-tag.
+        """
         import time
 
         path = tmp_path / f"{store}.db"
-        make = (lambda: ArchivalMemory(path, session_id="s-1")) if store == "archive" \
-            else (lambda: ToolResultStore(path, session_id="s-1"))
-        make().close()
+        make = (lambda: ArchivalMemory(path, session_id=session_id)) if store == "archive" \
+            else (lambda: ToolResultStore(path, session_id=session_id))
+        first = make()
+        if store == "archive":
+            first.store({"role": "user", "content": "an archived message"})
+        else:
+            first.store_and_reference("call-1", "read_file", "a stored tool result")
+        first.close()
         writer = sqlite3.connect(path, timeout=0)
         writer.execute("BEGIN IMMEDIATE")
         try:
@@ -572,21 +594,6 @@ class TestArchivalMemory:
         
         stats = archive.get_stats()
         assert stats["by_role"]["tool"] == 1
-    
-    def test_cleanup_old(self, temp_archive_path):
-        """Test cleanup of old entries."""
-        archive = ArchivalMemory(temp_archive_path, session_id="test-session")
-        
-        # Store some messages
-        for i in range(5):
-            archive.store({"role": "user", "content": f"Message {i}"})
-        
-        # Cleanup with 0 days should remove all
-        removed = archive.cleanup_old(max_age_days=0)
-        
-        # Note: This test may not remove entries created within the same second
-        # In production, entries would be older
-        assert removed >= 0
 
 
 # =============================================================================
