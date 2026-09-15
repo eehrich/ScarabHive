@@ -46,6 +46,8 @@ export class Workspace {
      */
     this.items = new Map();
     this.active = null;
+    this.draggedTab = null;
+    this.tabDropped = false;
     this.zTop = 1;
     this.dockWidth = 520;
     window.addEventListener('message', (event) => this.onMessage(event));
@@ -204,8 +206,10 @@ export class Workspace {
     // re-rendering the bar must not take the keyboard focus away from it
     const focused = this.tabBar.contains(document.activeElement) ? document.activeElement : null;
     const refocus = focused && { key: focused.closest('[data-key]')?.dataset.key, act: focused.dataset.act || '' };
-    render(this.tabBar, docked.map((item) => html`
-      <div class="dock-tab" role="tab" tabindex="0" aria-selected="${String(item.key === this.active)}" data-key="${item.key}" title="${item.title}">
+    // While a tab is dragged the bar is left alone: a replaced drag source never gets its dragend.
+    // The drag's end draws it again, titles and badges that came meanwhile included.
+    if (!this.draggedTab) render(this.tabBar, docked.map((item) => html`
+      <div class="dock-tab" role="tab" tabindex="0" draggable="true" aria-selected="${String(item.key === this.active)}" data-key="${item.key}" title="${item.title}">
         ${icon(this.panel(item.panelId).icon, { size: 'sm' })}
         <span class="dock-tab-title">${item.title}</span>
         ${item.badge ? html`<span class="pk-badge pk-badge--accent">${item.badge}</span>` : ''}
@@ -232,10 +236,65 @@ export class Workspace {
       else this.focus(tab.dataset.key);
     });
     this.tabBar.addEventListener('keydown', (event) => {
-      if ((event.key !== 'Enter' && event.key !== ' ') || !event.target.matches('.dock-tab')) return;
+      if (!event.target.matches('.dock-tab')) return;
+      if (event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+        // the keyboard's way to sort the tabs
+        event.preventDefault();
+        const keys = this.docked().map((item) => item.key);
+        const from = keys.indexOf(event.target.dataset.key);
+        const to = from + (event.key === 'ArrowLeft' ? -1 : 1);
+        if (to < 0 || to >= keys.length) return;
+        keys.splice(to, 0, keys.splice(from, 1)[0]);
+        this.arrangeDock(keys);
+        return;
+      }
+      if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
       this.focus(event.target.dataset.key);
     });
+    // Sorting by drag and drop: the dragged tab moves in the bar as it goes; dropped on the bar, the order is
+    // taken, cancelled (Esc) or dropped anywhere else, the bar goes back to the order it had.
+    this.tabBar.addEventListener('dragstart', (event) => {
+      const tab = event.target.closest?.('.dock-tab');
+      if (!tab) return;
+      this.draggedTab = tab;
+      this.tabDropped = false;
+      tab.dataset.dragging = '';
+      event.dataTransfer.effectAllowed = 'move';
+      // Firefox starts no drag without data; a type of its own, so no text field takes the tab as text
+      event.dataTransfer.setData('application/x-scarabhive-tab', tab.dataset.key);
+    });
+    this.tabBar.addEventListener('dragover', (event) => {
+      const dragged = this.draggedTab;
+      if (!dragged) return;  // a file or text dragged in from elsewhere is no tab
+      event.preventDefault();
+      const others = [...this.tabBar.querySelectorAll('.dock-tab')].filter((tab) => tab !== dragged);
+      const before = others.find((tab) => {
+        const box = tab.getBoundingClientRect();
+        return event.clientX < box.left + box.width / 2;
+      }) || null;
+      if (dragged.nextElementSibling !== before) this.tabBar.insertBefore(dragged, before);
+    });
+    this.tabBar.addEventListener('drop', (event) => {
+      if (!this.draggedTab) return;
+      event.preventDefault();
+      this.tabDropped = true;
+    });
+    this.tabBar.addEventListener('dragend', () => {
+      if (!this.draggedTab) return;
+      this.draggedTab = null;
+      if (this.tabDropped) this.arrangeDock([...this.tabBar.querySelectorAll('.dock-tab')].map((tab) => tab.dataset.key));
+      else this.renderDock();
+    });
+  }
+
+  /** Docked panels in the order of these keys, the rest after them; drawn and kept for the next visit. */
+  arrangeDock(keys) {
+    const sorted = keys.map((key) => this.items.get(key)).filter((item) => item?.place === 'dock');
+    const rest = [...this.items.values()].filter((item) => !sorted.includes(item));
+    this.items = new Map([...sorted, ...rest].map((item) => [item.key, item]));
+    this.renderDock();
+    this.save();
   }
 
   /** Follow a pointer until it is released or lost -- also when it leaves the window or the browser cancels it. */

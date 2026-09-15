@@ -117,6 +117,7 @@ body.app {
   background: transparent; border: 0; border-right: 1px solid var(--border-subtle); cursor: pointer; white-space: nowrap;
 }
 .dock-tab[aria-selected="true"] { color: var(--text-primary); background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--accent); }
+.dock-tab[data-dragging] { opacity: 0.5; }
 .dock-tab .dock-tab-title { overflow: hidden; text-overflow: ellipsis; }
 .dock-tab .pk-badge { height: 16px; padding: 0 5px; }
 .dock-tab .dock-tab-actions { display: inline-flex; }
@@ -169,7 +170,8 @@ body.app {
 .launcher-fold > summary::-webkit-details-marker { display: none; }
 .launcher-fold > summary > .pk-icon { color: var(--text-muted); transition: transform var(--duration-fast); }
 .launcher-fold[open] > summary > .pk-icon { transform: rotate(90deg); }
-.launcher-fold > .launcher-item { padding-left: calc(var(--space-2) + 28px); }
+/* the instances, not the group's own row: its summary is a launcher-item too */
+.launcher-fold > .launcher-item:not(summary) { padding-left: calc(var(--space-2) + 28px); }
 .launcher-title .pk-badge { margin-left: var(--space-1); vertical-align: 1px; }
 .launcher-pin { color: var(--text-muted); opacity: 0; }
 .launcher-item:hover .launcher-pin, .launcher-pin:focus-visible { opacity: 1; }

@@ -184,12 +184,19 @@
       && launcher.top >= button.bottom && Math.abs(launcher.right - button.right) < 1;
   });
 
-  await check('instances of one plugin fold into one launcher row', async () => {
+  await check('instances of one plugin fold into one launcher row, lined up with the others, and only the instances indent', async () => {
     const folds = $$('#launcherList details.launcher-fold');
     const members = folds[0] && [...folds[0].querySelectorAll('[data-panel]')].map((i) => i.dataset.panel).sort().join(',');
+    // the icons say where a row's content starts: the group row with the single rows, its instances further in
+    folds[0].open = true;
+    const iconLeft = (row) => row.querySelector('.launcher-icon').getBoundingClientRect().left;
+    const single = iconLeft($('#launcherList > .launcher-item[data-panel]'));
+    const lined = iconLeft(folds[0].querySelector('summary')) === single;
+    const indented = [...folds[0].querySelectorAll(':scope > [data-panel]')].every((row) => iconLeft(row) > single);
+    folds[0].open = false;
     return folds.length === 1 && folds[0].querySelector('summary').textContent.includes('Sub-Agents')
       && folds[0].querySelector('summary .pk-badge').textContent === '2' && members === 'sam_skills,sam_writer'
-      && $$('#launcherList > [data-panel^="sam_"]').length === 0;
+      && $$('#launcherList > [data-panel^="sam_"]').length === 0 && lined && indented;
   });
 
   await check('the launcher search matches description and keywords', async () => {
@@ -2195,6 +2202,49 @@
     for (const window_ of restored) window_.querySelector('[data-act="dock"]').click();
     await until('no window left again', () => !$('#floatingLayer .app-window'));
     return steps.join() === '20,44' && reused && freeStep;
+  });
+
+  await check('the docked tabs sort by drag and drop and by Shift+arrow, keep their order after a reload, and a cancelled drag changes nothing', async () => {
+    const panelOf = (key) => key.slice(0, key.lastIndexOf(':'));
+    const order = () => $$('.dock-tab').map((tab) => panelOf(tab.dataset.key));
+    const stored = () => JSON.parse(localStorage.getItem('scarabhive.layout.v1')).items
+      .filter((item) => item.place === 'dock').map((item) => item.panelId);
+    const before = order();
+    if (before.length < 3) return 'fixture: fewer than three docked tabs';
+    const transfer = new DataTransfer();
+    const drag = (type, target, clientX = 0) => target.dispatchEvent(
+      new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer, clientX }));
+    // dropped anywhere but on the bar (or cancelled with Esc), the bar goes back to its order
+    const cancelled = $('.dock-tab');
+    drag('dragstart', cancelled);
+    // carried as a tab, not as text a panel's input field would take
+    const noText = transfer.types.includes('application/x-scarabhive-tab') && !transfer.types.includes('text/plain');
+    drag('dragover', $$('.dock-tab').at(-1), $$('.dock-tab').at(-1).getBoundingClientRect().right - 1);
+    const shownMoved = order().at(-1) === before[0];
+    drag('dragend', cancelled);
+    const keptOnCancel = noText && shownMoved && order().join() === before.join() && stored().join() === before.join()
+      && !$('.dock-tab[data-dragging]');
+    const first = $('.dock-tab');
+    drag('dragstart', first);
+    // the bar is drawn anew while the tab is on its way (a resize here; a panel's title or badge alike)
+    win().dispatchEvent(new Event('resize'));
+    await sleep(100);
+    const last = $$('.dock-tab').at(-1);
+    const dropTarget = drag('dragover', last, last.getBoundingClientRect().right - 1) === false;  // past its middle
+    drag('drop', last, last.getBoundingClientRect().right - 1);
+    drag('dragend', first);
+    const dropped = [...before.slice(1), before[0]];
+    const byDrag = keptOnCancel && dropTarget && order().join() === dropped.join() && stored().join() === dropped.join()
+      && !$('.dock-tab[data-dragging]');
+    const moved = $$('.dock-tab').at(-1);
+    moved.focus();
+    moved.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', shiftKey: true, bubbles: true, cancelable: true }));
+    const keyed = [...dropped.slice(0, -2), dropped.at(-1), dropped.at(-2)];
+    const byKey = order().join() === keyed.join() && stored().join() === keyed.join()
+      && panelOf(doc().activeElement?.dataset.key || '') === before[0];
+    await loadShell();
+    await until('the restored tabs', () => $$('.dock-tab').length === before.length);
+    return byDrag && byKey && order().join() === keyed.join();
   });
 
   await check('closing the last panel hides the dock', async () => {
