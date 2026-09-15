@@ -2,7 +2,7 @@
 
 Hybrid MCP+Web plugin:
 - MCP tools via DebateForumServer (create_channel, post_message, get_thread, conclude, list_channels)
-- Web UI via DebateForumWebFactory (Discord-style panel with channels and chat messages)
+- Web UI via DebateForumWebFactory (the Debate Forum panel and its JSON API)
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ class DebateForumHybridPlugin:
             min_message_length=config.get("min_message_length", 50),
         )
 
-        # Create web factory (provides REST API + HTML panel)
+        # Create web factory (the panel and its JSON API)
         self.web_factory = DebateForumWebFactory(
             db=self._db, name=name, server=self.server
         )
@@ -88,6 +88,9 @@ class DebateForumHybridPlugin:
 
     def get_web_router(self) -> APIRouter | None:
         return self.web_factory.get_web_router()
+
+    def get_static_assets(self) -> Path:
+        return self.web_factory.get_static_assets()
 
     # ── Hook Interface (delegate to hooks_plugin) ─────────────
 

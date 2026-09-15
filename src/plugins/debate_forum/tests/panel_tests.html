@@ -1,0 +1,600 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Debate Forum panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('panel');
+  const expandAll = () => [...frame.contentDocument.querySelectorAll('.df-group:not([open]) > summary')].forEach((summary) => summary.click());
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const all = (selector) => [...doc().querySelectorAll(selector)];
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const text = (selector) => $(selector)?.innerText.replace(/\s+/g, ' ').trim() ?? '';
+  const texts = (selector) => all(selector).map((one) => one.textContent.replace(/\s+/g, ' ').trim());
+  const groupNamed = (name) => all('.df-group').find((group) => group.querySelector('summary .pk-truncate').textContent === name);
+  const channel = (id) => $(`[data-channel="${id}"]`);
+  const post = (id) => $(`[data-message="${id}"]`);
+  const question = () => $('dialog.pk-dialog[open]:not(#create)');
+  const toasts = (kind) => all(`.pk-toast--${kind}`).map((toast) => toast.textContent);
+  const toasted = (kind, part) => until(`the ${kind} toast "${part}"`, () => toasts(kind).some((one) => one.includes(part)));
+  const clearToasts = () => all('.pk-toast').forEach((toast) => toast.remove());
+  const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+  const now = () => $('pk-refresh [data-act="now"]').click();
+  const cookie = (name, value) => { document.cookie = `${name}=${value}; path=/`; };
+  const uncookie = (name) => { document.cookie = `${name}=; path=/; max-age=0`; };
+  const get = async (path) => (await fetch(path)).json();
+  const post_ = (path) => fetch(path, { method: 'POST' });
+  const asked = () => get('/__stub/asked');
+  const clickWith = (element, detail) => element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail }));
+  const autoOff = async () => {
+    const toggle = await until('the refresh control', () => $('pk-refresh [data-act="auto"]'));
+    if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+  };
+  const open = async (id) => {
+    await until(`channel ${id} listed`, () => { if (!channel(id)) expandAll(); return channel(id); });
+    channel(id).click();
+    await until(`channel ${id} shown`, () => text('#name').endsWith(`#${id}`) && !$('#open').hidden);
+  };
+  const enter = (options = {}) => $('#text').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options }));
+  const stored = async (id) => get(`/__stub/channel?id=${id}`);
+
+  await check('opened, the panel counts the channels, lists the groups newest first and closed, and shows no channel', async () => {
+    try { localStorage.clear(); } catch { /* none */ }
+    await go('/plugins/debate_forum/');
+    await until('the groups', () => all('.df-group').length === 3, 3000);  // not the first tick's
+    await autoOff();
+    const counted = text('#stats') === '2 active 1 concluded 1 archived 6 messages';
+    const order = texts('.df-group > summary').join('|') === 'Ungrouped1|<b>Markup group</b>1|Story design2';
+    const closed = all('.df-group').every((group) => !group.open);
+    const options = texts('#group option').sort().join('|') === '<b>Markup group</b> (1)|Every group|Story design (2)';
+    return counted && order && closed && options && text('#placeholder') === 'No channel chosen Choose a channel to read its debate.'
+      && $('#open').hidden && (await asked()).messages === 0;
+  });
+
+  await check('a group opens and closes, stays so across a tick and a reload, and lists its channels oldest first', async () => {
+    groupNamed('Story design').querySelector('summary').click();
+    groupNamed('Ungrouped').querySelector('summary').click();
+    tick();
+    await sleep(300);
+    const listed = texts('.df-group[open] .df-channel .pk-truncate').join() === 'old-debate,synopsis,titles'
+      && channel(1).querySelector('.pk-dot--ok') && channel(2).querySelector('.pk-dot--info') && !channel(4).querySelector('[class*="pk-dot--"]')
+      && channel(1).querySelector('.pk-tab-count').textContent === '4' && channel(2).title === 'Which title?';
+    groupNamed('Ungrouped').querySelector('summary').click();
+    await sleep(100);
+    await go('/plugins/debate_forum/');
+    await until('the groups again', () => all('.df-group').length === 3);
+    await autoOff();
+    const kept = groupNamed('Story design').open && !groupNamed('Ungrouped').open && !groupNamed('<b>Markup group</b>').open;
+    return Boolean(listed) && kept;
+  });
+
+  await check('a channel shows its thread: a round opens only where a later one begins, participants, pins, Markdown, code and the line to post', async () => {
+    await open(1);
+    const head = text('#name') === 'synopsis #1' && text('#topic') === 'Which synopsis is best?' && text('#state') === 'Active'
+      && $('#state .pk-badge--ok') && $('#reopen').hidden && !$('#archive').hidden && !$('#composer').hidden;
+    const people = texts('#participants .pk-badge').join('|') === 'Mira2|Sven1|Moderator1';
+    const rounds = texts('.df-round').join() === 'Round 1,Round 2';
+    const order = all('.df-post').map((one) => one.dataset.message).join() === '1,2,3,4';
+    const pins = all('.df-pin').map((pin) => pin.getAttribute('aria-pressed')).join() === 'false,true,false,false'
+      && post(2).classList.contains('df-pinned') && !post(1).classList.contains('df-pinned');
+    const markdown = post(1).querySelector('.df-md strong')?.textContent === 'middle';
+    const slots = post(1).querySelector('.df-avatar').className === post(3).querySelector('.df-avatar').className
+      && post(1).querySelector('.df-avatar').className !== post(2).querySelector('.df-avatar').className
+      && post(1).querySelector('.df-avatar').textContent === 'M';
+    const code = Boolean(post(4).querySelector('pre code .token'));  // highlighted
+    const current = channel(1).getAttribute('aria-current') === 'true' && channel(2).getAttribute('aria-current') === 'false';
+    return Boolean(head && people && rounds && order && pins && markdown && slots && code && current);
+  });
+
+  await check('a JSON block switches to a readable tree, other code does not, and an unchanged thread is not drawn again', async () => {
+    const toggles = all('.df-json-toggle');
+    const only = toggles.length === 1 && post(3).contains(toggles[0]) && !post(4).querySelector('.df-json-toggle');
+    toggles[0].focus();
+    toggles[0].click();
+    const readable = post(3).querySelector('pre').hidden && !post(3).querySelector('.df-json-view').hidden
+      && texts('#messages [data-message="3"] .pk-json-key').join() === 'winner,note,reasons';
+    const drawn = post(1);
+    tick();
+    await sleep(600);
+    const same = drawn.isConnected;
+    await post_('/__stub/post?channel=1');
+    tick();
+    await until('the agent post', () => all('.df-post').length === 5);
+    const kept = post(3).querySelector('.df-json-toggle').getAttribute('aria-pressed') === 'true' && post(3).querySelector('pre').hidden
+      && doc().activeElement === post(3).querySelector('.df-json-toggle') && !drawn.isConnected;
+    post(3).querySelector('.df-json-toggle').click();
+    const back = !post(3).querySelector('pre').hidden && post(3).querySelector('.df-json-view').hidden;
+    return only && readable && same && kept && back;
+  });
+
+  await check('posts, names and topics are drawn as text, and a post’s markup is removed', async () => {
+    expandAll();
+    await open(3);
+    await sleep(300);
+    const drawn = text('#name') === '<img src=x onerror=parent.__xss=1> #3' && text('#topic') === '<i>topic</i>'
+      && texts('#participants .pk-badge').join() === '<u>name</u>1' && text('[data-message="6"] strong') === '<u>name</u>'
+      && text('[data-message="6"] .df-post-head .pk-badge') === '<s>role</s>' && text('[data-message="6"] .df-md') === 'text'
+      && channel(3).textContent.includes('<img src=x');
+    const inert = !$('#messages img, #messages script, #channels img, #channels b, #name img, #topic i, #participants u, #group b');
+    return drawn && inert && frame.contentWindow.__xss === undefined && window.__xss === undefined;
+  });
+
+  await check('a post goes once into the latest round, clears its text and is drawn; Shift+Enter and a blank text send nothing', async () => {
+    await open(1);
+    const before = (await stored(1)).messages.length;
+    $('#text').value = 'First from the viewer';
+    enter();
+    enter();  // while the first is on its way
+    await until('the post drawn', () => all('.df-post').at(-1).textContent.includes('First from the viewer'));
+    await sleep(400);
+    const saved = (await stored(1)).messages;
+    const once = saved.length === before + 1 && saved.at(-1).round === 2 && saved.at(-1).agent_name === 'User'
+      && saved.at(-1).agent_role === 'user' && $('#text').value === '';
+    $('#text').value = 'line';
+    enter({ shiftKey: true });
+    $('#text').value = '   ';
+    enter();
+    await sleep(500);
+    const nothing = (await stored(1)).messages.length === before + 1 && !toasts('error').length;
+    cookie('df_post', 'slow');
+    try {
+      $('#text').value = 'Second from the viewer';
+      $('#send').focus();
+      $('#send').click();
+      $('#text').value = 'typed meanwhile';
+      await until('the second post drawn', () => all('.df-post').at(-1).textContent.includes('Second from the viewer'), 5000);
+    } finally {
+      uncookie('df_post');
+    }
+    const meanwhile = $('#text').value === 'typed meanwhile' && doc().activeElement === $('#send');
+    $('#text').value = '';
+    return once && nothing && meanwhile;
+  });
+
+  await check('a post the channel refuses keeps its text and shows why; reopening lets it post again, once', async () => {
+    clearToasts();
+    await post_('/__stub/conclude?channel=1');
+    $('#text').value = 'Too late';
+    $('#send').click();
+    await toasted('error', '409: Channel 1 is concluded: it takes no posts');
+    await until('the channel drawn concluded', () => text('#state') === 'Concluded' && $('#composer').hidden && !$('#reopen').hidden);
+    const kept = $('#text').value === 'Too late' && !$('#send').disabled;
+    clickWith($('#reopen'), 1);
+    clickWith($('#reopen'), 1);  // disabled by the first
+    await until('the channel active again', () => text('#state') === 'Active' && !$('#composer').hidden && $('#reopen').hidden);
+    await sleep(300);
+    return kept && !toasts('error').some((one) => one.includes('active already')) && (await stored(1)).status === 'active';
+  });
+
+  await check('a pin toggles once, a double click’s second click on the redrawn button does nothing, a refused pin shows why', async () => {
+    clearToasts();
+    const pins = (await asked()).pins;
+    cookie('df_action', 'slow');
+    post(1).querySelector('.df-pin').focus();
+    clickWith(post(1).querySelector('.df-pin'), 0);  // Space on the focused button
+    clickWith(post(1).querySelector('.df-pin'), 1);  // on the button still disabled
+    await until('pinned', () => post(1).querySelector('.df-pin').getAttribute('aria-pressed') === 'true' && post(1).classList.contains('df-pinned'));
+    uncookie('df_action');
+    await sleep(300);
+    const once = (await asked()).pins === pins + 1 && (await get('/__stub/message?id=1')).pinned === 1
+      && doc().activeElement === post(1).querySelector('.df-pin');
+    clickWith(post(1).querySelector('.df-pin'), 1);
+    await until('unpinned', () => post(1).querySelector('.df-pin').getAttribute('aria-pressed') === 'false');
+    clickWith(post(1).querySelector('.df-pin'), 2);  // the second click of that double click, on the button drawn anew
+    await sleep(500);
+    const second = (await asked()).pins === pins + 2 && (await get('/__stub/message?id=1')).pinned === 0
+      && post(1).querySelector('.df-pin').getAttribute('aria-pressed') === 'false';
+    await open(3);
+    await post_('/__stub/delete?channel=3');
+    clickWith(post(6).querySelector('.df-pin'), 1);
+    await toasted('error', '404: Message 6 not found');
+    await until('the thread gone', () => $('#open').hidden && text('#placeholder') === 'The channel could not be loaded Channel 3 not found');
+    return once && second;
+  });
+
+  await check('a concluded channel shows its verdict and is reloaded only when it changed; archive and reopen', async () => {
+    expandAll();
+    await open(2);
+    const verdict = $('.df-verdict .df-md strong')?.textContent === 'B'
+      && texts('.df-verdict-details .pk-json-key').join() === 'winner,score' && $('#composer').hidden && !$('#reopen').hidden && !$('#archive').hidden;
+    const messages = (await asked()).messages;
+    tick();
+    await sleep(600);
+    const unchanged = (await asked()).messages === messages;
+    await post_('/__stub/post?channel=2&round=1');  // reopened, posted into and concluded again between two ticks
+    tick();
+    await until('the post into the concluded channel', () => all('.df-post').length === 2);
+    clickWith(post(5).querySelector('.df-pin'), 1);
+    await until('the pin in a concluded channel', () => post(5).classList.contains('df-pinned'));
+    cookie('df_action', 'slow');
+    $('#archive').focus();
+    clickWith($('#archive'), 0);
+    await until('archived', () => text('#state') === 'Archived' && $('#archive').hidden && !$('#reopen').hidden && !$('.df-verdict'));
+    uncookie('df_action');
+    await sleep(100);
+    const reopenFocused = doc().activeElement === $('#reopen');
+    clickWith($('#reopen'), 2);  // the second click of that double click, on the button now in its place
+    await sleep(600);
+    await until('the counts', () => text('#stats').includes('0 concluded 2 archived'));
+    const listed = !channel(2).querySelector('[class*="pk-dot--"]') && text('#state') === 'Archived';
+    clickWith($('#reopen'), 1);
+    await until('active', () => text('#state') === 'Active' && !$('#composer').hidden && $('#reopen').hidden);
+    return verdict && unchanged && listed && reopenFocused && (await stored(2)).status === 'active';
+  });
+
+  await check('deleting asks once, keeps the channel on cancel and deletes the one it named when asked later', async () => {
+    clearToasts();
+    await open(2);
+    $('#delete').click();
+    $('#delete').click();  // before the question is up: one question
+    let asking = await until('the question', question);
+    await sleep(200);
+    const once = all('dialog.pk-dialog[open]:not(#create)').length === 1 && asking.textContent.includes('Delete the channel “titles” and its 2 messages for good?')
+      && asking.querySelector('[data-index="1"]').classList.contains('pk-btn--danger');
+    asking.querySelector('[data-index="0"]').click();  // Cancel
+    await sleep(400);
+    const kept = Boolean(channel(2)) && !$('#delete').disabled && (await stored(2)) !== null;
+    $('#delete').click();
+    asking = await until('the question again', question);
+    channel(1).click();  // another channel chosen while asked
+    await until('synopsis shown', () => text('#name') === 'synopsis #1');
+    asking.querySelector('[data-index="1"]').click();
+    await until('titles gone', () => !channel(2));
+    await sleep(300);
+    const other = (await stored(2)) === null && text('#name') === 'synopsis #1' && !$('#open').hidden && !toasts('error').length;
+    const { channel_id: doomed } = await (await post_('/__stub/create?name=doomed')).json();
+    now();
+    await open(doomed);
+    $('#delete').click();
+    (await until('the question for doomed', question)).querySelector('[data-index="1"]').click();
+    await until('nothing shown', () => $('#open').hidden && text('#placeholder') === 'No channel chosen Choose a channel to read its debate.');
+    return once && kept && other && !channel(doomed);
+  });
+
+  await check('a new channel is created once and shown; a refusal stays in the dialog, a late answer leaves a new dialog alone', async () => {
+    clearToasts();
+    $('#newChannel').click();
+    const dialog = $('#create');
+    const form = $('#createForm');
+    const none = (await asked()).creates;
+    $('#createSubmit').click();  // no name: the browser asks for one
+    await sleep(300);
+    const required = (await asked()).creates === none && dialog.open;
+    form.elements.name.value = '   ';
+    cookie('df_create', 'slow');
+    $('#createSubmit').focus();
+    $('#createSubmit').click();
+    await until('the refusal', () => text('#createError') === 'A channel needs a name', 5000);
+    uncookie('df_create');
+    const refused = dialog.open && !toasts('error').length && !$('#createSubmit').disabled && doc().activeElement === $('#createSubmit');
+    const creates = (await asked()).creates;
+    form.elements.name.value = 'fresh-debate';
+    form.elements.topic.value = 'Fresh topic';
+    cookie('df_create', 'slow');
+    try {
+      $('#createSubmit').click();
+      $('#createSubmit').click();  // once
+      await until('created and shown', () => !dialog.open && text('#name').startsWith('fresh-debate #') && text('#topic') === 'Fresh topic'
+        && text('#messages') === 'No messages yet The debate has not started.', 5000);
+    } finally {
+      uncookie('df_create');
+    }
+    await sleep(300);
+    const once = (await asked()).creates === creates + 1 && !form.elements.name.value;
+    $('#newChannel').click();
+    const fresh = dialog.open && !$('#createError') && !form.elements.name.value;
+    form.elements.name.value = 'late';
+    cookie('df_create', 'slowfail');
+    try {
+      $('#createSubmit').click();
+      $('#createCancel').click();
+      await until('closed and reset', () => !dialog.open && !form.elements.name.value);
+      $('#newChannel').click();
+      form.elements.name.value = 'typed';
+      const freed = !$('#createSubmit').disabled;
+      await toasted('error', 'late could not be created: The forum is locked');
+      await sleep(100);
+      const alone = dialog.open && form.elements.name.value === 'typed' && !$('#createError');
+      $('#createCancel').click();
+      await until('closed and reset again', () => !dialog.open && !form.elements.name.value);
+      cookie('df_create', 'slow');
+      $('#newChannel').click();
+      form.elements.name.value = 'first-late';
+      $('#createSubmit').click();
+      $('#createCancel').click();
+      await until('closed and reset once more', () => !dialog.open && !form.elements.name.value);
+      await sleep(700);
+      $('#newChannel').click();
+      form.elements.name.value = 'second';
+      $('#createSubmit').click();  // on its way when the first answer comes in
+      await until('the first created', () => text('#name').startsWith('first-late #'), 5000);
+      const pending = dialog.open && $('#createSubmit').disabled && form.elements.name.value === 'second';
+      await until('the second created', () => !dialog.open && text('#name').startsWith('second #'), 5000);
+      return required && refused && once && fresh && freed && alone && pending;
+    } finally {
+      uncookie('df_create');
+    }
+  });
+
+  await check('status, group and search filter the list, and the search asks once while typed', async () => {
+    $('#status').value = 'archived';
+    $('#status').dispatchEvent(new Event('change'));
+    await until('the archived', () => all('.df-channel').length === 1 && channel(4));
+    $('#status').value = '';
+    $('#status').dispatchEvent(new Event('change'));
+    await until('all again', () => all('.df-group').length >= 2);
+    const lists = (await asked()).channels;
+    for (const typed of ['s', 'sy', 'syn']) {
+      $('#search').value = typed;
+      $('#search').dispatchEvent(new Event('input'));
+      await sleep(50);
+    }
+    await until('the search', () => all('.df-channel').length === 1 && channel(1));
+    await sleep(500);
+    const once = (await asked()).channels === lists + 1;
+    $('#search').value = 'zzz';
+    $('#search').dispatchEvent(new Event('input'));
+    await until('no match', () => text('#channels') === 'No channel matches');
+    $('#search').value = '';
+    $('#search').dispatchEvent(new Event('input'));
+    await until('all again', () => all('.df-group').length >= 2);
+    $('#group').value = '1';
+    $('#group').dispatchEvent(new Event('change'));
+    await until('the flat list', () => !$('.df-group') && channel(1));
+    const flat = all('.df-channel').length === 1 && !$('.df-more');
+    $('#group').value = '';
+    $('#group').dispatchEvent(new Event('change'));
+    await until('grouped', () => $('.df-group'));
+    return once && flat;
+  });
+
+  await check('the focus stays on a channel and a group when the list is drawn anew', async () => {
+    expandAll();
+    await until('synopsis listed', () => channel(1));
+    channel(1).focus();
+    tick();
+    await sleep(600);
+    const onChannel = doc().activeElement === channel(1);
+    const option = $('#group option:last-child');
+    tick();
+    await sleep(600);
+    const optionsKept = option.isConnected;
+    groupNamed('Story design').querySelector('summary').focus();
+    tick();
+    await sleep(600);
+    return onChannel && optionsKept && doc().activeElement === groupNamed('Story design').querySelector('summary');
+  });
+
+  await check('copying puts the debate as text on the clipboard, and says when it cannot', async () => {
+    clearToasts();
+    await open(1);
+    let copied = null;
+    Object.defineProperty(frame.contentWindow.navigator.clipboard, 'writeText', { configurable: true, value: async (value) => { copied = value; } });
+    $('#copy').click();
+    await toasted('ok', 'The debate is copied');
+    const shape = copied.startsWith('# synopsis\nTopic: Which synopsis is best?\n\n--- Round 1 ---\n\n[CRITIC "Mira"]\nSynopsis A drags in the **middle**.\n\n')
+      && copied.includes('--- Round 2 ---\n\n[CRITIC "Mira"]\nScores:') && copied.includes('\n--- Round 1 ---\n\n[MODERATOR "Moderator"]');
+    Object.defineProperty(frame.contentWindow.navigator.clipboard, 'writeText', { configurable: true, value: async () => { throw new Error('denied'); } });
+    $('#copy').click();
+    await toasted('error', 'The debate could not be copied: denied');
+    return shape;
+  });
+
+  await check('a failed load shows the error and nothing of the list shown before; a failed channel says so', async () => {
+    cookie('df_list', 'fails');
+    try {
+      now();
+      await until('the error', () => text('#channels') === 'Channels could not be loaded The forum is locked');
+      const shown = !$('.df-channel') && text('#stats') === '' && !toasts('error').some((one) => one.includes('forum is locked'));
+      uncookie('df_list');
+      now();
+      await until('the list again', () => $('.df-group') && text('#stats').includes('active'));
+      cookie('df_channel_fails', '1');
+      now();
+      await until('the channel error', () => $('#open').hidden && text('#placeholder') === 'The channel could not be loaded The channel is locked');
+      const waiting = () => $('#open').hidden && Boolean($('#placeholder .pk-skeleton')) && !text('#placeholder').includes('could not');
+      cookie('df_channel', 'all');
+      $('#newChannel').click();
+      $('#createForm').elements.name.value = 'rescue';
+      $('#createSubmit').click();
+      await until('the dialog closed', () => !$('#create').open);
+      const afterCreate = waiting();
+      await until('rescue shown', () => text('#name').startsWith('rescue #'), 5000);
+      channel(1).click();
+      await until('the channel error again', () => text('#placeholder') === 'The channel could not be loaded The channel is locked', 5000);
+      expandAll();
+      channel(4).click();
+      const afterSelect = waiting();
+      await until('old-debate', () => text('#name') === 'old-debate #4', 5000);
+      uncookie('df_channel');
+      uncookie('df_channel_fails');
+      channel(1).click();
+      await until('the channel again', () => !$('#open').hidden && text('#name') === 'synopsis #1');
+      return shown && afterCreate && afterSelect;
+    } finally {
+      uncookie('df_list');
+      uncookie('df_channel');
+      uncookie('df_channel_fails');
+    }
+  });
+
+  await check('an answer overtaken by a later load is dropped', async () => {
+    cookie('df_list', 'slowfail');
+    try {
+      now();  // fails after 1.5 s
+      await sleep(200);
+      uncookie('df_list');
+      $('#status').value = 'active';
+      $('#status').dispatchEvent(new Event('change'));
+      await until('the active', () => $('.df-channel') && !$('.df-channel .pk-dot--info'));
+      await sleep(1800);
+      const failureDropped = Boolean($('.df-channel')) && !text('#channels').includes('could not be loaded');
+      cookie('df_list', 'slow');
+      $('#status').value = '';
+      $('#status').dispatchEvent(new Event('change'));  // succeeds after 1.5 s
+      await sleep(200);
+      cookie('df_list', 'fails');
+      now();
+      await until('the error', () => text('#channels').includes('could not be loaded'));
+      await sleep(1800);
+      const listDropped = text('#channels').includes('could not be loaded');
+      uncookie('df_list');
+      now();
+      await until('the list again', () => $('.df-group'));
+      expandAll();
+      cookie('df_channel', '1');
+      $('#search').value = '';
+      await until('both listed', () => channel(1) && channel(4));
+      channel(4).click();
+      await until('old-debate', () => text('#name') === 'old-debate #4');
+      channel(1).click();  // held 1.5 s
+      channel(4).click();
+      await until('old-debate again', () => text('#name') === 'old-debate #4' && !$('#open').hidden);
+      await sleep(1800);
+      const threadDropped = text('#name') === 'old-debate #4' && channel(4).getAttribute('aria-current') === 'true';
+      cookie('df_channel_fails', '1');
+      channel(1).click();  // fails after 1.5 s
+      channel(4).click();
+      await sleep(1800);
+      const errorDropped = text('#name') === 'old-debate #4' && !$('#open').hidden;
+      uncookie('df_channel');
+      uncookie('df_channel_fails');
+      cookie('df_messages', '1');
+      channel(1).click();  // its messages after 1.5 s
+      await sleep(300);
+      channel(4).click();
+      await sleep(1800);
+      const messagesDropped = text('#name') === 'old-debate #4' && !$('#open').hidden && !all('.df-post').length;
+      uncookie('df_messages');
+      await until('old-debate loaded', () => text('#name') === 'old-debate #4' && !$('#open').hidden);
+      await sleep(300);
+      cookie('df_channel', '4');
+      tick();  // a tick for the archived channel: its detail only, after 1.5 s
+      await sleep(300);
+      channel(1).click();
+      await until('synopsis', () => text('#name') === 'synopsis #1' && !$('#open').hidden);
+      await sleep(1800);
+      const tickDropped = text('#name') === 'synopsis #1' && !$('#open').hidden;
+      return failureDropped && listDropped && threadDropped && errorDropped && messagesDropped && tickDropped;
+    } finally {
+      uncookie('df_list');
+      uncookie('df_channel');
+      uncookie('df_channel_fails');
+      uncookie('df_messages');
+    }
+  });
+
+  await check('a tick of the auto refresh leaves a load still on its way alone', async () => {
+    let ticking = null;
+    cookie('df_list', 'slow');
+    try {
+      const lists = (await asked()).channels;
+      now();
+      ticking = setInterval(tick, 200);
+      await sleep(1000);
+      const alone = (await asked()).channels === lists + 1;
+      await until('the list', () => $('.df-group'), 4000);
+      await sleep(300);
+      const before = (await asked()).channels;
+      now();  // answered after 1.5 s, but overtaken
+      await sleep(700);
+      now();  // answered 0.7 s after the first: the first, dropped, leaves this one on its way
+      await sleep(1300);
+      const stillAlone = (await asked()).channels === before + 2;
+      clearInterval(ticking);
+      await sleep(1000);
+      return alone && stillAlone;
+    } finally {
+      clearInterval(ticking);
+      uncookie('df_list');
+    }
+  });
+
+  await check('the auto refresh runs from the start, brings posts and appended chunks, and follows only a thread read to its end', async () => {
+    cookie('df_list', 'slow');
+    await go('/plugins/debate_forum/');
+    const loading = Boolean($('#channels .pk-skeleton')) && text('#stats') === '';
+    uncookie('df_list');
+    await until('the groups', () => $('.df-group'), 4000);
+    const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
+    await open(1);
+    const count = all('.df-post').length;
+    const { message_id: id } = await (await post_('/__stub/post?channel=1')).json();
+    await until('the post, brought by a tick', () => all('.df-post').length === count + 1, 8000);
+    await post_(`/__stub/append?message=${id}`);
+    await until('the chunk, brought by a tick', () => post(id)?.textContent.includes('And a chunk appended.'), 8000);
+    await autoOff();
+    for (let i = 0; i < 12; i += 1) await post_('/__stub/post?channel=1');
+    tick();
+    const out = $('#messages');
+    const atEnd = () => out.scrollTop + out.clientHeight >= out.scrollHeight - 8;
+    await until('the posts', () => all('.df-post').length === count + 13);
+    const followed = out.scrollHeight > out.clientHeight + 100 && atEnd();
+    out.scrollTop = 0;
+    await post_('/__stub/post?channel=1');
+    tick();
+    await until('another post', () => all('.df-post').length === count + 14);
+    const stayed = out.scrollTop === 0;
+    out.scrollTop = out.scrollHeight;
+    await post_('/__stub/post?channel=1');
+    tick();
+    await until('one more', () => all('.df-post').length === count + 15);
+    await sleep(100);
+    const again = atEnd();
+    for (let i = 0; i < 12; i += 1) await post_('/__stub/post?channel=4');
+    out.scrollTop = 0;
+    await open(4);
+    await until('the thread of old-debate', () => all('.df-post').length === 12);
+    return loading && running && followed && stayed && again && out.scrollHeight > out.clientHeight + 100 && atEnd();
+  });
+
+  await check('the list says when it shows only the most recently active channels', async () => {
+    await post_('/__stub/many');
+    $('#group').value = '1';
+    $('#group').dispatchEvent(new Event('change'));
+    await until('the part', () => text('.df-more') === 'The 50 most recently active of 56 channels: search or filter for the others.');
+    now();
+    await sleep(600);
+    const flat = all('.df-channel').length === 50 && !$('.df-group') && $('#group').value === '1';
+    $('#group').value = '';
+    $('#group').dispatchEvent(new Event('change'));
+    await until('grouped', () => $('.df-group') && /^The 50 most recently active of \d+ channels/.test(text('.df-more')));
+    return flat;
+  });
+
+  await check('with no channels the panel says so', async () => {
+    await post_('/__stub/clear');
+    now();
+    await until('the empty state', () => text('#channels') === 'No channels yet Agents open them with create_channel.');
+    await until('the thread gone', () => $('#open').hidden);
+    return text('#stats') === '0 active 0 concluded 0 archived 0 messages';
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

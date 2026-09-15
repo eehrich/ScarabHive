@@ -1,936 +1,487 @@
-/* Debate Forum - Panel JavaScript */
-(function () {
-    "use strict";
+// Debate Forum: the channels agents debate in, each thread with its rounds, pins and verdict, and a line to post into it.
+import { api, html, render, trusted, icon, jsonView, confirm, toast } from '/static/kit/panel-kit.js';
 
-    // ── State ─────────────────────────────────────────────────
-    let channels = [];
-    let selectedChannelId = null;
-    let currentChannel = null;
-    let pollTimer = null;
-    // Signature of the currently rendered messages (count + total content length).
-    // Content length is included so appended chunks (which don't change the count)
-    // still trigger a re-render while polling.
-    let lastMsgSig = "";
+const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
+const $ = (id) => document.getElementById(id);
+const SLOTS = 6;  // role colours in panel.css
+const EXPANDED_KEY = 'debate_forum.expanded_groups';
 
-    const POLL_INTERVAL = 4000; // ms
-    const ROLE_PALETTE_SIZE = 8; // number of color slots (slot0–slot7)
+/** {channels, total} as listed, or null: not loaded, or it could not be. */
+let listed = null;
+let listError = null;
+let groups = [];
+/** The id of the channel shown, or null. */
+let selected = null;
+/** What the thread holds: {channel, messages} of the channel it was loaded for. */
+let thread = null;
+let threadError = null;
+let load = 0;
+let threadLoad = 0;
+let busy = false;
+let sending = false;
+/** The messages and verdict the thread was drawn from: an unchanged answer is not drawn again. */
+let drawnKey = null;
+let drawnChannel = null;
+/** JSON blocks shown readable, as message id and block index. */
+const readable = new Set();
+let openings = 0;
 
-    // ── DOM refs ──────────────────────────────────────────────
-    const $channelList = document.getElementById("channel-list");
-    const $chatPlaceholder = document.getElementById("chat-placeholder");
-    const $chatHeader = document.getElementById("chat-header");
-    const $chatMessages = document.getElementById("chat-messages");
-    const $chatChannelName = document.getElementById("chat-channel-name");
-    const $chatChannelTopic = document.getElementById("chat-channel-topic");
-    const $chatMsgCount = document.getElementById("chat-msg-count");
-    const $verdictBox = document.getElementById("verdict-box");
-    const $verdictContent = document.getElementById("verdict-content");
-    const $filterGroup = document.getElementById("filter-group");
-    const $filterStatus = document.getElementById("filter-status");
-    const $filterSearch = document.getElementById("filter-search");
-    const $btnRefresh = document.getElementById("btn-refresh");
-    const $btnArchive = document.getElementById("btn-archive");
-    const $btnReopen = document.getElementById("btn-reopen");
-    const $btnDelete = document.getElementById("btn-delete");
-    const $btnCopy = document.getElementById("btn-copy");
+let expanded;
+try { expanded = new Set(JSON.parse(localStorage.getItem(EXPANDED_KEY)) || []); } catch { expanded = new Set(); }
+const keepExpanded = () => { try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...expanded])); } catch { /* not kept */ } };
 
-    // Delete modal
-    const $modalDelete = document.getElementById("modal-delete-channel");
-    const $btnDeleteCancel = document.getElementById("btn-delete-cancel");
-    const $btnDeleteConfirm = document.getElementById("btn-delete-confirm");
+const empty = (name, title, text = '') =>
+  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
+const STATUS = { active: ['ok', 'Active'], concluded: ['info', 'Concluded'], archived: ['', 'Archived'] };
 
-    // Participants sidebar
-    const $participantsSidebar = document.getElementById("participants-sidebar");
-    const $participantsList = document.getElementById("participants-list");
+function slot(role) {
+  let hash = 0;
+  for (const c of (role || '').trim().toLowerCase()) hash = (hash * 31 + c.charCodeAt(0)) & 0xffff;
+  return `df-slot-${hash % SLOTS}`;
+}
 
-    // Chat input
-    const $chatInputBar = document.getElementById("chat-input-bar");
-    const $chatInputName = document.getElementById("chat-input-name");
-    const $chatInputRole = document.getElementById("chat-input-role");
-    const $chatInputMsg = document.getElementById("chat-input-msg");
-    const $btnSend = document.getElementById("btn-send");
+const initials = (name) => (name || '?').split(/[\s_-]+/).filter(Boolean).map((word) => word[0].toUpperCase()).slice(0, 2).join('') || '?';
+const time = (stamp) => (stamp ? new Date(`${stamp.replace(' ', 'T')}Z`) : null);  // the database writes UTC
 
-    // Stats
-    const $statActive = document.querySelector("#stat-active span");
-    const $statConcluded = document.querySelector("#stat-concluded span");
-    const $statArchived = document.querySelector("#stat-archived span");
-    const $statMessages = document.querySelector("#stat-messages span");
+/** A button disabled while focused hands the focus to the page: it goes back to the first of these still shown. */
+function refocus(had, ...candidates) {
+  if (!had || document.activeElement !== document.body) return;
+  candidates.find((one) => one?.isConnected && one.offsetParent !== null && !one.disabled)?.focus();
+}
 
-    // ── API helpers ───────────────────────────────────────────
-    function apiUrl(path) {
-        // Endpoints are relative to the plugin's mount point
-        return "api/" + path;
+/** Focus on something about to be drawn anew goes to its successor. */
+function keepingFocus(root, draw) {
+  const key = document.activeElement?.closest('[data-key]');
+  const had = key && root.contains(key) ? key.dataset.key : null;
+  draw();
+  if (had) root.querySelector(`[data-key="${CSS.escape(had)}"]`)?.focus();
+}
+
+// ------------------------------------------------------------------------ data
+
+async function refresh(event) {
+  const auto = Boolean(event?.detail?.auto);
+  if (auto && busy) return;  // a tick while the last answer is on its way would only discard it
+  const mine = ++load;
+  busy = true;
+  try {
+    const query = new URLSearchParams();
+    for (const [key, value] of [['status', $('status').value], ['group_id', $('group').value], ['search', $('search').value.trim()]]) {
+      if (value) query.set(key, value);
     }
-
-    async function apiFetch(path, options = {}) {
-        const resp = await fetch(apiUrl(path), options);
-        if (!resp.ok) throw new Error(`API ${path}: ${resp.status}`);
-        return resp.json();
+    let answers;
+    try {
+      answers = await Promise.all([
+        api(`${BASE}api/stats`, { quiet: true }),
+        api(`${BASE}api/groups`, { quiet: true }),
+        api(`${BASE}api/channels?${query}`, { quiet: true }),
+      ]);
+    } catch (error) {
+      if (mine !== load) return;
+      listed = null;
+      listError = error.message;
+      drawStats(null);
+      drawChannels();
+      return;
     }
+    if (mine !== load) return;
+    const [stats, groupList, channelList] = answers;
+    groups = groupList.groups;
+    listed = { ...channelList, filtered: query.size > 0, flat: query.has('group_id') };  // what it was asked with
+    listError = null;
+    drawStats(stats);
+    drawGroups();
+    drawChannels();
+    if (selected !== null) await loadThread(!auto);
+  } finally {
+    if (mine === load) busy = false;
+  }
+}
 
-    async function apiPost(path) {
-        const resp = await fetch(apiUrl(path), { method: "POST" });
-        if (!resp.ok) throw new Error(`API POST ${path}: ${resp.status}`);
-        return resp.json();
+/** The channel shown; its messages anew when asked for, and otherwise only when they can have changed. */
+async function loadThread(full = true) {
+  const id = selected;
+  const mine = ++threadLoad;
+  const held = thread?.channel.id === id ? thread : null;
+  try {
+    const channel = await api(`${BASE}api/channels/${id}`, { quiet: true });
+    if (mine !== threadLoad) return;
+    let messages = held?.messages;
+    // only an active channel takes posts and chunks; into another one a post comes only through a reopening
+    if (full || !held || channel.status === 'active' || channel.message_count !== held.messages.length) {
+      messages = (await api(`${BASE}api/channels/${id}/messages`, { quiet: true })).messages;
+      if (mine !== threadLoad) return;
     }
+    thread = { channel, messages };
+    threadError = null;
+  } catch (error) {
+    if (mine !== threadLoad) return;
+    thread = null;
+    threadError = error.message;
+  }
+  drawThread();
+}
 
-    async function apiPostJson(path, body) {
-        const resp = await fetch(apiUrl(path), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
-        if (!resp.ok) {
-            const err = await resp.json().catch(() => ({}));
-            throw new Error(err.detail || `API POST ${path}: ${resp.status}`);
-        }
-        return resp.json();
+// -------------------------------------------------------------------- drawing
+
+function drawStats(stats) {
+  render($('stats'), stats ? html`
+    <span class="pk-badge pk-badge--ok" title="Active channels">${stats.active} active</span>
+    <span class="pk-badge pk-badge--info" title="Concluded channels">${stats.concluded} concluded</span>
+    <span class="pk-badge" title="Archived channels">${stats.archived} archived</span>
+    <span class="pk-badge" title="Messages in all channels">${stats.total_messages} messages</span>` : '');
+}
+
+function drawGroups() {
+  const select = $('group');
+  const chosen = select.value;
+  const options = groups.map((group) => [String(group.id), `${group.name} (${group.channel_count})`]);
+  if (chosen && !options.some(([id]) => id === chosen)) options.push([chosen, `Group ${chosen}`]);  // gone or older: still the filter
+  const key = JSON.stringify(options);
+  if (select.dataset.key === key) return;  // redrawn, an open list would close
+  select.dataset.key = key;
+  render(select, [html`<option value="">Every group</option>`, options.map(([id, label]) => html`<option value="${id}">${label}</option>`)]);
+  select.value = chosen;
+}
+
+function channelButton(channel) {
+  const [kind] = STATUS[channel.status] || [''];
+  return html`<button type="button" class="df-channel" data-key="channel:${channel.id}" data-channel="${channel.id}"
+      aria-current="${String(channel.id === selected)}" title="${channel.topic || channel.name}">
+    <span class="pk-dot${kind ? ` pk-dot--${kind}` : ''}"></span><span class="pk-grow pk-truncate">${channel.name}</span>${
+    channel.message_count ? html`<span class="pk-tab-count">${channel.message_count}</span>` : ''}</button>`;
+}
+
+function drawChannels() {
+  keepingFocus($('channels'), () => {
+    if (!listed) {
+      render($('channels'), listError ? empty('circle-alert', 'Channels could not be loaded', listError) : html`<span class="pk-skeleton"></span>`);
+      return;
     }
-
-    // ── Stats ─────────────────────────────────────────────────
-    async function loadStats() {
-        try {
-            const data = await apiFetch("stats");
-            $statActive.textContent = data.active || 0;
-            $statConcluded.textContent = data.concluded || 0;
-            $statArchived.textContent = data.archived || 0;
-            $statMessages.textContent = data.total_messages || 0;
-        } catch (e) {
-            console.warn("Failed to load stats:", e);
-        }
+    const { channels, total, filtered, flat } = listed;
+    if (!channels.length) {
+      render($('channels'), filtered ? empty('search', 'No channel matches') : empty('messages-square', 'No channels yet', 'Agents open them with create_channel.'));
+      return;
     }
-
-    // ── Groups ────────────────────────────────────────────────
-    async function loadGroups() {
-        try {
-            const data = await apiFetch("groups");
-            const groups = data.groups || [];
-            // Preserve current selection
-            const current = $filterGroup.value;
-            $filterGroup.innerHTML = '<option value="">All Groups</option>';
-            for (const g of groups) {
-                const opt = document.createElement("option");
-                opt.value = g.id;
-                opt.textContent = `${g.name} (${g.channel_count || 0})`;
-                $filterGroup.appendChild(opt);
-            }
-            if (current) $filterGroup.value = current;
-        } catch (e) {
-            console.warn("Failed to load groups:", e);
-        }
+    let body;
+    if (flat) {
+      body = channels.map(channelButton);
+    } else {
+      const buckets = new Map();
+      for (const channel of channels) {
+        const id = channel.group_id || 0;
+        if (!buckets.has(id)) buckets.set(id, []);
+        buckets.get(id).push(channel);
+      }
+      const newest = (list) => Math.max(...list.map((channel) => channel.id));
+      body = [...buckets].sort((a, b) => newest(b[1]) - newest(a[1])).map(([id, list]) => {
+        const name = id ? groups.find((group) => group.id === id)?.name ?? `Group ${id}` : 'Ungrouped';
+        list.sort((a, b) => a.id - b.id);  // a debate in the order it was held
+        return html`<details class="df-group" data-group="${id}" ${expanded.has(String(id)) ? trusted('open') : ''}>
+          <summary data-key="group:${id}" title="${id ? `${name} #${id}` : name}"><span class="pk-grow pk-truncate">${name}</span><span class="pk-tab-count">${list.length}</span></summary>
+          ${list.map(channelButton)}
+        </details>`;
+      });
     }
-
-    // ── Channels ──────────────────────────────────────────────
-    async function loadChannels() {
-        try {
-            const params = new URLSearchParams();
-            const status = $filterStatus.value;
-            const search = $filterSearch.value.trim();
-            const groupId = $filterGroup.value;
-            if (status) params.set("status", status);
-            if (search) params.set("search", search);
-            if (groupId) params.set("group_id", groupId);
-
-            const qs = params.toString();
-            const data = await apiFetch("channels" + (qs ? "?" + qs : ""));
-            channels = data.channels || [];
-            renderChannelList();
-        } catch (e) {
-            console.warn("Failed to load channels:", e);
-        }
-    }
-
-    function statusIcon(status) {
-        switch (status) {
-            case "active": return "🟢";
-            case "concluded": return "✅";
-            case "archived": return "📦";
-            default: return "⚪";
-        }
-    }
-
-    function getGroupName(groupId) {
-        if (!groupId) return null;
-        const opt = $filterGroup.querySelector(`option[value="${groupId}"]`);
-        return opt ? opt.textContent.replace(/\s*\(\d+\)$/, "") : `Group ${groupId}`;
-    }
-
-    // ── Collapsed-groups state (persisted in localStorage) ──
-    const COLLAPSED_KEY = "debate_forum_collapsed_groups";
-    function loadCollapsed() {
-        try {
-            const raw = localStorage.getItem(COLLAPSED_KEY);
-            return raw ? new Set(JSON.parse(raw)) : null; // null = first visit
-        } catch { return null; }
-    }
-    function saveCollapsed(set) {
-        try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set])); } catch {}
-    }
-    let collapsedGroups = loadCollapsed(); // null until first render (default all collapsed)
-
-    const MAX_VISIBLE_GROUPS = 20; // hide oldest groups when more than this
-
-    function renderChannelList() {
-        if (channels.length === 0) {
-            $channelList.innerHTML = '<div class="empty-state">No channels yet</div>';
-            return;
-        }
-
-        const filteringByGroup = !!$filterGroup.value;
-
-        // When filtering by one group, render flat list (no headers)
-        if (filteringByGroup) {
-            let html = "";
-            for (const ch of channels) {
-                const isActive = ch.id === selectedChannelId;
-                const badge = ch.message_count
-                    ? `<span class="channel-msg-badge">${ch.message_count}</span>`
-                    : "";
-                html += `
-                <div class="channel-item${isActive ? " active" : ""}" data-id="${ch.id}">
-                    <span class="channel-status-icon">${statusIcon(ch.status)}</span>
-                    <span class="channel-name" title="${escapeHtml(ch.topic)}">${escapeHtml(ch.name)}</span>
-                    ${badge}
-                </div>`;
-            }
-            $channelList.innerHTML = html;
-            $channelList.querySelectorAll(".channel-item").forEach((el) => {
-                el.addEventListener("click", () => selectChannel(parseInt(el.dataset.id, 10)));
-            });
-            return;
-        }
-
-        // Bucket channels by group
-        const buckets = new Map(); // group_id → [channels]
-        for (const ch of channels) {
-            const gid = ch.group_id || 0;
-            if (!buckets.has(gid)) buckets.set(gid, []);
-            buckets.get(gid).push(ch);
-        }
-        // Sort channels within each group: oldest first (chronological)
-        for (const arr of buckets.values()) {
-            arr.sort((a, b) => (a.id || 0) - (b.id || 0));
-        }
-        // Sort groups: newest first (by highest channel id in group)
-        const sortedGroups = [...buckets.entries()].sort((a, b) => {
-            const maxA = Math.max(...a[1].map(c => c.id || 0));
-            const maxB = Math.max(...b[1].map(c => c.id || 0));
-            return maxB - maxA;
-        });
-
-        // First render: default all collapsed
-        if (collapsedGroups === null) {
-            collapsedGroups = new Set(sortedGroups.map(([gid]) => String(gid)));
-            saveCollapsed(collapsedGroups);
-        }
-
-        // Limit visible groups — hide oldest entirely
-        const visibleGroups = sortedGroups.slice(0, MAX_VISIBLE_GROUPS);
-        const hiddenCount = sortedGroups.length - visibleGroups.length;
-
-        let html = "";
-        for (const [gid, arr] of visibleGroups) {
-            const gidStr = String(gid);
-            const collapsed = collapsedGroups.has(gidStr);
-            const groupLabel = gid ? `${escapeHtml(getGroupName(gid))} (#${escapeHtml(String(gid))})` : "Ungrouped";
-            const chevron = collapsed ? "▸" : "▾";
-            const chCount = arr.length;
-            html += `<div class="channel-group-header" data-gid="${gidStr}" title="${groupLabel}">`
-                + `<span class="group-chevron">${chevron}</span> `
-                + `<span class="group-label">${groupLabel}</span>`
-                + `<span class="group-count">${chCount}</span>`
-                + `</div>`;
-
-            if (!collapsed) {
-                for (const ch of arr) {
-                    const isActive = ch.id === selectedChannelId;
-                    const badge = ch.message_count
-                        ? `<span class="channel-msg-badge">${ch.message_count}</span>`
-                        : "";
-                    html += `
-                    <div class="channel-item${isActive ? " active" : ""}" data-id="${ch.id}">
-                        <span class="channel-status-icon">${statusIcon(ch.status)}</span>
-                        <span class="channel-name" title="${escapeHtml(ch.topic)}">${escapeHtml(ch.name)}</span>
-                        ${badge}
-                    </div>`;
-                }
-            }
-        }
-
-        if (hiddenCount > 0) {
-            html += `<div class="channel-group-overflow">${hiddenCount} older group${hiddenCount > 1 ? "s" : ""} hidden — use group filter</div>`;
-        }
-
-        $channelList.innerHTML = html;
-
-        // Click handlers: channels
-        $channelList.querySelectorAll(".channel-item").forEach((el) => {
-            el.addEventListener("click", () => selectChannel(parseInt(el.dataset.id, 10)));
-        });
-        // Click handlers: group headers toggle collapse
-        $channelList.querySelectorAll(".channel-group-header").forEach((el) => {
-            el.addEventListener("click", () => {
-                const gid = el.getAttribute("data-gid");
-                if (collapsedGroups.has(gid)) {
-                    collapsedGroups.delete(gid);
-                } else {
-                    collapsedGroups.add(gid);
-                }
-                saveCollapsed(collapsedGroups);
-                renderChannelList();
-            });
-        });
-    }
-
-    // ── Channel selection & messages ──────────────────────────
-    async function selectChannel(channelId) {
-        selectedChannelId = channelId;
-        renderChannelList(); // highlight active
-        $chatPlaceholder.style.display = "none";
-        $chatHeader.style.display = "flex";
-        $chatMessages.style.display = "block";
-
-        try {
-            const [chData, msgData] = await Promise.all([
-                apiFetch("channels/" + channelId),
-                apiFetch("channels/" + channelId + "/messages"),
-            ]);
-
-            currentChannel = chData;
-            $chatChannelName.textContent = chData.name + "  #" + chData.id;
-            $chatChannelTopic.textContent = chData.topic;
-            $chatMsgCount.textContent = (msgData.count || 0) + " messages";
-
-            renderMessages(msgData.messages || []);
-            renderVerdict(chData);
-            updateChatInputVisibility();
-
-            // Show/hide archive and reopen buttons based on status
-            $btnArchive.style.display =
-                chData.status === "archived" ? "none" : "inline-block";
-            $btnReopen.style.display =
-                (chData.status === "concluded" || chData.status === "archived") ? "inline-block" : "none";
-        } catch (e) {
-            console.warn("Failed to load channel:", e);
-            $chatMessages.innerHTML =
-                '<div class="empty-state">Failed to load channel</div>';
-        }
-    }
-
-    function roleClass(role) {
-        const normalized = (role || "").toLowerCase().trim();
-        if (normalized === "moderator") return "moderator";
-        // Stable color slot derived from role name — works for any role string
-        let hash = 0;
-        for (let i = 0; i < normalized.length; i++) {
-            hash = (hash * 31 + normalized.charCodeAt(i)) & 0xffff;
-        }
-        return "slot" + (hash % ROLE_PALETTE_SIZE);
-    }
-
-    function getInitials(name) {
-        return (name || "?")
-            .split(/[\s_-]+/)
-            .map((w) => w.charAt(0).toUpperCase())
-            .slice(0, 2)
-            .join("");
-    }
-
-    function renderMessages(messages) {
-        if (!messages.length) {
-            $chatMessages.innerHTML =
-                '<div class="empty-state">No messages yet — debate has not started</div>';
-            renderParticipants([]);
-            lastMsgSig = msgSignature(messages);
-            return;
-        }
-
-        let html = "";
-        let maxRoundSeen = -1;
-
-        for (const msg of messages) {
-            // Messages are now chronological (sorted by id). Only emit a
-            // round divider when entering a NEW (higher) round — otherwise
-            // moderator posts in old rounds would create spurious dividers
-            // that fragment the timeline.
-            const r = typeof msg.round === "number" ? msg.round : 0;
-            if (r > maxRoundSeen) {
-                html += `<div class="round-divider">Round ${r}</div>`;
-                maxRoundSeen = r;
-            }
-
-            const rc = roleClass(msg.agent_role);
-            const isPinned = msg.pinned ? true : false;
-            const pinIcon = isPinned ? "📌" : "📍";
-            const pinnedClass = isPinned ? " pinned" : "";
-            html += `
-            <div class="message-card${pinnedClass}" data-msg-id="${msg.id}">
-                <div class="msg-avatar avatar-${rc}">${getInitials(msg.agent_name)}</div>
-                <div class="msg-body">
-                    <div class="msg-header">
-                        <span class="msg-agent-name">${escapeHtml(msg.agent_name)}</span>
-                        <span class="msg-role-badge role-${rc}">${escapeHtml(msg.agent_role)}</span>
-                        <span class="msg-timestamp">${formatTimestamp(msg.created_at)}</span>
-                        <button class="btn-pin" title="${isPinned ? 'Unpin' : 'Pin'}" data-msg-id="${msg.id}" data-pinned="${isPinned ? '1' : '0'}">${pinIcon}</button>
-                    </div>
-                    <div class="msg-content markdown-body">${msg.content_html || escapeHtml(msg.content)}</div>
-                </div>
-            </div>`;
-        }
-
-        $chatMessages.innerHTML = html;
-        // Syntax-highlight fenced code blocks (Prism, loaded from CDN in the
-        // panel head — matches the main chat panel). Degrades gracefully if
-        // Prism isn't available.
-        if (window.Prism) window.Prism.highlightAllUnder($chatMessages);
-        // Add JSON ⇄ human-readable toggle to each ```json block
-        enhanceJsonBlocks($chatMessages);
-        // Scroll to bottom
-        $chatMessages.scrollTop = $chatMessages.scrollHeight;
-
-        // Update participants sidebar
-        renderParticipants(messages);
-        lastMsgSig = msgSignature(messages);
-    }
-
-    // ── JSON ⇄ human-readable toggle ──────────────────────────
-    // Each ```json block gets a small top-right toggle (like the pin) that
-    // switches between the raw JSON (Prism-highlighted) and a nested,
-    // human-readable rendering parsed from that same JSON. Purely client-side.
-    function prettifyKey(k) {
-        return String(k).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    }
-
-    // Recursively turn a parsed JSON value into DOM. Uses textContent only
-    // (no innerHTML) so message content can never inject markup.
-    function jsonToDom(value) {
-        if (Array.isArray(value)) {
-            const ul = document.createElement("ul");
-            ul.className = "json-array";
-            for (const item of value) {
-                const li = document.createElement("li");
-                li.appendChild(jsonToDom(item));
-                ul.appendChild(li);
-            }
-            return ul;
-        }
-        if (value && typeof value === "object") {
-            const box = document.createElement("div");
-            box.className = "json-obj";
-            for (const [k, v] of Object.entries(value)) {
-                const field = document.createElement("div");
-                field.className = "json-field";
-                const key = document.createElement("span");
-                key.className = "json-key";
-                key.textContent = prettifyKey(k);
-                field.appendChild(key);
-                const val = document.createElement("div");
-                val.className = "json-val";
-                val.appendChild(jsonToDom(v));
-                field.appendChild(val);
-                box.appendChild(field);
-            }
-            return box;
-        }
-        const span = document.createElement("span");
-        span.className = "json-scalar";
-        span.textContent = value === null || value === undefined ? "—" : String(value);
-        return span;
-    }
-
-    // Tolerant JSON parse: strict first, then repair the single most common LLM
-    // mistake — raw control chars (unescaped newlines/tabs) inside string values.
-    // Returns the parsed value, or undefined if still not parseable.
-    function looseJsonParse(text) {
-        try { return JSON.parse(text); } catch (e) { /* try repair */ }
-        let out = "", inStr = false, esc = false;
-        for (let i = 0; i < text.length; i++) {
-            const ch = text[i];
-            if (esc) { out += ch; esc = false; continue; }
-            if (ch === "\\") { out += ch; esc = true; continue; }
-            if (ch === '"') { inStr = !inStr; out += ch; continue; }
-            if (inStr && ch.charCodeAt(0) < 0x20) {
-                out += JSON.stringify(ch).slice(1, -1); // e.g. real \n → escaped \n
-                continue;
-            }
-            out += ch;
-        }
-        try { return JSON.parse(out); } catch (e) { return undefined; }
-    }
-
-    function enhanceJsonBlocks(root) {
-        // Any code block (```json or a plain ``` fence) whose content is a JSON
-        // object/array. Non-JSON code (python, bash, prose) fails the parse and
-        // is skipped; genuinely malformed JSON (missing commas) is skipped too.
-        const codes = root.querySelectorAll("pre > code");
-        for (const code of codes) {
-            const pre = code.parentElement;
-            if (pre.dataset.jsonEnhanced) continue;
-            const data = looseJsonParse(code.textContent);
-            if (data === null || typeof data !== "object") continue;
-            pre.dataset.jsonEnhanced = "1";
-
-            const wrap = document.createElement("div");
-            wrap.className = "json-block";
-            pre.parentNode.insertBefore(wrap, pre);
-            wrap.appendChild(pre);
-
-            const human = document.createElement("div");
-            human.className = "json-human markdown-body";
-            human.style.display = "none";
-            human.appendChild(jsonToDom(data));
-            wrap.appendChild(human);
-
-            const btn = document.createElement("button");
-            btn.className = "json-toggle";
-            btn.type = "button";
-            btn.title = "Umschalten: JSON ⇄ lesbar";
-            btn.textContent = "📖";
-            btn.addEventListener("click", () => {
-                const showingJson = pre.style.display !== "none";
-                pre.style.display = showingJson ? "none" : "";
-                human.style.display = showingJson ? "" : "none";
-                btn.textContent = showingJson ? "{ }" : "📖";
-            });
-            wrap.appendChild(btn);
-        }
-    }
-
-    // Cheap change signature: message count + total content length. Catches
-    // both new messages AND appended chunks (same count, growing content).
-    function msgSignature(messages) {
-        let total = 0;
-        for (const m of messages) total += m.content ? m.content.length : 0;
-        return messages.length + ":" + total;
-    }
-
-    function renderParticipants(messages) {
-        if (!messages.length) {
-            $participantsSidebar.style.display = "none";
-            return;
-        }
-
-        // Extract unique participants with message counts
-        const participants = new Map();
-        for (const msg of messages) {
-            const key = msg.agent_name;
-            if (!participants.has(key)) {
-                participants.set(key, {
-                    name: msg.agent_name,
-                    role: msg.agent_role,
-                    count: 0,
-                });
-            }
-            participants.get(key).count++;
-        }
-
-        $participantsSidebar.style.display = "flex";
-        $participantsList.innerHTML = Array.from(participants.values())
-            .map((p) => {
-                const rc = roleClass(p.role);
-                return `
-                <div class="participant-item">
-                    <div class="participant-avatar avatar-${rc}">${getInitials(p.name)}</div>
-                    <div class="participant-info">
-                        <span class="participant-name">${escapeHtml(p.name)}</span>
-                        <span class="participant-role">${escapeHtml(p.role)}</span>
-                    </div>
-                    <span class="participant-msg-count">${p.count}</span>
-                </div>`;
-            })
-            .join("");
-    }
-
-    function renderVerdictValue(key, val) {
-        const label = key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-        if (val === null || val === undefined) {
-            return `<li><strong>${escapeHtml(label)}:</strong> <em>—</em></li>`;
-        }
-        if (Array.isArray(val)) {
-            let h = `<li><strong>${escapeHtml(label)}:</strong><ul>`;
-            for (const item of val) {
-                if (typeof item === "object" && item !== null) {
-                    h += `<li>${escapeHtml(JSON.stringify(item, null, 2))}</li>`;
-                } else {
-                    h += `<li>${escapeHtml(String(item))}</li>`;
-                }
-            }
-            return h + `</ul></li>`;
-        }
-        if (typeof val === "object") {
-            let h = `<li><strong>${escapeHtml(label)}:</strong><ul>`;
-            for (const [k, v] of Object.entries(val)) {
-                h += renderVerdictValue(k, v);
-            }
-            return h + `</ul></li>`;
-        }
-        return `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(String(val))}</li>`;
-    }
-
-    function renderVerdict(channel) {
-        if (channel.status === "concluded" && (channel.verdict_summary || channel.verdict_json)) {
-            $verdictBox.style.display = "block";
-
-            // Extract summary: prefer verdict_summary, fall back to verdict_json.summary
-            const vj = channel.verdict_json || {};
-            const summary = channel.verdict_summary
-                || (typeof vj === "object" ? vj.summary : null)
-                || "";
-
-            // Build HTML
-            let html = "";
-            if (summary) {
-                const summaryHtml = channel.verdict_summary_html
-                    || `<p>${escapeHtml(summary)}</p>`;
-                html += `<div class="verdict-summary markdown-body">${summaryHtml}</div>`;
-            }
-
-            // Show key verdict fields (if verdict_json is an object with useful keys)
-            if (typeof vj === "object" && Object.keys(vj).length > 0) {
-                const interestingKeys = Object.keys(vj).filter(
-                    k => k !== "summary" && k !== "remaining_differences"
-                );
-                if (interestingKeys.length > 0) {
-                    html += `<details class="verdict-details"><summary>Details</summary><ul>`;
-                    for (const key of interestingKeys) {
-                        html += renderVerdictValue(key, vj[key]);
-                    }
-                    html += `</ul></details>`;
-                }
-            }
-
-            // Fallback: no summary at all, show raw JSON
-            if (!html) {
-                html = `<pre>${escapeHtml(JSON.stringify(vj, null, 2))}</pre>`;
-            }
-
-            $verdictContent.innerHTML = html;
-            if (window.Prism) window.Prism.highlightAllUnder($verdictContent);
-            enhanceJsonBlocks($verdictContent);
-        } else {
-            $verdictBox.style.display = "none";
-        }
-    }
-
-    function escapeHtml(str) {
-        const div = document.createElement("div");
-        div.textContent = str;
-        return div.innerHTML;
-    }
-
-    // ── Copy channel text to clipboard ──────────────────────
-    async function copyChannelText() {
-        if (!selectedChannelId) return;
-        try {
-            const msgData = await apiFetch("channels/" + selectedChannelId + "/messages");
-            const messages = msgData.messages || [];
-            if (!messages.length) return;
-
-            let text = "";
-            if (currentChannel) {
-                text += `# ${currentChannel.name}\n`;
-                if (currentChannel.topic) text += `Topic: ${currentChannel.topic}\n`;
-                text += "\n";
-            }
-
-            let lastRound = -1;
-            for (const msg of messages) {
-                if (msg.round !== lastRound) {
-                    text += `--- Round ${msg.round} ---\n\n`;
-                    lastRound = msg.round;
-                }
-                const role = (msg.agent_role || "").toUpperCase();
-                text += `[${role} "${msg.agent_name}"]\n${msg.content}\n\n`;
-            }
-
-            if (currentChannel && currentChannel.verdict_summary) {
-                text += `--- Verdict ---\n${currentChannel.verdict_summary}\n`;
-            }
-
-            await navigator.clipboard.writeText(text);
-            $btnCopy.textContent = "✅";
-            setTimeout(() => { $btnCopy.textContent = "📋"; }, 1500);
-        } catch (e) {
-            console.warn("Failed to copy:", e);
-        }
-    }
-
-    // ── Archive action ────────────────────────────────────────
-    async function archiveChannel() {
-        if (!selectedChannelId || !currentChannel) return;
-        if (currentChannel.status === "archived") return;
-
-        try {
-            await apiPost("channels/" + selectedChannelId + "/archive");
-            await refresh();
-        } catch (e) {
-            console.warn("Failed to archive:", e);
-        }
-    }
-
-    // ── Reopen action ─────────────────────────────────────────
-    async function reopenChannel() {
-        if (!selectedChannelId || !currentChannel) return;
-        if (currentChannel.status === "active") return;
-
-        try {
-            await apiPost("channels/" + selectedChannelId + "/reopen");
-            await refresh();
-        } catch (e) {
-            console.warn("Failed to reopen:", e);
-        }
-    }
-    // ── Delete action ───────────────────────────────────────────────────
-    function openDeleteModal() {
-        if (!selectedChannelId) return;
-        $modalDelete.classList.add("visible");
-    }
-
-    function closeDeleteModal() {
-        $modalDelete.classList.remove("visible");
-    }
-
-    async function deleteChannel() {
-        if (!selectedChannelId) return;
-        closeDeleteModal();
-        try {
-            await apiFetch("channels/" + selectedChannelId, { method: "DELETE" });
-            selectedChannelId = null;
-            currentChannel = null;
-            $chatHeader.style.display = "none";
-            $chatMessages.style.display = "none";
-            $chatPlaceholder.style.display = "flex";
-            await loadChannels();
-        } catch (e) {
-            console.warn("Failed to delete:", e);
-        }
-    }
-    // ── Send message from chat input ──────────────────────────
-    async function sendMessage() {
-        if (!selectedChannelId || !currentChannel || currentChannel.status !== "active") return;
-
-        const name = $chatInputName.value.trim();
-        const role = $chatInputRole.value.trim() || "user";
-        const content = $chatInputMsg.value.trim();
-        if (!name || !content) return;
-
-        // Determine round: use latest round from current messages
-        let round = 0;
-        const roundDividers = $chatMessages.querySelectorAll(".round-divider");
-        if (roundDividers.length > 0) {
-            const lastDiv = roundDividers[roundDividers.length - 1];
-            const match = lastDiv.textContent.match(/(\d+)/);
-            if (match) round = parseInt(match[1], 10);
-        }
-
-        $btnSend.disabled = true;
-        try {
-            await apiPostJson("channels/" + selectedChannelId + "/messages", {
-                agent_name: name,
-                agent_role: role,
-                content: content,
-                round: round,
-            });
-            $chatInputMsg.value = "";
-            // Refresh messages immediately
-            const msgData = await apiFetch("channels/" + selectedChannelId + "/messages");
-            renderMessages(msgData.messages || []);
-            $chatMsgCount.textContent = (msgData.count || 0) + " messages";
-        } catch (e) {
-            console.warn("Failed to send message:", e);
-            alert("Failed to send: " + e.message);
-        } finally {
-            $btnSend.disabled = false;
-            $chatInputMsg.focus();
-        }
-    }
-
-    function updateChatInputVisibility() {
-        if (currentChannel && currentChannel.status === "active") {
-            $chatInputBar.style.display = "flex";
-        } else {
-            $chatInputBar.style.display = "none";
-        }
-    }
-
-    // ── Polling / Refresh ─────────────────────────────────────
-    async function refresh() {
-        await Promise.all([loadStats(), loadGroups()]);
-        await loadChannels(); // must run AFTER loadGroups so getGroupName() works
-        if (selectedChannelId) {
-            await selectChannel(selectedChannelId);
-        }
-    }
-
-    function startPolling() {
-        stopPolling();
-        pollTimer = setInterval(async () => {
-            await Promise.all([loadStats(), loadGroups()]);
-            await loadChannels(); // must run AFTER loadGroups so getGroupName() works
-            // Refresh messages if a channel is selected and active
-            if (selectedChannelId && currentChannel && currentChannel.status === "active") {
-                try {
-                    const msgData = await apiFetch("channels/" + selectedChannelId + "/messages");
-                    const msgs = msgData.messages || [];
-                    // Re-render on any change — new messages OR appended chunks
-                    // (count-only would miss appends, which don't add a row).
-                    if (msgSignature(msgs) !== lastMsgSig) {
-                        renderMessages(msgs);
-                        $chatMsgCount.textContent = (msgData.count || 0) + " messages";
-                    }
-                } catch (e) { /* ignore */ }
-            }
-        }, POLL_INTERVAL);
-    }
-
-    function stopPolling() {
-        if (pollTimer) {
-            clearInterval(pollTimer);
-            pollTimer = null;
-        }
-    }
-
-    // ── Utilities ─────────────────────────────────────────────
-    function escapeHtml(str) {
-        if (!str) return "";
-        const div = document.createElement("div");
-        div.textContent = str;
-        return div.innerHTML;
-    }
-
-    function formatTimestamp(ts) {
-        if (!ts) return "";
-        try {
-            const d = new Date(ts + (ts.includes("Z") || ts.includes("+") ? "" : "Z"));
-            return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-        } catch {
-            return ts;
-        }
-    }
-
-    // ── Create Channel Modal ─────────────────────────────────
-    const $modalCreate = document.getElementById("modal-create-channel");
-    const $createName = document.getElementById("create-ch-name");
-    const $createTopic = document.getElementById("create-ch-topic");
-    const $createContext = document.getElementById("create-ch-context");
-    const $btnCreateChannel = document.getElementById("btn-create-channel");
-    const $btnCreateCancel = document.getElementById("btn-create-cancel");
-    const $btnCreateConfirm = document.getElementById("btn-create-confirm");
-
-    function openCreateModal() {
-        $createName.value = "";
-        $createTopic.value = "";
-        $createContext.value = "";
-        $modalCreate.classList.add("visible");
-        $createName.focus();
-    }
-
-    function closeCreateModal() {
-        $modalCreate.classList.remove("visible");
-    }
-
-    async function createChannel() {
-        const name = $createName.value.trim();
-        if (!name) { $createName.focus(); return; }
-        try {
-            const result = await apiPostJson("channels", {
-                name: name,
-                topic: $createTopic.value.trim(),
-                context: $createContext.value.trim(),
-            });
-            closeCreateModal();
-            await refresh();
-            if (result.channel_id) {
-                await selectChannel(result.channel_id);
-            }
-        } catch (e) {
-            console.warn("Failed to create channel:", e);
-        }
-    }
-
-    $btnCreateChannel.addEventListener("click", openCreateModal);
-    $btnCreateCancel.addEventListener("click", closeCreateModal);
-    $btnCreateConfirm.addEventListener("click", createChannel);
-    $modalCreate.addEventListener("click", (e) => {
-        if (e.target === $modalCreate) closeCreateModal();
+    render($('channels'), [body, total > channels.length
+      ? html`<div class="pk-help df-more">The ${channels.length} most recently active of ${total} channels: search or filter for the others.</div>` : '']);
+  });
+}
+
+function drawThread() {
+  const held = thread && thread.channel.id === selected ? thread : null;
+  $('open').hidden = !held;
+  if (selected === null) render($('placeholder'), empty('messages-square', 'No channel chosen', 'Choose a channel to read its debate.'));
+  else if (held) render($('placeholder'), '');
+  else if (threadError) render($('placeholder'), empty('circle-alert', 'The channel could not be loaded', threadError));
+  else render($('placeholder'), html`<span class="pk-skeleton"></span>`);
+  if (!held) return;
+  const { channel, messages } = held;
+  const [kind, label] = STATUS[channel.status] || ['', channel.status];
+  $('name').textContent = `${channel.name} #${channel.id}`;
+  render($('state'), html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${label}</span>`);
+  $('topic').textContent = channel.topic;
+  $('reopen').hidden = channel.status === 'active';
+  $('archive').hidden = channel.status === 'archived';
+  $('composer').hidden = channel.status !== 'active';
+  const people = new Map();
+  for (const message of messages) {
+    const person = people.get(message.agent_name) || { role: message.agent_role, count: 0 };
+    person.count += 1;
+    people.set(message.agent_name, person);
+  }
+  render($('participants'), [...people].map(([name, person]) =>
+    html`<span class="pk-badge df-person ${slot(person.role)}" title="${person.role}">${name}<span class="pk-tab-count">${person.count}</span></span>`));
+  drawMessages(channel, messages);
+}
+
+function drawMessages(channel, messages) {
+  const key = JSON.stringify([channel.id, channel.status, channel.verdict_summary_html, channel.verdict_json, messages]);
+  if (key === drawnKey) return;
+  const out = $('messages');
+  const same = drawnChannel === channel.id;
+  const atEnd = out.scrollTop + out.clientHeight >= out.scrollHeight - 8;
+  drawnKey = key;
+  drawnChannel = channel.id;
+  let round = -Infinity;
+  const posts = messages.map((message) => {
+    const opens = message.round > round;  // a later post in an earlier round opens none
+    if (opens) round = message.round;
+    return html`${opens ? html`<div class="df-round" role="separator">Round ${message.round}</div>` : ''}
+      <article class="df-post${message.pinned ? ' df-pinned' : ''}" data-message="${message.id}">
+        <div class="df-avatar ${slot(message.agent_role)}" aria-hidden="true">${initials(message.agent_name)}</div>
+        <div class="pk-grow">
+          <div class="pk-row df-post-head">
+            <strong>${message.agent_name}</strong>
+            ${message.agent_role ? html`<span class="pk-badge ${slot(message.agent_role)}">${message.agent_role}</span>` : ''}
+            <time class="pk-muted" title="${time(message.created_at)?.toLocaleString() ?? ''}">${time(message.created_at)?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) ?? ''}</time>
+            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm df-pin" data-key="pin:${message.id}" data-pin="${message.id}"
+              aria-pressed="${String(Boolean(message.pinned))}" title="${message.pinned ? 'Pinned: always in the participants’ context. Unpin' : 'Pin: always in the participants’ context'}"
+              aria-label="${message.pinned ? 'Unpin' : 'Pin'}">${icon('pin', { size: 'sm' })}</button>
+          </div>
+          <div class="df-md">${trusted(message.content_html)}</div>
+        </div>
+      </article>`;
+  });
+  const verdict = channel.status === 'concluded' && (channel.verdict_summary_html || channel.verdict_json) ? verdictBox(channel) : '';
+  keepingFocus(out, () => {
+    render(out, [messages.length ? posts : empty('messages-square', 'No messages yet', 'The debate has not started.'), verdict]);
+    window.Prism?.highlightAllUnder(out);
+    readableJson(out);
+  });
+  if (!same || atEnd) out.scrollTop = out.scrollHeight;
+}
+
+function verdictBox(channel) {
+  const details = channel.verdict_json && typeof channel.verdict_json === 'object'
+    ? Object.fromEntries(Object.entries(channel.verdict_json).filter(([key]) => key !== 'summary' && key !== 'remaining_differences'))
+    : channel.verdict_json;
+  const more = details && (typeof details !== 'object' || Object.keys(details).length);
+  return html`<section class="pk-card df-verdict" data-message="verdict">
+    <div class="pk-card-head">${icon('circle-check')}<h3 class="pk-card-title">Verdict</h3></div>
+    ${channel.verdict_summary_html ? html`<div class="df-md">${trusted(channel.verdict_summary_html)}</div>` : ''}
+    ${more ? html`<details class="df-verdict-details"><summary>Details</summary>${jsonView(details, { open: 2 })}</details>` : ''}
+  </section>`;
+}
+
+/** Tolerant JSON: strict first, then with the raw line breaks and tabs models leave inside strings escaped. */
+function parseJson(text) {
+  try { return JSON.parse(text); } catch { /* repaired below */ }
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (const c of text) {
+    if (escaped) escaped = false;
+    else if (c === '\\') escaped = true;
+    else if (c === '"') inString = !inString;
+    else if (inString && c.charCodeAt(0) < 0x20) { out += JSON.stringify(c).slice(1, -1); continue; }
+    out += c;
+  }
+  try { return JSON.parse(out); } catch { return undefined; }
+}
+
+/** A code block holding a JSON object or array gets a switch to a readable tree of it. */
+function readableJson(root) {
+  root.querySelectorAll('[data-message]').forEach((post) => {
+    post.querySelectorAll('.df-md pre > code').forEach((code, index) => {
+      const data = parseJson(code.textContent);
+      if (data === null || typeof data !== 'object') return;
+      const pre = code.parentElement;
+      const key = `${post.dataset.message}:${index}`;
+      const on = readable.has(key);
+      pre.classList.add('df-json-source');
+      pre.insertAdjacentHTML('beforebegin', String(html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--sm df-json-toggle" data-key="json:${key}"
+        data-json="${key}" aria-pressed="${String(on)}">${icon('eye', { size: 'sm' })} Readable</button>`));
+      pre.insertAdjacentHTML('afterend', String(html`<div class="df-json-view" ${on ? '' : trusted('hidden')}>${jsonView(data, { open: 3 })}</div>`));
+      pre.hidden = on;
     });
-    $createName.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") createChannel();
-    });
+  });
+}
 
-    // ── Event bindings ────────────────────────────────────────
-    $btnRefresh.addEventListener("click", refresh);
-    $btnArchive.addEventListener("click", archiveChannel);
-    $btnReopen.addEventListener("click", reopenChannel);
-    $btnDelete.addEventListener("click", openDeleteModal);
-    $btnCopy.addEventListener("click", copyChannelText);
+// --------------------------------------------------------------------- actions
 
-    $btnDeleteCancel.addEventListener("click", closeDeleteModal);
-    $btnDeleteConfirm.addEventListener("click", deleteChannel);
-    $modalDelete.addEventListener("click", (e) => {
-        if (e.target === $modalDelete) closeDeleteModal();
-    });
-    $filterStatus.addEventListener("change", loadChannels);
-    $filterGroup.addEventListener("change", loadChannels);
+function select(id) {
+  selected = id;
+  threadError = null;
+  drawChannels();
+  drawThread();
+  loadThread();
+}
 
-    $btnSend.addEventListener("click", sendMessage);
-    $chatInputMsg.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            sendMessage();
-        }
-    });
-
-    // Pin toggle via event delegation
-    $chatMessages.addEventListener("click", async (e) => {
-        const btn = e.target.closest(".btn-pin");
-        if (!btn) return;
-        const msgId = btn.getAttribute("data-msg-id");
-        const currentlyPinned = btn.getAttribute("data-pinned") === "1";
-        btn.disabled = true;
-        try {
-            await apiPostJson("messages/" + msgId + "/pin", { pinned: !currentlyPinned });
-            // Refresh messages to show updated pin state
-            const msgData = await apiFetch("channels/" + selectedChannelId + "/messages");
-            renderMessages(msgData.messages || []);
-        } catch (err) {
-            console.warn("Failed to toggle pin:", err);
-        }
-    });
-
-    let searchTimeout;
-    $filterSearch.addEventListener("input", () => {
-        clearTimeout(searchTimeout);
-        searchTimeout = setTimeout(loadChannels, 300);
-    });
-
-    // ── Sidebar Splitter ───────────────────────────────────────
-    const $splitter = document.getElementById("sidebar-splitter");
-    const $sidebar = document.getElementById("channel-sidebar");
-    if ($splitter && $sidebar) {
-        let dragging = false;
-        $splitter.addEventListener("mousedown", (e) => {
-            e.preventDefault();
-            dragging = true;
-            $splitter.classList.add("dragging");
-            document.body.style.cursor = "col-resize";
-            document.body.style.userSelect = "none";
-        });
-        document.addEventListener("mousemove", (e) => {
-            if (!dragging) return;
-            const rect = $sidebar.parentElement.getBoundingClientRect();
-            const newWidth = Math.min(Math.max(e.clientX - rect.left, 140), 500);
-            $sidebar.style.width = newWidth + "px";
-        });
-        document.addEventListener("mouseup", () => {
-            if (!dragging) return;
-            dragging = false;
-            $splitter.classList.remove("dragging");
-            document.body.style.cursor = "";
-            document.body.style.userSelect = "";
-        });
+function threadText({ channel, messages }) {
+  let text = `# ${channel.name}\n${channel.topic ? `Topic: ${channel.topic}\n` : ''}\n`;
+  let round = null;
+  for (const message of messages) {
+    if (message.round !== round) {
+      round = message.round;
+      text += `--- Round ${round} ---\n\n`;
     }
+    text += `[${(message.agent_role || '').toUpperCase()} "${message.agent_name}"]\n${message.content}\n\n`;
+  }
+  if (channel.verdict_summary) text += `--- Verdict ---\n${channel.verdict_summary}\n`;
+  return text;
+}
 
-    // ── Init ──────────────────────────────────────────────────
-    loadGroups().then(() => refresh().then(() => startPolling()));
-})();
+async function copy() {
+  const held = thread?.channel.id === selected ? thread : null;
+  if (!held) return;
+  try {
+    await navigator.clipboard.writeText(threadText(held));
+    toast('The debate is copied', { kind: 'ok' });
+  } catch (error) {
+    toast(`The debate could not be copied: ${error.message}`, { kind: 'error' });
+  }
+}
+
+/** A channel action on the channel shown when clicked; its button stays off until the answer is drawn. */
+async function act(event, button, run) {
+  if (event.detail > 1 || button.disabled || selected === null) return;  // the second click of a double click, or one still answered
+  const id = selected;
+  const had = document.activeElement === button;
+  button.disabled = true;
+  try {
+    await run(id);
+  } catch {
+    // shown by api()
+  } finally {
+    await refresh();
+    button.disabled = false;
+    refocus(had, button, $('reopen'), $('archive'));
+  }
+}
+
+const reopen = (event) => act(event, $('reopen'), (id) => api(`${BASE}api/channels/${id}/reopen`, { method: 'POST' }));
+const archive = (event) => act(event, $('archive'), (id) => api(`${BASE}api/channels/${id}/archive`, { method: 'POST' }));
+const remove = (event) => act(event, $('delete'), async (id) => {
+  const { channel, messages } = thread;
+  const count = messages.length === 1 ? 'its message' : `its ${messages.length} messages`;
+  if (!await confirm(`Delete the channel “${channel.name}” and ${count} for good? This cannot be undone.`,
+    { title: 'Delete channel', confirmLabel: 'Delete', danger: true })) return;
+  await api(`${BASE}api/channels/${id}`, { method: 'DELETE' });
+  if (selected === id) {
+    selected = null;
+    thread = null;
+    drawThread();
+  }
+});
+
+async function pin(event) {
+  const button = event.target.closest('.df-pin');
+  if (!button || button.disabled || event.detail > 1) return;
+  const had = document.activeElement === button;
+  button.disabled = true;  // until drawn anew
+  try {
+    await api(`${BASE}api/messages/${button.dataset.pin}/pin`, { method: 'POST', json: { pinned: button.getAttribute('aria-pressed') !== 'true' } });
+  } catch {
+    // shown by api()
+  }
+  await loadThread();
+  button.disabled = false;  // still there when nothing changed
+  refocus(had, $('messages').querySelector(`[data-key="${CSS.escape(button.dataset.key)}"]`));
+}
+
+function toggleJson(event) {
+  const button = event.target.closest('.df-json-toggle');
+  if (!button) return;
+  const on = button.getAttribute('aria-pressed') !== 'true';
+  if (on) readable.add(button.dataset.json); else readable.delete(button.dataset.json);
+  button.setAttribute('aria-pressed', String(on));
+  button.nextElementSibling.hidden = on;
+  button.nextElementSibling.nextElementSibling.hidden = !on;
+}
+
+async function send(event) {
+  event.preventDefault();
+  const text = $('text').value.trim();
+  if (sending || selected === null || !text) return;
+  sending = true;
+  const had = document.activeElement === $('send');
+  $('send').disabled = true;
+  try {
+    await api(`${BASE}api/channels/${selected}/messages`, { method: 'POST', json: { agent_name: $('author').value, agent_role: $('role').value, content: text } });
+    if ($('text').value.trim() === text) $('text').value = '';  // not what was typed since
+  } catch {
+    // shown by api(); the text stays
+  } finally {
+    sending = false;
+    $('send').disabled = false;
+    refocus(had, $('send'));
+  }
+  refresh();
+}
+
+function openCreate() {
+  openings += 1;
+  $('createSubmit').disabled = false;
+  $('createError')?.remove();
+  $('create').showModal();
+}
+
+async function create(event) {
+  event.preventDefault();
+  const form = new FormData($('createForm'));
+  const channel = { name: form.get('name'), topic: form.get('topic'), context: form.get('context') };
+  const opening = openings;
+  const asked = () => opening === openings && $('create').open;  // still the dialog it was asked from
+  const had = document.activeElement === $('createSubmit');
+  $('createSubmit').disabled = true;
+  let result;
+  try {
+    result = await api(`${BASE}api/channels`, { method: 'POST', json: channel, quiet: true });
+  } catch (error) {
+    if (asked()) {
+      $('createError')?.remove();
+      $('createForm').querySelector('.pk-dialog-body').insertAdjacentHTML('afterbegin', String(html`<p class="pk-error" id="createError">${error.message}</p>`));
+    } else {
+      toast(`${channel.name} could not be created: ${error.message}`, { kind: 'error' });
+    }
+    return;
+  } finally {
+    if (opening === openings) {
+      $('createSubmit').disabled = false;
+      refocus(had, $('createSubmit'));
+    }
+  }
+  if (asked()) $('create').close();
+  selected = result.channel_id;
+  threadError = null;
+  drawThread();
+  refresh();
+}
+
+// ---------------------------------------------------------------------- wiring
+
+let searchTimer;
+document.addEventListener('refresh', refresh);
+$('status').addEventListener('change', () => refresh());
+$('group').addEventListener('change', () => refresh());
+$('search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(refresh, 300); });
+$('channels').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-channel]');
+  if (button) select(Number(button.dataset.channel));
+});
+$('channels').addEventListener('toggle', (event) => {
+  const group = event.target.dataset?.group;
+  if (group === undefined) return;
+  if (event.target.open) expanded.add(group); else expanded.delete(group);
+  keepExpanded();
+}, true);
+$('messages').addEventListener('click', (event) => { pin(event); toggleJson(event); });
+$('copy').addEventListener('click', copy);
+$('reopen').addEventListener('click', reopen);
+$('archive').addEventListener('click', archive);
+$('delete').addEventListener('click', remove);
+$('composer').addEventListener('submit', send);
+$('text').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    $('composer').requestSubmit();
+  }
+});
+$('newChannel').addEventListener('click', openCreate);
+$('createCancel').addEventListener('click', () => $('create').close());
+$('create').addEventListener('close', () => $('createForm').reset());
+$('createForm').addEventListener('submit', create);
+
+drawThread();
+refresh();

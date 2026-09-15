@@ -213,35 +213,29 @@ class DebateForumDB:
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        conn = self._get_conn()
-        sql = "SELECT * FROM channels WHERE 1=1"
-        params: list[Any] = []
-        if status:
-            sql += " AND status = ?"
-            params.append(status)
-        if search:
-            sql += " AND (name LIKE ? OR topic LIKE ?)"
-            params.extend([f"%{search}%", f"%{search}%"])
-        if group_id is not None:
-            sql += " AND group_id = ?"
-            params.append(group_id)
-        sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        rows = conn.execute(sql, params).fetchall()
+        where, params = self._channel_filter(status, search, group_id)
+        rows = self._get_conn().execute(
+            f"SELECT * FROM channels WHERE {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?", [*params, limit, offset]
+        ).fetchall()
         return [self._row_to_channel(r) for r in rows]
 
-    def count_channels(self, status: str | None = None, group_id: int | None = None) -> int:
-        conn = self._get_conn()
-        sql = "SELECT COUNT(*) FROM channels WHERE 1=1"
-        params: list[Any] = []
+    def count_channels(self, status: str | None = None, group_id: int | None = None, search: str | None = None) -> int:
+        where, params = self._channel_filter(status, search, group_id)
+        return self._get_conn().execute(f"SELECT COUNT(*) FROM channels WHERE {where}", params).fetchone()[0]
+
+    @staticmethod
+    def _channel_filter(status: str | None, search: str | None, group_id: int | None) -> tuple[str, list[Any]]:
+        where, params = ["1=1"], []
         if status:
-            sql += " AND status = ?"
+            where.append("status = ?")
             params.append(status)
+        if search:
+            where.append("(name LIKE ? OR topic LIKE ?)")
+            params.extend([f"%{search}%", f"%{search}%"])
         if group_id is not None:
-            sql += " AND group_id = ?"
+            where.append("group_id = ?")
             params.append(group_id)
-        row = conn.execute(sql, params).fetchone()
-        return row[0]
+        return " AND ".join(where), params
 
     def conclude_channel(
         self, channel_id: int, verdict: dict[str, Any], summary: str = ""

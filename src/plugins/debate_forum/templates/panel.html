@@ -1,137 +1,72 @@
-<!DOCTYPE html>
-<html lang="de">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Debate Forum</title>
-    <link rel="stylesheet" href="static/panel.css">
-    <!-- Prism.js for syntax highlighting (same theme as the main chat panel) -->
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
-</head>
-<body>
-    <!-- Header -->
-    <header class="forum-header">
-        <div class="header-left">
-            <span class="header-icon">💬</span>
-            <h1>Debate Forum</h1>
-        </div>
-        <div class="header-stats" id="stats-bar">
-            <span class="stat" id="stat-active" title="Active channels">🟢 <span>0</span></span>
-            <span class="stat" id="stat-concluded" title="Concluded">✅ <span>0</span></span>
-            <span class="stat" id="stat-archived" title="Archived">📦 <span>0</span></span>
-            <span class="stat" id="stat-messages" title="Total messages">💬 <span>0</span></span>
-        </div>
-        <div class="header-right">
-            <select id="filter-group" title="Filter by group">
-                <option value="">All Groups</option>
-            </select>
-            <select id="filter-status" title="Filter by status">
-                <option value="">All Channels</option>
-                <option value="active">🟢 Active</option>
-                <option value="concluded">✅ Concluded</option>
-                <option value="archived">📦 Archived</option>
-            </select>
-            <input type="text" id="filter-search" placeholder="Search..." title="Search channels">
-            <button class="btn-refresh" id="btn-refresh" title="Refresh">⟳</button>
-        </div>
-    </header>
-
-    <!-- Main layout: sidebar + chat area -->
-    <div class="forum-container">
-        <!-- Channel sidebar -->
-        <aside class="channel-sidebar" id="channel-sidebar">
-            <div class="sidebar-header">
-                Channels
-                <button class="btn-create-channel" id="btn-create-channel" title="Create channel">+</button>
-            </div>
-            <div class="channel-list" id="channel-list">
-                <div class="empty-state">No channels yet</div>
-            </div>
-        </aside>
-
-        <!-- Resizable splitter -->
-        <div class="sidebar-splitter" id="sidebar-splitter"></div>
-
-        <!-- Chat area -->
-        <main class="chat-area" id="chat-area">
-            <div class="chat-placeholder" id="chat-placeholder">
-                <div class="placeholder-icon">💬</div>
-                <div class="placeholder-text">Select a channel to view the debate</div>
-            </div>
-
-            <!-- Channel header (hidden until selected) -->
-            <div class="chat-header" id="chat-header" style="display:none">
-                <div class="chat-header-info">
-                    <span class="chat-channel-name" id="chat-channel-name"></span>
-                    <span class="chat-channel-topic" id="chat-channel-topic"></span>
-                </div>
-                <div class="chat-header-actions">
-                    <span class="chat-msg-count" id="chat-msg-count"></span>
-                    <button class="btn-sm btn-copy" id="btn-copy" title="Copy channel text to clipboard">📋</button>
-                    <button class="btn-sm btn-reopen" id="btn-reopen" title="Reopen channel" style="display:none">🔓</button>
-                    <button class="btn-sm btn-archive" id="btn-archive" title="Archive channel">📦</button>
-                    <button class="btn-sm btn-delete" id="btn-delete" title="Delete channel permanently">🗑️</button>
-                </div>
-            </div>
-
-            <!-- Messages -->
-            <div class="chat-messages" id="chat-messages" style="display:none"></div>
-
-            <!-- Chat input (only for active channels) -->
-            <div class="chat-input-bar" id="chat-input-bar" style="display:none">
-                <input type="text" id="chat-input-name" placeholder="Name" title="Your display name" value="User">
-                <input type="text" id="chat-input-role" placeholder="Role" title="Your role" value="user">
-                <input type="text" id="chat-input-msg" placeholder="Type a message..." title="Message">
-                <button id="btn-send" title="Send">Send</button>
-            </div>
-
-            <!-- Verdict box (shown if concluded) -->
-            <div class="verdict-box" id="verdict-box" style="display:none">
-                <div class="verdict-title">⚖️ Verdict</div>
-                <div class="verdict-content" id="verdict-content"></div>
-            </div>
-        </main>
-
-        <!-- Participants sidebar (right) -->
-        <aside class="participants-sidebar" id="participants-sidebar" style="display:none">
-            <div class="sidebar-header">Participants</div>
-            <div class="participants-list" id="participants-list"></div>
-        </aside>
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Debate Forum{% endblock %}
+{% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
+{% block toolbar %}
+<span class="pk-row" id="stats"></span>
+<button type="button" class="pk-btn pk-btn--sm" id="newChannel">{{ icon('plus', size='sm') }} New channel</button>
+<pk-refresh interval="5" auto></pk-refresh>
+{% endblock %}
+{% block content %}
+<div class="df-layout">
+  <aside class="df-sidebar">
+    <label class="pk-search">{{ icon('search') }}<input type="search" class="pk-input pk-input--sm" id="search" placeholder="Search channels" aria-label="Search channels"></label>
+    <div class="pk-row df-filters">
+      <select class="pk-select pk-select--sm pk-grow" id="group" aria-label="Group"><option value="">Every group</option></select>
+      <select class="pk-select pk-select--sm pk-grow" id="status" aria-label="Status">
+        <option value="">Every status</option>
+        <option value="active">Active</option>
+        <option value="concluded">Concluded</option>
+        <option value="archived">Archived</option>
+      </select>
     </div>
-
-    <!-- Delete Channel Confirm Modal -->
-    <div class="modal-overlay" id="modal-delete-channel">
-        <div class="modal-box">
-            <div class="modal-title">Delete Channel</div>
-            <p class="modal-warning">This will permanently delete the channel and all its messages. This cannot be undone.</p>
-            <div class="modal-actions">
-                <button class="btn-modal btn-cancel" id="btn-delete-cancel">Cancel</button>
-                <button class="btn-modal btn-danger" id="btn-delete-confirm">Delete</button>
-            </div>
+    <nav class="df-channels" id="channels" aria-label="Channels"><span class="pk-skeleton"></span></nav>
+  </aside>
+  <section class="df-thread" id="thread">
+    <div id="placeholder"><div class="pk-empty">{{ icon('messages-square') }}<div class="pk-empty-title">No channel chosen</div><div>Choose a channel to read its debate.</div></div></div>
+    <div class="df-open" id="open" hidden>
+      <header class="df-head">
+        <div class="pk-row">
+          <h2 class="pk-grow pk-truncate df-name" id="name"></h2>
+          <span id="state"></span>
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" id="copy" title="Copy the debate as text" aria-label="Copy the debate as text">{{ icon('copy', size='sm') }}</button>
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" id="reopen">{{ icon('rotate-ccw', size='sm') }} Reopen</button>
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" id="archive">{{ icon('folder', size='sm') }} Archive</button>
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" id="delete" title="Delete the channel" aria-label="Delete the channel">{{ icon('trash-2', size='sm') }}</button>
         </div>
-    </div>
-
-    <!-- Create Channel Modal -->
-    <div class="modal-overlay" id="modal-create-channel">
-        <div class="modal-box">
-            <div class="modal-title">New Channel</div>
-            <input type="text" id="create-ch-name" placeholder="Channel name" maxlength="100">
-            <input type="text" id="create-ch-topic" placeholder="Topic" maxlength="200">
-            <textarea id="create-ch-context" placeholder="Context (optional)" rows="3"></textarea>
-            <div class="modal-actions">
-                <button class="btn-modal btn-cancel" id="btn-create-cancel">Cancel</button>
-                <button class="btn-modal btn-confirm" id="btn-create-confirm">Create</button>
-            </div>
+        <div class="pk-muted" id="topic"></div>
+        <div class="pk-row df-participants" id="participants"></div>
+      </header>
+      <div class="df-messages" id="messages" role="log"></div>
+      <form class="df-composer" id="composer" hidden>
+        <div class="pk-row">
+          <input class="pk-input pk-input--sm df-who" id="author" value="User" aria-label="Name" required>
+          <input class="pk-input pk-input--sm df-who" id="role" value="user" aria-label="Role">
         </div>
+        <div class="pk-row df-send">
+          <textarea class="pk-textarea pk-grow" id="text" rows="2" placeholder="Write a post; Enter sends, Shift+Enter breaks the line" aria-label="Post"></textarea>
+          <button type="submit" class="pk-btn pk-btn--primary" id="send">{{ icon('send-horizontal', size='sm') }} Send</button>
+        </div>
+      </form>
     </div>
-
-    <!-- Prism.js for syntax highlighting (same set as the main chat panel) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
-    <script src="static/panel.js"></script>
-</body>
-</html>
+  </section>
+</div>
+<dialog class="pk-dialog" id="create" aria-labelledby="createTitle">
+  <form id="createForm">
+    <div class="pk-dialog-head"><h2 class="pk-dialog-title" id="createTitle">New channel</h2></div>
+    <div class="pk-dialog-body pk-form">
+      <label class="pk-field"><span class="pk-label">Name</span><input class="pk-input" name="name" maxlength="100" required></label>
+      <label class="pk-field"><span class="pk-label">Topic</span><input class="pk-input" name="topic" maxlength="200"></label>
+      <label class="pk-field"><span class="pk-label">Context</span><textarea class="pk-textarea" name="context" rows="3"></textarea></label>
+    </div>
+    <div class="pk-dialog-actions">
+      <button type="button" class="pk-btn" id="createCancel">Cancel</button>
+      <button type="submit" class="pk-btn pk-btn--primary" id="createSubmit">Create</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script src="/static/vendor/prism/prism.js" data-manual></script>
+<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>
+{% endblock %}
