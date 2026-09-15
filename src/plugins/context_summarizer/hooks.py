@@ -356,6 +356,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             # The pause starts as soon as LLM calls are about to be spent: a
             # rejected or failed run would otherwise redo them on every call.
+            # Stamped here, with no await since the check, so two calls of one
+            # session cannot both pass; given back below if no call went out.
+            previous_stamp = self._last_summarization_time.get(session_id)
             self._last_summarization_time[session_id] = current_time
             if len(self._last_summarization_time) > self._max_tracked_sessions:
                 oldest = min(self._last_summarization_time, key=self._last_summarization_time.get)
@@ -378,6 +381,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     context,
                     scope
                 )
+                # Only its own stamp: a manual run may have stamped this session meanwhile.
+                if summary_stats['llm_calls'] == 0 and self._last_summarization_time.get(session_id) == current_time:
+                    if previous_stamp is None:
+                        self._last_summarization_time.pop(session_id, None)
+                    else:
+                        self._last_summarization_time[session_id] = previous_stamp
 
                 # Reconstruct message list: system + summarized + recent
                 new_messages_dicts = system_msgs + summarized_msgs + recent_msgs
@@ -1014,7 +1023,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         
         if not summarizer_llm:
             logger.warning("[ContextSummarizer] No LLM available, skipping summarization")
-            return messages, {'summary_count': 0, 'reason': 'no_llm'}
+            return messages, {'summary_count': 0, 'reason': 'no_llm', 'llm_calls': 0}
 
         # Calculate effective chunk_size to respect max_chunks limit
         effective_chunk_size = self.chunk_size
@@ -1047,7 +1056,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Check for cancellation before starting
         if cancellation_token and cancellation_token.is_cancelled:
             logger.info("[ContextSummarizer] Cancellation requested before starting")
-            return messages, {'summary_count': 0, 'cancelled': True, 'cancelled_at_chunk': 0}
+            return messages, {'summary_count': 0, 'cancelled': True, 'cancelled_at_chunk': 0, 'llm_calls': 0}
 
         # Send progress update
         await scope.progress(
@@ -1090,9 +1099,11 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 'success': True,
                 'result': chunk,
                 'is_summary': False,
-                'chunk_idx': chunk_idx
+                'chunk_idx': chunk_idx,
+                'llm_called': False
             }
-        
+
+        llm_called = False
         try:
             # Format messages for prompt
             formatted_msgs = self._format_messages_for_summary(chunk)
@@ -1102,6 +1113,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             # Call LLM for summarization using chat() method with cancellation support
             from agent_system.llm.models import ChatMessage
+            llm_called = True
             summary_response = await summarizer_llm.chat(
                 messages=[ChatMessage(role='user', content=prompt, timestamp=datetime.now())],
                 cancellation_token=cancellation_token
@@ -1138,7 +1150,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 'success': True,
                 'result': [summary_msg],
                 'is_summary': True,
-                'chunk_idx': chunk_idx
+                'chunk_idx': chunk_idx,
+                'llm_called': True
             }
 
         except asyncio.CancelledError:
@@ -1148,7 +1161,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 'result': chunk,
                 'is_summary': False,
                 'chunk_idx': chunk_idx,
-                'error': 'cancelled'
+                'error': 'cancelled',
+                'llm_called': llm_called
             }
         except Exception as e:
             logger.error(f"[ContextSummarizer] Error summarizing chunk {chunk_num}: {e}", exc_info=True)
@@ -1158,7 +1172,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 'result': chunk,
                 'is_summary': False,
                 'chunk_idx': chunk_idx,
-                'error': str(e)
+                'error': str(e),
+                'llm_called': llm_called
             }
 
     async def _summarize_chunks_parallel(
@@ -1199,6 +1214,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         summarized = []
         summary_count = 0
         failed_chunks = 0
+        llm_calls = 0
         cancelled = False
 
         for idx, result in enumerate(results):
@@ -1207,7 +1223,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 logger.error(f"[ContextSummarizer] Chunk {idx + 1} raised exception: {result}")
                 summarized.extend(chunks[idx])  # Keep original
                 failed_chunks += 1
+                llm_calls += 1  # unknown whether the call went out; count it so the pause holds
             elif isinstance(result, dict):
+                llm_calls += result['llm_called']
                 if result.get('error') == 'cancelled':
                     cancelled = True
                 
@@ -1234,6 +1252,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             'total_chunks': total_chunks,
             'successful_chunks': summary_count,
             'failed_chunks': failed_chunks,
+            'llm_calls': llm_calls,
             'parallel': True,
             'cancelled': cancelled
         }

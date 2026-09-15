@@ -18,7 +18,8 @@ tool results.
 2. **Rate limit.** An automatic run within `min_time_between_summarizations`
    seconds of the last run in the same session that called the summarizing
    LLM is skipped — applied, rejected or failed alike, since each spent LLM
-   calls. Runs skipped before the LLM (step 3) start no pause.
+   calls. A run that sends no LLM call — skipped at step 3, cancelled before
+   the first chunk, or without a summarizing LLM — starts no pause.
 3. **Split.** Messages become system messages, the last
    `preserve_recent_count` messages and the older ones. Fewer than two older
    messages, or older messages too small to ever reach

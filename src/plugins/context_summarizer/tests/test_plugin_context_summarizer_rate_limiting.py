@@ -294,17 +294,70 @@ async def test_unapplied_run_starts_the_pause(summarizer_plugin, mock_agent, moc
     assert chat.await_count > calls_after_first_run
 
 
+@pytest.mark.parametrize("message_count, min_reduction, reason", [
+    (5, None, 'insufficient_old_messages'),
+    (100, 0.99, 'insufficient_potential_reduction'),
+], ids=["too_few_old_messages", "too_little_to_gain"])
 @pytest.mark.asyncio
-async def test_run_without_llm_call_does_not_start_the_pause(summarizer_plugin, mock_agent, mock_llm):
+async def test_run_without_llm_call_does_not_start_the_pause(
+        summarizer_plugin, mock_agent, mock_llm, message_count, min_reduction, reason):
     summarizer_plugin.trigger_percentage = 0.01
+    if min_reduction is not None:
+        summarizer_plugin.min_reduction = min_reduction
     context = HookContext(
         hook_type=HookType.PRE_LLM_CALL, request_id='r', session_id='session-skip',
-        agent=mock_agent, messages=create_test_messages(5), llm=mock_llm)
+        agent=mock_agent, messages=create_test_messages(message_count), llm=mock_llm)
 
     result = await summarizer_plugin.summarize_context(context)
 
-    assert result.metadata['reason'] == 'insufficient_old_messages'
+    assert result.metadata['reason'] == reason
     assert 'session-skip' not in summarizer_plugin._last_summarization_time
+
+
+@pytest.mark.parametrize("earlier_stamp", [None, 900.0], ids=["no_earlier_pause", "earlier_pause_kept"])
+@pytest.mark.asyncio
+async def test_run_cancelled_before_any_llm_call_leaves_the_pause_as_it_was(
+        summarizer_plugin, mock_agent, mock_llm, monkeypatch, earlier_stamp):
+    import plugins.context_summarizer.hooks as hooks_module
+
+    monkeypatch.setattr(hooks_module, "time", Mock(monotonic=Mock(return_value=1000.0)))
+    summarizer_plugin.trigger_percentage = 0.01
+    if earlier_stamp is not None:
+        summarizer_plugin._last_summarization_time['session-cancel'] = earlier_stamp
+    chat = summarizer_plugin._summarizer_llm.chat
+    context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL, request_id='r', session_id='session-cancel',
+        agent=mock_agent, messages=create_test_messages(100), llm=mock_llm,
+        metadata={'manual_trigger': True}, cancellation_token=Mock(is_cancelled=True))
+
+    await summarizer_plugin.summarize_context(context)
+
+    assert chat.await_count == 0
+    assert summarizer_plugin._last_summarization_time.get('session-cancel') == earlier_stamp
+
+
+@pytest.mark.asyncio
+async def test_run_without_llm_call_keeps_the_stamp_of_a_run_that_came_in_meanwhile(
+        summarizer_plugin, mock_agent, mock_llm, monkeypatch):
+    import plugins.context_summarizer.hooks as hooks_module
+
+    monkeypatch.setattr(hooks_module, "time", Mock(monotonic=Mock(return_value=1000.0)))
+    summarizer_plugin.trigger_percentage = 0.01
+    real = summarizer_plugin._summarize_messages
+
+    async def manual_run_stamps_meanwhile(*args):
+        summarizer_plugin._last_summarization_time['session-overlap'] = 1000.5  # a manual run that sent calls
+        return await real(*args)
+
+    monkeypatch.setattr(summarizer_plugin, "_summarize_messages", manual_run_stamps_meanwhile)
+    context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL, request_id='r', session_id='session-overlap',
+        agent=mock_agent, messages=create_test_messages(100), llm=mock_llm,
+        cancellation_token=Mock(is_cancelled=True))
+
+    await summarizer_plugin.summarize_context(context)
+
+    assert summarizer_plugin._last_summarization_time.get('session-overlap') == 1000.5
 
 
 @pytest.mark.asyncio
