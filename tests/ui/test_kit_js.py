@@ -46,6 +46,7 @@ EXPECTED = [
     "pk-refresh with auto refreshes from the start, and its button stops it",
     "a refresh says whether the viewer or the timer asked",
     "hidden hides whatever display a component sets",
+    "a panel pushed narrow scrolls sideways with its scrollbar in view, and prose tables still wrap",
 ]
 
 

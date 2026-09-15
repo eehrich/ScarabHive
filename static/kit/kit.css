@@ -149,8 +149,11 @@
 :where(.pk-root) ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
 :where(.pk-root) ::-webkit-scrollbar-track { background: transparent; }
 
-/* A panel document: header row, scrolling body. */
-.pk-panel { min-height: 100vh; display: flex; flex-direction: column; background: var(--surface-2); }
+/* A panel document: header row, a body that scrolls both ways beneath it.
+ * The body, not a table box, is what scrolls sideways: a table box's scrollbar
+ * sits at the table's end, often far below the view, so a panel pushed
+ * narrow showed its content cut off with no scrollbar in reach. */
+.pk-panel { height: 100vh; height: 100dvh; display: flex; flex-direction: column; background: var(--surface-2); }
 .pk-page-header {
   display: flex; align-items: center; gap: var(--space-3);
   min-height: 44px; padding: var(--space-2) var(--space-4);
@@ -162,7 +165,11 @@
 [data-framed] .pk-page-title { display: none; }
 [data-framed] .pk-page-header { justify-content: flex-end; min-height: 0; }
 [data-framed] .pk-page-header:has(> .pk-toolbar:empty) { display: none; }
-.pk-page-body { flex: 1; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
+/* scroll-padding: a row the keyboard moves to is scrolled clear of a sticky table head (its height: padding, one
+ * line of --text-xs, the border) instead of counting as visible beneath it */
+.pk-page-body { --pk-scroll-pad-top: var(--space-4); scroll-padding-top: calc(var(--space-2) * 3 + var(--text-xs) * 1.5 + 1px); flex: 1; min-height: 0; overflow: auto; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
+/* A scrolling column squeezes children that clip (a code block, a table box) instead of scrolling past them. */
+:where(.pk-page-body) > * { flex-shrink: 0; }
 
 /* ------------------------------------------------------------------- icons */
 
@@ -283,7 +290,7 @@
 @keyframes pk-pop { from { opacity: 0; transform: translateY(4px) scale(0.99); } }
 .pk-dialog-head { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-4) var(--space-4) 0; }
 .pk-dialog-title { font-size: var(--text-lg); font-weight: 600; margin: 0; }
-.pk-dialog-body { padding: var(--space-3) var(--space-4); color: var(--text-secondary); font-size: var(--text-sm); overflow: auto; }
+.pk-dialog-body { --pk-scroll-pad-top: var(--space-3); padding: var(--space-3) var(--space-4); color: var(--text-secondary); font-size: var(--text-sm); overflow: auto; }
 .pk-dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); padding: var(--space-3) var(--space-4) var(--space-4); }
 
 .pk-drawer {
@@ -381,10 +388,13 @@
 
 /* ------------------------------------------------------------------ tables */
 
-.pk-table-wrap { overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
+/* As wide as the table needs (its cells still wrap first), never a scroll box of its own: the panel body
+ * scrolls, and a sticky head sticks to it. clip only rounds the corners. */
+.pk-table-wrap { width: fit-content; min-width: 100%; overflow: clip; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
 .pk-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .pk-table th {
-  position: sticky; top: 0; z-index: 1; text-align: left; white-space: nowrap;
+  /* sticky holds at the scroller's content edge: pulled up by its padding, the head meets the top without a gap */
+  position: sticky; top: calc(-1 * var(--pk-scroll-pad-top, 0px)); z-index: 1; text-align: left; white-space: nowrap;
   padding: var(--space-2) var(--space-3); font-size: var(--text-xs); font-weight: 500; color: var(--text-muted);
   background: var(--surface-1); border-bottom: 1px solid var(--border-subtle);
 }

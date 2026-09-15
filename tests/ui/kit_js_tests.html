@@ -260,6 +260,50 @@
     return display === 'none';
   });
 
+  await check('a panel pushed narrow scrolls sideways with its scrollbar in view, and prose tables still wrap', async () => {
+    const cell = (text) => `<td style="white-space: nowrap">${text}</td>`;
+    const rows = Array.from({ length: 60 }, (_, i) => `<tr>${cell(`row ${i} ${'wide '.repeat(12)}`)}${cell('more wide text here')}</tr>`).join('');
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'width: 320px; height: 400px; border: 0';
+    frame.srcdoc = `<!doctype html><html class="pk-root"><head><link rel="stylesheet" href="/static/kit/kit.css"></head>
+      <body class="pk-panel"><header class="pk-page-header"><h1 class="pk-page-title">T</h1></header>
+      <main class="pk-page-body">
+        <div class="pk-table-wrap" id="prose"><table class="pk-table"><tr><td>${'word '.repeat(200)}</td></tr></table></div>
+        <pre class="pk-code" id="code">${'line\n'.repeat(30)}</pre>
+        <div class="pk-table-wrap" id="wide"><table class="pk-table"><thead><tr><th>Name</th><th>More</th></tr></thead>${rows}</table></div>
+      </main></body></html>`;
+    await new Promise((resolve) => { frame.onload = resolve; document.body.appendChild(frame); });
+    const doc = frame.contentDocument;
+    const body = doc.querySelector('.pk-page-body');
+    const wide = doc.getElementById('wide');
+    const code = doc.getElementById('code');
+    // the body scrolls, not the page: the header stays where it is, and the body's scrollbar ends in view
+    const header = doc.querySelector('.pk-page-header');
+    body.scrollLeft = 60;
+    const scrollsSideways = body.scrollLeft === 60 && header.getBoundingClientRect().left === 0
+      && doc.scrollingElement.scrollWidth === doc.scrollingElement.clientWidth && body.getBoundingClientRect().bottom <= 400;
+    // scrolled down past the table's top, its head stays at the top of the body
+    body.scrollTop = wide.offsetTop + 300;
+    const th = wide.querySelector('th');
+    const headSticks = Math.abs(th.getBoundingClientRect().top - body.getBoundingClientRect().top) <= 1;
+    // a row the keyboard moves to while it sits under the stuck head is scrolled clear of it
+    const row = wide.querySelectorAll('tbody tr')[30];
+    row.tabIndex = 0;
+    body.scrollTop += row.getBoundingClientRect().top - body.getBoundingClientRect().top - 10;
+    const underHead = row.getBoundingClientRect().top < th.getBoundingClientRect().bottom;
+    row.focus();
+    const focusClear = underHead && row.getBoundingClientRect().top >= th.getBoundingClientRect().bottom;
+    body.scrollTop = 0;
+    body.scrollLeft = 0;
+    // the table box is no scroller of its own: its scrollbar would sit at the table's end, far below the view
+    const boxScrollsNot = wide.scrollWidth === wide.clientWidth && wide.getBoundingClientRect().height > 400;
+    const proseWraps = doc.getElementById('prose').getBoundingClientRect().width <= body.clientWidth;
+    // a clipping child keeps its height in the scrolling column instead of being squeezed
+    const codeKept = code.getBoundingClientRect().height === Math.min(code.scrollHeight, 480);
+    frame.remove();
+    return scrollsSideways && headSticks && focusClear && boxScrollsNot && proseWraps && codeKept;
+  });
+
   await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });
 </script>
 </body>
