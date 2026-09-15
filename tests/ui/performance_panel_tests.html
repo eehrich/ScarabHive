@@ -171,19 +171,6 @@
       && card('slow').textContent.includes('No slow requests recorded') && rows('active').length === 1 && !$('.pk-toast--error');
   });
 
-  await check('collecting garbage asks first and says what it collected', async () => {
-    await fresh();
-    const before = (await asked()).posts;
-    button('gc').click();
-    const asking = await until('the question', question);
-    const named = asking.textContent.includes('garbage collection') && asking.querySelector('.pk-btn--primary')?.textContent === 'Collect garbage'
-      && !asking.querySelector('.pk-btn--danger');
-    await answer(true);
-    const toast = await until('the toast', () => $('.pk-toast--ok'));
-    return named && /^Collected [\d.,\s]+ objects; memory 512 MB → 512 MB$/.test(toast.textContent.trim())
-      && (await asked()).posts === before + 1;
-  });
-
   await check('a double click asks once, and the button stays disabled until drawn anew', async () => {
     await fresh();
     const before = (await asked()).posts;
@@ -213,15 +200,15 @@
   await check('the keyboard focus returns to the button when the dialog closes and stays across redraws', async () => {
     await fresh();
     frame.focus();
-    button('gc').focus();
-    button('gc').click();
+    button('reset').focus();
+    button('reset').click();
     await answer(false);
-    await until('the button again', () => !button('gc').disabled);
-    await until('the focus back on the button', () => doc().activeElement === button('gc'), 3000);
+    await until('the button again', () => !button('reset').disabled);
+    await until('the focus back on the button', () => doc().activeElement === button('reset'), 3000);
     await post('/__stub/traffic');
     now();
     await until('the routes drawn anew', () => routeKeys().includes('/tools/{name}'));
-    return doc().activeElement === button('gc');
+    return doc().activeElement === button('reset');
   });
 
   await check('a viewer who is no longer an administrator, or signed out, sees why and nothing of before', async () => {

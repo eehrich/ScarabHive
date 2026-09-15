@@ -108,6 +108,22 @@ async def take_memory_snapshot() -> dict[str, Any]:
     }
 
 
+@memory_router.post("/gc")
+async def collect_garbage() -> dict[str, Any]:
+    """Run a full garbage collection now and report what it freed.
+
+    Returns the number of objects collected and the process RSS before and after it, freed_mb being
+    their difference -- what the collection gave back to the process, not to the operating system.
+    """
+    _check_memory_profiling_enabled()
+    from ..utils.memory_profiling import process_memory
+    before = process_memory().get("rss_mb", 0.0)
+    collected = gc.collect()
+    after = process_memory().get("rss_mb", 0.0)
+    return {"collected_objects": collected, "memory_before_mb": before, "memory_after_mb": after,
+            "freed_mb": before - after}
+
+
 @memory_router.post("/baseline")
 async def set_memory_baseline() -> dict[str, Any]:
     """Replace the baseline with the current object counts (walks the heap in the profiling thread)."""
@@ -166,16 +182,6 @@ profile_router = APIRouter(prefix="/profile", dependencies=[Depends(require_perf
 async def get_profile() -> dict[str, Any]:
     """Active and slowest recent requests, stats per route, async tasks, event loop lag, memory, threads."""
     return get_profiling_report()
-
-
-@profile_router.post("/gc")
-async def trigger_gc() -> dict[str, Any]:
-    """Run a full garbage collection and say what it collected and how the process size changed."""
-    before = MemoryMonitor.get_memory_mb()
-    collected = gc.collect()
-    after = MemoryMonitor.get_memory_mb()
-    return {"collected_objects": collected, "memory_before_mb": before, "memory_after_mb": after,
-            "freed_mb": before - after}
 
 
 @profile_router.post("/reset")

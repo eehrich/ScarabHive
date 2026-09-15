@@ -21,6 +21,12 @@ const ACTIONS = {
     path: 'snapshot',
     done: (r) => `Snapshot taken: ${count(r.objects)} objects`,
   },
+  gc: {
+    path: 'gc',
+    ask: ['Run a full garbage collection now? The server pauses while it runs.',
+      { title: 'Collect garbage', confirmLabel: 'Collect garbage' }],
+    done: (r) => `Collected ${count(r.collected_objects)} objects, freed ${mb(r.freed_mb)}`,
+  },
   baseline: {
     path: 'baseline',
     ask: ['Replace the baseline with the object counts of now? Growth is then measured from this moment.',

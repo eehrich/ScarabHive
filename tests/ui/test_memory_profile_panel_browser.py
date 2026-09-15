@@ -12,6 +12,7 @@ Behind the panel's back: POST /__stub/reset seeds everything anew, /__stub/grow?
 /__stub/snapshot takes a snapshot as the periodic task would, /__stub/flag?on=false turns memory profiling off, /__stub/trace starts
 tracemalloc. GET /__stub/asked counts the summaries asked for, the heap walks, the snapshots and tracemalloc starts,
 and says whether tracemalloc runs with how many frames.
+A collection frees 4 MB and reports 1234 objects.
 Cookies: ``mp_role`` = admin | user (none: not signed in); ``mp_summary`` = fails | slow (1.5 s) | slower (3 s) |
 slowfail (fails after 1.5 s); ``mp_action=slow`` holds every POST for 1.5 s before it reaches the route.
 """
@@ -54,7 +55,7 @@ class Process:
         self.tracing = False
         self.nframes = None
         self.collections = 0
-        self.asked = {"summary": 0, "walks": 0, "snapshots": 0, "starts": 0}
+        self.asked = {"summary": 0, "walks": 0, "snapshots": 0, "starts": 0, "gcs": 0}
 
     def count_objects(self):
         self.asked["walks"] += 1
@@ -71,6 +72,11 @@ class Process:
     def top_allocations(self, limit=20):
         return [dict(a) for a in ALLOCATIONS] if self.tracing else []
 
+    def collect(self):
+        self.asked["gcs"] += 1
+        self.rss -= 4  # what the collection gave back
+        return 1234
+
     def start(self, nframes):
         self.tracing, self.nframes = True, nframes
 
@@ -79,6 +85,7 @@ class Process:
 
 
 def panel_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    from agent_system.api import debug_endpoints
     from agent_system.api.debug_endpoints import router as debug_router
     from agent_system.auth import database, dependencies
     from agent_system.auth.models import UserRole
@@ -95,6 +102,7 @@ def panel_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     monkeypatch.setattr(memory_profiling, "gc", SimpleNamespace(
         get_count=proc.gc_count, get_threshold=lambda: (700, 10, 10), garbage=[]))
     monkeypatch.setattr(memory_profiling, "MEMORY_PROFILING_ENABLED", True)
+    monkeypatch.setattr(debug_endpoints, "gc", SimpleNamespace(collect=proc.collect))
 
     roles = {"admin": UserRole.ADMIN, "user": UserRole.USER}
 
@@ -200,6 +208,7 @@ EXPECTED = [
     'type names and allocation sites are drawn as text, never as markup',
     'loading and the auto refresh walk no heap and store nothing',
     'a snapshot is taken on a click, walks the heap once and is drawn',
+    'collecting garbage asks first, is sent once on a double click, and the figures are read anew',
     'setting the baseline asks first: declined nothing happens, confirmed it is replaced',
     'tracemalloc starts and stops on a confirmed click; a snapshot asked for records the allocations, which outlast later periodic snapshots',
     'the server refuses the page and every memory route to anyone but an administrator',

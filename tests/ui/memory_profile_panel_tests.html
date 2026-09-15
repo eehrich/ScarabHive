@@ -122,6 +122,42 @@
       && toasts('ok').some((t) => t.includes('Snapshot taken')) && !act('snapshot').disabled;
   });
 
+  await check('collecting garbage asks first, is sent once on a double click, and the figures are read anew', async () => {
+    await fresh();
+    clearToasts();
+    const getRefused = await status('/debug/memory/gc');  // a collection is a change: it takes a POST
+    // the second click of a double click, on a button no first click reached: nothing
+    act('gc').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+    await sleep(300);
+    const secondIgnored = !question() && (await asked()).gcs === 0;
+    act('gc').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    act('gc').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+    const asking = await until('the question', question);
+    await sleep(200);
+    const named = all('dialog.pk-dialog[open]').length === 1 && asking.textContent.includes('garbage collection')
+      && asking.querySelector('.pk-btn--primary')?.textContent === 'Collect garbage' && !asking.querySelector('.pk-btn--danger');
+    await answer(false);
+    await until('the button again', () => !act('gc').disabled);
+    await sleep(300);
+    const declined = (await asked()).gcs === 0 && stat('rss') === '512 MB';
+    cookie('mp_action', 'slow');
+    try {
+      act('gc').click();
+      await answer(true);
+      await sleep(300);
+      const held = act('gc').disabled === true;  // until answered and drawn
+      act('gc').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));  // a disabled button: nothing
+      // the collection frees 4 MB: the figures are read anew after it
+      await until('the memory read anew', () => stat('rss') === '508 MB');
+      await sleep(300);
+      const told = toasts('ok').some((t) => t === `Collected ${(1234).toLocaleString()} objects, freed 4.0 MB`);
+      return getRefused === 405 && secondIgnored && named && declined && held && told
+        && (await asked()).gcs === 1 && !act('gc').disabled && !$('.pk-toast--error');
+    } finally {
+      cookie('mp_action', null);
+    }
+  });
+
   await check('setting the baseline asks first: declined nothing happens, confirmed it is replaced', async () => {
     await fresh();
     act('baseline').click();
@@ -184,7 +220,7 @@
   await check('the server refuses the page and every memory route to anyone but an administrator', async () => {
     await fresh();
     const routes = [['/debug/memory', 'GET'], ['/debug/memory/snapshot', 'POST'], ['/debug/memory/baseline', 'POST'],
-      ['/debug/memory/tracemalloc/start', 'POST'], ['/debug/memory/tracemalloc/stop', 'POST']];
+      ['/debug/memory/tracemalloc/start', 'POST'], ['/debug/memory/tracemalloc/stop', 'POST'], ['/debug/memory/gc', 'POST']];
     const statuses = async () => [await status('/ui/panels/memory_profile'), ...await Promise.all(routes.map(([p, m]) => status(p, m)))];
     cookie('mp_role', 'user');
     const asUser = await statuses();
@@ -202,7 +238,7 @@
     await until('the sign-in notice', () => $('#cards .pk-empty-title')?.textContent === 'Not signed in');
     cookie('mp_role', 'admin');
     return asUser.every((s) => s === 403) && anonymous.every((s) => s === 401)
-      && state.walks === 0 && !state.tracing && state.starts === 2 && panel;
+      && state.walks === 0 && !state.tracing && state.gcs === 0 && state.starts === 2 && panel;
   });
 
   await check('with memory profiling off the page and its data are not found, and a running trace can still be stopped', async () => {
@@ -212,12 +248,14 @@
     try {
       const page = await status('/ui/panels/memory_profile');
       const data = [await status('/debug/memory'), await status('/debug/memory/snapshot', 'POST'),
-        await status('/debug/memory/baseline', 'POST'), await status('/debug/memory/tracemalloc/start', 'POST')];
+        await status('/debug/memory/baseline', 'POST'), await status('/debug/memory/tracemalloc/start', 'POST'),
+        await status('/debug/memory/gc', 'POST')];
       const stop = await fetch('/debug/memory/tracemalloc/stop', { method: 'POST' });
       const stopped = stop.status === 200 && (await stop.json()).status === 'stopped' && !(await asked()).tracing;
       now();
       await until('the notice', () => $('#cards').textContent.includes('Memory profiling is off'));
-      return page === 404 && data.every((s) => s === 404) && stopped && (await asked()).walks === 0 && act('snapshot').disabled;
+      return page === 404 && data.every((s) => s === 404) && stopped && (await asked()).walks === 0
+        && (await asked()).gcs === 0 && act('snapshot').disabled;
     } finally {
       await post('/__stub/flag?on=true');
     }

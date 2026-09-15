@@ -203,7 +203,7 @@ def as_role(client: TestClient, role: str | None) -> TestClient:
 
 @pytest.mark.parametrize("method, path", [
     ("GET", "/ui/panels/performance"), ("GET", "/debug/profile"),
-    ("POST", "/debug/profile/gc"), ("POST", "/debug/profile/reset"),
+    ("POST", "/debug/profile/reset"),
 ])
 def test_page_and_data_are_for_administrators_only(client, method, path):
     answers = {role: as_role(client, role).request(method, path).status_code for role in (None, "user", "admin")}
@@ -220,7 +220,7 @@ def test_a_refused_viewer_changes_nothing(client):
 
 @pytest.mark.parametrize("method, path", [
     ("GET", "/ui/panels/performance"), ("GET", "/debug/profile"),
-    ("POST", "/debug/profile/gc"), ("POST", "/debug/profile/reset"),
+    ("POST", "/debug/profile/reset"),
 ])
 def test_with_profiling_off_nothing_of_it_exists(client, method, path):
     client.post("/__stub/off")
@@ -238,14 +238,13 @@ def test_reading_never_changes_state_and_changing_takes_a_post(client):
     before = stats()
 
     assert admin.get("/debug/profile/reset").status_code == 405
-    assert admin.get("/debug/profile/gc").status_code == 405
     assert stats() == before != {}
     assert admin.post("/debug/profile/reset").status_code == 200
     assert stats() == {}
 
 
 @pytest.mark.parametrize("path", ["/debug/profile/dashboard", "/debug/profile/requests", "/debug/profile/tasks",
-                                  "/debug/profile/loop", "/debug/profile/memory"])
+                                  "/debug/profile/loop", "/debug/profile/memory", "/debug/profile/gc"])
 def test_the_old_dashboard_and_the_endpoints_only_it_needed_are_gone(client, path):
     assert as_role(client, "admin").get(path).status_code == 404
 
@@ -266,7 +265,6 @@ EXPECTED = [
     'paths, task and thread names are drawn as text, never as markup',
     'what changes on every answer is updated in place, a card is drawn anew only when what it lists changed',
     'resetting asks first: declined nothing is sent, confirmed the stats are gone',
-    'collecting garbage asks first and says what it collected',
     'a double click asks once, and the button stays disabled until drawn anew',
     'the keyboard focus returns to the button when the dialog closes and stays across redraws',
     'a viewer who is no longer an administrator, or signed out, sees why and nothing of before',

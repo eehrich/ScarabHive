@@ -139,12 +139,6 @@ function draw(report) {
 // --------------------------------------------------------------------- actions
 
 const ACTIONS = {
-  gc: {
-    question: 'Run a full garbage collection now? The server pauses while it runs.',
-    options: { title: 'Collect garbage', confirmLabel: 'Collect garbage' },
-    path: '/debug/profile/gc',
-    done: (r) => `Collected ${number(r.collected_objects)} objects; memory ${mb(r.memory_before_mb)} → ${mb(r.memory_after_mb)}`,
-  },
   reset: {
     question: 'Forget the time per route and the slowest requests? Running requests stay.',
     options: { title: 'Reset stats', confirmLabel: 'Reset stats', danger: true },
