@@ -191,6 +191,29 @@ class TestMessageDebuggerDB:
         assert req["is_streaming"] == 1
         assert req["payload_json"]["messages"][0]["content"] == "hi"
 
+    def test_a_database_from_before_served_by_gets_the_column(self, tmp_path):
+        import sqlite3
+        from plugins.message_debugger.database import MessageDebuggerDB
+
+        path = tmp_path / "old.db"
+        old = sqlite3.connect(path)
+        old.execute("""CREATE TABLE llm_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp_ms REAL NOT NULL,
+            direction TEXT NOT NULL, agent_name TEXT NOT NULL DEFAULT '', request_id TEXT NOT NULL DEFAULT '',
+            session_id TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+            url TEXT DEFAULT '', is_streaming INTEGER DEFAULT 0, payload_json TEXT, response_json TEXT, error TEXT,
+            duration_ms REAL, usage_json TEXT, finish_reason TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')))""")
+        old.execute("INSERT INTO llm_requests (timestamp_ms, direction) VALUES (1, 'response')")
+        old.commit()
+        old.close()
+
+        db = MessageDebuggerDB(path, wal_mode=False)
+        try:
+            db.insert_llm_request(2, "response", served_by="DeepInfra")
+            assert [row["served_by"] for row in db.get_llm_requests()] == ["DeepInfra", None]
+        finally:
+            db.close()
+
     def test_get_llm_requests_with_filters(self, db):
         """Test filtering LLM requests."""
         ts = time.time() * 1000
@@ -532,6 +555,22 @@ class TestMessageDebuggerHooks:
         assert reqs[0]["duration_ms"] == pytest.approx(750.5)
         assert reqs[0]["finish_reason"] == "stop"
         assert reqs[0]["usage_json"]["prompt_tokens"] == 10
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("metadata, expected", [
+        ({"served_by": "Google AI Studio"}, "Google AI Studio"),
+        ({}, None),  # a provider that names no backend
+    ])
+    async def test_capture_post_response_keeps_the_backend_that_served_it(self, hooks_plugin, db, metadata, expected):
+        context = HookContext(hook_type="post_llm_response", request_id="req_1", session_id="sess_1",
+                              llm_provider="openai_responses", llm_model="m", metadata=metadata)
+
+        await hooks_plugin.debugger_capture_post_response(context)
+
+        assert db.flush(timeout=3)
+        row = db.get_llm_requests(direction="response")[0]
+        assert row["served_by"] == expected, "the list rows lack the backend"
+        assert db.get_llm_request(row["id"])["served_by"] == expected
 
     @pytest.mark.asyncio
     async def test_capture_post_response_with_error(self, hooks_plugin, db):

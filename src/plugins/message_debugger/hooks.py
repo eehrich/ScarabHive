@@ -164,6 +164,7 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
                     duration_ms=context.llm_duration_ms,
                     usage=context.llm_usage,
                     finish_reason=context.llm_finish_reason,
+                    served_by=context.metadata.get('served_by'),
                 )
                 logger.debug(
                     f"Captured post_llm_response: provider={context.llm_provider}, "

@@ -47,3 +47,19 @@ async def test_llm_hooks_carry_the_session_of_the_request(wired, request_id, ses
     contexts = [call.args[1] for call in manager.registry.execute_hooks.call_args_list]
     assert [c.hook_type for c in contexts] == [HookType.PRE_LLM_REQUEST, HookType.POST_LLM_RESPONSE]
     assert [c.session_id for c in contexts] == [session, session]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("info, served_by", [
+    # A streamed answer has no response_data: the backend arrives only as the client's routing record.
+    ({"routing": {"selected": "Google AI Studio", "available": ["Google AI Studio", "Google"]}}, "Google AI Studio"),
+    ({"routing": None}, None),
+    ({}, None),
+])
+async def test_the_response_hook_names_the_backend_the_client_read(wired, info, served_by):
+    manager, client = wired
+
+    await client.post({"provider": "openai_httpx", "model": "m", "is_streaming": True, **info})
+
+    context = manager.registry.execute_hooks.call_args.args[1]
+    assert context.metadata["served_by"] == served_by

@@ -63,7 +63,7 @@ def seed(db) -> tuple[int, int]:
                           provider="openrouter", model="m-1", error="[RETRY 1/3] rate limited", finish_reason="retry")
     db.insert_llm_request(now + 900, "response", agent_name="writer", request_id="r-1", session_id="s-1",
                           provider="openrouter", model="m-1", finish_reason="stop", duration_ms=800,
-                          usage={"total_tokens": 1200, "cost": 0.0021})
+                          usage={"total_tokens": 1200, "cost": 0.0021}, served_by="Google AI Studio")
     db.insert_turn(now + 2500, "pre_llm", agent_name="writer", request_id="r-3", session_id="s-1", step=1)
     db.insert_turn(now + 3000, "pre_llm", agent_name="coder", request_id="r-2", session_id="s-2", step=1)
     db.insert_llm_request(now + 3000, "request", agent_name="coder", request_id="r-2", session_id="s-2",
@@ -127,6 +127,7 @@ EXPECTED = [
     'a tick of the auto refresh leaves a list that is still loading alone, and the ticks after it bring what is new',
     'more entries load a page at a time, also when a refresh comes in between, and a refresh keeps as many as are wanted; an entry gone meanwhile is named in the drawer',
     'the retry of a request shows its attempt and reason, and its entry opens with its error',
+    'a response names the backend that served it, in the list and in the drawer',
     'clearing asks first and, confirmed, empties the lists',
     'pruning asks first and, confirmed, tells what it did, a compacted file included',
 ]

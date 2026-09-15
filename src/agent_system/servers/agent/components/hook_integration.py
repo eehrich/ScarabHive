@@ -186,7 +186,12 @@ class HookIntegrationManager:
                     llm_usage=info.get("usage"),
                     llm_finish_reason=info.get("finish_reason"),
                     llm_is_streaming=info.get("is_streaming", False),
-                    metadata={"timestamp_ms": info.get("timestamp_ms", time.time() * 1000)},
+                    metadata={
+                        "timestamp_ms": info.get("timestamp_ms", time.time() * 1000),
+                        # The backend a gateway routed to (OpenRouter), as the
+                        # client read it: streamed answers have no response_data.
+                        "served_by": (info.get("routing") or {}).get("selected"),
+                    },
                 )
                 await registry.execute_hooks(
                     HookType.POST_LLM_RESPONSE, context, hook_filter=hook_filter

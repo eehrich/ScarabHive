@@ -143,9 +143,10 @@ class MessageDebuggerDB:
                 duration_ms REAL,
                 usage_json TEXT,
                 finish_reason TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                served_by TEXT
             );
-            
+
             CREATE INDEX IF NOT EXISTS idx_turns_agent ON turns(agent_name);
             CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
             CREATE INDEX IF NOT EXISTS idx_turns_request_id ON turns(request_id);
@@ -180,6 +181,10 @@ class MessageDebuggerDB:
             CREATE INDEX IF NOT EXISTS idx_llm_requests_request_id
                 ON llm_requests(request_id);
         """)
+        # Databases from before served_by existed. ADD COLUMN only touches the
+        # schema, not the rows: instant even on a multi-GB file.
+        if "served_by" not in {row[1] for row in conn.execute("PRAGMA table_info(llm_requests)")}:
+            conn.execute("ALTER TABLE llm_requests ADD COLUMN served_by TEXT")
         conn.commit()
     
     # ---- Turn operations ----
@@ -237,7 +242,7 @@ class MessageDebuggerDB:
     _LLM_REQUESTS_LIST_COLS = (
         "id, timestamp_ms, direction, agent_name, request_id, "
         "session_id, provider, model, url, is_streaming, "
-        "error, duration_ms, usage_json, finish_reason, created_at"
+        "error, duration_ms, usage_json, finish_reason, created_at, served_by"
     )
 
     @staticmethod
@@ -314,9 +319,13 @@ class MessageDebuggerDB:
         duration_ms: Optional[float] = None,
         usage: Optional[Dict[str, Any]] = None,
         finish_reason: Optional[str] = None,
+        served_by: Optional[str] = None,
     ) -> int:
         """Insert an LLM API request or response log entry.
-        
+
+        ``served_by``: the backend a gateway routed the call to (OpenRouter: "Google AI Studio", "Google" for
+        Vertex), as the LLM client read it from the response.
+
         Returns:
             Row ID of inserted entry
         """
@@ -326,8 +335,8 @@ class MessageDebuggerDB:
                (timestamp_ms, direction, agent_name, request_id, session_id,
                 provider, model, url, is_streaming,
                 payload_json, response_json, error, duration_ms,
-                usage_json, finish_reason)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                usage_json, finish_reason, served_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp_ms,
                 direction,
@@ -344,6 +353,7 @@ class MessageDebuggerDB:
                 duration_ms,
                 json.dumps(usage, default=str) if usage else None,
                 finish_reason,
+                served_by,
             )
         )
         conn.commit()

@@ -183,7 +183,7 @@ function requestRows(rows) {
       <td class="pk-mono" title="${time(entry.timestamp_ms, true)}">${time(entry.timestamp_ms)}</td>
       <td>${directionBadge(entry)}</td>
       <td>${entry.agent_name}</td>
-      <td><span class="pk-muted">${entry.provider}</span> ${entry.model}${entry.is_streaming ? html` <span class="pk-badge">stream</span>` : ''}</td>
+      <td><span class="pk-muted">${entry.provider}</span> ${entry.model}${entry.served_by ? html` <span class="pk-muted md-served-by">via ${entry.served_by}</span>` : ''}${entry.is_streaming ? html` <span class="pk-badge">stream</span>` : ''}</td>
       <td class="pk-num">${duration(entry.duration_ms)}</td>
       <td class="pk-num">${number(entry.usage_json?.total_tokens)}</td>
       <td class="pk-num">${cost(entry.usage_json)}</td>
@@ -353,7 +353,8 @@ function drawRequest(entry) {
   $('detailTitle').textContent = `${entry.direction === 'request' ? 'Request' : 'Response'} #${entry.id} · ${entry.provider}/${entry.model}`;
   render($('detailBody'), html`
     ${facts([
-      ['Agent', entry.agent_name], ['Provider', entry.provider], ['Model', entry.model], ['URL', entry.url],
+      ['Agent', entry.agent_name], ['Provider', entry.provider], ['Served by', entry.served_by], ['Model', entry.model],
+      ['URL', entry.url],
       ['Streaming', entry.is_streaming ? 'yes' : 'no'], ['Duration', duration(entry.duration_ms)],
       ['Finish reason', entry.finish_reason], ['Time', time(entry.timestamp_ms, true)],
       ['Session', idFact('session', entry.session_id)], ['Request', idFact('request', entry.request_id)],

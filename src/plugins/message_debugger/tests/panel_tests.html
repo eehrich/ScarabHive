@@ -210,6 +210,17 @@
     return reason && title && !$('#detail').open;
   });
 
+  await check('a response names the backend that served it, in the list and in the drawer', async () => {
+    const served = rows('requests').filter((row) => row.querySelector('.md-served-by'));
+    const inList = served.length === 1 && served[0].querySelector('.md-served-by').textContent === 'via Google AI Studio';
+    served[0].click();
+    await until('its drawer', () => titled(`Response #${served[0].dataset.id} ·`));
+    const facts = [...$('#detailBody dl.pk-kv').children].map((cell) => cell.textContent);
+    const inDrawer = facts[facts.indexOf('Served by') + 1] === 'Google AI Studio';
+    $('#detail [data-close]').click();
+    return inList && inDrawer;
+  });
+
   /** Choose an action from the panel's menu; resolves with the question it asks. */
   const ask = async (action) => {
     $('#actionsButton').click();

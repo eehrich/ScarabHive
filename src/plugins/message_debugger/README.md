@@ -12,7 +12,7 @@ slow database never stalls an agent:
 | `pre_llm_call` | `turns` (`pre_llm`) | the messages of a step, as the LLM gets them |
 | `post_llm_call` | `turns` (`post_llm`) | the messages and the LLM response |
 | `pre_llm_request` | `llm_requests` (`request`) | the raw payload sent to the provider |
-| `post_llm_response` | `llm_requests` (`response`) | the raw response, usage, duration, error; a failed retry attempt is logged with `finish_reason: retry` and an error starting `[RETRY n/m]` |
+| `post_llm_response` | `llm_requests` (`response`) | the raw response, usage, duration, error; a failed retry attempt is logged with `finish_reason: retry` and an error starting `[RETRY n/m]`; `served_by` is the backend a gateway routed the call to, as the LLM client read it from the response (OpenRouter clients: e.g. `Google AI Studio`, `Google` for Vertex; streamed answers included) |
 
 A turn stores every field of every message (role, content, tool calls, `served_by`, `reasoning_details`, ...), so a
 field added to `ChatMessage` shows up without changes here. `content` and `tool_calls` are kept whole; any other
