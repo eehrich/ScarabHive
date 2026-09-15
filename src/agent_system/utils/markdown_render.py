@@ -143,11 +143,11 @@ class _AllowlistSanitizer(HTMLParser):
         # Text inside an open <script>/<style>, held back until its end tag.
         # Never closed, it was prose after all and comes back as text.
         self.dropped: list[str] | None = None
-        self.code_depth = 0
-        # nl2br puts <br> between the rows of a raw HTML table; outside a cell
-        # a browser hoists each one above the table as an empty line.
-        self.table_depth = 0
-        self.cell_depth = 0
+        # The allowed tags written and not closed yet. A model writes "the
+        # <strong> tag" unfenced: left open, it would take over everything the
+        # page shows after this text, so every tag is closed where its parent
+        # closes, or at the end.
+        self.open: list[str] = []
 
     def _start(self, tag: str, attrs: list[tuple[str, str | None]], closed: bool) -> None:
         if tag in _DROP_CONTENT:
@@ -160,7 +160,9 @@ class _AllowlistSanitizer(HTMLParser):
             if tag not in _HTML_ELEMENTS:
                 self.out.append(html_escape(self.get_starttag_text() or "", quote=False))
             return
-        if tag == "br" and self.table_depth and not self.cell_depth:
+        # nl2br puts <br> between the rows of a raw HTML table; outside a cell
+        # a browser hoists each one above the table as an empty line.
+        if tag == "br" and "table" in self.open and not {"td", "th"} & set(self.open):
             return
         kept = []
         for name, value in attrs:
@@ -174,13 +176,8 @@ class _AllowlistSanitizer(HTMLParser):
                 continue
             kept.append(f' {name}="{html_escape(value, quote=True)}"')
         self.out.append(f"<{tag}{''.join(kept)}>")
-        if not closed:
-            if tag == "code":
-                self.code_depth += 1
-            elif tag == "table":
-                self.table_depth += 1
-            elif tag in ("td", "th"):
-                self.cell_depth += 1
+        if not closed and tag not in _VOID_TAGS:
+            self.open.append(tag)
 
     def handle_starttag(self, tag, attrs):
         self._start(tag, attrs, closed=False)
@@ -194,14 +191,10 @@ class _AllowlistSanitizer(HTMLParser):
         elif self.dropped is not None:
             return
         elif tag in self.allowed_tags:
-            if tag not in _VOID_TAGS:
+            if tag in self.open:  # an end tag nothing opened is dropped
+                while (inner := self.open.pop()) != tag:
+                    self.out.append(f"</{inner}>")
                 self.out.append(f"</{tag}>")
-            if tag == "code":
-                self.code_depth = max(0, self.code_depth - 1)
-            elif tag == "table":
-                self.table_depth = max(0, self.table_depth - 1)
-            elif tag in ("td", "th"):
-                self.cell_depth = max(0, self.cell_depth - 1)
         elif tag not in _HTML_ELEMENTS:
             self.out.append(html_escape(f"</{tag}>", quote=False))
 
@@ -209,7 +202,7 @@ class _AllowlistSanitizer(HTMLParser):
         if self.dropped is not None:
             self.dropped.append(data)
         else:
-            self.out.append(_escape_text(data, in_code=self.code_depth > 0))
+            self.out.append(_escape_text(data, in_code="code" in self.open))
 
     def close(self):
         super().close()
@@ -220,6 +213,8 @@ class _AllowlistSanitizer(HTMLParser):
             self.out.append(_escape_text(rest))
             self.rawdata = ""
         self.dropped = None
+        self.out.extend(f"</{tag}>" for tag in reversed(self.open))
+        self.open = []
 
 
 _VOID_TAGS = frozenset({"br", "hr", "img"})

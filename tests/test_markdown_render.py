@@ -122,7 +122,7 @@ class TestAllowlistSanitizer:
 
     def test_markdown_output_is_unchanged(self):
         source = ('# T\n\nA **b** `c` [l](https://example.com "t").\n\n'
-                  "| A |\n|---|\n| 1 |\n\n```python\nx = '<b>'\n```\n\n> q")
+                  "| A |\n|---|\n| 1 |\n\n```python\nx = '<b>' + \"q\"\n```\n\n> q")
 
         assert markdown_to_html(source) == markdown_to_html(source, sanitize=False)
 
@@ -136,6 +136,19 @@ class TestAllowlistSanitizer:
 
         assert "schreibt weiter" in html
         assert "<script" not in html
+
+    def test_a_tag_named_in_prose_is_closed_within_its_paragraph(self):
+        # the page puts several messages side by side: an open tag would take over all that follow
+        html = markdown_to_html("Use the <strong> tag.\n\nWrap it in a <table> element.\n\nThen </em> stray.")
+
+        assert html == ("<p>Use the <strong> tag.</strong></p>\n"
+                        "<p>Wrap it in a <table> element.</table></p>\n"
+                        "<p>Then  stray.</p>")
+
+    def test_a_tag_left_open_at_the_end_is_closed(self):
+        from agent_system.utils.markdown_render import _sanitize_html
+
+        assert _sanitize_html("<ul><li><code>x") == "<ul><li><code>x</code></li></ul>"
 
     def test_the_allowlist_can_be_narrowed(self):
         html = markdown_to_html("| A |\n|---|\n| 1 |\n\n**fett**",
