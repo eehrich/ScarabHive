@@ -14,6 +14,7 @@ from typing import Optional
 import logging
 
 import typer
+from pydantic import ValidationError
 from tabulate import tabulate
 
 from agent_system.auth.database import setup_database, UserDatabase
@@ -57,6 +58,11 @@ def _colorize(text: str, color_code: str) -> str:
     if not _supports_color():
         return text
     return f"\x1b[{color_code}m{text}\x1b[0m"
+
+
+def _validation_message(error: ValidationError) -> str:
+    """Field and reason per error, never the input: pydantic's own text echoes the password."""
+    return "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in error.errors())
 
 
 def get_configured_db() -> UserDatabase:
@@ -177,14 +183,17 @@ def create_user(
         )
         
         created_user = db.create_user(user_data)
-        
+
         typer.echo("✓ User created successfully:")
         typer.echo(f"  ID: {created_user.id}")
         typer.echo(f"  Username: {created_user.username}")
         typer.echo(f"  Email: {created_user.email}")
         typer.echo(f"  Role: {created_user.role.value}")
         typer.echo(f"  Active: {'Yes' if created_user.is_active else 'No'}")
-        
+
+    except ValidationError as e:
+        typer.echo(f"Error: {_validation_message(e)}", err=True)
+        raise typer.Exit(1)
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -253,25 +262,29 @@ def update_user(
             typer.echo(f"User '{username}' not found.", err=True)
             raise typer.Exit(1)
         
-        # Build update data
-        update_data = UserUpdate()
-        
+        # Collect, then build once: assigning to a model skips its validation.
+        fields = {}
         if email:
-            update_data.email = email
+            fields["email"] = email
         if full_name:
-            update_data.full_name = full_name
+            fields["full_name"] = full_name
         if password:
-            update_data.password = password
+            fields["password"] = password
         if role:
             try:
-                update_data.role = UserRole(role.lower())
+                fields["role"] = UserRole(role.lower())
             except ValueError:
                 typer.echo(f"Invalid role: {role}. Use 'user', 'admin', or 'guest'.", err=True)
                 raise typer.Exit(1)
         if activate:
-            update_data.is_active = True
+            fields["is_active"] = True
         elif deactivate:
-            update_data.is_active = False
+            fields["is_active"] = False
+        try:
+            update_data = UserUpdate(**fields)
+        except ValidationError as e:
+            typer.echo(f"Error: {_validation_message(e)}", err=True)
+            raise typer.Exit(1)
         
         # Update user
         updated_user = db.update_user(user.id, update_data)

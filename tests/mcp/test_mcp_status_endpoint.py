@@ -15,13 +15,25 @@ class TestMCPStatusEndpoint:
     """Test the /mcp/status endpoint functionality."""
 
     @pytest.fixture
-    def auth_headers(self):
+    def admin(self, tmp_path, monkeypatch):
+        """The app's users database under tmp_path with one admin: the middleware looks the token's account up."""
+        from agent_system.auth import database
+        from agent_system.auth.models import UserCreate, UserRole
+
+        db = database.UserDatabase(tmp_path / "users.db")
+        monkeypatch.setattr(database, "_db", db)
+        monkeypatch.setattr(database, "setup_database", lambda db_path=None: db)
+        return db.create_user(UserCreate(username="test_admin", email="test_admin@example.com",
+                                         password="irrelevant-pw-123", role=UserRole.ADMIN))
+
+    @pytest.fixture
+    def auth_headers(self, admin):
         """Create authentication headers with a valid admin JWT token.
-        
+
         Uses the secret key from config/config.yaml to match what the app uses.
         """
         token = create_access_token(
-            data={"sub": "test_admin", "role": "admin"},
+            data={"sub": admin.username, "user_id": admin.id, "role": "admin"},
             secret_key=_CONFIG_SECRET_KEY
         )
         return {"Authorization": f"Bearer {token}"}

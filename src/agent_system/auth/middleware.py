@@ -217,7 +217,6 @@ class EndpointSecurityMiddleware:
                     algorithms=[self.auth_config.algorithm]
                 )
                 username = payload.get("sub")
-                role = payload.get("role", "user")
 
                 if payload.get("type", "access") != "access":
                     # Refresh tokens are exchange-only (/auth/refresh); they
@@ -229,10 +228,9 @@ class EndpointSecurityMiddleware:
                 elif not all(c.isalnum() or c in '_-.' for c in username):
                     logger.warning("JWT token has invalid username format")
                 else:
-                    if not isinstance(role, str) or role.lower() not in ROLE_HIERARCHY:
-                        logger.debug(f"JWT token has unknown role: {role}, defaulting to 'user'")
-                        role = "user"
-                    return (username, role)
+                    identity = self._lookup_token_user(username, payload.get("user_id"))
+                    if identity != (None, None):
+                        return identity
             except JWTError as e:
                 logger.debug(f"JWT token error: {e}")
 
@@ -309,20 +307,42 @@ class EndpointSecurityMiddleware:
         verified = verify_api_key(api_key, stored_hash)
         if not user_in_db or not verified or not user_in_db.is_active:
             return (None, None)
+        return self._identity_of(user_in_db)
 
+    def _lookup_token_user(self, username: str, user_id: Any) -> tuple:
+        """Resolve a verified access token to its account, like the API-key branch.
+
+        The token only names the account: it must still exist under the id it was
+        issued for and be active, and the role is the account's current one -- so a
+        demoted, deactivated or deleted admin loses access now, not at token expiry.
+        """
+        try:
+            user_in_db = self._get_user_db().get_user_by_username(username)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("JWT user DB lookup failed (%s: %s); request will return 401",
+                         exc.__class__.__name__, exc)
+            return (None, None)
+        if not user_in_db or user_in_db.id != user_id or not user_in_db.is_active:
+            logger.debug("JWT does not match an active account - rejected")
+            return (None, None)
+        return self._identity_of(user_in_db)
+
+    @staticmethod
+    def _identity_of(user_in_db: Any) -> tuple:
+        """(username, role) of an account row, sanitised the same way for every auth path."""
         try:
             username = user_in_db.username
             if not isinstance(username, str) or not all(
                 c.isalnum() or c in "_-." for c in username
             ):
-                logger.warning("API-Key user has invalid username format")
+                logger.warning("Authenticated user has invalid username format")
                 return (None, None)
 
             role_obj = user_in_db.role
             role = role_obj.value if hasattr(role_obj, "value") else str(role_obj)
             if not isinstance(role, str) or role.lower() not in ROLE_HIERARCHY:
                 logger.warning(
-                    "API-Key user has unknown role %r; defaulting to 'user'",
+                    "Authenticated user has unknown role %r; defaulting to 'user'",
                     role,
                 )
                 role = "user"
@@ -330,7 +350,7 @@ class EndpointSecurityMiddleware:
             return (username, role)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "API-Key user record could not be normalised (%s)",
+                "User record could not be normalised (%s)",
                 exc.__class__.__name__,
             )
             return (None, None)

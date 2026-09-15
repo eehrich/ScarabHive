@@ -67,6 +67,50 @@ def test_users_failure_exits_non_zero_and_reads_the_given_config(monkeypatch, tm
     assert seen == ["elsewhere.yaml"]
 
 
+def test_users_update_and_create_validate_like_the_api_and_never_echo_the_password(monkeypatch, tmp_path, capsys):
+    """`users update` assigned fields to an empty model, which skips validation: short passwords and bad emails
+    were stored. Pydantic's own message carries the input, so a refused password must not be printed either."""
+    monkeypatch.setattr(users_cli, "CONFIG_PATH", None)
+    from agent_system.auth import database
+    from agent_system.auth.security import verify_password
+    monkeypatch.setattr(database, "_db", database._db)
+    cfg = AgentSystemConfig(auth=AuthConfig(database_path=str(tmp_path / "users.db")))
+    monkeypatch.setattr(users_cli, "load_settings", lambda path=None: cfg)
+
+    def run(*args):
+        capsys.readouterr()
+        monkeypatch.setattr("sys.argv", ["agent-cli", "users", *args])
+        try:
+            cli.main()
+            code = 0
+        except SystemExit as exit_info:
+            code = exit_info.code or 0
+        out = capsys.readouterr()
+        return code, out.out + out.err
+
+    assert run("create", "bob", "bob@example.com", "-p", "correct-horse")[0] == 0
+    code, said = run("create", "carol", "carol@example.com", "-p", "Short7x")
+    assert code == 1 and "password" in said and "Short7x" not in said
+    before = database.get_db().get_user_by_username("bob")
+    refused = {
+        "short": ("-p", "Short7x"),
+        "long": ("-p", "€" * 25),
+        "email": ("-e", "not-an-email"),
+        "role": ("-r", "owner"),
+    }
+    for name, option in refused.items():
+        code, said = run("update", "bob", *option)
+        assert code == 1, name
+        assert option[1] not in said or name in ("email", "role"), name
+    assert "Invalid role: owner" in said
+    assert "longer than 72 bytes" in run("update", "bob", "-p", "€" * 25)[1]
+    after = database.get_db().get_user_by_username("bob")
+    assert (after.email, after.hashed_password, after.role) == (before.email, before.hashed_password, before.role)
+    assert database.get_db().get_user_by_username("carol") is None
+    assert run("update", "bob", "-p", "a-new-secret", "-e", "bob2@example.com")[0] == 0
+    assert verify_password("a-new-secret", database.get_db().get_user_by_username("bob").hashed_password)
+
+
 @pytest.mark.parametrize("argv, handed_over", [
     # The preliminary parser reads option values too: `-vS3cret` is -v plus
     # -S3cret to it, and the password became "-S3cret".

@@ -21,6 +21,32 @@ from agent_system.config.models import (
 )
 
 
+@pytest.fixture
+def accounts(tmp_path, monkeypatch):
+    """A users database under tmp_path as the global one. ``accounts(name, role)`` creates an account, returns its id."""
+    from agent_system.auth import database
+    from agent_system.auth.models import UserCreate, UserRole
+
+    db = database.UserDatabase(tmp_path / "users.db")
+    monkeypatch.setattr(database, "_db", db)
+
+    def add(name: str, role: str = "user") -> int:
+        existing = db.get_user_by_username(name)
+        if existing:
+            return existing.id
+        user = UserCreate(username=name, email=f"{name.lower()}@example.com", password="irrelevant-pw-123", role=UserRole(role))
+        return db.create_user(user).id
+
+    add.db = db
+    return add
+
+
+def account_token(accounts, name: str, role: str = "user", secret: str = "test-secret-key-12345", **claims) -> str:
+    """An access token as login signs it: name, the account's id, role."""
+    from jose import jwt
+    return jwt.encode({"sub": name, "user_id": accounts(name, role), "role": role, **claims}, secret, algorithm="HS256")
+
+
 class TestRoleHierarchyMiddleware:
     """Tests for role hierarchy in middleware."""
     
@@ -283,9 +309,9 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
         from jose import jwt
         return jwt.encode(payload, secret, algorithm="HS256")
     
-    def test_extract_from_bearer_header(self, middleware):
+    def test_extract_from_bearer_header(self, middleware, accounts):
         """Should extract token from Authorization Bearer header."""
-        token = self._create_token({"sub": "testuser", "role": "admin"})
+        token = account_token(accounts, "testuser", "admin")
         scope = {
             "headers": [
                 (b"authorization", f"Bearer {token}".encode()),
@@ -297,9 +323,9 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
         assert username == "testuser"
         assert role == "admin"
     
-    def test_extract_from_cookie(self, middleware):
+    def test_extract_from_cookie(self, middleware, accounts):
         """Should extract token from access_token cookie."""
-        token = self._create_token({"sub": "cookieuser", "role": "user"})
+        token = account_token(accounts, "cookieuser", "user")
         scope = {
             "headers": [
                 (b"cookie", f"other=value; access_token={token}; another=test".encode()),
@@ -311,10 +337,10 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
         assert username == "cookieuser"
         assert role == "user"
     
-    def test_a_token_in_the_query_string_does_not_authenticate(self, middleware):
+    def test_a_token_in_the_query_string_does_not_authenticate(self, middleware, accounts):
         """A token in a URL leaks into access logs, history and Referer headers,
         so ``?token=`` is refused -- even carrying a valid JWT."""
-        token = self._create_token({"sub": "queryuser", "role": "user"})
+        token = account_token(accounts, "queryuser", "user")
         scope = {
             "headers": [],
             "query_string": f"token={token}&other=value".encode(),
@@ -322,10 +348,10 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
 
         assert middleware._extract_user_info(scope) == (None, None)
     
-    def test_extract_bearer_takes_precedence_over_cookie(self, middleware):
+    def test_extract_bearer_takes_precedence_over_cookie(self, middleware, accounts):
         """Bearer header should take precedence over cookie."""
-        bearer_token = self._create_token({"sub": "bearer_user", "role": "admin"})
-        cookie_token = self._create_token({"sub": "cookie_user", "role": "guest"})
+        bearer_token = account_token(accounts, "bearer_user", "admin")
+        cookie_token = account_token(accounts, "cookie_user", "guest")
         
         scope = {
             "headers": [
@@ -339,10 +365,10 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
         assert username == "bearer_user"
         assert role == "admin"
     
-    def test_extract_cookie_takes_precedence_over_query(self, middleware):
+    def test_extract_cookie_takes_precedence_over_query(self, middleware, accounts):
         """Cookie should take precedence over query parameter."""
-        cookie_token = self._create_token({"sub": "cookie_user", "role": "admin"})
-        query_token = self._create_token({"sub": "query_user", "role": "guest"})
+        cookie_token = account_token(accounts, "cookie_user", "admin")
+        query_token = account_token(accounts, "query_user", "guest")
         
         scope = {
             "headers": [
@@ -376,9 +402,9 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
         assert username is None
         assert role is None
     
-    def test_extract_wrong_secret(self, middleware):
+    def test_extract_wrong_secret(self, middleware, accounts):
         """Should return None for token signed with wrong secret."""
-        token = self._create_token({"sub": "hacker", "role": "admin"}, secret="wrong-secret")
+        token = account_token(accounts, "hacker", "admin", secret="wrong-secret")
         scope = {
             "headers": [
                 (b"authorization", f"Bearer {token}".encode()),
@@ -390,14 +416,9 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
         assert username is None
         assert role is None
     
-    def test_extract_expired_token(self, middleware):
+    def test_extract_expired_token(self, middleware, accounts):
         """Should return None for expired token."""
-        expired_payload = {
-            "sub": "testuser",
-            "role": "admin",
-            "exp": datetime.now(timezone.utc) - timedelta(hours=1)
-        }
-        token = self._create_token(expired_payload)
+        token = account_token(accounts, "testuser", "admin", exp=datetime.now(timezone.utc) - timedelta(hours=1))
         
         scope = {
             "headers": [
@@ -410,19 +431,38 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
         assert username is None
         assert role is None
     
-    def test_extract_default_role(self, middleware):
-        """Should default to 'user' role if not in token."""
-        token = self._create_token({"sub": "norole"})  # No role in payload
-        scope = {
-            "headers": [
-                (b"authorization", f"Bearer {token}".encode()),
-            ],
-            "query_string": b"",
-        }
-        
-        username, role = middleware._extract_user_info(scope)
-        assert username == "norole"
-        assert role == "user"  # Default
+    def test_the_role_comes_from_the_account_not_the_token(self, middleware, accounts):
+        """A token's role claim is what the account had at login; the account decides now."""
+        from jose import jwt
+
+        def extracted(payload):
+            token = jwt.encode(payload, "test-secret-key-12345", algorithm="HS256")
+            return middleware._extract_user_info({"headers": [(b"authorization", f"Bearer {token}".encode())],
+                                                  "query_string": b""})
+
+        plain, boss = accounts("plain", "user"), accounts("boss", "admin")
+        assert extracted({"sub": "plain", "user_id": plain, "role": "admin"}) == ("plain", "user")
+        assert extracted({"sub": "plain", "user_id": plain, "role": "superadmin"}) == ("plain", "user")
+        assert extracted({"sub": "boss", "user_id": boss}) == ("boss", "admin")
+
+    def test_a_token_whose_account_changed_is_judged_by_the_account(self, middleware, accounts):
+        """Demoted: the new role. Deactivated, deleted, re-created under the name, or no id: no user."""
+        from agent_system.auth.models import UserCreate, UserRole, UserUpdate
+
+        def extracted(token):
+            return middleware._extract_user_info({"headers": [(b"authorization", f"Bearer {token}".encode())],
+                                                  "query_string": b""})
+
+        db = accounts.db
+        demoted, idle, gone = (account_token(accounts, name, "admin") for name in ("demoted", "idle", "gone"))
+        assert extracted(demoted) == ("demoted", "admin")
+        db.update_user(db.get_user_by_username("demoted").id, UserUpdate(role=UserRole.USER))
+        db.update_user(db.get_user_by_username("idle").id, UserUpdate(is_active=False))
+        db.delete_user(db.get_user_by_username("gone").id)
+        db.create_user(UserCreate(username="gone", email="gone2@example.com", password="irrelevant-pw-123", role=UserRole.ADMIN))
+        from jose import jwt
+        no_id = jwt.encode({"sub": "gone", "role": "admin"}, "test-secret-key-12345", algorithm="HS256")
+        assert [extracted(t) for t in (demoted, idle, gone, no_id)] == [("demoted", "user")] + [(None, None)] * 3
     
     def test_extract_rejects_invalid_username_chars(self, middleware):
         """Should reject usernames with invalid characters."""
@@ -467,18 +507,17 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
         assert username is None
         assert role is None
     
-    def test_extract_allows_valid_username_formats(self, middleware):
+    def test_extract_allows_valid_username_formats(self, middleware, accounts):
         """Should allow valid username formats."""
-        valid_usernames = [
+        valid_usernames = [  # no dots: an account name cannot have one (UserBase pattern)
             "user123",
-            "john.doe",
             "user_name",
             "user-name",
-            "User.Name_123",
+            "User_Name-123",
         ]
-        
+
         for valid_username in valid_usernames:
-            token = self._create_token({"sub": valid_username, "role": "user"})
+            token = account_token(accounts, valid_username, "user")
             scope = {
                 "headers": [
                     (b"authorization", f"Bearer {token}".encode()),
@@ -488,20 +527,6 @@ class TestEndpointSecurityMiddlewareJWTExtraction:
             
             username, role = middleware._extract_user_info(scope)
             assert username == valid_username, f"Should accept '{valid_username}'"
-    
-    def test_extract_unknown_role_defaults_to_user(self, middleware):
-        """Unknown roles should default to 'user'."""
-        token = self._create_token({"sub": "testuser", "role": "superadmin"})
-        scope = {
-            "headers": [
-                (b"authorization", f"Bearer {token}".encode()),
-            ],
-            "query_string": b"",
-        }
-        
-        username, role = middleware._extract_user_info(scope)
-        assert username == "testuser"
-        assert role == "user"  # Unknown role defaults to user
 
 
 class TestEndpointSecurityMiddlewareApiKeyExtraction:
@@ -594,8 +619,10 @@ class TestEndpointSecurityMiddlewareApiKeyExtraction:
 
     def test_jwt_takes_precedence_over_api_key(self, middleware, api_key_db):
         """Valid JWT wins over X-API-Key when both are present."""
-        _, _, api_key = api_key_db
-        token = self._create_token({"sub": "jwtuser", "role": "user"})
+        db, _, api_key = api_key_db
+        from agent_system.auth.models import UserCreate
+        jwtuser = db.create_user(UserCreate(username="jwtuser", email="jwt@example.com", password="irrelevant-pw-123"))
+        token = self._create_token({"sub": "jwtuser", "user_id": jwtuser.id, "role": "user"})
         scope = {
             "headers": [
                 (b"authorization", f"Bearer {token}".encode()),
@@ -622,6 +649,30 @@ class TestEndpointSecurityMiddlewareApiKeyExtraction:
         username, role = middleware._extract_user_info(scope)
         assert username == user.username
         assert role == "admin"
+
+    def test_a_signed_token_without_a_matching_account_falls_back_to_api_key(self, middleware, api_key_db):
+        """A validly signed token whose account is gone or has another id must not block a valid X-API-Key."""
+        _, user, api_key = api_key_db
+        for payload in ({"sub": "nobody", "user_id": 999, "role": "admin"},
+                        {"sub": user.username, "user_id": user.id + 1, "role": "admin"}):
+            scope = {
+                "headers": [
+                    (b"authorization", f"Bearer {self._create_token(payload)}".encode()),
+                    (b"x-api-key", api_key.encode()),
+                ],
+                "query_string": b"",
+            }
+            assert middleware._extract_user_info(scope) == (user.username, "admin"), payload
+
+    def test_token_user_lookup_failure_returns_none_without_raising(self, middleware, api_key_db):
+        """A raised exception in the DB layer during the token's account lookup must not surface as 500."""
+        _, user, _ = api_key_db
+        middleware._user_db = type("Broken", (), {
+            "get_user_by_username": lambda self, name: (_ for _ in ()).throw(RuntimeError("disk full"))
+        })()
+        token = self._create_token({"sub": user.username, "user_id": user.id, "role": "admin"})
+        scope = {"headers": [(b"authorization", f"Bearer {token}".encode())], "query_string": b""}
+        assert middleware._extract_user_info(scope) == (None, None)
 
     def test_empty_api_key_header_returns_none(self, middleware, api_key_db):
         """An empty X-API-Key header must not crash the lookup."""
@@ -811,12 +862,12 @@ class TestEndpointSecurityMiddlewareCall:
         assert start_call["status"] == 401
     
     @pytest.mark.asyncio
-    async def test_protected_endpoint_allows_authenticated(self, auth_config):
+    async def test_protected_endpoint_allows_authenticated(self, auth_config, accounts):
         """Protected endpoints should allow authenticated users."""
         app = AsyncMock()
         middleware = EndpointSecurityMiddleware(app, auth_config)
-        
-        token = self._create_token({"sub": "testuser", "role": "user"})
+
+        token = account_token(accounts, "testuser", "user")
         scope = {
             "type": "http",
             "path": "/protected",
@@ -833,12 +884,12 @@ class TestEndpointSecurityMiddlewareCall:
         app.assert_called_once()
     
     @pytest.mark.asyncio
-    async def test_admin_endpoint_rejects_user_role(self, auth_config):
+    async def test_admin_endpoint_rejects_user_role(self, auth_config, accounts):
         """Admin endpoints should reject users without admin role."""
         app = AsyncMock()
         middleware = EndpointSecurityMiddleware(app, auth_config)
-        
-        token = self._create_token({"sub": "testuser", "role": "user"})
+
+        token = account_token(accounts, "testuser", "user")
         scope = {
             "type": "http",
             "path": "/admin/users",
@@ -861,12 +912,12 @@ class TestEndpointSecurityMiddlewareCall:
         assert start_call["status"] == 403
     
     @pytest.mark.asyncio
-    async def test_admin_endpoint_allows_admin_role(self, auth_config):
+    async def test_admin_endpoint_allows_admin_role(self, auth_config, accounts):
         """Admin endpoints should allow admin users."""
         app = AsyncMock()
         middleware = EndpointSecurityMiddleware(app, auth_config)
-        
-        token = self._create_token({"sub": "adminuser", "role": "admin"})
+
+        token = account_token(accounts, "adminuser", "admin")
         scope = {
             "type": "http",
             "path": "/admin/users",
@@ -881,6 +932,39 @@ class TestEndpointSecurityMiddlewareCall:
         await middleware(scope, receive, send)
         
         app.assert_called_once()
+
+
+def test_middleware_guarded_routes_follow_the_account_not_the_token(accounts):
+    """Through a real app: an admin-only route stays open to a token only while its account is an active admin."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from agent_system.auth.models import UserCreate, UserRole, UserUpdate
+
+    config = AuthConfig(enabled=True, secret_key="test-secret-key-12345", algorithm="HS256",
+                        endpoint_security=EndpointSecurityConfig(default_policy="require_auth", rules=[
+                            EndpointSecurityRule(pattern="GET /public", policy="allow_anonymous"),
+                            EndpointSecurityRule(pattern="* /debug/*", policy="require_auth", min_role="admin")]))
+    app = FastAPI()
+    app.get("/debug/profile")(lambda: {"ok": True})
+    app.get("/public")(lambda: {"ok": True})
+    app.add_middleware(EndpointSecurityMiddleware, auth_config=config)
+    web = TestClient(app)
+    db = accounts.db
+
+    def status(token):
+        return web.get("/debug/profile", headers={"Authorization": f"Bearer {token}"}).status_code
+
+    demoted, idle, gone, kept = (account_token(accounts, name, "admin") for name in ("demoted", "idle", "gone", "kept"))
+    refresh = account_token(accounts, "kept", "admin", type="refresh")
+    assert [status(t) for t in (demoted, idle, gone, kept)] == [200] * 4
+    db.update_user(db.get_user_by_username("demoted").id, UserUpdate(role=UserRole.USER))
+    db.update_user(db.get_user_by_username("idle").id, UserUpdate(is_active=False))
+    db.delete_user(db.get_user_by_username("gone").id)
+    db.create_user(UserCreate(username="gone", email="gone2@example.com", password="irrelevant-pw-123", role=UserRole.ADMIN))
+    answers = {name: status(t) for name, t in
+               {"demoted": demoted, "deactivated": idle, "deleted": gone, "kept": kept, "refresh": refresh}.items()}
+    assert answers == {"demoted": 403, "deactivated": 401, "deleted": 401, "kept": 200, "refresh": 401}
+    assert web.get("/public").status_code == 200
 
 
 class TestEndpointSecurityMiddlewareErrorResponses:
@@ -1118,10 +1202,10 @@ class TestEndpointSecurityMiddlewareSecurityVectors:
                 # Either blocked (401) or requires the rule check
                 pass
     
-    def test_jwt_tampering_attack(self, middleware):
+    def test_jwt_tampering_attack(self, middleware, accounts):
         """Tampered JWT should be rejected."""
         # Create valid token
-        valid_token = self._create_token({"sub": "user", "role": "user"})
+        valid_token = account_token(accounts, "user", "user", secret="secure-secret-key-32chars!")
         
         # Tamper with payload (change role)
         parts = valid_token.split(".")
