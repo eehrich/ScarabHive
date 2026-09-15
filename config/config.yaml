@@ -221,7 +221,12 @@ auth:
       - pattern: "* /api/plugins/security/*"
         policy: "require_auth"
         min_role: "admin"
-        description: "Security audit endpoints require admin role"
+        description: "Plugin security status requires admin role"
+
+      - pattern: "GET /ui/panels/security_audit"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Security Audit panel (its data is under /admin/*)"
       
       # Config endpoint - admin only (exposes system configuration)
       # Note: Now under /admin/config (moved from /config)

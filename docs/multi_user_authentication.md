@@ -644,7 +644,7 @@ CREATE TABLE users (
 - Sliding window implementation
 
 ### Security Headers
-- X-Frame-Options: DENY -- except for the pages the shell shows in frames (`/ui/`, `/plugins/`, `/debug/`, `/api/security/audit`), which get SAMEORIGIN
+- X-Frame-Options: DENY -- except for the pages the shell shows in frames (`/ui/`, `/plugins/`, `/debug/`), which get SAMEORIGIN
 - X-Content-Type-Options: nosniff
 - X-XSS-Protection: 1; mode=block
 - Strict-Transport-Security (HSTS)

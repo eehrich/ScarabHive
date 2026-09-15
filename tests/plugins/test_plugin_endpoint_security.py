@@ -204,78 +204,41 @@ class TestPatternMatching:
 
 
 class TestAuditLogging:
-    """Tests for audit logging functionality."""
+    """A refused plugin request is written to logs/security.log with the rule's reason."""
 
-    def test_audit_log_enabled(self, basic_auth_config):
-        """Test audit logging when enabled."""
+    @pytest.fixture
+    def written(self, monkeypatch):
+        import logging
+
+        from agent_system.auth.middleware import AUDIT_LOGGER_NAME
+
+        lines = []
+
+        class Collect(logging.Handler):
+            def emit(self, record):
+                lines.append(record.getMessage())
+
+        monkeypatch.setattr(logging.getLogger(AUDIT_LOGGER_NAME), "handlers", [Collect()])
+        return lines
+
+    def test_a_refused_request_is_logged_with_its_reason(self, basic_auth_config, written):
         enforcer = PluginEndpointSecurityEnforcer(basic_auth_config)
-        
-        enforcer.audit_access(
-            plugin_name="test",
-            path="/plugins/test/action",
-            method="POST",
-            user_id="testuser",
-            allowed=True,
-            reason="Test access"
-        )
-        
-        log = enforcer.get_audit_log()
-        assert len(log) == 1
-        assert log[0]["plugin_name"] == "test"
-        assert log[0]["user_id"] == "testuser"
-        assert log[0]["allowed"] is True
 
-    def test_audit_log_disabled(self, basic_auth_config):
-        """Test audit logging when disabled."""
+        enforcer.audit_denied("test", "/plugins/test/action", "POST", "testuser", "Insufficient role: required admin")
+        enforcer.audit_denied("test", "/plugins/test/other", "GET", None, "Authentication required")
+
+        assert written == [
+            "DENIED | POST /plugins/test/action | plugin=test | user=testuser | Insufficient role: required admin",
+            "DENIED | GET /plugins/test/other | plugin=test | user=anonymous | Authentication required",
+        ]
+
+    def test_nothing_is_logged_while_the_audit_is_off(self, basic_auth_config, written):
         basic_auth_config.endpoint_security.audit_enabled = False
         enforcer = PluginEndpointSecurityEnforcer(basic_auth_config)
-        
-        enforcer.audit_access(
-            plugin_name="test",
-            path="/plugins/test/action",
-            method="POST",
-            user_id="testuser",
-            allowed=True,
-            reason="Test access"
-        )
-        
-        log = enforcer.get_audit_log()
-        assert len(log) == 0
 
-    def test_audit_log_filter_by_plugin(self, basic_auth_config):
-        """Test filtering audit log by plugin name."""
-        enforcer = PluginEndpointSecurityEnforcer(basic_auth_config)
-        
-        enforcer.audit_access("plugin_a", "/a", "GET", "user1", True, "ok")
-        enforcer.audit_access("plugin_b", "/b", "GET", "user2", True, "ok")
-        enforcer.audit_access("plugin_a", "/a2", "POST", "user1", False, "denied")
-        
-        # Filter by plugin_a
-        log = enforcer.get_audit_log(plugin_name="plugin_a")
-        assert len(log) == 2
-        assert all(e["plugin_name"] == "plugin_a" for e in log)
+        enforcer.audit_denied("test", "/plugins/test/action", "POST", "testuser", "Insufficient role")
 
-    def test_audit_log_limit(self, basic_auth_config):
-        """Test audit log respects limit."""
-        enforcer = PluginEndpointSecurityEnforcer(basic_auth_config)
-        
-        # Add more than limit entries
-        for i in range(20):
-            enforcer.audit_access("test", f"/test/{i}", "GET", "user", True, "ok")
-        
-        log = enforcer.get_audit_log(limit=5)
-        assert len(log) == 5
-
-    def test_audit_log_max_entries(self, basic_auth_config):
-        """Test audit log doesn't exceed 1000 entries."""
-        enforcer = PluginEndpointSecurityEnforcer(basic_auth_config)
-        
-        # Add more than 1000 entries
-        for i in range(1100):
-            enforcer.audit_access("test", f"/test/{i}", "GET", "user", True, "ok")
-        
-        # Internal list should be capped at 1000
-        assert len(enforcer._audit_log) == 1000
+        assert written == []
 
 
 class TestGlobalEnforcer:

@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBearer
+
+from agent_system.auth.dependencies import require_admin
+from agent_system.auth.middleware import AUDIT_CATEGORIES, AUDIT_STATUS_CLASSES, security_audit_log
 
 from .catalog import Panel, PanelSpecError, build_catalog, core_panels, plugin_panel, roles_allowed
 from .resources import sprite_icons, ui_templates
@@ -14,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["ui"])
 templates = ui_templates()
-CORE_PANELS = ("session", "system", "settings")
+CORE_PANELS = ("session", "system", "settings", "memory_profile", "performance")
 
 
 async def viewer_role(request: Request) -> str:
@@ -90,8 +93,23 @@ async def kit_page(request: Request):
     return templates.TemplateResponse(request, "kit/kit_page.html", {"icons": sprite_icons()})
 
 
+# Before /ui/panels/{name}, which would take the name and refuse it.
+@router.get("/ui/panels/security_audit", response_class=HTMLResponse,
+            dependencies=[Depends(security_audit_log), Depends(require_admin)])
+async def security_audit_panel(request: Request):
+    """The Security Audit panel: administrators only, and only while the audit log is kept."""
+    return templates.TemplateResponse(request, "panels/security_audit.html",
+                                      {"categories": AUDIT_CATEGORIES, "statuses": AUDIT_STATUS_CLASSES})
+
+
 @router.get("/ui/panels/{name}", response_class=HTMLResponse)
 async def core_panel(request: Request, name: str):
     if name not in CORE_PANELS:
         raise HTTPException(status_code=404, detail=f"No core panel {name!r}")
+    if name == "memory_profile":
+        from agent_system.api.debug_endpoints import require_memory_profile_access
+        await require_memory_profile_access(request)
+    if name == "performance":
+        from agent_system.api.debug_endpoints import require_performance_access
+        await require_performance_access(request)
     return templates.TemplateResponse(request, f"panels/{name}.html")

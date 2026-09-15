@@ -745,7 +745,6 @@ def _reset_all_global_state():
     try:
         from agent_system.utils import profiling as profiling_module
         profiling_module._request_profiler = None
-        profiling_module._task_monitor = None
         profiling_module._loop_monitor = None
     except ImportError:
         pass
@@ -754,7 +753,6 @@ def _reset_all_global_state():
     try:
         from agent_system.utils import memory_profiling as mem_module
         mem_module._leak_detector = None
-        mem_module._reference_tracker = None
         mem_module._snapshot_task = None
         # Don't reset _profiling_executor as it may have active threads
     except ImportError:

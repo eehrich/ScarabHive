@@ -1,0 +1,341 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Performance panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 900px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real Performance panel against the real routers, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const XSS = '<img src=x onerror="window.parent.__xss=1">';
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const stat = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`);
+  const statValue = (key) => stat(key)?.textContent;
+  const card = (key) => $(`#cards [data-card="${key}"]`);
+  const rows = (key) => [...(card(key)?.querySelectorAll('tbody tr') || [])];
+  const cells = (row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.trim().replace(/\s+/g, ' '));
+  const OWN = '/debug/profile';  // the report counts itself: a row of its own, not what the checks wait for
+  const routeKeys = () => rows('routes').map((row) => row.dataset.route).filter((route) => route !== OWN).join();
+  const ownRow = () => card('routes')?.querySelector(`tr[data-route="${OWN}"]`);
+  const ROUTES = '/agents/{name}/run,/api/sessions/{session_id}';
+  const button = (act) => $(`#actions button[data-act="${act}"]`);
+  const question = () => $('dialog.pk-dialog[open]');
+  const answer = async (confirmed) => (await until('the question', question)).querySelector(`[data-index="${confirmed ? 1 : 0}"]`).click();
+  const autoOff = async () => {
+    const toggle = await until('the refresh control', () => $('pk-refresh [data-act="auto"]'));
+    if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+    forgetRefreshChoice();  // paused for this check only -- the kit would remember it for the panel
+  };
+  const forgetRefreshChoice = () => Object.keys(localStorage)
+    .filter((key) => key.startsWith('pk.refresh:')).forEach((key) => localStorage.removeItem(key));
+  const now = () => $('pk-refresh [data-act="now"]').click();
+  const cookie = (name, value) => { document.cookie = value ? `${name}=${value}; path=/` : `${name}=; path=/; max-age=0`; };
+  const post = (path) => fetch(path, { method: 'POST' });
+  const asked = async () => (await fetch('/__stub/asked')).json();
+  const click = (target, detail = 1) => target.dispatchEvent(new MouseEvent('click', { bubbles: true, detail }));
+  // opened as an administrator on a fresh seed, the auto refresh off: what a check waits for comes from what it drives.
+  // Asked twice, as a panel that has been open a while: the first answer has not counted itself yet.
+  const fresh = async () => {
+    cookie('stub_role', 'admin');
+    await post('/__stub/on');
+    await post('/__stub/reset');
+    await go('/ui/panels/performance');
+    await until('the routes', () => routeKeys() === ROUTES);
+    await autoOff();
+    now();
+    await until('the report counted in its own row', () => ownRow());
+    await sleep(200);
+  };
+
+  await check('the page is refused to anyone but an administrator', async () => {
+    const status = async (role) => {
+      cookie('stub_role', role);
+      return (await fetch('/ui/panels/performance')).status;
+    };
+    const answers = [await status(null), await status('user'), await status('admin')];
+    return answers.join() === '401,403,200';
+  });
+
+  await check('the stats count running requests, tasks, lag, memory and threads', async () => {
+    cookie('stub_role', 'admin');
+    await post('/__stub/reset');
+    await go('/ui/panels/performance');
+    await until('the stats', () => statValue('tasks') === '31');
+    // the report request of a panel is not counted among the running ones
+    return statValue('requests') === '1' && statValue('lag') === '120 ms' && stat('lag').classList.contains('pk-error')
+      && statValue('peak') === '120 ms' && statValue('memory') === '512 MB' && statValue('threads') === '1 / 3 active'
+      && /^Updated /.test($('#updated').textContent) && !$('#actions').hidden;
+  });
+
+  await check('running and slowest requests, time per route, tasks and threads are listed', async () => {
+    await until('the routes', () => routeKeys() === ROUTES);
+    const active = rows('active');
+    const running = active.length === 1 && cells(active[0]).join('|') === `GET|/api/run/${XSS}|2.5 s`
+      && active[0].querySelector('td:last-child').classList.contains('pk-error');
+    const slow = rows('slow').map((row) => cells(row).join('|')).join() === 'POST|/agents/writer/run|200|2.5 s';
+    const routes = rows('routes').map((row) => cells(row).join('|')).join()
+      === '/agents/{name}/run|1|2.5 s|2.5 s|2.5 s|1 (100.0 %),/api/sessions/{session_id}|2|300 ms|200 ms|400 ms|0';
+    const tasks = rows('tasks').length === 20 && card('tasks').querySelector('.pk-card-title').textContent === 'Async tasks (first 20)'
+      && card('tasks').querySelector('.pk-badge').textContent === '31';
+    const threads = rows('threads');
+    const listed = threads.length === 3 && cells(threads[0]).join('|') === 'MainThread|active|no'
+      && threads[2].querySelector('.pk-badge').title === 'thread.py:_worker' && cells(threads[2]).join('|') === 'asyncio_0|idle|yes';
+    const request = cells(rows('tasks')[1]);
+    const requestTask = /^Task-\d+$/.test(request[0]) && request[1] === 'RequestResponseCycle.run_asgi';
+    return running && slow && routes && tasks && listed && requestTask && !card('active').textContent.includes(OWN)
+      && !card('slow').textContent.includes(OWN);
+  });
+
+  await check('paths, task and thread names are drawn as text, never as markup', async () => {
+    return rows('active')[0].children[1].textContent === `/api/run/${XSS}`
+      && rows('tasks')[0].children[0].textContent === XSS && rows('tasks')[0].children[1].textContent === '<b>coro</b>'
+      && rows('threads')[1].children[0].textContent === XSS
+      && !$('#cards img') && !$('#cards b') && window.__xss === undefined;
+  });
+
+  await check('what changes on every answer is updated in place, a card is drawn anew only when what it lists changed', async () => {
+    await fresh();
+    const tables = () => Object.fromEntries(['slow', 'routes', 'tasks', 'threads'].map((key) => [key, card(key).querySelector('table')]));
+    const before = tables();
+    const row = rows('active')[0];
+    const lag = statValue('lag');
+    const own = ownRow();
+    const ownCount = cells(own)[1];
+    const taskName = cells(rows('tasks')[1])[0];
+    await post('/__stub/drift?on=1');  // from now on each report finds the clock and the lag moved on
+    try {
+      for (let tick = 1; tick <= 2; tick += 1) {
+        const reports = (await asked()).reports;
+        now();
+        await until(`answer ${tick}`, async () => (await asked()).reports > reports && statValue('lag') !== lag
+          && cells(rows('active')[0])[2] !== '2.5 s');
+        await sleep(300);
+      }
+      const after = tables();
+      // the report's own count and the request task's name moved on too, in the rows already there
+      const kept = Object.keys(before).every((key) => after[key] === before[key]) && rows('active')[0] === row
+        && cells(row)[2] === '2.7 s' && statValue('lag') === '140 ms'
+        && ownRow() === own && Number(cells(own)[1]) === Number(ownCount) + 2
+        && cells(rows('tasks')[1])[0] !== taskName && /^Task-\d+$/.test(cells(rows('tasks')[1])[0]);
+      // a request finished on a new route and one more running: those two cards are drawn anew, the others stay
+      await post('/__stub/traffic');
+      now();
+      await until('the new route', () => routeKeys().includes('/tools/{name}'));
+      await until('the new running request', () => rows('active').length === 2);
+      const redrawn = tables().routes !== before.routes && rows('active')[0] !== row
+        && tables().threads === before.threads && tables().tasks === before.tasks && tables().slow === before.slow;
+      return kept && redrawn;
+    } finally {
+      await post('/__stub/drift');
+    }
+  });
+
+  await check('resetting asks first: declined nothing is sent, confirmed the stats are gone', async () => {
+    await fresh();
+    const before = (await asked()).posts;
+    button('reset').click();
+    const asking = await until('the question', question);
+    const named = asking.textContent.includes('Reset stats') && asking.textContent.includes('Running requests stay')
+      && asking.querySelector('.pk-btn--danger')?.textContent === 'Reset stats';
+    await answer(false);
+    await until('the button again', () => !button('reset').disabled);
+    await sleep(300);
+    const untouched = (await asked()).posts === before && routeKeys() === ROUTES;
+    button('reset').click();
+    await answer(true);
+    await until('the stats gone', () => card('routes')?.textContent.includes('No requests counted yet'));
+    const toast = await until('the toast', () => $('.pk-toast--ok'));
+    return named && untouched && toast.textContent.includes('Stats reset') && (await asked()).posts === before + 1
+      && card('slow').textContent.includes('No slow requests recorded') && rows('active').length === 1 && !$('.pk-toast--error');
+  });
+
+  await check('collecting garbage asks first and says what it collected', async () => {
+    await fresh();
+    const before = (await asked()).posts;
+    button('gc').click();
+    const asking = await until('the question', question);
+    const named = asking.textContent.includes('garbage collection') && asking.querySelector('.pk-btn--primary')?.textContent === 'Collect garbage'
+      && !asking.querySelector('.pk-btn--danger');
+    await answer(true);
+    const toast = await until('the toast', () => $('.pk-toast--ok'));
+    return named && /^Collected [\d.,\s]+ objects; memory 512 MB → 512 MB$/.test(toast.textContent.trim())
+      && (await asked()).posts === before + 1;
+  });
+
+  await check('a double click asks once, and the button stays disabled until drawn anew', async () => {
+    await fresh();
+    const before = (await asked()).posts;
+    click(button('reset'), 2);  // the second click of a double click, no first one reached: nothing
+    await sleep(300);
+    const secondIgnored = !question();
+    click(button('reset'), 1);
+    click(button('reset'), 2);
+    await until('the question', question);
+    await sleep(200);
+    const once = doc().querySelectorAll('dialog.pk-dialog[open]').length === 1 && button('reset').disabled;
+    cookie('pp_post', 'slow');
+    try {
+      await answer(true);
+      await sleep(400);
+      const held = button('reset').disabled && !question();
+      click(button('reset'), 1);  // a disabled button: nothing
+      await until('the stats gone', () => card('routes')?.textContent.includes('No requests counted yet'));
+      await until('the button again', () => !button('reset').disabled);
+      await sleep(300);
+      return secondIgnored && once && held && !question() && (await asked()).posts - before === 1;
+    } finally {
+      cookie('pp_post', null);
+    }
+  });
+
+  await check('the keyboard focus returns to the button when the dialog closes and stays across redraws', async () => {
+    await fresh();
+    frame.focus();
+    button('gc').focus();
+    button('gc').click();
+    await answer(false);
+    await until('the button again', () => !button('gc').disabled);
+    await until('the focus back on the button', () => doc().activeElement === button('gc'), 3000);
+    await post('/__stub/traffic');
+    now();
+    await until('the routes drawn anew', () => routeKeys().includes('/tools/{name}'));
+    return doc().activeElement === button('gc');
+  });
+
+  await check('a viewer who is no longer an administrator, or signed out, sees why and nothing of before', async () => {
+    await fresh();
+    cookie('stub_role', 'user');
+    try {
+      now();
+      await until('the notice', () => $('#notice .pk-empty-title')?.textContent === 'Administrators only');
+      const refused = rows('routes').length === 0 && $('#stats').textContent.trim() === '' && $('#updated').textContent === ''
+        && $('#actions').hidden && !$('.pk-toast--error');
+      cookie('stub_role', null);  // signed out meanwhile
+      now();
+      await until('the notice', () => $('#notice .pk-empty-title')?.textContent === 'Not signed in');
+      return refused;
+    } finally {
+      cookie('stub_role', 'admin');
+    }
+  });
+
+  await check('with profiling switched off the panel says so', async () => {
+    await fresh();
+    await post('/__stub/off');
+    try {
+      now();
+      await until('the notice', () => $('#notice .pk-empty-title')?.textContent === 'Profiling is off');
+      return $('#notice').textContent.includes('AGENT_ENABLE_PROFILING=1') && $('#stats').textContent.trim() === ''
+        && $('#actions').hidden && !$('.pk-toast--error');
+    } finally {
+      await post('/__stub/on');
+    }
+  });
+
+  await check('a failed load shows the error and nothing of before', async () => {
+    await fresh();
+    cookie('pp_report', 'fails');
+    try {
+      now();
+      await until('the error', () => $('#notice').textContent.includes('Performance data could not be loaded'));
+      return $('#notice').textContent.includes('The profiler lock timed out') && rows('routes').length === 0
+        && $('#stats').textContent.trim() === '' && $('#updated').textContent === '' && $('#actions').hidden
+        && !$('.pk-toast--error');
+    } finally {
+      cookie('pp_report', null);
+    }
+  });
+
+  await check('an answer overtaken by a later load is dropped', async () => {
+    await fresh();
+    const failed = () => $('#notice').textContent.includes('could not be loaded');
+    try {
+      // a success overtaken by an error
+      cookie('pp_report', 'slow');
+      now();  // held 1.5 s
+      await sleep(300);
+      cookie('pp_report', 'fails');
+      now();  // answered at once, with an error
+      await until('the later error', failed);
+      await sleep(2000);
+      const errorKept = rows('routes').length === 0 && failed();
+      // an error overtaken by a success
+      cookie('pp_report', 'slowfail');
+      now();  // held 1.5 s, then an error
+      await sleep(300);
+      cookie('pp_report', null);
+      now();
+      await until('the later report', () => routeKeys() === ROUTES);
+      await sleep(2000);
+      return errorKept && routeKeys() === ROUTES && !failed();
+    } finally {
+      cookie('pp_report', null);
+    }
+  });
+
+  await check('ticks of the auto refresh ask nothing more while a load is on its way', async () => {
+    await fresh();
+    const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+    const reports = async () => (await asked()).reports;
+    let ticking = null;
+    try {
+      const before = await reports();
+      cookie('pp_report', 'slow');
+      now();  // answered after 1.5 s
+      ticking = setInterval(tick, 150);
+      await sleep(300);
+      cookie('pp_report', 'slower');
+      now();  // answered after 3 s: the 1.5 s one is out of date when it ends, this one is still on its way
+      await sleep(200);
+      cookie('pp_report', null);  // a load a tick would start is answered at once
+      await sleep(2000);
+      clearInterval(ticking);
+      await until('the routes', () => routeKeys() === ROUTES);
+      await sleep(500);
+      // with a server slower than the tick, each tick would start one more load
+      return (await reports()) - before === 2;
+    } finally {
+      clearInterval(ticking);
+      cookie('pp_report', null);
+    }
+  });
+
+  await check('the auto refresh runs from the start and brings what changed', async () => {
+    cookie('stub_role', 'admin');
+    await post('/__stub/reset');
+    localStorage.clear();  // a viewer who never switched it: the kit remembers the other checks' "off"
+    await go('/ui/panels/performance');
+    await until('the routes', () => routeKeys() === ROUTES);
+    const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
+    await post('/__stub/advance');
+    await until('the running request a second older, brought by a tick', () => cells(rows('active')[0])[2] === '3.5 s', 8000);
+    return running;
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

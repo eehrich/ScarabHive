@@ -1,6 +1,7 @@
-"""Debug API endpoints for performance profiling.
+"""Debug API endpoints: the data of the Performance and Memory Profile panels, and /debug/health.
 
-These endpoints are only available when AGENT_ENABLE_PROFILING=1.
+The profiling endpoints exist only while their feature is on (AGENT_ENABLE_PROFILING=1,
+AGENT_ENABLE_MEMORY_PROFILING=1) and answer administrators only.
 """
 
 from __future__ import annotations
@@ -9,17 +10,14 @@ import asyncio
 import gc
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from ..utils import profiling
 from ..utils.profiling import (
     PROFILING_ENABLED,
     get_profiler,
-    get_task_monitor,
-    get_loop_monitor,
     get_profiling_report,
     MemoryMonitor,
 )
@@ -27,159 +25,6 @@ from ..utils.profiling import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/debug", tags=["debug"])
-
-# Template directory
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-
-
-def _load_template(name: str) -> str:
-    """Load an HTML template from the templates directory."""
-    template_path = TEMPLATES_DIR / name
-    if not template_path.exists():
-        raise HTTPException(status_code=500, detail=f"Template {name} not found")
-    return template_path.read_text(encoding="utf-8")
-
-
-def _check_profiling_enabled():
-    """Raise 404 if profiling is not enabled."""
-    if not PROFILING_ENABLED:
-        raise HTTPException(
-            status_code=404,
-            detail="Profiling not enabled. Set AGENT_ENABLE_PROFILING=1 to enable."
-        )
-
-
-@router.get("/profile")
-async def get_profile() -> dict[str, Any]:
-    """Get comprehensive profiling report.
-    
-    Returns detailed information about:
-    - Active and slow requests
-    - Async task states
-    - Event loop lag
-    - Memory usage
-    - Thread counts
-    """
-    _check_profiling_enabled()
-    return get_profiling_report()
-
-
-@router.get("/profile/requests")
-async def get_request_stats() -> dict[str, Any]:
-    """Get request statistics by endpoint."""
-    _check_profiling_enabled()
-    profiler = get_profiler()
-    return {
-        "active": [
-            {
-                "id": r.request_id,
-                "path": r.path,
-                "method": r.method,
-                "duration_ms": r.duration_ms
-            }
-            for r in profiler.get_active_requests()
-        ],
-        "stats_by_path": profiler.get_stats()
-    }
-
-
-@router.get("/profile/tasks")
-async def get_async_tasks(include_stack: bool = False) -> dict[str, Any]:
-    """Get information about all async tasks.
-    
-    Useful for identifying:
-    - Tasks that are stuck
-    - Task names and coroutine info
-    - Potential deadlocks
-    
-    Args:
-        include_stack: Include stack traces (expensive, use sparingly)
-    """
-    _check_profiling_enabled()
-    task_monitor = get_task_monitor()
-    all_tasks = task_monitor.get_all_tasks_info(include_stack=include_stack)
-    
-    return {
-        "total_count": len(all_tasks),
-        "tasks": all_tasks,
-        "slow_callbacks": task_monitor.get_slow_callbacks()
-    }
-
-
-@router.get("/profile/loop")
-async def get_event_loop_stats() -> dict[str, Any]:
-    """Get event loop health statistics.
-    
-    High lag values indicate blocking operations in the event loop.
-    """
-    _check_profiling_enabled()
-    loop_monitor = get_loop_monitor()
-    
-    # Also include current loop info
-    loop = asyncio.get_event_loop()
-    
-    return {
-        "lag": loop_monitor.get_lag_stats(),
-        "loop_info": {
-            "running": loop.is_running(),
-            "closed": loop.is_closed(),
-            "debug": loop.get_debug() if hasattr(loop, 'get_debug') else None
-        }
-    }
-
-
-@router.get("/profile/memory")
-async def get_memory_stats() -> dict[str, Any]:
-    """Get detailed memory statistics."""
-    _check_profiling_enabled()
-    return {
-        "current": MemoryMonitor.get_memory_details(),
-        "gc": {
-            "counts": gc.get_count(),
-            "thresholds": gc.get_threshold(),
-            "is_enabled": gc.isenabled()
-        }
-    }
-
-
-@router.post("/profile/gc")
-async def trigger_gc() -> dict[str, Any]:
-    """Trigger garbage collection and return stats."""
-    _check_profiling_enabled()
-    
-    before = MemoryMonitor.get_memory_details()
-    collected = gc.collect()
-    after = MemoryMonitor.get_memory_details()
-    
-    return {
-        "collected_objects": collected,
-        "memory_before_mb": before.get("rss_mb", 0),
-        "memory_after_mb": after.get("rss_mb", 0),
-        "freed_mb": before.get("rss_mb", 0) - after.get("rss_mb", 0)
-    }
-
-
-@router.post("/profile/reset")
-async def reset_profile_stats() -> dict[str, str]:
-    """Reset all profiling statistics."""
-    _check_profiling_enabled()
-    profiler = get_profiler()
-    profiler.reset_stats()
-    return {"status": "reset", "timestamp": datetime.now().isoformat()}
-
-
-@router.get("/profile/dashboard", response_class=HTMLResponse)
-async def profile_dashboard() -> HTMLResponse:
-    """Interactive HTML dashboard for profiling data."""
-    _check_profiling_enabled()
-    html = _load_template("profiling_dashboard.html")
-    return HTMLResponse(
-        content=html,
-        headers={
-            "X-Frame-Options": "SAMEORIGIN",
-            "Content-Security-Policy": "frame-ancestors 'self'"
-        }
-    )
 
 
 @router.get("/health")
@@ -205,8 +50,16 @@ async def health_check() -> dict[str, Any]:
 
 
 # =============================================================================
-# Memory Profiling Endpoints
+# Memory Profiling Endpoints -- the data of the Memory Profile panel
 # =============================================================================
+
+async def require_admin_viewer(request: Request) -> None:
+    """Administrators only, checked here and not only by the route rules in config.yaml: 401 or 403."""
+    from ..ui.routes import viewer_role
+
+    if await viewer_role(request) != "admin":
+        raise HTTPException(status_code=403, detail="Administrators only")
+
 
 def _check_memory_profiling_enabled():
     """Raise 404 if memory profiling is not enabled."""
@@ -218,233 +71,118 @@ def _check_memory_profiling_enabled():
         )
 
 
-@router.get("/memory")
-async def get_memory_report() -> dict[str, Any]:
-    """Get comprehensive memory profiling report.
-    
-    Returns detailed information about:
-    - Current memory usage
-    - Object counts by type
-    - Tracemalloc allocation tracking
-    - Memory trend analysis
-    - Potential memory leaks
-    - Reference cycles
+async def require_memory_profile_access(request: Request) -> None:
+    """Who may open the Memory Profile panel and read its data: an administrator, while the feature is on."""
+    await require_admin_viewer(request)
+    _check_memory_profiling_enabled()
+
+
+memory_router = APIRouter(prefix="/memory", dependencies=[Depends(require_admin_viewer)])
+
+
+@memory_router.get("")
+async def get_memory_summary() -> dict[str, Any]:
+    """Process memory, GC and tracemalloc state, the latest snapshot, baseline growth and trend.
+
+    Read-only and cheap enough for an auto refresh: it reads what snapshots
+    stored and never walks the heap.
     """
     _check_memory_profiling_enabled()
-    from ..utils.memory_profiling import get_memory_report_async
-    return await get_memory_report_async()
+    from ..utils.memory_profiling import memory_summary
+    return await asyncio.to_thread(memory_summary)
 
 
-@router.post("/memory/snapshot")
+@memory_router.post("/snapshot")
 async def take_memory_snapshot() -> dict[str, Any]:
-    """Take a memory snapshot for comparison.
-    
-    Snapshots are stored internally and used for:
-    - Comparing memory growth over time
-    - Identifying consistently growing object types
-    - Detecting memory leaks
-    """
-    _check_memory_profiling_enabled()
-    from ..utils.memory_profiling import take_memory_snapshot_async
-    snapshot = await take_memory_snapshot_async()
-    return {
-        "status": "snapshot_taken",
-        "timestamp": snapshot.timestamp.isoformat(),
-        "total_mb": snapshot.total_mb,
-        "object_count": sum(snapshot.object_counts.values())
-    }
+    """Count all objects by type (and the top allocations while tracemalloc runs) and store it as a snapshot.
 
-
-@router.get("/memory/diff")
-async def get_memory_diff() -> dict[str, Any]:
-    """Get difference between last two memory snapshots.
-    
-    Shows:
-    - Memory growth in MB
-    - Object count changes by type
-    - Top growing object types (potential leaks)
+    Walks the whole heap in the profiling thread; the oldest of ten snapshots is dropped.
     """
     _check_memory_profiling_enabled()
     from ..utils.memory_profiling import get_leak_detector
-    
-    detector = get_leak_detector()
-    diff = detector.get_latest_diff()
-    
-    if diff is None:
-        return {"status": "insufficient_snapshots", "message": "Need at least 2 snapshots"}
-    
-    return diff.to_dict()
-
-
-@router.get("/memory/trend")
-async def get_memory_trend() -> dict[str, Any]:
-    """Analyze memory trend over all snapshots.
-    
-    Identifies:
-    - Overall memory growth rate
-    - Consistently growing object types (likely leaks)
-    - Memory growth per hour
-    """
-    _check_memory_profiling_enabled()
-    from ..utils.memory_profiling import get_leak_detector
-    
-    detector = get_leak_detector()
-    return detector.get_trend()
-
-
-@router.get("/memory/objects")
-async def get_object_growth() -> dict[str, Any]:
-    """Get object count changes from baseline.
-    
-    Shows which object types have grown since profiling started.
-    Useful for identifying accumulating objects.
-    """
-    _check_memory_profiling_enabled()
-    from ..utils.memory_profiling import get_object_growth_async
-    
-    growth = await get_object_growth_async()
-    # Sort by absolute growth
-    sorted_growth = sorted(growth.items(), key=lambda x: abs(x[1]), reverse=True)
-    
+    snapshot = await get_leak_detector().take_snapshot_async(include_allocations=True)
     return {
-        "total_types_changed": len(growth),
-        "growth": dict(sorted_growth[:50])  # Top 50
+        "taken_at": snapshot.timestamp.isoformat(),
+        "rss_mb": snapshot.total_mb,
+        "objects": sum(snapshot.object_counts.values()),
     }
 
 
-@router.post("/memory/baseline")
+@memory_router.post("/baseline")
 async def set_memory_baseline() -> dict[str, Any]:
-    """Set current object counts as baseline.
-    
-    Future calls to /memory/objects will show changes from this point.
-    """
+    """Replace the baseline with the current object counts (walks the heap in the profiling thread)."""
     _check_memory_profiling_enabled()
     from ..utils.memory_profiling import get_leak_detector
-    
-    detector = get_leak_detector()
-    await detector._object_tracker.set_baseline_async()
-    
-    return {
-        "status": "baseline_set",
-        "timestamp": datetime.now().isoformat()
-    }
+    tracker = get_leak_detector()._object_tracker
+    await tracker.set_baseline_async()
+    return {"set_at": tracker.baseline()[1].isoformat()}
 
 
-@router.get("/memory/tracemalloc")
-async def get_tracemalloc_stats() -> dict[str, Any]:
-    """Get tracemalloc allocation statistics.
-    
-    Shows top memory allocations with file:line information.
-    Requires AGENT_ENABLE_MEMORY_PROFILING=1.
-    
-    Note: tracemalloc is not started by default (causes memory overhead).
-    Use POST /debug/memory/tracemalloc/start to enable it temporarily.
-    """
-    _check_memory_profiling_enabled()
-    import tracemalloc
-    
-    if not tracemalloc.is_tracing():
-        return {
-            "status": "not_tracing", 
-            "message": "tracemalloc not started. Use POST /debug/memory/tracemalloc/start to enable."
-        }
-    
-    snapshot = tracemalloc.take_snapshot()
-    # Filter out tracemalloc's own allocations
-    snapshot = snapshot.filter_traces([
-        tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
-        tracemalloc.Filter(False, "<frozen importlib._bootstrap_external>"),
-    ])
-    
-    # Get stats by line
-    top_by_line = []
-    for stat in snapshot.statistics('lineno')[:30]:
-        top_by_line.append({
-            "file": str(stat.traceback),
-            "size_kb": stat.size / 1024,
-            "count": stat.count
-        })
-    
-    # Get stats by file
-    top_by_file = []
-    for stat in snapshot.statistics('filename')[:20]:
-        top_by_file.append({
-            "file": str(stat.traceback),
-            "size_kb": stat.size / 1024,
-            "count": stat.count
-        })
-    
-    current, peak = tracemalloc.get_traced_memory()
-    
-    return {
-        "status": "tracing",
-        "current_mb": current / (1024 * 1024),
-        "peak_mb": peak / (1024 * 1024),
-        "top_by_line": top_by_line,
-        "top_by_file": top_by_file
-    }
-
-
-@router.post("/memory/tracemalloc/start")
-async def start_tracemalloc(nframes: int = 10) -> dict[str, Any]:
+@memory_router.post("/tracemalloc/start")
+async def start_tracemalloc(nframes: int = Query(10, ge=1, le=100)) -> dict[str, Any]:
     """Start tracemalloc for detailed allocation tracking.
-    
+
     WARNING: tracemalloc causes significant overhead and memory growth
     from FrameSummary accumulation. Use only for short debugging sessions.
     """
     # Same gate as every other /debug/memory endpoint. Without it the trace
-    # could be STARTED (with all its overhead) while the reader endpoint
-    # stays 404 -- profiling running forever with no consumer.
-    # stop_tracemalloc stays unguarded on purpose: it is the mitigation
+    # could be STARTED (with all its overhead) while nothing can read it --
+    # profiling running forever with no consumer.
+    # stop_tracemalloc stays ungated on purpose: it is the mitigation
     # path for a trace that outlived the flag (e.g. AGENT_START_TRACEMALLOC).
     _check_memory_profiling_enabled()
-    import tracemalloc
-    
-    if tracemalloc.is_tracing():
-        return {
-            "status": "already_running",
-            "message": "tracemalloc is already active"
-        }
-    
-    tracemalloc.start(nframes)
-    return {
-        "status": "started",
-        "nframes": nframes,
-        "message": "tracemalloc started - remember to stop it after debugging"
-    }
+    from ..utils.memory_profiling import start_tracing
+    return {"status": "started" if start_tracing(nframes) else "already_running", "nframes": nframes}
 
 
-@router.post("/memory/tracemalloc/stop")
+@memory_router.post("/tracemalloc/stop")
 async def stop_tracemalloc() -> dict[str, Any]:
-    """Stop tracemalloc and release memory."""
-    import tracemalloc
-    
-    if not tracemalloc.is_tracing():
-        return {
-            "status": "not_running",
-            "message": "tracemalloc is not active"
-        }
-    
-    current, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    
-    return {
-        "status": "stopped",
-        "final_current_mb": current / (1024 * 1024),
-        "final_peak_mb": peak / (1024 * 1024),
-        "message": "tracemalloc stopped, memory released"
-    }
+    """Stop tracemalloc and drop its traces."""
+    from ..utils.memory_profiling import stop_tracing
+    final = stop_tracing()
+    if final is None:
+        return {"status": "not_running"}
+    return {"status": "stopped", "final_current_mb": final["current_mb"], "final_peak_mb": final["peak_mb"]}
 
 
-@router.get("/memory/dashboard", response_class=HTMLResponse)
-async def memory_dashboard() -> HTMLResponse:
-    """Interactive HTML dashboard for memory profiling."""
-    _check_memory_profiling_enabled()
-    html = _load_template("memory_dashboard.html")
-    return HTMLResponse(
-        content=html,
-        headers={
-            "X-Frame-Options": "SAMEORIGIN",
-            "Content-Security-Policy": "frame-ancestors 'self'"
-        }
-    )
+router.include_router(memory_router)
+
+
+# =============================================================================
+# Performance Profiling Endpoints -- the data of the Performance panel
+# =============================================================================
+
+async def require_performance_access(request: Request) -> None:
+    """Who may open the Performance panel and read its data: an administrator, while profiling is on."""
+    await require_admin_viewer(request)
+    if not profiling.PROFILING_ENABLED:  # read at call time, like the catalogue reads it
+        raise HTTPException(status_code=404, detail="Profiling not enabled. Set AGENT_ENABLE_PROFILING=1 to enable.")
+
+
+profile_router = APIRouter(prefix="/profile", dependencies=[Depends(require_performance_access)])
+
+
+@profile_router.get("")
+async def get_profile() -> dict[str, Any]:
+    """Active and slowest recent requests, stats per route, async tasks, event loop lag, memory, threads."""
+    return get_profiling_report()
+
+
+@profile_router.post("/gc")
+async def trigger_gc() -> dict[str, Any]:
+    """Run a full garbage collection and say what it collected and how the process size changed."""
+    before = MemoryMonitor.get_memory_mb()
+    collected = gc.collect()
+    after = MemoryMonitor.get_memory_mb()
+    return {"collected_objects": collected, "memory_before_mb": before, "memory_after_mb": after,
+            "freed_mb": before - after}
+
+
+@profile_router.post("/reset")
+async def reset_profile_stats() -> dict[str, str]:
+    """Forget the request stats and the slow request history; running requests stay."""
+    get_profiler().reset_stats()
+    return {"status": "reset", "timestamp": datetime.now().isoformat()}
+
+
+router.include_router(profile_router)

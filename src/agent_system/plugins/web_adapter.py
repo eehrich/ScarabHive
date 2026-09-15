@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING
 from pathlib import Path
 from abc import ABC
 
@@ -71,11 +71,8 @@ class PluginEndpointSecurityEnforcer:
     - Plugin-level default policies
     - Per-plugin overrides
     - Pattern-based endpoint rules
-    - Audit logging of plugin endpoint access (file + memory)
+    - Audit logging of refused plugin endpoint access (logs/security.log)
     """
-    
-    # Dedicated security audit logger
-    _security_logger: Optional[logging.Logger] = None
     
     def __init__(self, auth_config: Optional["AuthConfig"] = None):
         """Initialize the enforcer with auth configuration.
@@ -84,46 +81,7 @@ class PluginEndpointSecurityEnforcer:
             auth_config: Authentication configuration from config.yaml
         """
         self.auth_config = auth_config
-        self._audit_log: List[Dict[str, Any]] = []
-        self._max_memory_entries = 1000  # Limit memory usage
-        self._setup_security_logger()
         logger.info("PluginEndpointSecurityEnforcer initialized")
-    
-    def _setup_security_logger(self) -> None:
-        """Setup dedicated security audit file logger."""
-        if PluginEndpointSecurityEnforcer._security_logger is not None:
-            return
-        
-        security_logger = logging.getLogger("agent_system.security.audit")
-        security_logger.setLevel(logging.INFO)
-        
-        # Don't propagate to root logger
-        security_logger.propagate = False
-        
-        # Create logs directory if needed
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
-        
-        # File handler with rotation
-        from logging.handlers import RotatingFileHandler
-        handler = RotatingFileHandler(
-            log_dir / "security.log",
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=5,
-            encoding="utf-8"
-        )
-        handler.setLevel(logging.INFO)
-        
-        # JSON-like format for easy parsing
-        formatter = logging.Formatter(
-            '%(asctime)s | %(levelname)s | %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        handler.setFormatter(formatter)
-        security_logger.addHandler(handler)
-        
-        PluginEndpointSecurityEnforcer._security_logger = security_logger
-        logger.info("Security audit logger initialized: logs/security.log")
     
     def update_config(self, auth_config: "AuthConfig") -> None:
         """Update the auth configuration."""
@@ -203,75 +161,34 @@ class PluginEndpointSecurityEnforcer:
         # Check path match with glob
         return fnmatch.fnmatch(path, pattern_path)
     
-    def audit_access(
+    def audit_denied(
         self,
         plugin_name: str,
         path: str,
         method: str,
         user_id: Optional[str],
-        allowed: bool,
         reason: str
     ) -> None:
-        """Log plugin endpoint access for auditing.
-        
-        Logs to:
-        - In-memory buffer (last 1000 entries for UI display)
-        - logs/security.log file (DENIED only, rotated at 10MB, 5 backups)
-        
+        """Log a refused plugin endpoint access to logs/security.log, with the plugin rule's reason.
+
+        Allowed requests are left to the app-wide audit, which logs every request.
+
         Args:
             plugin_name: Name of the plugin
             path: Request path
             method: HTTP method
-            user_id: User ID or "anonymous"
-            allowed: Whether access was allowed
-            reason: Reason for the decision
+            user_id: User ID, None for anonymous
+            reason: Reason for the refusal
         """
         if not self.auth_config or not self.auth_config.endpoint_security.audit_enabled:
             return
         
-        from datetime import datetime, timezone
-        timestamp = datetime.now(timezone.utc).isoformat()
-        user = user_id or "anonymous"
-        
-        entry = {
-            "timestamp": timestamp,
-            "plugin_name": plugin_name,
-            "path": path,
-            "method": method,
-            "user_id": user,
-            "allowed": allowed,
-            "reason": reason
-        }
-        
-        # Keep limited entries in memory for UI display (both allowed and denied)
-        self._audit_log.append(entry)
-        if len(self._audit_log) > self._max_memory_entries:
-            self._audit_log = self._audit_log[-self._max_memory_entries:]
-        
-        # Log only DENIED to security.log file (reduces log size significantly)
-        if not allowed and PluginEndpointSecurityEnforcer._security_logger:
-            PluginEndpointSecurityEnforcer._security_logger.warning(
-                f"DENIED | {method} {path} | plugin={plugin_name} | user={user} | {reason}"
-            )
-    
-    def get_audit_log(self, plugin_name: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get recent audit log entries from memory buffer.
-        
-        Note: For full audit history, check logs/security.log
-        
-        Args:
-            plugin_name: Filter by plugin name (optional)
-            limit: Maximum entries to return
-        
-        Returns:
-            List of audit log entries (most recent last)
-        """
-        entries = self._audit_log
-        if plugin_name:
-            entries = [e for e in entries if e["plugin_name"] == plugin_name]
-        # limit<=0 must mean "nothing", not "everything":
-        # entries[-0:] is the full buffer.
-        return entries[-limit:] if limit > 0 else []
+        from agent_system.auth.middleware import log_field, security_audit_logger
+
+        security_audit_logger().warning(
+            f"DENIED | {log_field(method)} {log_field(path)} | plugin={log_field(plugin_name)} "
+            f"| user={log_field(user_id or 'anonymous')} | {reason}"  # the reason is this module's own text
+        )
 
 
 # Global plugin endpoint security enforcer
@@ -409,9 +326,6 @@ class PluginWebRegistry:
             policy = security_enforcer.get_plugin_policy(plugin_name, path, method)
             
             if not policy["requires_auth"]:
-                security_enforcer.audit_access(
-                    plugin_name, path, method, None, True, "No auth required"
-                )
                 return None
             
             # Bearer header or access_token cookie, resolved by the core auth
@@ -437,14 +351,10 @@ class PluginWebRegistry:
                     from agent_system.auth.enforcement import AnonymousUser
                     for allowed in auth_config.anonymous_access.allowed_endpoints:
                         if fnmatch.fnmatch(path, allowed.split(" ")[-1]):
-                            security_enforcer.audit_access(
-                                plugin_name, path, method, "anonymous", True,
-                                "Anonymous access allowed by config"
-                            )
                             return AnonymousUser(role=auth_config.anonymous_access.role)
                 
-                security_enforcer.audit_access(
-                    plugin_name, path, method, None, False,
+                security_enforcer.audit_denied(
+                    plugin_name, path, method, None,
                     "Authentication required but no user found"
                 )
                 raise HTTPException(
@@ -458,19 +368,15 @@ class PluginWebRegistry:
             if min_role:
                 from agent_system.auth.enforcement import has_role
                 if not has_role(user, min_role):
-                    security_enforcer.audit_access(
-                        plugin_name, path, method, user_id, False,
+                    security_enforcer.audit_denied(
+                        plugin_name, path, method, user_id,
                         f"Insufficient role: required {min_role}"
                     )
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail=f"Insufficient permissions. Required role: {min_role}",
                     )
-            
-            security_enforcer.audit_access(
-                plugin_name, path, method, user_id, True,
-                f"Authenticated as {user_id}"
-            )
+
             return user
         
         # Include plugin routers with security dependency
@@ -503,155 +409,14 @@ class PluginWebRegistry:
             except Exception as e:
                 logger.error(f"Failed to mount static files for plugin {name}: {e}")
         
-        # Add security audit endpoints only if audit is enabled
-        audit_enabled = (
-            auth_config.endpoint_security.audit_enabled 
-            if auth_config else False
-        )
-        
-        if audit_enabled:
-            # Add plugin security audit panel (admin only)
-            @app.get("/api/security/audit")
-            async def get_plugin_security_audit_panel(request: Request):
-                """HTML panel for plugin security audit log (admin only)."""
-                # Check admin access
-                if auth_config and auth_config.enabled:
-                    from agent_system.auth.dependencies import require_admin
-                    from agent_system.auth.database import get_db
-                    
-                    try:
-                        # Use the require_admin dependency properly
-                        db = get_db()
-                        from fastapi.security import HTTPBearer
-                        bearer = HTTPBearer(auto_error=False)
-                        credentials = await bearer(request)
-                        
-                        from agent_system.auth.dependencies import get_current_user, get_current_active_user
-                        user = await get_current_user(
-                            request=request,
-                            credentials=credentials,
-                            x_api_key=request.headers.get("x-api-key"),
-                            db=db
-                        )
-                        # Call require_admin to check admin role
-                        await require_admin(await get_current_active_user(user))
-                    except HTTPException:
-                        raise
-                    except Exception as e:
-                        logger.error(f"Auth error in security audit: {e}")
-                        raise HTTPException(
-                            status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail="Authentication required"
-                        )
-                
-                from fastapi.templating import Jinja2Templates
-                from pathlib import Path
-                
-                templates_dir = Path(__file__).parent.parent / "api" / "templates"
-                templates = Jinja2Templates(directory=str(templates_dir))
-                
-                return templates.TemplateResponse(
-                    "security_audit.html",
-                    {"request": request}
-                )
-        
-            # Add security audit endpoint (admin only) - now uses global middleware
-            @app.get("/api/plugins/security/audit")
-            async def get_security_audit(
-                request: Request,
-                category: Optional[str] = None,
-                limit: int = 100,
-                status_filter: Optional[str] = None
-            ):
-                """Get security audit log (admin only).
-                
-                Args:
-                    category: Filter by category (plugin, api, agent, auth, mcp, debug, health, other)
-                    limit: Maximum entries to return
-                    status_filter: Filter by status code range (2xx, 3xx, 4xx, 5xx, all)
-                """
-                # Check admin access
-                if auth_config and auth_config.enabled:
-                    from agent_system.auth.dependencies import require_admin, get_current_user, get_current_active_user
-                    from agent_system.auth.database import get_db
-                    from fastapi.security import HTTPBearer
-                    
-                    try:
-                        db = get_db()
-                        bearer = HTTPBearer(auto_error=False)
-                        credentials = await bearer(request)
-                        
-                        user = await get_current_user(
-                            request=request,
-                            credentials=credentials,
-                            x_api_key=request.headers.get("x-api-key"),
-                            db=db
-                        )
-                        await require_admin(await get_current_active_user(user))
-                    except HTTPException:
-                        raise
-                    except Exception as e:
-                        logger.error(f"Auth error in security audit data: {e}")
-                        raise HTTPException(
-                            status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail="Authentication required"
-                        )
-                
-                # Get from new middleware
-                from agent_system.auth.middleware import get_security_audit_middleware
-                audit_middleware = get_security_audit_middleware()
-                
-                if audit_middleware:
-                    audit_log = audit_middleware.get_audit_log(category, limit, status_filter)
-                else:
-                    # Fallback to plugin enforcer (legacy). No category filter
-                    # here: its first parameter is a PLUGIN-NAME filter, and
-                    # passing a category ("api", "auth", ...) silently matched
-                    # nothing. Unfiltered is honest; the legacy entries carry
-                    # no category field to filter on.
-                    enforcer = get_plugin_security_enforcer()
-                    audit_log = enforcer.get_audit_log(limit=limit)
-                
-                # Get available categories
-                categories = ["plugin", "api", "agent", "auth", "mcp", "debug", "health", "other"]
-                
-                return {
-                    "audit_log": audit_log,
-                    "categories": categories,
-                    "total_plugins": len(self.web_plugins),
-                    "plugins_with_routers": list(self.active_routers.keys()),
-                }
-        
-        # Add plugin security status endpoint
-        @app.get("/api/plugins/security/status")
-        async def get_plugin_security_status(request: Request):
+        # Plugin security status: administrators only (without authentication there is one user, the owner)
+        from agent_system.auth.dependencies import require_admin
+
+        status_guard = [Depends(require_admin)] if auth_config and auth_config.enabled else []
+
+        @app.get("/api/plugins/security/status", dependencies=status_guard)
+        async def get_plugin_security_status():
             """Get current plugin security configuration status."""
-            if auth_config and auth_config.enabled:
-                from agent_system.auth.dependencies import get_current_user, get_current_active_user
-                from agent_system.auth.database import get_db
-                from fastapi.security import HTTPBearer
-                
-                try:
-                    db = get_db()
-                    bearer = HTTPBearer(auto_error=False)
-                    credentials = await bearer(request)
-                    
-                    user = await get_current_user(
-                        request=request,
-                        credentials=credentials,
-                        x_api_key=request.headers.get("x-api-key"),
-                        db=db
-                    )
-                    await get_current_active_user(user)
-                except HTTPException:
-                    raise
-                except Exception as e:
-                    logger.error(f"Auth error in security status: {e}")
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Authentication required"
-                    )
-            
             enforcer = get_plugin_security_enforcer()
             
             # Build status for each plugin

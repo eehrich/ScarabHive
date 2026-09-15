@@ -508,19 +508,24 @@ auth:
 
 ### Audit Logging
 
-When `audit_enabled: true`, all plugin endpoint access is logged:
+When `auth.endpoint_security.audit_enabled: true`, every request (static files aside) is logged to
+`logs/security.log` by the app-wide audit; a plugin request the plugin rules refuse gets a second line
+with the rule's reason:
 
 ```
-[PLUGIN_AUDIT] POST /plugins/todo/tasks | plugin=todo | user=john | allowed=True | Authenticated
-[PLUGIN_AUDIT] GET /plugins/admin_tools/users | plugin=admin_tools | user=anonymous | allowed=False | Insufficient role
+2026-09-15 10:00:00 | INFO | ALLOWED | POST /plugins/todo/tasks | user=john | ip=10.0.0.5 | status=200 | 12.3ms | plugin
+2026-09-15 10:00:01 | WARNING | DENIED | GET /plugins/admin_tools/users | plugin=admin_tools | user=anonymous | Authentication required but no user found
 ```
 
 ### Monitoring Endpoints
 
 Two admin endpoints are available for monitoring:
 
-1. **GET /api/plugins/security/status** - Current security configuration
-2. **GET /api/plugins/security/audit** - Recent audit log entries (admin only)
+1. **GET /api/plugins/security/status** - Current security configuration (admin only)
+2. **GET /admin/security/audit** - The newest requests the app-wide audit kept in memory, newest first
+   (admin only, 404 while the audit is off; `category`, repeatable `status=4xx`, `limit` 1-1000).
+   The **Security Audit** panel (`/ui/panels/security_audit`) shows it. Refused plugin requests
+   additionally land in `logs/security.log` with the plugin rule's reason.
 
 Example response from `/api/plugins/security/status`:
 ```json

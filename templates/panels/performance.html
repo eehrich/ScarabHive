@@ -1,0 +1,25 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Performance{% endblock %}
+{% block toolbar %}
+<span class="pk-muted" id="updated"></span>
+<span class="pk-row" id="actions" hidden>
+  <button type="button" class="pk-btn pk-btn--sm" data-act="gc"
+    title="Run a full garbage collection now">{{ icon('rotate-ccw', size='sm') }} Collect garbage</button>
+  <button type="button" class="pk-btn pk-btn--sm" data-act="reset"
+    title="Forget the time per route and the slow requests">{{ icon('trash-2', size='sm') }} Reset stats</button>
+</span>
+<pk-refresh interval="5" auto></pk-refresh>
+{% endblock %}
+{% block content %}
+<div class="pk-stack">
+  <div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
+  <div id="notice"></div>
+  {#- One slot per card: each is drawn anew only when what it lists changed. #}
+  <div class="pk-stack" id="cards">
+    <div id="card-active"></div><div id="card-slow"></div><div id="card-routes"></div>
+    <div id="card-tasks"></div><div id="card-threads"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/panels/performance.js"></script>{% endblock %}

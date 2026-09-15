@@ -11,11 +11,12 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
-from urllib.parse import unquote
+from typing import Dict, List, Optional, Any, Sequence, TYPE_CHECKING
+from urllib.parse import quote, unquote
 import logging
 from logging.handlers import RotatingFileHandler
 
+from fastapi import HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send, Message
@@ -390,8 +391,9 @@ class EndpointSecurityMiddleware:
             return
         
         # Auth required - check user
-        username, user_role = self._extract_user_info(scope)
-        
+        # the audit around this layer has looked the account up already
+        username, user_role = scope[IDENTITY_SCOPE_KEY] if IDENTITY_SCOPE_KEY in scope else self._extract_user_info(scope)
+
         # No user and auth required
         if username is None:
             # Check if anonymous access is allowed for this endpoint
@@ -465,206 +467,123 @@ class EndpointSecurityMiddleware:
         })
 
 
+#: What the audit log sorts a request into; static files are never kept.
+AUDIT_CATEGORIES = ("plugin", "api", "agent", "auth", "mcp", "debug", "health", "other")
+AUDIT_STATUS_CLASSES = ("2xx", "3xx", "4xx", "5xx")
+#: Where the Security Audit panel reads the log (api/admin_endpoints.py).
+AUDIT_LOG_PATH = "/admin/security/audit"
+AUDIT_LOGGER_NAME = "agent_system.security.audit"
+#: Where the audit leaves the (username, role) it resolved for the endpoint security inside it.
+IDENTITY_SCOPE_KEY = "agent_system.identity"
+
+
+def security_audit_logger() -> logging.Logger:
+    """The writer of logs/security.log, shared by every auditor in the process.
+
+    One handler per process: the endpoint audit and the plugin route audit both
+    write here, and a handler each wrote every line twice.
+    """
+    security_logger = logging.getLogger(AUDIT_LOGGER_NAME)
+    if not security_logger.handlers:
+        security_logger.setLevel(logging.INFO)
+        security_logger.propagate = False
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        handler = RotatingFileHandler(log_dir / "security.log", maxBytes=10 * 1024 * 1024, backupCount=5,
+                                      encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s",
+                                               datefmt="%Y-%m-%d %H:%M:%S"))
+        security_logger.addHandler(handler)
+        logger.info("Security audit logger initialized: logs/security.log")
+    return security_logger
+
+
+def log_field(value: Any) -> str:
+    """A value as one field of a security.log line, percent-encoded.
+
+    A decoded path (or a name) may carry a newline, which would forge the next line,
+    or " | user=root", which would forge a field of this one. Normal path characters stay.
+    """
+    return quote(str(value), safe="/:@!$&'()*+,;=[]")
+
+
 class SecurityAuditMiddleware:
     """
     Security audit middleware (Pure ASGI implementation).
-    
-    Logs all HTTP requests for security auditing.
-    Stores in-memory buffer for UI and writes to security.log file.
+
+    Logs every HTTP request (static files aside) to logs/security.log and keeps
+    the latest in memory for the Security Audit panel.
     """
-    
-    _security_logger: Optional[logging.Logger] = None
+
     _instance: Optional["SecurityAuditMiddleware"] = None
-    
+
     def __init__(
         self,
         app: ASGIApp,
+        auth_config: "AuthConfig",
         enabled: bool = True,
         max_memory_entries: int = 1000,
-        log_allowed: bool = True,
     ):
         """
-        Initialize security audit middleware.
-        
         Args:
             app: ASGI application
+            auth_config: resolves who sent a request exactly as the endpoint security does
             enabled: Whether audit logging is enabled
             max_memory_entries: Maximum entries to keep in memory
-            log_allowed: Whether to log allowed requests (vs only denied)
         """
         self.app = app
         self.enabled = enabled
         self._audit_log: List[Dict[str, Any]] = []
         self._max_memory_entries = max_memory_entries
-        self._log_allowed = log_allowed
-        # Lazy handle for X-API-Key → username resolution against UserDatabase.
-        self._user_db: Optional[Any] = None
-        self._setup_security_logger()
+        # The log names the account the request authenticates as -- a verified token
+        # of an existing active account or a valid API key -- never a claim anyone can write.
+        self._identity = EndpointSecurityMiddleware(app, auth_config)
         SecurityAuditMiddleware._instance = self
 
-    def _get_user_db(self) -> Any:
-        """Lazy-load the global UserDatabase singleton (see EndpointSecurityMiddleware)."""
-        if self._user_db is None:
-            from agent_system.auth.database import get_db
-            self._user_db = get_db()
-        return self._user_db
-    
-    def _setup_security_logger(self) -> None:
-        """Setup dedicated security audit file logger."""
-        if SecurityAuditMiddleware._security_logger is not None:
-            return
-        
-        security_logger = logging.getLogger("agent_system.security.audit")
-        security_logger.setLevel(logging.INFO)
-        security_logger.propagate = False
-        
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
-        
-        handler = RotatingFileHandler(
-            log_dir / "security.log",
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=5,
-            encoding="utf-8"
-        )
-        handler.setLevel(logging.INFO)
-        
-        formatter = logging.Formatter(
-            '%(asctime)s | %(levelname)s | %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        handler.setFormatter(formatter)
-        security_logger.addHandler(handler)
-        
-        SecurityAuditMiddleware._security_logger = security_logger
-        logger.info("Security audit logger initialized: logs/security.log")
-    
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Process request with audit logging."""
         if scope["type"] != "http" or not self.enabled:
             await self.app(scope, receive, send)
             return
-        
-        # Extract request info
+
         path = scope.get("path", "")
+        category = self._get_category(path)
+        if category == "static":  # never kept (too noisy): not worth an account lookup either
+            await self.app(scope, receive, send)
+            return
         method = scope.get("method", "GET")
         client = scope.get("client")
         client_ip = client[0] if client else "unknown"
-        
-        # Extract user from JWT token in headers
-        user_id = self._extract_user_from_headers(scope)
-        
-        # Track response status
         response_status = 0
-        
+        # Before the route runs: a request that changes its own credentials (DELETE /auth/api-key)
+        # is named by what it authenticated with. The endpoint security inside reuses it.
+        identity = scope[IDENTITY_SCOPE_KEY] = self._identity._extract_user_info(scope)
+
         async def send_wrapper(message: Message) -> None:
             nonlocal response_status
             if message["type"] == "http.response.start":
                 response_status = message.get("status", 0)
             await send(message)
-        
+
         start_time = time.time()
-        
         try:
             await self.app(scope, receive, send_wrapper)
+        except Exception:
+            if not response_status:
+                response_status = 500  # what the server error middleware outside answers
+            raise
         finally:
-            duration_ms = (time.time() - start_time) * 1000
-            
-            # Determine category
-            category = self._get_category(path)
-            
-            # Log the access
-            allowed = 200 <= response_status < 400
             self._audit_access(
                 path=path,
                 method=method,
-                user_id=user_id,
+                user_id=identity[0] or "anonymous",
                 client_ip=client_ip,
                 status_code=response_status,
-                duration_ms=duration_ms,
+                duration_ms=(time.time() - start_time) * 1000,
                 category=category,
-                allowed=allowed
+                allowed=200 <= response_status < 400,
             )
-    
-    def _extract_user_from_headers(self, scope: Scope) -> str:
-        """Extract username from JWT token (Bearer/cookie) or X-API-Key header.
 
-        Audit-only path: returns the username for logging, does NOT authorize.
-        JWT extraction is unverified (decode-only) because EndpointSecurityMiddleware
-        is responsible for the actual auth decision; we just want a name in the log.
-
-        For X-API-Key requests we still look up the hash in UserDatabase so the
-        audit log shows the real username instead of 'anonymous' (without that
-        lookup the audit log would lie about who hit /run).
-        """
-        headers = dict(scope.get("headers", []))
-
-        # Try Authorization header first
-        auth_header = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
-        token = None
-
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-        else:
-            # Try cookie
-            cookie_header = headers.get(b"cookie", b"").decode("utf-8", errors="ignore")
-            if cookie_header:
-                for cookie in cookie_header.split(";"):
-                    cookie = cookie.strip()
-                    if cookie.startswith("access_token="):
-                        token = cookie[13:]
-                        break
-
-        if token:
-            try:
-                # Decode JWT without verification (we just want the username for logging)
-                import base64
-                import json
-
-                # JWT format: header.payload.signature
-                parts = token.split(".")
-                if len(parts) >= 2:
-                    # Decode payload (add padding if needed)
-                    payload_b64 = parts[1]
-                    padding = 4 - len(payload_b64) % 4
-                    if padding != 4:
-                        payload_b64 += "=" * padding
-                    payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-                    sub = payload.get("sub")
-                    if sub:
-                        return sub
-            except Exception:
-                pass
-
-        # Fall back to X-API-Key lookup so audit log reflects the real user.
-        # Mirror the strict checks of EndpointSecurityMiddleware._lookup_api_key
-        # so the audit log never attributes a request to a user whose key
-        # would actually be rejected (inactive account, hash collision, etc.).
-        raw_headers = scope.get("headers", [])
-        if sum(1 for h in raw_headers if h[0].lower() == b"x-api-key") > 1:
-            # Ambiguous request — match EndpointSecurityMiddleware: stay anonymous.
-            return "anonymous"
-        api_key = headers.get(b"x-api-key", b"").decode("utf-8", errors="ignore").strip()
-        if api_key:
-            try:
-                from agent_system.auth.security import hash_api_key, verify_api_key
-                user = self._get_user_db().get_user_by_api_key(hash_api_key(api_key))
-                if (
-                    user
-                    and user.username
-                    and user.api_key
-                    and user.is_active
-                    and verify_api_key(api_key, user.api_key)
-                ):
-                    return user.username
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(
-                    "Audit user-lookup failed (%s); logging as anonymous",
-                    exc.__class__.__name__,
-                )
-
-        return "anonymous"
-    
     def _get_category(self, path: str) -> str:
         """Categorize the endpoint."""
         if path.startswith("/plugins/"):
@@ -685,7 +604,7 @@ class SecurityAuditMiddleware:
             return "health"
         else:
             return "other"
-    
+
     def _audit_access(
         self,
         path: str,
@@ -698,14 +617,8 @@ class SecurityAuditMiddleware:
         allowed: bool
     ) -> None:
         """Log endpoint access for auditing."""
-        # Skip static file logging (too noisy)
-        if category == "static":
-            return
-        
-        timestamp = datetime.now(timezone.utc).isoformat()
-        
         entry = {
-            "timestamp": timestamp,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "path": path,
             "method": method,
             "user_id": user_id,
@@ -715,65 +628,45 @@ class SecurityAuditMiddleware:
             "category": category,
             "allowed": allowed
         }
-        
-        # Keep limited entries in memory for UI display
-        self._audit_log.append(entry)
-        if len(self._audit_log) > self._max_memory_entries:
-            self._audit_log = self._audit_log[-self._max_memory_entries:]
-        
-        # Log to file
-        if SecurityAuditMiddleware._security_logger:
-            status_str = "ALLOWED" if allowed else "DENIED"
-            SecurityAuditMiddleware._security_logger.log(
-                logging.INFO if allowed else logging.WARNING,
-                f"{status_str} | {method} {path} | user={user_id} | ip={client_ip} | "
-                f"status={status_code} | {duration_ms:.1f}ms | {category}"
-            )
-    
+
+        # An open audit panel reads the log every few seconds: its answered reads
+        # would push out of memory what it is there to show. The file keeps them.
+        if not (allowed and method == "GET" and path == AUDIT_LOG_PATH):
+            self._audit_log.append(entry)
+            if len(self._audit_log) > self._max_memory_entries:
+                self._audit_log = self._audit_log[-self._max_memory_entries:]
+
+        status_str = "ALLOWED" if allowed else "DENIED"
+        security_audit_logger().log(
+            logging.INFO if allowed else logging.WARNING,
+            f"{status_str} | {log_field(method)} {log_field(path)} | user={log_field(user_id)} | ip={log_field(client_ip)} | "
+            f"status={status_code} | {duration_ms:.1f}ms | {category}"
+        )
+
     def get_audit_log(
         self,
         category: Optional[str] = None,
+        status_classes: Sequence[str] = (),
         limit: int = 100,
-        status_filter: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Get recent audit log entries from memory buffer.
-        
+        """The newest ``limit`` kept entries, newest first.
+
         Args:
-            category: Filter by category (plugin, api, agent, etc.)
+            category: only this category (plugin, api, agent, ...)
+            status_classes: only these status classes ("2xx" ... "5xx"); empty for all
             limit: Maximum entries to return
-            status_filter: Comma-separated status code ranges (2xx,3xx,4xx,5xx) or None for all
         """
-        entries = self._audit_log
-        
-        if category:
-            entries = [e for e in entries if e["category"] == category]
-        
-        # Support multiple status filters (comma-separated: "2xx,4xx,5xx")
-        if status_filter:
-            filters = [f.strip() for f in status_filter.split(',')]
-            if filters:
-                filtered_entries = []
-                for entry in entries:
-                    status_code = entry["status_code"]
-                    for filter_range in filters:
-                        if filter_range == "2xx" and 200 <= status_code < 300:
-                            filtered_entries.append(entry)
-                            break
-                        elif filter_range == "3xx" and 300 <= status_code < 400:
-                            filtered_entries.append(entry)
-                            break
-                        elif filter_range == "4xx" and 400 <= status_code < 500:
-                            filtered_entries.append(entry)
-                            break
-                        elif filter_range == "5xx" and status_code >= 500:
-                            filtered_entries.append(entry)
-                            break
-                entries = filtered_entries
-        
-        # limit<=0 must mean "nothing", not "everything":
-        # entries[-0:] is the full buffer.
-        return entries[-limit:] if limit > 0 else []
-    
+        return [
+            entry for entry in reversed(self._audit_log)
+            if (category is None or entry["category"] == category)
+            and (not status_classes or self._status_class(entry["status_code"]) in status_classes)
+        ][:limit]
+
+    @staticmethod
+    def _status_class(status_code: int) -> str:
+        """A request left without an answer (0: the client went away) counts with the server errors, as the panel counts it."""
+        return f"{status_code // 100}xx" if status_code else "5xx"
+
     @classmethod
     def get_instance(cls) -> Optional["SecurityAuditMiddleware"]:
         """Get the singleton instance."""
@@ -783,6 +676,15 @@ class SecurityAuditMiddleware:
 def get_security_audit_middleware() -> Optional[SecurityAuditMiddleware]:
     """Get the global security audit middleware instance."""
     return SecurityAuditMiddleware.get_instance()
+
+
+def security_audit_log(request: Request) -> SecurityAuditMiddleware:
+    """The audit log this server keeps; 404 while it keeps none (authentication or audit off)."""
+    auth = request.app.state.config.auth
+    audit = SecurityAuditMiddleware.get_instance()
+    if not (auth.enabled and auth.endpoint_security.audit_enabled) or audit is None:
+        raise HTTPException(status_code=404, detail="The security audit log is off")
+    return audit
 
 
 class RateLimitMiddleware:
@@ -887,8 +789,7 @@ class SecurityHeadersMiddleware:
         is_embeddable_path = (
             path.startswith("/plugins/") or
             path.startswith("/ui/") or
-            path.startswith("/debug/") or
-            path.startswith("/api/security/audit")
+            path.startswith("/debug/")
         )
         
         async def send_with_headers(message: Message) -> None:
@@ -1007,15 +908,14 @@ def configure_security_middleware(
             auth_config=auth_config,
         )
         logger.info("Endpoint security enforcement middleware enabled")
-    
-    # Security audit (must be first to capture all requests)
-    if audit_enabled:
-        app.add_middleware(
-            SecurityAuditMiddleware,
-            enabled=True,
-        )
+
+    # Security audit. add_middleware prepends, so it wraps the endpoint security (keeping its
+    # 401/403 and reusing the account it looked up) and sits inside the rate limiter and host
+    # check on purpose: a flood they refuse must not reach the audit's buffer, file and lookups.
+    if audit_enabled and auth_config and auth_config.enabled:
+        app.add_middleware(SecurityAuditMiddleware, auth_config=auth_config)
         logger.info("Security audit middleware enabled")
-    
+
     # Rate limiting
     if rate_limit_enabled:
         app.add_middleware(

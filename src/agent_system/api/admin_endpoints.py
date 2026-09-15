@@ -6,7 +6,7 @@ Provides administrative endpoints for user management.
 
 from __future__ import annotations
 
-from typing import List, Optional, Any, Dict
+from typing import List, Literal, Optional, Any, Dict
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
@@ -15,6 +15,13 @@ from pydantic import BaseModel
 from agent_system.auth.models import User, UserCreate, UserUpdate, UserRole
 from agent_system.auth.database import get_db, UserDatabase
 from agent_system.auth.dependencies import require_admin
+from agent_system.auth.middleware import (
+    AUDIT_CATEGORIES,
+    AUDIT_LOG_PATH,
+    AUDIT_STATUS_CLASSES,
+    SecurityAuditMiddleware,
+    security_audit_log,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -666,3 +673,18 @@ async def system_status(
     from agent_system.services.system_status import collect_system_status
 
     return await collect_system_status()
+
+
+@router.get(AUDIT_LOG_PATH.removeprefix("/admin"))
+async def security_audit(
+    audit: SecurityAuditMiddleware = Depends(security_audit_log),
+    admin_user: User = Depends(require_admin),
+    category: Optional[Literal[AUDIT_CATEGORIES]] = None,
+    status_classes: List[Literal[AUDIT_STATUS_CLASSES]] = Query([], alias="status"),
+    limit: int = Query(100, ge=1, le=1000),
+) -> Dict[str, Any]:
+    """The newest requests the security audit kept, newest first (admin only; 404 while the audit is off).
+
+    ``status`` may repeat (``?status=4xx&status=5xx``); none means every status.
+    """
+    return {"entries": audit.get_audit_log(category, status_classes, limit)}

@@ -96,16 +96,19 @@ def core_panels(*, audit_enabled: bool, profiling_enabled: bool,
               ["components", "design", "tokens"], window={"width": 1000, "height": 720}),
     ]
     if audit_enabled:
-        panels.append(Panel("security_audit", "Security Audit", "/api/security/audit", "shield", "admin",
-                            "Endpoint access audit log", ["audit", "security", "access"], roles=["admin"],
+        panels.append(Panel("security_audit", "Security Audit", "/ui/panels/security_audit", "shield", "admin",
+                            "Every request with who sent it and what it was answered",
+                            ["audit", "security", "access", "denied"], roles=["admin"],
                             window={"width": 980, "height": 640}))
     if profiling_enabled:
-        panels.append(Panel("performance", "Performance", "/debug/profile/dashboard", "gauge", "admin",
-                            "CPU profiling dashboard", ["profiling", "cpu"], roles=["admin"],
+        panels.append(Panel("performance", "Performance", "/ui/panels/performance", "gauge", "admin",
+                            "Running and slow requests, time per route, event loop lag, async tasks and threads",
+                            ["profiling", "cpu", "latency", "lag", "threads", "gc"], roles=["admin"],
                             window={"width": 980, "height": 640}))
     if memory_profiling_enabled:
-        panels.append(Panel("memory_profile", "Memory Profile", "/debug/memory/dashboard", "hard-drive", "admin",
-                            "Memory profiling dashboard", ["profiling", "memory"], roles=["admin"],
+        panels.append(Panel("memory_profile", "Memory Profile", "/ui/panels/memory_profile", "hard-drive", "admin",
+                            "Process memory, object counts by type, growth against a baseline and allocations",
+                            ["profiling", "memory", "leak", "tracemalloc", "gc"], roles=["admin"],
                             window={"width": 980, "height": 640}))
     return panels
 
