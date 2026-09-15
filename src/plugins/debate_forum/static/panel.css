@@ -1,8 +1,5 @@
 /* Debate Forum: only what the kit has no component for -- a channel list beside a thread that fill the panel. Tokens only. */
 
-.pk-panel { height: 100vh; }
-.pk-page-body { min-height: 0; }
-
 .df-layout { flex: 1; min-height: 0; display: flex; gap: var(--space-4); }
 .df-sidebar {
   width: 16rem; min-width: 11rem; max-width: 50%; resize: horizontal; overflow: auto;
@@ -110,7 +107,8 @@
   .df-layout { flex-direction: column; }
   .df-filters { flex-direction: row; flex-wrap: nowrap; }
   .df-filters .pk-select { flex: 1; min-width: 0; }
-  .df-sidebar { width: auto; max-width: none; max-height: 40vh; resize: none; padding-right: 0; border-right: 0; border-bottom: 1px solid var(--border-subtle); padding-bottom: var(--space-2); }
+  /* !important: over the width the viewer dragged on a wide panel, kept inline by panel.js */
+  .df-sidebar { width: auto !important; max-width: none; max-height: 40vh; resize: none; padding-right: 0; border-right: 0; border-bottom: 1px solid var(--border-subtle); padding-bottom: var(--space-2); }
   .df-messages { overflow: visible; }
   .df-head .pk-row { flex-wrap: wrap; }
   .df-name { flex-basis: 100%; }

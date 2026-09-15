@@ -709,6 +709,7 @@ EXPECTED = [
     "the kit page's theme buttons switch the whole shell",
     'a new window takes the first free step down, not the count of windows',
     'the docked tabs sort by drag and drop and by Shift+arrow, keep their order after a reload, and a cancelled drag changes nothing',
+    'the sessions pane takes the width it was dragged or keyed to, keeps it after a reload, and stays within its bounds',
     'closing the last panel hides the dock',
     'a mangled stored layout does not stop the shell',
     'a failing catalogue leaves the chat working',

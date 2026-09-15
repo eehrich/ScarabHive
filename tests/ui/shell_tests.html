@@ -2357,3 +2357,66 @@
 </script>
 </body>
 </html>
+  await check('the sessions pane takes the width it was dragged or keyed to, keeps it after a reload, and stays within its bounds', async () => {
+    const KEY = 'scarabhive.sessionsWidth';
+    const tabs = $$('.dock-tab').length;
+    const pane = () => Math.round($('#sessionsPane').getBoundingClientRect().width);
+    const handle = () => $('#sessionsResizer');
+    const pointer = (type, clientX) => handle().dispatchEvent(
+      new PointerEvent(type, { button: 0, pointerId: 1, clientX, bubbles: true, cancelable: true }));
+    const drag = (dx) => {
+      const x = pane();
+      pointer('pointerdown', x);
+      pointer('pointermove', x + dx);
+      handle().dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 1 }));
+    };
+    if ($('.app-body').dataset.sessions !== 'open') $('#sessionsToggle').click();
+    const start = pane();
+    // the handle rides the pane's right edge
+    const onEdge = () => Math.abs(handle().getBoundingClientRect().left + 3 - $('#sessionsPane').getBoundingClientRect().right) <= 1;
+    const edgeBefore = onEdge();
+    drag(80);
+    const dragged = pane() === start + 80 && localStorage.getItem(KEY) === String(start + 80) && onEdge();
+    handle().focus();
+    handle().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }));
+    const keyed = pane() === start + 64 && localStorage.getItem(KEY) === String(start + 64);
+    const cap = Math.round(win().innerWidth * 0.4);
+    drag(5000);
+    handle().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    // a key at the cap stores the cap, not a width the pane never shows
+    const capped = Math.abs(pane() - cap) <= 1 && localStorage.getItem(KEY) === String(cap);
+    drag(-5000);
+    const floored = pane() === 200 && localStorage.getItem(KEY) === '200';
+    $('#sessionsToggle').click();
+    // closed wins over the dragged width: the pane's column is gone (the pane itself keeps its 1px border)
+    const closed = getComputedStyle($('.app-body')).gridTemplateColumns.startsWith('0px ') && getComputedStyle(handle()).display === 'none';
+    $('#sessionsToggle').click();
+    localStorage.setItem(KEY, String(start + 40));
+    await loadShell();
+    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
+    const reloaded = pane() === start + 40;
+    // kept from a wider window: this one caps it
+    localStorage.setItem(KEY, '5000');
+    await loadShell();
+    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
+    const cappedOnLoad = Math.abs(pane() - win().innerWidth * 0.4) <= 1;
+    // a window just above the narrow layout: the pane leaves the chat and the open dock their room
+    const midWidth = await withWidth('1000px', async () => {
+      await until('the 1000px window', () => win().innerWidth === 1000 && getComputedStyle(handle()).display !== 'none');
+      // measured before any key: the stored 5000 is capped by shell.css alone
+      const fits = Math.abs(pane() - (1000 - 685)) <= 1 && $('#dock').getBoundingClientRect().right <= 1001;
+      handle().focus();
+      handle().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+      return fits && localStorage.getItem(KEY) === String(1000 - 685);
+    });
+    localStorage.setItem(KEY, 'Infinity');
+    await loadShell();
+    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
+    const garbageIgnored = pane() === start;
+    localStorage.removeItem(KEY);
+    await loadShell();
+    await until('the restored tabs', () => $$('.dock-tab').length === tabs);
+    return edgeBefore && dragged && keyed && capped && floored && closed && reloaded && cappedOnLoad && midWidth && garbageIgnored
+      && pane() === start;
+  });
+

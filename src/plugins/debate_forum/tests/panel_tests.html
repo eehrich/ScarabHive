@@ -91,6 +91,25 @@
     return Boolean(listed) && kept;
   });
 
+  await check('the channel list keeps the width it was resized to across a reload, and a narrow panel still stacks it full width', async () => {
+    const width = () => Math.round($('.df-sidebar').getBoundingClientRect().width);
+    const before = width();
+    $('.df-sidebar').style.width = '320px';  // what the browser writes when the resize grip is dragged
+    await sleep(50);
+    const resized = width() === 320 && before !== 320;
+    await go('/plugins/debate_forum/');
+    await until('the groups again', () => all('.df-group').length === 3);
+    await autoOff();
+    const kept = width() === 320;
+    frame.style.width = '500px';
+    try {
+      await until('the stacked layout', () => getComputedStyle($('.df-layout')).flexDirection === 'column');
+      return resized && kept && width() === Math.round($('.df-layout').getBoundingClientRect().width);
+    } finally {
+      frame.style.width = '';
+    }
+  });
+
   await check('a channel shows its thread: a round opens only where a later one begins, participants, pins, Markdown, code and the line to post', async () => {
     await open(1);
     const head = text('#name') === 'synopsis #1' && text('#topic') === 'Which synopsis is best?' && text('#state') === 'Active'

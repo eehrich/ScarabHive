@@ -7,6 +7,10 @@ import { Palette } from './palette.js';
 
 const SESSIONS_OPEN_KEY = 'scarabhive.sessionsOpen';
 const THEME_ICONS = { system: 'monitor', light: 'sun', dark: 'moon' };
+const SESSIONS_WIDTH_KEY = 'scarabhive.sessionsWidth';
+const SESSIONS_MIN_WIDTH = 200;
+/** As shell.css caps it, which caps it again for a window made smaller later. */
+const sessionsMaxWidth = () => Math.min(window.innerWidth * 0.4, window.innerWidth - 685);
 
 const $ = (id) => document.getElementById(id);
 /** A narrow screen as shell.css decides it: the sessions pane is a sheet over the chat. */
@@ -103,6 +107,35 @@ function sessionsOpen() {
 }
 
 /** On a narrow screen the sessions pane is a sheet over everything: it steps aside for what comes next. */
+function setSessionsWidth(width, { remember = true } = {}) {
+  const clamped = Math.round(Math.max(Math.min(width, sessionsMaxWidth()), SESSIONS_MIN_WIDTH));
+  document.querySelector('.app-body').style.setProperty('--sessions-open-width', `${clamped}px`);
+  if (!remember) return;
+  try { localStorage.setItem(SESSIONS_WIDTH_KEY, String(clamped)); } catch { /* storage unavailable */ }
+}
+
+/** The pane's right edge: dragged, or Arrow Left/Right on the focused handle. */
+function wireSessionsResizer(workspace) {
+  const handle = $('sessionsResizer');
+  const width = () => $('sessionsPane').getBoundingClientRect().width;
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    const startX = event.clientX;
+    const startWidth = width();
+    handle.dataset.dragging = '';
+    workspace.track(handle, event, (e) => setSessionsWidth(startWidth + e.clientX - startX, { remember: false }), () => {
+      delete handle.dataset.dragging;
+      setSessionsWidth(width());
+    });
+  });
+  handle.addEventListener('keydown', (event) => {
+    const step = { ArrowLeft: -16, ArrowRight: 16 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    setSessionsWidth(width() + step);
+  });
+}
+
 function closeSheet() {
   if (narrow() && sessionsOpen()) setSessionsOpen(false, { remember: false });
 }
@@ -231,6 +264,11 @@ async function start() {
   setSessionsOpen(stored !== 'false' && !narrow(), { remember: false });
 
   // header and menus
+  let storedWidth = null;
+  try { storedWidth = Number(localStorage.getItem(SESSIONS_WIDTH_KEY)); } catch { /* storage unavailable */ }
+  // unclamped on purpose: the window may be smaller now than when it was set, and shell.css caps it to this one
+  if (Number.isFinite(storedWidth) && storedWidth >= SESSIONS_MIN_WIDTH) document.querySelector('.app-body').style.setProperty('--sessions-open-width', `${storedWidth}px`);
+  wireSessionsResizer(workspace);
   $('sessionsToggle').addEventListener('click', () => setSessionsOpen(!sessionsOpen()));
   $('paletteButton').addEventListener('click', () => palette.open());
   $('themeButton').addEventListener('click', () => {

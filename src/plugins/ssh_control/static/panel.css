@@ -1,8 +1,5 @@
 /* SSH Machines: only what the kit has no component for -- a terminal that fills the panel. Tokens only. */
 
-.pk-panel { height: 100vh; }
-.pk-page-body { min-height: 0; }
-
 .ssh-tabs { flex-wrap: wrap; }
 .ssh-notice:empty { display: none; }
 

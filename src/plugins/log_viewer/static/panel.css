@@ -1,9 +1,5 @@
 /* Logs: only what the kit has no component for. Tokens only. */
 
-/* the entries scroll, the filters stay in view */
-.pk-panel { height: 100vh; }
-.pk-page-body { min-height: 0; }
-
 .lv-small { font-size: var(--text-xs); }
 .lv-file, .lv-lines { width: auto; max-width: 16rem; }
 .lv-search { flex: 1; min-width: 9rem; max-width: 18rem; }

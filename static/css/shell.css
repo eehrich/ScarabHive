@@ -55,8 +55,11 @@ body.app {
 /* -------------------------------------------------------------------- body */
 
 .app-body {
-  --sessions-width: 272px;
+  /* --sessions-open-width: the width the viewer dragged, set by shell.js; closed overrides it below */
+  /* the cap leaves the chat its 360px and an open dock its 320px + 5px resizer (see .app-dock) */
+  --sessions-width: min(var(--sessions-open-width, 272px), 40vw, calc(100vw - 685px));
   --dock-width: 520px;
+  position: relative;
   min-width: 0;
   display: grid;
   grid-template-columns: var(--sessions-width) minmax(360px, 1fr) auto auto;
@@ -64,6 +67,13 @@ body.app {
 }
 .app-body[data-sessions="closed"] { --sessions-width: 0px; }
 .app-body[data-sessions="closed"] .app-sessions { visibility: hidden; }
+/* out of the grid flow: it rides the pane's right edge without taking a column */
+.app-sessions-resizer {
+  position: absolute; top: 0; bottom: 0; left: calc(var(--sessions-width) - 3px); z-index: 5;
+  width: 6px; cursor: col-resize; touch-action: none;
+}
+.app-sessions-resizer:hover, .app-sessions-resizer[data-dragging], .app-sessions-resizer:focus-visible { background: var(--accent-subtle); outline: none; }
+.app-body[data-sessions="closed"] .app-sessions-resizer { display: none; }
 
 /* sessions pane */
 .app-sessions {
@@ -214,7 +224,7 @@ body.app {
   .app-dock { position: fixed; inset: 48px 0 28px 0; width: auto; max-width: none; z-index: 55; }
   .app-body[data-panels="aside"] .app-dock, .app-body[data-panels="aside"] ~ .app-floating-layer { display: none; }
   .app-back { display: inline-flex; }
-  .app-dock-resizer { display: none; }
+  .app-dock-resizer, .app-sessions-resizer { display: none; }
   .app-search span, .app-search kbd, .app-brand span, .app-session { display: none; }
   .app-search { width: auto; margin-left: auto; }
   .app-window { inset: 0 !important; width: auto !important; height: auto !important; border-radius: 0; }
