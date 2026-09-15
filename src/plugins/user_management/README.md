@@ -1,222 +1,76 @@
-# User Management Plugin
+# User Management
 
-Web-based user administration interface for AgentSystem's multi-user authentication system.
-
-## Overview
-
-This plugin provides a comprehensive web UI for managing users when multi-user authentication is enabled. It integrates with the auth system to provide admin-level user management capabilities.
-
-## Features
-
-- **User Dashboard**: View all users with search and filtering
-- **User Statistics**: Real-time count of total, active, and role-based users
-- **User Actions**:
-  - Toggle user active/inactive status
-  - Delete users with confirmation
-  - View user details (ID, username, email, role, creation date, last login)
-  - API key indicators
-- **Role Management**: Visual badges for ADMIN, USER, and GUEST roles
-- **Search Functionality**: Client-side search across usernames, emails, and names
-- **Responsive Design**: Modern, gradient-based UI
+The **Users** panel: the accounts of the auth database (`data/users.db`, see
+`src/agent_system/auth/`), administered by an admin. Web-only plugin, no MCP tools.
 
 ## Requirements
 
-- AgentSystem with `auth.enabled: true` in configuration
-- Admin privileges to access the plugin
+- `auth.enabled: true` in `config/config.yaml`. With authentication off the panel says so, and the API refuses.
+- An active admin account. Create the first one on the command line:
 
-## Installation
+  ```bash
+  agent-cli users create admin admin@example.com --admin
+  ```
 
-The plugin is included in the AgentSystem plugins directory. No additional installation required.
+## The panel
 
-## Configuration
+Opened from the panel launcher (category *admin*) or at `/plugins/user_management/`.
 
-In `config/mcp.yaml` or your plugin configuration:
+- **Stats**: users, active users, active admins.
+- **Search**: filters the table by username, email and full name.
+- **Table**: username with full name, email, role, state, created, last login. `(you)` marks your own account, a key
+  marks an account with an API key.
+- **New user**: username, email, full name, role, active, password. A refusal (name or email taken, password too
+  long, email invalid) is shown in the dialog.
+- **Edit**: email, full name, role, active, and a new password (left empty, the password stays). Only what was changed
+  is sent, so a change made meanwhile by someone else is not overwritten.
+- **Deactivate / Activate**: deactivating asks first; an inactive account can no longer sign in.
+- **Delete**: asks first.
 
-```yaml
-servers:
-  user_management:
-    type: plugin
-    plugin_name: user_management
-    enabled: true
-    mcp:
-      items_per_page: 20          # Number of users per page
-      allow_self_delete: false     # Allow users to delete themselves
-      show_api_keys: true          # Show API key indicators
-      require_email_validation: false  # Require email validation (future)
-```
+Your own account cannot be deactivated, deleted or given another role here — the buttons are off and the server
+refuses. Another admin does that.
 
-## Usage
+## Endpoints
 
-### Access the Dashboard
+All under `/plugins/user_management/`, JSON in and out.
 
-Navigate to: `http://127.0.0.1:8000/plugins/user_management/`
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/` | the panel |
+| `GET` | `/users` | `{"me": <your id>, "users": [...]}` — every account with `id, username, email, full_name, role, is_active, created_at, last_login, has_api_key` |
+| `POST` | `/users` | create: `username, email, password`, optional `full_name, role, is_active` |
+| `PUT` | `/users/{id}` | change any of `email, full_name, role, is_active, password`; only the fields sent |
+| `DELETE` | `/users/{id}` | delete |
 
-**Note**: This endpoint requires admin authentication when auth is enabled.
+Answers: `401` not signed in (or a refresh token), `403` not an active admin or authentication off, `404` no such
+account, `409` name or email taken, or a change to your own role, active state or existence, `422` invalid input:
+role not one of `admin`, `user`, `guest`; email invalid; username not 3–50 of letters, digits, `_`, `-`; password
+shorter than 8 characters or longer than 72 bytes. `415` a creation sent without `Content-Type: application/json`.
 
-### API Endpoints
+## Permissions
 
-All endpoints are prefixed with `/plugins/user_management/`:
+Two layers:
 
-- `GET /` - User management dashboard (HTML)
-- `GET /users/list?skip=0&limit=20` - List users (JSON)
-- `GET /users/{user_id}` - Get user details (JSON)
-- `POST /users/{user_id}/toggle-active` - Toggle user active status
-- `POST /users/{user_id}/change-role?role=ADMIN` - Change user role
-- `DELETE /users/{user_id}` - Delete user
-- `GET /stats` - Get user statistics (JSON)
+1. **Route rules** in `config/config.yaml`: the `auth.plugin_security.endpoint_rules` entry for
+   `/plugins/user_management/*` requires the admin role. The same rules decide who sees the panel in the launcher.
+2. **The plugin itself** checks every data endpoint, whatever the rules say: a signed-in account that is **active** and
+   an **admin in the database** — not the role written in the token. Tokens only (cookie or `Authorization: Bearer`);
+   an API key is refused.
 
-### Dashboard Features
+Credentials never leave the server: no password hash, no API key, only `has_api_key`.
 
-**Search Bar**: Type in the search box to filter users by username, email, or full name
+Since the requesting admin is checked right before each write and cannot change their own role, active state or
+account, one active admin always remains — within one API process. Two processes writing the same database at the same
+moment are not serialized.
 
-**User Actions**:
-- **⏸/▶ Toggle**: Activate or deactivate user accounts
-- **✏️ Edit**: View user details (integration point for future edit functionality)
-- **🗑️ Delete**: Remove users with confirmation dialog
-
-**Statistics**:
-- Total user count displayed in header
-- Active user count auto-updates based on current filter
-- Role distribution visible via colored badges
-
-## Security
-
-- All endpoints require authentication when `auth.enabled: true`
-- Admin role required for user management operations
-- Self-delete protection (configurable via `allow_self_delete`)
-- Confirmation dialogs for destructive operations
-- Rate limiting applies to all endpoints (inherited from auth middleware)
-
-## Integration Points
-
-### With Auth System
-
-The plugin integrates with `src/agent_system/auth/database.py`:
-- Uses `get_db()` to access UserDatabase
-- Leverages existing CRUD operations
-- Respects user roles and permissions
-
-### With Admin Endpoints
-
-Complements the `/admin/users/*` REST API endpoints with a visual interface.
-
-### Panel Registration
-
-The plugin registers admin panels accessible from the main UI:
-- **User Management**: Main dashboard at `/plugins/user_management/`
-- **User Statistics**: Stats endpoint at `/plugins/user_management/stats`
-
-## Development
-
-### File Structure
-
-```
-user_management/
-├── __init__.py           # Package initialization
-├── plugin.py             # Plugin factory and main class
-├── plugin.yaml           # Plugin metadata
-├── endpoints.py          # FastAPI web endpoints
-├── README.md             # This file
-├── templates/
-│   ├── dashboard.html    # Main user management UI
-│   └── auth_disabled.html # Auth not enabled message
-└── static/               # Future: JS/CSS assets
-```
-
-### Adding New Features
-
-1. **Add API Endpoint**: Update `endpoints.py` with new route
-2. **Update UI**: Modify `dashboard.html` template
-3. **Add JavaScript**: Create handler in `<script>` section
-4. **Update Config**: Add new settings to `plugin.yaml`
-
-### Testing
+## Tests
 
 ```bash
-# Enable auth in config
-auth:
-  enabled: true
-  secret_key: "test-key-min-32-chars-long-secure"
-
-# Start API
-agent-api
-
-# Create admin user (USERNAME EMAIL; prompts for the password)
-agent-cli users create admin admin@test.com --admin
-
-# Login and access dashboard
-curl -X POST http://127.0.0.1:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"your_password"}'
-
-# Visit http://127.0.0.1:8000/plugins/user_management/
+pytest src/plugins/user_management/tests -q
 ```
 
-## Future Enhancements
-
-- [ ] Inline user editing with modal dialogs
-- [ ] Bulk user operations (multi-select)
-- [ ] User creation form in UI
-- [ ] Password reset functionality
-- [ ] User activity logs
-- [ ] Export users to CSV
-- [ ] Pagination controls for large user lists
-- [ ] Advanced filtering (by role, status, creation date)
-- [ ] User profile page with detailed information
-- [ ] API key management UI
-
-## Troubleshooting
-
-### "Authentication Not Enabled" Page
-
-**Solution**: Enable auth in `config/config.yaml`:
-
-```yaml
-auth:
-  enabled: true
-```
-
-### 403 Forbidden Errors
-
-**Cause**: User lacks admin privileges
-
-**Solution**: Promote user to admin:
-
-```bash
-agent-cli users update USERNAME --role admin
-```
-
-### Users Not Loading
-
-**Check**:
-1. Database file exists: `data/users.db`
-2. Database permissions are correct
-3. Auth system initialized properly
-4. Check API logs for errors
-
-### Empty User List
-
-**Cause**: No users created yet
-
-**Solution**: Create users via CLI or API:
-
-```bash
-agent-cli users create newuser newuser@example.com
-```
-
-## Related Documentation
-
-- [Multi-User Authentication Guide](../../../docs/multi_user_authentication.md)
-- [Plugin Authoring Guide](../../../docs/plugin_authoring.md)
-- [Auth System Configuration](../../../config/config.yaml)
-
-## Support
-
-For issues or questions:
-- Check the main documentation in `docs/`
-- Review test cases in `tests/test_auth_system.py`
-- Examine auth endpoints in `src/api/auth_endpoints.py` and `src/api/admin_endpoints.py`
-
-## License
-
-Part of the AgentSystem project. See main LICENSE file.
+- `test_plugin_user_management.py` — the API against a users database under `tmp_path`: who is refused, lock-out,
+  validation, no credentials in answers.
+- `test_plugin_user_management_panel.py` with `panel_tests.html` — the panel in a headless Chromium against the real
+  plugin behind the app's route security, including a non-admin whose every change the server refuses, and the
+  instance with authentication off. Skipped without a Chromium-based browser.

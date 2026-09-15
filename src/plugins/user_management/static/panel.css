@@ -1,0 +1,7 @@
+/* Users: only what the kit has no component for. Tokens only. */
+
+.um-search { max-width: 24rem; }
+.um-name { font-weight: 600; white-space: nowrap; }
+.um-key { color: var(--text-muted); vertical-align: middle; }
+.um-inactive td { color: var(--text-secondary); }
+.um-actions { white-space: nowrap; text-align: right; }

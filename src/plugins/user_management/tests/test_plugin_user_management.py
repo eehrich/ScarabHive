@@ -1,454 +1,194 @@
-"""
-Tests for User Management Plugin
+"""The Users API against a real users database under tmp_path: who may call it, what it answers, what it refuses.
 
-Comprehensive tests for user management plugin web interface,
-endpoints, and integration with authentication system.
+The plugin's router is mounted bare (no route security from the config), so every refusal here is the plugin's own.
 """
+from __future__ import annotations
+
+from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
-from unittest.mock import Mock, patch
-from pathlib import Path
-from datetime import datetime
-
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
-from agent_system.auth.models import UserRole
-from plugins.user_management.plugin import UserManagementPlugin
-from plugins.user_management.endpoints import UserManagementWebEndpoints
-
-
-class TestUserManagementPlugin:
-    """Test UserManagementPlugin core functionality"""
-
-    @pytest.fixture
-    def mock_system_config(self):
-        """Create mock system config with auth enabled"""
-        config = Mock(spec=AgentSystemConfig)
-        config.auth = Mock()
-        config.auth.enabled = True
-        return config
-
-    @pytest.fixture
-    def mock_system_config_no_auth(self):
-        """Create mock system config with auth disabled"""
-        config = Mock(spec=AgentSystemConfig)
-        config.auth = Mock()
-        config.auth.enabled = False
-        return config
-
-    @pytest.fixture
-    def mcp_config(self):
-        """Create MCP config for user management"""
-        return MCPConfig(
-            type="user_management",
-            enabled=True,
-            agent_config=AgentConfig(),
-            items_per_page=20,
-            allow_self_delete=False,
-            show_api_keys=True
-        )
-
-    @pytest.fixture
-    def plugin(self, mock_system_config, mcp_config):
-        """Create user management plugin instance"""
-        return UserManagementPlugin("user_management", mock_system_config, mcp_config)
-
-    @pytest.fixture
-    def plugin_no_auth(self, mock_system_config_no_auth, mcp_config):
-        """Create plugin with auth disabled"""
-        return UserManagementPlugin("user_management", mock_system_config_no_auth, mcp_config)
-
-    def test_plugin_initialization(self, plugin):
-        """Test plugin initializes correctly"""
-        assert plugin.name == "user_management"
-        assert plugin.auth_enabled is True
-        assert plugin.items_per_page == 20
-        assert plugin.allow_self_delete is False
-        assert plugin.show_api_keys is True
-
-    def test_plugin_initialization_no_auth(self, plugin_no_auth):
-        """Test plugin initialization when auth disabled"""
-        assert plugin_no_auth.name == "user_management"
-        assert plugin_no_auth.auth_enabled is False
-
-    async def test_plugin_call_interface(self, plugin):
-        """Test MCP call interface returns status"""
-        result = await plugin.call()
-
-        assert result["status"] == "ok"
-        assert result["name"] == "user_management"
-        assert result["type"] == "web_ui_only"
-        assert result["auth_enabled"] is True
-        assert result["active"] is True
-
-    async def test_plugin_call_interface_no_auth(self, plugin_no_auth):
-        """Test call interface when auth disabled"""
-        result = await plugin_no_auth.call()
-
-        assert result["status"] == "ok"
-        assert result["active"] is False
-
-    def test_web_router_creation(self, plugin):
-        """Test that plugin creates a web router"""
-        router = plugin.get_web_router()
-
-        assert router is not None
-        assert router.prefix == "/plugins/user_management"
-
-
-class TestUserManagementWebEndpoints:
-    """Test web endpoints functionality"""
-
-    @pytest.fixture
-    def mock_system_config(self):
-        """Create mock system config"""
-        config = Mock(spec=AgentSystemConfig)
-        config.auth = Mock()
-        config.auth.enabled = True
-        return config
-
-    @pytest.fixture
-    def mcp_config(self):
-        """Create MCP config"""
-        return MCPConfig(
-            type="user_management",
-            enabled=True,
-            agent_config=AgentConfig(),
-            items_per_page=10
-        )
-
-    @pytest.fixture
-    def endpoints(self, mock_system_config, mcp_config):
-        """Create endpoints instance"""
-        return UserManagementWebEndpoints("user_management", mock_system_config, mcp_config)
-
-    def test_endpoints_initialization(self, endpoints):
-        """Test endpoints initialize correctly"""
-        assert endpoints.name == "user_management"
-        assert endpoints.auth_enabled is True
-        assert endpoints.items_per_page == 10
-
-    def test_get_user_database_when_auth_disabled(self):
-        """Test database access when auth disabled"""
-        config = Mock(spec=AgentSystemConfig)
-        config.auth = Mock()
-        config.auth.enabled = False
-
-        mcp_cfg = MCPConfig(type="user_management", enabled=True, agent_config=AgentConfig())
-        endpoints = UserManagementWebEndpoints("user_management", config, mcp_cfg)
-
-        from fastapi import HTTPException
-        with pytest.raises(HTTPException) as exc_info:
-            endpoints._get_user_database()
-
-        assert exc_info.value.status_code == 503
-        assert "not enabled" in exc_info.value.detail.lower()
-
-    def test_check_admin_permission(self, endpoints):
-        """Test admin permission check"""
-        # Should succeed when auth enabled
-        from fastapi import Request
-        mock_request = Mock(spec=Request)
-
-        result = endpoints._check_admin_permission(mock_request)
-        assert result is True
-
-    def test_check_admin_permission_no_auth(self):
-        """Test admin permission check when auth disabled"""
-        config = Mock(spec=AgentSystemConfig)
-        config.auth = Mock()
-        config.auth.enabled = False
-
-        mcp_cfg = MCPConfig(type="user_management", enabled=True, agent_config=AgentConfig())
-        endpoints = UserManagementWebEndpoints("user_management", config, mcp_cfg)
-
-        from fastapi import HTTPException, Request
-        mock_request = Mock(spec=Request)
-
-        with pytest.raises(HTTPException) as exc_info:
-            endpoints._check_admin_permission(mock_request)
-
-        assert exc_info.value.status_code == 403
-
-
-class TestUserManagementEndpoints:
-    """Test user management API endpoints"""
-
-    @pytest.fixture
-    def app_with_plugin(self):
-        """Create FastAPI app with user management plugin"""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
-
-        app = FastAPI()
-
-        # Create plugin with auth enabled
-        system_config = Mock(spec=AgentSystemConfig)
-        system_config.auth = Mock()
-        system_config.auth.enabled = True
-
-        mcp_config = MCPConfig(
-            type="user_management",
-            enabled=True,
-            agent_config=AgentConfig(),
-            items_per_page=10
-        )
-
-        plugin = UserManagementPlugin("user_management", system_config, mcp_config)
-        router = plugin.get_web_router()
-        app.include_router(router)
-
-        return app
-
-    @patch('agent_system.auth.database.get_db')
-    def test_user_management_home_endpoint(self, mock_get_db, app_with_plugin):
-        """Test home/dashboard endpoint"""
-        # Mock database
-        mock_db = Mock()
-        mock_user = Mock()
-        mock_user.id = 1
-        mock_user.username = "testuser"
-        mock_user.email = "test@example.com"
-        mock_user.full_name = "Test User"
-        mock_user.is_active = True
-        mock_user.role = UserRole.USER
-        mock_user.created_at = datetime.now()
-        mock_user.last_login = None
-        mock_user.api_key = None
-
-        mock_db.list_users.return_value = [mock_user]
-        mock_get_db.return_value = mock_db
-
-        client = TestClient(app_with_plugin)
-        response = client.get("/plugins/user_management/")
-
-        assert response.status_code == 200
-        assert "text/html" in response.headers["content-type"]
-
-    @patch('agent_system.auth.database.get_db')
-    def test_list_users_endpoint(self, mock_get_db, app_with_plugin):
-        """Test list users API endpoint"""
-        # Mock database
-        mock_db = Mock()
-        mock_user = Mock()
-        mock_user.id = 1
-        mock_user.username = "testuser"
-        mock_user.email = "test@example.com"
-        mock_user.full_name = "Test User"
-        mock_user.is_active = True
-        mock_user.role = UserRole.USER
-        mock_user.created_at = datetime.now()
-        mock_user.last_login = None
-        mock_user.api_key = None
-
-        mock_db.list_users.return_value = [mock_user]
-        mock_get_db.return_value = mock_db
-
-        client = TestClient(app_with_plugin)
-        response = client.get("/plugins/user_management/users/list")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert "users" in data
-        assert len(data["users"]) == 1
-        assert data["users"][0]["username"] == "testuser"
-
-    @patch('agent_system.auth.database.get_db')
-    def test_get_user_endpoint(self, mock_get_db, app_with_plugin):
-        """Test get single user endpoint"""
-        # Mock database
-        mock_db = Mock()
-        mock_user = Mock()
-        mock_user.id = 1
-        mock_user.username = "testuser"
-        mock_user.email = "test@example.com"
-        mock_user.full_name = "Test User"
-        mock_user.is_active = True
-        mock_user.role = UserRole.USER
-        mock_user.created_at = datetime.now()
-        mock_user.updated_at = None
-        mock_user.last_login = None
-        mock_user.api_key = None
-
-        mock_db.get_user_by_id.return_value = mock_user
-        mock_get_db.return_value = mock_db
-
-        client = TestClient(app_with_plugin)
-        response = client.get("/plugins/user_management/users/1")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["username"] == "testuser"
-        assert data["id"] == 1
-
-    @patch('agent_system.auth.database.get_db')
-    def test_get_user_not_found(self, mock_get_db, app_with_plugin):
-        """Test get user when user doesn't exist"""
-        mock_db = Mock()
-        mock_db.get_user_by_id.return_value = None
-        mock_get_db.return_value = mock_db
-
-        client = TestClient(app_with_plugin)
-        response = client.get("/plugins/user_management/users/999")
-
-        assert response.status_code == 404
-
-    @patch('agent_system.auth.database.get_db')
-    def test_get_user_stats_endpoint(self, mock_get_db, app_with_plugin):
-        """Test user statistics endpoint"""
-        # Mock database with various users
-        mock_db = Mock()
-
-        admin_user = Mock()
-        admin_user.is_active = True
-        admin_user.role = "ADMIN"
-        admin_user.api_key = "key123"
-
-        regular_user = Mock()
-        regular_user.is_active = True
-        regular_user.role = "USER"
-        regular_user.api_key = None
-
-        inactive_user = Mock()
-        inactive_user.is_active = False
-        inactive_user.role = "USER"
-        inactive_user.api_key = None
-
-        mock_db.list_users.return_value = [admin_user, regular_user, inactive_user]
-        mock_get_db.return_value = mock_db
-
-        client = TestClient(app_with_plugin)
-        response = client.get("/plugins/user_management/stats")
-
-        assert response.status_code == 200
-        stats = response.json()
-
-        assert stats["total_users"] == 3
-        assert stats["active_users"] == 2
-        assert stats["inactive_users"] == 1
-        assert stats["admins"] == 1
-        assert stats["users_with_api_keys"] == 1
-
-
-class TestUserManagementIntegration:
-    """Integration tests with full plugin system"""
-
-    @patch('agent_system.auth.database.get_db')
-    def test_plugin_with_web_registry(self, mock_get_db):
-        """Test plugin integration with web registry"""
-        from agent_system.plugins.web_adapter import PluginWebRegistry
-
-        app = FastAPI()
-        registry = PluginWebRegistry()
-
-        # Create plugin
-        system_config = Mock(spec=AgentSystemConfig)
-        system_config.auth = Mock()
-        system_config.auth.enabled = True
-
-        mcp_config = MCPConfig(
-            type="user_management",
-            enabled=True,
-            agent_config=AgentConfig()
-        )
-
-        plugin = UserManagementPlugin("user_management", system_config, mcp_config)
-        registry.register_web_plugin("user_management", plugin)
-        registry.apply_to_app(app)
-
-        # Mock database
-        mock_db = Mock()
-        mock_db.list_users.return_value = []
-        mock_get_db.return_value = mock_db
-
-        client = TestClient(app)
-
-        # Test that the plugin is registered and endpoints work
-        response = client.get("/plugins/user_management/")
-        # Plugin should respond (even if it requires auth, it should not 404)
-        assert response.status_code in [200, 401, 403]
-
-    def test_plugin_templates_directory_exists(self):
-        """Test that templates directory exists"""
-        plugin_dir = Path(__file__).parent.parent.parent.parent.parent / "src" / "plugins" / "user_management"
-        templates_dir = plugin_dir / "templates"
-
-        # Templates should exist for web UI
-        assert templates_dir.exists(), "Templates directory should exist for user management plugin"
-
-    def test_plugin_configuration_from_schema(self):
-        """Test that plugin can be configured from schema.yaml"""
-        plugin_dir = Path(__file__).parent.parent.parent.parent.parent / "src" / "plugins" / "user_management"
-        schema_file = plugin_dir / "schema.yaml"
-
-        assert schema_file.exists(), "schema.yaml should exist for user management plugin"
-
-
-class TestUserManagementEdgeCases:
-    """Test edge cases and error handling"""
-
-    def test_plugin_with_missing_auth_config(self):
-        """Test plugin when auth config is missing"""
-        config = Mock(spec=AgentSystemConfig)
-        # No auth attribute at all
-        delattr(config, 'auth')
-
-        mcp_config = MCPConfig(
-            type="user_management",
-            enabled=True,
-            agent_config=AgentConfig()
-        )
-
-        # Should handle gracefully
-        plugin = UserManagementPlugin("user_management", config, mcp_config)
-        assert plugin.auth_enabled is False
-
-    def test_endpoints_with_none_mcp_config_values(self):
-        """Test endpoints with missing config values"""
-        config = Mock(spec=AgentSystemConfig)
-        config.auth = Mock()
-        config.auth.enabled = True
-
-        # Minimal MCP config
-        mcp_config = MCPConfig(
-            type="user_management",
-            enabled=True,
-            agent_config=AgentConfig()
-        )
-
-        endpoints = UserManagementWebEndpoints("user_management", config, mcp_config)
-
-        # Should use defaults
-        assert endpoints.items_per_page == 20  # Default
-        assert endpoints.allow_self_delete is False
-        assert endpoints.show_api_keys is True
-
-    @patch('agent_system.auth.database.get_db')
-    def test_static_file_serving_security(self, mock_get_db):
-        """Test that static file serving prevents path traversal"""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
-
-        app = FastAPI()
-
-        system_config = Mock(spec=AgentSystemConfig)
-        system_config.auth = Mock()
-        system_config.auth.enabled = True
-
-        mcp_config = MCPConfig(
-            type="user_management",
-            enabled=True,
-            agent_config=AgentConfig()
-        )
-
-        plugin = UserManagementPlugin("user_management", system_config, mcp_config)
-        router = plugin.get_web_router()
-        app.include_router(router)
-
-        client = TestClient(app)
-
-        # Attempt path traversal
-        response = client.get("/plugins/user_management/static/../../../../../../etc/passwd")
-
-        # Should be blocked
-        assert response.status_code in [403, 404]
+from agent_system.auth import database
+from agent_system.auth.models import UserCreate, UserRole
+from agent_system.auth.security import create_access_token, verify_password
+from agent_system.config.models import AgentSystemConfig, AuthConfig, MCPConfig
+from plugins.user_management.plugin import PLUGIN_FACTORY
+
+PUBLIC = {"id", "username", "email", "full_name", "role", "is_active", "created_at", "last_login", "has_api_key"}
+PASSWORD = "correct-horse"
+
+
+@pytest.fixture
+def db(tmp_path, monkeypatch):
+    users = database.UserDatabase(tmp_path / "users.db")
+    monkeypatch.setattr(database, "_db", users)
+    for name, role, active in [("root", UserRole.ADMIN, True), ("ada", UserRole.ADMIN, True), ("bob", UserRole.USER, True),
+                               ("idle", UserRole.ADMIN, False)]:
+        users.create_user(UserCreate(username=name, email=f"{name}@example.com", password=PASSWORD, role=role, is_active=active))
+    users.generate_user_api_key(users.get_user_by_username("ada").id)
+    return users
+
+
+def client(auth_enabled: bool = True) -> TestClient:
+    plugin = PLUGIN_FACTORY("user_management", AgentSystemConfig(auth=AuthConfig(enabled=auth_enabled)), MCPConfig())
+    app = FastAPI()
+    app.include_router(plugin.get_web_router())
+    return TestClient(app)
+
+
+def as_user(name: str, **claims) -> dict:
+    token = create_access_token({"sub": name, "role": "admin", **claims}, expires_delta=timedelta(minutes=5))
+    return {"Authorization": f"Bearer {token}"}
+
+
+def ids(db) -> SimpleNamespace:
+    return SimpleNamespace(**{name: db.get_user_by_username(name).id for name in ("root", "ada", "bob", "idle")})
+
+
+def snapshot(db) -> list:
+    return [(u.username, u.email, u.full_name, u.role, u.is_active, u.hashed_password) for u in db.list_users(limit=100)]
+
+
+def test_an_admin_lists_every_account_without_credentials(db):
+    answer = client().get("/plugins/user_management/users", headers=as_user("root"))
+    assert answer.status_code == 200
+    body = answer.json()
+    assert body["me"] == ids(db).root
+    assert sorted(user["username"] for user in body["users"]) == ["ada", "bob", "idle", "root"]
+    assert all(set(user) == PUBLIC for user in body["users"])
+    assert {user["username"]: user["has_api_key"] for user in body["users"]} == {"root": False, "ada": True, "bob": False, "idle": False}
+    assert "$2b$" not in answer.text
+
+
+@pytest.mark.parametrize("who, status", [
+    ("nobody", 401),
+    ("a user", 403),
+    ("a user whose token claims admin", 403),
+    ("an inactive admin", 403),
+    ("a refresh token", 401),
+    ("a deleted admin", 401),
+    ("an admin's API key", 401),
+])
+def test_the_plugin_refuses_everyone_but_an_active_admin(db, who, status):
+    headers = {
+        "nobody": {},
+        "a user": as_user("bob", role="user"),
+        "a user whose token claims admin": as_user("bob"),
+        "an inactive admin": as_user("idle"),
+        "a refresh token": {"Authorization": "Bearer " + create_access_token({"sub": "root", "role": "admin"}, token_type="refresh")},
+        "a deleted admin": as_user("gone"),
+        "an admin's API key": {"X-API-Key": db.generate_user_api_key(ids(db).root)} if who == "an admin's API key" else {},
+    }[who]
+    web = client()
+    target = ids(db).ada
+    before = snapshot(db)
+    answers = [
+        web.get("/plugins/user_management/users", headers=headers),
+        web.post("/plugins/user_management/users", headers=headers,
+                 json={"username": "mallory", "email": "m@example.com", "password": PASSWORD, "role": "admin"}),
+        web.put(f"/plugins/user_management/users/{target}", headers=headers, json={"role": "guest", "password": "taken-over"}),
+        web.delete(f"/plugins/user_management/users/{target}", headers=headers),
+    ]
+    assert [answer.status_code for answer in answers] == [status] * 4
+    assert snapshot(db) == before
+
+
+def test_with_authentication_off_the_api_refuses_and_the_page_says_so(db):
+    web = client(auth_enabled=False)
+    before = snapshot(db)
+    assert web.get("/plugins/user_management/users", headers=as_user("root")).status_code == 403
+    assert web.delete(f"/plugins/user_management/users/{ids(db).bob}", headers=as_user("root")).status_code == 403
+    assert snapshot(db) == before
+    page = web.get("/plugins/user_management/")
+    assert page.status_code == 200 and "Authentication is off" in page.text
+    assert "panel.js" not in page.text and 'id="users"' not in page.text
+    enabled = client().get("/plugins/user_management/")
+    assert "Authentication is off" not in enabled.text and "/plugins/user_management/static/panel.js" in enabled.text
+
+
+def test_an_admin_cannot_lock_themselves_out(db):
+    web = client()
+    root = ids(db).root
+    refusals = [
+        web.put(f"/plugins/user_management/users/{root}", headers=as_user("root"), json={"role": "user"}),
+        web.put(f"/plugins/user_management/users/{root}", headers=as_user("root"), json={"role": "guest", "email": "r@example.com"}),
+        web.put(f"/plugins/user_management/users/{root}", headers=as_user("root"), json={"is_active": False}),
+        web.delete(f"/plugins/user_management/users/{root}", headers=as_user("root")),
+    ]
+    assert [answer.status_code for answer in refusals] == [409] * 4
+    me = db.get_user_by_id(root)
+    assert (me.role, me.is_active, me.email) == (UserRole.ADMIN, True, "root@example.com")
+    kept = web.put(f"/plugins/user_management/users/{root}", headers=as_user("root"),
+                   json={"role": "admin", "is_active": True, "full_name": "Root"})
+    assert kept.status_code == 200 and db.get_user_by_id(root).full_name == "Root"
+
+
+def test_another_admin_can_be_demoted_deactivated_and_deleted(db):
+    web = client()
+    ada = ids(db).ada
+    assert web.put(f"/plugins/user_management/users/{ada}", headers=as_user("root"), json={"role": "user"}).status_code == 200
+    assert web.put(f"/plugins/user_management/users/{ada}", headers=as_user("root"), json={"is_active": False}).status_code == 200
+    assert (db.get_user_by_id(ada).role, db.get_user_by_id(ada).is_active) == (UserRole.USER, False)
+    assert web.delete(f"/plugins/user_management/users/{ada}", headers=as_user("root")).json() == {"deleted": ada}
+    assert db.get_user_by_id(ada) is None
+    assert web.delete(f"/plugins/user_management/users/{ada}", headers=as_user("root")).status_code == 404
+    assert web.put(f"/plugins/user_management/users/{ada}", headers=as_user("root"), json={"full_name": "x"}).status_code == 404
+
+
+def test_creating_validates_and_answers_without_credentials(db):
+    web = client()
+    new = {"username": "carol", "email": "carol@example.com", "password": PASSWORD, "full_name": "Carol", "role": "guest",
+           "is_active": False, "hashed_password": "$2b$12$forged", "api_key": "forged"}
+    created = web.post("/plugins/user_management/users", headers=as_user("root"), json=new)
+    assert created.status_code == 200 and set(created.json()) == PUBLIC and created.json()["has_api_key"] is False
+    carol = db.get_user_by_username("carol")
+    assert (carol.role, carol.is_active, carol.api_key) == (UserRole.GUEST, False, None)
+    assert verify_password(PASSWORD, carol.hashed_password)
+    refused = {
+        "duplicate username": ({**new, "email": "other@example.com"}, 409),
+        "duplicate email": ({**new, "username": "carol2"}, 409),
+        "short password": ({**new, "username": "dave", "email": "d@example.com", "password": "seven77"}, 422),
+        "password over 72 bytes": ({**new, "username": "dave", "email": "d@example.com", "password": "€" * 25}, 422),
+        "unknown role": ({**new, "username": "dave", "email": "d@example.com", "role": "superuser"}, 422),
+        "role in capitals": ({**new, "username": "dave", "email": "d@example.com", "role": "ADMIN"}, 422),
+        "bad email": ({**new, "username": "dave", "email": "not-an-email"}, 422),
+        "bad username": ({**new, "username": "da ve", "email": "d@example.com"}, 422),
+    }
+    for name, (body, status) in refused.items():
+        assert web.post("/plugins/user_management/users", headers=as_user("root"), json=body).status_code == status, name
+    assert db.get_user_by_username("dave") is None and db.count_users() == 5
+
+
+def test_updating_changes_only_what_is_sent_and_validates_it(db):
+    web = client()
+    bob = ids(db).bob
+    url = f"/plugins/user_management/users/{bob}"
+    changed = web.put(url, headers=as_user("root"), json={"full_name": "Bob B"})
+    assert changed.status_code == 200 and set(changed.json()) == PUBLIC and "$2b$" not in changed.text
+    after = db.get_user_by_id(bob)
+    assert (after.full_name, after.email, after.role, after.is_active) == ("Bob B", "bob@example.com", UserRole.USER, True)
+    assert verify_password(PASSWORD, after.hashed_password)
+    for body, status in [({"password": "seven77"}, 422), ({"password": "€" * 25}, 422), ({"role": "owner"}, 422),
+                         ({"email": "ada@example.com"}, 409), ({"email": "nope"}, 422)]:
+        assert web.put(url, headers=as_user("root"), json=body).status_code == status, body
+    assert verify_password(PASSWORD, db.get_user_by_id(bob).hashed_password)
+    assert db.get_user_by_id(bob).email == "bob@example.com"
+    assert web.put(url, headers=as_user("root"), json={"password": "a-new-secret"}).status_code == 200
+    assert verify_password("a-new-secret", db.get_user_by_id(bob).hashed_password)
+
+
+def test_state_changes_take_json_only(db):
+    web = client()
+    before = snapshot(db)
+    body = '{"username": "mallory", "email": "m@example.com", "password": "correct-horse", "role": "admin"}'
+    plain = web.post("/plugins/user_management/users", headers={**as_user("root"), "Content-Type": "text/plain"}, content=body)
+    untyped = web.post("/plugins/user_management/users", headers=as_user("root"), content=body)
+    form = web.post("/plugins/user_management/users", headers=as_user("root"),
+                    data={"username": "mallory", "email": "m@example.com", "password": PASSWORD, "role": "admin"})
+    put = web.put(f"/plugins/user_management/users/{ids(db).bob}", headers={**as_user("root"), "Content-Type": "text/plain"},
+                  content='{"role": "admin"}')
+    assert [plain.status_code, untyped.status_code, form.status_code, put.status_code] == [422, 415, 422, 422]
+    assert snapshot(db) == before

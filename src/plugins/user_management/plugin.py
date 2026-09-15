@@ -1,6 +1,8 @@
 """User Management Plugin Entry Point"""
 
 from __future__ import annotations
+
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
@@ -11,38 +13,30 @@ if TYPE_CHECKING:
 
 
 class UserManagementPlugin(SchemaBasedPluginWebInterface):
-    """Web-only plugin for user management UI"""
-    
+    """Web-only plugin: the Users panel."""
+
     def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
-        """Initialize with new signature."""
-        # Initialize base class (loads schema automatically)
         super().__init__(name, system_config, mcp_config)
-        
-        # Check if auth is enabled
-        self.auth_enabled = getattr(system_config.auth, 'enabled', False) if hasattr(system_config, 'auth') and system_config.auth else False
-        
-        # Configuration from plugin.yaml or mcp_config
-        self.items_per_page = getattr(mcp_config, 'items_per_page', 20)
-        self.allow_self_delete = getattr(mcp_config, 'allow_self_delete', False)
-        self.show_api_keys = getattr(mcp_config, 'show_api_keys', True)
-        
-        # Initialize web endpoints with plugin reference for schema access
-        self.web_endpoints = UserManagementWebEndpoints(name, system_config, mcp_config, plugin=self)
-    
-    # MCP Server interface methods (no-op since this is web-only)
+        auth = getattr(system_config, "auth", None)
+        self.auth_enabled = bool(auth and auth.enabled)
+        self.web_endpoints = UserManagementWebEndpoints(self)
+
     async def call(self, tool: str = None, params: dict = None, *args, **kwargs):
         """No MCP tools - web UI only"""
         return {
-            "status": "ok", 
+            "status": "ok",
             "name": self.name,
             "type": "web_ui_only",
             "auth_enabled": self.auth_enabled,
             "active": self.auth_enabled
         }
-    
-    # Web Interface methods
+
     def get_web_router(self):
-        """Delegate to web endpoints"""
         return self.web_endpoints.get_web_router()
-    
+
+    def get_static_assets(self) -> Path:
+        """The panel's script and stylesheet, served under /plugins/<name>/static/."""
+        return Path(__file__).parent / "static"
+
+
 PLUGIN_FACTORY = UserManagementPlugin

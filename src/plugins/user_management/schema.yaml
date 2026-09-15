@@ -16,68 +16,34 @@ web_ui:
     keywords: [accounts, roles, permissions]
     window: {width: 960, height: 680}
 
+  # Every data endpoint checks for an active admin itself (endpoints.py), on top of the route rules in config.yaml.
   endpoints:
     - path: "/"
       method: "GET"
-      handler: "user_management_home"
+      handler: "render_panel"
       response_type: "html"
-      description: "Main user management dashboard UI"
-    
-    - path: "/users/list"
+      description: "The Users panel"
+
+    - path: "/users"
       method: "GET"
       handler: "list_users"
       response_type: "json"
-      description: "List all users (admin only)"
-    
+      description: "Every account, without credentials, and the requesting admin's id"
+
     - path: "/users"
       method: "POST"
       handler: "create_user"
       response_type: "json"
-      description: "Create new user (admin only)"
-    
-    - path: "/users/{user_id}"
-      method: "GET"
-      handler: "get_user"
-      response_type: "json"
-      description: "Get user details (admin only)"
-    
+      description: "Create an account"
+
     - path: "/users/{user_id}"
       method: "PUT"
       handler: "update_user"
       response_type: "json"
-      description: "Update user details (admin only)"
-    
-    - path: "/users/{user_id}/toggle-active"
-      method: "POST"
-      handler: "toggle_user_active"
-      response_type: "json"
-      description: "Toggle user active status (admin only)"
-    
-    - path: "/users/{user_id}/change-role"
-      method: "POST"
-      handler: "change_user_role"
-      response_type: "json"
-      description: "Change user role (admin only)"
-    
+      description: "Change email, full name, role, active state or password; only the fields sent"
+
     - path: "/users/{user_id}"
       method: "DELETE"
       handler: "delete_user"
       response_type: "json"
-      description: "Delete user (admin only)"
-    
-    - path: "/stats"
-      method: "GET"
-      handler: "get_stats"
-      response_type: "json"
-      description: "Get user statistics (admin only)"
-    
-    - path: "/static/{file_path:path}"
-      method: "GET"
-      handler: "serve_static"
-      response_type: "response"
-      description: "Static assets (CSS, JS, images)"
-
-config:
-  items_per_page: 20
-  allow_self_delete: false
-  show_api_keys: true
+      description: "Delete an account"
