@@ -21,11 +21,9 @@ def summarizer_plugin():
     plugin = PLUGIN_FACTORY("context_summarizer", system_config, mcp_config)
     impl = plugin.server._hooks_impl
 
-    # Pin the summariser's OWN llm: the rate limit is only recorded after a
-    # summarisation actually succeeds, so an uncontrolled LLM makes the first
-    # call fail on insufficient_reduction and the second one is never rate
-    # limited. Until the config chain was fixed this seam was closed by
-    # accident (invalid profile -> fallback to the agent's mock).
+    # Pin the summariser's OWN llm so no real provider is reached. Until the
+    # config chain was fixed this seam was closed by accident (invalid
+    # profile -> fallback to the agent's mock).
     from unittest.mock import AsyncMock as _AsyncMock
     summary_llm = _AsyncMock()
     summary_llm.chat = _AsyncMock(return_value="Kurze Zusammenfassung.")
@@ -260,48 +258,53 @@ async def test_manual_trigger_bypasses_rate_limiting(summarizer_plugin, mock_age
         "Manual trigger should bypass rate limiting"
 
 
+@pytest.mark.parametrize("chat_behaviour", [
+    {"return_value": "a summary far longer than the messages it replaces " * 2000},
+    {"side_effect": RuntimeError("provider down")},
+], ids=["rejected", "llm_failed"])
 @pytest.mark.asyncio
-async def test_rate_limiting_timestamp_updates_only_on_success(summarizer_plugin, mock_agent, mock_llm):
-    """Test that timestamp is only updated when summarization actually happens."""
+async def test_unapplied_run_starts_the_pause(summarizer_plugin, mock_agent, mock_llm, monkeypatch, chat_behaviour):
+    """A run that spent LLM calls without being applied pauses like an applied one."""
+    import plugins.context_summarizer.hooks as hooks_module
+
+    clock = Mock(monotonic=Mock(return_value=1000.0))
+    monkeypatch.setattr(hooks_module, "time", clock)
     summarizer_plugin.trigger_percentage = 0.01
-    summarizer_plugin.min_time_between = 0.2
-    
-    messages = create_test_messages(100)
-    
-    # First attempt
-    context1 = HookContext(
-        hook_type=HookType.PRE_LLM_CALL,
-        request_id='test-update-1',
-        session_id='session-update-test',
-        agent=mock_agent,
-        messages=messages,
-        llm=mock_llm
-    )
-    
-    result1 = await summarizer_plugin.summarize_context(context1)
-    
-    # Check if session has timestamp recorded
-    session_id = 'session-update-test'
-    
-    if result1.modified:
-        # Timestamp should be recorded
-        assert session_id in summarizer_plugin._last_summarization_time
-        first_timestamp = summarizer_plugin._last_summarization_time[session_id]
-        
-        # Wait a bit
-        await asyncio.sleep(0.05)
-        
-        # Attempt that gets rate limited
-        result2 = await summarizer_plugin.summarize_context(context1)
-        
-        if result2.metadata.get('reason') == 'rate_limited':
-            # Timestamp should NOT have changed
-            assert summarizer_plugin._last_summarization_time[session_id] == first_timestamp
-    else:
-        # If first attempt didn't modify, timestamp shouldn't be recorded
-        # (unless it was rejected for insufficient_reduction)
-        if result1.metadata.get('reason') != 'insufficient_reduction':
-            assert session_id not in summarizer_plugin._last_summarization_time
+    summarizer_plugin.min_time_between = 200.0
+    chat = AsyncMock(**chat_behaviour)
+    summarizer_plugin._summarizer_llm.chat = chat
+
+    def call():
+        return summarizer_plugin.summarize_context(HookContext(
+            hook_type=HookType.PRE_LLM_CALL, request_id='r', session_id='session-pause',
+            agent=mock_agent, messages=create_test_messages(100), llm=mock_llm))
+
+    first = await call()
+    assert first.metadata['reason'] == 'insufficient_reduction'
+    calls_after_first_run = chat.await_count
+    assert calls_after_first_run > 0
+
+    clock.monotonic.return_value = 1100.0
+    second = await call()
+    assert second.metadata['reason'] == 'rate_limited'
+    assert chat.await_count == calls_after_first_run
+
+    clock.monotonic.return_value = 1201.0
+    await call()
+    assert chat.await_count > calls_after_first_run
+
+
+@pytest.mark.asyncio
+async def test_run_without_llm_call_does_not_start_the_pause(summarizer_plugin, mock_agent, mock_llm):
+    summarizer_plugin.trigger_percentage = 0.01
+    context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL, request_id='r', session_id='session-skip',
+        agent=mock_agent, messages=create_test_messages(5), llm=mock_llm)
+
+    result = await summarizer_plugin.summarize_context(context)
+
+    assert result.metadata['reason'] == 'insufficient_old_messages'
+    assert 'session-skip' not in summarizer_plugin._last_summarization_time
 
 
 @pytest.mark.asyncio

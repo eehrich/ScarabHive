@@ -117,8 +117,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
     MAX_HISTORY = 1000
 
     def _record(self, event: Dict[str, Any]) -> None:
-        """Add an event to the panel's history, newest last, bounded: skipped and rejected runs repeat on every call
-        above the threshold."""
+        """Add an event to the panel's history, newest last, bounded: skipped runs repeat on every call above the
+        threshold."""
         event['id'] = next(self._event_ids)
         event['timestamp'] = datetime.now(timezone.utc).isoformat()
         self.summarization_history.append(event)
@@ -354,6 +354,13 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     }
                 )
 
+            # The pause starts as soon as LLM calls are about to be spent: a
+            # rejected or failed run would otherwise redo them on every call.
+            self._last_summarization_time[session_id] = current_time
+            if len(self._last_summarization_time) > self._max_tracked_sessions:
+                oldest = min(self._last_summarization_time, key=self._last_summarization_time.get)
+                del self._last_summarization_time[oldest]
+
             # Use StatusScope to ensure START/END pairing even on errors
             result = None
             async with StatusScope(
@@ -490,14 +497,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'summary_stats': summary_stats
                         }
                         self._record(event)
-
-                    # Update last summarization time for rate limiting
-                    self._last_summarization_time[session_id] = current_time
-                    
-                    # Evict old entries if over limit (LRU by timestamp)
-                    if len(self._last_summarization_time) > self._max_tracked_sessions:
-                        oldest = min(self._last_summarization_time, key=self._last_summarization_time.get)
-                        del self._last_summarization_time[oldest]
 
                     # Session persistence is handled automatically by
                     # HookIntegrationManager when we return HookResult(modified=True)

@@ -16,7 +16,9 @@ tool results.
    message count instead; either condition is enough. A manual run skips the
    check.
 2. **Rate limit.** An automatic run within `min_time_between_summarizations`
-   seconds of the last applied one in the same session is skipped.
+   seconds of the last run in the same session that called the summarizing
+   LLM is skipped — applied, rejected or failed alike, since each spent LLM
+   calls. Runs skipped before the LLM (step 3) start no pause.
 3. **Split.** Messages become system messages, the last
    `preserve_recent_count` messages and the older ones. Fewer than two older
    messages, or older messages too small to ever reach
