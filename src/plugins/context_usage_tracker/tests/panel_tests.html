@@ -202,6 +202,28 @@
     return running;
   });
 
+  await check('keyboard focus stays on its call when the table draws anew, also after the drawer closes', async () => {
+    tab('calls');
+    const newest = () => rows('calls')[0].dataset.key;
+    const focusedKey = () => doc().activeElement?.dataset?.key;
+    const added = async (count) => {
+      await fetch('/__stub/call', { method: 'POST' });
+      $('pk-refresh [data-act="now"]').click();
+      await until(`${count} calls`, () => statValue('calls') === count);
+    };
+    const first = newest();
+    rows('calls')[0].focus();
+    await added('5');
+    const kept = focusedKey() === first && newest() !== first;
+    const row = doc().activeElement;
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await until('the drawer', () => $('#detail').open);
+    await added('6');
+    $('#detail').close();
+    await sleep(50);
+    return kept && focusedKey() === first;
+  });
+
   await check('with no session open the panel says so instead of counting every session', async () => {
     await go('/plugins/context_usage_tracker/');  // no shell, no link: no session
     await until('the empty state', () => $('#stats')?.textContent.includes('No session open'));
@@ -211,7 +233,7 @@
 
   await check('clearing asks first and, confirmed, empties the panel', async () => {
     await go('/plugins/context_usage_tracker/?session_id=s-1');
-    await until('the calls of s-1', () => statValue('calls') === '4');
+    await until('the calls of s-1', () => statValue('calls') === '6');
     $('pk-refresh [data-act="auto"]').click();  // no tick: the clear itself has to draw the panel anew
     const question = () => doc().querySelector('dialog.pk-dialog[open]:not(#detail)');
     $('#clearButton').click();
@@ -219,7 +241,7 @@
     const titled = asked.textContent.includes('Clear the usage history');
     asked.querySelector('[data-index="0"]').click();  // Cancel
     await sleep(500);
-    const kept = statValue('calls') === '4';
+    const kept = statValue('calls') === '6';
     $('#clearButton').click();
     asked = await until('the question again', question);
     asked.querySelector('[data-index="1"]').click();

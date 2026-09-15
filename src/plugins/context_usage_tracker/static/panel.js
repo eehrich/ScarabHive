@@ -336,11 +336,12 @@ function drawCalls() {
     return;
   }
   const own = scoped();
+  const focused = document.activeElement?.closest('#calls tr[data-key]')?.dataset.key;
   render($('calls'), html`<div class="pk-table-wrap"><table class="pk-table cu-table cu-calls">
     <thead><tr><th>Time</th><th>Agent</th><th>Session · Request</th><th>Model</th><th class="pk-num">Prompt</th>
       <th class="pk-num">Output</th><th class="pk-num">Cached</th><th class="pk-num">Writes</th><th class="pk-num">Context</th>
       <th class="pk-num">Latency</th><th class="pk-num">Cost</th></tr></thead>
-    <tbody>${callRows.map((call, index) => html`<tr tabindex="0" data-index="${index}">
+    <tbody>${callRows.map((call, index) => html`<tr tabindex="0" data-index="${index}" data-key="${callKey(call)}">
       <td class="pk-mono">${time(call.timestamp)}</td>
       <td>${own && call.session_id !== own ? html`<span class="pk-muted" title="a sub-agent's call">↳ </span>` : ''}${call.agent_name}</td>
       <td class="pk-mono cu-ids" title="${`session: ${call.session_id || '–'}\nrequest: ${call.request_id || '–'}`}">${call.session_id || '–'}${call.request_id ? ` · ${call.request_id}` : ''}</td>
@@ -354,10 +355,17 @@ function drawCalls() {
       <td class="pk-num">${cost(call.cost, call.cost_is_estimate)}</td>
     </tr>`)}</tbody>
   </table></div>`);
+  if (focused) focusCall(focused);  // a redraw replaces the row the keyboard was on
 }
+
+/** A call has no id of its own: its time and agent tell it apart. */
+const callKey = (call) => `${call.timestamp}|${call.agent_id}`;
+const focusCall = (key) => $('calls').querySelector(`tr[data-key="${CSS.escape(key)}"]`)?.focus();
+let openedCall = null;
 
 function openCall(index) {
   const call = callRows[index];
+  openedCall = callKey(call);
   const facts = [
     ['Time', dateTime(call.timestamp)], ['Agent', call.agent_name], ['Agent id', call.agent_id],
     ['Model', call.model || '–'], ['Session', call.session_id || '–'], ['Request', call.request_id || '–'],
@@ -423,6 +431,9 @@ $('detail').addEventListener('click', (event) => {
   const box = drawer.getBoundingClientRect();
   const outside = event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
   if (event.target.closest('[data-close]') || (event.target === drawer && outside)) drawer.close();
+});
+$('detail').addEventListener('close', () => {
+  focusCall(openedCall);  // the drawer hands focus back to the row it opened from, which a redraw may have replaced
 });
 
 refresh();

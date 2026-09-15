@@ -99,6 +99,7 @@ EXPECTED = [
     'the LLMs tab adds up each model with its average and p95 latency',
     "calls filter by agent, mark a sub-agent's call and open in the drawer",
     'the auto refresh runs from the start and brings a new call',
+    'keyboard focus stays on its call when the table draws anew, also after the drawer closes',
     'with no session open the panel says so instead of counting every session',
     'clearing asks first and, confirmed, empties the panel',
     'the chart takes real colours from the theme and a theme change draws it in the new ones',
