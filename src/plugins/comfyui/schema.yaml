@@ -169,7 +169,7 @@ config:
         type: object
 
 
-# Web UI configuration for ComfyUI Monitor
+# Web UI
 web_ui:
   # The panel's catalogue entry: launcher, command palette and chat links read it
   # (agent_system/ui/catalog.py lists the fields and categories).
@@ -185,31 +185,16 @@ web_ui:
   endpoints:
     - path: "/"
       method: "GET"
-      handler: "monitor_panel"
+      handler: "render_panel"
       response_type: "html"
-      description: "ComfyUI job monitoring panel"
+      description: "The ComfyUI panel"
     - path: "/jobs"
       method: "GET"
       handler: "list_jobs"
       response_type: "json"
-      description: "List all jobs with optional filters"
-    - path: "/jobs/{prompt_id}"
-      method: "GET"
-      handler: "get_job_detail"
-      response_type: "json"
-      description: "Get details for a specific job"
+      description: "Each server's state, the jobs still to finish, the last ones finished and the counts by status"
     - path: "/jobs/{prompt_id}/cancel"
       method: "POST"
       handler: "cancel_job"
       response_type: "json"
-      description: "Cancel a running or queued job"
-    - path: "/workflows"
-      method: "GET"
-      handler: "list_workflows"
-      response_type: "json"
-      description: "List configured workflows"
-    - path: "/stats"
-      method: "GET"
-      handler: "get_stats"
-      response_type: "json"
-      description: "Get server and job statistics"
+      description: "Cancel a queued or running job on the server that runs it"

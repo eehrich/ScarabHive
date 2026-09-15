@@ -810,10 +810,7 @@ class TestComfyUIServer:
         
         # Check that routes are registered (with plugin prefix)
         routes = [r.path for r in router.routes]
-        assert "/plugins/comfyui/" in routes
-        assert "/plugins/comfyui/jobs" in routes
-        assert "/plugins/comfyui/workflows" in routes
-        assert "/plugins/comfyui/stats" in routes
+        assert sorted(routes) == ["/plugins/comfyui/", "/plugins/comfyui/jobs", "/plugins/comfyui/jobs/{prompt_id}/cancel"]
     
     @pytest.mark.asyncio
     async def test_workflow_result_with_text_outputs(

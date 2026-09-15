@@ -281,16 +281,19 @@ class ComfyUIClient:
                     
                 elif job_status in ("completed", "failed"):
                     # Job already finished
-                    return {"status": "already_finished", "prompt_id": prompt_id, "job_status": job_status}
+                    finished = {"status": "already_finished", "prompt_id": prompt_id, "job_status": job_status}
+                    if job_status == "failed":
+                        finished["error"] = str(status.get("error", "Unknown error"))  # stored as _op_status does
+                    return finished
                     
                 else:
-                    # Unknown status - try both operations
-                    logger.warning(f"Unknown status '{job_status}' for job {prompt_id}, trying both cancel methods")
-                    await session.post(f"{self.base_url}/interrupt")
-                    data = {"delete": [prompt_id]}
-                    async with session.post(f"{self.base_url}/queue", json=data):
-                        pass
-                    return {"status": "cancelled", "prompt_id": prompt_id, "method": "both"}
+                    # Neither queued, running nor finished: /interrupt would stop whichever job runs now.
+                    return {
+                        "status": "error",
+                        "prompt_id": prompt_id,
+                        "error": status.get("error")
+                        or f"Job {prompt_id} is not in the queue or history of {self.host}:{self.port}",
+                    }
                     
         except Exception as e:
             logger.exception("Error cancelling job %s", prompt_id)

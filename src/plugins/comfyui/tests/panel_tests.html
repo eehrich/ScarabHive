@@ -1,0 +1,300 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ComfyUI panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 900px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
+  const keys = (section) => [...doc().querySelectorAll(`#${section} tbody tr`)].map((row) => row.dataset.job);
+  const row = (section, id) => $(`#${section} tr[data-job="${id}"]`);
+  const cells = (section, id) => [...row(section, id).querySelectorAll('td')].map((cell) => cell.textContent.trim().replace(/\s+/g, ' '));
+  const cancelButton = (id) => row('active', id)?.querySelector('button[data-cancel]');
+  const question = () => $('dialog.pk-dialog[open]');
+  const answer = async (confirmed) => (await until('the question', question)).querySelector(`[data-index="${confirmed ? 1 : 0}"]`).click();
+  const autoOff = async () => {
+    const toggle = await until('the refresh control', () => $('pk-refresh [data-act="auto"]'));
+    if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+  };
+  const now = () => $('pk-refresh [data-act="now"]').click();
+  const cookie = (name, value) => { document.cookie = value ? `${name}=${value}; path=/` : `${name}=; path=/; max-age=0`; };
+  const post = (path) => fetch(path, { method: 'POST' });
+  const get = async (path) => (await fetch(path)).json();
+  const ACTIVE = 'run-1111-a,wait-2222-b,far-6666-f';
+  const sameSet = (list, expected) => [...list].sort().join() === [...expected].sort().join();
+  const recentSeeded = () => sameSet(keys('recent'), ['lost-3333-c', 'hist-7777-g', 'done-4444-d', 'fail-5555-e', 'old-8888-h']);
+  // opened on a fresh seed, the auto refresh off: what a check waits for comes from what it drives
+  const fresh = async () => {
+    await post('/__stub/reset');
+    await go('/plugins/comfyui/');
+    await until('the jobs', () => keys('active').join() === ACTIVE);
+    await autoOff();
+  };
+
+  await check('opened, the panel shows each server with its queue, or offline with the reason', async () => {
+    await post('/__stub/reset');
+    await go('/plugins/comfyui/');
+    await until('the servers', () => $('#servers [data-server="gpu2.test:8189"]'));
+    const gpu1 = $('#servers [data-server="gpu1.test:8188"]');
+    const gpu2 = $('#servers [data-server="gpu2.test:8189"]');
+    return doc().querySelectorAll('#servers [data-server]').length === 2
+      && gpu1.querySelector('.pk-dot--ok') !== null && gpu1.textContent.includes('1 running · 2 queued')
+      && gpu2.querySelector('.pk-dot--danger') !== null
+      && gpu2.textContent.includes('Offline: Connection failed: Cannot connect to host gpu2.test:8189')
+      && /^Updated /.test($('#updated').textContent);
+  });
+
+  await check('the tracker is brought up to date with the servers before the jobs are counted and listed', async () => {
+    await until('the jobs', () => keys('active').join() === ACTIVE);
+    // run-1111-a runs on gpu1: running now; far-6666-f waits on gpu2, which cannot be asked: left queued
+    const run = cells('active', 'run-1111-a');
+    const running = run[0] === 'run-1111' && run[1] === 'Flux Cover' && run[2] === 'running' && /^\d+s$/.test(run[4])
+      && row('active', 'run-1111-a').children[0].title === 'run-1111-a' && row('active', 'run-1111-a').querySelector('.pk-badge--info') !== null;
+    const waiting = cells('active', 'wait-2222-b');
+    const queued = waiting[2] === 'queued' && /^3m 2\ds$/.test(waiting[4]) && cells('active', 'far-6666-f')[2] === 'queued'
+      && waiting[3] !== '—' && cancelButton('wait-2222-b') && !cancelButton('wait-2222-b').disabled;
+    // lost-3333-c is nowhere on gpu1: failed; hist-7777-g is in gpu1's history: completed
+    const lost = cells('recent', 'lost-3333-c');
+    const hist = cells('recent', 'hist-7777-g');
+    const synced = lost[1] === 'flux_cover' && lost[2].startsWith('failed') && lost[2].includes('Job lost (server restart or queue cleared)')
+      && hist[2] === 'completed' && /^\d+s$/.test(hist[4]);
+    return running && queued && synced && recentSeeded()
+      && statValue('active') === '3' && statValue('completed') === '3' && statValue('failed') === '2'
+      && statValue('cancelled') === '0' && statValue('total') === '8';
+  });
+
+  await check('a finished job shows its outcome, error, duration and outputs', async () => {
+    const done = cells('recent', 'done-4444-d');
+    const outputs = [...row('recent', 'done-4444-d').querySelectorAll('.cu-output')].map((item) => `${item.title}:${item.textContent.trim()}`);
+    const failed = cells('recent', 'fail-5555-e');
+    return done[0] === 'done-444' && done[2] === 'completed' && done[3] !== '—' && done[4] === '2m 5s' && outputs.join() === 'images:2,text:1'
+      && row('recent', 'done-4444-d').querySelector('.pk-badge--ok') !== null && !row('recent', 'done-4444-d').querySelector('.cu-error')
+      && failed[4] === '1h 2m' && failed[5] === '—' && row('recent', 'fail-5555-e').querySelector('.pk-badge--danger') !== null
+      && row('recent', 'fail-5555-e').querySelector('.cu-error').title === '<b>CUDA</b> out of memory'
+      && !row('active', 'wait-2222-b').querySelector('.cu-error') && cells('recent', 'old-8888-h')[4] === '—';
+  });
+
+  await check('workflow names and errors are drawn as text, never as markup', async () => {
+    const failed = row('recent', 'fail-5555-e');
+    return failed.children[1].textContent === '<img src=x onerror="window.parent.__xss=1">'
+      && failed.querySelector('.cu-error').textContent === '<b>CUDA</b> out of memory'
+      && !failed.querySelector('img') && !failed.querySelector('b') && window.__xss === undefined;
+  });
+
+  await check('cancelling asks first: declined nothing happens, confirmed the job is cancelled on its server', async () => {
+    await fresh();
+    cancelButton('wait-2222-b').click();
+    const asked = await until('the question', question);
+    const named = asked.textContent.includes('Cancel job') && asked.textContent.includes('wait-222') && asked.textContent.includes('Stable Audio')
+      && asked.querySelector('.pk-btn--danger')?.textContent === 'Cancel job';
+    await answer(false);
+    await until('the button again', () => cancelButton('wait-2222-b') && !cancelButton('wait-2222-b').disabled);
+    await sleep(300);
+    const untouched = (await get('/__stub/calls')).length === 0 && keys('active').join() === ACTIVE;
+    // a queued job leaves the queue, a running one is interrupted
+    cancelButton('wait-2222-b').click();
+    await answer(true);
+    await until('wait-2222-b cancelled', () => row('recent', 'wait-2222-b'));
+    const toast = $('.pk-toast--ok')?.textContent.includes('Job wait-222 is cancelled');
+    cancelButton('run-1111-a').click();
+    await answer(true);
+    await until('run-1111-a cancelled', () => row('recent', 'run-1111-a'));
+    const calls = await get('/__stub/calls');
+    return named && untouched && toast && calls.join('|') === 'POST /queue {"delete": ["wait-2222-b"]}|POST /interrupt'
+      && keys('active').join() === 'far-6666-f' && cells('recent', 'wait-2222-b')[2] === 'cancelled'
+      && cells('recent', 'run-1111-a')[2] === 'cancelled' && statValue('cancelled') === '2' && !$('.pk-toast--error');
+  });
+
+  await check('a refused cancel is shown as an error and the job stays active', async () => {
+    await fresh();
+    await post('/__stub/refuse');
+    cancelButton('run-1111-a').click();
+    await answer(true);
+    const error = await until('the error', () => $('.pk-toast--error'));
+    await until('the button again', () => cancelButton('run-1111-a') && !cancelButton('run-1111-a').disabled);
+    return error.textContent.includes('interrupt returned HTTP 500') && keys('active').join() === ACTIVE
+      && cells('active', 'run-1111-a')[2] === 'running' && !row('recent', 'run-1111-a') && !$('.pk-toast--ok');
+  });
+
+  await check('a job that finished before the cancel reached it keeps its outcome', async () => {
+    await fresh();
+    await post('/__stub/finish?id=run-1111-a');  // not drawn yet: the panel still lists it as running
+    cancelButton('run-1111-a').click();
+    await answer(true);
+    const error = await until('the refusal', () => $('.pk-toast--error'));
+    await until('run-1111-a finished', () => row('recent', 'run-1111-a'));
+    return error.textContent.includes('Job run-1111-a has already completed') && cells('recent', 'run-1111-a')[2] === 'completed'
+      && (await get('/__stub/calls')).length === 0 && !$('.pk-toast--ok');
+  });
+
+  await check('a double click cancels once, and the button stays disabled until the answer is in', async () => {
+    await fresh();
+    const before = (await get('/__stub/asked')).cancels;
+    // the second click of a double click, on a button no first click reached: nothing
+    cancelButton('far-6666-f').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+    await sleep(300);
+    const secondIgnored = !question();
+    const button = cancelButton('wait-2222-b');
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+    await until('the question', question);
+    await sleep(200);
+    const once = doc().querySelectorAll('dialog.pk-dialog[open]').length === 1;
+    cookie('cu_cancel', 'slow');
+    try {
+      await answer(true);
+      await sleep(300);
+      const heldBefore = cancelButton('wait-2222-b')?.disabled === true;
+      const drawn = cancelButton('wait-2222-b');
+      now();  // drawn anew while the cancel is on its way
+      await until('the jobs drawn anew', () => cancelButton('wait-2222-b') !== drawn);
+      const held = cancelButton('wait-2222-b')?.disabled === true;
+      cancelButton('wait-2222-b').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));  // a disabled button: nothing
+      await until('wait-2222-b cancelled', () => row('recent', 'wait-2222-b'));
+      await sleep(300);
+      return secondIgnored && once && heldBefore && held && !question() && (await get('/__stub/asked')).cancels - before === 1;
+    } finally {
+      cookie('cu_cancel', null);
+    }
+  });
+
+  await check('the keyboard focus stays on a cancel button when the jobs are drawn anew', async () => {
+    await fresh();
+    frame.focus();
+    cancelButton('far-6666-f').focus();
+    const before = cancelButton('far-6666-f');
+    now();
+    await until('the jobs drawn anew', () => cancelButton('far-6666-f') && cancelButton('far-6666-f') !== before);
+    return doc().activeElement === cancelButton('far-6666-f');
+  });
+
+  await check('with ComfyUI offline the panel says so and keeps the tracked jobs as they were', async () => {
+    await fresh();
+    await post('/__stub/finish?id=run-1111-a');
+    await post('/__stub/offline');
+    now();
+    await until('gpu1 offline', () => $('#servers [data-server="gpu1.test:8188"] .pk-dot--danger'));
+    // nothing could be asked: no job is taken for lost or finished
+    return $('#servers [data-server="gpu1.test:8188"]').textContent.includes('Offline: Connection failed: Cannot connect to host gpu1.test:8188')
+      && keys('active').join() === ACTIVE && cells('active', 'run-1111-a')[2] === 'running' && recentSeeded()
+      && statValue('active') === '3' && !$('#jobs .pk-empty');
+  });
+
+  await check('with no jobs the panel says so', async () => {
+    await fresh();
+    await post('/__stub/clear');
+    now();
+    await until('the notices', () => doc().querySelectorAll('#jobs .pk-empty').length === 2);
+    return $('#active').textContent.includes('No active jobs') && $('#recent').textContent.includes('No finished jobs yet')
+      && keys('active').length === 0 && keys('recent').length === 0 && statValue('total') === '0' && statValue('active') === '0';
+  });
+
+  await check('a failed load shows the error and nothing of before', async () => {
+    await fresh();
+    cookie('cu_jobs', 'fails');
+    try {
+      now();
+      await until('the error', () => $('#jobs').textContent.includes('Jobs could not be loaded'));
+      return $('#jobs').textContent.includes('The job database is locked') && keys('active').length === 0 && keys('recent').length === 0
+        && $('#servers').textContent.trim() === '' && $('#stats').textContent.trim() === '' && $('#updated').textContent === ''
+        && !$('.pk-toast--error');
+    } finally {
+      cookie('cu_jobs', null);
+    }
+  });
+
+  await check('an answer overtaken by a later load is dropped', async () => {
+    await fresh();
+    const failed = () => $('#jobs').textContent.includes('Jobs could not be loaded');
+    try {
+      // a success overtaken by an error
+      cookie('cu_jobs', 'slow');
+      now();  // held 1.5 s
+      await sleep(300);
+      cookie('cu_jobs', 'fails');
+      now();  // answered at once, with an error
+      await until('the later error', failed);
+      await sleep(2000);
+      const errorKept = keys('active').length === 0 && failed();
+      // an error overtaken by a success
+      cookie('cu_jobs', 'slowfail');
+      now();  // held 1.5 s, then an error
+      await sleep(300);
+      cookie('cu_jobs', null);
+      now();
+      await until('the later jobs', () => keys('active').join() === ACTIVE);
+      await sleep(2000);
+      return errorKept && keys('active').join() === ACTIVE && !failed();
+    } finally {
+      cookie('cu_jobs', null);
+    }
+  });
+
+  await check('ticks of the auto refresh ask nothing more while a load is on its way', async () => {
+    await fresh();
+    const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+    const asked = async () => (await get('/__stub/asked')).jobs;
+    let ticking = null;
+    try {
+      const before = await asked();
+      cookie('cu_jobs', 'slow');
+      now();  // answered after 1.5 s
+      ticking = setInterval(tick, 150);
+      await sleep(300);
+      cookie('cu_jobs', 'slower');
+      now();  // answered after 3 s: the 1.5 s one is out of date when it ends, this one is still on its way
+      await sleep(200);
+      cookie('cu_jobs', null);  // a load a tick would start is answered at once
+      await sleep(2000);
+      clearInterval(ticking);
+      await until('the jobs', () => keys('active').join() === ACTIVE);
+      await sleep(500);
+      // with a server slower than the tick, each tick would start one more load
+      return (await asked()) - before === 2;
+    } finally {
+      clearInterval(ticking);
+      cookie('cu_jobs', null);
+    }
+  });
+
+  await check('the auto refresh runs from the start and brings what changed', async () => {
+    await post('/__stub/reset');
+    await go('/plugins/comfyui/');
+    await until('the jobs', () => keys('active').join() === ACTIVE);
+    const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
+    await post('/__stub/finish?id=run-1111-a');
+    await until('run-1111-a completed, brought by a tick', () => row('recent', 'run-1111-a'), 8000);
+    return running && cells('recent', 'run-1111-a')[2] === 'completed' && keys('active').join() === 'wait-2222-b,far-6666-f'
+      && $('#servers [data-server="gpu1.test:8188"]').textContent.includes('0 running · 2 queued');
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

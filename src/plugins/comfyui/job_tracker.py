@@ -14,6 +14,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# a job in one of these is still to be finished by ComfyUI
+ACTIVE_STATUSES = ("queued", "running", "pending")
+
 
 class ComfyUIJobTracker:
     """Track ComfyUI job execution state.
@@ -137,7 +140,8 @@ class ComfyUIJobTracker:
         with sqlite3.connect(self.db_path) as conn:
             if status == "running":
                 conn.execute(
-                    "UPDATE jobs SET status = ?, started_at = ? WHERE prompt_id = ?",
+                    # the first report of a run starts its clock; every later status poll says running again
+                    "UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?) WHERE prompt_id = ?",
                     (status, now, prompt_id)
                 )
             elif status in ["completed", "failed", "cancelled"]:

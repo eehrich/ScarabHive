@@ -11,13 +11,12 @@ import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
+from fastapi import APIRouter
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from .comfyui_client import ComfyUIClient
-from .job_tracker import ComfyUIJobTracker
+from .job_tracker import ACTIVE_STATUSES, ComfyUIJobTracker
+from .web_endpoints import ComfyUIWebEndpoints
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
@@ -157,12 +156,6 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # Initialize job tracker
         db_path = self.output_dir.parent / "jobs.db"
         self.job_tracker = ComfyUIJobTracker(db_path)
-        
-        # Templates for web UI
-        self.templates_dir = Path(__file__).parent / "templates"
-        self.templates: Jinja2Templates | None = None
-        if self.templates_dir.exists():
-            self.templates = Jinja2Templates(directory=str(self.templates_dir))
         
         # Flag for lazy startup sync (will run on first tool call)
         self._startup_sync_done = False
@@ -460,16 +453,21 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # false-fail every in-flight job on the affected server.
         dead_servers: set[str] = queue_data.get("_dead_servers", set()) if isinstance(queue_data, dict) else set()
 
+        # Instances configured with other servers share this tracker database: their jobs are absent from our queues
+        # without being lost.
+        own_servers = {f"http://{srv['host']}:{srv['port']}" for srv in self._servers}
+
         updated = 0
         for prompt_id in stale_ids:
-            if dead_servers:
-                job_server = self.job_tracker.get_server_url(prompt_id)
-                if job_server and job_server in dead_servers:
-                    logger.debug(
-                        "Skipping stale-check for %s (owning server %s currently unreachable)",
-                        prompt_id, job_server,
-                    )
-                    continue
+            job_server = self.job_tracker.get_server_url(prompt_id)
+            if job_server and job_server not in own_servers:
+                continue
+            if job_server and job_server in dead_servers:
+                logger.debug(
+                    "Skipping stale-check for %s (owning server %s currently unreachable)",
+                    prompt_id, job_server,
+                )
+                continue
 
             # Check if job is in history (completed or failed). Use the
             # per-job client so jobs queued on a non-primary server are
@@ -581,6 +579,22 @@ class ComfyUIServer(SchemaBasedMCPServer):
 
         return await asyncio.to_thread(_do_cleanup)
     
+    async def _cancel_job(self, prompt_id: str) -> dict[str, Any]:
+        """Cancel on the server that runs the job; the tracker follows only what the server confirms.
+
+        ComfyUIClient.cancel answers ``{"status": "error", ...}`` when it failed, and ``already_finished``
+        with the job's real outcome, which the tracker takes over if it still counts the job as active.
+        """
+        job_client = await self._client_for_job(prompt_id, self.output_dir)
+        result = await job_client.cancel(prompt_id)
+        if result.get("status") == "cancelled":
+            self.job_tracker.update_status(prompt_id, "cancelled")
+        elif result.get("status") == "already_finished":
+            job = self.job_tracker.get_job(prompt_id)
+            if job and job["status"] in ACTIVE_STATUSES:
+                self.job_tracker.update_status(prompt_id, result["job_status"], result.get("error"))
+        return result
+
     # =========================================================================
     # MCP Tool: workflow
     # =========================================================================
@@ -694,15 +708,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
                     await status.error("Prompt ID is required for cancel operation")
                 return {"error": "prompt_id is required"}
 
-            job_client = await self._client_for_job(prompt_id, self.output_dir)
-            result = await job_client.cancel(prompt_id)
-            # Only update tracker if cancel was successful — mirrors the
-            # web router guard. ComfyUIClient.cancel returns
-            # {"status": "error", ...} on failure; without this guard we
-            # would lie to consumers about the live job state.
+            result = await self._cancel_job(prompt_id)
             cancelled = result.get("status") in ("cancelled", "already_finished")
-            if cancelled:
-                self.job_tracker.update_status(prompt_id, "cancelled")
             if status:
                 # The guard above already knows cancel can fail — the status
                 # line said "Job cancelled" regardless, so a refused interrupt
@@ -1911,135 +1918,15 @@ class ComfyUIServer(SchemaBasedMCPServer):
         }
 
     # =========================================================================
-    # Web UI Router
+    # Web UI
     # =========================================================================
-    
+
     def get_web_router(self) -> APIRouter:
-        """Get FastAPI router for web monitoring endpoints.
-        
-        Returns:
-            APIRouter with monitoring endpoints
-        """
-        router = APIRouter(prefix=f"/plugins/{self.name}")
-        
-        @router.get("/", response_class=HTMLResponse)
-        async def monitor_panel(request: Request) -> HTMLResponse:
-            """Render the job monitoring panel."""
-            if not self.templates:
-                return HTMLResponse(
-                    "<h1>ComfyUI Monitor</h1><p>Templates not found</p>",
-                    status_code=500
-                )
-            return self.templates.TemplateResponse(
-                request=request,
-                name="monitor.html",
-                context={
-                    "plugin_name": self.name,
-                    "title": f"ComfyUI Monitor - {self.name}",
-                    "host": self.host,
-                    "port": self.port
-                }
-            )
-        
-        @router.get("/jobs")
-        async def get_jobs() -> JSONResponse:
-            """Get all tracked jobs."""
-            server_status = await self.client.ping()
+        return ComfyUIWebEndpoints(self).get_web_router()
 
-            # Sync DB with live queue and history to update stale jobs.
-            # Aggregate across all configured servers so load-balanced jobs
-            # on non-primary hosts are not flagged stale.
-            queue_data = await self._get_aggregated_queue()
-            if queue_data is not None:
-                await self._sync_stale_jobs_with_history(queue_data)
-
-                # Check live status for all active jobs IN PARALLEL — each
-                # against the server that actually owns it, via
-                # _client_for_job.
-                active_jobs = self.job_tracker.get_active_jobs()
-                if active_jobs:
-                    async def check_and_update_job(job: dict) -> None:
-                        """Check live status and update DB if needed."""
-                        prompt_id = job.get("prompt_id")
-                        if not prompt_id:
-                            return
-                        try:
-                            job_client = await self._client_for_job(
-                                prompt_id, self.output_dir
-                            )
-                            live = await job_client.get_status(prompt_id)
-                            live_status = live.get("status", "unknown")
-                            db_status = job.get("status")
-                            # Update DB if status changed (e.g. queued/running -> completed)
-                            if live_status != db_status and live_status in ["completed", "failed"]:
-                                error_msg = live.get("error") if live_status == "failed" else None
-                                if isinstance(error_msg, list):
-                                    error_msg = str(error_msg)
-                                self.job_tracker.update_status(prompt_id, live_status, error_msg)
-                        except Exception as e:
-                            logger.warning(f"Failed to check status for job {prompt_id}: {e}")
-
-                    # Run all status checks in parallel
-                    await asyncio.gather(*[check_and_update_job(job) for job in active_jobs])
-            
-            active = self.job_tracker.get_active_jobs()
-            recent = self.job_tracker.get_recent_completed(limit=10)
-            stats = self.job_tracker.get_stats()
-            
-            return JSONResponse({
-                "status": "success",
-                "server_online": server_status.get("status") == "online",
-                "server_host": f"{self.host}:{self.port}",
-                "queue_pending": server_status.get("queue_pending", 0),
-                "queue_running": server_status.get("queue_running", 0),
-                "jobs": active,
-                "recent_completed": recent,
-                "stats": stats
-            })
-        
-        @router.get("/jobs/{prompt_id}")
-        async def get_job_detail(prompt_id: str) -> JSONResponse:
-            """Get details for a specific job."""
-            job = self.job_tracker.get_job(prompt_id)
-            if not job:
-                raise HTTPException(status_code=404, detail="Job not found")
-
-            # Get live status from the server that handled this job
-            job_client = await self._client_for_job(prompt_id, self.output_dir)
-            live_status = await job_client.get_status(prompt_id)
-            job["live_status"] = live_status.get("status", "unknown")
-
-            return JSONResponse({"status": "success", "job": job})
-
-        @router.post("/jobs/{prompt_id}/cancel")
-        async def cancel_job(prompt_id: str) -> JSONResponse:
-            """Cancel a job."""
-            job_client = await self._client_for_job(prompt_id, self.output_dir)
-            result = await job_client.cancel(prompt_id)
-            # Only update tracker if cancel was successful
-            if result.get("status") in ("cancelled", "already_finished"):
-                self.job_tracker.update_status(prompt_id, "cancelled")
-            return JSONResponse(result)
-        
-        @router.get("/workflows")
-        async def list_workflows() -> JSONResponse:
-            """List configured workflows."""
-            result = await self._op_list({})
-            return JSONResponse(result)
-        
-        @router.get("/stats")
-        async def get_stats() -> JSONResponse:
-            """Get job statistics."""
-            server_status = await self.client.ping()
-            job_stats = self.job_tracker.get_stats()
-            
-            return JSONResponse({
-                "status": "success",
-                "server": server_status,
-                "jobs": job_stats
-            })
-        
-        return router
+    def get_static_assets(self) -> Path:
+        """The panel's script and stylesheet, served under /plugins/<name>/static/."""
+        return Path(__file__).parent / "static"
 
 
 # Plugin factory for discovery
