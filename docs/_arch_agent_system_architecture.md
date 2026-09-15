@@ -273,13 +273,22 @@ class Agent(MCPServer):
 - Order management and dependencies
 - Error isolation
 
-**Hook Types:**
+**Hook Types** (`HookType` in `hooks/plugin_hook.py`, 10 values):
 - `pre_llm_call` - Before LLM request
 - `post_llm_call` - After LLM response
-- `pre_tool_call` - Before tool execution
-- `post_tool_call` - After tool execution
+- `pre_llm_request` / `post_llm_response` - LLM-client level (exact API payload/response)
+- `llm_progress` - During a streaming LLM call (no messages attached)
 - `format_output` - Output formatting
 - `session_start/end` - Session lifecycle
+- `pre_tool_call` / `post_tool_call` - declared but **never fire**: nothing calls
+  `execute_pre_tool_hooks` / `execute_post_tool_hooks`
+  (`servers/agent/components/hook_integration.py`); registering one logs a warning
+  (`plugins/discovery.py`)
+
+Each hook runs under its own timeout (`asyncio.wait_for` in `hooks/registry.py`); a
+timed-out hook is logged and skipped. Global `hooks.overrides` accept an exact
+`plugin.hook` key or a plugin-wide `plugin` key (the exact key wins) and set
+`enabled` / `timeout` / `order`; `hooks.enabled: false` disables all hooks.
 
 #### 4.2.8 Configuration System (`config/`)
 
@@ -435,9 +444,7 @@ User Request (HTTP/CLI)
          │      ▼
          │   Tool Execution Manager
          │      │
-         │      ├─► Hook: pre_tool_call
-         │      ├─► Execute Tool (Plugin/MCP)
-         │      ├─► Hook: post_tool_call
+         │      ├─► Execute Tool (Plugin/MCP)   (no tool hooks fire)
          │      ▼
          │   Tool Results
          │

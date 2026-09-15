@@ -11,7 +11,7 @@ and then imports exactly the plugin whose ``provides`` contains the
 requested provider. Unused providers — and their SDK dependencies — are
 never imported.
 
-``build_client`` is the ONE construction seam. tests/conftest.py replaces
+``build_client`` is the ONE construction seam. The root conftest.py replaces
 it with a fake so bootstrap never opens sockets; the original stays
 available as ``_orig_build_client``. Everything above this seam
 (``factory._build_client``) binds it late for exactly that reason.

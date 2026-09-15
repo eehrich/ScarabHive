@@ -4,11 +4,13 @@ Plugin Hook System for Agent Lifecycle.
 Provides extensible hooks allowing plugins to intercept agent lifecycle points:
 - pre_llm_call: Before LLM invocation (modify messages, inject context)
 - post_llm_call: After LLM response (modify response, extract metadata)
-- pre_tool_call: Before tool execution (modify parameters, apply policies)
-- post_tool_call: After tool execution (modify results, apply transformations)
+- pre_llm_request / post_llm_response: LLM-client level (exact API payloads)
+- llm_progress: During a streaming LLM call
 - format_output: Format final output (convert to markdown, HTML, etc.)
 - session_start: Initialize session (inject system prompts, setup state)
 - session_end: Cleanup session (persist state, generate summaries)
+- pre_tool_call / post_tool_call: declared but never fired (the tool loop
+  does not call tool hooks; registration logs a warning)
 
 Key features:
 - Named ordering system with before/after dependencies
@@ -29,7 +31,6 @@ from .schema_based import SchemaBasedPluginHook
 from .config import (
     HooksConfig,
     load_hooks_config,
-    validate_hook_references,
 )
 from .exceptions import (
     HookError,
@@ -52,7 +53,6 @@ __all__ = [
     # Configuration
     "HooksConfig",
     "load_hooks_config",
-    "validate_hook_references",
     # Exceptions
     "HookError",
     "HookOrderingError",

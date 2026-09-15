@@ -2413,8 +2413,11 @@ class Agent(MCPServer):
                 )
 
                 # Stream status events while hook is running
-                # NOTE: No hard timeout - hooks can run as long as needed (e.g., context_summarizer may take 10+ minutes)
-                # Hooks are expected to implement their own timeouts if needed
+                # NOTE: this polling loop has no deadline of its own. Each hook
+                # is bounded by its per-hook timeout (asyncio.wait_for in
+                # hooks/registry.py; a timed-out hook is logged and skipped), so
+                # a long-running hook (e.g. context_summarizer) needs a timeout
+                # configured high enough for it.
                 while not hook_task.done():
                     for status_event in yield_pending_status_events():
                         yield status_event
@@ -2886,8 +2889,8 @@ class Agent(MCPServer):
                 )
 
                 # Stream status events while hook is running
-                # NOTE: No hard timeout - hooks can run as long as needed
-                # Hooks are expected to implement their own timeouts if needed
+                # NOTE: this polling loop has no deadline of its own; each hook
+                # is bounded by its per-hook timeout (hooks/registry.py).
                 while not hook_task.done():
                     for status_event in yield_pending_status_events():
                         yield status_event

@@ -7,19 +7,16 @@ in a schema.yaml file, analogous to SchemaBasedMCPServer for MCP tools.
 Example schema.yaml:
 ```yaml
 hooks:
-  - name: optimize_context
+  - name: optimize_context  # also the handler method name on the plugin class
     type: PRE_LLM_CALL
     description: Optimize context before LLM call
     enabled: true
-    priority: 10
-    handler: optimize_context  # Method name on plugin class
+    timeout: 60             # optional; order: {before: [...], after: [...]}
 
-  - name: log_stats
+  - name: log_context_stats
     type: POST_LLM_CALL
     description: Log context statistics
     enabled: true
-    priority: 5
-    handler: log_context_stats
 
 config:
   max_total_tokens: 100000

@@ -303,7 +303,9 @@ def discover_entrypoint_plugins(group: str = "agent_system.mcp_plugins") -> Dict
 
     Entry point group defaults to 'agent_system.mcp_plugins'. Each
     entry point should return a callable factory that accepts
-    (name, config, ssl_verify=True) and returns an MCPServer.
+    (name, system_config, mcp_config) -- plus ``registry=`` when the factory
+    carries ``_accepts_registry`` -- and returns an MCPServer
+    (see ``runtime._construct``).
     """
     out: Dict[str, Callable[..., MCPServer]] = {}
     try:
