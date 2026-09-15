@@ -131,7 +131,7 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 | Export | Wofür |
 |---|---|
 | `api(path, {method, json, body, headers, quiet, raw})` | jeder Server-Aufruf. Cookie-Auth, JSON rein und raus, Fehler als `ApiError(status, detail)` **plus Toast** (außer `quiet: true`), abgebrochen, wenn das Panel geht. Wer selbst reagiert (404 → leerer Zustand), nimmt `quiet` und fängt. |
-| ``html`…` ``, `render(el, content)` | Markup bauen: jeder eingesetzte Wert wird escapet, verschachteltes ``html`` `` und Arrays bleiben Markup. `trusted(str)` nur für schon sicheres HTML (z. B. vom Server sanitisiert). |
+| ``html`…` ``, `render(el, content)` | Markup bauen: jeder eingesetzte Wert wird escapet, verschachteltes ``html`` `` und Arrays bleiben Markup. `trusted(str)` nur für schon sicheres HTML (z. B. vom Server sanitisiert). `false`, `null` und `undefined` ergeben nichts — damit `${cond && html`…`}` geht; in einem Attribut darum `aria-pressed="${String(on)}"`, sonst steht dort `""`. |
 | `escapeHtml(v)`, `jsonView(value, {open})`, `icon(name, {size, label})` | Hilfen für dasselbe. |
 | `alert(msg)`, `confirm(msg, {title, confirmLabel, danger})`, `prompt(msg, {title, value, placeholder, confirmLabel})`, `dialog({title, message, actions, input})` | Dialoge — Promise mit dem Ergebnis (`confirm` → `true/false`, `prompt` → Text oder `null`). In der Shell über der ganzen Anwendung, sonst im Panel. |
 | `toast(msg, {kind})` | `info`, `ok`, `warn`, `error`. |

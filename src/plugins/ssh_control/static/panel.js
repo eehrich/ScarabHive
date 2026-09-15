@@ -92,7 +92,7 @@ function drawMachines() {
   render($('tabs'), (machines || []).map((one) => {
     const { kind, label, title } = state(one);
     const selected = one.name === shown;
-    return html`<button type="button" class="pk-tab" role="tab" data-tab="${one.name}" aria-selected="${selected}" tabindex="${selected ? 0 : -1}" title="${title}">
+    return html`<button type="button" class="pk-tab" role="tab" data-tab="${one.name}" aria-selected="${String(selected)}" tabindex="${selected ? 0 : -1}" title="${title}">
       <span class="pk-dot${kind ? ` pk-dot--${kind}` : ''}"></span>${one.name}${one.connected && one.latency_ms ? html`<span class="pk-tab-count">${label}</span>` : ''}
     </button>`;
   }));
