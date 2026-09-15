@@ -14,7 +14,6 @@ Background: Bug 2025-11-09 - Writer plugins not discovered because:
 import pytest
 from pathlib import Path
 import importlib.util
-import sys
 
 from agent_system.plugins import discover_plugins, discover_all_plugins
 from agent_system.config.models import AgentSystemConfig, PluginsConfig
@@ -110,12 +109,9 @@ class TestPluginDirsConfiguration:
     
     def test_all_configured_plugin_dirs_are_discovered(self):
         """Verify plugins from ALL configured directories are found."""
-        # Clear any stale module state that might interfere with discovery
-        # (other tests may have loaded modules in a way that breaks relative imports)
-        stale_modules = [k for k in sys.modules.keys() if k.startswith('plugins_writer.')]
-        for mod_name in stale_modules:
-            del sys.modules[mod_name]
-        
+        # No clearing of plugins_writer.* from sys.modules here: a later test that
+        # imported a function before this ran would then patch a fresh module
+        # object while its function reads the old one.
         # Simulate config with multiple plugin_dirs
         plugin_dirs = [Path('src/plugins'), Path('src/plugins_writer')]
         
