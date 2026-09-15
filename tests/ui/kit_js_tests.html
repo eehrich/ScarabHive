@@ -39,6 +39,36 @@
     return !out.includes('<img') && !out.includes('<k>') && out.includes('&lt;k&gt;');
   });
 
+  await check('jsonView shows every level, strings as text with their line breaks, arrays as lists', () => {
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    try {
+      box.style.width = '600px';
+      pk.render(box, pk.jsonView({ note: 'one\ntwo', nested: { deep: { n: 1 } }, list: ['x', { k: 'v' }], none: [], nil: null,
+        short: 'beside', long: 'word '.repeat(30) }));
+      const keyOf = (key) => [...box.querySelectorAll('.pk-json-key')].find((k) => k.textContent === key);
+      const valueOf = (key) => keyOf(key).nextElementSibling;
+      const note = valueOf('note');
+      // a text starts on its key's line and wraps back to the left edge under the key -- no column right of the key
+      const onKeyLine = (key) => Math.abs(valueOf(key).getClientRects()[0].top - keyOf(key).getBoundingClientRect().top) < 4;
+      const flowsUnder = (key) => {
+        const lines = valueOf(key).getClientRects();  // a line break may leave an empty fragment on the first line
+        const last = lines[lines.length - 1];
+        return onKeyLine(key) && last.top > lines[0].top && last.left <= keyOf(key).getBoundingClientRect().left + 1;
+      };
+      const indented = box.querySelector('.pk-json-field--nested > .pk-json-object');
+      return note.textContent === 'one\ntwo' && getComputedStyle(note).whiteSpace === 'pre-wrap'
+        && !box.querySelector('details') && keyOf('n').getClientRects().length > 0  // nothing folded away
+        && getComputedStyle(indented).borderLeftWidth === '2px'
+        && box.querySelectorAll(':scope .pk-json-list > li').length === 2
+        && box.textContent.includes('no items') && !box.textContent.includes('"')  // strings without quotes
+        && onKeyLine('short') && valueOf('short').getClientRects().length === 1
+        && flowsUnder('note') && flowsUnder('long');
+    } finally {
+      box.remove();
+    }
+  });
+
   await check('native confirm is refused, not blocking', () => window.confirm('x') === false);
 
   await check('a dialog resolves with the pressed action', async () => {

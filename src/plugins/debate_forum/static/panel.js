@@ -261,7 +261,7 @@ function verdictBox(channel) {
   return html`<section class="pk-card df-verdict" data-message="verdict">
     <div class="pk-card-head">${icon('circle-check')}<h3 class="pk-card-title">Verdict</h3></div>
     ${channel.verdict_summary_html ? html`<div class="df-md">${trusted(channel.verdict_summary_html)}</div>` : ''}
-    ${more ? html`<details class="df-verdict-details"><summary>Details</summary>${jsonView(details, { open: 2 })}</details>` : ''}
+    ${more ? html`<details class="df-verdict-details"><summary>Details</summary>${jsonView(details)}</details>` : ''}
   </section>`;
 }
 
@@ -293,7 +293,7 @@ function readableJson(root) {
       pre.classList.add('df-json-source');
       pre.insertAdjacentHTML('beforebegin', String(html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--sm df-json-toggle" data-key="json:${key}"
         data-json="${key}" aria-pressed="${String(on)}">${icon('eye', { size: 'sm' })} Readable</button>`));
-      pre.insertAdjacentHTML('afterend', String(html`<div class="df-json-view" ${on ? '' : trusted('hidden')}>${jsonView(data, { open: 3 })}</div>`));
+      pre.insertAdjacentHTML('afterend', String(html`<div class="df-json-view" ${on ? '' : trusted('hidden')}>${jsonView(data)}</div>`));
       pre.hidden = on;
     });
   });

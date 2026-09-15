@@ -33,7 +33,7 @@ function varsTable(vars) {
   if (!entries.length) return html`<p class="pk-muted" style="margin:0">None</p>`;
   return html`<dl class="pk-kv">${entries.map(([key, value]) => html`
     <dt class="pk-mono">${key}</dt>
-    <dd>${value !== null && typeof value === 'object' ? jsonView(value, { open: 0 }) : html`<span class="pk-mono">${String(value)}</span>`}</dd>`)}</dl>`;
+    <dd>${value !== null && typeof value === 'object' ? jsonView(value) : html`<span class="pk-mono">${String(value)}</span>`}</dd>`)}</dl>`;
 }
 
 function descendants(tree) {

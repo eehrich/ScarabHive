@@ -51,20 +51,27 @@ export function render(element, content) {
   element.innerHTML = fragment(content);
 }
 
-/** A collapsible JSON tree for .pk-json. Objects and arrays deeper than `open` levels start closed. */
-export function jsonView(value, { open = 1 } = {}) {
-  const node = (v, depth) => {
-    if (v === null || v === undefined) return html`<span class="pk-json-null">${String(v)}</span>`;
-    if (typeof v === 'string') return html`<span class="pk-json-string">"${v}"</span>`;
-    if (typeof v === 'number' || typeof v === 'boolean') return html`<span class="pk-json-number">${String(v)}</span>`;
-    const isArray = Array.isArray(v);
-    const entries = isArray ? v.map((item, i) => [i, item]) : Object.entries(v);
-    if (!entries.length) return html`${isArray ? '[]' : '{}'}`;
-    const rows = entries.map(([key, item]) => html`<div>${isArray ? '' : html`<span class="pk-json-key">${key}</span>: `}${node(item, depth + 1)}</div>`);
-    const summary = isArray ? `[${entries.length}]` : `{${entries.length}}`;
-    return html`<details ${depth < open ? trusted('open') : ''}><summary>${summary}</summary>${rows}</details>`;
+/**
+ * JSON as a reader takes it in (.pk-json): every level shown, a nested object indented under its key,
+ * an array as a list, strings as text -- no quotes, their line breaks kept. Keys stay as they are.
+ */
+export function jsonView(value) {
+  const muted = (text) => html`<span class="pk-json-null">${text}</span>`;
+  const node = (v) => {
+    if (v === null || v === undefined) return muted(String(v));
+    if (typeof v === 'string') return v ? html`<span class="pk-json-string">${v}</span>` : muted('empty');
+    if (typeof v !== 'object') return html`<span class="pk-json-number">${String(v)}</span>`;
+    if (Array.isArray(v)) {
+      return v.length ? html`<ul class="pk-json-list">${v.map((item) => html`<li>${node(item)}</li>`)}</ul>` : muted('no items');
+    }
+    const entries = Object.entries(v);
+    if (!entries.length) return muted('no fields');
+    return html`<div class="pk-json-object">${entries.map(([key, item]) => {
+      const nested = item !== null && typeof item === 'object' && Object.keys(item).length > 0;
+      return html`<div class="pk-json-field${nested ? ' pk-json-field--nested' : ''}"><span class="pk-json-key">${key}</span>${node(item)}</div>`;
+    })}</div>`;
   };
-  return html`<div class="pk-json">${node(value, 0)}</div>`;
+  return html`<div class="pk-json">${node(value)}</div>`;
 }
 
 export function icon(name, { size = '', label = '' } = {}) {

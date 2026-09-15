@@ -458,15 +458,22 @@
 .pk-kv dt { color: var(--text-muted); }
 .pk-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
-.pk-json { font: 400 var(--text-xs)/1.55 var(--font-mono); }
-.pk-json details { padding-left: var(--space-4); }
-.pk-json summary { cursor: pointer; margin-left: calc(-1 * var(--space-4)); list-style: none; }
-.pk-json summary::before { content: "▸ "; color: var(--text-muted); }
-.pk-json details[open] > summary::before { content: "▾ "; }
-.pk-json .pk-json-key { color: var(--accent-text); }
-.pk-json .pk-json-string { color: var(--ok); }
-.pk-json .pk-json-number { color: var(--warn); }
-.pk-json .pk-json-null { color: var(--text-muted); }
+/* JSON for reading: every level open; a text runs on from its key and wraps back to the left edge,
+   a nested object or list goes indented under its key */
+.pk-json { font-size: var(--text-sm); line-height: 1.55; color: var(--text-primary); overflow-wrap: anywhere; }
+.pk-json-object { display: flex; flex-direction: column; gap: var(--space-1); }
+.pk-json-field--nested > :not(.pk-json-key) {
+  margin: 2px 0 var(--space-1) var(--space-1); padding-left: var(--space-3); border-left: 2px solid var(--border-subtle);
+}
+.pk-json-key { font-weight: 600; color: var(--accent-text); }
+.pk-json-key::after { content: ": "; font-weight: 400; color: var(--text-muted); white-space: pre; }
+.pk-json-list { margin: 0; padding-left: var(--space-5); }
+.pk-json-field--nested > .pk-json-list { padding-left: var(--space-5); }  /* room for the bullets beside the rule */
+.pk-json-list > li + li { margin-top: var(--space-1); }
+.pk-json-list > li::marker { color: var(--text-muted); }
+.pk-json-string { white-space: pre-wrap; }
+.pk-json-number { font: 400 var(--text-xs)/1.55 var(--font-mono); color: var(--warn); }
+.pk-json-null { font-style: italic; color: var(--text-muted); }
 
 /* ----------------------------------------------------------- refresh ctrl */
 
