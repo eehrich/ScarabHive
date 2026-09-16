@@ -236,7 +236,7 @@ llm_system:
 
     openrouter-deepseek-pro:
       extends: openrouter-deepseek
-      model: deepseek/deepseek-v4-pro-0813
+      model: ~deepseek/deepseek-pro-latest
       provider_routing:
         order:
         - deepseek
