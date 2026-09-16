@@ -7,6 +7,27 @@ am Feld selbst. Was hier steht, ist das, was man den Werten nicht ansieht.
 Die Vererbung zwischen den Einträgen (`extends:`) beschreibt
 [llm_model_inheritance_konzept.md](llm_model_inheritance_konzept.md).
 
+## Was ein Endpunkt spricht, sagt sein Eintrag — nicht sein Name
+
+Die Clients kennen keine Modellnamen. Eigenheiten eines Endpunkts stehen als
+Schlüssel am Modell, und wer einen neuen Anbieter aufnimmt, setzt Zeilen statt
+Code. Welche Route welchen Schlüssel auswertet:
+
+| Schlüssel | `openai_httpx` | `openai_responses` | `openrouter_sdk` | `anthropic` | `gemini*`, `openai`, `ollama` |
+|---|---|---|---|---|---|
+| `tool_schema_dialect` | ja | ja | ja | – | – |
+| `reasoning_details_mode` | ja | ja | ja | ja | – |
+| `assistant_reasoning_field` | ja | – | – | – | – |
+| `thinking_request_shape` | – | – | – | ja | – |
+| `prompt_cache_marker_style` | ja | ja | verweigert `anthropic` | eigener Weg | – |
+| `safety_settings` | ja | ja | verweigert | – | nur `gemini*` (nativ) |
+
+Die ersten vier Zeilen sind die **Dialekt-Schlüssel**: steht einer auf einer
+Route, die ihn nicht auswertet, protokolliert der Bau des Clients das („is not
+wired for provider=…"). Die letzten beiden Zeilen haben diesen Wächter nicht.
+Ein unbekannter **Wert** lässt den Bau in allen Fällen scheitern. Beides mit Absicht: still ignoriert zu werden ist der
+Fall, den man erst Wochen später am Rechnungsbetrag merkt.
+
 ## OpenRouter: warum die Backends gepinnt sind
 
 Der Prompt-Cache bei OpenRouter ist **backend-lokal**. Wer die Anbieterwahl dem
@@ -162,13 +183,19 @@ byte-identischer 10k-Prefix, `cached_tokens=0`). Der Key gehört zum Modell, nic
 in die Agent-Dateien; dort stand er bis zum 2026-08-22 34-mal.
 
 Reasoning-Round-Trip: Die Items der Reasoning-Modelle bilden eine
-verschlüsselte Kette, die jeder Turn vollständig zurückgeben muss. Auf der
-`openai_responses`-Route erledigt das der Client selbst (verbatim-Replay der
-Items, de facto keep_all). Das Config-Feld `reasoning_details_mode` existiert
-im Schema weiterhin, ist aber seit dem Umzug auf die Responses-API in keiner
-YAML mehr gesetzt — ausgewertet wird es nur noch vom `openai_httpx`-Client
-(Default `keep_last`); andere Provider verwerfen es (anthropic nimmt es an,
-liest es nie).
+verschlüsselte Kette, die jeder Turn vollständig zurückgeben muss. Das
+Config-Feld `reasoning_details_mode` sagt pro Modell, wie viel davon
+zurückreist, und wird auf `openai_httpx`, `openai_responses`,
+`openrouter_sdk` und `anthropic` ausgewertet. Der Default hängt an der Route:
+`keep_last` auf der Chat-Route (dort gilt eine Thought-Signature nur für den
+laufenden Turn), `keep_all` dort, wo ganze Item-Ketten verbatim zurückgehen.
+
+⚠️ Wer den Cache eines Modells nutzt, das seinen Prefix byteweise vergleicht
+(Claude), braucht `keep_all` — mit `keep_last` verliert die vorige Runde ihre
+Blöcke, das Prefix ändert sich vor dem Anker, und jeder Schritt schreibt den
+Cache neu statt ihn zu lesen. Gemessen am `book_launcher` (43 Calls): 19-mal
+Rückfall auf 25.878 gelesene Tokens, nie mehr. `openrouter-claude` setzt es
+deshalb.
 
 ## `openrouter_sdk`: dieselbe Route über das offizielle SDK
 

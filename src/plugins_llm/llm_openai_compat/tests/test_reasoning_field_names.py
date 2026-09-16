@@ -185,7 +185,14 @@ def test_chat_stores_the_thinking_once_when_both_names_arrive():
     assert thinking_text(result["assistant"]) == "weighed the options"
 
 
-def test_deepseek_roundtrip_sends_the_text_from_wherever_it_lives():
+def _reasoning_content_client() -> HTTPXOpenAIClient:
+    """A model whose config declares the extra field — no name is read anywhere."""
+    return HTTPXOpenAIClient(model="a-model-the-client-never-reads",
+                             api_key="test-key",
+                             assistant_reasoning_field="reasoning_content")
+
+
+def test_declared_roundtrip_sends_the_text_from_wherever_it_lives():
     """DeepSeek needs the thinking BACK on every assistant message with tools.
 
     An empty string satisfies the schema and loses the chain of thought — the
@@ -193,20 +200,32 @@ def test_deepseek_roundtrip_sends_the_text_from_wherever_it_lives():
     run because the model re-derived it every turn). Storing the text once
     means it can sit in the artifacts, so the payload has to look there.
     """
-    client = HTTPXOpenAIClient(model="deepseek-v4-pro", api_key="test-key")
     msgs = [{"role": "assistant", "content": "done",
              "reasoning_details": [{"type": "reasoning.text",
                                     "text": "why I did it"}]}]
-    client._postprocess_messages_for_provider(msgs)
+    _reasoning_content_client()._postprocess_messages_for_provider(msgs)
     assert msgs[0]["reasoning_content"] == "why I did it"
 
 
-def test_deepseek_roundtrip_keeps_the_field_present_without_thinking():
+def test_declared_roundtrip_keeps_the_field_present_without_thinking():
     """No thinking anywhere: the key must still be there, or DeepSeek 400s."""
-    client = HTTPXOpenAIClient(model="deepseek-v4-pro", api_key="test-key")
     msgs = [{"role": "assistant", "content": "done"}]
-    client._postprocess_messages_for_provider(msgs)
+    _reasoning_content_client()._postprocess_messages_for_provider(msgs)
     assert msgs[0]["reasoning_content"] == ""
+
+
+def test_the_deepseek_name_alone_buys_nothing():
+    """Without the declared key the field is stripped, model name or not.
+
+    This is the removal made visible: the client used to sniff "deepseek" in
+    the model and the base_url.
+    """
+    client = HTTPXOpenAIClient(model="deepseek-v4-pro", api_key="test-key",
+                               base_url="https://api.deepseek.com/v1")
+    msgs = [{"role": "assistant", "content": "done",
+             "reasoning_content": "why I did it"}]
+    client._postprocess_messages_for_provider(msgs)
+    assert "reasoning_content" not in msgs[0]
 
 
 def test_chat_keeps_the_text_when_the_artifact_is_encrypted_only():

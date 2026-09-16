@@ -154,6 +154,7 @@ llm_system:
 
     claude-opus-5-thinking:
       provider: anthropic
+      thinking_request_shape: adaptive   # budget_tokens gibt hier 400
       model: claude-opus-5
       api_key: ${ANTHROPIC_API_KEY}
       context_window: 1000000
@@ -180,6 +181,7 @@ llm_system:
 
     claude-haiku-4-5:
       extends: claude-opus-5-thinking
+      thinking_request_shape: budget     # kennt adaptive nicht
       model: claude-haiku-4-5-20251001
       context_window: 200000
       request_timeout: 120
@@ -194,6 +196,7 @@ llm_system:
 
     claude-opus-5-batch:
       provider: batch
+      thinking_request_shape: adaptive   # budget_tokens gibt hier 400
       model: claude-opus-5
       api_key: ${ANTHROPIC_API_KEY}
       batch_provider: anthropic
@@ -208,6 +211,7 @@ llm_system:
 
     claude-haiku-4-5-batch:
       extends: claude-opus-5-batch
+      thinking_request_shape: budget     # kennt adaptive nicht
       model: claude-haiku-4-5-20251001
       context_window: 200000
       max_tokens: 8192
@@ -383,6 +387,7 @@ llm_system:
 
     deepseek-pro:
       provider: openai_httpx
+      assistant_reasoning_field: reasoning_content   # ohne das 400 bei Tool-Turns
       model: deepseek-v4-pro
       api_key: ${DEEPSEEK_API_KEY}
       base_url: https://api.deepseek.com/v1

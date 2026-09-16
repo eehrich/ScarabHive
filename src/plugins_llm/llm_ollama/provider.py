@@ -8,6 +8,8 @@ through the registry instead of importing across plugins.
 from __future__ import annotations
 
 import logging
+
+from plugins_llm.llm_common.model_dialects import warn_unwired
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from .ollama_client import OllamaNativeAsyncClient
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_ollama(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "LLMClient":
+    warn_unwired(cfg, provider="ollama", wired=(), logger=logger)
     if cfg.thinking_level or cfg.thinking_budget or cfg.include_thoughts:
         logger.debug(
             "thinking_level/thinking_budget/include_thoughts are ignored "

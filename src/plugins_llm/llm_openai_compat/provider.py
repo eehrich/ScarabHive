@@ -10,6 +10,7 @@ import logging
 from typing import Optional, TYPE_CHECKING
 
 from plugins_llm.llm_common.api_keys import resolve_api_key
+from plugins_llm.llm_common.model_dialects import warn_unwired
 
 from .httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
 
@@ -51,6 +52,9 @@ def build_openai_httpx(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None)
             cfg.model,
         )
 
+    warn_unwired(cfg, provider="openai_httpx", logger=logger,
+                 wired=("tool_schema_dialect", "assistant_reasoning_field", "reasoning_details_mode"))
+
     temp_kw = {} if cfg.temperature is None else {"temperature": cfg.temperature}
     return HTTPXOpenAIClient(
         model=cfg.model,
@@ -71,6 +75,8 @@ def build_openai_httpx(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None)
         service_tier=cfg.service_tier,
         provider_routing=cfg.provider_routing,
         reasoning_details_mode=cfg.reasoning_details_mode,
+        tool_schema_dialect=cfg.tool_schema_dialect,
+        assistant_reasoning_field=cfg.assistant_reasoning_field,
         prompt_cache_key=cfg.prompt_cache_key,
         prompt_cache_mode=cfg.prompt_cache_mode,
         prompt_cache_marker_style=cfg.prompt_cache_marker_style,
@@ -111,6 +117,9 @@ def build_openai_responses(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = N
             cfg.model,
         )
 
+    warn_unwired(cfg, provider="openai_responses", logger=logger,
+                 wired=("tool_schema_dialect", "reasoning_details_mode"))
+
     from .openai_responses_client import OpenAIResponsesClient
     return OpenAIResponsesClient(
         model=cfg.model,
@@ -127,6 +136,8 @@ def build_openai_responses(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = N
         service_tier=cfg.service_tier,
         provider_routing=cfg.provider_routing,
         safety_settings=cfg.safety_settings,
+        reasoning_details_mode=cfg.reasoning_details_mode,  # the same round trip as on the chat route
+        tool_schema_dialect=cfg.tool_schema_dialect,
         prompt_cache_key=cfg.prompt_cache_key,
         prompt_cache_mode=cfg.prompt_cache_mode,
         prompt_cache_marker_style=cfg.prompt_cache_marker_style,

@@ -47,18 +47,29 @@ REQUEST-SIDE GAPS, DELIBERATELY LOUD
 ====================================
 Typed parameters cannot carry what the SDK's schema does not know, and they
 drop it without a word. Two payload keys this house sends have no SDK
-parameter.
+parameter, and BOTH are refused at construction: a declared config key is
+either honoured or it fails loudly — a key that is accepted and then does
+nothing is the failure this plugin was built to detect.
 
-``prompt_cache_marker_style: anthropic`` (per-part ``cache_control``) is
-REFUSED at construction: the httpx route does send it, so losing it here
-would cost cache hits with no error to show for it.
+``prompt_cache_marker_style: anthropic`` (per-part ``cache_control``): the
+httpx route does send it, so losing it here would cost cache hits with no
+error to show for it.
 
-``safety_settings`` only WARNS. Measured 2026-09-01: OpenRouter drops the
-field on ``/responses`` itself — the same nonsense value that earns an HTTP
-400 with the valid enum list on ``/chat/completions`` is swallowed with an
-HTTP 200 here. The httpx route therefore loses it too, just silently.
-Refusing to build would invent a difference between the routes that does not
-exist and would lock the Gemini entries out for nothing.
+``safety_settings``: the SDK's content-part schema has no such field.
+Measured 2026-09-01: OpenRouter drops the field on ``/responses`` itself —
+the same nonsense value that earns an HTTP 400 with the valid enum list on
+``/chat/completions`` is swallowed with an HTTP 200 here, so the httpx route
+loses it too, just silently. That measurement concedes the mechanism and
+only disputes the damage; it used to buy a WARNING plus a silent rewrite to
+``None``. It now buys a refusal, because "declared and ineffective" is the
+one state a model entry must never be in. No catalogue entry is affected:
+the Gemini entries carry a comment saying they deliberately omit the field.
+An entry that needs it names ``provider: openai_responses`` — one word.
+
+Everything the SDK CAN carry is carried: the declared client-side keys
+(``tool_schema_dialect``, ``reasoning_details_mode``) shape the payload in
+the inherited builder before the transport sees it, and their payload
+results (``tools``, ``input``) travel as typed parameters.
 
 The OpenAI-style cache marker this route actually uses —
 ``prompt_cache_breakpoint`` — IS in the SDK schema and travels unchanged
@@ -132,6 +143,12 @@ class OpenRouterSDKClient(OpenAIResponsesClient):
         even be passed — it would raise TypeError. Dropping it here keeps the
         call alive but says so, once: a payload field that silently stops
         travelling is the failure this plugin was built to detect.
+
+        This is the BACKSTOP, for a payload key a future builder change adds.
+        A key that a MODEL ENTRY causes (safety_settings, Anthropic cache
+        markers) never gets this far: the factory refuses to build such a
+        client at all, because that loss is a config error with a one-line
+        fix, and mid-run is the wrong moment to learn about it.
         """
         kwargs: dict = {}
         for key, value in payload.items():
@@ -221,23 +238,22 @@ def build_openrouter_sdk_client(
     prompt_cache_marker_style: Optional[str],
     **kwargs: Any,
 ) -> OpenRouterSDKClient:
-    """Construct the client, handling the two fields the SDK cannot send.
+    """Construct the client, refusing the two fields the SDK cannot send.
 
-    The cache-marker refusal is a real gap: the httpx route sends that field
-    and this one cannot, so a run would lose cache hits with nothing to show
-    for it. Raising beats that — the operator moves the entry back to
-    ``provider: openai_responses`` in one line.
-
-    ``safety_settings`` is a different case and only warns; see the module
-    docstring for the measurement.
+    Both refusals are the same rule: a declared key that cannot travel must
+    not be accepted, because the loss has no error to show for it. The
+    operator moves the entry back to ``provider: openai_responses`` in one
+    line — see the module docstring for the measurement behind each.
     """
     from agent_system.llm.cache_key import MARKER_STYLE_ANTHROPIC
 
     if safety_settings:
-        logger.warning(
-            "safety_settings are not sent for model=%s — OpenRouter ignores "
-            "them on /responses either way. The entry can drop the field.",
-            model)
+        raise ValueError(
+            f"provider 'openrouter_sdk' cannot send safety_settings "
+            f"(model={model!r}): the SDK has no such parameter, so the "
+            f"declared thresholds would silently not apply. Use provider: "
+            f"openai_responses — or drop the field, which is what the "
+            f"Gemini entries do (OpenRouter ignores it on /responses).")
     if prompt_cache_marker_style == MARKER_STYLE_ANTHROPIC:
         raise ValueError(
             f"provider 'openrouter_sdk' cannot send Anthropic-style per-part "

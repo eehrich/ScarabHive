@@ -29,6 +29,11 @@ from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from agent_system.llm.tls import httpx_verify
 
 from . import anthropic_utils
+from plugins_llm.llm_common.model_dialects import (
+    reasoning_replay_flags,
+    resolve_reasoning_details_mode,
+    resolve_thinking_request_shape,
+)
 from agent_system.llm.cache_key import (
     CACHE_BP_SENTINEL,
     anthropic_cache_conversation,
@@ -83,6 +88,7 @@ class AnthropicAsyncClient(LLMClient):
         enable_prompt_caching: bool = True,
         prompt_cache_mode: Optional[str] = None,
         reasoning_details_mode: Optional[str] = None,
+        thinking_request_shape: Optional[str] = None,
         capabilities=None,
         ssl_verify: Optional[bool] = None,
         **extra_params
@@ -126,7 +132,16 @@ class AnthropicAsyncClient(LLMClient):
         # steuert ob der wachsende Konversations-Tail zusaetzlich zu System/Tools
         # als cache_control-Breakpoint markiert wird (Multi-Turn).
         self.prompt_cache_mode = prompt_cache_mode
-        self.reasoning_details_mode = reasoning_details_mode
+        # Governs the thinking-block replay below. keep_all is what this
+        # client has always done and what a tool round trip needs: the blocks
+        # of the latest assistant turn must come back complete, and the
+        # earlier ones keep the cached prefix byte-identical.
+        self.reasoning_details_mode = resolve_reasoning_details_mode(
+            reasoning_details_mode, model=model, default="keep_all")
+        # "budget" or "adaptive" — declared per model entry, see
+        # _build_thinking_param. Unknown value: fail here, not on the wire.
+        self.thinking_request_shape = resolve_thinking_request_shape(
+            thinking_request_shape, model=model)
         self.extra_params = extra_params
         
         # Initialize the official client
@@ -156,32 +171,23 @@ class AnthropicAsyncClient(LLMClient):
             f"enable_prompt_caching={enable_prompt_caching}"
         )
 
-    #: Model families where ``thinking={"type":"enabled","budget_tokens":N}`` is
-    #: REJECTED with HTTP 400 — adaptive thinking is the only "on" mode there.
-    #: Claude documents this for Fable/Mythos 5, Opus 4.7+ and Sonnet 5; our own
-    #: config/llm.yaml carries the same note per model. Prefix matching is safe:
-    #: "claude-sonnet-5" does not match "claude-sonnet-4-5-…".
-    _ADAPTIVE_ONLY_THINKING = (
-        "claude-fable-", "claude-mythos-",
-        "claude-opus-5", "claude-opus-4-7", "claude-opus-4-8",
-        "claude-sonnet-5",
-    )
-
     def _build_thinking_param(self) -> Dict[str, Any]:
-        """Thinking config for this model.
+        """Thinking config for this model, per its declared request shape.
 
         Newer models take only ``{"type": "adaptive"}`` and 400 on a fixed
         budget; older ones still require ``budget_tokens``. Sending the wrong
-        shape fails the request outright, so pick by model rather than always
-        using the legacy form.
+        shape fails the request outright, and the model NAME is not allowed to
+        decide it: the entry declares ``thinking_request_shape``, so the next
+        family is a config line instead of a table in here.
 
-        ``thinking_budget`` stays a config field for the legacy models (and as a
-        soft-cap indicator elsewhere) but must NOT be sent to adaptive-only ones.
+        ``thinking_budget`` stays a config field for the budget models (and as a
+        soft-cap indicator elsewhere) but must NOT be sent to adaptive ones.
         """
-        if self.model.startswith(self._ADAPTIVE_ONLY_THINKING):
+        if self.thinking_request_shape == "adaptive":
             if self.thinking_budget:
                 logger.debug(
-                    "thinking_budget=%s ignored: %s accepts adaptive thinking only",
+                    "thinking_budget=%s ignored: %s is declared "
+                    "thinking_request_shape=adaptive",
                     self.thinking_budget, self.model,
                 )
             return {"type": "adaptive"}
@@ -219,15 +225,21 @@ class AnthropicAsyncClient(LLMClient):
                 blocks.append(dict(block))
         return blocks
 
-    def _replayable_thinking(self, msg: ChatMessage) -> List[Dict[str, Any]]:
+    def _replayable_thinking(self, msg: ChatMessage,
+                             allowed: bool = True) -> List[Dict[str, Any]]:
         """This message's thinking blocks, if they may be replayed to THIS model.
 
         Signatures are model-bound. Replaying them to a different model does not
         error — the blocks are ignored but still billed as input — so a fallback
         chain that switched models would silently pay for dead weight.
+
+        ``allowed`` is this turn's verdict from ``reasoning_details_mode``
+        (keep_all / keep_last / strip): thinking blocks ARE this route's
+        reasoning round trip — it carries them on ``ChatMessage.thinking_blocks``
+        instead of ``reasoning_details``, so the declared key governs them.
         """
         blocks = getattr(msg, "thinking_blocks", None)
-        if not blocks:
+        if not blocks or not allowed:
             return []
         origin = getattr(msg, "thinking_model", None)
         if origin and origin != self.model:
@@ -249,8 +261,9 @@ class AnthropicAsyncClient(LLMClient):
         """
         system_prompt: Optional[str] = None
         converted_messages: List[Dict[str, Any]] = []
+        may_replay = reasoning_replay_flags(messages, self.reasoning_details_mode)
 
-        for msg in messages:
+        for index, msg in enumerate(messages):
             role = msg.role
 
             # Extract system message(s) - Anthropic only supports a single system param
@@ -310,7 +323,8 @@ class AnthropicAsyncClient(LLMClient):
                 # "must match what the model generated" check validates against.
                 # Required when returning tool results: the blocks have to come
                 # back complete and unmodified or the turn is rejected.
-                content_blocks.extend(self._replayable_thinking(msg))
+                content_blocks.extend(
+                    self._replayable_thinking(msg, may_replay[index]))
 
                 # Add text content if present
                 text_content = msg.content if isinstance(msg.content, str) else msg.get_text_content()
@@ -354,7 +368,7 @@ class AnthropicAsyncClient(LLMClient):
                 # the whole history — but only alongside real text: blocks with
                 # no content would produce an empty assistant message.
                 replay = (
-                    self._replayable_thinking(msg)
+                    self._replayable_thinking(msg, may_replay[index])
                     if anthropic_role == "assistant" else []
                 )
                 if replay and isinstance(msg.content, str) and msg.content:
@@ -435,7 +449,17 @@ class AnthropicAsyncClient(LLMClient):
         return anthropic_tools
 
     def _clean_schema(self, schema: Dict) -> Dict:
-        """Clean JSON schema for Anthropic compatibility."""
+        """Clean JSON schema for Anthropic compatibility.
+
+        NOT llm_common's ``sanitize_schema_for_gemini``, although it looks like
+        a fourth copy of it. Measured over the same four schemas (a pydantic
+        tool signature, a nested array of objects, enum/const, a oneOf union):
+        0 of 4 came out the same. Anthropic's ``input_schema`` IS JSON Schema
+        and keeps ``minimum``, ``maximum``, ``pattern``, ``format``, ``const``
+        and ``oneOf``; the Gemini dialect deletes all of them and appends their
+        values to the description as prose. Unifying would hand Claude tools
+        whose constraints are only a hint — a loss, for no bug.
+        """
         if not schema:
             return {"type": "object", "properties": {}}
         

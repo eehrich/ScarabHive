@@ -88,7 +88,12 @@ from agent_system.llm.cache_key import (
     plan_cache_blocks,
     strip_cache_breakpoints,
 )
-from plugins_llm.llm_common.schema_sanitize import sanitize_schema_for_gemini
+from plugins_llm.llm_common.model_dialects import (
+    reasoning_replay_flags,
+    resolve_reasoning_details_mode,
+    resolve_tool_schema_dialect,
+    tool_schema_sanitizer,
+)
 from .httpx_client import (
     HTTPXTimeoutConfig,
     openrouter_routing_info,
@@ -231,7 +236,9 @@ class OpenAIResponsesClient(LLMClient):
         ssl_verify: bool = True,
         timeout_config: Optional[HTTPXTimeoutConfig] = None,
         capabilities: Any = None,
-        parallel_tool_calls: bool = True,
+        parallel_tool_calls: Optional[bool] = True,
+        tool_schema_dialect: Optional[str] = None,
+        reasoning_details_mode: Optional[str] = None,
         thinking_level: Optional[str] = None,
         max_tokens: Optional[int] = None,
         service_tier: Optional[str] = None,
@@ -261,6 +268,15 @@ class OpenAIResponsesClient(LLMClient):
         self.ssl_verify = ssl_verify
         self.capabilities = capabilities
         self.parallel_tool_calls = parallel_tool_calls
+        self.tool_schema_dialect = resolve_tool_schema_dialect(
+            tool_schema_dialect, model=model)
+        # keep_all is what this route has always done: it replays the model's
+        # output items VERBATIM, and an encrypted chain missing its earlier
+        # links is exactly the "could not be verified" 400 this client exists
+        # to avoid. The chat route's keep_last default is a Gemini
+        # thought-signature rule and does not apply here.
+        self.reasoning_details_mode = resolve_reasoning_details_mode(
+            reasoning_details_mode, model=model, default="keep_all")
         self.thinking_level = thinking_level
         self.max_tokens = max_tokens
         self.service_tier = service_tier
@@ -405,9 +421,17 @@ class OpenAIResponsesClient(LLMClient):
         verbatim (the lossless path). Assistant turns from other routes are
         reconstructed from content/tool_calls — without their foreign
         reasoning artifacts, which cannot verify here (fresh chain start).
+
+        ``reasoning_details_mode`` decides HOW MANY of the own turns replay:
+        ``keep_all`` (default here) every one of them, ``keep_last`` only the
+        most recent, ``strip`` none. A turn that may not replay is
+        reconstructed from content/tool_calls exactly like a foreign one, so
+        the request stays valid either way — what changes is whether the
+        encrypted chain (and the cached prefix) survives the turn.
         """
+        may_replay = reasoning_replay_flags(messages, self.reasoning_details_mode)
         items: list = []
-        for msg in messages:
+        for index, msg in enumerate(messages):
             role = _get(msg, "role")
             content = _get(msg, "content")
 
@@ -427,7 +451,7 @@ class OpenAIResponsesClient(LLMClient):
                 # stripped — replaying its reasoning items verbatim would send
                 # a PARTIAL chain, which fails verification. Reconstruct from
                 # content/tool_calls instead (clean chain restart).
-                verbatim = None if _get(msg, "rd_orphaned") \
+                verbatim = None if (_get(msg, "rd_orphaned") or not may_replay[index]) \
                     else self._extract_verbatim_items(msg)
                 if verbatim is not None:
                     # The block keeps the model's RAW arguments string, while
@@ -497,30 +521,32 @@ class OpenAIResponsesClient(LLMClient):
             supports_audio=self._supports_audio_input,
         )
 
-    @property
-    def _is_gemini_model(self) -> bool:
-        """Gemini via OpenRouter — needs tool-schema sanitization (same as
-        the Chat Completions route's _sanitize_tools_for_gemini)."""
-        return self.model.startswith("google/gemini")
-
     def _convert_tools(self, tools: Optional[list]) -> Optional[list]:
         """Chat-format tool schemas -> Responses-format (flat, no nesting).
 
-        For Gemini models the parameter schemas are sanitized like on the
-        Chat Completions route: Gemini's Function Declarations reject JSON
-        Schema keywords (additionalProperties, default, format, oneOf, ...)
-        and complex nested schemas then fail with MALFORMED_FUNCTION_CALL.
+        The declared ``tool_schema_dialect`` names the sanitiser the endpoint
+        needs (llm_common.model_dialects), and this route looks it up rather
+        than asking which family it is: e.g. Gemini's Function Declarations
+        reject JSON Schema keywords (additionalProperties, default, format,
+        oneOf, ...) and complex nested schemas then fail with
+        MALFORMED_FUNCTION_CALL. Declared per model entry because the model
+        NAME says nothing about it — the same family is reachable through
+        gateway aliases (``~google/gemini-flash-latest``) and through
+        translating gateways.
+
+        Unlike the Chat Completions route this one always sends
+        ``parameters``, ``{}`` for a tool without any.
         """
         if not tools:
             return None
-        sanitize = self._is_gemini_model
+        sanitize = tool_schema_sanitizer(self.tool_schema_dialect)
         converted = []
         for t in tools:
             fn = t.get("function") if isinstance(t, dict) else None
             if fn:
                 params = fn.get("parameters", {})
                 if sanitize and params:
-                    params = sanitize_schema_for_gemini(params)
+                    params = sanitize(params)
                 converted.append({
                     "type": "function",
                     "name": fn.get("name", ""),
@@ -530,7 +556,7 @@ class OpenAIResponsesClient(LLMClient):
             elif isinstance(t, dict) and t.get("name"):
                 clean = dict(t)
                 if sanitize and clean.get("parameters"):
-                    clean["parameters"] = sanitize_schema_for_gemini(clean["parameters"])
+                    clean["parameters"] = sanitize(clean["parameters"])
                 # "Flat" does not imply "tagged": a caller that hands over
                 # {name, description, parameters} produced an item without a
                 # discriminator, which is not a valid Responses tool. The
@@ -692,7 +718,11 @@ class OpenAIResponsesClient(LLMClient):
         if converted_tools:
             payload["tools"] = converted_tools
             payload["tool_choice"] = "auto"
-            payload["parallel_tool_calls"] = bool(self.parallel_tool_calls)
+            # None means "leave the field out" (declared per model): a backend
+            # that does not know it refuses the request, and Gemini answers
+            # worse when it is sent at all. bool(None) would have sent False.
+            if self.parallel_tool_calls is not None:
+                payload["parallel_tool_calls"] = bool(self.parallel_tool_calls)
         return payload
 
     @property

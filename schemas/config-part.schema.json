@@ -938,9 +938,16 @@
           "type": "integer"
         },
         "parallel_tool_calls": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": true,
-          "title": "Parallel Tool Calls",
-          "type": "boolean"
+          "title": "Parallel Tool Calls"
         },
         "httpx_timeouts": {
           "anyOf": [
@@ -1074,6 +1081,54 @@
           ],
           "default": null,
           "title": "Safety Settings"
+        },
+        "tool_schema_dialect": {
+          "anyOf": [
+            {
+              "enum": [
+                "json_schema",
+                "gemini_function_declarations"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Schema Dialect"
+        },
+        "assistant_reasoning_field": {
+          "anyOf": [
+            {
+              "enum": [
+                "omit",
+                "reasoning_content"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assistant Reasoning Field"
+        },
+        "thinking_request_shape": {
+          "anyOf": [
+            {
+              "enum": [
+                "budget",
+                "adaptive"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Request Shape"
         },
         "service_tier": {
           "anyOf": [

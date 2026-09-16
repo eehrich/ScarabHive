@@ -37,10 +37,20 @@ What it does (provider-agnostic — callers don't know which model runs):
 The provider-aware side lives in the LLM client (config-driven
 ``reasoning_details_mode``, no model-name sniffing):
 
-- ``keep_all`` (OpenAI reasoning chains): an ``_rd_orphaned`` message gets its
-  ``reasoning_details`` stripped per-request too — completing a clean chain
-  reset. The model re-reasons once; every item generated afterwards forms a
-  fresh, internally consistent chain that verifies again.
+- ``keep_all``: an ``_rd_orphaned`` message gets its ``reasoning_details``
+  stripped per-request too — completing a clean chain reset. The model
+  re-reasons once; every item generated afterwards forms a fresh, internally
+  consistent chain that verifies again.
+  EXCEPT while that message still carries ``tool_calls``: a turn whose tools
+  have not answered yet is the one the next request continues, and a provider
+  that wants a tool turn's thinking echoed back COMPLETE (Anthropic) refuses a
+  bare one with a 400. Chain reset and echo requirement point in opposite
+  directions here, and the open turn is where the echo wins.
+  Consequence for a model whose chain is ENCRYPTED and verified across turns
+  (the OpenAI reasoning models): on the chat route ``keep_all`` would replay
+  that open turn without its stripped predecessors. Those models round-trip
+  their items verbatim on the Responses route, where the reset stays
+  unconditional — that is where they belong.
 - ``keep_last`` (Gemini): the flag is ignored — the latest signature is kept
   (needed for the open round-trip; older ones were never round-tripped anyway).
 

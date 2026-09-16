@@ -37,6 +37,7 @@ llm_system:
 
     openrouter-gemini:
       extends: openrouter-base
+      tool_schema_dialect: gemini_function_declarations   # sonst MALFORMED_FUNCTION_CALL
       provider_routing: # make a defined order to avoid reasoning breaks
         order:
         - google-vertex
@@ -158,6 +159,7 @@ llm_system:
       # die Responses-API der Basis. Ohne beides laeuft Claude ohne Cache.
       provider: openai_httpx
       prompt_cache_marker_style: anthropic
+      reasoning_details_mode: keep_all   # sonst bricht das Cache-Praefix jede Runde
       include_thoughts: false     # Chat Completions liefert keine Thoughts
       capabilities:
         streaming: false

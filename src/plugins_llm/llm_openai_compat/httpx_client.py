@@ -12,7 +12,7 @@ import random
 import re
 import socket
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from dataclasses import dataclass
 
 import httpx
@@ -43,7 +43,16 @@ from agent_system.llm.cache_key import (
 from agent_system.llm.models import LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
 from agent_system.core.cancellation import CancellationToken
 from plugins_llm.llm_common import openai_utils
-from plugins_llm.llm_common.schema_sanitize import sanitize_schema_for_gemini
+from plugins_llm.llm_common.model_dialects import (
+    ASSISTANT_REASONING_FIELDS,
+    DIALECT_GEMINI_FUNCTION_DECLARATIONS,
+    MARKER_STYLES,
+    declared_choice,
+    reasoning_replay_flags,
+    resolve_reasoning_details_mode,
+    resolve_tool_schema_dialect,
+    tool_schema_sanitizer,
+)
 from agent_system.utils.reasoning_artifacts import (
     strip_all_reasoning_artifacts,
     strip_reasoning_artifacts_containing,
@@ -211,7 +220,7 @@ class HTTPXOpenAIClient(LLMClient):
         verify: Optional[bool] = None,
         context_window: Optional[int] = None,
         capabilities: Optional[dict] = None,
-        parallel_tool_calls: bool = True,
+        parallel_tool_calls: Optional[bool] = True,
         max_tokens: Optional[int] = None,
         safety_settings: Optional[dict[str, str]] = None,
         **extra_params
@@ -261,7 +270,29 @@ class HTTPXOpenAIClient(LLMClient):
         # Cache-Verhalten (Agent, via llm_params "*") + Marker-Stil (Modell) —
         # docs/prompt_cache_design.md §3/§4.
         self.prompt_cache_mode: str | None = self.extra_params.pop("prompt_cache_mode", None)
-        self.prompt_cache_marker_style: str | None = self.extra_params.pop("prompt_cache_marker_style", None)
+        self.prompt_cache_marker_style: str | None = declared_choice(
+            self.extra_params.pop("prompt_cache_marker_style", None),
+            default=None, allowed=MARKER_STYLES,
+            field="prompt_cache_marker_style", model=model)
+
+        # Which tool schema the endpoint accepts. "json_schema" (default) sends
+        # the schema as it is; "gemini_function_declarations" strips what
+        # Gemini's function declarations reject. Declared per model — the same
+        # family is reachable through gateways that translate and gateways that
+        # do not, so the model name says nothing about it.
+        self.tool_schema_dialect: str = resolve_tool_schema_dialect(
+            self.extra_params.pop("tool_schema_dialect", None), model=model)
+
+        # What an assistant message carries back as its thinking, next to the
+        # standard reasoning_details. "omit" (default) sends the field to no
+        # one — it is not part of the OpenAI schema. "reasoning_content" fills
+        # it on EVERY assistant message, empty string included: DeepSeek's
+        # thinking mode answers 400 without it on a tool round trip.
+        # See: https://api-docs.deepseek.com/guides/thinking_mode#tool-call
+        self.assistant_reasoning_field: str = declared_choice(
+            self.extra_params.pop("assistant_reasoning_field", None),
+            default="omit", allowed=ASSISTANT_REASONING_FIELDS,
+            field="assistant_reasoning_field", model=model)
 
         # Provider routing (OpenRouter) — soft preference over the available backends.
         # Example: {"order": ["google-vertex", "google-ai-studio"], "allow_fallbacks": true}
@@ -294,18 +325,20 @@ class HTTPXOpenAIClient(LLMClient):
         #       output reasoning tokens).
         #   "strip": drop reasoning_details entirely (providers that don't accept
         #       it back).
-        self.reasoning_details_mode: str = (
-            self.extra_params.pop("reasoning_details_mode", None) or "keep_last"
-        )
+        self.reasoning_details_mode: str = resolve_reasoning_details_mode(
+            self.extra_params.pop("reasoning_details_mode", None),
+            model=model, default="keep_last")
 
-        # Store safety settings for Gemini content filtering (via OpenRouter)
+        # Content-filter thresholds, sent whenever they are configured — a
+        # model whose backend does not know the field must not carry it.
         self.safety_settings = safety_settings
 
         self.capabilities = capabilities or {}
         self._verify: ssl.SSLContext | bool | None = None  # Normalized verify value
         
         # Gates the gateway-only parts of a request: provider_routing, the
-        # app-title header, and the Gemini/Claude dialect detection below.
+        # app-title header and the metadata header. Derived from the declared
+        # base_url — the gateway extras really do hang off the endpoint.
         self._is_openrouter = "openrouter.ai" in base_url.lower()
         if self.plugins and not self._is_openrouter:
             # Konfiguriert und trotzdem nicht gesendet ist genau die stille
@@ -314,31 +347,6 @@ class HTTPXOpenAIClient(LLMClient):
                 "plugins are configured for model=%s but its endpoint is not "
                 "OpenRouter (%s) — they are NOT sent.", model, base_url)
         
-        # Detect Gemini models via OpenRouter — need tool schema sanitization.
-        # Gemini doesn't support certain JSON Schema keywords (additionalProperties,
-        # default, format, title, oneOf, anyOf, etc.) in function declarations.
-        # The native Gemini SDK client handles this via llm_common.schema_sanitize.sanitize_schema_for_gemini(),
-        # but when routed through OpenRouter's OpenAI-compatible API, schemas pass through raw.
-        self._is_gemini_via_openrouter = (
-            self._is_openrouter and "gemini" in model.lower()
-        )
-
-        # Detect Anthropic/Claude models via OpenRouter — need cache_control injection.
-        # OpenRouter passes cache_control through to Anthropic for prompt caching.
-        self._is_anthropic_via_openrouter = (
-            self._is_openrouter and "claude" in model.lower()
-        )
-
-        # Detect DeepSeek models — need special reasoning_content handling.
-        # DeepSeek thinking mode requires reasoning_content on ALL assistant messages
-        # (even empty string), otherwise returns HTTP 400.
-        # See: https://api-docs.deepseek.com/guides/thinking_mode#tool-call
-        _model_lower = model.lower()
-        self._is_deepseek = (
-            "deepseek" in _model_lower
-            or "deepseek" in base_url.lower()
-        )
-
         # Validate API type - HTTPX client only supports chat_completions
         if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
             api_type = self.capabilities.default_api_type
@@ -416,6 +424,60 @@ class HTTPXOpenAIClient(LLMClient):
         if self.prompt_cache_options:
             payload["prompt_cache_options"] = self.prompt_cache_options
 
+    def _apply_tool_fields(self, payload: dict, tools: Optional[list],
+                           message_dicts: list) -> None:
+        """Everything a request's tools decide — written once for both paths.
+
+        Streaming and non-streaming build their payloads separately in this
+        file, and every field added to only one of them has drifted since.
+
+        All three decisions come from declared per-model keys:
+        ``tool_schema_dialect`` picks the schema the endpoint accepts,
+        ``prompt_cache_marker_style == "anthropic"`` adds the tool cache marker
+        and enforces Anthropic's hard 4-block limit, and
+        ``parallel_tool_calls`` is sent as configured — *None* means the field
+        stays out of the request, because a backend that does not know it
+        refuses it while a backend that does defaults to true.
+        """
+        if not tools:
+            return
+        sanitize = tool_schema_sanitizer(self.tool_schema_dialect)
+        if sanitize is not None:
+            payload["tools"] = self._sanitize_tools_for_dialect(tools, sanitize)
+            logger.info(
+                "Sanitized %d tool schemas for dialect %s "
+                "(model=%s, stream=%s)", len(tools), self.tool_schema_dialect,
+                self.model, payload.get("stream"))
+        else:
+            payload["tools"] = tools
+        if self._marker_style() == MARKER_STYLE_ANTHROPIC:
+            self._apply_anthropic_tool_cache_control(payload["tools"])
+            # Enforce Anthropic's hard 4-block cache_control limit across
+            # system + conversation-tail + tools + any sentinels.
+            self._cap_anthropic_cache_control(message_dicts, payload["tools"])
+        payload["tool_choice"] = "auto"
+        # Send the configured value explicitly: omitting it means the provider
+        # default applies (OpenAI: true), so a configured False MUST be sent.
+        # parallel_tool_calls=false is required for OpenAI reasoning models —
+        # a turn with multiple parallel tool_calls loses the fc_* item ids in
+        # Chat-Completions format, the Responses backend can't reconstruct the
+        # item sequence, and the turn's encrypted reasoning item fails
+        # verification (HTTP 400 "encrypted content ... could not be verified").
+        if self.parallel_tool_calls is not None:
+            payload["parallel_tool_calls"] = bool(self.parallel_tool_calls)
+
+    def _marker_style(self) -> str:
+        """The model's declared cache-marker style — one resolution, all sites.
+
+        Unset falls back to the OpenAI style exactly when a prompt_cache_key is
+        configured (config discipline: the key only sits on GPT entries), and
+        to "none" otherwise. A model that speaks cache_control says so in its
+        config; nothing here reads the model name.
+        """
+        if self.prompt_cache_marker_style is not None:
+            return self.prompt_cache_marker_style
+        return MARKER_STYLE_OPENAI if self.prompt_cache_key else MARKER_STYLE_NONE
+
     def _apply_cache_breakpoints(
         self, message_dicts: list, resolved_key: str | None = None,
     ) -> None:
@@ -428,17 +490,7 @@ class HTTPXOpenAIClient(LLMClient):
         Bei prompt_cache_mode=task_sequence ergaenzt die Segment-Leiter den
         BP1-Read-Anker aus der Prozess-Registry (s. cache_key.py).
         """
-        style = self.prompt_cache_marker_style
-        if style is None:
-            # Default abgeleitet: Anthropic-Modell -> cache_control; sonst
-            # Key gesetzt -> OpenAI-Stil (Config-Disziplin: Key liegt nur
-            # auf GPT-Profilen); sonst strippen.
-            if getattr(self, "_is_anthropic_via_openrouter", False):
-                style = MARKER_STYLE_ANTHROPIC
-            elif self.prompt_cache_key:
-                style = MARKER_STYLE_OPENAI
-            else:
-                style = MARKER_STYLE_NONE
+        style = self._marker_style()
         mode = self.prompt_cache_mode
         # Anthropic: hartes 4-Marker-Limit (System-/Tool-Marker belegen schon
         # 2 Slots) und nativer Prefix-Match -> KEINE kumulative Leiter,
@@ -596,14 +648,19 @@ class HTTPXOpenAIClient(LLMClient):
         return sanitized
 
     @staticmethod
-    def _sanitize_tools_for_gemini(tools: list) -> list:
-        """Sanitize tool schemas for Gemini models via OpenRouter.
-        
-        Gemini's Function Declaration schema doesn't support JSON Schema keywords
-        like additionalProperties, default, format, title, oneOf, anyOf, etc.
-        The native Gemini SDK client handles this via llm_common.schema_sanitize.sanitize_schema_for_gemini(),
-        but when routed through OpenRouter, schemas are passed through raw and cause
-        MALFORMED_FUNCTION_CALL errors — especially with complex nested schemas.
+    def _sanitize_tools_for_dialect(tools: list, sanitize: Callable[[dict], dict]) -> list:
+        """Rewrite every tool's parameter schema with the dialect's sanitiser.
+
+        Which sanitiser that is comes from the model's declared
+        ``tool_schema_dialect`` (llm_common.model_dialects) — this route never
+        asks which family it is talking to. The endpoint behind an
+        OpenAI-shaped API may accept far less than JSON Schema: Gemini's
+        Function Declarations reject additionalProperties, default, format,
+        title, oneOf, anyOf and answer MALFORMED_FUNCTION_CALL for a schema
+        that keeps them.
+
+        A tool without parameters keeps the field OUT of the request — the
+        chat route has always sent it that way.
         """
         sanitized = []
         for tool in tools:
@@ -620,7 +677,7 @@ class HTTPXOpenAIClient(LLMClient):
             }
             params = func.get("parameters", {})
             if params:
-                clean_tool["function"]["parameters"] = sanitize_schema_for_gemini(params)
+                clean_tool["function"]["parameters"] = sanitize(params)
             sanitized.append(clean_tool)
         return sanitized
 
@@ -677,22 +734,18 @@ class HTTPXOpenAIClient(LLMClient):
         cap_cache_control([tools, message_dicts])
 
     def _postprocess_messages_for_provider(self, message_dicts: list) -> None:
-        """Post-process serialized messages for provider-specific requirements.
+        """Post-process serialized messages for the model's declared dialect.
 
-        DeepSeek thinking mode requires `reasoning_content` on ALL assistant messages
-        (even empty string ""), otherwise returns HTTP 400:
-          "Missing reasoning_content field in the assistant message"
-        See: https://api-docs.deepseek.com/guides/thinking_mode#tool-call
+        ``assistant_reasoning_field == "reasoning_content"`` fills that field on
+        ALL assistant messages (empty string included), otherwise it is
+        stripped — it is not part of the OpenAI Chat Completions schema.
 
-        For non-DeepSeek providers, `reasoning_content` is stripped since it's not
-        a standard OpenAI Chat Completions API field.
-
-        Anthropic via OpenRouter: inject cache_control on system messages for
-        prompt caching (70-80% cost savings).
+        ``prompt_cache_marker_style == "anthropic"``: inject cache_control on
+        system messages (and the conversation tail) for prompt caching.
 
         Modifies message_dicts in-place.
         """
-        if self._is_anthropic_via_openrouter:
+        if self._marker_style() == MARKER_STYLE_ANTHROPIC:
             self._apply_anthropic_cache_control(message_dicts)
             # Conversation-tail caching for multi-turn agents — shared policy
             # (multi_turn seeds from turn 1; auto/None only once real history
@@ -702,8 +755,8 @@ class HTTPXOpenAIClient(LLMClient):
             ):
                 self._apply_anthropic_conversation_cache_control(message_dicts)
 
-        if self._is_deepseek:
-            # DeepSeek: ensure ALL assistant messages have reasoning_content.
+        if self.assistant_reasoning_field == "reasoning_content":
+            # Ensure ALL assistant messages carry the field (DeepSeek & co.).
             # With tools in the request the REAL text has to come back, not
             # just the key — an empty string satisfies the schema while losing
             # the chain of thought, and the model then re-derives it on every
@@ -714,7 +767,7 @@ class HTTPXOpenAIClient(LLMClient):
                 if msg.get("role") == "assistant" and not msg.get("reasoning_content"):
                     msg["reasoning_content"] = thinking_text(msg)
         else:
-            # Other providers: strip reasoning_content (non-standard field)
+            # "omit": strip reasoning_content (non-standard field)
             for msg in message_dicts:
                 msg.pop("reasoning_content", None)
 
@@ -742,30 +795,29 @@ class HTTPXOpenAIClient(LLMClient):
         #               partial chain is exactly the "encrypted content could
         #               not be verified" 400. Items generated on LATER turns
         #               (after the reset request ran clean) form a fresh chain
-        #               and are kept.
+        #               and are kept. EXCEPT while the flagged turn still has
+        #               tool_calls: invalidate_reasoning_artifacts flags the
+        #               MOST RECENT assistant message, which at a pre_llm_call
+        #               hook is the OPEN tool-use turn — and Anthropic wants
+        #               that turn's thinking echoed back complete, so dropping
+        #               it is the 400 the strip was meant to avoid. The chain
+        #               must travel exactly here.
         #   keep_last → flag ignored: the latest signature is still required
         #               for the open Gemini tool round-trip; older ones are
-        #               stripped here anyway.
+        #               stripped here anyway. (Contract of
+        #               utils/reasoning_artifacts, which sets the flag.)
+        # Which messages may replay at all is the shared policy, used by all
+        # three routes — the flag is the only thing this route adds on top.
         # The flag is ALWAYS popped below — it never reaches a provider.
         mode = self.reasoning_details_mode
+        may_replay = reasoning_replay_flags(message_dicts, mode)
         try:
-            if mode == "keep_all":
-                for msg in message_dicts:
-                    if msg.get("role") == "assistant" and msg.get("rd_orphaned"):
-                        msg.pop("reasoning_details", None)
-                return
-            if mode == "strip":
-                for msg in message_dicts:
-                    if msg.get("role") == "assistant":
-                        msg.pop("reasoning_details", None)
-                return
-            # keep_last (default)
-            last_assistant_idx = -1
-            for i, msg in enumerate(message_dicts):
-                if msg.get("role") == "assistant":
-                    last_assistant_idx = i
-            for i, msg in enumerate(message_dicts):
-                if i != last_assistant_idx and msg.get("role") == "assistant":
+            for msg, replay in zip(message_dicts, may_replay):
+                if msg.get("role") != "assistant":
+                    continue
+                orphaned = (mode == "keep_all" and msg.get("rd_orphaned")
+                            and not msg.get("tool_calls"))
+                if not replay or orphaned:
                     msg.pop("reasoning_details", None)
         finally:
             for msg in message_dicts:
@@ -1093,33 +1145,10 @@ class HTTPXOpenAIClient(LLMClient):
             else:
                 payload["temperature"] = self.temperature
 
-        if tools:
-            if self._is_gemini_via_openrouter:
-                payload["tools"] = self._sanitize_tools_for_gemini(tools)
-                logger.info(f"Sanitized {len(tools)} tool schemas for Gemini via OpenRouter (model={self.model})")
-            else:
-                payload["tools"] = tools
-            # Anthropic via OpenRouter: add cache_control to last tool for prompt caching
-            if self._is_anthropic_via_openrouter:
-                self._apply_anthropic_tool_cache_control(payload["tools"])
-                # Enforce Anthropic's hard 4-block cache_control limit across
-                # system + conversation-tail + tools + any sentinels.
-                self._cap_anthropic_cache_control(message_dicts, payload["tools"])
-            payload["tool_choice"] = "auto"
-            # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
-            # OpenRouter may pass it through and confuse the Gemini backend.
-            # Always send the value explicitly for non-Gemini: omitting it means
-            # the provider default applies (OpenAI: true), so False MUST be sent.
-            # parallel_tool_calls=false is required for OpenAI reasoning models —
-            # a turn with multiple parallel tool_calls loses the fc_* item ids in
-            # Chat-Completions format, the Responses backend can't reconstruct the
-            # item sequence, and the turn's encrypted reasoning item fails
-            # verification (HTTP 400 "encrypted content ... could not be verified").
-            if not self._is_gemini_via_openrouter:
-                payload["parallel_tool_calls"] = bool(self.parallel_tool_calls)
+        self._apply_tool_fields(payload, tools, message_dicts)
 
-        # Gemini via OpenRouter: inject safety settings for content filtering
-        if self._is_gemini_via_openrouter and self.safety_settings:
+        # Content-filter thresholds, sent whenever they are configured
+        if self.safety_settings:
             payload["safety_settings"] = [
                 {"category": category, "threshold": threshold}
                 for category, threshold in self.safety_settings.items()
@@ -1644,28 +1673,10 @@ class HTTPXOpenAIClient(LLMClient):
             else:
                 payload["temperature"] = self.temperature
 
-        if tools:
-            if self._is_gemini_via_openrouter:
-                payload["tools"] = self._sanitize_tools_for_gemini(tools)
-                logger.info(f"Sanitized {len(tools)} tool schemas for Gemini via OpenRouter (streaming, model={self.model})")
-            else:
-                payload["tools"] = tools
-            # Anthropic via OpenRouter: add cache_control to last tool for prompt caching
-            if self._is_anthropic_via_openrouter:
-                self._apply_anthropic_tool_cache_control(payload["tools"])
-                # Enforce Anthropic's hard 4-block cache_control limit across
-                # system + conversation-tail + tools + any sentinels.
-                self._cap_anthropic_cache_control(message_dicts, payload["tools"])
-            payload["tool_choice"] = "auto"
-            # Gemini doesn't support parallel_tool_calls — it's an OpenAI-specific parameter.
-            # Always send the value explicitly for non-Gemini (same rule as the
-            # non-streaming path): omitting it means the provider default (true)
-            # applies, so a configured False MUST be sent.
-            if not self._is_gemini_via_openrouter:
-                payload["parallel_tool_calls"] = bool(self.parallel_tool_calls)
+        self._apply_tool_fields(payload, tools, message_dicts)
 
-        # Gemini via OpenRouter: inject safety settings for content filtering
-        if self._is_gemini_via_openrouter and self.safety_settings:
+        # Content-filter thresholds, sent whenever they are configured
+        if self.safety_settings:
             payload["safety_settings"] = [
                 {"category": category, "threshold": threshold}
                 for category, threshold in self.safety_settings.items()
@@ -2435,10 +2446,10 @@ class HTTPXOpenAIClient(LLMClient):
 
         Returns True only when the response is truly unusable (no tool_calls present).
         If tool_calls ARE present despite the error, returns False so they can be used.
-        """
-        if not self._is_gemini_via_openrouter:
-            return False
 
+        Decided on the ANSWER's shape, not on the model: an endpoint that never
+        produces this native_finish_reason never trips the detector.
+        """
         choices = response_data.get("choices", [])
         if not choices:
             return False
@@ -2467,18 +2478,20 @@ class HTTPXOpenAIClient(LLMClient):
     def _is_gemini_internal_format_leak(self, response_data: dict) -> bool:
         """True when Gemini emitted a function call as plain-text content.
 
-        Detection criteria:
-          - provider routed via OpenRouter and we're on a Gemini model
+        Detection criteria (the answer's shape, not the model's name):
           - response has no tool_calls (otherwise the call worked)
           - message content starts with the `call:default_api:NAME{` marker
 
         Unlike the MALFORMED case the finish_reason here is usually "stop" —
         Gemini sees its own text as a valid completion. Without this detection
         the agent loop accepts an empty assistant turn and treats it as final.
-        """
-        if not self._is_gemini_via_openrouter:
-            return False
 
+        Only where the endpoint speaks that dialect: the marker is plain text,
+        and a model WRITING about this bug would otherwise lose its answer to a
+        retry.
+        """
+        if self.tool_schema_dialect != DIALECT_GEMINI_FUNCTION_DECLARATIONS:
+            return False
         choices = response_data.get("choices", [])
         if not choices:
             return False

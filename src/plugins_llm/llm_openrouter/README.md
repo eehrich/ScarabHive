@@ -46,7 +46,8 @@ raw body**, for two reasons:
 | Field | Behaviour |
 |---|---|
 | `prompt_cache_marker_style: anthropic` | **refused at construction** — the httpx route sends per-part `cache_control`, this one cannot, and losing it costs cache hits with no error |
-| `safety_settings` | warns only — OpenRouter drops the field on `/responses` either way, so refusing would invent a difference that does not exist |
+| `safety_settings` | **refused at construction** — the SDK has no field for it, and a model entry that declares it must not run as if it had not |
+| `assistant_reasoning_field`, `thinking_request_shape` | not wired here — the factory logs it when a model entry carries one |
 
 The SDK also substitutes one default: it always sends `service_tier: "auto"`,
 so the flex-tier drop sends the standard tier explicitly where the httpx

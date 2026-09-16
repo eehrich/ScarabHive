@@ -11,8 +11,9 @@ Tests cover:
 """
 
 import asyncio
+import json
 import pytest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import httpx
 
@@ -44,6 +45,52 @@ def get_sample_messages():
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Hello, world!"}
     ]
+
+def get_dialect_tools():
+    """A tool schema carrying every keyword Gemini's function declarations reject."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_book",
+                "description": "Read the catalogue.",
+                "parameters": {
+                    "type": "object",
+                    "title": "BookArgs",
+                    "additionalProperties": False,
+                    "properties": {
+                        "section": {"type": "string", "title": "Section",
+                                    "default": "all"},
+                        "limit": {"type": "integer", "format": "int32"},
+                    },
+                    "required": ["section"],
+                },
+            },
+        }
+    ]
+
+
+async def captured_payload(client, tools=None, messages=None):
+    """The payload the client really sends — its own preparation path, one mocked POST.
+
+    Driving the request instead of reading an attribute is the point: a flag
+    can be right while the payload built from it is not.
+    """
+    response = httpx.Response(
+        200,
+        json=get_mock_openai_response(),
+        request=httpx.Request("POST", "https://example.invalid/chat/completions"),
+    )
+    with patch("httpx.AsyncClient") as mock_async_client:
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=response)
+        mock_async_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        await client._make_request_non_streaming(
+            messages if messages is not None else get_sample_messages(),
+            tools=tools if tools is not None else [])
+    return mock_client.post.call_args.kwargs["json"]
+
 
 def get_sample_tools():
     """Sample tool list for testing."""
@@ -827,26 +874,45 @@ class TestPerformanceComparison(TestHTTPXOpenAIClient):
 
 
 class TestGeminiMalformedRetry(TestHTTPXOpenAIClient):
-    """Test MALFORMED_FUNCTION_CALL retry logic for Gemini via OpenRouter."""
+    """MALFORMED_FUNCTION_CALL retry logic — decided on the answer, not the model."""
 
     @pytest.fixture
     def gemini_client(self):
-        """Create a Gemini-via-OpenRouter client."""
+        """A client whose config declares the Gemini function-declaration dialect."""
         return HTTPXOpenAIClient(
-            model="google/gemini-3-flash-preview",
+            model="a-model-the-client-never-reads",
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             max_retries=2,
             retry_backoff=0.01,  # Fast for tests
+            tool_schema_dialect="gemini_function_declarations",
         )
 
-    def test_is_gemini_via_openrouter_detection(self, gemini_client):
-        """Gemini models via OpenRouter are correctly detected."""
-        assert gemini_client._is_gemini_via_openrouter is True
+    @pytest.mark.asyncio
+    async def test_declared_dialect_sanitizes_the_tool_schemas(self, gemini_client):
+        """tool_schema_dialect=gemini_function_declarations strips the rejected keywords."""
+        payload = await captured_payload(gemini_client, tools=get_dialect_tools())
+        params = payload["tools"][0]["function"]["parameters"]
+        assert "additionalProperties" not in params
+        assert "title" not in params
+        assert "title" not in params["properties"]["section"]
+        assert "default" not in params["properties"]["section"]
+        assert "format" not in params["properties"]["limit"]
+        assert params["required"] == ["section"]
 
-    def test_is_gemini_via_openrouter_negative(self, client):
-        """Non-Gemini clients are not detected as Gemini."""
-        assert client._is_gemini_via_openrouter is False
+    @pytest.mark.asyncio
+    async def test_default_dialect_sends_the_schema_unchanged(self, client):
+        """Without the key the schema goes out as it is — plain OpenAI behaviour."""
+        tools = get_dialect_tools()
+        payload = await captured_payload(client, tools=tools)
+        assert payload["tools"] == tools
+
+    @pytest.mark.asyncio
+    async def test_unknown_dialect_fails_loudly(self):
+        """A typo must not silently buy another provider's dialect."""
+        with pytest.raises(ValueError, match="tool_schema_dialect"):
+            HTTPXOpenAIClient(model="m", api_key="k",
+                              tool_schema_dialect="gemini_functions")
 
     def test_is_gemini_malformed_response_detects_malformed(self, gemini_client):
         """MALFORMED_FUNCTION_CALL without tool_calls is detected."""
@@ -874,8 +940,12 @@ class TestGeminiMalformedRetry(TestHTTPXOpenAIClient):
         }
         assert gemini_client._is_gemini_malformed_response(response_data) is False
 
-    def test_is_gemini_malformed_response_ignores_non_gemini(self, client):
-        """Non-Gemini clients never report MALFORMED."""
+    def test_malformed_is_detected_by_the_answer_not_the_model(self, client):
+        """A default client sees it too — the answer's shape decides.
+
+        An endpoint that never emits this native_finish_reason never trips the
+        detector, so the model gate in front of it bought nothing.
+        """
         response_data = {
             "choices": [{
                 "message": {"role": "assistant", "content": ""},
@@ -883,7 +953,27 @@ class TestGeminiMalformedRetry(TestHTTPXOpenAIClient):
                 "native_finish_reason": "MALFORMED_FUNCTION_CALL",
             }]
         }
-        assert client._is_gemini_malformed_response(response_data) is False
+        assert client._is_gemini_malformed_response(response_data) is True
+
+    def test_internal_format_leak_is_read_only_where_that_dialect_is_spoken(self, client, gemini_client):
+        """The marker is plain text: only an endpoint that speaks the dialect can leak it.
+
+        Unlike the MALFORMED case, which rides on a field only that backend sets, this one reads the
+        answer's TEXT. A model writing about this very bug would otherwise lose its answer to a retry.
+        """
+        leaked = {
+            "choices": [{
+                "message": {"role": "assistant",
+                            "content": "call:default_api:read_book{section:all}"},
+                "finish_reason": "stop",
+            }]
+        }
+        assert gemini_client._is_gemini_internal_format_leak(leaked) is True
+        assert client._is_gemini_internal_format_leak(leaked) is False, \
+            "a model that merely writes the marker must keep its answer"
+        normal = {"choices": [{"message": {"role": "assistant", "content": "Hi"},
+                               "finish_reason": "stop"}]}
+        assert gemini_client._is_gemini_internal_format_leak(normal) is False
 
     def test_is_gemini_malformed_response_ignores_normal(self, gemini_client):
         """Normal responses are not detected as MALFORMED."""
@@ -955,40 +1045,144 @@ class TestGeminiMalformedRetry(TestHTTPXOpenAIClient):
             assert result["assistant"]["content"] == ""
             assert mock_client.post.call_count == 3  # 1 initial + 2 retries
 
-    def test_parallel_tool_calls_stripped_for_gemini(self, gemini_client, sample_tools):
-        """parallel_tool_calls is not sent to Gemini."""
-        assert gemini_client.parallel_tool_calls is True  # Default
-        # The actual stripping is checked in the payload building,
-        # verified via the _is_gemini_via_openrouter flag
-        assert gemini_client._is_gemini_via_openrouter is True
+
+class TestDeclaredRequestFields(TestHTTPXOpenAIClient):
+    """parallel_tool_calls and safety_settings: config decides, not the model name."""
+
+    @staticmethod
+    def _client(**kwargs):
+        return HTTPXOpenAIClient(model="a-model-the-client-never-reads",
+                                 api_key="test-key", max_retries=1,
+                                 retry_backoff=0.01, **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_parallel_tool_calls_none_leaves_the_field_out(self, sample_tools):
+        """None = omit: a backend that does not know the field refuses it."""
+        payload = await captured_payload(self._client(parallel_tool_calls=None),
+                                         tools=sample_tools)
+        assert "parallel_tool_calls" not in payload
+
+    @pytest.mark.asyncio
+    async def test_parallel_tool_calls_false_is_sent(self, sample_tools):
+        """Omitting it means the provider default (true) applies — False must go out."""
+        payload = await captured_payload(self._client(parallel_tool_calls=False),
+                                         tools=sample_tools)
+        assert payload["parallel_tool_calls"] is False
+
+    @pytest.mark.asyncio
+    async def test_parallel_tool_calls_default_true_is_sent(self, sample_tools):
+        payload = await captured_payload(self._client(), tools=sample_tools)
+        assert payload["parallel_tool_calls"] is True
+
+    @pytest.mark.asyncio
+    async def test_safety_settings_are_sent_whenever_configured(self, sample_tools):
+        """No endpoint gate: a model that must not carry them does not declare them."""
+        payload = await captured_payload(
+            self._client(safety_settings={"HARM_CATEGORY_HARASSMENT": "BLOCK_NONE"}),
+            tools=sample_tools)
+        assert payload["safety_settings"] == [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}]
+
+    @pytest.mark.asyncio
+    async def test_no_safety_settings_no_field(self, sample_tools):
+        payload = await captured_payload(self._client(), tools=sample_tools)
+        assert "safety_settings" not in payload
+
+    @pytest.mark.asyncio
+    async def test_declared_keys_never_leak_into_the_payload(self, sample_tools):
+        """The dialect keys steer the request; they are not part of it."""
+        payload = await captured_payload(
+            self._client(tool_schema_dialect="json_schema",
+                         assistant_reasoning_field="omit",
+                         reasoning_details_mode="keep_last",
+                         prompt_cache_marker_style="none"),
+            tools=sample_tools)
+        for key in ("tool_schema_dialect", "assistant_reasoning_field",
+                    "reasoning_details_mode", "prompt_cache_marker_style"):
+            assert key not in payload
+
+    @pytest.mark.asyncio
+    async def test_streaming_sends_the_same_tool_fields(self, sample_tools):
+        """Both request paths build their payload separately — they must not drift.
+
+        Every field once added to only one of them has drifted since.
+        """
+        client = self._client(parallel_tool_calls=False,
+                              tool_schema_dialect="gemini_function_declarations")
+        tools = get_dialect_tools()
+        non_streaming = await captured_payload(client, tools=tools)
+
+        response = MagicMock()
+
+        async def aiter_bytes():
+            yield b'data: [DONE]\n'
+
+        response.aiter_bytes = aiter_bytes
+        response.status_code = 200
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=None)
+        with patch("httpx.AsyncClient.stream", return_value=response) as stream:
+            async for _ in client._make_request_streaming(get_sample_messages(), tools=tools):
+                pass
+        streamed = stream.call_args.kwargs["json"]
+
+        for key in ("tools", "tool_choice", "parallel_tool_calls"):
+            assert streamed[key] == non_streaming[key], key
+
+    def test_unknown_declared_values_fail_loudly(self):
+        for key, value in (("assistant_reasoning_field", "reasoning"),
+                           ("reasoning_details_mode", "keep_first"),
+                           ("prompt_cache_marker_style", "claude")):
+            with pytest.raises(ValueError, match=key):
+                self._client(**{key: value})
 
 
 class TestAnthropicViaOpenRouterCaching:
-    """Test Anthropic prompt caching via OpenRouter."""
+    """Anthropic prompt caching, driven by prompt_cache_marker_style."""
 
     @pytest.fixture
     def anthropic_or_client(self):
-        """HTTPXOpenAIClient configured as Anthropic via OpenRouter."""
+        """A client whose config declares the Anthropic cache-marker style."""
         return HTTPXOpenAIClient(
-            model="anthropic/claude-sonnet-4-6",
+            model="a-model-the-client-never-reads",
             api_key="sk-or-test",
             base_url="https://openrouter.ai/api/v1",
+            max_retries=1,
+            retry_backoff=0.01,
+            prompt_cache_marker_style="anthropic",
         )
 
     @pytest.fixture
     def non_anthropic_or_client(self):
-        """HTTPXOpenAIClient configured as non-Anthropic via OpenRouter."""
+        """The same endpoint without the declared style."""
         return HTTPXOpenAIClient(
-            model="google/gemini-2.5-pro",
+            model="a-model-the-client-never-reads",
             api_key="sk-or-test",
             base_url="https://openrouter.ai/api/v1",
+            max_retries=1,
+            retry_backoff=0.01,
         )
 
-    def test_anthropic_via_openrouter_detection(self, anthropic_or_client):
-        assert anthropic_or_client._is_anthropic_via_openrouter is True
+    @pytest.mark.asyncio
+    async def test_declared_style_marks_system_and_last_tool(self, anthropic_or_client):
+        """The whole cache_control injection follows the declared style."""
+        payload = await captured_payload(
+            anthropic_or_client,
+            tools=get_dialect_tools(),
+            messages=[{"role": "system", "content": "BASE"},
+                      {"role": "user", "content": "hi"}])
+        assert payload["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral"}
 
-    def test_non_anthropic_via_openrouter_not_detected(self, non_anthropic_or_client):
-        assert non_anthropic_or_client._is_anthropic_via_openrouter is False
+    @pytest.mark.asyncio
+    async def test_without_the_style_nothing_is_marked(self, non_anthropic_or_client):
+        """Same endpoint, no declared style: the payload carries no cache_control."""
+        payload = await captured_payload(
+            non_anthropic_or_client,
+            tools=get_dialect_tools(),
+            messages=[{"role": "system", "content": "BASE"},
+                      {"role": "user", "content": "hi"}])
+        assert "cache_control" not in json.dumps(payload)
 
     def test_cache_control_injected_on_system_message(self, anthropic_or_client):
         """System messages get cache_control content blocks."""
@@ -1214,9 +1408,14 @@ class TestAnthropicViaOpenRouterCaching:
         """keep_all: a message flagged rd_orphaned (its chain predecessors were
         removed by compaction) must lose its reasoning_details — sending a
         partial chain is exactly the 'could not be verified' 400. Later,
-        unflagged messages keep theirs (fresh chain)."""
+        unflagged messages keep theirs (fresh chain).
+
+        A CLOSED turn: an orphaned turn whose tool_calls are still open is the
+        one exception (see test_reasoning_details_prefix_stability.py)."""
         c = self._rd_client("keep_all")
         msgs = self._rd_two_assistants()
+        msgs[1].pop("tool_calls")
+        msgs[1]["content"] = "done"
         msgs[1]["rd_orphaned"] = True  # older turn survived a mutation flagged
         c._postprocess_messages_for_provider(msgs)
         assert "reasoning_details" not in msgs[1]   # orphaned → stripped
@@ -1554,8 +1753,8 @@ class TestAnthropicCacheControl:
 
     def _client(self, mode=None):
         c = create_test_client()
-        c._is_anthropic_via_openrouter = True
-        c._is_deepseek = False
+        c.prompt_cache_marker_style = "anthropic"
+        c.assistant_reasoning_field = "omit"
         c.prompt_cache_mode = mode
         c.reasoning_details_mode = "keep_last"
         return c

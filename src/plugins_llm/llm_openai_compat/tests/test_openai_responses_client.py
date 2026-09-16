@@ -75,6 +75,14 @@ def _drive_non_streaming(body: dict, **client_kw) -> list[dict]:
     return asyncio.run(_collect())
 
 
+#: Ein Tool-Schema mit allem, was Geminis Function Declarations ablehnen.
+NASTY_TOOL = [{"type": "function", "function": {
+    "name": "f", "description": "d",
+    "parameters": {"type": "object", "title": "T", "additionalProperties": False,
+                   "properties": {"x": {"type": "string", "default": "a", "format": "id"},
+                                  "y": {"oneOf": [{"type": "string"}]}}}}}]
+
+
 SAMPLE_OUTPUT = [
     {"type": "reasoning", "id": "rs_abc", "status": "completed",
      "encrypted_content": "BLOB", "format": "openai-responses-api",
@@ -120,6 +128,65 @@ class TestExtractVerbatimItems:
         c = _client()
         assert c._extract_verbatim_items(
             {"role": "assistant", "reasoning_details": []}) is None
+
+
+def _own_turn(model: str, rs_id: str, call_id: str) -> dict:
+    """An assistant turn as THIS client stored it: verbatim items + tool_calls."""
+    return {
+        "role": "assistant", "content": "",
+        "tool_calls": [{"id": call_id, "type": "function",
+                        "function": {"name": "f", "arguments": "{}"}}],
+        "reasoning_details": [{
+            "type": "reasoning.responses_items", "format": RESPONSES_ITEMS_FORMAT,
+            "index": 0, "model": model,
+            "items": [{"type": "reasoning", "id": rs_id, "encrypted_content": "BLOB"},
+                      {"type": "function_call", "id": "fc_" + call_id,
+                       "call_id": call_id, "name": "f", "arguments": "{}"}]}],
+    }
+
+
+def _history(model: str) -> list:
+    return [
+        {"role": "user", "content": "los"},
+        _own_turn(model, "rs_1", "call_1"),
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        _own_turn(model, "rs_2", "call_2"),
+        {"role": "tool", "tool_call_id": "call_2", "content": "ok"},
+    ]
+
+
+class TestReasoningDetailsMode:
+    """Der deklarierte Round-Trip-Modus entscheidet, WIE VIELE eigene Turns
+    ihre Items verbatim wiederholen. Ein Turn, der nicht darf, wird aus
+    content/tool_calls rekonstruiert — wie fremde Historie."""
+
+    @staticmethod
+    def _sent(mode=None):
+        c = _client(reasoning_details_mode=mode) if mode else _client()
+        items = c._messages_to_input(_history(c.model))
+        return ([i["id"] for i in items if i.get("type") == "reasoning"],
+                [i["call_id"] for i in items if i.get("type") == "function_call"])
+
+    def test_default_replays_every_own_turn(self):
+        """Default dieser Route = keep_all: die verschluesselte Kette darf
+        keine Luecke haben, und der gecachte Prefix bleibt byte-gleich."""
+        assert self._sent() == (["rs_1", "rs_2"], ["call_1", "call_2"])
+
+    def test_keep_all_is_the_same_declared(self):
+        assert self._sent("keep_all") == (["rs_1", "rs_2"], ["call_1", "call_2"])
+
+    def test_keep_last_drops_the_earlier_reasoning_but_not_the_call(self):
+        """Der aeltere Turn verliert seine Reasoning-Items, behaelt aber seinen
+        function_call — sonst haenge das zugehoerige tool-Ergebnis in der Luft
+        (HTTP 400)."""
+        assert self._sent("keep_last") == (["rs_2"], ["call_1", "call_2"])
+
+    def test_strip_sends_no_reasoning_at_all(self):
+        assert self._sent("strip") == ([], ["call_1", "call_2"])
+
+    def test_an_undeclared_mode_fails_at_construction(self):
+        with pytest.raises(ValueError, match="reasoning_details_mode"):
+            _client(reasoning_details_mode="keep_first")
 
 
 class TestFormatResponse:
@@ -420,22 +487,42 @@ class TestToolsAndPayload:
         conv = _client()._convert_tools([{"type": "web_search", "name": "s"}])
         assert conv[0]["type"] == "web_search"
 
-    def test_gemini_tool_schemas_sanitized(self):
-        """Gemini-Modelle: Function-Declaration-feindliche JSON-Schema-Keywords
-        (additionalProperties, default, format, oneOf, title) werden entfernt —
-        wie auf der Chat-Route (_sanitize_tools_for_gemini); GPT bleibt roh."""
+    def test_the_declared_dialect_sanitizes_the_schemas(self):
+        """``tool_schema_dialect: gemini_function_declarations`` entfernt die
+        Function-Declaration-feindlichen JSON-Schema-Keywords (additional-
+        Properties, default, format, oneOf, title) — wie auf der Chat-Route."""
         import json as _json
-        nasty = [{"type": "function", "function": {"name": "f", "description": "d",
-                  "parameters": {"type": "object", "title": "T", "additionalProperties": False,
-                                 "properties": {"x": {"type": "string", "default": "a",
-                                                      "format": "id"},
-                                                "y": {"oneOf": [{"type": "string"}]}}}}}]
-        gem = _client(model="google/gemini-3.5-flash-lite")._convert_tools(nasty)
+        gem = _client(model="google/gemini-3.5-flash-lite",
+                      tool_schema_dialect="gemini_function_declarations"
+                      )._convert_tools(NASTY_TOOL)
         blob = _json.dumps(gem)
         for kw in ('"title"', '"default"', '"oneOf"', '"additionalProperties"', '"format"'):
             assert kw not in blob, f"{kw} nicht sanitized"
-        gpt = _client(model="openai/gpt-5.6-terra")._convert_tools(nasty)
+
+    def test_without_the_dialect_the_schema_travels_as_it_is(self):
+        """Default = json_schema: der Endpunkt bekommt das Schema unberuehrt."""
+        import json as _json
+        gpt = _client(model="openai/gpt-5.6-terra")._convert_tools(NASTY_TOOL)
         assert '"oneOf"' in _json.dumps(gpt)
+
+    def test_the_model_name_no_longer_decides(self):
+        """Der Riegel gegen Namens-Schnueffelei, in beide Richtungen.
+
+        Der Katalog nennt dieselbe Familie als ``google/gemini-3.1-pro-preview``
+        UND als Gateway-Alias ``~google/gemini-flash-latest``. Eine
+        Praefix-Erkennung sanitisierte nur die erste Schreibweise — der Alias
+        fuhr ungefiltert. Deklariert entscheidet nur noch der Schluessel."""
+        import json as _json
+        alias = _client(model="~google/gemini-flash-latest",
+                        tool_schema_dialect="gemini_function_declarations"
+                        )._convert_tools(NASTY_TOOL)
+        assert '"oneOf"' not in _json.dumps(alias)
+        named = _client(model="google/gemini-3.1-pro-preview")._convert_tools(NASTY_TOOL)
+        assert '"oneOf"' in _json.dumps(named)
+
+    def test_an_undeclared_dialect_fails_at_construction(self):
+        with pytest.raises(ValueError, match="tool_schema_dialect"):
+            _client(tool_schema_dialect="gemini")
 
     def test_payload_carries_config(self):
         c = _client(max_tokens=16384, parallel_tool_calls=True)
@@ -448,6 +535,22 @@ class TestToolsAndPayload:
         assert p["provider"] == {"order": ["openai"], "allow_fallbacks": False}
         assert p["parallel_tool_calls"] is True
         assert p["tool_choice"] == "auto"
+
+    def test_parallel_tool_calls_none_leaves_the_field_out(self):
+        """None heisst „Feld weglassen" — nicht False. bool(None) haette den
+        Modellen, die das Feld gar nicht kennen sollen, parallel_tool_calls=false
+        geschickt und damit paralleles Tool-Calling abgeschaltet."""
+        p = _client(parallel_tool_calls=None)._build_payload(
+            [ChatMessage(role="user", content="hi")],
+            [{"type": "function", "function": {"name": "f", "parameters": {}}}])
+        assert "parallel_tool_calls" not in p
+        assert p["tool_choice"] == "auto"  # der Rest des Tool-Blocks bleibt
+
+    def test_parallel_tool_calls_false_is_still_sent(self):
+        p = _client(parallel_tool_calls=False)._build_payload(
+            [ChatMessage(role="user", content="hi")],
+            [{"type": "function", "function": {"name": "f", "parameters": {}}}])
+        assert p["parallel_tool_calls"] is False
 
     def test_payload_carries_safety_settings(self):
         """Previously guarded by no test — and unlike the httpx route, this

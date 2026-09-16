@@ -8,6 +8,7 @@ import logging
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from plugins_llm.llm_common.api_keys import resolve_api_key
+from plugins_llm.llm_common.model_dialects import warn_unwired
 
 from .openai_client import OpenAIAsyncClient
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_openai(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "LLMClient":
+    warn_unwired(cfg, provider="openai", wired=(), logger=logger)
     # The key follows the endpoint (llm_common.api_keys): this SDK client
     # accepts any OpenAI-compatible base_url, so the env fallback must not
     # send the OpenAI secret to a gateway named in the model entry.

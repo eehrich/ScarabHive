@@ -4,13 +4,19 @@ Bodies are the former ``make_llm`` branches, verbatim in semantics.
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, Optional, TYPE_CHECKING
+
+from plugins_llm.llm_common.model_dialects import warn_unwired
 
 if TYPE_CHECKING:
     from agent_system.config.models import LLMModelConfig
     from agent_system.llm.batch.base import BatchProviderClient
     from agent_system.llm.models import LLMClient
+
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_key(cfg: "LLMModelConfig") -> str:
@@ -44,11 +50,13 @@ def _common_kwargs(cfg: "LLMModelConfig", ssl_verify: Optional[bool]) -> Dict[st
 
 
 def build_gemini(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "LLMClient":
+    warn_unwired(cfg, provider="gemini", wired=(), logger=logger)
     from .gemini_client import GeminiClient
     return GeminiClient(**_common_kwargs(cfg, ssl_verify))
 
 
 def build_gemini_sdk(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "LLMClient":
+    warn_unwired(cfg, provider="gemini_sdk", wired=(), logger=logger)
     from .gemini_sdk_client import GeminiSDKClient
     return GeminiSDKClient(max_retries=3, **_common_kwargs(cfg, ssl_verify))
 

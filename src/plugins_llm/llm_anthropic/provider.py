@@ -11,6 +11,8 @@ import logging
 import os
 from typing import Optional, TYPE_CHECKING
 
+from plugins_llm.llm_common.model_dialects import warn_unwired
+
 from .anthropic_client import AnthropicAsyncClient
 
 if TYPE_CHECKING:
@@ -34,6 +36,9 @@ def build_anthropic(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) ->
             "ignored (model=%s) — use include_thoughts/thinking_budget.",
             cfg.model)
 
+    warn_unwired(cfg, provider="anthropic", logger=logging.getLogger(__name__),
+                 wired=("reasoning_details_mode", "thinking_request_shape"))
+
     # Only forward temperature when configured: a None would override
     # provider-side defaults.
     temp_kw = {} if cfg.temperature is None else {"temperature": cfg.temperature}
@@ -53,6 +58,7 @@ def build_anthropic(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) ->
                                if cfg.enable_prompt_caching is not None else True),
         prompt_cache_mode=cfg.prompt_cache_mode,
         reasoning_details_mode=cfg.reasoning_details_mode,
+        thinking_request_shape=cfg.thinking_request_shape,
         capabilities=cfg.capabilities,
     )
 

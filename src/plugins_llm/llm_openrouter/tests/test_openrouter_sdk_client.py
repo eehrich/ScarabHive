@@ -378,20 +378,23 @@ async def _record(sink: list, info: dict) -> None:
 
 
 class TestConstructionHandlesWhatTheSdkCannotSend:
-    def test_safety_settings_warn_but_build(self, caplog):
-        """Not refused: OpenRouter drops the field on /responses anyway
-        (measured 2026-09-01 — an invalid value earns HTTP 200 there and
-        HTTP 400 on /chat/completions). Blocking the build would invent a
-        difference between the routes that does not exist."""
-        with caplog.at_level(logging.WARNING):
-            client = build_openrouter_sdk_client(
+    def test_safety_settings_are_refused(self):
+        """The SDK has no such parameter, so the declared thresholds would not
+        apply — and a declared key that does nothing is the one state a model
+        entry must never be in. It used to warn and blank the field; the loud
+        refusal names the one-line fix (provider: openai_responses)."""
+        with pytest.raises(ValueError, match="safety_settings"):
+            build_openrouter_sdk_client(
                 model="m", api_key="k", base_url="https://openrouter.ai/api/v1",
                 safety_settings={"HARM": "BLOCK_NONE"},
                 prompt_cache_marker_style=None)
-        assert isinstance(client, OpenRouterSDKClient)
-        assert "safety_settings" in caplog.text
-        # And the field must not reach the payload builder either, or every
-        # request would additionally log an unmapped-field warning.
+
+    def test_an_empty_safety_settings_still_builds(self):
+        """Nothing is declared, nothing is lost — {} must not lock an entry
+        out (the Gemini entries deliberately carry no thresholds)."""
+        client = build_openrouter_sdk_client(
+            model="m", api_key="k", base_url="https://openrouter.ai/api/v1",
+            safety_settings={}, prompt_cache_marker_style=None)
         assert client.safety_settings is None
 
     def test_anthropic_cache_markers_are_refused(self):
@@ -400,6 +403,26 @@ class TestConstructionHandlesWhatTheSdkCannotSend:
                 model="m", api_key="k", base_url="https://openrouter.ai/api/v1",
                 safety_settings=None,
                 prompt_cache_marker_style=MARKER_STYLE_ANTHROPIC)
+
+    def test_the_declared_client_side_keys_arrive(self):
+        """tool_schema_dialect and reasoning_details_mode shape the payload in
+        the inherited builder, so this route CAN honour them — they travel
+        through the factory's **kwargs and must not be swallowed there."""
+        client = build_openrouter_sdk_client(
+            model="~google/gemini-flash-latest", api_key="k",
+            base_url="https://openrouter.ai/api/v1", safety_settings=None,
+            prompt_cache_marker_style=None,
+            tool_schema_dialect="gemini_function_declarations",
+            reasoning_details_mode="keep_last")
+        assert client.tool_schema_dialect == "gemini_function_declarations"
+        assert client.reasoning_details_mode == "keep_last"
+
+    def test_an_undeclared_value_fails_here_too(self):
+        with pytest.raises(ValueError, match="tool_schema_dialect"):
+            build_openrouter_sdk_client(
+                model="m", api_key="k", base_url="https://openrouter.ai/api/v1",
+                safety_settings=None, prompt_cache_marker_style=None,
+                tool_schema_dialect="gemini")
 
     def test_the_ordinary_case_builds(self):
         client = build_openrouter_sdk_client(

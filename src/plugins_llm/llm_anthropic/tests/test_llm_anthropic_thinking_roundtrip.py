@@ -35,7 +35,7 @@ def client():
     c.model = "claude-opus-5"
     c.enable_prompt_caching = False
     c.prompt_cache_mode = None
-    c.reasoning_details_mode = None
+    c.reasoning_details_mode = "keep_all"  # what __init__ resolves an unset entry to
     return c
 
 
@@ -151,6 +151,85 @@ class TestOutgoingOrder:
             ChatMessage(role="user", content="frage")
         ])
         assert converted[0] == {"role": "user", "content": "frage"}
+
+
+def _built(**kw):
+    """A real constructor run — the declared keys are validated there."""
+    from unittest.mock import MagicMock, patch
+    with patch("anthropic.AsyncAnthropic", MagicMock()):
+        return AnthropicAsyncClient(model=kw.pop("model", "claude-opus-5"),
+                                    api_key="k", **kw)
+
+
+class TestThinkingRequestShape:
+    """Welche Thinking-Form das Modell akzeptiert, sagt der Eintrag — nicht
+    sein Name. Die falsche Form ist ein HTTP 400, kein stiller Verlust."""
+
+    def test_default_is_the_budget_form(self):
+        assert _built(thinking_budget=4096)._build_thinking_param() == {
+            "type": "enabled", "budget_tokens": 4096}
+
+    def test_budget_falls_back_to_the_house_default(self):
+        assert _built()._build_thinking_param() == {
+            "type": "enabled", "budget_tokens": 8192}
+
+    def test_declared_adaptive_sends_no_budget(self):
+        """budget_tokens waere hier die 400 — das Feld darf nicht mitreisen,
+        auch wenn der Eintrag ein thinking_budget traegt."""
+        assert _built(thinking_request_shape="adaptive",
+                      thinking_budget=16384)._build_thinking_param() == {"type": "adaptive"}
+
+    def test_the_name_no_longer_decides(self):
+        """Gegenprobe zur geloeschten Namens-Tabelle: derselbe Name, beide
+        Formen — allein der deklarierte Schluessel entscheidet."""
+        assert _built(model="claude-opus-5")._build_thinking_param()["type"] == "enabled"
+        assert _built(model="claude-haiku-4-5-20251001",
+                      thinking_request_shape="adaptive")._build_thinking_param() == {
+            "type": "adaptive"}
+
+    def test_an_undeclared_shape_fails_at_construction(self):
+        with pytest.raises(ValueError, match="thinking_request_shape"):
+            _built(thinking_request_shape="enabled")
+
+
+class TestReasoningDetailsModeGovernsTheThinkingBlocks:
+    """Dieser Client traegt sein Reasoning in ``thinking_blocks`` statt in
+    ``reasoning_details`` — der deklarierte Modus regiert trotzdem ihn."""
+
+    @staticmethod
+    def _history():
+        def turn(text):
+            return ChatMessage(
+                role="assistant", content=text,
+                thinking_blocks=[{"type": "thinking", "thinking": text, "signature": "S"}],
+                thinking_model="claude-opus-5")
+        return [ChatMessage(role="user", content="frage"), turn("erst"),
+                ChatMessage(role="user", content="weiter"), turn("dann")]
+
+    def _replayed(self, mode):
+        client = _built(reasoning_details_mode=mode) if mode else _built()
+        _system, converted = client._convert_messages(self._history())
+        return [b["thinking"] for m in converted if isinstance(m["content"], list)
+                for b in m["content"] if b.get("type") == "thinking"]
+
+    def test_default_replays_all_of_them(self):
+        assert self._replayed(None) == ["erst", "dann"]
+
+    def test_keep_last_replays_only_the_open_turn(self):
+        assert self._replayed("keep_last") == ["dann"]
+
+    def test_strip_replays_none(self):
+        assert self._replayed("strip") == []
+
+    def test_the_text_of_a_stripped_turn_survives(self):
+        """Nur die Bloecke fallen weg, nicht die Antwort des Modells."""
+        client = _built(reasoning_details_mode="strip")
+        _system, converted = client._convert_messages(self._history())
+        assert [m["content"] for m in converted if m["role"] == "assistant"] == ["erst", "dann"]
+
+    def test_an_undeclared_mode_fails_at_construction(self):
+        with pytest.raises(ValueError, match="reasoning_details_mode"):
+            _built(reasoning_details_mode="keep_first")
 
 
 class TestTransport:
