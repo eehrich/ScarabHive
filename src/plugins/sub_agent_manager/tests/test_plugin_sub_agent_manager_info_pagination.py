@@ -279,3 +279,36 @@ class TestOwnershipStillEnforced:
         result = await server._handle_info(params)
         assert result.get("status") == "error"
         assert "messages" not in result
+
+
+class TestInfoOnAnInstanceThatDoesNotExist:
+    """Production hit this on 2026-09-16: a coordinator asked for 'info' on an
+    instance_id no create() had ever produced (a guessed or stale id). The
+    lookup goes through SessionManager.load_session, which raises
+    SessionNotFoundError -- not FileNotFoundError, which is what the except
+    clause here used to catch. The mismatch let the raw exception fall through
+    to the outer generic handler as an ERROR-level traceback instead of the
+    intended one-line "Sub-agent '<id>' not found".
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_never_created_instance_id_gets_a_clean_not_found(self, server, session_service, session_manager):
+        await session_manager.create_session(
+            user_id=USER, session_id=PARENT_ID, title="Coordinator", agent_name="meta_agent", llm_profile="normal",
+        )
+        result = await server._handle_info(_params("sub_never_existed_999", session_service))
+        assert result["status"] == "error"
+        assert result["error"].startswith("Sub-agent 'sub_never_existed_999' not found.")
+        assert "no sub-agents at all" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_the_hint_names_the_real_siblings_instead_of_the_guessed_id(
+        self, server, session_service, sub_agent_manager, sub_session
+    ):
+        """The production case: 'panel-beats-P04' guessed from one sibling's
+        label and another's suffix. Neither existed, both do."""
+        real_sub_id, _ = sub_session
+        result = await server._handle_info(_params("sub_assembled_from_two_others_12345", session_service))
+        assert result["status"] == "error"
+        assert real_sub_id in result["error"]
+        assert "exactly as returned" in result["error"]

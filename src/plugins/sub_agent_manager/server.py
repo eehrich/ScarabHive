@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, List, Optional
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
+from agent_system.services.session_manager import SessionNotFoundError
 from agent_system.utils.id import short_id
 from agent_system.llm.token_utils import extract_text_from_content
 
@@ -942,7 +943,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
             try:
                 sub_session_data = await session_manager.load_session(user_id, instance_id)
-            except FileNotFoundError:
+            except (FileNotFoundError, SessionNotFoundError):
                 raise ValueError(f"Sub-agent instance '{instance_id}' not found")
 
             # Verify parent link
@@ -1334,7 +1335,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     # Verify ownership
                     try:
                         sub_session_data = await session_manager.load_session(user_id, sub_id)
-                    except FileNotFoundError:
+                    except (FileNotFoundError, SessionNotFoundError):
                         results.append({
                             "instance_id": sub_id,
                             "status": "error",
@@ -1425,6 +1426,24 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 "error": str(e)
             }
 
+    async def _known_instance_hint(self, manager: SubAgentManager, parent_session_id: str) -> str:
+        """A one-line hint for a 'not found' error: what instance_id would have worked.
+
+        Built after production hit this on 2026-09-16: a coordinator asked for
+        info on an instance_id it had assembled itself from another instance's
+        label and a third one's numeric suffix -- neither expired nor
+        mistyped, just never issued. A bare "not found" gives a guessing agent
+        nothing to correct itself with; naming the real siblings does.
+        """
+        try:
+            known = await manager.list_sub_sessions(parent_session_id, include_completed=True)
+        except Exception:
+            return "Could not look up this session's sub-agents either."
+        if not known:
+            return "This session has no sub-agents at all -- 'create' one first."
+        ids = ", ".join(sorted(m["instance_id"] for m in known if m.get("instance_id")))
+        return f"This session's sub-agents are: {ids}. Use the instance_id exactly as returned, never assembled from a label and a guessed number."
+
     async def _handle_info(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'info' operation - read a sub-agent's transcript, paged.
 
@@ -1466,8 +1485,11 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             # Load sub-session data
             try:
                 sub_session_data = await session_manager.load_session(user_id, instance_id)
-            except FileNotFoundError:
-                raise ValueError(f"Sub-agent '{instance_id}' not found")
+            except (FileNotFoundError, SessionNotFoundError):
+                raise ValueError(
+                    f"Sub-agent '{instance_id}' not found. "
+                    f"{await self._known_instance_hint(manager, parent_session_id)}"
+                )
 
             # Verify ownership
             parent_link = sub_session_data.get("parent_session", {}).get("session_id")
