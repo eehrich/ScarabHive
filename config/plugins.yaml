@@ -948,7 +948,10 @@ plugins:
         max_message_preview_length: 5000
         min_time_between_summarizations: 500
         max_chunks: 10  # Limit parallel LLM calls (auto-increases chunk_size if needed)
-        max_messages: 150
+        # UEBER dem max_messages des context_engineer (190): dessen Prune
+        # (ohne LLM-Call, mit Archiv) greift zuerst, die Zusammenfassung nur,
+        # wenn er es nicht unter 200 schafft.
+        max_messages: 200
         summarization_trigger_percentage: 0.8
 
     context_engineer:
@@ -1002,18 +1005,14 @@ plugins:
         # Pre-Layer P: message limit - prunes oldest messages if exceeded
         # Runs BEFORE token-based layers to prevent excessive message counts
         # Counts ALL messages including tool calls/results, not just user messages
-        # AUS (0): die Nachrichtenzahl begrenzt heute der context_summarizer.
-        # Jeder Prune bricht den Prompt-Cache; entscheidend ist, wie selten.
-        # Gemessen am 16.09.2026 an einem v6-Lauf, bei dem die Nachrichtenzahl
-        # das Token-Fenster rund 12x ueberholt (152 Nachrichten bei erst 64k
-        # Tokens): der Summarizer schneidet auf 23 — ~64 Schritte Ruhe fuer
-        # 11 LLM-Calls (4x in 13 Tagen).
-        # Pre-Layer P kann genauso tief schneiden (max_messages_prune_to), ohne
-        # LLM-Call und mit Archiv. Einschalten heisst: max_messages UNTER das
-        # max_messages des context_summarizer (150) setzen, sonst greift dessen
-        # Zusammenfassung zuerst und Pre-Layer P bleibt wirkungslos.
-        max_messages: 0                # 0 = aus
-        max_messages_prune_to: 0       # so viele bleiben nach einem Prune; 0 = max_messages // 2
+        # Jeder Prune bricht den Prompt-Cache; entscheidend ist, wie selten:
+        # ueber 190 auf 100 heisst ein Bruch je ~90 Nachrichten, ohne LLM-Call,
+        # das Entfernte liegt im Archiv. Muss UNTER dem max_messages des
+        # context_summarizer (200) liegen, sonst fasst der zuerst zusammen.
+        # Der writer_context_summarizer (Writer-Agenten) steht auf 150 und
+        # greift dort weiterhin vorher.
+        max_messages: 190              # 0 = aus
+        max_messages_prune_to: 100     # so viele bleiben nach einem Prune; 0 = max_messages // 2
         
         deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
         compact_media_after_user_message: true  # Compact media files after user messages 
