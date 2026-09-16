@@ -64,6 +64,42 @@
       && entries.every(underR1) && entries.includes('r-1_sub_ab12') && $('#filterRequest').value === 'r-1';
   });
 
+  await check('the lists sort by a column, by value and not by the text shown, and keep that order when drawn anew', async () => {
+    const headOf = (tab, text) => [...doc().querySelectorAll(`#${tab} th`)].find((th) => th.textContent.trim() === text);
+    const tokens = () => rows('turns').map((row) => row.children[5].textContent).join('|');
+    const biggestFirst = `${Number(12000).toLocaleString()}|${Number(900).toLocaleString()}|0|0|0`;
+    const newest = requestIds('turns').join();
+    const marked = headOf('turns', 'Time').getAttribute('aria-sort') === 'descending';
+    headOf('turns', 'Tokens').click();  // biggest first: as text, "900" would come before "12,000"
+    const byTokens = tokens() === biggestFirst;
+    const before = $('#turns table');
+    type('#filterRequest', 'r-1_001');
+    await until('one request', () => rows('turns').length === 1);
+    type('#filterRequest', 'r-1');
+    await until('r-1 drawn anew', () => rows('turns').length === 5 && $('#turns table') !== before);
+    const kept = tokens() === biggestFirst && headOf('turns', 'Tokens').getAttribute('aria-sort') === 'descending';
+    headOf('turns', 'Type').click();  // A to Z as shown: input before output
+    const types = rows('turns').map((row) => row.children[1].textContent.trim());
+    const inputFirst = types[0] === 'input' && types.at(-1) === 'output' && types.join() === [...types].sort().join();
+    headOf('turns', 'Time').click();
+    headOf('turns', 'Time').click();  // newest first again, as the drawer checks after this one expect
+    // the raw requests sort too: Z to A puts writer before the helper, the newest entry
+    $('[data-tab="requests"]').click();
+    await until('the entries of r-1', () => rows('requests').length === 4);
+    const agents = () => rows('requests').map((row) => row.children[2].textContent).join();
+    const helperFirst = agents() === 'helper,writer,writer,writer';
+    headOf('requests', 'Agent').click();
+    headOf('requests', 'Agent').click();
+    const writerFirst = agents() === 'writer,writer,writer,helper';
+    headOf('requests', 'Time').click();
+    headOf('requests', 'Time').click();
+    $('[data-tab="turns"]').click();
+    const restored = requestIds('turns').join() === newest && agents() === 'helper,writer,writer,writer';
+    const got = { marked, byTokens, kept, inputFirst, restored, helperFirst, writerFirst };
+    if (!Object.values(got).every(Boolean)) throw new Error(`${JSON.stringify(got)} tokens=${tokens()} agents=${agents()}`);
+    return true;
+  });
+
   await check('a turn opens in the drawer with its messages: text as text, JSON tool results and tool arguments as trees, other fields by name; the drawer scrolls below its head', async () => {
     const oldest = rows('turns').at(-1);
     oldest.click();
@@ -195,6 +231,49 @@
     return firstPage && secondPage && noMore && kept && named;
   });
 
+  await check('with the refresh paused, an entry captured since shows only once the viewer refreshes -- not on a tab switch or a filter change, and a list asked for while a refresh is on its way does not undo it', async () => {
+    // the bulk turns of the check before, all 121 of them; the auto refresh is off, as a page starts without a choice
+    const paused = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'false';
+    const answered = async () => (await (await fetch('/__stub/answered')).json()).turns;
+    /** Let the panel ask for its turns, and wait until that answer is in and drawn. */
+    const asked = async (what, act) => {
+      const before = await answered();
+      act();
+      await until(what, async () => (await answered()) > before);
+      await sleep(150);
+    };
+    const seen = () => `${$('#turns .md-footer')?.textContent.replace(/\s+/g, ' ').trim()} / ${rows('turns').length} rows`;
+    await fetch('/__stub/turn', { method: 'POST' });  // a second r-bulk-new
+    await asked('the turns after a tab switch', () => {
+      $('[data-tab="requests"]').click();
+      $('[data-tab="turns"]').click();
+    });
+    const tabSwitch = seen();
+    await asked('the turns of one request', () => type('#filterRequest', 'r-bulk-new'));
+    const filtered = seen();
+    await asked('every bulk turn again', () => type('#filterRequest', ''));  // a new filter starts on the first page
+    const unfiltered = seen();
+    $('pk-refresh [data-act="now"]').click();
+    await until('the refresh', () => $('#turns .md-footer')?.textContent.includes('50 of 122'));
+    // s-slow answers late: a tab switch right after a refresh asks again before the refresh has answered
+    choose('#filterAgent', '');
+    type('#filterSession', 's-slow');
+    await until('the turns of s-slow', () => seen() === '2 of 2 / 2 rows');
+    await fetch('/__stub/turn?session_id=s-slow', { method: 'POST' });
+    const before = await answered();
+    $('pk-refresh [data-act="now"]').click();
+    $('[data-tab="requests"]').click();
+    $('[data-tab="turns"]').click();
+    await until('the answers to the refresh and the tab switch', async () => (await answered()) >= before + 2, 6000);
+    await sleep(150);
+    const overtaken = seen();
+    type('#filterSession', '');
+    const expected = ['121 of 121 / 121 rows', '1 of 1 / 1 rows', '50 of 121 Load more / 50 rows', '3 of 3 / 3 rows'];
+    const got = [tabSwitch, filtered, unfiltered, overtaken];
+    if (!paused || got.join() !== expected.join()) throw new Error(`paused=${paused}, saw ${got.join(' | ')}`);
+    return true;
+  });
+
   await check('the retry of a request shows its attempt and reason, and its entry opens with its error', async () => {
     choose('#filterAgent', '');
     type('#filterRequest', 'r-1');
@@ -244,21 +323,27 @@
     asked = await ask('clear');
     asked.querySelector('[data-index="1"]').click();
     await until('the emptied lists', () => $('#requests .pk-empty') && $('#requestsCount').textContent === '0');
+    // with no filter left the list says nothing was captured, not that nothing matches
+    type('#filterRequest', '');
+    await until('the list without filters', () => $('#requests .pk-empty-title')?.textContent === 'No LLM requests captured yet');
     return titledQuestion && kept && (await stats()).total_turns === 0 && $('#turnsCount').textContent === '0';
   });
 
-  await check('pruning asks first and, confirmed, tells what it did, a compacted file included', async () => {
+  await check('pruning asks first and, confirmed, tells what it did, a compacted file included, and shows the lists as they are now', async () => {
     let asked = await ask('prune');
     const titledQuestion = asked.textContent.includes('Prune the database');
     asked.querySelector('[data-index="0"]').click();  // Cancel
     await sleep(500);
     const notYet = pruned === 0;
+    // a turn captured since the lists were drawn: the paused lists leave it out until they start over
+    await fetch('/__stub/turn', { method: 'POST' });
     asked = await ask('prune');
     asked.querySelector('[data-index="1"]').click();
     // the clear has freed the pages: the report stays until it is read
     const report = await until('the report', () => question()?.textContent.includes('Database pruned') && question());
     const told = report.textContent.includes('Stripped 0 payloads, dropped 0 turns') && report.textContent.includes('The file was compacted');
     report.querySelector('[data-index="0"]').click();
+    await until('the turns counted as they are now', () => $('#turnsCount').textContent === '1');
     return titledQuestion && notYet && pruned === 1 && told && !$('#actionsButton').disabled;
   });
 

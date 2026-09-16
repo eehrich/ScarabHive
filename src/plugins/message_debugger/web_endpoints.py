@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+LARGEST_INTEGER = 2**63 - 1  # SQLite's: a larger number cannot even be asked for
+
 
 class MessageDebuggerWebFactory:
     """Web UI factory for message debugger plugin.
@@ -55,15 +57,23 @@ class MessageDebuggerWebFactory:
         session_id: str | None = Query(default=None, description="Filter by session ID"),
         request_id: str | None = Query(default=None, description="Filter by request ID"),
         snapshot_type: str | None = Query(default=None, description="Filter by type (pre_llm/post_llm)"),
+        max_id: int | None = Query(default=None, ge=0, le=LARGEST_INTEGER, description=(
+            "Only entries up to this id: the list as it stood at an earlier answer's as_of_id")),
         limit: int = Query(default=50, ge=1, le=500, description="Maximum turns to return"),
-        offset: int = Query(default=0, ge=0, description="Offset for pagination"),
+        offset: int = Query(default=0, ge=0, le=LARGEST_INTEGER, description="Offset for pagination"),
     ):
-        """List captured agent-level message turns; ``total`` counts every turn the filters match."""
+        """List captured agent-level message turns; ``total`` counts every turn the filters match.
+
+        The answer holds still at ``as_of_id``: the newest turn when it was asked, or ``max_id``. A viewer who
+        passes it back sees the same list -- a page more, other filters -- and nothing captured since.
+        """
+        as_of = self.db.newest_id("turns") if max_id is None else max_id  # first: a turn written meanwhile waits
         filters = dict(agent_name=agent_name, session_id=session_id, request_id=request_id,
-                       snapshot_type=snapshot_type)
+                       snapshot_type=snapshot_type, max_id=as_of)
         turns = self.db.get_turns(**filters, limit=limit, offset=offset)
         total = self.db.count_turns(**filters)
         return {
+            'as_of_id': as_of,
             'total': total,
             'offset': offset,
             'limit': limit,
@@ -73,7 +83,7 @@ class MessageDebuggerWebFactory:
     
     async def get_turn(self, request: Request, turn_id: int):
         """Get detailed information for a specific turn."""
-        turn = self.db.get_turn(turn_id)
+        turn = self.db.get_turn(turn_id) if abs(turn_id) <= LARGEST_INTEGER else None
         if not turn:
             raise HTTPException(status_code=404, detail=f"Turn {turn_id} not found")
         return turn
@@ -88,15 +98,22 @@ class MessageDebuggerWebFactory:
         request_id: str | None = Query(default=None, description="Filter by request ID"),
         direction: str | None = Query(default=None, description="Filter by direction (request/response)"),
         provider: str | None = Query(default=None, description="Filter by provider"),
+        max_id: int | None = Query(default=None, ge=0, le=LARGEST_INTEGER, description=(
+            "Only entries up to this id: the list as it stood at an earlier answer's as_of_id")),
         limit: int = Query(default=50, ge=1, le=500, description="Maximum entries to return"),
-        offset: int = Query(default=0, ge=0, description="Offset for pagination"),
+        offset: int = Query(default=0, ge=0, le=LARGEST_INTEGER, description="Offset for pagination"),
     ):
-        """List raw LLM API request/response logs; ``total`` counts every entry the filters match."""
+        """List raw LLM API request/response logs; ``total`` counts every entry the filters match.
+
+        Holds still at ``as_of_id`` like the turns list.
+        """
+        as_of = self.db.newest_id("llm_requests") if max_id is None else max_id
         filters = dict(agent_name=agent_name, session_id=session_id, request_id=request_id,
-                       direction=direction, provider=provider)
+                       direction=direction, provider=provider, max_id=as_of)
         items = self.db.get_llm_requests(**filters, limit=limit, offset=offset)
         total = self.db.count_llm_requests(**filters)
         return {
+            'as_of_id': as_of,
             'total': total,
             'offset': offset,
             'limit': limit,
@@ -106,7 +123,7 @@ class MessageDebuggerWebFactory:
 
     async def get_llm_request(self, request: Request, entry_id: int):
         """Get one LLM request log entry by its row ID."""
-        item = self.db.get_llm_request(entry_id)
+        item = self.db.get_llm_request(entry_id) if abs(entry_id) <= LARGEST_INTEGER else None
         if not item:
             raise HTTPException(status_code=404, detail=f"LLM request log entry {entry_id} not found")
         return item

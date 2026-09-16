@@ -246,14 +246,19 @@ class MessageDebuggerDB:
     )
 
     @staticmethod
-    def _where(request_id: Optional[str] = None, **filters: Optional[str]) -> tuple[str, list]:
+    def _where(request_id: Optional[str] = None, max_id: Optional[int] = None,
+               **filters: Optional[str]) -> tuple[str, list]:
         """The WHERE clause of a list or count query: each filter given is an equality on its column.
 
         A request takes the calls under it along: tool calls and sub-agents run under ``<request_id>_...`` ids.
+        ``max_id`` keeps to the rows that existed when it was the newest id (ids only ever grow).
         """
         given = {column: value for column, value in filters.items() if value}
         clauses = [f"{column} = ?" for column in given]
         params: list = list(given.values())
+        if max_id is not None:
+            clauses.append("+id <= ?")  # "+": not a rowid range -- a count would read the table instead of an index
+            params.append(max_id)
         if request_id:
             # the ids that start with "<request_id>_" as a range the index serves: '`' is the character after '_'
             clauses.append("(request_id = ? OR (request_id >= ? AND request_id < ?))")
@@ -266,6 +271,7 @@ class MessageDebuggerDB:
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
         snapshot_type: Optional[str] = None,
+        max_id: Optional[int] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -275,7 +281,7 @@ class MessageDebuggerDB:
         Use get_turn(id) to fetch full details including messages.
         """
         where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
-                                    snapshot_type=snapshot_type)
+                                    snapshot_type=snapshot_type, max_id=max_id)
         rows = self._get_conn().execute(
             f"SELECT {self._TURNS_LIST_COLS} FROM turns{where} ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?",
             [*params, limit, offset],
@@ -294,10 +300,11 @@ class MessageDebuggerDB:
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
         snapshot_type: Optional[str] = None,
+        max_id: Optional[int] = None,
     ) -> int:
         """Count the turns get_turns finds with the same filters."""
         where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
-                                    snapshot_type=snapshot_type)
+                                    snapshot_type=snapshot_type, max_id=max_id)
         return self._get_conn().execute(f"SELECT COUNT(*) FROM turns{where}", params).fetchone()[0]
     
     # ---- LLM Request operations ----
@@ -455,6 +462,7 @@ class MessageDebuggerDB:
         request_id: Optional[str] = None,
         direction: Optional[str] = None,
         provider: Optional[str] = None,
+        max_id: Optional[int] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -464,7 +472,7 @@ class MessageDebuggerDB:
         Use get_llm_request(id) to fetch full details.
         """
         where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
-                                    direction=direction, provider=provider)
+                                    direction=direction, provider=provider, max_id=max_id)
         rows = self._get_conn().execute(
             f"SELECT {self._LLM_REQUESTS_LIST_COLS} FROM llm_requests{where} ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?",
             [*params, limit, offset],
@@ -484,12 +492,19 @@ class MessageDebuggerDB:
         request_id: Optional[str] = None,
         direction: Optional[str] = None,
         provider: Optional[str] = None,
+        max_id: Optional[int] = None,
     ) -> int:
         """Count the LLM request logs get_llm_requests finds with the same filters."""
         where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
-                                    direction=direction, provider=provider)
+                                    direction=direction, provider=provider, max_id=max_id)
         return self._get_conn().execute(f"SELECT COUNT(*) FROM llm_requests{where}", params).fetchone()[0]
     
+    def newest_id(self, table: str) -> int:
+        """The id the newest row of ``turns`` or ``llm_requests`` has, 0 for an empty table: a list's point in time."""
+        if table not in ("turns", "llm_requests"):
+            raise ValueError(f"not a list table: {table}")
+        return self._get_conn().execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()[0]
+
     # ---- Stats ----
     
     def get_stats(self) -> Dict[str, Any]:

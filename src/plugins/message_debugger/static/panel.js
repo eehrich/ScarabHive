@@ -10,11 +10,12 @@ const $ = (id) => document.getElementById(id);
 
 /**
  * Each list: the rows it shows, the total its filters match, how many it wants (a page more per "Load more"),
- * the number of its latest load and whether one is on its way.
+ * the number of its latest load and whether one is on its way, `until`: the newest entry id as of the last
+ * refresh -- a paused panel shows nothing captured after it --, and `fresh`: a refresh asked for, not answered yet.
  */
 const lists = {
-  turns: { path: 'turns', field: 'turns', rows: [], total: 0, want: PAGE, load: 0, busy: false, drawn: '' },
-  requests: { path: 'llm-requests', field: 'requests', rows: [], total: 0, want: PAGE, load: 0, busy: false, drawn: '' },
+  turns: { path: 'turns', field: 'turns', rows: [], total: 0, want: PAGE, load: 0, busy: false, drawn: '', until: null, fresh: false },
+  requests: { path: 'llm-requests', field: 'requests', rows: [], total: 0, want: PAGE, load: 0, busy: false, drawn: '', until: null, fresh: false },
 };
 let activeTab = 'turns';
 let statsLoad = 0;
@@ -117,7 +118,7 @@ async function loadStats({ auto = false } = {}) {
 
 // --------------------------------------------------------------------- lists
 
-function query(tab, limit) {
+function query(tab, limit, until = null) {
   const filters = {
     agent_name: $('filterAgent').value,
     session_id: $('filterSession').value.trim(),
@@ -128,6 +129,7 @@ function query(tab, limit) {
   };
   const search = new URLSearchParams({ limit: String(limit) });
   Object.entries(filters).forEach(([name, value]) => { if (value) search.set(name, value); });
+  if (until !== null) search.set('max_id', String(until));
   return search;
 }
 
@@ -154,39 +156,43 @@ function status(entry) {
   return entry.finish_reason ? html`<span class="pk-badge">${entry.finish_reason}</span>` : '';
 }
 
-const requestCell = (id) => html`<td class="pk-mono" title="${id}">${requestLabel(id)}</td>`;
+const requestCell = (id) => html`<td class="pk-mono" title="${id}" data-sort-value="${id}">${requestLabel(id)}</td>`;
+const timeCell = (ms) => html`<td class="pk-mono" title="${time(ms, true)}" data-sort-value="${ms}">${time(ms)}</td>`;
+const usageCost = (usage) => (typeof usage?.cost === 'number' ? usage.cost : '');
 
+// Both lists come newest first, and the kit sorts them by the column the viewer picks (data-pk-sort); the
+// drawer still steps through them newest to oldest.
 function turnRows(rows) {
-  return html`<div class="pk-table-wrap"><table class="pk-table md-entries">
-    <thead><tr><th>Time</th><th>Type</th><th>Agent</th><th class="pk-num">Step</th><th class="pk-num">Messages</th>
+  return html`<div class="pk-table-wrap"><table class="pk-table md-entries" data-pk-sort="turns">
+    <thead><tr><th aria-sort="descending">Time</th><th>Type</th><th>Agent</th><th class="pk-num">Step</th><th class="pk-num">Messages</th>
       <th class="pk-num">Tokens</th><th class="pk-num">Cached</th><th class="pk-num">Cost</th><th>Session</th><th>Request</th></tr></thead>
     <tbody>${rows.map((turn) => html`<tr tabindex="0" data-id="${turn.id}" aria-selected="${selected('turns', turn.id)}">
-      <td class="pk-mono" title="${time(turn.timestamp_ms, true)}">${time(turn.timestamp_ms)}</td>
+      ${timeCell(turn.timestamp_ms)}
       <td>${snapshotBadge(turn.snapshot_type)}</td>
       <td>${turn.agent_name}</td>
       <td class="pk-num">${turn.step}</td>
-      <td class="pk-num">${number(turn.message_count)}</td>
-      <td class="pk-num">${number(turn.total_tokens)}</td>
+      <td class="pk-num" data-sort-value="${turn.message_count}">${number(turn.message_count)}</td>
+      <td class="pk-num" data-sort-value="${turn.total_tokens}">${number(turn.total_tokens)}</td>
       <td class="pk-num">${cached(turn.usage_json)}</td>
-      <td class="pk-num">${cost(turn.usage_json)}</td>
-      <td class="pk-mono" title="${turn.session_id}">${head(turn.session_id)}</td>
+      <td class="pk-num" data-sort-value="${usageCost(turn.usage_json)}">${cost(turn.usage_json)}</td>
+      <td class="pk-mono" title="${turn.session_id}" data-sort-value="${turn.session_id}">${head(turn.session_id)}</td>
       ${requestCell(turn.request_id)}
     </tr>`)}</tbody>
   </table></div>`;
 }
 
 function requestRows(rows) {
-  return html`<div class="pk-table-wrap"><table class="pk-table md-entries">
-    <thead><tr><th>Time</th><th>Direction</th><th>Agent</th><th>Model</th><th class="pk-num">Duration</th>
+  return html`<div class="pk-table-wrap"><table class="pk-table md-entries" data-pk-sort="requests">
+    <thead><tr><th aria-sort="descending">Time</th><th>Direction</th><th>Agent</th><th>Model</th><th class="pk-num">Duration</th>
       <th class="pk-num">Tokens</th><th class="pk-num">Cost</th><th>Status</th><th>Request</th></tr></thead>
     <tbody>${rows.map((entry) => html`<tr tabindex="0" data-id="${entry.id}" aria-selected="${selected('requests', entry.id)}">
-      <td class="pk-mono" title="${time(entry.timestamp_ms, true)}">${time(entry.timestamp_ms)}</td>
-      <td>${directionBadge(entry)}</td>
+      ${timeCell(entry.timestamp_ms)}
+      <td data-sort-value="${entry.direction}">${directionBadge(entry)}</td>
       <td>${entry.agent_name}</td>
-      <td><span class="pk-muted">${entry.provider}</span> ${entry.model}${entry.served_by ? html` <span class="pk-muted md-served-by">via ${entry.served_by}</span>` : ''}${entry.is_streaming ? html` <span class="pk-badge">stream</span>` : ''}</td>
-      <td class="pk-num">${duration(entry.duration_ms)}</td>
-      <td class="pk-num">${number(entry.usage_json?.total_tokens)}</td>
-      <td class="pk-num">${cost(entry.usage_json)}</td>
+      <td data-sort-value="${entry.model}"><span class="pk-muted">${entry.provider}</span> ${entry.model}${entry.served_by ? html` <span class="pk-muted md-served-by">via ${entry.served_by}</span>` : ''}${entry.is_streaming ? html` <span class="pk-badge">stream</span>` : ''}</td>
+      <td class="pk-num" data-sort-value="${entry.duration_ms}">${duration(entry.duration_ms)}</td>
+      <td class="pk-num" data-sort-value="${entry.usage_json?.total_tokens}">${number(entry.usage_json?.total_tokens)}</td>
+      <td class="pk-num" data-sort-value="${usageCost(entry.usage_json)}">${cost(entry.usage_json)}</td>
       <td>${status(entry)}</td>
       ${requestCell(entry.request_id)}
     </tr>`)}</tbody>
@@ -202,10 +208,10 @@ function draw(tab) {
   $(`${tab}Count`).textContent = number(list.total);
   if (!list.rows.length) {
     render($(tab), filtered(tab)
-      ? empty('filter', 'Nothing matches the filters')
+      ? empty('filter', 'Nothing matches the filters', 'As of the last refresh.')
       : tab === 'turns'
-        ? empty('history', 'No turns captured yet', 'The messages agents send to their LLM show up here.')
-        : empty('history', 'No LLM requests captured yet', 'The raw requests to the LLM providers and their responses show up here.'));
+        ? empty('history', 'No turns captured yet', 'The messages agents send to their LLM show up here with a refresh.')
+        : empty('history', 'No LLM requests captured yet', 'The raw requests to the LLM providers and their responses show up here with a refresh.'));
     return;
   }
   const more = list.rows.length < Math.min(list.total, MOST);
@@ -219,20 +225,23 @@ function draw(tab) {
 }
 
 /**
- * Load the newest entries of a list, as many as it wants -- from the top each time, so entries captured
- * meanwhile neither repeat nor push others out of reach; `more` wants a page more. With `countOnly` just its
- * total, for the count on the tab not shown. A tick of the auto refresh skips a list still loading: with
- * answers slower than the tick, every answer would be outdated on arrival.
+ * Load the newest entries of a list, as many as it wants -- from the top each time, so no entry repeats or
+ * slips out of reach; `more` wants a page more. Only a `fresh` load (a refresh) asks for what was captured
+ * since the last one: a page more, another tab or other filters show the list as of that refresh, so a paused
+ * panel holds still -- unless they overtake a refresh still on its way: then they ask for what it would have. With `countOnly` just its total, for the count on the tab not shown. A tick of the auto
+ * refresh skips a list still loading: with answers slower than the tick, every answer would be outdated on arrival.
  */
-async function loadList(tab, { more = false, countOnly = false, auto = false } = {}) {
+async function loadList(tab, { more = false, countOnly = false, auto = false, fresh = false } = {}) {
   const list = lists[tab];
   if (auto && list.busy) return;
+  if (fresh) list.fresh = true;
   if (more) list.want = Math.min(MOST, list.want + PAGE);
   const load = ++list.load;
   list.busy = true;
+  const until = list.fresh ? null : list.until;
   let data;
   try {
-    data = await api(`${BASE}${list.path}?${query(tab, countOnly ? 1 : list.want)}`, { quiet: true });
+    data = await api(`${BASE}${list.path}?${query(tab, countOnly ? 1 : list.want, until)}`, { quiet: true });
   } catch (error) {
     if (load === list.load && !countOnly) {
       list.drawn = '';
@@ -243,6 +252,8 @@ async function loadList(tab, { more = false, countOnly = false, auto = false } =
     if (load === list.load) list.busy = false;
   }
   if (load !== list.load) return;  // a newer load -- other filters, a refresh -- draws this list
+  if (until === null) list.fresh = false;
+  list.until = data.as_of_id;
   if (countOnly) {
     $(`${tab}Count`).textContent = number(data.total);
     return;
@@ -257,17 +268,20 @@ const otherTab = () => (activeTab === 'turns' ? 'requests' : 'turns');
 function refresh(event) {
   const auto = Boolean(event?.detail?.auto);
   loadStats({ auto });
-  loadList(activeTab, { auto });
-  loadList(otherTab(), { countOnly: true, auto });
+  loadList(activeTab, { auto, fresh: true });
+  loadList(otherTab(), { countOnly: true, auto, fresh: true });
 }
 
-/** Filters changed: the lists start over from their first page, and show nothing of the filters before. */
-function startOver(tabs) {
+/**
+ * Filters changed: the lists start over from their first page, and show nothing of the filters before. `fresh`
+ * after the data changed under them: as of now, like the statistics.
+ */
+function startOver(tabs, { fresh = false } = {}) {
   for (const tab of tabs) {
     Object.assign(lists[tab], { rows: [], want: PAGE, drawn: '' });
     $(`${tab}Count`).textContent = '';
     render($(tab), html`<span class="pk-skeleton"></span>`);
-    loadList(tab, { countOnly: tab !== activeTab });
+    loadList(tab, { countOnly: tab !== activeTab, fresh });
   }
 }
 
@@ -441,7 +455,7 @@ async function prune() {
     button.disabled = false;
   }
   loadStats();
-  startOver(Object.keys(lists));
+  startOver(Object.keys(lists), { fresh: true });
   const done = [`Stripped ${number(result.stripped)} payloads`, `dropped ${number(result.turns_deleted)} turns`];
   if (result.requests_deleted) done.push(`deleted ${number(result.requests_deleted)} old cost rows`);
   const file = result.vacuum_error ? `Compacting the file failed: ${result.vacuum_error}`
@@ -463,7 +477,7 @@ async function clearAll() {
   toast(`Deleted ${number(result.turns_deleted)} turns and ${number(result.requests_deleted)} LLM request logs`, { kind: 'ok' });
   if ($('detail').open) $('detail').close();
   loadStats();
-  startOver(Object.keys(lists));
+  startOver(Object.keys(lists), { fresh: true });
 }
 
 // -------------------------------------------------------------------- wiring

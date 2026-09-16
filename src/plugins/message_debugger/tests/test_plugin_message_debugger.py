@@ -167,6 +167,20 @@ class TestMessageDebuggerDB:
         assert db.count_turns() == 3
         assert db.count_turns(agent_name="a") == 2
 
+    def test_a_count_up_to_an_id_reads_an_index_not_the_table(self, db):
+        """The rows are large: a count bounded as a rowid range would read every page of the table."""
+        for table in ("turns", "llm_requests"):
+            where, params = db._where(max_id=7)
+            plan = " | ".join(row[3] for row in db._get_conn().execute(
+                f"EXPLAIN QUERY PLAN SELECT COUNT(*) FROM {table}{where}", params))
+            assert "COVERING INDEX" in plan, plan
+
+    def test_newest_id_is_asked_of_the_list_tables_only(self, db):
+        assert db.newest_id("turns") == 0
+        assert db.newest_id("llm_requests") == 0
+        with pytest.raises(ValueError):
+            db.newest_id("turns; DROP TABLE turns")
+
     def test_insert_and_get_llm_request(self, db):
         """Test inserting and retrieving LLM requests."""
         ts = time.time() * 1000
@@ -656,6 +670,34 @@ class TestMessageDebuggerWebEndpoints:
         result = response.json()
         assert result["total"] == 2
         assert result["count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_lists_hold_still_at_the_newest_id_they_were_answered_as_of(self, web_factory, db):
+        """Each list says the newest id it was answered as of; asked with it as ``max_id``, a list leaves out what
+        was captured since, in its entries and its total. Numbers past SQLite's integers are refused, not a 500."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+        app.include_router(web_factory.get_web_router())
+        client = TestClient(app)
+        base = "/plugins/message_debugger"
+        ts = time.time() * 1000
+        kept = {"turns": db.insert_turn(ts, "pre_llm", agent_name="a"),
+                "llm-requests": db.insert_llm_request(ts, "request", agent_name="a")}
+        field = {"turns": "turns", "llm-requests": "requests"}
+        as_of = {path: client.get(f"{base}/{path}").json()["as_of_id"] for path in kept}
+        assert as_of == kept
+        db.insert_turn(ts + 1, "pre_llm", agent_name="a")
+        db.insert_llm_request(ts + 1, "response", agent_name="a")
+        for path, newest in as_of.items():
+            held = client.get(f"{base}/{path}?max_id={newest}").json()
+            assert ([entry["id"] for entry in held[field[path]]], held["total"], held["as_of_id"]) == ([newest], 1, newest)
+            now = client.get(f"{base}/{path}").json()
+            assert (now["total"], now["as_of_id"]) == (2, newest + 1)
+            for asked in ("max_id", "offset"):
+                assert client.get(f"{base}/{path}?{asked}={2**63}").status_code == 422
+            assert client.get(f"{base}/{path}/{2**63}").status_code == 404
 
     @pytest.mark.asyncio
     async def test_list_turns_filter_by_agent(self, web_factory, db):

@@ -50,7 +50,10 @@ both lists start filtered to that request or session.
   total the filters match on each tab. Filters: agent, session, request, plus type (turns) and provider and
   direction (requests). A request takes the calls under it along -- tool calls (`<id>_001`) and sub-agents
   (`<id>_sub_...`), which the request column shows by what follows the id; a session filter shows that session's
-  own calls, a sub-agent's are in its own session.
+  own calls, a sub-agent's are in its own session. A click on a column head sorts the entries loaded by it.
+- With the auto refresh off -- as the panel starts -- the lists hold still at the last refresh: a page more,
+  another tab or other filters show nothing captured since, the refresh button brings it. After a prune or a
+  clear the lists show the database as it is then.
 - A row opens its entry in a drawer: the messages as cards (text as text, JSON tool results and tool arguments as
   trees, every other field by name), the LLM response, or the request payload, response, usage and error. Each
   part copies as JSON; the arrows step to the next newer or older entry; the filter buttons narrow the lists to
@@ -65,14 +68,17 @@ All under `/plugins/message_debugger/`:
 
 | Route | |
 |---|---|
-| `GET turns` | `agent_name`, `session_id`, `request_id` (with the calls under it), `snapshot_type`, `limit` (≤ 500), `offset` → `{total, turns}`; a row carries `usage_json` (the usage of its LLM response), not the messages |
+| `GET turns` | `agent_name`, `session_id`, `request_id` (with the calls under it), `snapshot_type`, `max_id`, `limit` (≤ 500), `offset` → `{total, turns, as_of_id}`; a row carries `usage_json` (the usage of its LLM response), not the messages |
 | `GET turns/{turn_id}` | the whole turn |
-| `GET llm-requests` | `agent_name`, `session_id`, `request_id` (with the calls under it), `direction`, `provider`, `limit`, `offset` → `{total, requests}`, without payload and response |
+| `GET llm-requests` | `agent_name`, `session_id`, `request_id` (with the calls under it), `direction`, `provider`, `max_id`, `limit`, `offset` → `{total, requests, as_of_id}`, without payload and response |
 | `GET llm-requests/{entry_id}` | the whole log entry |
 | `GET stats` | counts, agents, providers, errors, database size |
 | `POST prune?vacuum=true` | retention down to ~75 %, then VACUUM when the file has free pages (can take minutes; a VACUUM failure is reported, not raised) |
 | `DELETE clear` | deletes everything |
 | `GET /` | the panel |
+
+`as_of_id` is the newest id a list was answered as of; passed back as `max_id`, the list and its total leave out
+what was captured since. Ids only grow, a clear included.
 
 ## Files
 
