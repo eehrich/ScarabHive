@@ -901,7 +901,6 @@ plugins:
       auto_archive_on_limit: true 
 
       allowed_agents:
-        - financial_analyst_agent
         - research_agent
         - sysadmin_agent
         - comfyui_agent
