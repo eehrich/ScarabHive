@@ -1002,13 +1002,27 @@ plugins:
         # Pre-Layer P: Hard message limit - prunes oldest messages if exceeded
         # Runs BEFORE token-based layers to prevent excessive message counts
         # Counts ALL messages including tool calls/results, not just user messages
-        # IMMER NOCH AUS (0). Der Grund fuer das Abschalten war, dass ein Prune
-        # exakt auf max_messages trimmte: der naechste Schritt lag wieder
-        # darueber, also Prune + Cache-Bruch bei JEDEM Schritt. Das ist mit
-        # max_messages_headroom behoben — ein Bruch statt fuenfzig. Zum
-        # Einschalten hier einen Wert setzen (z.B. 200); solange 0 steht,
-        # laeuft Pre-Layer P nicht und der Headroom hat keine Wirkung.
-        max_messages: 0                # 0 = aus, z.B. 200 = hoechstens 200 Nachrichten
+        # AUS (0), und das ist eine Entscheidung, kein vergessener Schalter.
+        # Der alte Grund (ein Prune trimmte exakt auf das Limit, lag im
+        # naechsten Schritt wieder darueber und brach den Cache bei JEDEM
+        # Schritt) ist mit max_messages_headroom behoben. Ausschlaggebend ist
+        # heute ein anderer: Pre-Layer P schneidet zu FLACH. Gemessen am
+        # 16.09.2026 an einem v6-Lauf, bei dem die Nachrichtenzahl das
+        # Token-Fenster rund 12x ueberholt (152 Nachrichten bei erst 64k
+        # Tokens), greift stattdessen der context_summarizer:
+        #
+        #   context_summarizer (max_messages 150)  schneidet auf  23  -> ~64 Schritte Ruhe
+        #   Pre-Layer P        (150, headroom 50)  schneidet auf 100  -> ~25 Schritte Ruhe
+        #
+        # Die Zusammenfassung bricht den Prompt-Cache also SELTENER, weil sie
+        # tiefer schneidet — ihre 11 LLM-Calls (4x in 13 Tagen) sind gegen
+        # einen neu bezahlten 64k-Prefix billig. Tiefer kommt Pre-Layer P
+        # nicht: headroom ist auf max_messages // 2 gedeckelt.
+        # Einschalten lohnt erst, wenn er auf ein eigenes tiefes Ziel schneiden
+        # darf; der Wert muesste dann UNTER dem max_messages des
+        # context_summarizer liegen, sonst greift dessen Zusammenfassung
+        # zuerst und Pre-Layer P bleibt wirkungslos.
+        max_messages: 0                # 0 = aus
         max_messages_headroom: 50      # wie weit UNTER max_messages ein Prune kuerzt
         
         deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
