@@ -269,6 +269,19 @@
           "title": "Request Timeout",
           "type": "integer"
         },
+        "stream_silence_timeout": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stream Silence Timeout"
+        },
         "parallel_tool_calls": {
           "anyOf": [
             {

@@ -1190,6 +1190,114 @@ class TestTheEventStream:
         assert [c["type"] for c in chunks] == ["final"]
 
 
+class _PacedStream(_FakeStream):
+    """Keep-alive comments every ``gap`` seconds, each line after the next one. After the lines, by ``ending``:
+    keep-alives forever (a silent upstream as the gateway holds it open), the read timeout httpx raises when not
+    even those arrive ("quiet"), or a dropped connection ("drop")."""
+
+    def __init__(self, lines, gap: float, ending: str = "keep-alives"):
+        super().__init__(lines)
+        self._gap = gap
+        self._ending = ending
+
+    async def aiter_bytes(self):
+        import asyncio
+
+        import httpx
+
+        for line in self._lines:
+            await asyncio.sleep(self._gap)
+            yield b": OPENROUTER PROCESSING\n\n"
+            yield (line + "\n").encode("utf-8")
+        if self._ending == "quiet":
+            raise httpx.ReadTimeout("")  # what httpcore raises for a silent socket: no message
+        if self._ending == "drop":
+            raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+        while True:
+            await asyncio.sleep(self._gap)
+            yield b": OPENROUTER PROCESSING\n\n"
+
+
+_THINKING_EVENT = {"type": "response.reasoning_text.delta", "delta": "hm"}
+#: all hidden thinking sends: measured on 16.09.2026, 74 of these pairs over 38k tokens of hidden reasoning
+_BOOKKEEPING_EVENT = {"type": "response.output_item.added", "item": {"type": "reasoning"}}
+
+
+class TestASilentUpstream:
+    """The gateway sends keep-alive comments about every half second; they reset the socket's read timeout, so only
+    events count as progress, and the declared ``stream_silence_timeout`` bounds a stream that sends nothing else."""
+
+    LIMIT = 1.0
+    GAP = 0.1
+    opened: list
+
+    def _run(self, *attempts, silence=LIMIT, ending="keep-alives", outer=20):
+        """One scripted stream per attempt. Only the limit a test names is short."""
+        import asyncio
+
+        from plugins_llm.llm_openai_compat.httpx_client import HTTPXTimeoutConfig
+
+        client = _client(max_retries=len(attempts) - 1, retry_backoff=0, stream_silence_timeout=silence,
+                         timeout_config=HTTPXTimeoutConfig(connect=30, read=30, write=30, pool=30))
+        self.opened = []
+        streams = iter(attempts)
+
+        def open_stream(*args, **kwargs):
+            self.opened.append(1)
+            return _PacedStream(next(streams), self.GAP, ending)
+
+        client._stream = open_stream
+
+        async def collect():
+            return [chunk async for chunk in client.chat_tools_streaming([], [])]
+
+        # a regression hangs; the outer limit turns that into a failure
+        return asyncio.run(asyncio.wait_for(collect(), outer))
+
+    @staticmethod
+    def _text(chunks) -> str:
+        return "".join(c["delta"] for c in chunks if c["type"] == "content_delta")
+
+    def test_only_keep_alives_end_in_a_timeout_after_every_attempt(self):
+        import httpx
+
+        with pytest.raises(httpx.ReadTimeout, match="only keep-alives"):
+            self._run([], [])
+        assert len(self.opened) == 2
+
+    def test_without_a_declared_limit_keep_alives_hold_the_call(self):
+        """None is the endpoint's own bound (DeepSeek closes its queue after 10 minutes), not ours."""
+        import asyncio
+
+        with pytest.raises(asyncio.TimeoutError):
+            self._run([], silence=None, outer=3 * self.LIMIT)
+        assert len(self.opened) == 1
+
+    def test_a_silent_attempt_is_retried_with_a_fresh_clock(self):
+        chunks = self._run([], _sse({"type": "response.output_text.delta", "delta": "da"}, _COMPLETED))
+        assert chunks[-1]["type"] == "final" and self._text(chunks) == "da"
+        assert len(self.opened) == 2
+
+    @pytest.mark.parametrize("event", [_THINKING_EVENT, _BOOKKEEPING_EVENT], ids=["thinking", "bookkeeping"])
+    def test_a_stream_of_one_kind_of_event_outlasts_the_limit(self, event):
+        """The limit is the silence between events, not the length of the call, and every event counts: this one
+        sends only that kind of event for one and a half times the limit before the answer comes."""
+        chunks = self._run(_sse(*[event] * 15, {"type": "response.output_text.delta", "delta": "da"}, _COMPLETED))
+        assert chunks[-1]["type"] == "final" and self._text(chunks) == "da"
+        assert len(self.opened) == 1
+
+    @pytest.mark.parametrize("ending", ["keep-alives", "quiet", "drop"])
+    def test_a_finished_run_is_kept_however_the_stream_ends(self, ending):
+        """Paid for and complete: however the stream ends after the terminal event, the answer must not be thrown
+        away and generated again."""
+        chunks = self._run(_sse({"type": "response.output_text.delta", "delta": "fertig"}, _COMPLETED)[:-1],
+                           ending=ending)
+        assert chunks[-1]["type"] == "final"
+        assert "finish_reason" not in chunks[-1], "a complete run was flagged as cut off"
+        assert chunks[-1]["assistant"]["tool_calls"], "the finished answer was dropped"
+        assert len(self.opened) == 1
+
+
 class TestWhoStreams:
     def test_capabilities_decide(self):
         assert _client().supports_streaming() is True

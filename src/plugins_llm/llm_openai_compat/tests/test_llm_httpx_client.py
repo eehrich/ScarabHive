@@ -464,6 +464,130 @@ class TestTransportErrorTyping(TestHTTPXOpenAIClient):
             assert mock_client.stream.call_count == client.max_retries + 1
 
 
+_CONTENT = 'data: {"choices":[{"index":0,"delta":{"content":"%s"},"finish_reason":null}]}'
+_THINKING = 'data: {"choices":[{"index":0,"delta":{"reasoning_content":"%s"},"finish_reason":null}]}'
+_USAGE_ONLY = 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}'
+_FINISH = 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
+
+
+class TestASilentUpstream(TestHTTPXOpenAIClient):
+    """Keep-alive comments reset the per-chunk timeout, so only events count as progress, and the declared
+    ``stream_silence_timeout`` bounds a stream that sends nothing else."""
+
+    LIMIT = 1.0
+    GAP = 0.1
+
+    @staticmethod
+    def _stream_mock(lines, gap: float, ending: str):
+        """Each line after a keep-alive and ``gap`` seconds. After the lines, by ``ending``: keep-alives forever,
+        nothing at all ("quiet"), or a dropped connection ("drop"). A line given as bytes is sent as it is."""
+        response = AsyncMock()
+        response.status_code = 200
+        response.headers = {}
+
+        async def aiter_bytes():
+            for line in lines:
+                await asyncio.sleep(gap)
+                if isinstance(line, bytes):  # a piece of a line: nothing may come between the pieces
+                    yield line
+                    continue
+                yield b": keep-alive\n\n"
+                yield (line + "\n").encode("utf-8")
+            if ending == "drop":
+                raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+            while True:
+                await asyncio.sleep(3600 if ending == "quiet" else gap)
+                yield b": keep-alive\n\n"
+
+        response.aiter_bytes = aiter_bytes
+        response.__aenter__.return_value = response
+        response.__aexit__.return_value = None
+        return response
+
+    async def _stream(self, *attempts, silence=LIMIT, read=30.0, ending="keep-alives", outer=20):
+        """One scripted stream per attempt; the chunks the caller sees. Only the limit a test names is short."""
+        client = HTTPXOpenAIClient(
+            model="gpt-3.5-turbo", api_key="test-key", max_retries=len(attempts) - 1, retry_backoff=0,
+            stream_silence_timeout=silence,
+            timeout_config=HTTPXTimeoutConfig(connect=30.0, read=read, write=30.0, pool=30.0))
+        streams = iter(attempts)
+
+        async def collect():
+            return [chunk async for chunk in client.chat_tools_streaming([{"role": "user", "content": "hi"}], [])]
+
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client.stream = Mock(
+                side_effect=lambda *a, **kw: self._stream_mock(next(streams), self.GAP, ending))
+            mock_async_client.return_value = mock_client
+            try:
+                # a regression hangs; the outer limit turns that into a failure
+                return await asyncio.wait_for(collect(), outer)
+            finally:
+                self.streams_opened = mock_client.stream.call_count
+
+    @staticmethod
+    def _text(chunks) -> str:
+        return "".join(c["delta"] for c in chunks if c["type"] == "content_delta")
+
+    @pytest.mark.asyncio
+    async def test_only_keep_alives_end_in_an_error_after_every_attempt(self):
+        with pytest.raises(LLMConnectionError, match="only keep-alives"):
+            await self._stream([], [])
+        assert self.streams_opened == 2
+
+    @pytest.mark.asyncio
+    async def test_without_a_declared_limit_keep_alives_hold_the_call(self):
+        """None is the endpoint's own bound (DeepSeek closes its queue after 10 minutes), not ours -- and not the
+        read timeout either, even when that is short."""
+        with pytest.raises(asyncio.TimeoutError):
+            await self._stream([], silence=None, read=self.LIMIT, outer=3 * self.LIMIT)
+        assert self.streams_opened == 1
+
+    @pytest.mark.asyncio
+    async def test_a_silent_attempt_is_retried_with_a_fresh_clock(self):
+        chunks = await self._stream([], [_CONTENT % "da", _FINISH, "data: [DONE]"])
+        assert self._text(chunks) == "da"
+        assert self.streams_opened == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("event", [_THINKING % "hm", _USAGE_ONLY], ids=["thinking", "no choices"])
+    async def test_a_stream_of_one_kind_of_event_outlasts_the_limit(self, event):
+        """The limit is the silence between events, not the length of the call, and every event counts: this one
+        sends only that kind of chunk for one and a half times the limit before the answer comes."""
+        chunks = await self._stream([event] * 15 + [_CONTENT % "da", _FINISH, "data: [DONE]"])
+        assert self._text(chunks) == "da"
+        assert self.streams_opened == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ending", ["keep-alives", "quiet", "drop"])
+    async def test_a_finished_answer_is_kept_however_the_stream_ends(self, ending):
+        """Paid for and complete: however the stream ends after the finish, the answer must not be thrown away, and
+        it keeps the finish reason it came with."""
+        chunks = await self._stream([_CONTENT % "fertig", _FINISH], ending=ending,
+                                    read=self.LIMIT if ending == "quiet" else 30.0)
+        assert self._text(chunks) == "fertig"
+        assert chunks[-1]["type"] == "final" and chunks[-1]["finish_reason"] == "stop"
+        assert self.streams_opened == 1
+
+    @pytest.mark.asyncio
+    async def test_a_connection_dropped_before_the_finish_keeps_its_own_error(self):
+        """No finish yet: the dropped connection is what the caller hears about, not a made-up stall."""
+        with pytest.raises(LLMConnectionError, match="peer closed"):
+            await self._stream([_CONTENT % "halb"], [_CONTENT % "halb"], ending="drop")
+        assert self.streams_opened == 2
+
+    @pytest.mark.asyncio
+    async def test_a_character_split_across_two_packets_survives(self):
+        """The network cuts where it likes: a multi-byte character across two packets must arrive whole."""
+        line = (_CONTENT % "Grüße").encode("utf-8") + b"\n"
+        cut = line.index("ü".encode("utf-8")) + 1  # inside the two bytes of the u-umlaut
+        chunks = await self._stream([line[:cut], line[cut:], _FINISH, "data: [DONE]"])
+        assert self._text(chunks) == "Grüße"
+
+
 class TestErrorHandling(TestHTTPXOpenAIClient):
     """Test error handling and retry logic."""
     
@@ -1095,10 +1219,11 @@ class TestDeclaredRequestFields(TestHTTPXOpenAIClient):
             self._client(tool_schema_dialect="json_schema",
                          assistant_reasoning_field="omit",
                          reasoning_details_mode="keep_last",
-                         prompt_cache_marker_style="none"),
+                         prompt_cache_marker_style="none",
+                         stream_silence_timeout=900),
             tools=sample_tools)
         for key in ("tool_schema_dialect", "assistant_reasoning_field",
-                    "reasoning_details_mode", "prompt_cache_marker_style"):
+                    "reasoning_details_mode", "prompt_cache_marker_style", "stream_silence_timeout"):
             assert key not in payload
 
     @pytest.mark.asyncio

@@ -19,14 +19,35 @@ Code. Welche Route welchen Schlüssel auswertet:
 | `reasoning_details_mode` | ja | ja | ja | ja | – |
 | `assistant_reasoning_field` | ja | – | – | – | – |
 | `thinking_request_shape` | – | – | – | ja | – |
+| `stream_silence_timeout` | ja | ja | – | – | – |
 | `prompt_cache_marker_style` | ja | ja | verweigert `anthropic` | eigener Weg | – |
 | `safety_settings` | ja | ja | verweigert | – | nur `gemini*` (nativ) |
 
-Die ersten vier Zeilen sind die **Dialekt-Schlüssel**: steht einer auf einer
+Die ersten fünf Zeilen sind die **Dialekt-Schlüssel**: steht einer auf einer
 Route, die ihn nicht auswertet, protokolliert der Bau des Clients das („is not
 wired for provider=…"). Die letzten beiden Zeilen haben diesen Wächter nicht.
 Ein unbekannter **Wert** lässt den Bau in allen Fällen scheitern. Beides mit Absicht: still ignoriert zu werden ist der
 Fall, den man erst Wochen später am Rechnungsbetrag merkt.
+
+## Wie lange ein Stream nur Keep-alives schicken darf
+
+OpenRouter hält einen wartenden Stream mit Kommentarzeilen offen, etwa alle
+halbe Sekunde. Jede davon setzt den `read`-Timeout zurück — der feuert dort
+also nie. `stream_silence_timeout` zählt nur echte Events: kommt so lange
+keins, wird der Versuch wiederholt. Ohne Eintrag gibt es keine solche Grenze.
+Ist das Endereignis eines Laufs schon da, bleibt die Antwort stehen, egal wie
+der Stream danach endet (Keep-alives, Stille, abgerissene Verbindung).
+
+Gemessen am 16.09.2026 (Produktions-Payload, Flex-Tier): zwischen zwei Events
+lagen höchstens 9,2 s, auch über 38.000 Tokens verdeckten Denkens — OpenRouter
+meldet dabei alle paar Sekunden ein `output_item`. Die 900 s der Basis liegen
+bei OpenAIs Empfehlung für Flex (15 Minuten Wartezeit sind dort normal).
+DeepSeek direkt bekommt keinen Eintrag: die API schickt unter Last ebenfalls
+nur Keep-alives, schließt eine Anfrage aber nach 10 Minuten Wartezeit selbst.
+
+Nicht verwechseln: ein Call, der 26 Minuten lang **generiert** (gemessen: ein
+Kontinuitäts-Pass mit 55.742 Tokens), ist nicht still und wird nicht
+abgebrochen. Dagegen hilft die Output-Grenze des Agenten, kein Timeout.
 
 ## OpenRouter: warum die Backends gepinnt sind
 

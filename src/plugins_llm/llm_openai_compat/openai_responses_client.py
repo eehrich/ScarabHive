@@ -251,8 +251,10 @@ class OpenAIResponsesClient(LLMClient):
         plugins: Optional[list] = None,
         prompt_cache_options: Optional[dict] = None,
         safety_identifier: Optional[str] = None,
+        stream_silence_timeout: Optional[float] = None,
     ) -> None:
         self.model = model
+        self.stream_silence_timeout = stream_silence_timeout
         self.api_key = api_key
         self.plugins = plugins
         if plugins and "openrouter.ai" not in base_url.lower():
@@ -942,10 +944,20 @@ class OpenAIResponsesClient(LLMClient):
         A stream that ends without any terminal event yields ``None`` as the
         body: the caller retries it like an unreadable body rather than
         inventing a result out of the deltas it happens to have seen.
+
+        A stream that sends nothing but the gateway's keep-alive comments for
+        longer than ``stream_silence_timeout`` raises ``httpx.ReadTimeout``,
+        which the request loop retries. The gateway sends those comments about
+        every half second, so the socket's own read timeout never fires: without
+        the declared limit, an upstream that stopped answering holds its call
+        for as long as the gateway keeps it open. A run whose terminal event
+        has arrived is kept, however the stream ends after it.
         """
         accumulated = []
         body = None
         buffer = b""
+        silence_limit = self.stream_silence_timeout
+        last_event = _time.monotonic()
         # Bytes, not lines. httpx' line decoder splits like ``str.splitlines()``
         # — which also cuts at U+2028, U+2029 and U+0085. SSE ends a line at
         # CR/LF only, and JSON allows those characters RAW inside a string, so
@@ -953,59 +965,68 @@ class OpenAIResponsesClient(LLMClient):
         # whole answer. The sibling client reads bytes for the same reason.
         # Splitting on b"\n" can never cut a multi-byte character in half, so
         # every line decodes on its own.
-        async for raw in response.aiter_bytes():
-            if cancellation_token and cancellation_token.is_cancelled:
-                raise asyncio.CancelledError("Request cancelled by user")
-            buffer += raw
-            while b"\n" in buffer:
-                raw_line, buffer = buffer.split(b"\n", 1)
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                # Only ``data:`` lines carry events. That also drops the
-                # gateway's keep-alive comments (": "), which is why a silent
-                # call never runs into the read timeout — and why no separate
-                # comment check is needed here: a mutation removing one proved
-                # it redundant.
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    yield "body", body
-                    return
-                try:
-                    event = json.loads(data)
-                except json.JSONDecodeError:
-                    logger.debug("Responses stream: unparsable event %r", data[:200])
-                    continue
-                kind = event.get("type")
-                if kind == "response.output_text.delta":
-                    delta = event.get("delta") or ""
-                    accumulated.append(delta)
-                    yield "delta", {"type": "content_delta", "delta": delta,
-                                    "accumulated": "".join(accumulated)}
-                elif kind in ("response.reasoning_text.delta",
-                              "response.reasoning_summary_text.delta"):
-                    # The thinking channel, under both its names: models that
-                    # expose raw reasoning use the first (measured: five of
-                    # them before the first answer token), while the OpenAI
-                    # family only ever emits a SUMMARY of its thinking, under
-                    # the second. The agent server forwards either as
-                    # ``reasoning_delta`` — the only live view of a run's
-                    # reasoning.
-                    yield "delta", {"type": "thinking_delta",
-                                    "delta": event.get("delta") or ""}
-                elif kind == "response.function_call_arguments.delta":
-                    yield "delta", {
-                        "type": "tool_call_delta",
-                        "index": event.get("output_index", 0),
-                        "delta": {"function": {"arguments": event.get("delta") or ""}},
-                    }
-                elif kind in ("response.completed", "response.incomplete",
-                              "response.failed"):
-                    body = event.get("response")
-                elif kind == "error" or (kind is None and event.get("error")):
-                    # Upstream failure mid-stream: hand it over in the body
-                    # shape the loop already knows how to read.
-                    body = {"error": event.get("error") or event}
+        try:
+            async for raw in response.aiter_bytes():
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise asyncio.CancelledError("Request cancelled by user")
+                buffer += raw
+                while b"\n" in buffer:
+                    raw_line, buffer = buffer.split(b"\n", 1)
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    # Only ``data:`` lines carry events, and only they count as a
+                    # sign of life; the gateway's keep-alive comments (": ") are
+                    # dropped here.
+                    if not line or not line.startswith("data:"):
+                        continue
+                    last_event = _time.monotonic()
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        yield "body", body
+                        return
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        logger.debug("Responses stream: unparsable event %r", data[:200])
+                        continue
+                    kind = event.get("type")
+                    if kind == "response.output_text.delta":
+                        delta = event.get("delta") or ""
+                        accumulated.append(delta)
+                        yield "delta", {"type": "content_delta", "delta": delta,
+                                        "accumulated": "".join(accumulated)}
+                    elif kind in ("response.reasoning_text.delta",
+                                  "response.reasoning_summary_text.delta"):
+                        # The thinking channel, under both its names: models that
+                        # expose raw reasoning use the first (measured: five of
+                        # them before the first answer token), while the OpenAI
+                        # family only ever emits a SUMMARY of its thinking, under
+                        # the second. The agent server forwards either as
+                        # ``reasoning_delta`` — the only live view of a run's
+                        # reasoning.
+                        yield "delta", {"type": "thinking_delta",
+                                        "delta": event.get("delta") or ""}
+                    elif kind == "response.function_call_arguments.delta":
+                        yield "delta", {
+                            "type": "tool_call_delta",
+                            "index": event.get("output_index", 0),
+                            "delta": {"function": {"arguments": event.get("delta") or ""}},
+                        }
+                    elif kind in ("response.completed", "response.incomplete",
+                                  "response.failed"):
+                        body = event.get("response")
+                    elif kind == "error" or (kind is None and event.get("error")):
+                        # Upstream failure mid-stream: hand it over in the body
+                        # shape the loop already knows how to read.
+                        body = {"error": event.get("error") or event}
+                if silence_limit and _time.monotonic() - last_event > silence_limit:
+                    raise httpx.ReadTimeout(
+                        f"no stream event for {silence_limit:g}s, only keep-alives")
+        except httpx.TransportError as error:
+            # Keep-alives only, nothing at all, or the connection dropped: a run that has ended is kept.
+            if body is None:
+                logger.warning("Responses stream: no terminal event (%r): %s", error, self.model)
+                raise
+            logger.warning("Responses stream: run ended, stream not closed (%r): %s", error, self.model)
         yield "body", body
 
     async def _request(self, messages: list, tools: Optional[list],

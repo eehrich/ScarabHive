@@ -110,11 +110,11 @@ def resolve_thinking_request_shape(value: Optional[str], *, model: str,
                            field="thinking_request_shape", model=model)
 
 
-#: Every key that declares a dialect. A factory names what it WIRES; whatever is
-#: left over is warned about. Stated that way round, a key added here and
+#: Every key that declares how an endpoint behaves. A factory names what it WIRES;
+#: whatever is left over is warned about. Stated that way round, a key added here and
 #: forgotten in a factory is loud, not silent.
 DIALECT_KEYS = ("tool_schema_dialect", "assistant_reasoning_field",
-                "reasoning_details_mode", "thinking_request_shape")
+                "reasoning_details_mode", "thinking_request_shape", "stream_silence_timeout")
 
 
 def warn_unwired(config: Any, *, provider: str, wired: Sequence[str], logger: Any) -> None:

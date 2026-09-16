@@ -6,6 +6,7 @@ OpenAI client which has known hanging/timeout issues.
 """
 
 import asyncio
+import codecs
 import json
 import logging
 import random
@@ -328,6 +329,9 @@ class HTTPXOpenAIClient(LLMClient):
         self.reasoning_details_mode: str = resolve_reasoning_details_mode(
             self.extra_params.pop("reasoning_details_mode", None),
             model=model, default="keep_last")
+        # Seconds a stream may send only keep-alive comments before the attempt
+        # is retried; None leaves such a stream to the endpoint (see the model key).
+        self.stream_silence_timeout: Optional[float] = self.extra_params.pop("stream_silence_timeout", None)
 
         # Content-filter thresholds, sent whenever they are configured — a
         # model whose backend does not know the field must not carry it.
@@ -1893,22 +1897,38 @@ class HTTPXOpenAIClient(LLMClient):
                         chunk_timeout = self.timeout_config.read
                         # aiter_bytes() is async iterator that we can iterate over directly
                         line_buffer = ""
-                        
+
                         # Create async iterator manually to apply timeout per chunk
                         byte_stream = response.aiter_bytes()
-                        
+                        # Keep-alive comments reset the per-chunk timeout, so
+                        # only events count as progress; without the declared
+                        # limit an upstream that stopped answering holds the
+                        # call as long as the endpoint keeps it open.
+                        silence_limit = self.stream_silence_timeout
+                        last_event = time.monotonic()
+                        # The network cuts where it likes: a character split
+                        # across two chunks must not decode as two U+FFFD.
+                        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+
                         while True:
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise asyncio.CancelledError("Request cancelled during streaming")
-                            
+
                             try:
                                 # Get next chunk with timeout
                                 chunk_bytes = await asyncio.wait_for(byte_stream.__anext__(), timeout=chunk_timeout)
-                                line_buffer += chunk_bytes.decode('utf-8', errors='replace')
+                                line_buffer += decoder.decode(chunk_bytes)
                             except StopAsyncIteration:
                                 # Stream completed - process any remaining data in buffer
                                 break
-                            except asyncio.TimeoutError:
+                            except (asyncio.TimeoutError, httpx.TransportError) as error:
+                                # the answer is complete; only [DONE] is missing -- whether the
+                                # stream then stalled or the connection dropped
+                                if _last_finish_reason:
+                                    logger.warning("HTTPX stream: finish arrived, then %r: %s", error, self.model)
+                                    break
+                                if isinstance(error, httpx.TransportError):
+                                    raise
                                 logger.warning(f"HTTPX stream chunk timeout after {chunk_timeout}s")
                                 raise httpx.RemoteProtocolError(f"Stream stalled - no data for {chunk_timeout}s")
                             
@@ -1919,6 +1939,7 @@ class HTTPXOpenAIClient(LLMClient):
                                 
                                 if not line or not line.startswith("data: "):
                                     continue
+                                last_event = time.monotonic()
 
                                 data = line[6:]  # Remove "data: " prefix
 
@@ -2094,6 +2115,12 @@ class HTTPXOpenAIClient(LLMClient):
                             # Body-400 encrypted-reasoning signaled — same pattern.
                             if _body_400_enc_retry_msg:
                                 break
+                            if silence_limit and time.monotonic() - last_event > silence_limit:
+                                if _last_finish_reason:
+                                    break  # the answer is complete; only [DONE] is missing
+                                logger.warning(f"HTTPX stream: only keep-alives for {silence_limit:g}s: {self.model}")
+                                raise httpx.RemoteProtocolError(
+                                    f"Stream stalled - no event for {silence_limit:g}s, only keep-alives")
 
                         # A body-level retry was signaled from the chunk
                         # parser. Skip the finalization tail entirely --

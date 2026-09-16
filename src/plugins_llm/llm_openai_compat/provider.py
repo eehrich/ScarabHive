@@ -53,7 +53,8 @@ def build_openai_httpx(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None)
         )
 
     warn_unwired(cfg, provider="openai_httpx", logger=logger,
-                 wired=("tool_schema_dialect", "assistant_reasoning_field", "reasoning_details_mode"))
+                 wired=("tool_schema_dialect", "assistant_reasoning_field", "reasoning_details_mode",
+                        "stream_silence_timeout"))
 
     temp_kw = {} if cfg.temperature is None else {"temperature": cfg.temperature}
     return HTTPXOpenAIClient(
@@ -77,6 +78,7 @@ def build_openai_httpx(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None)
         reasoning_details_mode=cfg.reasoning_details_mode,
         tool_schema_dialect=cfg.tool_schema_dialect,
         assistant_reasoning_field=cfg.assistant_reasoning_field,
+        stream_silence_timeout=cfg.stream_silence_timeout,
         prompt_cache_key=cfg.prompt_cache_key,
         prompt_cache_mode=cfg.prompt_cache_mode,
         prompt_cache_marker_style=cfg.prompt_cache_marker_style,
@@ -118,7 +120,7 @@ def build_openai_responses(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = N
         )
 
     warn_unwired(cfg, provider="openai_responses", logger=logger,
-                 wired=("tool_schema_dialect", "reasoning_details_mode"))
+                 wired=("tool_schema_dialect", "reasoning_details_mode", "stream_silence_timeout"))
 
     from .openai_responses_client import OpenAIResponsesClient
     return OpenAIResponsesClient(
@@ -138,6 +140,7 @@ def build_openai_responses(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = N
         safety_settings=cfg.safety_settings,
         reasoning_details_mode=cfg.reasoning_details_mode,  # the same round trip as on the chat route
         tool_schema_dialect=cfg.tool_schema_dialect,
+        stream_silence_timeout=cfg.stream_silence_timeout,
         prompt_cache_key=cfg.prompt_cache_key,
         prompt_cache_mode=cfg.prompt_cache_mode,
         prompt_cache_marker_style=cfg.prompt_cache_marker_style,

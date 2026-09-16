@@ -16,6 +16,7 @@ llm_system:
       base_url: https://openrouter.ai/api/v1
       context_window: 272000      # independend of more conext size limit by default to 272K to avoid long context costs
       request_timeout: 600        # some models are really slow
+      stream_silence_timeout: 900 # seconds of keep-alives only, then a retry
       max_tokens: 16384           # default limit to 16k
       include_thoughts: true    
       thinking_level: medium

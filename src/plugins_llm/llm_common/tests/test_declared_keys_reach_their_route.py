@@ -34,6 +34,7 @@ DECLARED = {
     "assistant_reasoning_field": "reasoning_content",
     "reasoning_details_mode": "strip",
     "thinking_request_shape": "adaptive",
+    "stream_silence_timeout": 42.0,
 }
 
 
