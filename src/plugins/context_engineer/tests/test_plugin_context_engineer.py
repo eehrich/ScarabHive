@@ -2085,11 +2085,11 @@ class TestPreLayerPRecoverability:
                 layer1_threshold=10**9, layer2_threshold=10**9,
                 layer3_threshold=10**9, max_messages=6,
                 # These tests pin WHICH messages a prune picks and whether they
-                # survive the trip. The headroom decides HOW MANY, and at its
-                # default (50) a limit of 6 would empty the list — the picking
-                # would then be untestable. Its own behaviour is pinned in
-                # TestPruneHysteresis.
-                max_messages_headroom=0,
+                # survive the trip. max_messages_prune_to decides HOW MANY; the
+                # counts here are written for a prune to exactly the limit, not
+                # to the default half. Its own behaviour is pinned in
+                # TestPruneHysteresis (test_plugin_context_engineer_removal.py).
+                max_messages_prune_to=6,
                 keep_system_messages=True,
             ),
         )
@@ -2365,10 +2365,6 @@ class TestPreLayerPRecoverability:
             config=CompactionConfig(
                 layer1_threshold=10**9, layer2_threshold=10**9,
                 layer3_threshold=10**9, max_messages=8,
-                # See the fixture above: the headroom decides how many go, and
-                # at its default the whole list would go — leaving no surviving
-                # pair to check for splits.
-                max_messages_headroom=0,
                 keep_system_messages=keep_system,
             ),
         )
@@ -2400,9 +2396,12 @@ class TestPreLayerPRecoverability:
             + [{"role": "user", "content": "letzte Frage"}]
         )
 
-        # Room for the recent group to survive, so the pair assertions below
-        # have something to be true ABOUT instead of comparing empty to empty.
-        strat.config.max_messages = 12
+        # The budget must run out INSIDE the old group, or a split cannot
+        # happen: at 12 / 12 the prune needs 5 messages, one short of the
+        # group's 6. At a deeper mark the whole group goes one index at a time
+        # and the bug hides. The recent group survives as the round the model
+        # has not seen.
+        strat.config.max_messages = strat.config.max_messages_prune_to = 12
         result = await strat.compact(messages, current_tokens=100)
         out = result.modified_messages
 

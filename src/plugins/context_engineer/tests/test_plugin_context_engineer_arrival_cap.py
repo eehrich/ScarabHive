@@ -291,7 +291,7 @@ async def test_a_provider_count_from_before_the_arrival_is_not_undercut(plugin, 
 
 @pytest.mark.asyncio
 async def test_pre_layer_p_keeps_the_round_the_model_has_not_seen(plugin):
-    """With a small max_messages the candidate window spans the whole list, and
+    """This prune needs every candidate, so the window spans the whole list, and
     the pointer T just left ranked cheapest of all."""
     strategy = plugin._get_session_components("prune", overrides={"max_messages": 6})["strategy"]
     messages = [{"role": "user", "content": "Read everything."}]

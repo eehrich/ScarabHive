@@ -83,17 +83,20 @@ class CompactionConfig:
     drop_after_turns: int = 50       # Drop messages older than N turns
     max_summary_tokens: int = 100    # Max tokens for archived summaries
     
-    # Hard message limit - drops oldest messages if exceeded (Pre-Layer P)
+    # Message limit - drops oldest messages if exceeded (Pre-Layer P)
     # Counts ALL messages including tool calls/results, not just user messages
     # Set to 0 to disable
     max_messages: int = 0            # 0 = disabled, e.g., 200 = keep max 200 messages
 
-    # How far BELOW max_messages a prune goes. Without it a prune trims to
-    # exactly the limit, the next step is over it again, and the front of the
-    # conversation is rewritten every single step — a prompt-cache break per
-    # step for one message of savings. With headroom the same break buys
-    # roughly `headroom` quiet steps.
-    max_messages_headroom: int = 50
+    # The hysteresis of Pre-Layer P: past max_messages, a prune keeps this
+    # many (200 / 100 = over 200, drop to 100). Every prune rewrites the front
+    # of the conversation and breaks the prompt cache behind it, and the next
+    # one comes about max_messages - prune_to new messages later
+    # (min_tokens_between_compactions can hold it longer) — so the deeper the
+    # cut, the rarer the break. Equal to max_messages prunes whenever the list
+    # is over the limit. 0, or a value above max_messages (a per-agent
+    # max_messages below the inherited value), prunes to half the limit.
+    max_messages_prune_to: int = 0
 
     # Hysteresis for the layers that rewrite messages (P, 1, 2, 3): once one
     # ran, the next run waits until the context has grown by this many tokens.
@@ -117,8 +120,9 @@ class CompactionConfig:
     # Set to 0 to disable, >0 to enable and keep last N media-containing messages
     always_compact_media_keep_last: int = 0  # 0 = disabled, 5 = keep last 5 messages with media
 
-    # How far BELOW keep_last that pass evicts, like max_messages_headroom for
-    # Pre-Layer P. Nothing goes while at most keep_last messages carry media;
+    # How far BELOW keep_last that pass evicts — a distance, unlike Pre-Layer
+    # P's absolute max_messages_prune_to. Nothing goes while at most keep_last
+    # messages carry media;
     # past that only the newest max(1, keep_last - headroom) keep theirs.
     # Without it each new media message evicts the oldest kept one on the next
     # call: an old message rewritten and the prompt cache broken from there,
@@ -1988,23 +1992,27 @@ class LayeredCompactionStrategy:
         # exactly max_messages means the next step is over it again and prunes
         # again, and every prune rewrites the front of the conversation — so
         # the provider prompt cache was being thrown away on EVERY step once a
-        # session reached the limit. Going deeper once buys `headroom` quiet
-        # steps for the same single cache break.
+        # session reached the limit. A deep cut buys max_messages - target
+        # quiet messages for the same single cache break.
         #
-        # Capped at half the limit. Unclamped, any max_messages below the
-        # headroom (default 50) drove the target to 1 — max(1, 40 - 50) — so
-        # the FIRST prune collapsed the conversation to the protected minimum
-        # instead of trimming 50 messages. The cap also keeps excess small
-        # enough that _select_prune_candidates' window (2 * excess) stays in
-        # the old head instead of reaching into the working tail.
-        headroom = min(max(0, self.config.max_messages_headroom), max_msgs // 2)
-        target = max(1, max_msgs - headroom)
+        # An absolute mark, not a distance below the limit: a distance
+        # inherited by an agent with a smaller max_messages cut to the
+        # protected minimum (max(1, 40 - 50)). A mark that does not fit the
+        # limit only makes the cut shallower — half the limit.
+        target = self.config.max_messages_prune_to
+        if not 0 < target <= max_msgs:
+            if target:
+                logger.warning(
+                    f"Pre-Layer P: max_messages_prune_to={target} does not fit "
+                    f"max_messages={max_msgs}; pruning to half the limit")
+            target = max(1, max_msgs // 2)
         excess = len(messages) - target
 
         # The breadcrumb below is itself a message. Removing exactly `excess`
-        # and then adding it would land one over the limit and re-trigger on
-        # every following call, so pay for it here — but only when there is not
-        # already one in the list to replace.
+        # and then adding it would land one over the target — with the target
+        # at the limit, over the limit, re-triggering on every following call —
+        # so pay for it here, but only when there is not already one in the
+        # list to replace.
         if not any(_is_prune_notice(m) for m in messages):
             excess += 1
 
@@ -2027,10 +2035,11 @@ class LayeredCompactionStrategy:
             # the task sits at the front and was the very first thing to go.
             protected.update(_request_user_indices(messages))
             protected.add(user_indices[0])
-        # The round the model has not seen yet. With a small max_messages the
-        # candidate window spans the whole list, and the pointer Pre-Layer T just
-        # left ranks cheapest of all: the call went out and the model never saw
-        # what came back.
+        # The round the model has not seen yet. When a prune needs every
+        # candidate, or all but one or two, the window reaches it: the pointer
+        # Pre-Layer T just left ranks cheapest of all, or the call before it is
+        # needed and takes it along as one unit. Either way the call went out
+        # and the model never saw what came back.
         protected.update(_arrival_indices(messages))
 
         indices_to_remove = self._select_prune_candidates(
@@ -2074,12 +2083,16 @@ class LayeredCompactionStrategy:
         a store, so losing it costs an address, while real content costs an
         archive write and a retrieval turn to get back.
 
-        The candidate window is deliberately narrow (twice what we need). A
-        global sort by cheapness would reach into the recent tail and strip the
-        pointers the agent is actively working with.
+        The candidate window is deliberately narrow: twice what we need (at
+        least 20), but it ends before the newer half of what stays. A global
+        sort by cheapness would reach into the recent tail and strip the
+        pointers the agent is actively working with — and a deep prune needs
+        more than half the list, so twice the need alone spans all of it. A
+        tool-call unit at the window's edge still leaves whole.
         """
         candidates = [i for i in range(len(messages)) if i not in protected]
-        window = candidates[:max(2 * excess, 20)]
+        stays = max(0, len(candidates) - excess)
+        window = candidates[:min(max(2 * excess, 20), len(candidates) - (stays + 1) // 2)]
 
         def cost(i: int) -> tuple[int, int]:
             # 0/1: placeholder (body is stored elsewhere), 2: real content.

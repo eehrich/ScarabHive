@@ -485,7 +485,7 @@ class TestTheBlockBehindTheSystemPrompt:
         await self._call(plugin, 50_000, monkeypatch, self._chat(20))
         await plugin._handle_store_fact("the database is books.db", session_id="facts")
         pruned = await self._call(plugin, 150_000, monkeypatch, self._chat(21),
-                                  max_messages=20, max_messages_headroom=0)
+                                  max_messages=20, max_messages_prune_to=20)
 
         assert pruned.metadata["messages_pruned"] > 0, "fixture: nothing was pruned"
         assert "books.db" in self._block(pruned)

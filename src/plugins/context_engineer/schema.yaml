@@ -303,18 +303,18 @@ config:
     minimum: 0
     description: "How far below always_compact_media_keep_last an eviction goes. Nothing is evicted while at most keep_last messages carry media; once more do, only the newest max(1, keep_last - headroom) keep theirs. Each eviction rewrites an old message and breaks the provider prompt cache from there; with headroom that many new media messages arrive without a break after each one (one break per headroom+1 while keep_last - headroom >= 1), at the cost of fewer visible media right after it. keep_last stays the most the context carries. 0 = evict down to keep_last on every new media message."
 
-  # Pre-Layer P: Hard message limit
+  # Pre-Layer P: message limit
   max_messages:
     type: integer
     default: 0
     minimum: 0
     description: "Maximum message count before pruning oldest messages. Set to 0 to disable. Runs BEFORE token-based layers. Preserves tool call/result pairs."
 
-  max_messages_headroom:
+  max_messages_prune_to:
     type: integer
-    default: 50
+    default: 0
     minimum: 0
-    description: "How far below max_messages a prune goes. 0 trims to exactly the limit, which puts the next step over it again — a prompt-cache break on EVERY step. 50 buys ~50 quiet steps per break."
+    description: "How many messages a prune keeps (the hysteresis: max_messages 200, prune_to 100 = over 200, drop to 100). Each prune breaks the prompt cache; the next comes about max_messages - prune_to messages later (min_tokens_between_compactions can hold it longer), so deeper is rarer. Equal to max_messages prunes whenever the list is over the limit. 0, or above max_messages, = half of max_messages."
 
   # Cache-Hysterese: Mindest-Wachstum zwischen prefix-brechenden Kompaktionen
   # (jede History-Mutation bricht das Provider-Prompt-Caching komplett —

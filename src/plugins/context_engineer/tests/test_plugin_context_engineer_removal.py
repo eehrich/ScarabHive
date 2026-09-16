@@ -42,7 +42,7 @@ class TestPruneHysteresis:
     """
 
     @staticmethod
-    def _strategy(tmp_path, headroom: int):
+    def _strategy(tmp_path, prune_to: int, max_messages: int = 40):
         return LayeredCompactionStrategy(
             tool_store=ToolResultStore(tmp_path / "tools.db"),
             core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
@@ -50,7 +50,7 @@ class TestPruneHysteresis:
             config=CompactionConfig(
                 layer1_threshold=10**9, layer2_threshold=10**9,
                 layer3_threshold=10**9,
-                max_messages=40, max_messages_headroom=headroom,
+                max_messages=max_messages, max_messages_prune_to=prune_to,
                 keep_system_messages=True,
             ),
         )
@@ -64,7 +64,7 @@ class TestPruneHysteresis:
 
     @pytest.mark.asyncio
     async def test_a_prune_goes_below_the_limit_not_to_it(self, tmp_path):
-        strat = self._strategy(tmp_path, headroom=20)
+        strat = self._strategy(tmp_path, prune_to=20)
 
         result = await strat.compact(self._over_the_limit(), current_tokens=100)
 
@@ -76,7 +76,7 @@ class TestPruneHysteresis:
     @pytest.mark.asyncio
     async def test_the_next_steps_are_quiet(self, tmp_path):
         """Der Gewinn: ein Cache-Bruch statt einer pro Schritt."""
-        strat = self._strategy(tmp_path, headroom=20)
+        strat = self._strategy(tmp_path, prune_to=20)
         messages = self._over_the_limit()
 
         pruning_rounds = 0
@@ -93,14 +93,39 @@ class TestPruneHysteresis:
                 f"Limit — die Hysterese darf die Liste nicht wachsen lassen")
 
         assert pruning_rounds == 1, (
-            f"{pruning_rounds} von 15 Schritten haben geprunt. Jeder schreibt "
-            f"den Anfang der Konversation um und entwertet den Prompt-Cache "
-            f"dahinter; genau dafuer gibt es den Headroom")
+            f"{pruning_rounds} of 15 steps pruned. Each rewrites the front of "
+            f"the conversation and invalidates the prompt cache behind it; that "
+            f"is what max_messages_prune_to is for")
 
     @pytest.mark.asyncio
-    async def test_headroom_zero_still_trims_to_the_limit(self, tmp_path):
-        """Das alte Verhalten bleibt erreichbar — manche Agents wollen eine harte Decke."""
-        strat = self._strategy(tmp_path, headroom=0)
+    async def test_a_deep_cut_buys_as_many_quiet_messages(self, tmp_path):
+        """200 / 30: one prune, then 170 messages without a cache break.
+
+        The half-limit cap kept every prune shallow; the cut goes as deep as
+        configured, and the next prune waits for the whole distance.
+        """
+        strat = self._strategy(tmp_path, prune_to=30, max_messages=200)
+        messages = [{"role": "user", "content": "die Aufgabe"}]
+        messages += [{"role": "assistant", "content": f"Antwort {i}"} for i in range(200)]
+        messages += [{"role": "user", "content": "letzte Frage"}]
+
+        prunes = []
+        for step in range(172):
+            result = await strat.compact(messages, current_tokens=100)
+            if result.messages_pruned:
+                prunes.append((step, len(result.modified_messages)))
+            messages = result.modified_messages
+            messages.append({"role": "assistant", "content": f"neu {step}"})
+
+        assert prunes[0] == (0, 30), f"the first prune did not cut to 30: {prunes}"
+        assert [s for s, _ in prunes] == [0, 171], (
+            f"prunes at steps {[s for s, _ in prunes]}: 30 kept, the next is due "
+            f"once 171 more arrived (over 200), not before")
+
+    @pytest.mark.asyncio
+    async def test_prune_to_the_limit_still_trims_to_the_limit(self, tmp_path):
+        """The old behaviour stays reachable: prune whenever the list is over the limit."""
+        strat = self._strategy(tmp_path, prune_to=40)
 
         result = await strat.compact(self._over_the_limit(), current_tokens=100)
         assert 39 <= len(result.modified_messages) <= 40
@@ -247,17 +272,19 @@ class TestLayer1ResultsAreFindable:
         assert found["count"] >= 1, "search cannot reach it either"
 
 
-class TestHeadroomNeverCollapsesTheConversation:
-    """The headroom must trim, not empty.
+class TestAnInheritedMarkNeverCollapsesTheConversation:
+    """A mark that does not fit the limit must trim, not empty.
 
-    Unclamped, max(1, max_messages - headroom) went to 1 for ANY limit below
-    the default headroom of 50: an agent configured with max_messages=40 lost
-    its whole conversation on the first prune instead of 20 messages.
+    A distance below the limit (the old max_messages_headroom, default 50)
+    went to 1 for ANY limit below it: an agent configured with
+    max_messages=40 lost its whole conversation on the first prune instead
+    of 20 messages. An absolute mark above the agent's own limit, inherited
+    from the plugin config, prunes to half the limit.
     """
 
     @pytest.mark.parametrize("max_messages", [200, 40, 30, 10, 2])
     @pytest.mark.asyncio
-    async def test_a_prune_keeps_a_workable_conversation(self, tmp_path, max_messages):
+    async def test_a_prune_keeps_a_workable_conversation(self, tmp_path, caplog, max_messages):
         strat = LayeredCompactionStrategy(
             tool_store=ToolResultStore(tmp_path / "tools.db"),
             core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
@@ -265,7 +292,7 @@ class TestHeadroomNeverCollapsesTheConversation:
             config=CompactionConfig(
                 layer1_threshold=10**9, layer2_threshold=10**9,
                 layer3_threshold=10**9,
-                max_messages=max_messages, max_messages_headroom=50,
+                max_messages=max_messages, max_messages_prune_to=100,
                 keep_system_messages=True,
             ),
         )
@@ -282,7 +309,90 @@ class TestHeadroomNeverCollapsesTheConversation:
         # are all protected. A limit below that is a nonsense config, and
         # Pre-Layer P already logs a warning when it cannot reach it.
         assert kept <= max(max_messages, 3), f"still over the limit: {kept}"
-        # Half the limit is the deepest a prune may ever go.
-        assert kept >= min(max_messages // 2, max_messages), (
-            f"max_messages={max_messages} collapsed to {kept} messages - the "
-            f"headroom cut deeper than the limit itself")
+        # 100 fits only the limit of 200 (and is its half); every other limit
+        # falls back to half, down to the protected floor of 3.
+        assert kept == max(max_messages // 2, 3), (
+            f"max_messages={max_messages} kept {kept} messages, not half the "
+            f"limit - the inherited mark was not replaced")
+        assert ("does not fit" in caplog.text) == (max_messages < 100), (
+            "a mark that does not fit the limit must say so")
+
+
+class TestADeepPruneKeepsTheWorkingPointers:
+    """Placeholders go first, but only among the old messages.
+
+    The candidate window was twice the need, at least 20. A deep cut needs most
+    of the list, and a small list is shorter than 20, so the window spanned all
+    of it, and the cheapest-first order took the newest tool-result pointers —
+    the ones the agent is working with — before old real content.
+    """
+
+    @staticmethod
+    def _strategy(tmp_path, **limits):
+        return LayeredCompactionStrategy(
+            tool_store=ToolResultStore(tmp_path / "tools.db"),
+            core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
+            archival_memory=ArchivalMemory(tmp_path / "archive.db", session_id="t"),
+            config=CompactionConfig(
+                layer1_threshold=10**9, layer2_threshold=10**9,
+                layer3_threshold=10**9, keep_system_messages=True, **limits,
+            ),
+        )
+
+    @staticmethod
+    def _ref(k):
+        return json.dumps({"type": "tool_result_ref", "ref_id": f"TR_{k}",
+                           "summary": f"stored {k}"})
+
+    @classmethod
+    def _pairs(cls, count, pointers):
+        messages = []
+        for k in range(count):
+            messages += [
+                {"role": "assistant", "content": None, "tool_calls": [
+                    {"id": f"c{k}", "type": "function",
+                     "function": {"name": "t", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": f"c{k}", "name": "t",
+                 "content": cls._ref(k) if k in pointers else f"result {k}"},
+            ]
+        return messages
+
+    @pytest.mark.asyncio
+    async def test_the_newest_placeholders_survive(self, tmp_path):
+        strat = self._strategy(tmp_path, max_messages=40, max_messages_prune_to=10)
+        messages = ([{"role": "user", "content": "the task"}]
+                    + self._pairs(20, pointers={17, 18, 19})
+                    + [{"role": "user", "content": "last question"}])
+
+        result = await strat.compact(messages, current_tokens=100)
+        kept = [m.get("content") for m in result.modified_messages]
+
+        assert result.messages_pruned > 0, "fixture: nothing was pruned"
+        assert len(kept) <= 12, f"the cut did not go deep: {len(kept)} kept"
+        assert self._ref(18) in kept, (
+            "the prune took a pointer from the newest messages - the window "
+            "reached into what stays")
+        # Inside the window cheap still goes first: the older pointer leaves,
+        # the real result before it stays.
+        assert self._ref(17) not in kept and "result 16" in kept, (
+            "among the old messages the placeholder no longer goes before real content")
+
+    @pytest.mark.asyncio
+    async def test_a_small_limit_keeps_them_too(self, tmp_path):
+        """Limit 24, the repo's own prune test agent.
+
+        The need is 15 of 23 candidates: twice that (30) and the floor of 20
+        both reach past the 19 before the newer half of what stays.
+        """
+        strat = self._strategy(tmp_path, max_messages=24)
+        messages = ([{"role": "system", "content": "the prompt"},
+                     {"role": "user", "content": "the task"}]
+                    + self._pairs(12, pointers={9}))
+
+        result = await strat.compact(messages, current_tokens=100)
+        kept = [m.get("content") for m in result.modified_messages]
+
+        assert result.messages_pruned > 0, "fixture: nothing was pruned"
+        assert self._ref(9) in kept, (
+            "the window reached into the newer half of what stays and "
+            "took the pointer")

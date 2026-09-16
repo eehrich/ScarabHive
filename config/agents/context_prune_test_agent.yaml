@@ -7,8 +7,8 @@
 # durch Pre-Layer P. Genau die Lage, in der eine Information nur dann wieder
 # auftauchen kann, wenn P sie vorher archiviert hat.
 #
-# Nicht produktiv nutzen: max_messages=8 bricht bei jedem Turn den
-# Prompt-Cache-Präfix (docs/prompt_cache_design.md §3.5).
+# Nicht produktiv nutzen: max_messages=24 bricht den Prompt-Cache-Präfix
+# alle ~12 Nachrichten (docs/prompt_cache_design.md §3.5).
 plugins:
   servers:
     context_prune_test_agent:
@@ -50,11 +50,13 @@ plugins:
               # Und der einzige Mechanismus, der dort etwas tut.
               #
               # NICHT kleiner setzen: Pre-Layer P sucht seine Kandidaten unter
-              # den aeltesten max(2*excess, 20) Nachrichten, damit der aktuelle
-              # Schwanz — die Arbeitsmenge des Agenten — unberuehrt bleibt. Bei
-              # einem Limit unter ~20 deckt dieses Fenster das ganze Gespraech
-              # ab, und dann verdraengt der Agent im selben Turn die
-              # Abruf-Antwort, die er gerade geholt hat. Produktion faehrt 200.
+              # den aeltesten max(2*excess, 20) Nachrichten, hoechstens bis zur
+              # neueren Haelfte dessen, was bleibt — damit der aktuelle Schwanz,
+              # die Arbeitsmenge des Agenten, unberuehrt bleibt. Bei einem sehr
+              # kleinen Limit ist diese Haelfte nur ein paar Nachrichten lang,
+              # und dann verdraengt der Agent im selben Turn die Abruf-Antwort,
+              # die er gerade geholt hat. Ohne max_messages_prune_to kuerzt P
+              # auf die Haelfte (12).
               max_messages: 24
               keep_system_messages: true
 

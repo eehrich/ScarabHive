@@ -473,7 +473,7 @@ class TestHeldRunsRewriteNothing:
 
     @pytest.mark.asyncio
     async def test_pre_layer_p_waits_too(self, tmp_path):
-        strategy, _ = _strategy(tmp_path, max_messages=6, max_messages_headroom=0)
+        strategy, _ = _strategy(tmp_path, max_messages=6, max_messages_prune_to=6)
         messages = [{"role": "user", "content": "go"}]
         for i in range(10):
             messages += [{"role": "assistant", "content": f"step {i}"},
@@ -715,7 +715,7 @@ class TestLayerThreeCutsDeep:
                 ]
             return messages
 
-        strategy, _ = _strategy(tmp_path, max_messages=20, max_messages_headroom=0,
+        strategy, _ = _strategy(tmp_path, max_messages=20, max_messages_prune_to=20,
                                 tool_result_min_size=10)
         tools_gap = 5_000
         start = strategy._estimate_messages_tokens(conversation())

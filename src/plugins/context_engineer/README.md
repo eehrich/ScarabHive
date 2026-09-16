@@ -129,6 +129,11 @@ Progressive compression strategy that applies increasingly aggressive techniques
 - The bound is a share of the window, not a token count: a 1M model keeps a 100k chapter inline (the read tool pages 5000 characters at a time). Lower the share per agent for a tighter cap.
 - Only the current round (after the last assistant message the model wrote) is touched: messages a request already carried and their reasoning artifacts stay as they were sent. The one front change is the restoration block behind the system prompt, which explains how to read a stored result: it gains its "Tool Results" section when a session stores its first one, and for an agent whose calls normally skip the hook (no always-on media compaction) it is inserted whenever the hook runs — the same as on a Layer 1 run.
 
+**Pre-Layer P (message count, off by default):**
+- Past `max_messages`, the oldest messages are archived and removed until `max_messages_prune_to` remain (0 = half the limit). No LLM call; the agent finds them again through the retrieval tools.
+- It is a hysteresis: each prune breaks the prompt cache, the next one comes about `max_messages - max_messages_prune_to` messages later (`min_tokens_between_compactions` can hold it longer). `200` / `100` breaks at most once per 100 messages; `max_messages_prune_to` equal to the limit prunes whenever the list is over it.
+- The task (first user message), the last user message, system messages and the round the model has not seen yet stay. Among the oldest messages placeholders go before real content; the choice stops before the newer half of what stays (a tool-call unit at that edge still leaves whole).
+
 **Layer 1 (Reversible):**
 - Store tool outputs with compact references
 - **Media Deduplication** - Auto-detect duplicate media by file hash, compact older duplicates (keep newest)
