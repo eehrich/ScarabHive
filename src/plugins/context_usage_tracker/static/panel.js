@@ -10,7 +10,6 @@ let scope = 'session';
 let usage = { latest: null, agents: {}, statistics: {}, history: [] };
 let load = 0;
 let busy = false;
-let agentSort = { key: 'total_cost', dir: -1 };
 let chart = null;
 /** the calls the table shows, newest first: a row opens its index */
 let callRows = [];
@@ -32,6 +31,9 @@ const latency = (ms) => (ms === null || ms === undefined ? dash : ms >= 1000 ? `
 const cost = (usd, estimated) => (usd === null || usd === undefined
   ? dash
   : html`<span class="${estimated ? 'cu-estimate' : 'cu-cost'}" title="${estimated ? 'includes estimates from llm_pricing.yaml, not billed prices' : ''}">${estimated ? '~' : ''}${cents(usd)}</span>`);
+
+/** A cell the kit sorts by its value rather than by the text it shows; no value sorts last. */
+const cell = (value, shown, cls = 'pk-num') => html`<td class="${cls}" data-sort-value="${value ?? ''}">${shown}</td>`;
 
 const empty = (name, title, text = '') =>
   html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
@@ -207,14 +209,6 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', dra
 
 // ---------------------------------------------------------------------- agents
 
-const AGENT_COLUMNS = [
-  ['agent_name', 'Agent', false], ['total_calls', 'Calls', true], ['total_tokens', 'Σ Tokens', true],
-  ['total_prompt_tokens', 'Σ Prompt', true], ['total_completion_tokens', 'Σ Output', true],
-  ['total_cached_tokens', 'Σ Cached', true], ['total_cache_write_tokens', 'Σ Writes', true],
-  ['total_cost', 'Σ Cost', true], ['avg_cost', 'Ø Cost', true], ['avg_latency', 'Ø Latency', true],
-  ['peak_tokens', 'Peak', true], ['last_activity', 'Last', true],
-];
-
 function agentValue(agent, key) {
   if (key === 'avg_cost') return agent.cost_known_calls ? (agent.total_cost ?? 0) / agent.cost_known_calls : null;
   if (key === 'avg_latency') return agent.latency_calls ? agent.total_latency_ms / agent.latency_calls : null;
@@ -239,32 +233,29 @@ function drawAgents() {
     render($('agents'), empty('users', 'No agent activity yet'));
     return;
   }
-  const { key, dir } = agentSort;
-  rows.sort((a, b) => {
-    const left = agentValue(a, key) ?? -Infinity;
-    const right = agentValue(b, key) ?? -Infinity;
-    const order = typeof left === 'string' || typeof right === 'string' ? String(left).localeCompare(String(right)) : left - right;
-    return dir * order;
-  });
-  const sortState = (column) => (column === key ? (dir === 1 ? 'ascending' : 'descending') : 'none');
-  render($('agents'), html`<div class="pk-table-wrap"><table class="pk-table cu-table">
-    <thead><tr>${AGENT_COLUMNS.map(([column, label, numeric]) => html`<th class="${numeric ? 'pk-num' : ''}" aria-sort="${sortState(column)}" data-sort="${column}">${label}</th>`)}</tr></thead>
+  // the most expensive first, until the viewer picks another column
+  render($('agents'), html`<div class="pk-table-wrap"><table class="pk-table cu-table" data-pk-sort="agents">
+    <thead><tr><th>Agent</th><th class="pk-num">Calls</th><th class="pk-num">Σ Tokens</th><th class="pk-num">Σ Prompt</th>
+      <th class="pk-num">Σ Output</th><th class="pk-num">Σ Cached</th><th class="pk-num">Σ Writes</th>
+      <th class="pk-num" aria-sort="descending">Σ Cost</th><th class="pk-num">Ø Cost</th><th class="pk-num">Ø Latency</th>
+      <th class="pk-num">Peak</th><th class="pk-num">Last</th></tr></thead>
     <tbody>${rows.map((agent) => {
+      const value = (key) => agentValue(agent, key);
       const share = cacheShare(agent);
       const estimated = agent.cost_estimated_calls > 0;
       return html`<tr>
         <td title="${agent.agent_id}">${agent.agent_name}</td>
-        <td class="pk-num">${number(agent.total_calls)}</td>
-        <td class="pk-num">${number(agent.total_tokens)}</td>
-        <td class="pk-num">${number(agent.total_prompt_tokens)}</td>
-        <td class="pk-num">${number(agent.total_completion_tokens)}</td>
-        <td class="pk-num">${number(agent.total_cached_tokens)} <span class="pk-muted">${share === null ? '(–)' : `(${share.toFixed(0)}%)`}</span></td>
-        <td class="pk-num">${number(agent.total_cache_write_tokens)}</td>
-        <td class="pk-num">${cost(agent.total_cost ?? 0, estimated)}</td>
-        <td class="pk-num">${cost(agentValue(agent, 'avg_cost'), estimated)}</td>
-        <td class="pk-num">${latency(agentValue(agent, 'avg_latency'))}</td>
-        <td class="pk-num">${number(agent.peak_tokens)}</td>
-        <td class="pk-num pk-muted">${agent.last_activity ? time(agent.last_activity) : '–'}</td>
+        ${cell(value('total_calls'), number(agent.total_calls))}
+        ${cell(value('total_tokens'), number(agent.total_tokens))}
+        ${cell(value('total_prompt_tokens'), number(agent.total_prompt_tokens))}
+        ${cell(value('total_completion_tokens'), number(agent.total_completion_tokens))}
+        ${cell(value('total_cached_tokens'), html`${number(agent.total_cached_tokens)} <span class="pk-muted">${share === null ? '(–)' : `(${share.toFixed(0)}%)`}</span>`)}
+        ${cell(value('total_cache_write_tokens'), number(agent.total_cache_write_tokens))}
+        ${cell(value('total_cost'), cost(agent.total_cost ?? 0, estimated))}
+        ${cell(value('avg_cost'), cost(value('avg_cost'), estimated))}
+        ${cell(value('avg_latency'), latency(value('avg_latency')))}
+        ${cell(value('peak_tokens'), number(agent.peak_tokens))}
+        ${cell(agent.last_activity, agent.last_activity ? time(agent.last_activity) : '–', 'pk-num pk-muted')}
       </tr>`;
     })}</tbody>
   </table></div>`);
@@ -290,7 +281,7 @@ function drawLlms() {
     }
     if (call.latency_ms != null) model.latencies.push(call.latency_ms);
   }
-  const rows = [...models.values()].sort((a, b) => b.calls - a.calls);
+  const rows = [...models.values()];
   $('llmsCount').textContent = rows.length || '';
   if (!rows.length) {
     render($('llms'), empty('cpu', 'No LLM calls recorded'));
@@ -302,22 +293,28 @@ function drawLlms() {
     const sorted = [...values].sort((a, b) => a - b);
     return sorted[Math.min(sorted.length - 1, Math.floor(0.95 * sorted.length))];
   };
-  render($('llms'), html`<div class="pk-table-wrap"><table class="pk-table cu-table">
-    <thead><tr><th>Model</th><th class="pk-num">Calls</th><th class="pk-num">Σ Tokens</th><th class="pk-num">Σ Prompt</th>
+  // the most used first, until the viewer picks another column
+  render($('llms'), html`<div class="pk-table-wrap"><table class="pk-table cu-table" data-pk-sort="llms">
+    <thead><tr><th>Model</th><th class="pk-num" aria-sort="descending">Calls</th><th class="pk-num">Σ Tokens</th><th class="pk-num">Σ Prompt</th>
       <th class="pk-num">Σ Output</th><th class="pk-num">Σ Cached</th><th class="pk-num">Σ Cost</th><th class="pk-num">Ø Cost</th>
       <th class="pk-num">Ø Latency</th><th class="pk-num">p95 Latency</th></tr></thead>
-    <tbody>${rows.map((model) => html`<tr>
-      <td class="pk-mono">${model.name}</td>
-      <td class="pk-num">${number(model.calls)}</td>
-      <td class="pk-num">${number(model.total)}</td>
-      <td class="pk-num">${number(model.prompt)}</td>
-      <td class="pk-num">${number(model.output)}</td>
-      <td class="pk-num">${number(model.cached)} <span class="pk-muted">(${model.prompt ? ((model.cached / model.prompt) * 100).toFixed(0) : 0}%)</span></td>
-      <td class="pk-num">${cost(model.costCalls ? model.cost : null, model.estimated > 0)}</td>
-      <td class="pk-num">${cost(model.costCalls ? model.cost / model.costCalls : null, model.estimated > 0)}</td>
-      <td class="pk-num">${latency(average(model.latencies))}</td>
-      <td class="pk-num">${latency(p95(model.latencies))}</td>
-    </tr>`)}</tbody>
+    <tbody>${rows.map((model) => {
+      const spent = model.costCalls ? model.cost : null;
+      const each = model.costCalls ? model.cost / model.costCalls : null;
+      const [mean, slow] = [average(model.latencies), p95(model.latencies)];
+      return html`<tr>
+        <td class="pk-mono">${model.name}</td>
+        ${cell(model.calls, number(model.calls))}
+        ${cell(model.total, number(model.total))}
+        ${cell(model.prompt, number(model.prompt))}
+        ${cell(model.output, number(model.output))}
+        ${cell(model.cached, html`${number(model.cached)} <span class="pk-muted">(${model.prompt ? ((model.cached / model.prompt) * 100).toFixed(0) : 0}%)</span>`)}
+        ${cell(spent, cost(spent, model.estimated > 0))}
+        ${cell(each, cost(each, model.estimated > 0))}
+        ${cell(mean, latency(mean))}
+        ${cell(slow, latency(slow))}
+      </tr>`;
+    })}</tbody>
   </table></div>`);
 }
 
@@ -337,22 +334,23 @@ function drawCalls() {
   }
   const own = scoped();
   const focused = document.activeElement?.closest('#calls tr[data-key]')?.dataset.key;
-  render($('calls'), html`<div class="pk-table-wrap"><table class="pk-table cu-table cu-calls">
+  // newest first until the viewer sorts; a sort orders the calls shown, the select says which those are
+  render($('calls'), html`<div class="pk-table-wrap"><table class="pk-table cu-table cu-calls" data-pk-sort="calls">
     <thead><tr><th>Time</th><th>Agent</th><th>Session · Request</th><th>Model</th><th class="pk-num">Prompt</th>
       <th class="pk-num">Output</th><th class="pk-num">Cached</th><th class="pk-num">Writes</th><th class="pk-num">Context</th>
       <th class="pk-num">Latency</th><th class="pk-num">Cost</th></tr></thead>
     <tbody>${callRows.map((call, index) => html`<tr tabindex="0" data-index="${index}" data-key="${callKey(call)}">
-      <td class="pk-mono">${time(call.timestamp)}</td>
-      <td>${own && call.session_id !== own ? html`<span class="pk-muted" title="a sub-agent's call">↳ </span>` : ''}${call.agent_name}</td>
+      ${cell(call.timestamp, time(call.timestamp), 'pk-mono')}
+      <td data-sort-value="${call.agent_name}">${own && call.session_id !== own ? html`<span class="pk-muted" title="a sub-agent's call">↳ </span>` : ''}${call.agent_name}</td>
       <td class="pk-mono cu-ids" title="${`session: ${call.session_id || '–'}\nrequest: ${call.request_id || '–'}`}">${call.session_id || '–'}${call.request_id ? ` · ${call.request_id}` : ''}</td>
       <td class="pk-mono">${call.model || '–'}</td>
-      <td class="pk-num">${number(call.prompt_tokens)}</td>
-      <td class="pk-num">${number(call.completion_tokens)}</td>
-      <td class="pk-num">${number(call.cached_tokens)}</td>
-      <td class="pk-num">${number(call.cache_write_tokens)}</td>
-      <td class="pk-num pk-muted">${percent(call.usage_percentage)}</td>
-      <td class="pk-num">${latency(call.latency_ms)}</td>
-      <td class="pk-num">${cost(call.cost, call.cost_is_estimate)}</td>
+      ${cell(call.prompt_tokens ?? 0, number(call.prompt_tokens))}
+      ${cell(call.completion_tokens ?? 0, number(call.completion_tokens))}
+      ${cell(call.cached_tokens ?? 0, number(call.cached_tokens))}
+      ${cell(call.cache_write_tokens ?? 0, number(call.cache_write_tokens))}
+      ${cell(call.usage_percentage ?? 0, percent(call.usage_percentage), 'pk-num pk-muted')}
+      ${cell(call.latency_ms, latency(call.latency_ms))}
+      ${cell(call.cost, cost(call.cost, call.cost_is_estimate))}
     </tr>`)}</tbody>
   </table></div>`);
   if (focused) focusCall(focused);  // a redraw replaces the row the keyboard was on
@@ -408,13 +406,6 @@ $('clearButton').addEventListener('click', clearHistory);
 $('chartAgent').addEventListener('change', drawChart);
 $('callAgent').addEventListener('change', drawCalls);
 $('callLimit').addEventListener('change', drawCalls);
-$('agents').addEventListener('click', (event) => {
-  const header = event.target.closest('[data-sort]');
-  if (!header) return;
-  const key = header.dataset.sort;
-  agentSort = { key, dir: agentSort.key === key ? -agentSort.dir : -1 };
-  drawAgents();
-});
 $('calls').addEventListener('click', (event) => {
   const row = event.target.closest('tr[data-index]');
   if (row) openCall(Number(row.dataset.index));

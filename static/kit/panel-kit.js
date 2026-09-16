@@ -48,7 +48,16 @@ export function html(strings, ...values) {
 export function trusted(markup) { return new SafeHtml(String(markup)); }
 
 export function render(element, content) {
+  // a redraw replaces the column head the keyboard sorted with: the focus goes to its successor
+  const focused = document.activeElement?.closest('table[data-pk-sort] .pk-sort');
+  const table = focused?.closest('table[data-pk-sort]');
+  const refocus = table && element.contains(table) ? { name: table.dataset.pkSort, key: headKey(focused.parentElement) } : null;
   element.innerHTML = fragment(content);
+  sortTables(element);
+  if (refocus) {
+    [...element.querySelectorAll(`table[data-pk-sort="${CSS.escape(refocus.name)}"] .pk-sort`)]
+      .find((button) => headKey(button.parentElement) === refocus.key)?.focus();
+  }
 }
 
 /**
@@ -570,10 +579,117 @@ export function initTabs(root = document) {
   });
 }
 
+// ---------------------------------------------------------------- sortable tables
+
+/*
+ * <table class="pk-table" data-pk-sort="calls">: a click on a column head sorts the rows -- a number
+ * column biggest first, any other A to Z, a click on the column sorted by reverses -- and the choice holds through
+ * every render() of the table. The name tells a page's tables apart; the choice follows the head's
+ * text, so a column shown only sometimes does not shift it. A cell sorts by its data-sort-value,
+ * else by its text; a column of numbers as numbers, of ISO timestamps as points in time (without a
+ * zone: UTC), any other all naturally ("B9" before "B10"), an empty cell or a lone dash last in either
+ * direction. A head with data-pk-nosort, without text or with a control of its own stays plain.
+ * aria-sort in the markup is the order until the viewer picks one. A <thead> with one row, one <tbody>, no colspan.
+ */
+const sortChoices = new Map();  // table name -> { key, dir }
+const renderedAt = new WeakMap();  // row -> its place as rendered, which breaks ties
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+const EMPTY_CELLS = new Set(['', '-', '–', '—']);
+
+const headKey = (th) => th.textContent.trim();
+
+function cellValue(row, column) {
+  const cell = row.cells[column];
+  return cell ? (cell.dataset.sortValue ?? cell.textContent).trim() : '';
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}|$)/;
+const WITH_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+const CONTROLS = 'a[href], button, input, select, textarea, [tabindex]';
+
+// without a zone a time is UTC, as the databases write it: read as local time, a clock change would turn two round
+const instant = (value) => Date.parse(value.length > 10 && !WITH_ZONE.test(value) ? `${value.replace(' ', 'T')}Z` : value);
+
+/**
+ * How a column's values compare: as numbers or as points in time when all of them are, else all as text. Decided
+ * pair by pair, a column of both would have no order ("-10" < "-5" < "-5x" < "-10").
+ */
+function comparer(values) {
+  if (values.every((value) => Number.isFinite(Number(value)))) return (a, b) => Number(a) - Number(b);
+  // as text, "10:00:00+00:00" would follow "10:00:00.5+00:00", and a later time with another offset an earlier one
+  if (values.every((value) => ISO_DATE.test(value) && Number.isFinite(instant(value)))) {
+    return (a, b) => instant(a) - instant(b);
+  }
+  return collator.compare;
+}
+
+/** The viewer's choice while its column is shown, else the one the markup names. */
+function sortChoice(table, heads) {
+  const chosen = sortChoices.get(table.dataset.pkSort);
+  if (chosen && heads.some((th) => headKey(th) === chosen.key)) return chosen;
+  const marked = heads.find((th) => ['ascending', 'descending'].includes(th.getAttribute('aria-sort')));
+  return marked ? { key: headKey(marked), dir: marked.getAttribute('aria-sort') === 'ascending' ? 1 : -1 } : null;
+}
+
+function sortTable(table) {
+  const heads = [...(table.tHead?.rows[0]?.cells ?? [])];
+  const body = table.tBodies[0];
+  if (!heads.length || !body) return;
+  for (const th of heads) {
+    // wrapped already, or holding a control of its own: a control inside a button is not allowed
+    if (th.hasAttribute('data-pk-nosort') || !headKey(th) || th.querySelector(CONTROLS)) continue;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'pk-sort';
+    button.append(...th.childNodes);
+    th.append(button);
+  }
+  const choice = sortChoice(table, heads);
+  if (!choice) return;
+  const column = heads.findIndex((th) => headKey(th) === choice.key);
+  heads.forEach((th, i) => {
+    if (i === column) th.setAttribute('aria-sort', choice.dir > 0 ? 'ascending' : 'descending');
+    else th.removeAttribute('aria-sort');
+  });
+  const rows = [...body.rows].map((row, i) => {
+    if (!renderedAt.has(row)) renderedAt.set(row, i);
+    return { row, value: cellValue(row, column), at: renderedAt.get(row) };
+  });
+  const compare = comparer(rows.map(({ value }) => value).filter((value) => !EMPTY_CELLS.has(value)));
+  rows.sort((a, b) => {
+    const emptyA = EMPTY_CELLS.has(a.value);
+    const emptyB = EMPTY_CELLS.has(b.value);
+    if (emptyA !== emptyB) return emptyA ? 1 : -1;
+    return (emptyA ? 0 : choice.dir * compare(a.value, b.value)) || a.at - b.at;
+  });
+  body.append(...rows.map(({ row }) => row));
+}
+
+/** The sortable tables in root, and the one root sits in (a render into a tbody). */
+function sortTables(root) {
+  const tables = [...root.querySelectorAll('table[data-pk-sort]')];
+  const around = root.closest?.('table[data-pk-sort]');
+  if (around) tables.push(around);
+  tables.forEach(sortTable);
+}
+
+document.addEventListener('click', (event) => {
+  // the whole head cell, not only its text: the button is what the keyboard reaches
+  const th = event.target instanceof Element ? event.target.closest('th') : null;
+  const table = th?.querySelector(':scope > .pk-sort') && th.closest('table[data-pk-sort]');
+  if (!table) return;
+  const current = sortChoice(table, [...th.parentElement.cells]);
+  const key = headKey(th);
+  const dir = current?.key === key ? -current.dir : th.classList.contains('pk-num') ? -1 : 1;
+  sortChoices.set(table.dataset.pkSort, { key, dir });
+  sortTable(table);
+});
+
 // ---------------------------------------------------------------- start
 
 function start() {
   initTabs();
+  sortTables(document);
   if (framed) post('pk:ready');
 }
 

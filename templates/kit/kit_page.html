@@ -83,12 +83,12 @@
   </div>
   <div id="kit-tab-a" role="tabpanel">
     <div class="pk-table-wrap">
-      <table class="pk-table">
-        <thead><tr><th>Time</th><th>Agent</th><th>Status</th><th class="pk-num">Duration</th></tr></thead>
+      <table class="pk-table" data-pk-sort="kit-demo">
+        <thead><tr><th aria-sort="descending">Time</th><th>Agent</th><th>Status</th><th class="pk-num">Duration</th></tr></thead>
         <tbody>
-          <tr><td class="pk-mono">14:02:11</td><td>writer_review</td><td><span class="pk-badge pk-badge--ok">ok</span></td><td class="pk-num">1.2 s</td></tr>
-          <tr aria-selected="true"><td class="pk-mono">14:01:58</td><td>coder</td><td><span class="pk-badge pk-badge--warn">retry</span></td><td class="pk-num">4.8 s</td></tr>
-          <tr><td class="pk-mono">14:01:40</td><td>research</td><td><span class="pk-badge pk-badge--danger">error</span></td><td class="pk-num">0.3 s</td></tr>
+          <tr><td class="pk-mono">14:02:11</td><td>writer_review</td><td><span class="pk-badge pk-badge--ok">ok</span></td><td class="pk-num" data-sort-value="1200">1.2 s</td></tr>
+          <tr aria-selected="true"><td class="pk-mono">14:01:58</td><td>coder</td><td><span class="pk-badge pk-badge--warn">retry</span></td><td class="pk-num" data-sort-value="850">850 ms</td></tr>
+          <tr><td class="pk-mono">14:01:40</td><td>research</td><td><span class="pk-badge pk-badge--danger">error</span></td><td class="pk-num" data-sort-value="4800">4.8 s</td></tr>
         </tbody>
       </table>
     </div>

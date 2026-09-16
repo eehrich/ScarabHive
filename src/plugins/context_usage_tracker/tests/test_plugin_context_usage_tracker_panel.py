@@ -98,6 +98,7 @@ EXPECTED = [
     'a tick of the auto refresh leaves a load still on its way alone',
     'the LLMs tab adds up each model with its average and p95 latency',
     "calls filter by agent, mark a sub-agent's call and open in the drawer",
+    'the calls sort by a column, by value and not by the text shown, and keep that order when the table draws anew',
     'the auto refresh runs from the start and brings a new call',
     'keyboard focus stays on its call when the table draws anew, also after the drawer closes',
     'with no session open the panel says so instead of counting every session',

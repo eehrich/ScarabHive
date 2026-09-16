@@ -36,6 +36,7 @@
   const n = (value) => Number(value).toLocaleString();
   const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
   const tab = (name) => $(`[data-tab="${name}"]`).click();
+  const headOf = (id, text) => [...doc().querySelectorAll(`#${id} th`)].find((th) => th.textContent.trim() === text);
 
   await go('/plugins/context_usage_tracker/?session_id=s-1');
 
@@ -115,9 +116,9 @@
     tab('agents');
     const names = () => rows('agents').map((row) => cells(row)[0]);
     const byCost = names().join();  // most expensive first
-    $('#agents th[data-sort="total_cost"]').click();
+    headOf('agents', 'Σ Cost').click();
     const byCostUp = names();
-    $('#agents th[data-sort="total_calls"]').click();
+    headOf('agents', 'Calls').click();
     const byCalls = names();
     const share = (name) => cells(rows('agents').find((row) => cells(row)[0] === name))[5].replace(/^[\d,.\s]+/, '');
     // all-time: writer's paired counts give 800 of 2,500; the archivist's calls predate the pair
@@ -126,7 +127,7 @@
     await until('the agents of s-1', () => statValue('calls') === '3' && rows('agents').length === 2);
     const inSession = share('writer') === '(32%)';  // the session's own calls, summed
     return byCost.startsWith('writer,helper') && byCostUp.at(-1) === 'writer' && byCostUp.at(-2) === 'helper'
-      && $('#agents th[data-sort="total_calls"]').getAttribute('aria-sort') === 'descending'
+      && headOf('agents', 'Calls').getAttribute('aria-sort') === 'descending'
       && byCalls.slice(0, 3).join() === 'bulk,archivist,writer' && allTime && inSession;
   });
 
@@ -193,6 +194,24 @@
     select.dispatchEvent(new Event('change'));
     return marked.length === 1 && marked[0].includes('helper') && writerOnly && facts.Agent === 'writer'
       && facts.Cost === '0.3000¢' && facts.Request === 'r-1' && !$('#detail').open;
+  });
+
+  await check('the calls sort by a column, by value and not by the text shown, and keep that order when the table draws anew', async () => {
+    tab('calls');
+    const column = (i) => rows('calls').map((row) => cells(row)[i]).join();
+    const newest = column(10);  // 0.300¢,~0.050¢,0.200¢
+    headOf('calls', 'Cost').click();  // biggest first
+    const byCost = column(10) === '0.300¢,0.200¢,~0.050¢';
+    const before = $('#calls table');
+    $('pk-refresh [data-act="now"]').click();
+    await until('the calls drawn anew', () => $('#calls table') !== before);
+    const kept = column(10) === '0.300¢,0.200¢,~0.050¢' && headOf('calls', 'Cost').getAttribute('aria-sort') === 'descending';
+    headOf('calls', 'Latency').click();  // as text "800 ms" would come before "1.20 s"
+    const byLatency = column(9) === '1.20 s,800 ms,300 ms';
+    headOf('calls', 'Time').click();
+    headOf('calls', 'Time').click();  // newest first again, as the checks after this one expect
+    return newest === '0.300¢,~0.050¢,0.200¢' && byCost && kept && byLatency && column(10) === newest
+      && headOf('calls', 'Time').getAttribute('aria-sort') === 'descending';
   });
 
   await check('the auto refresh runs from the start and brings a new call', async () => {

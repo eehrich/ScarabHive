@@ -39,9 +39,9 @@ In the launcher under **Context**; a session's info button offers it too, opened
   tokens, cached tokens and their share of the prompt, cache writes, and the context in use now (`stale` after a
   context optimisation).
 - **Overview**: tokens and cost of the newest 60 calls (Chart.js from `static/vendor/chartjs`), per agent if chosen,
-  and current, min, max and average context. **Agents**: sums per agent, sortable by any column. **LLMs**: sums per
-  model with average and p95 latency. **Calls**: the newest 50 to 500, per agent; a sub-agent's call is marked `↳`,
-  a row opens the call in a drawer.
+  and current, min, max and average context. **Agents**: sums per agent. **LLMs**: sums per model with average and
+  p95 latency. **Calls**: the newest 50 to 500, per agent; a sub-agent's call is marked `↳`, a row opens the call
+  in a drawer. A click on a column head sorts a table by it; the order holds through the auto refresh.
 - Costs are shown in cents. Clearing asks first and deletes every call and all agent totals, of every session.
 
 ## API

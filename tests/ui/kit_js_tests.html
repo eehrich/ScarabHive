@@ -392,6 +392,139 @@
     return scrollsSideways && headSticks && focusClear && boxScrollsNot && proseWraps && codeKept;
   });
 
+  // sortable tables: a table as a panel renders it, and what a viewer sees of it
+  const sortableTable = (name, head, body) => pk.trusted(
+    `<table class="pk-table" data-pk-sort="${name}"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`);
+  const size = (value, shown = value) => `<td class="pk-num" data-sort-value="${value}">${shown}</td>`;
+  const column = (box, i) => [...box.querySelectorAll('tbody tr')].map((tr) => tr.cells[i].textContent).join('|');
+  const head = (box, text) => [...box.querySelectorAll('th')].find((th) => th.textContent.trim() === text);
+  const clickHead = (box, text) => head(box, text).querySelector('.pk-sort').click();
+
+  await check('a sortable table sorts by the head the viewer clicks: numbers biggest first, text A to Z, a second click reverses', () => {
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    pk.render(box, sortableTable('t-click', '<th>Name</th><th class="pk-num">Size</th><th data-pk-nosort>Note</th><th></th>',
+      `<tr><td>B10</td>${size(9)}<td>x</td><td></td></tr><tr><td>b9</td>${size(1000, '1,000')}<td>x</td><td></td></tr>`
+      + `<tr><td>a</td>${size(10)}<td>x</td><td></td></tr>`));
+    const untouched = column(box, 0) === 'B10|b9|a';
+    const buttons = [...box.querySelectorAll('th')].map((th) => Boolean(th.querySelector(':scope > button.pk-sort')));
+    clickHead(box, 'Size');
+    const biggestFirst = column(box, 1) === '1,000|10|9';
+    clickHead(box, 'Size');
+    const reversed = column(box, 1) === '9|10|1,000';
+    head(box, 'Name').click();  // the cell around the text sorts too
+    const natural = column(box, 0) === 'a|b9|B10';
+    const marked = head(box, 'Name').getAttribute('aria-sort') === 'ascending' && !head(box, 'Size').hasAttribute('aria-sort');
+    box.remove();
+    return untouched && buttons.join() === 'true,true,false,false' && biggestFirst && reversed && natural && marked;
+  });
+
+  await check('a chosen order holds through a re-render and follows its head when a column comes or goes, empty cells last', () => {
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    pk.render(box, sortableTable('t-keep', '<th>Name</th><th class="pk-num">Size</th>',
+      `<tr><td>a</td>${size(1)}</tr><tr><td>b</td>${size(3)}</tr>`));
+    clickHead(box, 'Size');
+    // the next load: other rows, sizes missing or dashed, and a column shown in front of the others
+    pk.render(box, sortableTable('t-keep', '<th>Session</th><th>Name</th><th class="pk-num">Size</th>',
+      `<tr><td>s</td><td>c</td>${size(2)}</tr><tr><td>s</td><td>d</td>${size('', '–')}</tr>`
+      + `<tr><td>s</td><td>e</td>${size(5)}</tr><tr><td>s</td><td>f</td><td class="pk-num">–</td></tr>`));
+    const kept = column(box, 1) === 'e|c|d|f' && head(box, 'Size').getAttribute('aria-sort') === 'descending';
+    clickHead(box, 'Size');
+    const emptiesLast = column(box, 1) === 'c|e|d|f';
+    // a panel that renders only the rows
+    pk.render(box.querySelector('tbody'), pk.trusted(`<tr><td>s</td><td>g</td>${size(9)}</tr><tr><td>s</td><td>h</td>${size(4)}</tr>`));
+    const intoBody = column(box, 1) === 'h|g';
+    box.remove();
+    return kept && emptiesLast && intoBody;
+  });
+
+  await check('the order the markup names holds until the viewer picks one, and ties keep the rendered order', () => {
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    pk.render(box, sortableTable('t-marked', '<th>Name</th><th class="pk-num" aria-sort="descending">Size</th>',
+      `<tr><td>a</td>${size(1)}</tr><tr><td>b</td>${size(7)}</tr><tr><td>c</td>${size(1)}</tr><tr><td>d</td>${size(7)}</tr>`));
+    const ordered = column(box, 0) === 'b|d|a|c';
+    clickHead(box, 'Name');
+    clickHead(box, 'Name');  // Z to A: d c b a
+    clickHead(box, 'Size');  // back to the sizes: equal ones in the order they came, not the order Z to A left
+    const ties = column(box, 0) === 'b|d|a|c';
+    box.remove();
+    return ordered && ties;
+  });
+
+  await check('timestamps sort as points in time, with or without a fraction of a second, in any offset, and without one as UTC', () => {
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    const at = (name, iso) => `<tr><td>${name}</td><td data-sort-value="${iso}">${name}</td></tr>`;
+    pk.render(box, sortableTable('t-time', '<th>Name</th><th>When</th>',
+      at('half-past', '2026-09-16T10:00:00.500000+00:00') + at('on-the-second', '2026-09-16T10:00:00+00:00')
+      + at('earliest', '2026-09-16T11:30:00+02:00')));
+    clickHead(box, 'When');
+    const ascending = column(box, 0);
+    // read as local time, half-past-ten would move before 12:15 at +02:00 east of UTC and after 05:45 at -05:00 west
+    // of it; where the clocks go forward on 29 March (as on this machine), the last two would turn round as well
+    pk.render(box, sortableTable('t-utc', '<th>Name</th><th>When</th>',
+      at('half-past-ten', '2026-09-16 10:30:00') + at('quarter-past-noon-at-two', '2026-09-16T12:15:00+02:00')
+      + at('quarter-to-six-at-minus-five', '2026-09-16T05:45:00-05:00')
+      + at('ten-past-three', '2026-03-29 03:10:00') + at('half-past-two', '2026-03-29 02:30:00')));
+    clickHead(box, 'When');
+    const utc = column(box, 0);
+    box.remove();
+    return ascending === 'earliest|on-the-second|half-past'
+      && utc === 'half-past-two|ten-past-three|quarter-past-noon-at-two|half-past-ten|quarter-to-six-at-minus-five';
+  });
+
+  await check('a column sorts as numbers only when all its values but the blank ones are numbers, else all as text, whatever order the rows came in', () => {
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    const ascending = (values) => {
+      pk.render(box, sortableTable('t-mixed', '<th>Value</th>', values.map((value) => `<tr><td>${value}</td></tr>`).join('')));
+      if (!head(box, 'Value').hasAttribute('aria-sort')) clickHead(box, 'Value');
+      return column(box, 0);
+    };
+    // pair by pair "-10" < "-5" as numbers, but "-5" < "-5x" < "-10" as text: no order at all
+    const orders = [['-10', '-5', '-5x'], ['-5x', '-10', '-5'], ['-5', '-5x', '-10']].map(ascending);
+    // blank cells have no say: decimals still sort as numbers -- as text "1.5" would come before "1.25"
+    pk.render(box, sortableTable('t-decimals', '<th>Value</th>', ['1.5', '–', '1.25', ''].map((value) => `<tr><td>${value}</td></tr>`).join('')));
+    clickHead(box, 'Value');
+    const decimals = column(box, 0);
+    box.remove();
+    return orders.every((order) => order === '-5|-5x|-10') && decimals === '1.25|1.5|–|';
+  });
+
+  await check('a head holding a control of its own is left as it is', () => {
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    pk.render(box, sortableTable('t-control', '<th><input type="checkbox" aria-label="Select all"> All</th>'
+      + '<th><a href="#top">Name</a></th><th>Size</th>', '<tr><td></td><td>b</td><td>1</td></tr><tr><td></td><td>a</td><td>2</td></tr>'));
+    const buttons = [...box.querySelectorAll('th')].map((th) => Boolean(th.querySelector('.pk-sort')));
+    box.querySelector('th input').click();
+    const unsorted = column(box, 1) === 'b|a' && !box.querySelector('th[aria-sort]');
+    box.remove();
+    return buttons.join() === 'false,false,true' && unsorted;
+  });
+
+  await check('the keyboard stays on the column head it sorted with when the table is drawn anew', () => {
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    const draw = (rows) => pk.render(box, sortableTable('t-focus', '<th>Name</th><th class="pk-num">Size</th>', rows));
+    draw(`<tr><td>a</td>${size(1)}</tr>`);
+    const button = head(box, 'Size').querySelector('.pk-sort');
+    button.focus();
+    button.click();
+    draw(`<tr><td>a</td>${size(1)}</tr><tr><td>b</td>${size(2)}</tr>`);
+    const focused = document.activeElement;
+    const kept = focused !== button && focused.classList.contains('pk-sort') && focused.textContent === 'Size'
+      && box.contains(focused) && column(box, 0) === 'b|a';
+    // a head the keyboard is not on is left alone
+    focused.blur();
+    draw(`<tr><td>c</td>${size(3)}</tr>`);
+    const untouched = !box.contains(document.activeElement);
+    box.remove();
+    return kept && untouched;
+  });
+
   await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });
 </script>
 </body>

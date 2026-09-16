@@ -157,6 +157,41 @@ session.onChange(load);
 load();
 ```
 
+**Sortierbare Tabellen** brauchen kein eigenes Skript: `render()` sortiert
+danach jede `<table class="pk-table" data-pk-sort="<name>">` mit `<thead>`, die
+es gerendert hat (auch die umschließende, wenn nur der `tbody` neu kommt).
+
+- Ein Klick irgendwo in die Kopfzelle sortiert, eine `.pk-num`-Spalte größte
+  zuerst, jede andere A–Z; der zweite Klick dreht um. Auf der Spalte, nach der
+  die Tabelle gerade sortiert ist (auch per `aria-sort` im Markup), dreht schon
+  der erste Klick um. Das Kit legt den Kopfinhalt in einen
+  `<button class="pk-sort">` (Tastatur). Köpfe ohne Text, mit eigenem
+  Bedienelement (Link, Button, Eingabefeld, Auswahl, alles mit `tabindex`)
+  oder mit `data-pk-nosort` bleiben stumm; `data-pk-nosort` auch dort, wo die
+  Werte keine Ordnung haben (eine Reihe Badges).
+- Die Wahl hält über jedes Neuzeichnen (Auto-Refresh) und hängt am
+  **Kopftext**, nicht an der Spaltennummer; eine Spalte, die nur manchmal da
+  ist, verschiebt sie also nicht. Der Name trennt die Tabellen einer Seite.
+  Nach einem Reload ist sie weg.
+- Sortiert wird nach `data-sort-value`, sonst nach dem Text. Sind alle Werte
+  einer Spalte Zahlen, als Zahlen; alle ISO-Zeitstempel, als Zeitpunkte (ohne
+  Zone als UTC, wie unsere Datenbanken schreiben); sonst
+  die ganze Spalte natürlich als Text („B9" vor „B10"). Leer oder ein
+  einzelner Strich steht immer am Ende. **Jede Zelle, deren Text nicht ihr
+  Wert ist** (`toLocaleString()` mit Tausenderpunkt, „1.2 s", „0.300¢", ein
+  Badge, ein gekürzter Text), bekommt `data-sort-value="${roh ?? ''}"`.
+- `aria-sort="descending"` im Markup ist die Reihenfolge, bis der Nutzer
+  wählt. Sortiert das Panel seine Zeilen heute nach einer Spalte, gehört
+  diese Markierung an den Kopf und die JS-Sortierung weg.
+- Nicht sortierbar machen: Schlüssel-Wert-Tabellen, Tabellen mit Zeilenpaaren
+  (Detailzeile unter jedem Eintrag) und serverseitig seitenweise geladene
+  Listen — dort sortiert der Server (`writer_admin`). Eine Liste „die neuesten
+  N" sortiert das Kit innerhalb dieser N.
+- Eine Kopfzeile, ein `<tbody>` (nur das erste wird sortiert), kein
+  `colspan`. Zeilen behalten beim Umsortieren ihre
+  Attribute; Handler über `data-id`/`data-index` funktionieren weiter, Code,
+  der die Reihenfolge im DOM liest, nicht.
+
 ## 4. Aussehen
 
 - **Komponenten** statt eigener: `pk-btn` (`--primary`, `--danger`, `--ghost`,

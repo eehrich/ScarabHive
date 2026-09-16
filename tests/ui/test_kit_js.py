@@ -49,6 +49,13 @@ EXPECTED = [
     "a refresh says whether the viewer or the timer asked",
     "hidden hides whatever display a component sets",
     "a panel pushed narrow scrolls sideways with its scrollbar in view, and prose tables still wrap",
+    "a sortable table sorts by the head the viewer clicks: numbers biggest first, text A to Z, a second click reverses",
+    "a chosen order holds through a re-render and follows its head when a column comes or goes, empty cells last",
+    "the order the markup names holds until the viewer picks one, and ties keep the rendered order",
+    "timestamps sort as points in time, with or without a fraction of a second, in any offset, and without one as UTC",
+    "a column sorts as numbers only when all its values but the blank ones are numbers, else all as text, whatever order the rows came in",
+    "a head holding a control of its own is left as it is",
+    "the keyboard stays on the column head it sorted with when the table is drawn anew",
 ]
 
 
