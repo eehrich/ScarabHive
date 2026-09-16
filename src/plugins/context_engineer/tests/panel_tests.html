@@ -257,6 +257,25 @@
     return running;
   });
 
+  await check('a click on a head sorts the compactions by value, and the order holds when they are drawn anew', async () => {
+    const head = (text) => [...doc().querySelectorAll('#events thead th')].find((th) => th.textContent.trim() === text);
+    const saved = (...values) => values.map(number).join('|');
+    await stub('record?saved=900');  // "900" before "20,000" as text
+    await go('/plugins/context_engineer/?session_id=s-1');
+    await until('the five compactions of s-1', () => rows().length === 5);
+    await autoOff();
+    const byTime = head('Time').getAttribute('aria-sort') === 'descending' && !head('Saved').hasAttribute('aria-sort');
+    head('Saved').click();
+    const sorted = column(4) === saved(20000, 4000, 2000, 1000, 900) && head('Saved').getAttribute('aria-sort') === 'descending'
+      && !head('Time').hasAttribute('aria-sort');
+    const table = $('#events table');
+    await stub('record?saved=3000');
+    $('pk-refresh [data-act="now"]').click();
+    await until('the compactions drawn anew', () => $('#events table') !== table && rows().length === 6);
+    return byTime && sorted && column(4) === saved(20000, 4000, 3000, 2000, 1000, 900)
+      && head('Saved').getAttribute('aria-sort') === 'descending';
+  });
+
   await fetch('/__results', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
 </script>

@@ -109,6 +109,27 @@
       && !failed.querySelector('img') && !failed.querySelector('b') && window.__xss === undefined;
   });
 
+  await check("the finished jobs come in the tracker's order until a click on a column head sorts them by value, and that order holds when they are drawn anew", async () => {
+    await fresh();
+    const head = (label) => [...doc().querySelectorAll('#recent th')].find((th) => th.textContent.trim() === label);
+    const listed = (await get('/plugins/comfyui/jobs')).recent.map((job) => job.prompt_id).join();
+    const byFinished = head('Finished').getAttribute('aria-sort') === 'descending' && keys('recent').join() === listed;
+    head('Duration').click();
+    // 1h 2m, about 6m 40s, 2m 5s, about 50s, none: as text, 50s would come first
+    const BY_DURATION = 'fail-5555-e,lost-3333-c,done-4444-d,hist-7777-g,old-8888-h';
+    const sorted = keys('recent').join() === BY_DURATION && head('Duration').getAttribute('aria-sort') === 'descending'
+      && !head('Finished').hasAttribute('aria-sort');
+    const drawn = $('#recent table');
+    now();
+    await until('the jobs drawn anew', () => $('#recent table') !== drawn);
+    const held = keys('recent').join() === BY_DURATION && keys('active').join() === ACTIVE;
+    // a count: the most first, summed over the kinds -- four images before two images and a text
+    head('Outputs').click();
+    const byOutputs = keys('recent').slice(0, 2).join() === 'old-8888-h,done-4444-d'
+      && head('Outputs').getAttribute('aria-sort') === 'descending';
+    return byFinished && sorted && held && byOutputs;
+  });
+
   await check('cancelling asks first: declined nothing happens, confirmed the job is cancelled on its server', async () => {
     await fresh();
     cancelButton('wait-2222-b').click();

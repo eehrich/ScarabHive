@@ -4,7 +4,8 @@
 .cu-servers:empty { display: none; }
 .cu-heading { font-size: var(--text-sm); font-weight: 600; margin: 0; }
 .cu-error { color: var(--danger); font-size: var(--text-xs); max-width: 18rem; }
-.cu-output { white-space: nowrap; margin-right: var(--space-2); }
+.cu-output { white-space: nowrap; }
+.cu-output + .cu-output { margin-left: var(--space-2); }
 #jobs { display: flex; flex-direction: column; gap: var(--space-4); }
 #jobs .pk-table td { vertical-align: middle; }
 #jobs .pk-table td.pk-num, #jobs .pk-table td.pk-mono, .cu-time, .pk-badge { white-space: nowrap; }

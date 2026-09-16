@@ -99,8 +99,8 @@ function activeRow(job) {
     <td class="pk-mono" title="${job.prompt_id}">${short(job.prompt_id)}</td>
     <td class="cu-workflow">${job.workflow}</td>
     <td>${badge(job.status)}</td>
-    <td class="cu-time">${when(job.submitted_at)}</td>
-    <td class="pk-num">${duration(job.seconds)}</td>
+    <td class="cu-time" data-sort-value="${job.submitted_at}">${when(job.submitted_at)}</td>
+    <td class="pk-num" data-sort-value="${job.seconds}">${duration(job.seconds)}</td>
     <td class="pk-num"><button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" data-cancel="${job.prompt_id}" ${pending ? html`disabled` : ''}>${icon('ban', { size: 'sm' })} Cancel</button></td>
   </tr>`;
 }
@@ -110,17 +110,19 @@ function recentRow(job) {
   return html`<tr data-job="${job.prompt_id}">
     <td class="pk-mono" title="${job.prompt_id}">${short(job.prompt_id)}</td>
     <td class="cu-workflow">${job.workflow}</td>
-    <td>${badge(job.status)}${job.error ? html`<div class="cu-error pk-truncate" title="${job.error}">${job.error}</div>` : ''}</td>
-    <td class="cu-time">${when(job.completed_at)}</td>
-    <td class="pk-num">${duration(job.seconds)}</td>
-    <td class="cu-time">${outputs.length
+    <td data-sort-value="${job.status}">${badge(job.status)}${job.error ? html`<div class="cu-error pk-truncate" title="${job.error}">${job.error}</div>` : ''}</td>
+    <td class="cu-time" data-sort-value="${job.completed_at}">${when(job.completed_at)}</td>
+    <td class="pk-num" data-sort-value="${job.seconds}">${duration(job.seconds)}</td>
+    <td class="pk-num" data-sort-value="${outputs.reduce((sum, [, count]) => sum + count, 0) || ''}">${outputs.length
       ? outputs.map(([kind, count]) => html`<span class="cu-output" title="${kind}">${icon(OUTPUTS[kind] || 'paperclip', { size: 'sm' })} ${number(count)}</span>`)
       : '—'}</td>
   </tr>`;
 }
 
-const table = (head, rows) => html`<div class="pk-table-wrap"><table class="pk-table">
-  <thead><tr>${head.map(([label, numeric]) => html`<th${numeric ? html` class="pk-num"` : ''}>${label}</th>`)}</tr></thead>
+// a head's order is the one the tracker lists the rows in, until the viewer picks another
+const table = (name, head, rows) => html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="${name}">
+  <thead><tr>${head.map(([label, numeric, order]) =>
+    html`<th${numeric ? html` class="pk-num"` : ''}${order ? html` aria-sort="${order}"` : ''}>${label}</th>`)}</tr></thead>
   <tbody>${rows}</tbody>
 </table></div>`;
 
@@ -131,13 +133,13 @@ function drawJobs() {
     <section class="pk-stack" id="active">
       <h2 class="cu-heading">Active jobs</h2>
       ${shown.active.length
-        ? table([['Job'], ['Workflow'], ['Status'], ['Submitted'], ['Time', true], ['']], shown.active.map(activeRow))
+        ? table('active', [['Job'], ['Workflow'], ['Status'], ['Submitted', false, 'ascending'], ['Time', true], ['']], shown.active.map(activeRow))
         : empty('workflow', 'No active jobs', 'Nothing is queued or running.')}
     </section>
     <section class="pk-stack" id="recent">
       <h2 class="cu-heading">Recently finished</h2>
       ${shown.recent.length
-        ? table([['Job'], ['Workflow'], ['Status'], ['Finished'], ['Duration', true], ['Outputs']], shown.recent.map(recentRow))
+        ? table('recent', [['Job'], ['Workflow'], ['Status'], ['Finished', false, 'descending'], ['Duration', true], ['Outputs', true]], shown.recent.map(recentRow))
         : empty('history', 'No finished jobs yet')}
     </section>`);
   if (focused !== undefined) [...$('jobs').querySelectorAll('button[data-cancel]')].find((button) => button.dataset.cancel === focused)?.focus();

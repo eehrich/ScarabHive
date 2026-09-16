@@ -110,27 +110,28 @@ function drawStats(stats, stores) {
 
 function table(events) {
   const all = scope === 'all';
-  return html`<div class="pk-table-wrap"><table class="pk-table ce-table">
-    <thead><tr><th>Time</th><th>Agent</th>${all ? html`<th>Session</th>` : ''}<th class="pk-num">Before</th><th class="pk-num">After</th>
+  // sorted by Time until the viewer picks a column: the server sends the newest first
+  return html`<div class="pk-table-wrap"><table class="pk-table ce-table" data-pk-sort="compactions">
+    <thead><tr><th aria-sort="descending">Time</th><th>Agent</th>${all ? html`<th>Session</th>` : ''}<th class="pk-num">Before</th><th class="pk-num">After</th>
       <th class="pk-num">Saved</th><th class="pk-num">Reduction</th><th class="pk-num" title="Tool results moved to the store">Stored</th>
-      <th class="pk-num">Media</th><th>Layers</th></tr></thead>
+      <th class="pk-num">Media</th><th data-pk-nosort>Layers</th></tr></thead>
     <tbody>${events.map((event) => html`<tr>
-      <td class="pk-mono">${time(event.timestamp)}</td>
+      <td class="pk-mono" data-sort-value="${event.timestamp ?? ''}">${time(event.timestamp)}</td>
       <td class="ce-clip" title="${event.agent_name || ''}">${event.agent_name || '–'}</td>
       ${all ? html`<td class="pk-mono ce-clip" title="${event.session_id || ''}">${event.session_id || '–'}</td>` : ''}
-      <td class="pk-num">${number(event.original_tokens)}</td>
-      <td class="pk-num">${number(event.final_tokens)}</td>
-      <td class="pk-num">${number(event.tokens_saved)}</td>
-      <td class="pk-num">${Number(event.reduction_percent ?? 0).toFixed(1)}%</td>
-      <td class="pk-num">${event.tool_results_stored ? number(event.tool_results_stored) : '–'}</td>
-      <td class="pk-num">${media(event) ? `${number(media(event))}${event.media_bytes_saved ? ` (${megabytes(event.media_bytes_saved)})` : ''}` : '–'}</td>
+      <td class="pk-num" data-sort-value="${event.original_tokens ?? ''}">${number(event.original_tokens)}</td>
+      <td class="pk-num" data-sort-value="${event.final_tokens ?? ''}">${number(event.final_tokens)}</td>
+      <td class="pk-num" data-sort-value="${event.tokens_saved ?? ''}">${number(event.tokens_saved)}</td>
+      <td class="pk-num" data-sort-value="${event.reduction_percent ?? ''}">${Number(event.reduction_percent ?? 0).toFixed(1)}%</td>
+      <td class="pk-num" data-sort-value="${event.tool_results_stored || ''}">${event.tool_results_stored ? number(event.tool_results_stored) : '–'}</td>
+      <td class="pk-num" data-sort-value="${media(event) || ''}">${media(event) ? `${number(media(event))}${event.media_bytes_saved ? ` (${megabytes(event.media_bytes_saved)})` : ''}` : '–'}</td>
       <td><span class="pk-row ce-layers">${(event.layers_applied || []).map(layer)}</span></td>
     </tr>`)}</tbody>
   </table></div>`;
 }
 
 function facts(list) {
-  return html`<div class="pk-table-wrap"><table class="pk-table ce-facts">
+  return html`<div class="pk-table-wrap"><table class="pk-table ce-facts" data-pk-sort="facts">
     <thead><tr><th>Category</th><th class="pk-num">Importance</th><th>Fact</th></tr></thead>
     <tbody>${list.map((fact) => html`<tr>
       <td><span class="pk-badge">${fact.category}</span></td>

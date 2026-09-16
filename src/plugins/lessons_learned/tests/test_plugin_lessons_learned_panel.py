@@ -177,6 +177,7 @@ EXPECTED = [
     'a failed load shows the error and none of the lessons shown before',
     'a tick of the auto refresh leaves a load still on its way alone',
     'a tick of the auto refresh brings a lesson an agent added',
+    'a click on a head sorts the lessons found, the paged list stays in the order of the server',
 ]
 
 

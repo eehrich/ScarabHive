@@ -159,6 +159,7 @@ EXPECTED = [
     'an answer overtaken by a later load is dropped',
     'a failed load shows the error and nothing of before, also when only the totals fail',
     'ticks of the auto refresh ask nothing more while a load is on its way',
+    'a click on a column head sorts the jobs by value, and the order holds when they are drawn anew',
     'the auto refresh runs from the start and brings what changed',
 ]
 

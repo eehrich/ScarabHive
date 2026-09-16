@@ -101,17 +101,18 @@ function show(list) {
 
 function table(list) {
   const all = scope === 'all';
-  return html`<div class="pk-table-wrap"><table class="pk-table cs-table">
-    <thead><tr><th>Time</th><th>Run</th>${all ? html`<th>Session</th>` : ''}<th class="pk-num">Messages</th>
+  // newest first, as the server lists them, until the viewer picks another order
+  return html`<div class="pk-table-wrap"><table class="pk-table cs-table" data-pk-sort="runs">
+    <thead><tr><th aria-sort="descending">Time</th><th>Run</th>${all ? html`<th>Session</th>` : ''}<th class="pk-num">Messages</th>
       <th class="pk-num">Tokens</th><th class="pk-num">Saved</th><th class="pk-num">Reduction</th></tr></thead>
     <tbody>${list.map((event) => html`<tr tabindex="0" data-id="${event.id}" data-status="${event.status}">
-      <td class="pk-mono">${time(event.timestamp)}</td>
-      <td>${badge(event)}${event.status !== 'success' && event.reason ? html` <span class="pk-muted cs-reason">${reason(event)}</span>` : ''}</td>
+      <td class="pk-mono" data-sort-value="${event.timestamp}">${time(event.timestamp)}</td>
+      <td data-sort-value="${status(event).label}">${badge(event)}${event.status !== 'success' && event.reason ? html` <span class="pk-muted cs-reason">${reason(event)}</span>` : ''}</td>
       ${all ? html`<td class="pk-mono cs-session" title="${event.session_id || ''}">${event.session_id || '–'}</td>` : ''}
-      <td class="pk-num">${number(event.original_message_count)} → ${number(event.summarized_message_count)}</td>
-      <td class="pk-num">${event.original_tokens ? html`${number(event.original_tokens)} → ${number(event.new_tokens)}` : '–'}</td>
-      <td class="pk-num">${number(event.tokens_saved)}</td>
-      <td class="pk-num">${event.status === 'skipped' ? '–' : percent(event.reduction_ratio)}</td>
+      <td class="pk-num" data-sort-value="${event.original_message_count}">${number(event.original_message_count)} → ${number(event.summarized_message_count)}</td>
+      <td class="pk-num" data-sort-value="${event.original_tokens || ''}">${event.original_tokens ? html`${number(event.original_tokens)} → ${number(event.new_tokens)}` : '–'}</td>
+      <td class="pk-num" data-sort-value="${event.tokens_saved}">${number(event.tokens_saved)}</td>
+      <td class="pk-num" data-sort-value="${event.status === 'skipped' ? '' : event.reduction_ratio}">${event.status === 'skipped' ? '–' : percent(event.reduction_ratio)}</td>
     </tr>`)}</tbody>
   </table></div>`;
 }

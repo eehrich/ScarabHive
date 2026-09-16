@@ -272,6 +272,30 @@
     return cleared;
   });
 
+  await check('a click on a column head sorts the runs by value, and the order holds when they are drawn anew', async () => {
+    // after the clearing: one skipped run of s-1, listed in either scope
+    await fetch('/__stub/record?count=20', { method: 'POST' });
+    await fetch('/__stub/record?count=15', { method: 'POST' });
+    refreshNow();
+    await until('the recorded runs', () => rows().length === 3);
+    const heads = () => [...doc().querySelectorAll('#events th')];
+    const head = (label) => heads().find((th) => th.textContent.trim() === label);
+    const counts = () => rows().map((one) => one.children[heads().indexOf(head('Messages'))].textContent.split(' ')[0]).join();
+    const { events } = await (await fetch('/plugins/context_summarizer/history?session_id=s-1')).json();
+    const saved = Object.fromEntries(events.map((one) => [one.original_message_count, one.tokens_saved]));
+    // as text the 15-message run would come first: "909" above "1,849"
+    const asText = new Intl.Collator(undefined, { numeric: true }).compare(n(saved[15]), n(saved[20])) > 0;
+    const byTime = counts() === '15,20,5' && head('Time').getAttribute('aria-sort') === 'descending';
+    head('Saved').click();
+    const sorted = counts() === '20,15,5' && head('Saved').getAttribute('aria-sort') === 'descending'
+      && !head('Time').hasAttribute('aria-sort');
+    const drawn = $('#events table');
+    await fetch('/__stub/record', { method: 'POST' });  // an unchanged answer draws nothing
+    $('pk-refresh [data-act="now"]').click();
+    await until('the list drawn anew', () => $('#events table') !== drawn && rows().length === 4);
+    return asText && byTime && sorted && counts() === '20,15,5,5';
+  });
+
   await fetch('/__results', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
 </script>

@@ -7,7 +7,7 @@ an agent named in markup 40,000 → 36,000 with P, L1 and L2, 2 media in the win
 10,000 → 9,000 with no layer and 2 duplicates), two stored tool results, three archived messages (and one tagged
 ``default``) and four core memory facts, one of them markup; ``s-2`` with one Pre-Layer T compaction; ``s-3`` with 101
 compactions and no stores; ``s-8`` with a core memory file that is no JSON. POST /__stub/record records a compaction in
-``s-1``; GET /__stub/live answers what the hook's own open stores of ``s-1`` count; GET /__stub/disk lists the session directories and the
+``s-1`` of 8,000 tokens (``saved`` of them saved, 2,000 unless given); GET /__stub/live answers what the hook's own open stores of ``s-1`` count; GET /__stub/disk lists the session directories and the
 sessions the hook holds open. GET /__stub/asked counts the calls per kind (``history``, ``session``) and session
 (``all`` for none). With the cookie ``ce=fails`` both calls fail, with ``ce=slow`` they are held for 1.5 s, with
 ``ce=slower`` for 3 s.
@@ -109,8 +109,8 @@ def panel_app(storage: Path, monkeypatch):
         return asked
 
     @app.post("/__stub/record")
-    async def record():
-        history.append(event("s-1", "recorded", time.time(), 8000, 6000, [1]))
+    async def record(saved: int = 2000):
+        history.append(event("s-1", "recorded", time.time(), 8000, 8000 - saved, [1]))
         return {}
 
     @app.get("/__stub/live")
@@ -152,6 +152,7 @@ EXPECTED = [
     'the server refuses a session id that is no session id',
     'an unchanged answer draws nothing, and a click on the scope shown asks nothing',
     'the auto refresh runs from the start and brings a new compaction',
+    'a click on a head sorts the compactions by value, and the order holds when they are drawn anew',
 ]
 
 

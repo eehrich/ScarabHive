@@ -65,8 +65,9 @@ function draw() {
   const shown = users.filter((user) => !query
     || [user.username, user.email, user.full_name || ''].some((text) => text.toLowerCase().includes(query)));
   const focused = document.activeElement?.closest('#users [data-key]')?.dataset.key;  // drawn anew, it keeps the focus
-  render($('users'), shown.length ? html`<div class="pk-table-wrap"><table class="pk-table">
-    <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th>Last login</th><th></th></tr></thead>
+  // newest first, as the database lists them, until the admin picks another order
+  render($('users'), shown.length ? html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="users">
+    <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th aria-sort="descending">Created</th><th>Last login</th><th></th></tr></thead>
     <tbody>${shown.map(row)}</tbody>
   </table></div>` : empty('users', users.length ? `No user matches “${$('search').value.trim()}”` : 'No users'));
   if (focused) $('users').querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
@@ -80,14 +81,14 @@ function row(user) {
       data-key="${key}" title="${label}" aria-label="${label}" ${off || pending.has(key) ? 'disabled' : ''}>${icon(name, { size: 'sm' })}</button>`;
   };
   return html`<tr data-user="${user.id}" class="${user.is_active ? '' : 'um-inactive'}">
-    <td><div class="um-name">${user.username}${self ? html` <span class="pk-muted">(you)</span>` : ''}${user.has_api_key
+    <td data-sort-value="${user.username}"><div class="um-name">${user.username}${self ? html` <span class="pk-muted">(you)</span>` : ''}${user.has_api_key
       ? html` <span class="um-key" title="Has an API key">${icon('key-round', { size: 'sm', label: 'Has an API key' })}</span>` : ''}</div>
       ${user.full_name ? html`<div class="pk-muted">${user.full_name}</div>` : ''}</td>
     <td>${user.email}</td>
     <td>${badge(ROLES[user.role], user.role)}</td>
     <td>${user.is_active ? badge('ok', 'Active') : badge('', 'Inactive')}</td>
-    <td>${day(user.created_at)}</td>
-    <td>${user.last_login ? day(user.last_login) : html`<span class="pk-muted">Never</span>`}</td>
+    <td data-sort-value="${user.created_at}">${day(user.created_at)}</td>
+    <td data-sort-value="${user.last_login}">${user.last_login ? day(user.last_login) : html`<span class="pk-muted">Never</span>`}</td>
     <td class="um-actions">
       ${button('edit', 'pencil', `Edit ${user.username}`)}
       ${user.is_active

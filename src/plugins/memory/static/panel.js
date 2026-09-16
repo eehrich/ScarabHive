@@ -109,19 +109,20 @@ function focusRow(id, place) {
 }
 
 function table(list, query) {
-  return html`<div class="pk-table-wrap"><table class="pk-table mm-table">
+  // sorted by the last column until the viewer picks one: the server sends the most recently accessed, or the closest, first
+  return html`<div class="pk-table-wrap"><table class="pk-table mm-table" data-pk-sort="memories">
     <thead><tr><th>Memory</th><th class="pk-num">Importance</th><th class="pk-num">Accesses</th>
-      ${query ? html`<th class="pk-num">Match</th>` : html`<th>Last accessed</th>`}</tr></thead>
+      ${query ? html`<th class="pk-num" aria-sort="descending">Match</th>` : html`<th aria-sort="descending">Last accessed</th>`}</tr></thead>
     <tbody>${list.map((memory) => html`<tr tabindex="0" data-memory="${memory.memory_id}">
-      <td class="mm-memory">
+      <td class="mm-memory" data-sort-value="${memory.title}">
         <div class="mm-title">${memory.title}</div>
         <div class="mm-content">${memory.content}</div>
         <div class="pk-row mm-meta"><span class="pk-mono pk-muted">${memory.memory_id}</span>${memory.keywords.map((word) => badge('', word))}</div>
       </td>
-      <td class="pk-num">${importance(memory.importance)}</td>
-      <td class="pk-num" data-cell="accesses">${number(memory.access_count)}</td>
-      ${query ? html`<td class="pk-num" data-cell="match">${percent(memory.similarity)}</td>`
-        : html`<td class="pk-mono mm-time">${time(memory.accessed_at)}</td>`}
+      <td class="pk-num" data-sort-value="${memory.importance ?? ''}">${importance(memory.importance)}</td>
+      <td class="pk-num" data-cell="accesses" data-sort-value="${memory.access_count ?? ''}">${number(memory.access_count)}</td>
+      ${query ? html`<td class="pk-num" data-cell="match" data-sort-value="${memory.similarity ?? ''}">${percent(memory.similarity)}</td>`
+        : html`<td class="pk-mono mm-time" data-sort-value="${Date.parse(memory.accessed_at) || ''}">${time(memory.accessed_at)}</td>`}
     </tr>`)}</tbody>
   </table></div>`;
 }

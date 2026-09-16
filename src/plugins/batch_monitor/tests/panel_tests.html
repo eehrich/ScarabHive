@@ -180,6 +180,22 @@
     }
   });
 
+  await check('a click on a column head sorts the jobs by value, and the order holds when they are drawn anew', async () => {
+    const head = (label) => [...doc().querySelectorAll('#queues th')].find((th) => th.textContent.trim() === label);
+    const drawn = $('#queues table');
+    const byQueue = rowKeys() === SEEDED && head('Queue').getAttribute('aria-sort') === 'ascending';
+    head('Input tokens').click();
+    // 1.21M, 1.00M, 1.2K, 625, 250, 125, none: as text, 1.2K would come after 625
+    const BY_TOKENS = 'job-done,pending:mistral:large,pending:anthropic:claude-x,job-run,pending:openai:gpt-4o,job-new,job-rec';
+    const sorted = rowKeys() === BY_TOKENS && head('Input tokens').getAttribute('aria-sort') === 'descending'
+      && !head('Queue').hasAttribute('aria-sort');
+    now();
+    await until('the jobs drawn anew', () => $('#queues table') !== drawn);
+    const held = rowKeys() === BY_TOKENS;
+    head('Queue').click();  // back to the order the server lists
+    return byQueue && sorted && held && rowKeys() === SEEDED;
+  });
+
   await check('the auto refresh runs from the start and brings what changed', async () => {
     await go('/plugins/batch_monitor/');
     await until('the queues', () => rowKeys() === SEEDED);

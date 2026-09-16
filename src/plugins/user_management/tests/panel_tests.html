@@ -95,6 +95,20 @@
     return found && none && names() === 'mallory,bob,ada,root';
   });
 
+  await check('a click on a column head sorts the accounts by value, and the order holds when they are drawn anew', async () => {
+    const head = (label) => all('#users th').find((th) => th.textContent.trim() === label);
+    const byCreated = head('Created').getAttribute('aria-sort') === 'descending' && names() === 'mallory,bob,ada,root';
+    head('Created').click();
+    // created a moment apart: the dates read the same, the times tell the accounts apart
+    const oldest = names() === 'root,ada,bob,mallory' && head('Created').getAttribute('aria-sort') === 'ascending';
+    const drawn = $('#users table');
+    now();
+    await until('the accounts drawn anew', () => $('#users table') !== drawn);
+    const held = names() === 'root,ada,bob,mallory';
+    head('Created').click();  // newest first again, as the checks after this one expect
+    return byCreated && oldest && held && names() === 'mallory,bob,ada,root';
+  });
+
   await check('creating shows a refusal in the dialog, adds the account once on a double click and leaves no password in the page', async () => {
     clearToasts();
     $('#create').click();

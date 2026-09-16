@@ -5,7 +5,8 @@ Seeded (keywords as given): session ``s-1`` with mem_001 "Python type hints" (im
 ``typing``, accessed once), mem_002 "Deploy checklist" (importance 6, ``deploy``, accessed three times) and mem_003 "Style
 guide" (importance 3, no keywords, never accessed), most recently accessed first in that order; session ``s-2`` with
 mem_001, title and content markup, and mem_002 "Second session memory"; session ``s-3`` with 101 memories "Bulk memory
-1" to "Bulk memory 101"; session ``s-8`` with a metadata file that is no JSON. Behind the panel's back: POST /__stub/store stores "Stored by an agent" in ``s-1``,
+1" to "Bulk memory 101", mem_100 accessed 12,000 times and mem_101 900 times; session ``s-8`` with a metadata file that is
+no JSON. Behind the panel's back: POST /__stub/store stores "Stored by an agent" in ``s-1`` (or the ``session`` given),
 /__stub/forget deletes mem_003 of ``s-1``, /__stub/retitle retitles it "Style guide, revised" without new content,
 /__stub/ghost drops mem_002 of ``s-2`` from the metadata but not from the vector store; /__stub/vectors/off makes the
 vector store fail, /__stub/vectors/on mends it. GET /__stub/asked counts the calls, per kind (``list``, ``stats``, ``search``) and session. With the cookie
@@ -86,6 +87,9 @@ async def seed(server) -> None:
         collection = await server._load_collection(session)
         for minutes, memory_id in enumerate(order):
             collection.memories[memory_id].accessed_at = base + timedelta(minutes=minutes)
+        if session == "s-3":  # counts whose text does not sort as they do: "900" before "12,000"
+            collection.memories["mem_100"].access_count = 12000
+            collection.memories["mem_101"].access_count = 900
         await server._save_collection(collection)
 
 
@@ -126,8 +130,8 @@ def panel_app(storage: Path):
         return asked
 
     @app.post("/__stub/store")
-    async def store():
-        await server._operation_store(session_id="s-1", title="Stored by an agent", content="A memory stored meanwhile", importance=7)
+    async def store(session: str = "s-1"):
+        await server._operation_store(session_id=session, title="Stored by an agent", content="A memory stored meanwhile", importance=7)
         return {}
 
     @app.post("/__stub/forget")
@@ -187,6 +191,7 @@ EXPECTED = [
     'rows drawn anew keep the keyboard focus, and an unchanged answer draws nothing',
     'closing the drawer gives the focus back to its row, also when the list was drawn anew behind it',
     'the auto refresh runs from the start and brings a memory an agent stores',
+    'a click on a head sorts the memories by value, and the order holds when they are drawn anew',
 ]
 
 

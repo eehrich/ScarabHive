@@ -95,29 +95,30 @@ function jobRow(queue, job) {
     <td class="pk-mono">${queue.queue_key}</td>
     <td class="pk-mono pk-muted" title="${job.provider_job_id || ''}">${job.job_id}</td>
     <td>${badge(job.status)}</td>
-    <td class="pk-num">${job.total_requests ? `${number(job.completed_count)} / ${number(job.total_requests)}` : '—'}${
+    <td class="pk-num" data-sort-value="${job.total_requests ? job.completed_count : ''}">${job.total_requests ? `${number(job.completed_count)} / ${number(job.total_requests)}` : '—'}${
       job.failed_count ? html` <span class="bm-failed">${number(job.failed_count)} failed</span>` : ''}</td>
-    <td class="pk-num">${tokens(job.estimated_input_tokens)}</td>
-    <td class="pk-num">${duration(job.elapsed_seconds)}</td>
+    <td class="pk-num" data-sort-value="${job.estimated_input_tokens || ''}">${tokens(job.estimated_input_tokens)}</td>
+    <td class="pk-num" data-sort-value="${job.elapsed_seconds}">${duration(job.elapsed_seconds)}</td>
   </tr>`;
 }
 
-// requests collected for the next job: it is submitted when the collection window closes
+// requests collected for the next job: it is submitted when the collection window closes; nothing done, nothing elapsed
 function pendingRow(queue, window) {
   return html`<tr data-pending="${queue.queue_key}">
     <td class="pk-mono">${queue.queue_key}</td>
     <td class="pk-muted">—</td>
     <td>${badge('pending')}</td>
-    <td class="pk-num">${number(queue.pending_requests)} waiting</td>
-    <td class="pk-num">${tokens(queue.pending_estimated_tokens)}</td>
-    <td class="pk-num pk-muted" title="Collection window">~${window}s</td>
+    <td class="pk-num" data-sort-value="">${number(queue.pending_requests)} waiting</td>
+    <td class="pk-num" data-sort-value="${queue.pending_estimated_tokens || ''}">${tokens(queue.pending_estimated_tokens)}</td>
+    <td class="pk-num pk-muted" data-sort-value="" title="Collection window">~${window}s</td>
   </tr>`;
 }
 
 function drawQueues({ queues, collection_window_seconds: window }) {
+  // the server lists the queues by key: the Queue column's order until the viewer picks another
   render($('queues'), queues.length
-    ? html`<div class="pk-table-wrap"><table class="pk-table">
-        <thead><tr><th>Queue</th><th>Job</th><th>Status</th><th class="pk-num">Progress</th><th class="pk-num">Input tokens</th><th class="pk-num">Time</th></tr></thead>
+    ? html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="jobs">
+        <thead><tr><th aria-sort="ascending">Queue</th><th>Job</th><th>Status</th><th class="pk-num">Progress</th><th class="pk-num">Input tokens</th><th class="pk-num">Time</th></tr></thead>
         <tbody>${queues.map((queue) => [
           queue.jobs.map((job) => jobRow(queue, job)),
           queue.pending_requests ? pendingRow(queue, window) : '',

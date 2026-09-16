@@ -406,6 +406,27 @@
     return running;
   });
 
+  await check('a click on a head sorts the memories by value, and the order holds when they are drawn anew', async () => {
+    const head = (text) => [...doc().querySelectorAll('#memories thead th')].find((th) => th.textContent.trim() === text);
+    const first = (count) => rows().slice(0, count).map((one) => one.dataset.memory).join();
+    await go('/plugins/memory/?session_id=s-3');
+    await until('the memories of s-3', () => rows().length === 100);
+    await autoOff();
+    const byTime = first(2) === 'mem_101,mem_100' && head('Last accessed').getAttribute('aria-sort') === 'descending';
+    head('Accesses').click();
+    const sorted = first(3) === 'mem_100,mem_101,mem_099' && head('Accesses').getAttribute('aria-sort') === 'descending'
+      && !head('Last accessed').hasAttribute('aria-sort');
+    const table = $('#memories table');
+    await stub('store?session=s-3');  // never accessed: first of the memories that tie
+    $('pk-refresh [data-act="now"]').click();
+    await until('the memories drawn anew', () => $('#memories table') !== table && row('mem_102'));
+    const held = first(3) === 'mem_100,mem_101,mem_102' && head('Accesses').getAttribute('aria-sort') === 'descending';
+    head('Last accessed').click();  // the oldest of the hundred shown first, the one just stored last
+    const oldest = first(1) === 'mem_003' && rows().at(-1).dataset.memory === 'mem_102'
+      && head('Last accessed').getAttribute('aria-sort') === 'ascending';
+    return byTime && sorted && held && oldest;
+  });
+
   await fetch('/__results', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
 </script>

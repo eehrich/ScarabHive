@@ -106,7 +106,7 @@ function row(lesson, query) {
     html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="${act}" title="${label}" aria-label="${label}">${icon(name, { size: 'sm' })}</button>`;
   const level = lesson.confidence >= 0.7 ? 'll-high' : lesson.confidence < 0.4 ? 'll-low' : '';
   return html`<tr data-lesson="${lesson.lesson_id}" data-status="${lesson.status}">
-    <td class="ll-lesson">
+    <td class="ll-lesson" data-sort-value="${lesson.title}">
       <div class="ll-title">${lesson.title}</div>
       <div class="ll-content">${lesson.content}</div>
       <div class="pk-row ll-meta"><span class="pk-mono pk-muted">${lesson.lesson_id}</span>${lesson.tags.map((tag) => badge('', tag))}</div>
@@ -133,11 +133,12 @@ function drawLessons(query) {
     render($('lessons'), empty('graduation-cap', query ? 'No lesson matches the search' : 'No lessons found'));
     return;
   }
-  render($('lessons'), html`<div class="pk-table-wrap"><table class="pk-table">
+  // only the lessons found sort here: the list is paged, and sorted by the select, on the server
+  render($('lessons'), html`<div class="pk-table-wrap"><table class="pk-table"${query ? html` data-pk-sort="found"` : ''}>
     <thead><tr>
       <th>Lesson</th><th>Agent</th><th>Category</th><th class="pk-num" title="Priority">Prio.</th>
       <th class="pk-num" title="Confidence">Conf.</th><th>Status</th><th class="pk-num" title="Evidence">Ev.</th>
-      <th class="pk-num" title="Applications">App.</th><th>Source</th>${query ? html`<th class="pk-num">Similarity</th>` : ''}<th></th>
+      <th class="pk-num" title="Applications">App.</th><th>Source</th>${query ? html`<th class="pk-num" aria-sort="descending">Similarity</th>` : ''}<th></th>
     </tr></thead>
     <tbody>${lessons.map((lesson) => row(lesson, query))}</tbody>
   </table></div>`);

@@ -576,6 +576,28 @@
     return true;
   });
 
+  await check('a click on a head sorts the lessons found, the paged list stays in the order of the server', async () => {
+    const head = (text) => [...doc().querySelectorAll('#lessons thead th')].find((th) => th.textContent.trim() === text);
+    const priorities = () => rows().map((one) => one.cells[3].textContent.trim()).join('|');
+    setFilter('agentFilter', 'coder');
+    await until('the lessons of coder', () => rows().length === 3 && !$('[data-cell="similarity"]'));
+    const listUnsorted = !$('#lessons .pk-sort');
+    $('#query').value = 'build';
+    $('#searchForm [type="submit"]').click();
+    await until('the three found', () => $('[data-cell="similarity"]') && rows().length === 3);
+    const bySimilarity = head('Similarity').getAttribute('aria-sort') === 'descending';
+    head('Prio.').click();
+    const descending = priorities() === '8|5|2' && head('Prio.').getAttribute('aria-sort') === 'descending'
+      && !head('Similarity').hasAttribute('aria-sort');
+    head('Prio.').click();
+    const ascending = priorities() === '2|5|8';
+    const table = $('#lessons table');
+    refreshNow();
+    await until('the lessons found drawn anew', () => $('#lessons table') !== table && rows().length === 3);
+    return listUnsorted && bySimilarity && descending && ascending && priorities() === '2|5|8'
+      && head('Prio.').getAttribute('aria-sort') === 'ascending';
+  });
+
   await fetch('/__results', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
 </script>

@@ -5,9 +5,10 @@ Configured: ``gpu1.test:8188`` (online) and ``gpu2.test:8189`` (refuses every co
 and has ``wait-2222-b`` and ``other-9999-z`` (not tracked: another client's) queued; its history holds ``hist-7777-g`` (succeeded). Tracked: ``run-1111-a`` (Flux Cover,
 queued in the tracker although gpu1 runs it), ``wait-2222-b`` (Stable Audio, queued 200 s ago), ``far-6666-f`` (queued
 on gpu2), ``lost-3333-c`` (queued on gpu1, but neither in its queue nor in its history), ``hist-7777-g`` (running in the
-tracker), ``done-4444-d`` (completed ten minutes ago after 125.4 s, two images and a text) and ``fail-5555-e``
-(failed a quarter of an hour ago after 3725 s, with markup in its workflow name and its error) and ``old-8888-h``
-(completed, its duration never recorded).
+tracker), ``done-4444-d`` (completed ten minutes ago after 125.4 s, two images and a text; submitted before
+``fail-5555-e``, so the two finished in the other order) and ``fail-5555-e`` (failed a quarter of an hour ago after
+3725 s, with markup in its workflow name and its error) and ``old-8888-h`` (completed, its duration never recorded,
+four images).
 
 Behind the panel's back: POST /__stub/reset seeds everything anew, /__stub/finish?id= lets gpu1 finish a job,
 /__stub/refuse makes gpu1 refuse interrupts, /__stub/offline takes gpu1 off the network, /__stub/clear forgets every job.
@@ -132,11 +133,12 @@ def seed(tracker) -> None:
         ("far-6666-f", "flux_cover", "Flux Cover", "queued", ago(100), None, None, None, None, None, GPU2),
         ("lost-3333-c", "flux_cover", None, "queued", ago(400), None, None, None, None, None, GPU1),
         ("hist-7777-g", "stable_audio", "Stable Audio", "running", ago(80), ago(50), None, None, None, None, GPU1),
-        ("done-4444-d", "flux_cover", "Flux Cover", "completed", ago(3600), ago(3500), ago(600), 125.4,
+        ("done-4444-d", "flux_cover", "Flux Cover", "completed", ago(9500), ago(9400), ago(600), 125.4,
          json.dumps({"images": ["a.png", "b.png"], "text": ["t.txt"]}), None, GPU1),
         ("fail-5555-e", "tts", '<img src=x onerror="window.parent.__xss=1">', "failed", ago(9000), ago(8000), ago(900),
          3725, None, "<b>CUDA</b> out of memory", GPU1),
-        ("old-8888-h", "flux_cover", "Flux Cover", "completed", ago(9900), None, ago(9800), None, None, None, GPU1),
+        ("old-8888-h", "flux_cover", "Flux Cover", "completed", ago(9900), None, ago(9800), None,
+         json.dumps({"images": ["c.png", "d.png", "e.png", "f.png"]}), None, GPU1),
     ]
     with sqlite3.connect(tracker.db_path) as conn:
         conn.executemany(
@@ -248,6 +250,7 @@ EXPECTED = [
     'the tracker is brought up to date with the servers before the jobs are counted and listed',
     'a finished job shows its outcome, error, duration and outputs',
     'workflow names and errors are drawn as text, never as markup',
+    "the finished jobs come in the tracker's order until a click on a column head sorts them by value, and that order holds when they are drawn anew",
     'cancelling asks first: declined nothing happens, confirmed the job is cancelled on its server',
     'a refused cancel is shown as an error and the job stays active',
     'a job that finished before the cancel reached it keeps its outcome',

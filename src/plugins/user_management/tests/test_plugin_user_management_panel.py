@@ -141,6 +141,7 @@ EXPECTED = [
     'opened by an admin, the panel lists every account with its role and state and counts them, without a credential',
     'names are drawn as text, never as markup',
     'the search filters by name and email and says when nothing matches',
+    'a click on a column head sorts the accounts by value, and the order holds when they are drawn anew',
     'creating shows a refusal in the dialog, adds the account once on a double click and leaves no password in the page',
     'editing sends only what was changed and sets a password only when one is typed',
     'a late answer to a closed editor leaves a new one alone',

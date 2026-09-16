@@ -4,7 +4,8 @@ its static files. Only the summarizing LLM is stubbed.
 Seeded through the hook: session ``s-1`` with an applied run (request ``r-1``, 40 messages), a rejected one (``r-2``,
 the summaries longer than what they replace) and a skipped one (``r-3``, too few messages); session ``s-2`` with an
 applied run whose summaries are markup (``r-4``); session ``s-3`` with 101 skipped runs. POST /__stub/record runs the
-hook once more in ``s-1`` (skipped), POST /__stub/drop/{id} removes a run from the history behind the panel's back.
+hook once more in ``s-1``, on 5 messages (skipped) or on ``?count=`` of them (15 and 20 are applied and save 909 and
+1849 tokens), POST /__stub/drop/{id} removes a run from the history behind the panel's back.
 GET /__stub/asked counts the histories asked for, per session (``all`` without one). With the cookie
 ``cs_history=fails`` the history fails, with ``cs_history=slow`` it is held for 1.5 s; with ``cs_slow_event=<id>``
 that run's detail is held for 1.5 s.
@@ -100,8 +101,8 @@ def panel_app():
         return asked
 
     @app.post("/__stub/record")
-    async def record():
-        await run(hooks, "s-1", "r-5", 5)
+    async def record(count: int = 5):
+        await run(hooks, "s-1", "r-5", count)
         return {}
 
     @app.post("/__stub/drop/{event_id}")
@@ -137,6 +138,7 @@ EXPECTED = [
     'closing the drawer gives the focus back to its row, also when the list was drawn anew behind it',
     'the auto refresh runs from the start and brings a new run',
     'clearing asks once, cancelled keeps every run and confirmed forgets them',
+    'a click on a column head sorts the runs by value, and the order holds when they are drawn anew',
 ]
 
 
