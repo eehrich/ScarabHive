@@ -104,7 +104,7 @@ llm_system:
 
     openrouter-gpt-astra:
       extends: openrouter-gpt
-      model: openai/gpt-6-astra
+      model: ~openai/gpt-astra-latest
 
     openrouter-gpt-astra-unlimited:
       extends: openrouter-gpt-astra
@@ -112,7 +112,7 @@ llm_system:
 
     openrouter-gpt-sol:
       extends: openrouter-gpt
-      model: openai/gpt-5.6-sol
+      model: ~openai/gpt-sol-latest
 
     openrouter-gpt-sol-unlimited:
       extends: openrouter-gpt-sol
@@ -120,7 +120,7 @@ llm_system:
 
     openrouter-gpt-terra:
       extends: openrouter-gpt
-      model: openai/gpt-5.6-terra
+      model: ~openai/gpt-terra-latest
       max_tokens: 32768
 
     openrouter-gpt-terra-unlimited:
@@ -129,7 +129,7 @@ llm_system:
 
     openrouter-gpt-luna:
       extends: openrouter-gpt
-      model: openai/gpt-5.6-luna
+      model: ~openai/gpt-luna-latest
 
     openrouter-gpt-luna-unlimited:
       extends: openrouter-gpt-luna
