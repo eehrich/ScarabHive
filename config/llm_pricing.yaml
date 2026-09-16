@@ -21,8 +21,11 @@
 
 # =============================================================================
 # DeepSeek — Direct API (api.deepseek.com)
-# Both models are DeepSeek-V3.2 (chat = non-thinking, reasoner = thinking mode)
 # Pricing: https://api-docs.deepseek.com/quick_start/pricing
+# Tageszeit-Tarif: Mo-Fr 01:00-04:00 und 06:00-10:00 UTC kostet alles das
+# Doppelte; hier steht der Grundpreis ausserhalb dieser Zeiten.
+# deepseek-chat/-reasoner: bis 2026-04 V3.2, danach Alias auf v4-flash,
+# abgekuendigt zum 2026-07-24. Die Zeilen bleiben fuer alte DB-Eintraege.
 # =============================================================================
 deepseek-chat:
   input: 0.28
@@ -34,14 +37,19 @@ deepseek-reasoner:
   output: 0.42
   cached_input: 0.028
 
-# ⚠️ Direct-Preise DEUTLICH erhoeht (2026-08). Werte = DeepSeeks eigener
-# Endpunkt (identisch auf OpenRouter sichtbar, Stand 2026-08-20). Der
-# Direct-Account ist fast leer; Primaernutzung laeuft seit 2026-08-20 ueber
-# OpenRouter (or-deepseek-flash/-pro), Direct ist nur noch Fallback.
+# Der Direct-Account ist fast leer; Primaernutzung laeuft seit 2026-08-20
+# ueber OpenRouter (or-deepseek-flash/-pro), Direct ist nur noch Fallback.
+# Seit 2026-09-10 beantwortet `deepseek-v4-flash` V4.1-Flash zum Preis von
+# `deepseek-flash` (bis dahin 0.22/0.66/0.007). Stand Preisseite 2026-09-16.
+deepseek-flash:
+  input: 0.15
+  output: 0.60
+  cached_input: 0.003
+
 deepseek-v4-flash:
-  input: 0.22
-  output: 0.66
-  cached_input: 0.007
+  input: 0.15
+  output: 0.60
+  cached_input: 0.003
 
 deepseek-v4-pro:
   input: 0.66
@@ -209,20 +217,24 @@ google/gemini-3.6-flash:
   output: 7.50
   cached_input: 0.15
 
+# 3.7, 3.8 und der latest-Alias (Ziel 2026-09-16: 3.8): regulaer 1.50/7.50,
+# Google gibt bis 2026-12-31 50 % Rabatt (OpenRouter: `discount: 0.5`),
+# abgerechnet wird also 0.75/3.75. Hier steht der regulaere Preis. 3.6
+# (Aktion identisch) steht schon auf 1.50.
 google/gemini-3.7-flash:
-  input: 0.75
-  output: 3.75
-  cached_input: 0.075
+  input: 1.50
+  output: 7.50
+  cached_input: 0.15
 
 google/gemini-3.8-flash:
-  input: 0.75
-  output: 3.75
-  cached_input: 0.075
+  input: 1.50
+  output: 7.50
+  cached_input: 0.15
 
-~google/gemini-flash-latest:
-  input: 0.75
-  output: 3.75
-  cached_input: 0.075
+"~google/gemini-flash-latest":
+  input: 1.50
+  output: 7.50
+  cached_input: 0.15
 
 google/gemini-3.1-pro-preview:
   input: 2.00
@@ -236,20 +248,26 @@ google/gemini-3.1-pro-preview:
 # (gemessen 07.09.2026 an gpt-6-astra: 9 in / 5 out = $0.000170 = 5/25 statt
 # 10/50). Hier steht trotzdem Standard: die Zahlen greifen nur, wenn
 # usage_json.cost fehlt, und ein Fallback soll eher zu hoch als zu niedrig
-# schätzen. Die dritte Stufe `openai/fast` ist das Vierfache.
+# schätzen. Die dritte Stufe `openai/fast` kostet das Doppelte von Standard.
 #
-# Die vier Einträge unten sind die konfigurierten Modelle. Was darüber steht
+# GPT-5.6 und GPT-6: Cache-Writes kosten das 1,25-fache des Inputs
+# (cache_write = der Aufschlag 0.25x). Ueber 272K Prompt-Tokens verdoppelt
+# sich der Input und der Output steigt um die Haelfte — nicht abbildbar.
+# Quelle: developers.openai.com/api/docs/pricing, Stand 2026-09-16.
+#
+# Konfiguriert sind die latest-Aliase weiter unten; die vier Einträge
+# gpt-5.6-*/gpt-6-astra sind ihre Ziele. Was darüber steht
 # (gpt-5.4, gpt-5.4-mini, gpt-5, gpt-oss-120b) läuft nicht mehr, bleibt aber:
 # die Kostenauswertung rechnet auch über alte DB-Zeilen.
 #
-# Quelle: GET /api/v1/models/<slug>/endpoints, Tag `openai` — ABER die API
-# kennt zeitlich begrenzte Rabatte nicht und liefert den Aktionspreis als
-# wäre er der reguläre (siehe sol). Hier stehen reguläre Preise; wer die
-# Werte prüft, gleicht mit der Modellseite ab, nicht mit der API.
+# Quelle: GET /api/v1/models/<slug>/endpoints, Tag `openai`. Die Preise dort
+# sind NACH Rabatt; der Rabatt steht im Feld `pricing.discount` (sol: 0.5).
+# Regulaer = Preis / (1 - discount) — das steht hier. /api/v1/models zeigt
+# das Feld nicht.
 openai/gpt-5.4:
-  input: 1.25
-  output: 7.50
-  cached_input: 0.125
+  input: 2.50
+  output: 15.00
+  cached_input: 0.25
 
 openai/gpt-5.4-mini:
   input: 0.75
@@ -269,26 +287,28 @@ openai/gpt-5.6-luna:
   input: 0.20
   output: 1.20
   cached_input: 0.02
+  cache_write: 0.05
 
 openai/gpt-5.6-terra:
   input: 2.00
   output: 12.00
   cached_input: 0.20
+  cache_write: 0.50
 
-# ⚠️ Regulärer Preis. OpenRouter listet sol mit „50% off" bei 2.00/10.00 —
-# eine Aktion ohne genanntes Enddatum, und die API verschweigt sie: weder
-# /models noch /endpoints tragen einen Rabatt-Hinweis, dort steht nur der
-# ermäßigte Wert. Nur die Modellseite zeigt beides nebeneinander. Wer die
-# Preise per Skript nachzieht, holt sich also stillschweigend den Aktionspreis.
+# ⚠️ Regulärer Preis. OpenRouter rechnet sol mit „50% off" ab (2.00/10.00),
+# laut OpenAI „at least through November 21, 2026". /api/v1/models zeigt nur den
+# ermäßigten Wert, /endpoints nennt den Rabatt (`discount: 0.5`).
 openai/gpt-5.6-sol:
   input: 4.00
   output: 20.00
   cached_input: 0.40
+  cache_write: 1.00
 
 openai/gpt-6-astra:
   input: 10.00
   output: 50.00
   cached_input: 1.00
+  cache_write: 2.50
 
 # latest-Aliase (llm_openrouter.yaml), gleiche Saetze wie ihr Ziel am
 # 2026-09-16: luna/terra/sol -> gpt-5.6-*, astra -> gpt-6-astra. sol wieder
@@ -297,21 +317,25 @@ openai/gpt-6-astra:
   input: 0.20
   output: 1.20
   cached_input: 0.02
+  cache_write: 0.05
 
 "~openai/gpt-terra-latest":
   input: 2.00
   output: 12.00
   cached_input: 0.20
+  cache_write: 0.50
 
 "~openai/gpt-sol-latest":
   input: 4.00
   output: 20.00
   cached_input: 0.40
+  cache_write: 1.00
 
 "~openai/gpt-astra-latest":
   input: 10.00
   output: 50.00
   cached_input: 1.00
+  cache_write: 2.50
 
 # Anthropic via OpenRouter — cache read = 0.1x, cache write premium = 0.25x of input
 anthropic/claude-sonnet-4-6:
@@ -359,15 +383,13 @@ deepseek/deepseek-v4-flash:
   output: 0.28
   cached_input: 0.028
 
-# DeepSeek V4 Flash via OpenRouter, latest-Alias. DURCHSCHNITT ueber alle
-# 30 Anbieter-Endpunkte (2026-08-20): je nach Routing streut der echte Preis
-# von 0.065/0.14 (open-inference, fp4) bis 0.44/1.32 (cloudflare). Unser
-# provider_routing pinnt die guenstigsten fp8 (streamlake/baidu/deepinfra),
-# real liegt der Preis also UNTER diesem Schnitt.
+# DeepSeek V4 Flash via OpenRouter, latest-Alias (Ziel 2026-09-16:
+# deepseek-v4-flash-0731). Werte = DeepInfra fp8, der erste Anbieter in
+# order; streamlake als zweiter. Stand OpenRouter-Endpunkte 2026-09-16.
 "~deepseek/deepseek-v4-flash-latest":
-  input: 0.149
-  output: 0.349
-  cached_input: 0.032
+  input: 0.06
+  output: 0.18
+  cached_input: 0.015
 
 # DeepSeek Flash via OpenRouter, latest-Alias der ganzen Flash-Familie
 # (alias_target 2026-09-16: deepseek/deepseek-v4.1-flash). Werte = DeepInfra
@@ -423,17 +445,19 @@ qwen/qwen3.8-27b:
   output: 2.20
   cached_input: 0.05
 
-# MiniMax via OpenRouter — cache read = 0.2x of input price.
-# Source: https://openrouter.ai/minimax/minimax-m3
+# MiniMax via OpenRouter — cache read = 0.2x of input price. Werte = Anbieter
+# minimax (einziger in order), ohne Rabatt. Stand 2026-09-16; vorher 0.60/2.40.
 minimax/minimax-m3:
-  input: 0.60
-  output: 2.40
-  cached_input: 0.12
+  input: 0.30
+  output: 1.20
+  cached_input: 0.06
 
 # GLM Flash via OpenRouter, latest-Alias. Ohne provider_routing haengt der Satz
 # am Anbieter: abgerechnet meist 0.15/0.50/0.03 (eingetragen) oder
 # 0.1124/0.3745/0.0225, vereinzelt hoeher; der Listenpreis 0.075/0.25 wurde
-# nie berechnet (66 Aufrufe, Stand 2026-09-13).
+# nie berechnet (66 Aufrufe, Stand 2026-09-13). 0.15/0.50/0.03 ist der
+# regulaere Preis fast aller Anbieter; 0.075/0.25 ist DeepInfras 50-%-Rabatt
+# (Ziel am 2026-09-16: glm-5.3-flash).
 "~z-ai/glm-flash-latest":
   input: 0.15
   output: 0.50
