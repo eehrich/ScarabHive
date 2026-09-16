@@ -189,3 +189,19 @@ class TestPricingPath:
 
     def test_real_table_loads(self):
         assert pricing.load_pricing()  # not empty
+
+    def test_every_configured_model_has_a_price(self):
+        """The table is the fallback when a response carries no billed cost.
+
+        A model without an entry is estimated as unknown, so a new profile or
+        latest-alias slips through until someone reads a cost report and
+        wonders. Local models get an entry too (0), which says "free".
+        """
+        from agent_system.config.settings import load_settings
+
+        table = pricing.load_pricing()
+        models = load_settings().llm_system.models.values()
+        missing = sorted({m.model for m in models if m.model and m.model not in table})
+        assert not missing, (
+            f"no entry in config/llm_pricing.yaml for {missing} - add the "
+            f"model's per-1M rates (OpenRouter: GET /api/v1/models/<slug>/endpoints)")
