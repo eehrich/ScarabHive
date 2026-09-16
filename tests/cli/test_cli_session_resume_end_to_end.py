@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -26,7 +25,7 @@ from agent_system.config.models import (
     MCPConfig,
     PluginsConfig,
 )
-from agent_system.services.session_manager import SessionManager
+from agent_system.services.session_manager import SessionManager, SessionPermissionError
 from agent_system.services.session_service import SessionService
 
 STORED_AGENT = "stored_agent"
@@ -259,6 +258,33 @@ class TestSessionPresence:
         assert refused.value.code == 1
         assert "another process" in capsys.readouterr().err
         assert cli_env.saved == {}, "it ran the session anyway"
+
+    @pytest.mark.parametrize("failure, said", [
+        (SessionPermissionError("owned by u2"), "belongs to a different user"),
+        (OSError("disk gone"), "Error loading session"),
+    ])
+    def test_a_session_that_cannot_be_loaded_exits_1_and_lets_go(
+            self, cli_env, monkeypatch, tmp_path, capsys, failure, said):
+        # It used to return with 0: a caller checking the exit code read a
+        # run that never started as a successful one with empty output.
+        from agent_system.core.session_presence import presence_for
+
+        self._presence_on(cli_env, monkeypatch, tmp_path)
+        shut = self._records_the_shutdown(monkeypatch)
+
+        async def failing_load(agent, user_id, session_id):
+            raise failure
+
+        monkeypatch.setattr(cli_env.service, "load_and_restore_session", failing_load)
+
+        with pytest.raises(SystemExit) as failed:
+            _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1"])
+
+        assert failed.value.code == 1
+        assert said in capsys.readouterr().err
+        assert cli_env.saved == {}, "it ran the session anyway"
+        assert shut == ["batch", "mcp"]
+        assert presence_for(cli_env.config).get("s1", "cli_user")["status"] == "idle"
 
     def test_force_runs_it_anyway(self, cli_env, monkeypatch, tmp_path, other_process):
         sessions = self._presence_on(cli_env, monkeypatch, tmp_path)
