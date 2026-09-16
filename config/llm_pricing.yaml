@@ -17,7 +17,7 @@
 #   batch_discount: multiplier for batch API pricing (e.g. 0.5 = 50% off). Optional.
 #                   Applied when provider in DB starts with "batch_" (e.g. batch_gemini).
 #
-# Last updated: 2026-09-15
+# Last updated: 2026-09-16
 
 # =============================================================================
 # DeepSeek — Direct API (api.deepseek.com)
@@ -306,6 +306,15 @@ deepseek/deepseek-v4-flash:
   input: 0.149
   output: 0.349
   cached_input: 0.032
+
+# DeepSeek Flash via OpenRouter, latest-Alias der ganzen Flash-Familie
+# (alias_target 2026-09-16: deepseek/deepseek-v4.1-flash). Werte = DeepInfra
+# fp8, der erste Anbieter in unserem provider_routing; Fireworks als
+# Zwilling liegt bei 0.22/0.66/0.007. Stand OpenRouter-Endpunkte 2026-09-16.
+"~deepseek/deepseek-flash-latest":
+  input: 0.20
+  output: 0.60
+  cached_input: 0.006
 
 # DeepSeek V4 Pro 0813 via OpenRouter (kein latest-Alias). Durchschnitt der
 # 12 Endpunkte; order pinnt deepseek/alibaba (0.66-0.73 in, 1.98-2.18 out).

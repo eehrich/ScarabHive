@@ -248,7 +248,7 @@ llm_system:
     # V4.1 Flash ist teurer als V4; gepinnt auf die zwei guenstigen Anbieter.
     # KEIN quantizations-Filter: Fireworks nennt keine Quantisierung und
     # fiele sonst heraus.
-    openrouter-deepseek-flash:
+    openrouter-deepseek-latest-flash:
       extends: openrouter-deepseek
       model: ~deepseek/deepseek-flash-latest
       provider_routing:
@@ -432,6 +432,11 @@ llm_system:
       description: "OpenRouter DeepSeek V4 Flash"
       max_steps: 500
 
+    or-deepseek-latest-flash:
+      model_ref: openrouter-deepseek-latest-flash
+      description: "OpenRouter latest DeepSeek Flash Model"
+      max_steps: 500
+
     or-deepseek-pro:
       model_ref: openrouter-deepseek-pro
       description: "OpenRouter DeepSeek V4 Pro*"
@@ -450,11 +455,6 @@ llm_system:
     or-glm-flash:
       model_ref: openrouter-glm-flash
       description: "OpenRouter GLM Flash (latest)"
-      max_steps: 500
-
-    or-deepseek-flash:
-      model_ref: openrouter-deepseek-flash
-      description: "OpenRouter latest DeepSeek Flash Model"
       max_steps: 500
 
     or-kimi-k3:
