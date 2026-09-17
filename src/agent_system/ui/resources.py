@@ -7,6 +7,7 @@ from pathlib import Path
 
 from starlette.requests import Request
 from starlette.templating import Jinja2Templates
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 THEMES = ("dark", "light", "system")
 THEME_COOKIE = "ui_theme"
@@ -35,6 +36,33 @@ def find_resource_dir(name: str) -> Path:
 
 TEMPLATES_DIR = find_resource_dir("templates")
 STATIC_DIR = find_resource_dir("static")
+
+
+def revalidated(files: ASGIApp) -> ASGIApp:
+    """Static files the browser asks for again before each use -- a short 304 while unchanged.
+
+    Given to /static and to every plugin's static folder alike: without a rule the browser keeps a panel
+    script for a while on its own, and a page mixes a fresh kit with a stale panel. A wrapping ASGI app,
+    not middleware: BaseHTTPMiddleware costs 100 ms and more per request.
+    """
+    async def serve(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await files(scope, receive, send)
+            return
+        if any(name == b"if-none-match" for name, _ in scope["headers"]):
+            # the ETag decides alone (RFC 9110 13.1.3): Starlette would also answer 304 for an unchanged second of
+            # modification, and a file rewritten within it, or replaced by one with an older time, would stay stale
+            headers = [(name, value) for name, value in scope["headers"] if name != b"if-modified-since"]
+            scope = {**scope, "headers": headers}
+
+        async def send_revalidated(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                message = {**message, "headers": [*message.get("headers", []), (b"cache-control", b"no-cache")]}
+            await send(message)
+
+        await files(scope, receive, send_revalidated)
+
+    return serve
 
 
 @lru_cache(maxsize=1)

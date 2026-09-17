@@ -18,6 +18,8 @@ from fastapi import APIRouter, FastAPI, Request, Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
 from starlette import status
 
+from agent_system.ui.resources import revalidated
+
 if TYPE_CHECKING:
     from agent_system.config.models import AuthConfig
 
@@ -402,9 +404,10 @@ class PluginWebRegistry:
         for name, path in self.static_mounts.items():
             try:
                 mount_path = f"/plugins/{name}/static"
-                app.mount(mount_path, 
-                         StaticFiles(directory=str(path)), 
-                         name=f"plugin-{name}-static")
+                files = StaticFiles(directory=str(path))
+                # the cache rule /static has (build_app), so a panel script never outlives the kit it was written for
+                revalidate = getattr(app.state, "revalidate_static", False)
+                app.mount(mount_path, revalidated(files) if revalidate else files, name=f"plugin-{name}-static")
                 logger.info(f"Mounted static assets for plugin {name} at {mount_path}")
             except Exception as e:
                 logger.error(f"Failed to mount static files for plugin {name}: {e}")

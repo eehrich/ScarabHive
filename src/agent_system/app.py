@@ -22,7 +22,7 @@ from starlette.datastructures import UploadFile  # Use starlette's UploadFile fo
 from fastapi.staticfiles import StaticFiles
 
 from .api.endpoints import router as api_router
-from .ui.resources import STATIC_DIR, ui_templates
+from .ui.resources import STATIC_DIR, revalidated, ui_templates
 from .ui.routes import router as ui_router
 from .mcp.base import MCPRegistry
 # Module level: inside list_agents it would sit in a try/except that
@@ -772,38 +772,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 detail="LLM requests require authentication"
             )
 
-    # Mount static files
+    # Mount static files. disable_cache: asked for again before each use -- the plugins'
+    # static files follow the same rule (PluginWebRegistry.apply_to_app reads it here)
+    app.state.revalidate_static = config.network.disable_cache
     if static_path.exists():
         static_files = StaticFiles(directory=str(static_path))
-
-        # Add no-cache headers for static files when cache is disabled.
-        # Mounted as a wrapping ASGI app on purpose: assigning
-        # static_files.__call__ on the INSTANCE never took effect (Python
-        # looks dunders up on the type), so browsers kept caching stale
-        # assets although disable_cache was on. Kept out of middleware to
-        # avoid BaseHTTPMiddleware overhead (100ms+ per request).
-        if config.network.disable_cache:
-            async def static_with_no_cache(scope, receive, send):
-                if scope["type"] != "http":
-                    await static_files(scope, receive, send)
-                    return
-
-                async def send_with_no_cache(message):
-                    if message["type"] == "http.response.start":
-                        headers = list(message.get("headers", []))
-                        headers.extend([
-                            (b"cache-control", b"no-cache, no-store, must-revalidate"),
-                            (b"pragma", b"no-cache"),
-                            (b"expires", b"0"),
-                        ])
-                        message = {**message, "headers": headers}
-                    await send(message)
-
-                await static_files(scope, receive, send_with_no_cache)
-
-            app.mount("/static", static_with_no_cache, name="static")
-        else:
-            app.mount("/static", static_files, name="static")
+        app.mount("/static", revalidated(static_files) if app.state.revalidate_static else static_files, name="static")
 
     # Initialize logging with role-specific logfile
     def _role_logfile(base: str, role: str) -> str:
