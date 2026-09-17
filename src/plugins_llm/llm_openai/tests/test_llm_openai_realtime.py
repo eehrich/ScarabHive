@@ -151,12 +151,16 @@ async def test_the_request_is_one_response_with_the_whole_history(realtime):
     ]
     await client.chat_tools(messages, TOOLS)
 
-    assert [e["type"] for e in socket.sent] == ["response.create"], "items must not be created one by one"
+    # Text output on the session, not the response: there gpt-realtime-2.1
+    # reports input_tokens 0. The session default is audio.
+    assert socket.sent[0] == {"type": "session.update", "session": {"type": "realtime", "output_modalities": ["text"]}}
+    assert [e["type"] for e in socket.sent] == ["session.update", "response.create"], \
+        "items must not be created one by one"
     request = _request(socket)
     assert request["conversation"] == "none"
-    assert request["output_modalities"] == ["text"], "the session default is audio"
+    assert "output_modalities" not in request
     assert request["instructions"] == "Be terse."
-    assert request["max_output_tokens"] == 4096
+    assert request["max_output_tokens"] == 10_000, "the model's ceiling is the entry's max_tokens"
     assert "temperature" not in request
     assert request["tools"] == [{"type": "function", "name": "get_weather", "description": "Weather",
                                  "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}]
@@ -198,6 +202,14 @@ async def test_streaming_names_the_tool_before_its_arguments_arrive(realtime):
     assert {d["index"] for d in deltas} == {0}
     assert deltas[-1]["accumulated"]["function"] == {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}
     assert events[-1]["type"] == "final" and events[-1]["usage"]["completion_tokens"] == 20
+
+
+def test_reasoning_tokens_are_kept():
+    """gpt-realtime-2.1-mini reports them under output_token_details."""
+    usage = realtime_adapter.to_openai_usage({**USAGE, "output_token_details": {
+        "text_tokens": 20, "audio_tokens": 0, "reasoning_tokens": 15}})
+
+    assert usage["completion_tokens_details"] == {"reasoning_tokens": 15}
 
 
 async def test_streaming_text_arrives_as_deltas(realtime):

@@ -19,9 +19,6 @@ from plugins_llm.llm_common import openai_utils
 
 logger = logging.getLogger(__name__)
 
-#: The Realtime models cap a response here (gpt-realtime, gpt-realtime-mini).
-MAX_OUTPUT_TOKENS = 4096
-
 #: Stands in for an audio part: this path sends no audio input.
 AUDIO_NOTE = "[Audio attachment - audio input not supported by this model]"
 
@@ -150,12 +147,16 @@ def to_openai_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
     if not usage:
         return None
     details = usage.get("input_token_details") or {}
-    return {
+    mapped = {
         "prompt_tokens": usage.get("input_tokens", 0),
         "completion_tokens": usage.get("output_tokens", 0),
         "total_tokens": usage.get("total_tokens", 0),
         "prompt_tokens_details": {"cached_tokens": details.get("cached_tokens", 0)},
     }
+    reasoning = (usage.get("output_token_details") or {}).get("reasoning_tokens")
+    if reasoning is not None:  # gpt-realtime-2.1 thinks
+        mapped["completion_tokens_details"] = {"reasoning_tokens": reasoning}
+    return mapped
 
 
 def outcome(response: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:

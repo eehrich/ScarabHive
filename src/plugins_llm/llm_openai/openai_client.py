@@ -980,7 +980,7 @@ class OpenAIAsyncClient(LLMClient):
         instructions, items = await asyncio.to_thread(
             adapter.to_request_input, messages,
             attachment=lambda msg: self._create_multimodal_injection(msg, supports_audio=False))
-        response: dict[str, Any] = {"conversation": "none", "output_modalities": ["text"], "input": items}
+        response: dict[str, Any] = {"conversation": "none", "input": items}
         if instructions:
             response["instructions"] = instructions
         realtime_tools = adapter.to_realtime_tools(tools or [])
@@ -988,7 +988,8 @@ class OpenAIAsyncClient(LLMClient):
             response["tools"] = realtime_tools
             response["tool_choice"] = "auto"
         if self.max_tokens:
-            response["max_output_tokens"] = min(self.max_tokens, adapter.MAX_OUTPUT_TOKENS)
+            # The ceiling is the model's (gpt-realtime(-mini): 4096, 2.1: 32000).
+            response["max_output_tokens"] = self.max_tokens
         if self._default_extra and not getattr(self, "_realtime_extra_reported", False):
             # temperature and modalities are not part of the GA Realtime API.
             self._realtime_extra_reported = True
@@ -1029,6 +1030,10 @@ class OpenAIAsyncClient(LLMClient):
         try:
             async with RealtimeSession(self.model, self.api_key, url, ssl_context) as session:
                 check_cancelled()
+                # Text output is set on the session: in response.create it makes
+                # gpt-realtime-2.1 report input_tokens 0 (measured 2026-09-17).
+                await session.send_event({"type": "session.update",
+                                          "session": {"type": "realtime", "output_modalities": ["text"]}})
                 await session.send_event({"type": "response.create", "response": response})
                 while True:
                     event = await next_event(session)

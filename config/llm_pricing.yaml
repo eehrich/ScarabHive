@@ -134,9 +134,25 @@ claude-haiku-4-5-20251001:
 # =============================================================================
 # Realtime und Audio: die Tabelle kennt nur EINEN Satz je Modell, die
 # Clients liefern Audio-Tokens nicht getrennt. Eingetragen ist der Text-Satz;
-# Audio kostet pro 1M: gpt-realtime 32 in / 0.40 cached / 64 out,
-# gpt-realtime-mini 10 / 0.30 / 20, gpt-audio 32 / 64 — ein Audio-Aufruf wird
-# also deutlich zu niedrig geschaetzt. Stand developers.openai.com 2026-09-16.
+# Audio kostet pro 1M: gpt-realtime(-2.1) 32 in / 0.40 cached / 64 out,
+# gpt-realtime(-2.1)-mini 10 / 0.30 / 20, gpt-audio(-1.5) 32 / 64 — ein
+# Audio-Aufruf wird also deutlich zu niedrig geschaetzt. Bilder bei 2.1:
+# 5 / 0.50 cached, bei 2.1-mini 0.80 / 0.08. Stand developers.openai.com
+# 2026-09-17. gpt-realtime(-mini) werden am 2027-01-20 abgeschaltet.
+gpt-realtime-2.1:
+  input: 4.00
+  output: 24.00
+  cached_input: 0.40
+
+gpt-realtime-2.1-mini:
+  input: 0.60
+  output: 2.40
+  cached_input: 0.06
+
+gpt-audio-1.5:
+  input: 2.50
+  output: 10.00
+
 gpt-realtime:
   input: 4.00
   output: 16.00

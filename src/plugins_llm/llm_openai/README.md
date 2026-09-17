@@ -33,15 +33,17 @@ with its own. No mapping table anywhere.
 
 ## Realtime
 
-A model whose capabilities say `default_api_type: realtime` (gpt-realtime,
-gpt-realtime-mini) is served over the Realtime API (GA) instead of
+A model whose capabilities say `default_api_type: realtime`
+(gpt-realtime-2.1, gpt-realtime-2.1-mini) is served over the Realtime API (GA) instead of
 `/v1/chat/completions`, which those models do not answer — `chat`,
 `chat_tools` and `chat_tools_streaming` all take that path.
 
 - One WebSocket per call, one `response.create` with `conversation: "none"`:
   the whole history goes as `input` items, a leading system message as
   `instructions`, later system messages stay items at their place. Output is
-  text only (`output_modalities: ["text"]`; the session default is audio).
+  text only: a `session.update` sets `output_modalities: ["text"]` first (the
+  session default is audio). Set on the response instead, gpt-realtime-2.1
+  reports `input_tokens: 0`, and the call would look free.
 - Text streams as `response.output_text.delta`; a tool's name arrives only
   in `response.output_item.added`. The result — text, tool calls, usage — is
   read from `response.done`.
@@ -49,7 +51,9 @@ gpt-realtime-mini) is served over the Realtime API (GA) instead of
   text and reports `finish_reason` `length` / `content_filter`, as Chat
   Completions does. Any other status than `completed` is an error in the
   shape the agent server reads (`error.message`, `error.type`).
-- `max_tokens` goes as `max_output_tokens`, capped at 4096. `temperature`
+- `max_tokens` goes as `max_output_tokens`, as the entry says: the ceiling is
+  the model's (gpt-realtime-2.1: 32000; the older gpt-realtime and
+  gpt-realtime-mini reject more than 4096). `temperature`
   and `modalities` from the model entry do not exist in the GA API and are
   not sent (logged once per client).
 - The WebSocket URL follows `base_url` (`https://…/v1` → `wss://…/v1/realtime`),
@@ -69,14 +73,16 @@ gpt-realtime-mini) is served over the Realtime API (GA) instead of
   audio attachment of a tool result (for a model without `image_input`, the
   tool note is the general one: the content cannot be shown). Usage is
   mapped to the Chat Completions shape, so the cost layer prices it — at the
-  text rate (audio tokens are not reported apart).
+  text rate (audio tokens are not reported apart). gpt-realtime-2.1 reports
+  reasoning tokens; they go on as `completion_tokens_details.reasoning_tokens`.
 - Known gap: no retry and no `LLMRateLimitError`. How the GA API reports a
   rate limit (HTTP 429 at the handshake, or a `failed` response) has not been
   observed yet; until then a limit is an ordinary error and the agent falls
   back to the next profile.
 
 `realtime_session.py` holds the connection, `realtime_adapter.py` the
-conversion. Checked live against gpt-realtime-mini on 2026-09-16.
+conversion. Checked live against gpt-realtime-mini on 2026-09-16 and
+gpt-realtime-2.1 / gpt-realtime-2.1-mini on 2026-09-17.
 
 ## `provider_routing` does not apply here
 

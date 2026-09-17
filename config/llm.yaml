@@ -317,35 +317,37 @@ llm_system:
         - webp
         image_detail_control: true
 
-    gpt-realtime:
+    gpt-realtime-2.1:
       provider: openai
-      model: gpt-realtime
+      model: gpt-realtime-2.1
       api_key: ${OPENAI_API_KEY}
-      context_window: 27900
+      context_window: 128000
       request_timeout: 240
       capabilities:
         tools: true
         function_calling: true
-        audio_input: true
+        # The Realtime path sends no audio input (llm_openai README).
+        audio_input: false
         image_input: true
         streaming: true
         supported_api_types:
         - realtime
         default_api_type: realtime
 
-    gpt-realtime-mini:
-      extends: gpt-realtime
-      model: gpt-realtime-mini
+    gpt-realtime-2.1-mini:
+      extends: gpt-realtime-2.1
+      model: gpt-realtime-2.1-mini
 
-    gpt-audio:
-      extends: gpt-realtime
-      model: gpt-audio
-      context_window: 128000
+    gpt-audio-1.5:
+      extends: gpt-realtime-2.1
+      model: gpt-audio-1.5
+      # Answers in text, and only to a request that carries audio: the model
+      # refuses text-only input, and audio output needs an `audio` config.
       modalities:
       - text
-      - audio
       capabilities:
         streaming: false
+        audio_input: true
         image_input: false
         supported_api_types: null
         default_api_type: null
@@ -459,7 +461,7 @@ llm_system:
       max_steps: 500
       
     realtime:
-      model_ref: gpt-realtime-mini
+      model_ref: gpt-realtime-2.1-mini
       description: "Realtime answers for medium tasks"
       max_steps: 500
 
