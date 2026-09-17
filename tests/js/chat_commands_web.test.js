@@ -214,6 +214,67 @@ test('an empty store says so', async () => {
   assert.ok(notesOf(container).join('\n').includes('No sessions yet.'));
 });
 
+test('/context names what is filling the window, biggest first', async () => {
+  const { chatModule, container, calls } = load([], {
+    session: 'sid7',
+    answers: { '/chat/context': {
+      session_id: 'sid7', agent_name: 'coder',
+      window: 200000,
+      last_call: { window: 200000, prompt_tokens: 42100, cached: 31000 },
+      estimated: { total: 44000, parts: {
+        questions: { tokens: 1200, count: 12 },
+        tool_results: { tokens: 29900, count: 34 },
+        answers: { tokens: 7600, count: 30 },
+        system_prompt: { tokens: 1900, count: 1 },
+        tools: { tokens: 3400, count: 47 },
+      } },
+    } },
+  });
+  await chatModule.runCommand('context', '');
+  assert.deepStrictEqual(calls, ['/chat/context?session_id=sid7&agent_name=coder']);
+  const note = notesOf(container).join('\n');
+  const order = ['tool results', 'answers', 'tool schemas', 'system prompt', 'your messages'];
+  const places = order.map((label) => note.indexOf(label));
+  assert.deepStrictEqual(places, places.slice().sort((a, b) => a - b),
+    'the parts are not sorted by size: ' + note);
+  assert.ok(places[0] > -1, note);
+  // The measurement and the estimate are BOTH there, and apart.
+  assert.ok(note.includes('last call'), note);
+  // No thousands separator in the assertion: toLocaleString gives the
+  // VIEWER's, which is the right thing on screen and the wrong thing to nail
+  // down in a test that runs wherever node happens to be configured.
+  assert.ok(note.includes('of them cached'), note);
+  assert.ok(note.includes('together'), note);
+});
+
+test('/context says when the measurement describes a conversation that is gone', async () => {
+  const { chatModule, container } = load([], {
+    session: 'sid7',
+    answers: { '/chat/context': {
+      session_id: 'sid7',
+      window: 128000,
+      last_call: { window: 100, prompt_tokens: 40, is_stale: true },
+      estimated: { total: 10, parts: { questions: { tokens: 10, count: 1 } } },
+    } },
+  });
+  await chatModule.runCommand('context', '');
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes('stale'),
+    'a number from before a rewrite was shown as if it still held');
+  // ...and the measurement is held against the window IT ran on (100), while
+  // the estimate is held against the one the NEXT call will use (128000). A
+  // /model switch is exactly what makes those two different numbers.
+  assert.ok(note.includes('of 100'), note);
+  assert.ok(/of 128[.,]000/.test(note), note);
+});
+
+test('/context without a session says so instead of asking the server', async () => {
+  const { chatModule, container, calls } = load([], { session: null });
+  await chatModule.runCommand('context', '');
+  assert.deepStrictEqual(calls, []);
+  assert.ok(notesOf(container).join('\n').includes('No session yet'));
+});
+
 test('/rename goes through the session list, not a PATCH of its own', async () => {
   const { chatModule, container, acted, calls } = load([], { session: 'sid7' });
   await chatModule.runCommand('rename', 'Blitter umbauen');

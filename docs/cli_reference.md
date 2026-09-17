@@ -176,6 +176,7 @@ Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
 | `/tools [filter]` | Tools the agent really has, grouped by server (optionally filtered) |
 | `/skills` | Skill bundles it loads, `always` vs `on_demand` |
 | `/costs` | Session cost so far **including sub-agents** (needs `context_usage_tracker`) |
+| `/context`, `/ctx` | Was das Kontextfenster füllt. Zwei Blöcke, die nie vermischt werden: was der Anbieter beim **letzten Call gezählt** hat (aus `context_usage_tracker`, mit dem Fenster, gegen das er gezählt wurde — und dem Hinweis „stale", wenn seither kompaktiert wurde), und was das Gespräch **jetzt** enthält, geschätzt und nach Art aufgeschlüsselt: Tool-Ergebnisse, Antworten, deine Nachrichten, System-Prompt, Tool-Schemas. Größtes zuerst, denn das ist die Antwort auf „warum ist mein Fenster voll" — in einer langen Session sind es fast immer die Tool-Ergebnisse. Keine Kategorie wird als „Messung minus Schätzung" gerechnet: das sähe exakt aus und trüge den Fehler von beidem |
 | `/history [n]` | Last `n` exchanges (default 6); tool traffic condensed to one line each |
 | `/last` | The last turn's tool calls and results in full, formatted |
 | `/undo` | Die letzte Frage und alles, was sie beantwortet hat, aus der Session nehmen. Der Datensatz wird sofort mitgeschnitten, sonst holt `--session <id>` den Turn zurück — auch dann, wenn die Session danach leer ist. Lässt sich der gekürzte Stand nicht schreiben, sagt der Chat es, statt den Turn als weg auszugeben |
@@ -194,9 +195,10 @@ reachable as `/<plugin>:<command>`. See `docs/plugin_commands_design.md`.
 
 **In the browser** the same commands run, from the same catalogue and the same
 parser — `/sessions`, `/resume`, `/tools`, `/costs`, `/history`, `/last`,
-`/vars`, `/rename`, `/agent`, `/undo`, `/retry` und `/export` answer from the
-API (`/agents/<name>/tools`, `/api/sessions`, `/chat/vars`, `/chat/undo`,
-`/chat/transcript`, the usage tracker) instead of from the local agent. `/vars`
+`/vars`, `/rename`, `/agent`, `/undo`, `/retry`, `/export` und `/context`
+answer from the API (`/agents/<name>/tools`, `/api/sessions`, `/chat/vars`,
+`/chat/undo`, `/chat/transcript`, `/chat/context`) instead of from the local
+agent. `/vars`
 sends the line as typed, so the grammar is read by the same parser the
 terminal uses; it needs a session, which in the browser exists from the first
 message on. It reads the persisted variables merged with the live ones — the

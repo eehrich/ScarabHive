@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent_system.chat_actions import (
+    context_breakdown,
+    measured_context,
     message_role,
     message_text,
     split_off_last_exchange,
@@ -150,3 +152,118 @@ class TestWritingItOut:
 
         assert "-- LLM" not in markdown
         assert "`s`" in markdown
+
+
+class TestWhatFillsTheWindow:
+    """The split, not the total: "42k of 200k" says the window is filling,
+    only the split says WHAT is filling it."""
+
+    @SHAPES
+    def test_every_kind_is_counted_on_its_own(self, build):
+        out = context_breakdown(
+            [build("user", "kurze frage"),
+             build("assistant", "kurze antwort"),
+             build("tool", "x" * 4000)],
+            system_prompt="Du bist ein Agent. " * 40,
+            tools=[{"type": "function", "function": {
+                "name": "file_ops_read", "description": "read a file",
+                "parameters": {"type": "object",
+                               "properties": {"path": {"type": "string"}}}}}])
+        parts = out["parts"]
+
+        assert parts["tool_results"]["count"] == 1
+        assert parts["questions"]["count"] == 1
+        assert parts["answers"]["count"] == 1
+        assert parts["tools"]["count"] == 1
+        assert parts["system_prompt"]["count"] == 1
+        # ...and the long tool result really is the biggest of them. This is
+        # the whole reason the command exists.
+        biggest = max(parts, key=lambda name: parts[name]["tokens"])
+        assert biggest == "tool_results", parts
+
+    @SHAPES
+    def test_the_total_is_the_parts(self, build):
+        out = context_breakdown([build("user", "frage" * 100)],
+                                system_prompt="prompt" * 100)
+
+        assert out["total"] == sum(p["tokens"] for p in out["parts"].values())
+        assert out["total"] > 0
+
+    @SHAPES
+    def test_a_role_nobody_expected_is_still_counted(self, build):
+        """Counted under "other", not dropped: a total that silently omits a
+        message is worse than one line saying there is something else."""
+        out = context_breakdown([build("system", "eine systemzeile" * 50)])
+
+        assert out["parts"]["other"]["count"] == 1
+        assert out["total"] == out["parts"]["other"]["tokens"]
+
+    def test_nothing_unexpected_gets_no_line_of_its_own(self):
+        """A line reading 0 invites the question what it is."""
+        out = context_breakdown([{"role": "user", "content": "frage"}])
+
+        assert "other" not in out["parts"]
+
+    def test_an_empty_session_has_the_tools_and_the_prompt_in_it(self):
+        """They sit in the window on every single call, before a word is
+        typed -- an agent with 200 tools starts the session two thirds full."""
+        out = context_breakdown([], system_prompt="p" * 4000, tools=[
+            {"type": "function", "function": {"name": f"t{i}", "description": "d" * 200,
+                                              "parameters": {}}} for i in range(50)])
+
+        assert out["parts"]["system_prompt"]["tokens"] > 0
+        assert out["parts"]["tools"]["tokens"] > 0
+        assert out["parts"]["questions"]["tokens"] == 0
+
+
+class TestWhatTheProviderCounted:
+    def test_it_reads_the_last_snapshot_of_this_session(self):
+        asked = []
+
+        class _Tracker:
+            def get_latest(self, session_id=None):
+                asked.append(session_id)
+                return {"context_window": 200000, "prompt_tokens": 42100,
+                        "cached_tokens": 31000}
+
+        agent = SimpleNamespace(registry=SimpleNamespace(
+            get=lambda name: SimpleNamespace(tracker=_Tracker())))
+
+        assert measured_context(agent, "s1") == {
+            "window": 200000, "prompt_tokens": 42100, "cached": 31000,
+            "is_stale": False}
+        assert asked == ["s1"], "it read the whole store, not this session"
+
+    def test_a_context_rewritten_since_is_flagged(self):
+        """The number then describes a conversation that no longer exists."""
+        class _Tracker:
+            def get_latest(self, session_id=None):
+                return {"context_window": 1, "prompt_tokens": 1, "is_stale": True}
+
+        agent = SimpleNamespace(registry=SimpleNamespace(
+            get=lambda name: SimpleNamespace(tracker=_Tracker())))
+
+        assert measured_context(agent, "s1")["is_stale"] is True
+
+    def test_a_session_that_never_ran_a_call_has_no_measurement(self):
+        """The tracker is there and answers None -- filling that in with a
+        plausible window would be a number nobody counted."""
+        class _Tracker:
+            def get_latest(self, session_id=None):
+                return None
+
+        agent = SimpleNamespace(registry=SimpleNamespace(
+            get=lambda name: SimpleNamespace(tracker=_Tracker())))
+
+        assert measured_context(agent, "s1") == {}
+
+    def test_without_the_plugin_there_is_no_measurement(self):
+        """An estimate is worth showing; an invented measurement is not."""
+        agent = SimpleNamespace(registry=None)
+        assert measured_context(agent, "s1") == {}
+
+        class _Broken:
+            def get(self, name):
+                raise RuntimeError("registry gone")
+
+        assert measured_context(SimpleNamespace(registry=_Broken()), "s1") == {}

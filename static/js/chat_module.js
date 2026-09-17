@@ -584,6 +584,62 @@
     addNote(container, 'Written: chat-' + currentSessionId + '.md');
   }
 
+  /**
+   * `/context` -- what fills the window of this session.
+   *
+   * Two blocks the server keeps apart and so does this: what the provider
+   * COUNTED on the last call, and what the conversation holds now, estimated
+   * per kind. The split is the point -- "42k of 200k" says the window is
+   * filling, only the split says the tool results are doing it.
+   */
+  async function cmdContext(container) {
+    if (!currentSessionId) {
+      addNote(container, 'No session yet -- the window fills with the first message.');
+      return;
+    }
+    const agent = currentAgentName();
+    const data = await getJSON('/chat/context?session_id=' +
+      encodeURIComponent(currentSessionId) +
+      (agent ? '&agent_name=' + encodeURIComponent(agent) : ''));
+
+    const labels = {
+      tool_results: 'tool results', answers: 'answers', questions: 'your messages',
+      system_prompt: 'system prompt', tools: 'tool schemas', other: 'other messages',
+    };
+    const last = data.last_call || {};
+    // The window the NEXT call runs against. The measured line brings its own:
+    // a /model switch changes the model and with it the size, and one share
+    // against the other would state a fill that is not true.
+    const window_ = data.window || 0;
+    const measuredWindow = last.window || 0;
+    const lines = ['Context of ' + data.session_id +
+      (data.agent_name ? ' (' + data.agent_name + ')' : '') + ':'];
+    if (last.prompt_tokens) {
+      lines.push('  last call     ' + last.prompt_tokens.toLocaleString() +
+        (measuredWindow ? ' of ' + measuredWindow.toLocaleString() +
+          '  (' + Math.round(last.prompt_tokens / measuredWindow * 100) + '%)' : '') +
+        (last.cached ? ', ' + last.cached.toLocaleString() + ' of them cached' : '') +
+        (last.is_stale ? '   [stale: the context was rewritten since]' : ''));
+    }
+    lines.push('  ---- and what the conversation holds now, estimated ----');
+    const parts = Object.entries((data.estimated || {}).parts || {})
+      .sort((a, b) => b[1].tokens - a[1].tokens);
+    const width = parts.reduce((w, [name]) => Math.max(w, (labels[name] || name).length), 0);
+    parts.forEach(([name, part]) => {
+      if (!part.tokens) return;   // no line for a part with nothing in it
+      const unit = name === 'tools' ? ' tools' : ' messages';
+      lines.push('  ' + (labels[name] || name).padEnd(width) + '  ' +
+        String(part.tokens.toLocaleString()).padStart(8) +
+        (name === 'system_prompt' ? '' : '   ' + part.count + unit));
+    });
+    const total = (data.estimated || {}).total || 0;
+    lines.push('  ' + 'together'.padEnd(width) + '  ' +
+      String(total.toLocaleString()).padStart(8) +
+      (window_ ? '   of ' + window_.toLocaleString() +
+        '  (' + Math.round(total / window_ * 100) + '%)' : ''));
+    addNote(container, lines.join('\n'));
+  }
+
   async function cmdResume(container, payload) {
     const id = (payload || '').trim();
     if (!id) {
@@ -892,6 +948,7 @@
       vars: function () { return cmdVars(container, payload); },
       tools: function () { return cmdTools(container, payload); },
       costs: function () { return cmdCosts(container); },
+      context: function () { return cmdContext(container); },
       history: function () { return cmdHistory(container, payload); },
       last: function () { return cmdLast(container); },
       undo: function () { return cmdUndo(container, payload, false); },

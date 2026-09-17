@@ -624,6 +624,9 @@ async def run_chat_turn(
 # terminal does. Imported into this namespace because the REPL below (and its
 # tests) call them by these names.
 from agent_system.chat_actions import (  # noqa: E402
+    context_breakdown,
+    live_context_window,
+    measured_context,
     message_text,
     one_line,
     split_off_last_exchange,
@@ -1838,6 +1841,94 @@ def _usage_tracker(ctx: "_ChatContext") -> Any:
         return None
     tracker = getattr(server, "tracker", None)
     return tracker if hasattr(tracker, "get_statistics") else None
+
+
+#: What each part of the window is called on screen, biggest-first order is
+#: decided by the numbers, not by this.
+_CONTEXT_LABELS = {
+    "tool_results": "tool results",
+    "answers": "answers",
+    "questions": "your messages",
+    "system_prompt": "system prompt",
+    "tools": "tool schemas",
+    "other": "other messages",
+}
+
+
+async def _show_context(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
+    """What fills the context window of this session.
+
+    Two blocks that are never mixed: what the provider COUNTED on the last
+    call (the usage tracker has it, including the window it was counted
+    against), and what this conversation holds NOW, estimated per kind. A
+    category worked out as "measured minus estimated" would look exact and
+    carry the error of both.
+
+    The split is the point. "42k of 200k" says the window is filling; only
+    the split says the tool results are doing it, and that is the one the
+    person can act on -- /undo, /new, or a narrower tool.
+    """
+    messages = _session_messages(ctx)
+    prompt, tools = "", []
+    notes = []
+    try:
+        prompt, tools = await ctx.agent.describe_context_inputs(ctx.session_id)
+    except Exception as e:  # noqa: BLE001 - a missing line, not the end of the command
+        logger.debug("Could not read the context inputs: %s", e)
+        notes.append("  (the system prompt and the tool schemas could not be "
+                     "read -- they are missing below)")
+
+    last = measured_context(ctx.agent, ctx.session_id)
+    # The window the NEXT call runs against. The measured line brings its own:
+    # /model changes the model and with it the size, and one share against the
+    # other would state a fill that is not true.
+    window = live_context_window(ctx.agent, ctx.llm_override)
+    breakdown = context_breakdown(messages, system_prompt=prompt, tools=tools)
+
+    # Everything through the renderer, and committed at the end: a bare print
+    # lands on the row the live region redraws and is invisible to its offset
+    # arithmetic, so the next turn paints over this output.
+    renderer.println(
+        f"Context of {ctx.session_id} ({ctx.entry_name} on {ctx.llm_label()}):")
+    for note in notes:
+        renderer.println(note, color="90")
+    if last.get("prompt_tokens"):
+        measured_window = last.get("window", 0)
+        share = (f"  ({last['prompt_tokens'] / measured_window:.0%})"
+                 if measured_window else "")
+        cached = (f", {last['cached']:,} of them cached"
+                  if last.get("cached") else "")
+        renderer.println(
+            f"  last call     {last['prompt_tokens']:>8,}"
+            + (f" of {measured_window:,}" if measured_window else "") + share + cached
+            + ("   [stale: the context was rewritten since]"
+               if last.get("is_stale") else ""),
+            color="90")
+    renderer.println("  ---- and what the conversation holds now, estimated ----",
+                     color="90")
+    _print_context_lines(renderer, breakdown, window)
+    renderer.commit()
+
+
+def _print_context_lines(renderer: ChatRenderer, breakdown: dict, window: int) -> None:
+    """The estimated split, biggest first, and what it adds up to."""
+    parts = sorted(breakdown["parts"].items(), key=lambda kv: -kv[1]["tokens"])
+    width = max((len(_CONTEXT_LABELS.get(name, name)) for name, _ in parts), default=0)
+    for name, part in parts:
+        # Nothing in it, no line: an agent with no tools does not need a row
+        # saying so, and a fresh session would otherwise list three zeroes.
+        if not part["tokens"]:
+            continue
+        counted = part["count"]
+        unit = "tools" if name == "tools" else "messages"
+        detail = f"   {counted} {unit}" if name not in ("system_prompt",) else ""
+        renderer.println(
+            f"  {_CONTEXT_LABELS.get(name, name):<{width}}  {part['tokens']:>8,}{detail}",
+            color="90")
+    total = breakdown["total"]
+    renderer.println(f"  {'together':<{width}}  {total:>8,}"
+                     + (f"   of {window:,}  ({total / window:.0%})" if window else ""),
+                     color="90")
 
 
 def _show_costs(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
@@ -3161,6 +3252,9 @@ def run_chat_loop(
                     continue
                 if command == "skills":
                     _show_skills(ctx, renderer)
+                    continue
+                if command == "context":
+                    _run_interruptible(loop, _show_context(ctx, renderer), "/context")
                     continue
                 if command == "costs":
                     _show_costs(ctx, renderer)

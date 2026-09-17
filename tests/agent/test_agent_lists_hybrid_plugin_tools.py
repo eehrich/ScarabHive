@@ -167,3 +167,34 @@ async def test_a_listing_that_fails_says_so():
     agent.list_usable_tools = broken
     with pytest.raises(RuntimeError, match="discovery broke"):
         await agent._list_usable_tools_with_details({})
+
+
+@pytest.mark.asyncio
+async def test_the_prompt_and_the_schemas_describe_the_same_tools():
+    """`/context` counts the system prompt and the tool schemas as two lines
+    of one window. They come from ONE discovery for that reason: rendered
+    from a different list, the prompt would name tools the model has no
+    schema for -- which is the drift this pipeline was unified to end.
+    """
+    registry = MCPRegistry()
+    registry.register("hybrid", _HybridServer(
+        [_MCPToolLike("hybrid_tool", "does the thing")]))
+    agent = _agent_with(registry, ["hybrid/*"])
+
+    # At the seam, because whether the tools SHOW in the prompt is the
+    # template's business -- the default one names none. What must hold is
+    # that the renderer is handed the very list the schemas were built from.
+    given = []
+    original = agent._render_prompts
+
+    def record(usable_tools, *args, **kwargs):
+        given.append(list(usable_tools))
+        return original(usable_tools, *args, **kwargs)
+
+    agent._render_prompts = record
+
+    _prompt, schemas = await agent.describe_context_inputs()
+
+    assert [s["function"]["name"] for s in schemas] == ["hybrid_tool"]
+    assert given == [["hybrid"]], (
+        f"the prompt was rendered from another discovery: {given}")

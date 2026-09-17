@@ -13,17 +13,29 @@ on every message, so there the record IS the conversation.
 
 Nothing here prints, writes or awaits: the caller decides what to do with the
 answer, which is what keeps one copy serving a REPL and an HTTP endpoint.
+(`measured_context` reads a plugin's store, which is still a read -- it asks
+nobody to wait and changes nothing.)
 """
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "message_role", "message_text", "tool_calls_of", "tool_call_summary",
     "one_line", "starts_a_turn", "split_off_last_exchange",
-    "transcript_markdown",
+    "transcript_markdown", "context_breakdown", "measured_context",
 ]
+
+#: What a conversation is made of, and the role each kind arrives under.
+CONTEXT_KINDS: tuple[tuple[str, str], ...] = (
+    ("questions", "user"),
+    ("answers", "assistant"),
+    ("tool_results", "tool"),
+)
 
 
 def _field(message: Any, name: str) -> Any:
@@ -108,6 +120,101 @@ def split_off_last_exchange(
         if starts_a_turn(messages[index]):
             return list(messages[:index]), messages[index]
     return list(messages), None
+
+
+def measured_context(agent: Any, session_id: str) -> dict:
+    """What the PROVIDER counted on the last call of this session.
+
+    From context_usage_tracker, which hooks every LLM call in the process --
+    so it also sees the calls a sub-agent made, which never appear in the
+    coordinator's own event stream.
+
+    Empty when the plugin is not registered: an estimate is still worth
+    showing, a made-up measurement is not. `is_stale` is the tracker's own
+    word for "the context was rewritten since" -- the number then describes a
+    conversation that no longer exists.
+    """
+    registry = getattr(agent, "registry", None)
+    if registry is None:
+        return {}
+    try:
+        tracker = getattr(registry.get("context_usage_tracker"), "tracker", None)
+        latest = tracker.get_latest(session_id=session_id) if tracker else None
+    except Exception:
+        logger.debug("No usage snapshot for %s", session_id, exc_info=True)
+        return {}
+    if not latest:
+        return {}
+    return {
+        "window": int(latest.get("context_window") or 0),
+        "prompt_tokens": int(latest.get("prompt_tokens") or 0),
+        "cached": int(latest.get("cached_tokens") or 0),
+        "is_stale": bool(latest.get("is_stale")),
+    }
+
+
+def live_context_window(agent: Any, llm_override: Any = None) -> int:
+    """The window the NEXT call runs against, or 0 when nobody knows it.
+
+    The client this chat is on, not the one the LAST call was counted against:
+    a /model switch or a fallback changes the model and with it the size, and
+    a share worked out against the old one states a fill that is not true.
+    """
+    client = llm_override or getattr(agent, "llm", None)
+    window = getattr(client, "context_window", None)
+    # > 0 is a guard, not a case anyone produces: a configured 0 reads the
+    # same either way, and a negative one would render a negative share
+    # rather than no share at all.
+    return window if isinstance(window, int) and window > 0 else 0
+
+
+def context_breakdown(
+    messages: Sequence[Any],
+    *,
+    system_prompt: str = "",
+    tools: Optional[Sequence[Any]] = None,
+) -> dict:
+    """Where the context window goes, in ESTIMATED tokens, by kind.
+
+    What a provider really counted is known only after a call, and only as one
+    number. The split is what answers "why is my window full" -- and in a long
+    session the answer is almost always the tool RESULTS, which nothing else
+    says out loud.
+
+    Estimate and measurement stay apart: a category worked out as "measured
+    minus estimated" looks exact and carries the error of both. Whoever
+    renders this prints the provider's number next to it, not inside it.
+
+    Tools are the SCHEMAS the model is handed; the system prompt is the
+    rendered one, which already contains the tool prompt. Both sit in the
+    window on every single call, which is why they are their own lines.
+    """
+    from .llm.token_utils import estimate_token_count
+
+    groups: dict[str, list] = {name: [] for name, _ in CONTEXT_KINDS}
+    groups["other"] = []
+    for message in messages:
+        role = message_role(message)
+        name = next((n for n, r in CONTEXT_KINDS if r == role), "other")
+        groups[name].append(message)
+
+    parts = {name: {"tokens": estimate_token_count(group), "count": len(group)}
+             for name, group in groups.items()}
+    parts["system_prompt"] = {
+        "tokens": (estimate_token_count([{"role": "system", "content": system_prompt}])
+                   if system_prompt else 0),
+        "count": 1 if system_prompt else 0,
+    }
+    tool_list = list(tools or [])
+    parts["tools"] = {
+        "tokens": estimate_token_count([], tools=tool_list) if tool_list else 0,
+        "count": len(tool_list),
+    }
+    # "other" only when there is something: a line reading 0 invites the
+    # question what it is, and the answer is usually "nothing".
+    if not parts["other"]["count"]:
+        del parts["other"]
+    return {"parts": parts, "total": sum(p["tokens"] for p in parts.values())}
 
 
 def transcript_markdown(

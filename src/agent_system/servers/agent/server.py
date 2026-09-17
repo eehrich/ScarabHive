@@ -1235,6 +1235,65 @@ class Agent(MCPServer):
 
         return await discovery_service.discover_allowed_tools()
 
+    async def describe_context_inputs(
+        self, session_id: Optional[str] = None
+    ) -> tuple[str, list[Dict[str, Any]]]:
+        """(system prompt, tool schemas) as they go into a call of *session_id*.
+
+        What sits in the context window before the conversation does, and what
+        `/context` counts. Two things matter about it:
+
+        * The prompt is rendered WITH the session's template vars, because
+          that is the prompt the session really sends -- rendered without
+          them it is short by the whole var payload, on the one line the
+          command exists to show.
+        * One discovery, not two. Both halves need the list of usable tools,
+          and asking for it twice means awaiting list_tools() on every
+          registered server a second time.
+        """
+        usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
+        tools_schema = await self._schemas_for(
+            usable_tools, allowed_patterns, blocked_patterns)
+        max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
+        system_msg, _ = self._render_prompts(
+            usable_tools, max_steps, current_step=0, session_id=session_id)
+        return system_msg, tools_schema
+
+    async def _schemas_for(self, usable_tools: list[str],
+                           allowed_patterns: Optional[list[str]],
+                           blocked_patterns: Optional[list[str]]) -> list[Dict[str, Any]]:
+        """The LLM schemas for an ALREADY discovered set of tools."""
+        schema_builder = ToolSchemaBuilder(
+            agent_name=self.name,
+            mcp_integration_manager=self._mcp_integration_manager,
+            server_getter_func=self._get_server_from_any_registry,
+        )
+        tools_schema, _mapping, _usable, _display = await schema_builder.build_schemas(
+            usable_tools,
+            allowed_patterns=allowed_patterns,
+            blocked_patterns=blocked_patterns,
+        )
+        return list(tools_schema)
+
+    async def build_llm_tool_schemas(self) -> list[Dict[str, Any]]:
+        """The tool schemas this agent hands the model, exactly as they go out.
+
+        EXACTLY the pipeline that builds the LLM schema -- discovery (deny-all
+        on empty allowed, _mcp_tool_visible, externals) plus ToolSchemaBuilder
+        (tool-level allow/block, both tool interfaces, every schema dialect).
+        A caller that re-implements half of it diverges on every point it
+        skips: hybrid plugins (list_tools-only) went missing entirely, an
+        empty allowlist meant allow-all in one place and deny-all in the
+        other, and blocked patterns were never applied -- an agent asking what
+        it could do got a different answer than the schema it ran with.
+
+        Whole schemas, parameters and all: what a listing needs is the name,
+        what a token count needs is the rest, and the parameters are usually
+        the larger half of both.
+        """
+        usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
+        return await self._schemas_for(usable_tools, allowed_patterns, blocked_patterns)
+
     async def _list_usable_tools_with_details(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
         """Return detailed info about tools this agent CAN USE (name + description).
 
@@ -1252,28 +1311,7 @@ class Agent(MCPServer):
         tools" -- the chat even named the cause: an empty allowlist.
         """
         status = params.get("_status")
-
-        # EXACTLY the pipeline that builds the LLM schema -- discovery
-        # (deny-all on empty allowed, _mcp_tool_visible, externals) plus
-        # ToolSchemaBuilder (tool-level allow/block, both tool interfaces,
-        # every schema dialect). This method used to re-implement about
-        # half of that and diverged on every point it skipped: hybrid
-        # plugins (list_tools-only) were missing entirely, an empty
-        # allowlist meant allow-all here but deny-all in the schema, and
-        # blocked patterns were never applied. An agent asking what it can
-        # do got a different answer than the schema it was running with.
-        usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
-
-        schema_builder = ToolSchemaBuilder(
-            agent_name=self.name,
-            mcp_integration_manager=self._mcp_integration_manager,
-            server_getter_func=self._get_server_from_any_registry,
-        )
-        tools_schema, _mapping, _usable, _display = await schema_builder.build_schemas(
-            usable_tools,
-            allowed_patterns=allowed_patterns,
-            blocked_patterns=blocked_patterns,
-        )
+        tools_schema = await self.build_llm_tool_schemas()
 
         all_tools: list[Dict[str, Any]] = []
         for entry in tools_schema:

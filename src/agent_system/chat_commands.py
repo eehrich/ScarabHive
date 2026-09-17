@@ -89,6 +89,8 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
                 usage="/tools [filter]"),
     ChatCommand("skills", ("/skills",), "skills you can run, and what this agent loads"),
     ChatCommand("costs", ("/costs", "/cost"), "session cost so far, including sub-agents"),
+    ChatCommand("context", ("/context", "/ctx"),
+                "what fills the context window of this session"),
     ChatCommand("history", ("/history", "/hist"), "show the last n exchanges (default 6)",
                 usage="/history [n]"),
     ChatCommand("last", ("/last",), "tool calls and results of the last turn, in full"),

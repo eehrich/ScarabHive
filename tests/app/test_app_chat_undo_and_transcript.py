@@ -223,6 +223,106 @@ class TestUndo:
         assert dropped["text"] == "was ist das? [image_url]"
 
 
+class TestContext:
+    """What fills the window -- the measurement and the estimate, apart."""
+
+    async def test_the_split_names_what_is_filling_it(self, api):
+        await _stored(api, messages=[
+            {"role": "user", "content": "schreib die routine"},
+            {"role": "assistant", "content": "gleich"},
+            {"role": "tool", "content": "x" * 8000},
+        ])
+
+        async with _client(api.app) as client:
+            response = await client.get("/chat/context",
+                                        params={"session_id": "s1"}, timeout=30.0)
+
+        assert response.status_code == 200, response.text
+        parts = response.json()["estimated"]["parts"]
+        assert parts["tool_results"]["count"] == 1
+        assert parts["questions"]["count"] == 1
+        # The long tool result is the biggest thing in there, and saying so is
+        # the whole point -- a total alone cannot.
+        biggest = max(parts, key=lambda name: parts[name]["tokens"])
+        assert biggest == "tool_results", parts
+
+    async def test_the_prompt_and_the_tools_are_in_it(self, api):
+        """They sit in the window on every call, before a word is typed."""
+        await _stored(api, messages=[{"role": "user", "content": "frage"}])
+
+        async with _client(api.app) as client:
+            response = await client.get("/chat/context",
+                                        params={"session_id": "s1"}, timeout=30.0)
+
+        parts = response.json()["estimated"]["parts"]
+        assert "system_prompt" in parts and "tools" in parts
+        assert parts["system_prompt"]["tokens"] > 0, (
+            "the agent's own prompt was not counted")
+
+    async def test_what_was_never_measured_is_not_invented(self, api):
+        """A session no LLM call ever ran in has no provider count -- an
+        estimate is worth showing, a made-up measurement is not.
+
+        Its own id: the usage tracker is a real registered plugin with a real
+        store, and "s1" has been used by enough runs to have a snapshot in it.
+        """
+        await _stored(api, session_id="ctx-never-called", messages=[
+            {"role": "user", "content": "frage"}])
+
+        async with _client(api.app) as client:
+            response = await client.get(
+                "/chat/context", params={"session_id": "ctx-never-called"},
+                timeout=30.0)
+
+        assert response.json()["last_call"] == {}
+        assert response.json()["estimated"]["total"] > 0
+
+    async def test_a_session_that_is_not_there(self, api):
+        async with _client(api.app) as client:
+            response = await client.get("/chat/context",
+                                        params={"session_id": "gibtsnicht"},
+                                        timeout=30.0)
+
+        # No record, no messages -- but the agent's prompt and tools are real,
+        # so this answers rather than 404s. What it must NOT do is invent a
+        # conversation.
+        assert response.status_code == 200, response.text
+        assert response.json()["estimated"]["parts"]["questions"]["count"] == 0
+
+    async def test_the_prompt_is_rendered_for_THIS_session(self, api, monkeypatch):
+        """Without the session id the template vars are skipped, and the one
+        line the command exists to show is short by the whole var payload."""
+        from agent_system.servers.agent.server import Agent
+
+        asked = []
+
+        async def describe(self, session_id=None):
+            asked.append(session_id)
+            return "ein prompt", []
+
+        monkeypatch.setattr(Agent, "describe_context_inputs", describe)
+        await _stored(api, messages=[{"role": "user", "content": "frage"}])
+
+        async with _client(api.app) as client:
+            await client.get("/chat/context", params={"session_id": "s1"},
+                             timeout=30.0)
+
+        assert asked == ["s1"]
+
+    async def test_a_session_with_no_record_gets_no_measurement(self, api):
+        """The tracker is keyed by session id ALONE, and a session that is not
+        on disk has no owner there -- so the ownership check passes for
+        anybody. A guessed id must not answer with someone else's counts."""
+        async with _client(api.app) as client:
+            response = await client.get(
+                "/chat/context", params={"session_id": "s1"}, timeout=30.0)
+
+        # "s1" has snapshots in the real usage store from earlier runs; with
+        # no record for it here, none of them may come back.
+        assert response.status_code == 200, response.text
+        assert response.json()["last_call"] == {}
+
+
 class TestTranscript:
     async def test_it_writes_the_conversation(self, api):
         await _stored(api, messages=_turn("was macht der blitter?",

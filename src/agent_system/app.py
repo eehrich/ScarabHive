@@ -3374,6 +3374,67 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             },
         }
 
+    @app.get("/chat/context")
+    async def chat_context(request: Request, session_id: str = Query(...),
+                           agent_name: Optional[str] = Query(default=None)):
+        """What fills the context window of a session -- `/context`.
+
+        Two blocks that are never mixed: what the provider COUNTED on the last
+        call (the usage tracker keeps it, with the window it was counted
+        against), and what the conversation holds NOW, estimated per kind. A
+        category worked out as "measured minus estimated" would look exact and
+        carry the error of both.
+
+        The system prompt and the tool schemas are read off the agent that
+        RAN the session, because that is whose prompt and whose tools sit in
+        that window -- another agent's numbers would describe a chat that
+        never happened.
+        """
+        from .chat_actions import (
+            context_breakdown, live_context_window, measured_context)
+
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        ran_with = await _session_agent_name(session_id, user_id)
+        target_agent = _chat_agent(request, ran_with or agent_name)
+        if target_agent is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        await _verify_session_owner(session_id, current_user,
+                                    getattr(target_agent, "_session_tracker", None))
+
+        messages: list = []
+        if _session_service and _session_service.session_manager:
+            try:
+                record = await _session_service.session_manager.load_session(
+                    user_id, session_id)
+                messages = (record or {}).get("messages") or []
+            except Exception as e:
+                logging.getLogger(__name__).debug(
+                    "No stored messages for %s: %s", session_id, e)
+
+        prompt, tools = "", []
+        try:
+            # With the session id: the prompt this SESSION sends, template
+            # vars and all. Rendered without them it is short by the whole
+            # var payload, on the one line the command exists to show.
+            prompt, tools = await target_agent.describe_context_inputs(session_id)
+        except Exception as e:  # noqa: BLE001 - a missing line, not a failed request
+            logging.getLogger(__name__).warning("No context inputs for %s: %s",
+                                                session_id, e)
+
+        return {
+            "session_id": session_id,
+            "agent_name": getattr(target_agent, "name", ran_with or ""),
+            # The window the NEXT call runs against; the measurement below
+            # carries the one IT was counted against.
+            "window": live_context_window(target_agent),
+            # What the provider counted, kept in its own box -- and only for a
+            # session that HAS a record: the tracker is keyed by session id
+            # alone, and an unpersisted id passes the ownership check.
+            "last_call": measured_context(target_agent, session_id) if ran_with else {},
+            "estimated": context_breakdown(messages, system_prompt=prompt, tools=tools),
+        }
+
     @app.get("/chat/transcript")
     async def chat_transcript(request: Request, session_id: str = Query(...)):
         """The conversation as markdown -- `/export`, for whoever asks.

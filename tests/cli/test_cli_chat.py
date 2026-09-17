@@ -2615,6 +2615,171 @@ class _CostAgent:
         self.registry = _Reg()
 
 
+class _ContextAgent:
+    """An agent with a prompt, tools, a conversation and a usage snapshot."""
+
+    def __init__(self, messages, *, latest=None, prompt="Du bist ein Agent. " * 40,
+                 tools=None, raises=False, window=0):
+        self._messages = messages
+        self._prompt = prompt
+        self.llm = SimpleNamespace(model="m", context_window=window)
+        self._tools = tools if tools is not None else [
+            {"type": "function", "function": {
+                "name": "file_ops_read", "description": "read a file",
+                "parameters": {"type": "object",
+                               "properties": {"path": {"type": "string"}}}}}]
+        self._raises = raises
+        self.asked_for = []
+        self._session_tracker = SimpleNamespace(
+            get_session_messages=lambda sid: list(messages))
+
+        class _Reg:
+            def get(_self, name):
+                if latest is None:
+                    raise KeyError(name)
+                return type("S", (), {"tracker": type("T", (), {
+                    "get_latest": staticmethod(lambda session_id=None: dict(latest))})()})()
+
+        self.registry = _Reg()
+
+    async def describe_context_inputs(self, session_id=None):
+        """One call for both, and it gets the SESSION id: the prompt this
+        session sends is rendered with its template vars."""
+        self.asked_for.append(session_id)
+        if self._raises:
+            raise RuntimeError("the template is gone")
+        return self._prompt, list(self._tools)
+
+
+class TestContextCommand:
+    """"42k of 200k" says the window is filling. Only the split says WHAT is
+    filling it, and that is the part the person can act on."""
+
+    def _run(self, agent, capsys=None):
+        """Everything the command put on screen.
+
+        Both halves: the header and the notes go through print(), the rows
+        through the renderer -- reading only one of them would miss a block.
+        """
+        import agent_system.cli_utils.chat as chat
+
+        ctx = chat._ChatContext(
+            agent=agent, entry_name="a", session_service=None, session_user="u",
+            session_id="sess-1", was_new_session=False, llm_profile="p",
+            llm_override=None, llm_profile_info=None, show_status=True)
+        renderer, out = _renderer(width=200)
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(chat._show_context(ctx, renderer))
+        finally:
+            loop.close()
+        printed = capsys.readouterr().out if capsys is not None else ""
+        return printed + out.getvalue()
+
+    def _conversation(self):
+        return [_Msg("user", "schreib die routine"),
+                _Msg("assistant", "gleich"),
+                _Msg("tool", "x" * 8000),
+                _Msg("assistant", "fertig")]
+
+    def test_the_biggest_part_comes_first(self, capsys):
+        text = self._run(capsys=capsys, agent=_ContextAgent(self._conversation()))
+
+        places = [text.index(label) for label in
+                  ["tool results", "system prompt", "tool schemas", "your messages"]]
+        assert places == sorted(places), f"not sorted by size:\n{text}"
+
+    def test_the_measurement_and_the_estimate_are_both_there_and_apart(self, capsys):
+        text = self._run(capsys=capsys, agent=_ContextAgent(
+            self._conversation(),
+            latest={"context_window": 200000, "prompt_tokens": 42100,
+                    "cached_tokens": 31000}))
+
+        assert "last call" in text
+        assert "42,100" in text and "200,000" in text
+        assert "31,000 of them cached" in text
+        # The estimate keeps its own block and its own total.
+        assert "estimated" in text and "together" in text
+
+    def test_a_measurement_from_before_a_rewrite_is_flagged(self, capsys):
+        """It describes a conversation that no longer exists."""
+        text = self._run(capsys=capsys, agent=_ContextAgent(
+            self._conversation(),
+            latest={"context_window": 100, "prompt_tokens": 40, "is_stale": True}))
+
+        assert "stale" in text
+
+    def test_a_part_with_nothing_in_it_gets_no_line(self, capsys):
+        """A fresh session would otherwise list three zeroes, and an agent
+        without tools a row saying it has none."""
+        text = self._run(capsys=capsys, agent=_ContextAgent(
+            [_Msg("user", "die erste frage")], tools=[]))
+
+        assert "your messages" in text
+        assert "answers" not in text, text
+        assert "tool results" not in text, text
+        assert "tool schemas" not in text, text
+
+    def test_without_a_tracker_the_estimate_still_answers(self, capsys):
+        text = self._run(capsys=capsys, agent=_ContextAgent(self._conversation()))
+
+        assert "last call" not in text
+        assert "tool results" in text, "the split needs no tracker"
+
+    def test_inputs_that_cannot_be_read_are_named(self, capsys):
+        """Missing, and said so -- a split that silently leaves out the system
+        prompt understates the window by thousands of tokens."""
+        text = self._run(capsys=capsys,
+                         agent=_ContextAgent(self._conversation(), raises=True))
+
+        assert "could not be read" in text
+
+    def test_the_prompt_is_rendered_for_THIS_session(self):
+        """Without the session id the template vars are skipped, and the one
+        line the command exists to show is short by the whole var payload."""
+        agent = _ContextAgent(self._conversation())
+        self._run(agent=agent)
+
+        assert agent.asked_for == ["sess-1"]
+
+    def test_the_estimate_is_held_against_the_window_of_the_NEXT_call(self, capsys):
+        """The measurement carries the window IT ran on. A /model switch makes
+        those two different numbers, and a share against the old one states a
+        fill that is not true."""
+        text = self._run(capsys=capsys, agent=_ContextAgent(
+            self._conversation(), window=128000,
+            latest={"context_window": 100, "prompt_tokens": 40}))
+
+        assert "of 100" in text, text          # the measured line, on its own
+        assert "of 128,000" in text, text      # the estimate, on the live one
+
+    def test_the_repl_dispatches_it(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        seen = []
+
+        async def fake(ctx, renderer):
+            seen.append(ctx.session_id)
+
+        monkeypatch.setattr(chat, "_show_context", fake)
+        drive_chat_repl(monkeypatch, ["/context"])
+
+        assert seen == ["s1"]
+
+    def test_the_short_spelling_dispatches_too(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        seen = []
+
+        async def fake(ctx, renderer):
+            seen.append("ran")
+
+        monkeypatch.setattr(chat, "_show_context", fake)
+        drive_chat_repl(monkeypatch, ["/ctx"])
+
+        assert seen == ["ran"]
+
+
 class TestCostsCommand:
     """The turn footer only sums the coordinator's own event stream. Sub-agents
     bill against the same wallet through their own sub-sessions, so /costs has

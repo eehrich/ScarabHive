@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 from .models import ChatMessage
 
 
@@ -470,7 +470,10 @@ def estimate_tools_token_count(tools_schema: List[Dict[str, Any]]) -> int:
 
 
 def estimate_token_count(
-    messages: List[ChatMessage],
+    # Both shapes, as the docstring below and the body have always said: the
+    # annotation said ChatMessage only, so every caller holding the dicts a
+    # session file stores had to lie to the type checker.
+    messages: Sequence[Union[ChatMessage, Dict[str, Any]]],
     tools: Optional[List[Dict[str, Any]]] = None
 ) -> int:
     """Enhanced token count estimation with improved accuracy for different content types.
