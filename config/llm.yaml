@@ -420,28 +420,17 @@ llm_system:
       max_steps: 500
 
     normal:
-      model_ref: gpt-5-mini
+      model_ref: or-deepseek-flash
       description: "Fast model for medium reasoning tasks"
       max_steps: 500
-      
-    normal-stream:
-      model_ref: gemini-3-flash
-      description: "Fast model for medium reasoning tasks (streaming)"
-      max_steps: 500
-      
+            
     think:
       model_ref: gpt-5
       description: "Advanced model for complex reasoning (batch)"
       max_steps: 500
       
-    think-stream:
-      model_ref: gemini-3-pro
-      description: "Advanced model for complex reasoning (streaming)"
-      max_steps: 500
-      
-    
     chat:
-      model_ref: deepseek-chat
+      model_ref: or-deepseek-flash
       description: "Cheap and fast model for medium tasks"
       max_steps: 500
       
@@ -451,12 +440,12 @@ llm_system:
       max_steps: 500      
       
     code:
-      model_ref: gpt-5-codex
+      model_ref: or-claude-sonnet
       description: "Special LLM for complex coding tasks"
       max_steps: 500
       
     code-mini:
-      model_ref: gpt-5-codex-mini
+      model_ref: or-gpt-mini
       description: "Special LLM for medium coding tasks"
       max_steps: 500
       
