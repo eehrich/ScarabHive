@@ -197,9 +197,10 @@ keeps its line breaks.</div>
 </section>
 
 <section class="kit-section">
-  <h2>Code and JSON</h2>
+  <h2>Code, JSON and YAML</h2>
   <pre class="pk-code">POST /events  {"agent_name": "writer_review", "task": "Check chapter 3"}</pre>
   <div id="kit-json" class="pk-card"></div>
+  <pre id="kit-yaml" class="pk-code"></pre>
 </section>
 
 <section class="kit-section">
@@ -211,7 +212,7 @@ keeps its line breaks.</div>
 {% endblock %}
 {% block scripts %}
 <script type="module">
-  import { alert, confirm, prompt, toast, jsonView, render, setTheme } from '/static/kit/panel-kit.js';
+  import { alert, confirm, prompt, toast, jsonView, yamlCode, render, setTheme } from '/static/kit/panel-kit.js';
 
   // setTheme: remembered in the cookie, and in the shell every panel follows
   document.querySelectorAll('[data-theme-choice]').forEach((button) => {
@@ -229,5 +230,19 @@ keeps its line breaks.</div>
 
   render(document.getElementById('kit-json-small'), jsonView({ title: 'The Night', chapters: 8, series: null }));
   render(document.getElementById('kit-json'), jsonView({ request_id: '8f2c1a', agent: 'writer_review', usage: { prompt_tokens: 4120, completion_tokens: 380 }, tools: ['writer_content_chapter', 'writer_issues_list'], cached: null }));
+  render(document.getElementById('kit-yaml'), yamlCode([
+    '# yamlCode: the text as it is, coloured',
+    'writer_review:',
+    '  type: basic_agent',
+    '  enabled: true',
+    '  agent_config:',
+    '    max_steps: 30',
+    "    tools: {allowed: [+files/*, '!web/*']}",
+    '    system_prompt: |',
+    '      Review the chapter.',
+    '',
+    '      A blank line stays inside the prompt.',
+    '  description: "Checks chapters"  # shown in the list',
+  ].join('\n')));
 </script>
 {% endblock %}

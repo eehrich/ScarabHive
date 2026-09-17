@@ -24,6 +24,7 @@ EXPECTED = [
     "trusted markup passes unchanged",
     "jsonView escapes keys and strings",
     "jsonView shows every level, strings as text with their line breaks, arrays as lists",
+    "yamlCode keeps the text and colours keys, values, comments, a block over blank lines and a quote over lines",
     "native confirm is refused, not blocking",
     "a dialog resolves with the pressed action",
     "a prompt resolves with the typed text",

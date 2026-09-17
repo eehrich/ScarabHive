@@ -76,6 +76,133 @@ export function jsonView(value) {
   return html`<div class="pk-json">${node(value)}</div>`;
 }
 
+const YAML_KEY = /^((?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^ \t\r#'"[\]{},](?:[ \t]*(?:[^ \t\r:#]|:(?![ \t]|$)|(?<![ \t])#))*))([ \t]*:)(?=[ \t]|$)/;
+const YAML_FLOW_KEY = /^((?:[^ \t\r:]|:(?![ \t]|$))(?:[ \t]*(?:[^ \t\r:]|:(?![ \t]|$)))*)([ \t]*:)(?=[ \t]|$)([ \t]*)([^]*)$/;
+const YAML_WORD = /^(?:true|false|yes|no|on|off|null|~)$/i;
+const YAML_NUMBER = /^(?:[-+]?(?:\d[\d_]*(?:\.[\d_]*)?|\.\d+)(?:e[-+]?\d+)?|0x[\da-f_]+|0o[0-7_]+|[-+]?\.inf|\.nan)$/i;
+// a flow collection in pieces: brackets and commas, quoted strings, a comment, and the plain text between them
+const YAML_FLOW = /[[\]{},]|"(?:[^"\\]|\\.)*"?|'(?:[^']|'')*'?|(?<=\s)#.*|[^[\]{},"'#]+|#/g;
+
+const yamlSpan = (kind, value) => (kind && value ? html`<span class="pk-yaml-${kind}">${value}</span>` : value);
+const yamlKind = (value) => (YAML_NUMBER.test(value) ? 'number' : YAML_WORD.test(value) ? 'word' : '');
+
+/** Where a quoted scalar opened with `quote` ends (after its closing quote), searching from `start`; -1 if not here. */
+function quoteEnd(text, quote, start) {
+  for (let i = start; i < text.length; i += 1) {
+    if (quote === '"' && text[i] === '\\') i += 1;
+    else if (text[i] === quote && quote === "'" && text[i + 1] === "'") i += 1;
+    else if (text[i] === quote) return i + 1;
+  }
+  return -1;
+}
+
+function yamlFlowPiece(piece) {
+  const inner = piece.trim();
+  if (!inner) return piece;
+  const lead = piece.slice(0, piece.length - piece.trimStart().length);
+  const trail = piece.slice(piece.trimEnd().length);
+  const pair = inner.match(YAML_FLOW_KEY);
+  if (!pair) return [lead, yamlSpan(yamlKind(inner), inner), trail];
+  return [lead, yamlSpan('key', pair[1]), yamlSpan('punct', pair[2]), pair[3], yamlSpan(yamlKind(pair[4]), pair[4]), trail];
+}
+
+/** One line: its markup, the column a block scalar it opens must go deeper than, a quote it leaves open. */
+function yamlLine(line, openQuote) {
+  const parts = [];
+  let rest = line;
+  let column = 0;
+  const take = (length, kind = '') => {
+    parts.push(yamlSpan(kind, rest.slice(0, length)));
+    rest = rest.slice(length);
+    column += length;
+  };
+  const blank = () => take(rest.match(/^[ \t]*/)[0].length);
+  const done = (block = null, quote = '') => {  // what follows a node: spaces, a comment, or text as it is
+    blank();
+    take(rest.length, rest.startsWith('#') ? 'comment' : '');
+    return { parts, block, quote };
+  };
+  if (openQuote) {
+    const end = quoteEnd(rest, openQuote, 0);
+    take(end < 0 ? rest.length : end, 'string');
+    return done(null, end < 0 ? openQuote : '');
+  }
+  blank();
+  let owner = column;
+  if (column === 0 && /^(?:---|\.\.\.)(?=[ \t]|$)/.test(rest)) take(3, 'punct');
+  else if (column === 0 && rest.startsWith('%')) take(rest.length, 'tag');
+  blank();
+  while (/^[-?](?=[ \t]|$)/.test(rest)) {
+    owner = column;
+    take(1, 'punct');
+    blank();
+  }
+  const key = rest.match(YAML_KEY);
+  if (key) {
+    owner = column;
+    take(key[1].length, 'key');
+    take(key[2].length, 'punct');
+    blank();
+  }
+  for (let prop = rest.match(/^[!&]\S*/); prop; prop = rest.match(/^[!&]\S*/)) {
+    take(prop[0].length, prop[0][0] === '!' ? 'tag' : 'anchor');
+    blank();
+  }
+  if (rest.startsWith('#')) return done();
+  const indicator = rest.match(/^[|>][-+1-9]*(?=[ \t]|$)/);
+  if (indicator) {
+    take(indicator[0].length, 'punct');
+    return done(owner);
+  }
+  if (rest[0] === '"' || rest[0] === "'") {
+    const quote = rest[0];
+    const end = quoteEnd(rest, quote, 1);
+    take(end < 0 ? rest.length : end, 'string');
+    return done(null, end < 0 ? quote : '');
+  }
+  const alias = rest.match(/^\*[^\s,[\]{}]+/);
+  if (alias) {
+    take(alias[0].length, 'anchor');
+    return done();
+  }
+  if (rest[0] === '[' || rest[0] === '{') {
+    for (const piece of rest.match(YAML_FLOW)) {
+      if (/^[[\]{},]$/.test(piece)) parts.push(yamlSpan('punct', piece));
+      else if (piece[0] === '"' || piece[0] === "'") parts.push(yamlSpan('string', piece));
+      else if (piece[0] === '#' && piece.length > 1) parts.push(yamlSpan('comment', piece));
+      else parts.push(yamlFlowPiece(piece));
+    }
+    return { parts, block: null, quote: '' };
+  }
+  const cut = rest.search(/[ \t]#/);
+  const value = (cut < 0 ? rest : rest.slice(0, cut)).trimEnd();
+  take(value.length, yamlKind(value));
+  return done();
+}
+
+/**
+ * YAML text coloured (.pk-yaml-*), the text itself unchanged: for a <pre>, or a copy beneath a textarea. Keys,
+ * quoted strings, numbers, true/false/null, comments, tags and anchors; a block scalar (| or >) with every line that
+ * belongs to it, blank lines included, and a quoted string over its lines.
+ */
+export function yamlCode(text) {
+  const out = [];
+  let block = null;  // a block scalar goes on while its lines sit deeper than this column, or are blank
+  let quote = '';
+  String(text ?? '').split('\n').forEach((line, index) => {
+    if (index) out.push('\n');
+    const depth = line.search(/\S/);
+    if (block !== null && (depth < 0 || depth > block)) {
+      out.push(yamlSpan('string', line));
+      return;
+    }
+    const scanned = yamlLine(line, quote);
+    out.push(scanned.parts);
+    ({ block, quote } = scanned);
+  });
+  return html`${out}`;
+}
+
 export function icon(name, { size = '', label = '' } = {}) {
   const cls = size ? ` pk-icon--${escapeHtml(size)}` : '';
   const aria = label ? ` role="img" aria-label="${escapeHtml(label)}"` : ' aria-hidden="true"';

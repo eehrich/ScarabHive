@@ -69,6 +69,60 @@
     }
   });
 
+  await check('yamlCode keeps the text and colours keys, values, comments, a block over blank lines and a quote over lines', () => {
+    const text = [
+      '# head',
+      'name: "The <Night>"   # quoted',
+      'count: 3',
+      'on: true',
+      'tools:',
+      "  - '!files/*'",
+      '  - !web/*',
+      '  - plain text # note',
+      'prompt: |',
+      '  first line',
+      '',
+      '  key: after a blank line',
+      '    deeper',
+      'flow: [a, "b", {c: 1}]',
+      'long: "runs',
+      '  on: here"',
+      'next: &anchor x',
+      'url: http://host:80/a',
+      '  - item: |',
+      '      text',
+      '    other: 1',
+      '- - |-',
+      '    in a list',
+      '  - *anchor',
+      "quote: 'it''s # not a comment'",
+    ].join('\n');
+    const box = document.createElement('pre');
+    // a long run of spaces costs no more than a long line
+    const started = performance.now();
+    pk.yamlCode(`x${' '.repeat(30000)}y\nk: [x${' '.repeat(30000)}y]`);
+    const fast = performance.now() - started < 100;
+    pk.render(box, pk.yamlCode(text));
+    const keyOf = (line) => {
+      pk.render(box, pk.yamlCode(line));
+      return box.querySelector('.pk-yaml-key')?.textContent;
+    };
+    const odd = ['a: [x\u2028y]', '{k\u2029v: 1}', '[  ,  ]', 'a#b: c'];
+    const kinds = (kind) => JSON.stringify([...box.querySelectorAll(`.pk-yaml-${kind}`)].map((one) => one.textContent));
+    const same = (kind, list) => kinds(kind) === JSON.stringify(list);
+    return box.textContent === text && !box.innerHTML.includes('<Night>')
+      && same('key', ['name', 'count', 'on', 'tools', 'prompt', 'flow', 'c', 'long', 'next', 'url', 'item', 'other', 'quote'])
+      && same('string', ['"The <Night>"', "'!files/*'", '  first line', '  key: after a blank line', '    deeper', '"b"',
+        '"runs', '  on: here"', '      text', '    in a list', "'it''s # not a comment'"])
+      && same('comment', ['# head', '# quoted', '# note'])
+      && same('number', ['3', '1', '1']) && same('word', ['true']) && same('tag', ['!web/*'])
+      && same('anchor', ['&anchor', '*anchor'])
+      && box.querySelectorAll('.pk-yaml-punct').length === 29
+      && String(pk.yamlCode('')) === '' && String(pk.yamlCode(null)) === ''
+      && odd.every((one) => pk.render(box, pk.yamlCode(one)) === undefined && box.textContent === one)
+      && keyOf('a#b: c') === 'a#b' && keyOf('a\u00a0b: c') === 'a\u00a0b' && keyOf('{a\u00a0b: c}') === 'a\u00a0b' && fast;
+  });
+
   await check('native confirm is refused, not blocking', () => window.confirm('x') === false);
 
   await check('a dialog resolves with the pressed action', async () => {

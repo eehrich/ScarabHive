@@ -473,6 +473,14 @@ kbd.pk-kbd {
 .pk-json-number { font: 400 var(--text-xs)/1.55 var(--font-mono); color: var(--warn); }
 .pk-json-null { font-style: italic; color: var(--text-muted); }
 
+/* YAML text coloured by yamlCode(): spans around the text, which stays as it is */
+.pk-yaml-key { color: var(--accent-text); }
+.pk-yaml-string { color: var(--ok); }
+.pk-yaml-number, .pk-yaml-word { color: var(--warn); }
+.pk-yaml-comment { color: var(--text-muted); font-style: italic; }
+.pk-yaml-punct { color: var(--text-secondary); }
+.pk-yaml-tag, .pk-yaml-anchor { color: var(--info); }
+
 /* ----------------------------------------------------------- refresh ctrl */
 
 pk-refresh { display: inline-flex; align-items: center; gap: 2px; }
