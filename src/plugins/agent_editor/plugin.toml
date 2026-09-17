@@ -1,0 +1,14 @@
+# agent_editor plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "agent_editor"
+version = "0.1.0"
+description = "Panel to create and edit agents in their YAML files, comments kept."
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["web"]
+category = "infrastructure"
+requires = { agent_system = ">=0.7.0" }
+dependencies = []

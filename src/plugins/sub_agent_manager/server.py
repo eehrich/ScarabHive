@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, List, Optional
@@ -18,6 +19,16 @@ if TYPE_CHECKING:
 from plugins.sub_agent_manager.manager import SubAgentManager
 
 logger = logging.getLogger(__name__)
+
+
+def agent_allowed(agent_name: str, allowed: List[str], blocked: List[str]) -> bool:
+    """Whether a manager with these lists may spawn the agent: blocked (exact) first, then `*`, exact, fnmatch."""
+    if agent_name in blocked:
+        return False
+    if '*' in allowed or agent_name in allowed:
+        return True
+    return any(fnmatch.fnmatch(agent_name, pattern) for pattern in allowed)
+
 
 #: An aborted run comes back as TEXT ("Error: ..."/"Cancelled: ..."), while
 #: `status` said "completed" regardless -- so a failed reviewer read like a
@@ -2287,28 +2298,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         Returns:
             True if agent is allowed, False otherwise
         """
-        # Check blacklist first
-        if agent_name in self.blocked_agents:
-            logger.debug(f"Agent '{agent_name}' blocked by blacklist")
-            return False
-
-        # Check whitelist
-        if '*' in self.allowed_agents:
-            return True
-
-        # Exact match
-        if agent_name in self.allowed_agents:
-            return True
-
-        # Glob pattern matching
-        import fnmatch
-        for pattern in self.allowed_agents:
-            if fnmatch.fnmatch(agent_name, pattern):
-                logger.debug(f"Agent '{agent_name}' matched pattern '{pattern}'")
-                return True
-
-        logger.debug(f"Agent '{agent_name}' not in allowed list: {self.allowed_agents}")
-        return False
+        allowed = agent_allowed(agent_name, self.allowed_agents, self.blocked_agents)
+        if not allowed:
+            logger.debug(f"Agent '{agent_name}' not allowed: allowed={self.allowed_agents} blocked={self.blocked_agents}")
+        return allowed
 
     def _get_current_phase(self, params: dict[str, Any]) -> Optional[str]:
         """Get current workflow phase from session template vars or agent config default.

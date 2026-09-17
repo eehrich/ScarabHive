@@ -366,6 +366,12 @@ auth:
         min_role: "admin"
         description: "Management of users via plugin requires admin role"
 
+      # The agent editor writes the agent YAMLs (tools, prompts, models).
+      - pattern: "/plugins/agent_editor/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Agent editor requires admin role"
+
       # writer_admin exposes the whole writer DB (jobs.db, books.db,
       # sessions, story payloads, raw reader feedback) — operator
       # surface only. Pre-existing gap closed in Phase D after the

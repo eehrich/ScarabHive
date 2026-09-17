@@ -1,0 +1,1216 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Agent Editor panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1240px; height: 820px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  // The checks run in order and build on each other's files.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const all = (selector) => [...doc().querySelectorAll(selector)];
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const text = (selector) => $(selector)?.textContent.trim() ?? '';
+  const cookie = (name, value) => { document.cookie = `${name}=${value}; path=/`; };
+  const get = async (path) => (await fetch(path)).json();
+  const post = (path) => fetch(path, { method: 'POST' });
+  const signIn = async (user) => cookie('access_token', await get(`/__stub/token?user=${user}`));
+  const enc = encodeURIComponent;
+  const file = (path) => get(`/__stub/file?path=${enc(path)}`);
+  const replace = (path, old, now) => post(`/__stub/replace?path=${enc(path)}&old=${enc(old)}&new=${enc(now)}`);
+
+  const DESCRIPTION = ['description'];
+  const ENABLED = ['enabled'];
+  const TYPE = ['type'];
+  const MAX_STEPS = ['agent_config', 'max_steps'];
+  const CHAIN = ['agent_config', 'llm_profile'];
+  const TEMPLATE = ['agent_config', 'system_template'];
+  const INLINE = ['agent_config', 'system_prompt'];
+  const ALWAYS = ['agent_config', 'skills', 'always'];
+  const ON_DEMAND = ['agent_config', 'skills', 'on_demand'];
+  const MARKUP = '<img src=x onerror=parent.__xss=1>';
+
+  const row = (name) => $(`#list [data-name="${name}"]`);
+  const listed = () => all('#list [data-name]').map((button) => button.dataset.name).join();
+  const badges = (name) => [...row(name).querySelectorAll('.pk-badge')].map((one) => one.textContent.trim()).join();
+  const heading = () => text('#head .ae-name');
+  const fieldOf = (path) => $(`#editor [data-field='${JSON.stringify(path)}']`);
+  const control = (path) => $(`#editor [data-path='${JSON.stringify(path)}']`);
+  const isSet = (path) => fieldOf(path)?.dataset.set === 'true';
+  const chainOf = (path) => [...fieldOf(path).querySelectorAll('.ae-chain-row')].map((one) => one.dataset.profile).join();
+  const type = (element, value) => { element.value = value; element.dispatchEvent(new Event('input', { bubbles: true })); };
+  const enter = (element) => element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  const openTab = (name) => $(`#tabs [data-tab="${name}"]`).click();
+  const dirtyShown = () => !$('#dirtyMark').hidden;
+  const choose = async (name) => {
+    row(name).click();
+    await until(`${name} shown`, () => heading() === name && !$('#editor').hidden && $('#tab-general [data-field]'));
+  };
+  const diff = () => $('#diffDialog');
+  const diffLines = (kind) => all(`#diffBody .ae-diff-${kind}`).map((line) => line.textContent);
+  const diffShown = () => until('the diff', () => diff().open);
+  const writeDiff = async () => { $('#diffWrite').click(); await until('the diff closed', () => !diff().open); };
+  const cancelDiff = async () => { $('#diffCancel').click(); await until('the diff closed', () => !diff().open); };
+  const question = () => $('dialog.pk-dialog[open]:not(#diffDialog):not(#createDialog)');
+  const answer = async (label) => {
+    const asked = await until('a question', question);
+    [...asked.querySelectorAll('button')].find((button) => button.textContent.trim() === label).click();
+    await until('the question gone', () => !question());
+  };
+  const toasts = (kind) => all(`.pk-toast--${kind}`).map((toast) => toast.textContent);
+  const toasted = (kind, part) => until(`the ${kind} toast "${part}"`, () => toasts(kind).some((one) => one.includes(part)));
+  const clearToasts = () => all('.pk-toast').forEach((toast) => toast.remove());
+  const saved = () => until('the form saved', () => !dirtyShown() && $('#save').disabled && !$('#formLock').disabled);
+  const saveAll = async (toastText) => {
+    $('#save').click();
+    await diffShown();
+    await writeDiff();
+    await toasted('ok', toastText);
+    await saved();
+  };
+  const keepsPage = () => {
+    const leaving = new Event('beforeunload', { cancelable: true });
+    frame.contentWindow.dispatchEvent(leaving);
+    return leaving.defaultPrevented;
+  };
+  const form = () => $('#createForm');
+  const create = async (fields) => {
+    const inputs = form().elements;
+    if (fields.start) {
+      inputs.start.value = fields.start;
+      form().dispatchEvent(new Event('change'));
+    }
+    if (fields.source) inputs.source.value = fields.source;
+    if (fields.name !== undefined) inputs.name.value = fields.name;
+    form().requestSubmit();
+  };
+  let nativeCalls = 0;
+  const watchNative = () => {
+    const panel = frame.contentWindow;
+    for (const name of ['alert', 'confirm', 'prompt']) {
+      const kit = panel[name];
+      panel[name] = (...args) => { nativeCalls += 1; return kit.apply(panel, args); };
+    }
+  };
+
+  await check('the list groups the agents by where they are defined, and search and filter narrow it', async () => {
+    await signIn('root');
+    await go('/plugins/agent_editor/');
+    watchNative();
+    await until('the list', () => row('writer') && row('demo'));
+    const groups = all('#list details').map((one) => `${one.dataset.group}=${one.querySelector('[data-count]').dataset.count}`).join();
+    // writer runs unbuilt with other max_steps: only a restart applies that
+    const marked = badges('scout') === 'off' && badges('demo') === 'new,restart' && badges('writer') === 'restart'
+      && badges('twin') === 'read-only' && badges('editor') === '';
+    const search = (value) => { type($('#search'), value); return listed(); };
+    const filter = (value) => { $('#filter').value = value; $('#filter').dispatchEvent(new Event('change')); return listed(); };
+    const searched = search('look') === 'scout' && search('WRITES') === 'writer' && search('zzz') === ''
+      && text('#list').includes('No agent matches');
+    search('');
+    const filtered = filter('enabled') === 'editor,twin,writer,demo' && filter('restart') === 'writer,demo'
+      && filter('readonly') === 'twin';
+    filter('all');
+    const demo = () => $('#list details[data-group="demo"]');
+    demo().querySelector('summary').click();
+    await until('demo collapsed', () => !demo().open);
+    await sleep(50);  // the toggle event comes a task later
+    search('');
+    const kept = !demo().open;
+    demo().querySelector('summary').click();
+    await until('demo open', () => demo().open);
+    await sleep(50);
+    const quiet = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'false';
+    return groups === 'config=4,demo=1' && listed() === 'editor,scout,twin,writer,demo' && Boolean(marked)
+      && searched && filtered && kept && quiet && $('#editor').hidden;
+  });
+
+  await check('descriptions from the files are drawn as text, never as markup', async () => {
+    return row('editor').querySelector('.ae-item-desc').textContent === MARKUP
+      && !doc().querySelector('img') && frame.contentWindow.__xss === undefined && window.__xss === undefined;
+  });
+
+  await check('a selected agent shows its own values apart from the inherited ones', async () => {
+    await choose('editor');
+    const head = Boolean($('#head [data-goto="writer"]')) && text('#head .ae-file') === 'config/agents/team.yaml'
+      && Boolean($('#head [data-state="in_sync"]')) && text('#head').includes('Running') && row('editor').getAttribute('aria-current') === 'true';
+    const description = control(DESCRIPTION).value === MARKUP && isSet(DESCRIPTION) && !doc().querySelector('img');
+    const steps = !isSet(MAX_STEPS) && control(MAX_STEPS).value === '' && control(MAX_STEPS).placeholder === '30';
+    const metadata = !isSet(['metadata', 'category']) && control(['metadata', 'category']).placeholder === 'writing'
+      && !isSet(['metadata', 'visibility']) && control(['metadata', 'visibility']).value === 'ui';
+    const chainText = fieldOf(CHAIN).textContent;
+    const chain = !isSet(CHAIN) && chainOf(CHAIN) === 'smart,fast' && chainText.includes('openai · large-2')
+      && chainText.includes('#1 Primary') && chainText.includes('Fallback 1');
+    const clean = $('#save').disabled && !dirtyShown() && text('#banners') === '';
+    $('#head [data-goto="writer"]').click();
+    await until('writer shown', () => heading() === 'writer');
+    const writer = isSet(MAX_STEPS) && control(MAX_STEPS).value === '30' && control(MAX_STEPS).placeholder === '20'
+      && text('#banners').includes('Needs a restart: max_steps') && !text('#banners').includes('Reload config applies')
+      && row('writer').getAttribute('aria-current') === 'true';
+    return head && description && steps && metadata && chain && clean && writer;
+  });
+
+  await check('an edited field marks the form dirty, and Save writes the diff it showed into the file', async () => {
+    await choose('scout');
+    clearToasts();
+    const before = (await file('config/agents/extra.yaml')).text;
+    const clean = $('#save').disabled && !dirtyShown() && !keepsPage();
+    type(control(DESCRIPTION), 'Looks everywhere');
+    const marked = !$('#save').disabled && dirtyShown() && isSet(DESCRIPTION) && keepsPage();
+    $('#save').click();
+    await diffShown();
+    const shown = diffLines('del').some((line) => line.includes('description: Looks around'))
+      && diffLines('add').some((line) => line.includes('description: Looks everywhere'))
+      && text('#diffTitle') === 'Save scout' && text('#diffNotes').includes('config/agents/extra.yaml')
+      && $('#formLock').disabled;
+    await cancelDiff();
+    await sleep(200);
+    const untouched = (await file('config/agents/extra.yaml')).text === before && dirtyShown() && !$('#formLock').disabled;
+    await saveAll('scout saved');
+    await until('the list drawn anew', () => row('scout').querySelector('.ae-item-desc').textContent === 'Looks everywhere');
+    const after = (await file('config/agents/extra.yaml')).text;
+    return clean && marked && shown && untouched && after === before.replace('Looks around', 'Looks everywhere')
+      && control(DESCRIPTION).value === 'Looks everywhere';
+  });
+
+  await check('resetting a field to the inherited value removes its key from the file', async () => {
+    await choose('writer');
+    openTab('model');
+    fieldOf(MAX_STEPS).querySelector('[data-reset]').click();
+    const reset = !isSet(MAX_STEPS) && control(MAX_STEPS).value === '' && control(MAX_STEPS).placeholder === '20'
+      && !$('#save').disabled && doc().activeElement === control(MAX_STEPS);
+    $('#save').click();
+    await diffShown();
+    const shown = diffLines('del').some((line) => line.includes('max_steps: 30'));
+    await writeDiff();
+    await toasted('ok', 'writer saved');
+    await saved();
+    const written = (await file('config/agents/team.yaml')).text;
+    return reset && shown && !written.includes('max_steps') && written.includes('llm_profile: [smart, fast]')
+      && written.includes('# The base writer: everything the team shares.') && !isSet(MAX_STEPS);
+  });
+
+  await check('the model chain adds, reorders and removes profiles', async () => {
+    const picker = () => fieldOf(CHAIN).querySelector('[data-picker]');
+    const offered = () => [...fieldOf(CHAIN).querySelectorAll('[data-add-profile]')].map((one) => one.dataset.addProfile).join();
+    const button = (name, act) => fieldOf(CHAIN).querySelector(`[data-profile="${name}"] [data-chain="${act}"]`);
+    const position = (name) => fieldOf(CHAIN).querySelector(`[data-profile="${name}"] .pk-badge`).textContent.trim();
+    type(picker(), 'anthropic');
+    const byProvider = offered() === 'deep';
+    type(picker(), 'fast');
+    const notTwice = offered() === '' && fieldOf(CHAIN).querySelector('.ae-picker-list').hidden;
+    type(picker(), 'anthropic');
+    enter(picker());
+    const added = chainOf(CHAIN) === 'smart,fast,deep' && position('deep') === 'Fallback 2' && picker().value === ''
+      && doc().activeElement === picker();
+    button('deep', 'up').click();
+    const moved = chainOf(CHAIN) === 'smart,deep,fast' && position('deep') === 'Fallback 1';
+    button('smart', 'remove').click();
+    const removed = chainOf(CHAIN) === 'deep,fast' && position('deep') === '#1 Primary' && button('deep', 'up').disabled
+      && button('fast', 'down').disabled && isSet(CHAIN) && doc().activeElement === button('deep', 'remove');
+    await saveAll('writer saved');
+    const written = (await file('config/agents/team.yaml')).text;
+    return byProvider && notTwice && added && moved && removed && written.includes('llm_profile: [deep, fast]')
+      && chainOf(CHAIN) === 'deep,fast';
+  });
+
+  await check('a small YAML field keeps text that does not parse, and the head counts it as a change', async () => {
+    const PARAMS = ['agent_config', 'llm_params'];
+    const area = () => $(`#editor [data-yaml='${JSON.stringify(PARAMS)}']`);
+    const error = () => area().closest('[data-yaml-box]').querySelector('[data-yaml-error]');
+    await until('a clean form', () => area() && !dirtyShown());
+    area().focus();
+    type(area(), 'temperature: [');
+    area().blur();
+    await until('the parse error', () => !error().hidden);
+    area().focus();
+    type(area(), 'temperature: [1');
+    const clearedField = error().hidden && !area().hasAttribute('aria-invalid');
+    type(area(), 'temperature: [');
+    area().blur();
+    await until('the parse error again', () => !error().hidden);
+    const marked = dirtyShown() && !$('#revert').disabled && !$('#save').disabled;
+    // a redraw (a chain button) keeps the text and its error
+    fieldOf(CHAIN).querySelector('[data-profile="fast"] [data-chain="up"]').click();
+    await until('the redraw', () => chainOf(CHAIN) === 'fast,deep');
+    const kept = area().value === 'temperature: [' && !error().hidden
+      && area().previousElementSibling.textContent === 'temperature: [';
+    $('#revert').click();
+    await until('reverted', () => !dirtyShown() && chainOf(CHAIN) === 'deep,fast' && area().value === '' && error().hidden);
+    return marked && kept && clearedField;
+  });
+
+  await check('the tool tree grants whole servers and single tools as production does, blocks, and the count follows', async () => {
+    openTab('tools');
+    const section = (list) => $(`#tools-${list}`);
+    const server = (list, name) => section(list).querySelector(`[data-tree-server="${name}"]`);
+    const tool = (list, name) => section(list).querySelector(`[data-tree-tool="${name}"]`);
+    const expand = (list, name) => section(list).querySelector(`[data-expand="${name}"]`).click();
+    const count = () => $('#toolSummary [data-tool-count]')?.dataset.toolCount;
+    const counted = (pattern) => $(`#toolSummary [data-pattern="${pattern}"]`);
+    await until('two tools', () => count() === '2');
+    const start = section('allowed').querySelector('[data-list-mode][value="own"]').checked && server('allowed', 'files').checked
+      && !server('allowed', 'web').checked && !server('allowed', 'web').indeterminate;
+    // a wildcard alone does not let the server through: production grants nothing, and the panel says so
+    const pattern = section('allowed').querySelector('[data-pattern-add]');
+    type(pattern, '*search*');
+    enter(pattern);
+    await until('the wildcard counted', () => counted('*search*'));
+    expand('allowed', 'web');
+    const wildcard = count() === '2' && counted('*search*').textContent.includes('matches nothing')
+      && !tool('allowed', 'web_search').checked && !tool('allowed', 'web_search').disabled && !server('allowed', 'web').indeterminate;
+    section('allowed').querySelector('[data-pattern-remove="*search*"]').click();
+    await until('the wildcard gone', () => !counted('*search*'));
+    server('allowed', 'web').click();
+    await until('four tools', () => count() === '4');
+    const whole = server('allowed', 'web').checked && !server('allowed', 'web').indeterminate && tool('allowed', 'web_fetch').checked;
+    server('allowed', 'web').click();
+    await until('two tools again', () => count() === '2');
+    tool('allowed', 'web_search').click();
+    await until('three tools', () => count() === '3');
+    const single = server('allowed', 'web').indeterminate && !server('allowed', 'web').hasAttribute('aria-checked')
+      && tool('allowed', 'web_search').checked && !tool('allowed', 'web_fetch').checked && text('#toolSummary').includes('3 tools');
+    // a click on the mixed server takes the whole server in place of its single entry, the next one drops both
+    server('allowed', 'web').click();
+    await until('the whole web server', () => count() === '4');
+    const mixedToWhole = server('allowed', 'web').checked && !server('allowed', 'web').indeterminate;
+    server('allowed', 'web').click();
+    await until('no web tool', () => count() === '2');
+    const mixedOff = !server('allowed', 'web').checked && !server('allowed', 'web').indeterminate
+      && !tool('allowed', 'web_search').checked;
+    tool('allowed', 'web_search').click();
+    await until('three tools once more', () => count() === '3');
+    // the blocked list: overridden, one tool blocked, then inherited again
+    $('#toolTab-blocked').click();
+    const inheritedBlocked = !section('blocked').hidden && section('blocked').querySelector('[data-list-mode][value="inherited"]').checked;
+    section('blocked').querySelector('[data-list-mode][value="own"]').click();
+    await until('the own blocked list', () => section('blocked').querySelector('[data-list-mode][value="own"]').checked);
+    expand('blocked', 'files');
+    tool('blocked', 'files_write').click();
+    await until('two tools after the block', () => count() === '2');
+    const blockedChecked = tool('blocked', 'files_write').checked && !tool('blocked', 'files_read').checked;
+    $('#toolTab-allowed').click();
+    expand('allowed', 'files');
+    await until('the lock', () => tool('allowed', 'files_write').disabled);
+    const lockedByBlock = !tool('allowed', 'files_write').checked
+      && tool('allowed', 'files_write').closest('li').textContent.includes('Blocked by files/files_write')
+      && server('allowed', 'files').checked && !server('allowed', 'files').indeterminate;
+    // the own whole server stays a plain checked box beside a blocked tool: a click takes it away, the next one back
+    server('allowed', 'files').click();
+    await until('the files server dropped', () => count() === '1');
+    const blockedServerOff = !server('allowed', 'files').checked && !server('allowed', 'files').indeterminate;
+    server('allowed', 'files').click();
+    await until('the files server back', () => count() === '2');  // at the end of the list now
+    $('#toolTab-blocked').click();
+    section('blocked').querySelector('[data-list-mode][value="inherited"]').click();
+    await until('three tools again', () => count() === '3');
+    $('#toolTab-allowed').click();
+    await saveAll('writer saved');
+    const written = (await file('config/agents/team.yaml')).text;
+    const persisted = written.includes('allowed: [web/web_search, files/*]') && !written.includes('blocked');
+    // the child extends what it inherits: the inherited server is locked, the inherited list shown
+    await choose('editor');
+    openTab('tools');
+    await until('the child count', () => count() === '3' && server('allowed', 'files').disabled);
+    const extend = section('allowed').querySelector('[data-list-mode][value="extend"]').checked
+      && server('allowed', 'files').checked && server('allowed', 'files').closest('label').title.includes('files/*')
+      && [...section('allowed').querySelectorAll('.ae-chip--locked')].map((one) => one.textContent.trim()).join() === 'web/web_search,files/*';
+    return start && wildcard && whole && single && mixedToWhole && mixedOff && inheritedBlocked && blockedChecked
+      && lockedByBlock && blockedServerOff && persisted && extend;
+  });
+
+  await check('the prompt tab previews the template file and flags a missing one', async () => {
+    await choose('writer');
+    openTab('prompt');
+    const template = $('#tab-prompt [data-prompt-mode][value="template"]').checked
+      && control(TEMPLATE).value === '' && control(TEMPLATE).placeholder === 'config/prompts/base.md';
+    await until('the preview', () => text('#promptPreview') === 'You are a base agent.' && text('#promptState') === 'found');
+    type(control(TEMPLATE), 'config/prompts/nope.md');
+    await until('the missing file', () => text('#promptState') === 'missing');
+    const marked = !$('#save').disabled && isSet(TEMPLATE);
+    $('#revert').click();
+    const reverted = $('#save').disabled && control(TEMPLATE).value === '' && !dirtyShown();
+    await until('the preview again', () => text('#promptState') === 'found');
+    await choose('scout');
+    const inline = $('#tab-prompt [data-prompt-mode][value="inline"]').checked
+      && control(INLINE).value === 'You scout.' && !$('#promptPreview');
+    return template && marked && reverted && inline;
+  });
+
+  await check('the YAML tab applies typed text by its button or on leaving, and keeps text that does not parse', async () => {
+    await choose('editor');
+    openTab('yaml');
+    await until('the YAML', () => $('#yamlText').value.includes('type: writer'));
+    // the text is coloured beneath the textarea, and the copy follows every change
+    const view = () => $('#tab-yaml .ae-code-view');
+    const coloured = (value) => view().textContent.trimEnd() === value.trimEnd();
+    const painted = Boolean(view().querySelector('.pk-yaml-key')) && coloured($('#yamlText').value)
+      && view().textContent.includes(MARKUP) && !doc().querySelector('img') && frame.contentWindow.__xss === undefined;
+    const rendered = $('#yamlText').value;
+    type($('#yamlText'), rendered.replace('enabled: true', 'enabled: false'));
+    const typedDirty = dirtyShown() && !$('#save').disabled && control(ENABLED).checked === true;
+    $('#yamlApply').click();
+    await until('the entry applied', () => control(ENABLED).checked === false);
+    const applied = isSet(ENABLED) && dirtyShown() && !$('#tab-yaml').hidden;
+    await until('the YAML of the applied entry', () => $('#yamlText').value.includes('enabled: false'));
+    $('#revert').click();
+    await until('the form reverted', () => control(ENABLED).checked === true && !dirtyShown()
+      && $('#yamlText').value.includes('enabled: true'));
+    // leaving the tab applies what was typed
+    type($('#yamlText'), $('#yamlText').value.replace('enabled: true', 'enabled: false'));
+    openTab('general');
+    await until('applied on leaving', () => !$('#tab-general').hidden && control(ENABLED).checked === false);
+    const onLeaving = $('#tab-yaml').hidden && dirtyShown();
+    // text that does not parse keeps the tab open, and a redraw does not overwrite it
+    openTab('yaml');
+    await until('the YAML again', () => $('#yamlText').value.includes('enabled: false'));
+    type($('#yamlText'), 'type: [');
+    openTab('general');
+    await until('the parse error', () => !$('#yamlError').hidden);
+    await sleep(100);
+    const stayed = !$('#tab-yaml').hidden && $('#tab-general').hidden && $('#yamlText').value === 'type: ['
+      && control(ENABLED).checked === false && coloured('type: [');
+    // another parent: the inherited values follow it, and every tab is drawn anew
+    const based = control(TYPE);
+    based.value = 'basic_agent';
+    based.dispatchEvent(new Event('change', { bubbles: true }));
+    await until('the inherited values of the class', () => chainOf(CHAIN) === 'fast' && !isSet(CHAIN));
+    const keptTyped = $('#yamlText').value === 'type: [' && dirtyShown() && !$('#head [data-goto]')
+      && !$('#yamlError').hidden && text('#yamlError') !== '';
+    $('#yamlReload').click();
+    await until('the entry shown again', () => $('#yamlText').value.includes('type: basic_agent') && $('#yamlError').hidden);
+    const repainted = coloured($('#yamlText').value) && view().textContent.includes('type: basic_agent');
+    $('#revert').click();
+    await until('reverted', () => control(ENABLED).checked === true && !dirtyShown() && chainOf(CHAIN) === 'deep,fast'
+      && Boolean($('#head [data-goto="writer"]')));
+    // scrolled to the far corner, the copy is where the text is: its scrollbars take the textarea's room only
+    const area = $('#yamlText');
+    type(area, Array.from({ length: 80 }, (_, i) => `key_${i}: ${'x'.repeat(i === 40 ? 400 : 3)}`).join('\n'));
+    area.scrollTop = area.scrollHeight;
+    area.scrollLeft = area.scrollWidth;
+    await until('the corner', () => area.scrollTop > 0 && area.scrollLeft > 0
+      && view().scrollTop === area.scrollTop && view().scrollLeft === area.scrollLeft);
+    $('#yamlReload').click();
+    await until('the entry again', () => $('#yamlText').value.includes('type: writer') && !dirtyShown());
+    openTab('general');
+    return painted && typedDirty && applied && onLeaving && stayed && keptTyped && repainted && !$('#tab-general').hidden;
+  });
+
+  await check('an unquoted !entry typed in the YAML tab is the removal it looks like, and an error goes with its text', async () => {
+    await choose('editor');
+    openTab('yaml');
+    await until('the YAML', () => $('#yamlText').value.includes('- +web/web_search'));
+    const area = () => $('#yamlText');  // drawn anew once the text is applied
+    // unquoted, `!files/*` is a YAML tag to the parser: here it is the removal it looks like
+    type(area(), area().value.replace('- +web/web_search', '- +web/web_search\n      - !files/*'));
+    openTab('general');
+    await until('applied on leaving', () => !$('#tab-general').hidden);
+    const removed = text('#tools-allowed').includes('!files/*') && $('#yamlError').hidden;
+    openTab('yaml');
+    await until('the YAML quoted', () => $('#yamlText').value.includes("- '!files/*'"));
+    // an error goes with its text: typing on hides it, leaving with broken text shows it again
+    type(area(), `${area().value}\n  broken: [`);
+    openTab('general');
+    await until('the parse error', () => !$('#yamlError').hidden);
+    type(area(), area().value.replace('\n  broken: [', ''));
+    const cleared = $('#yamlError').hidden && !area().hasAttribute('aria-invalid');
+    // the answer for text typed over meanwhile shows no error
+    const panelWindow = frame.contentWindow;
+    const realFetch = panelWindow.fetch;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    try {
+      panelWindow.fetch = async (url, options) => {
+        if (String(url).endsWith('/plugins/agent_editor/yaml/parse')) await held;
+        return realFetch(url, options);
+      };
+      type(area(), `${area().value}\n  broken: [`);
+      openTab('general');
+      await sleep(100);
+      type(area(), area().value.replace('\n  broken: [', ''));
+    } finally {
+      release();
+      panelWindow.fetch = realFetch;
+    }
+    await sleep(400);
+    const staleHidden = $('#yamlError').hidden;
+    $('#save').click();
+    await diffShown();
+    const written = diffLines('add').some((line) => line.includes("'!files/*'"));  // quoted in the file, too
+    await cancelDiff();
+    await until('the form unlocked', () => !$('#formLock').disabled);
+    $('#revert').click();
+    await until('editor reverted', () => !dirtyShown());
+    openTab('general');
+    return removed && cleared && staleHidden && written;
+  });
+
+  await check('resetting Enabled on a child removes the key and shows it off', async () => {
+    const on = isSet(ENABLED) && control(ENABLED).checked;
+    fieldOf(ENABLED).querySelector('[data-reset]').click();
+    const off = !isSet(ENABLED) && control(ENABLED).checked === false && !$('#save').disabled;
+    $('#save').click();
+    await diffShown();
+    const shown = diffLines('del').some((line) => line.includes('enabled: true'));
+    await writeDiff();
+    await toasted('ok', 'editor saved');
+    await saved();
+    const written = (await file('config/agents/team.yaml')).text;
+    const editorPart = written.slice(written.indexOf('    editor:'));
+    await until('the list drawn anew', () => badges('editor').startsWith('off'));
+    return on && off && shown && !editorPart.includes('enabled') && written.includes('enabled: true')
+      && !isSet(ENABLED) && control(ENABLED).checked === false;
+  });
+
+  await check('editing a bare skills list writes only the always list, and on demand stays inherited', async () => {
+    openTab('prompt');
+    const box = (kind, name) => $(`#skillLists [data-kind="${kind}"][data-skill="${name}"]`);
+    const before = isSet(ALWAYS) && box('always', 'alpha').checked && !box('always', 'beta').checked
+      && !isSet(ON_DEMAND) && box('on_demand', 'beta').checked && !box('on_demand', 'alpha').checked;
+    box('always', 'beta').click();
+    const after = isSet(ALWAYS) && box('always', 'alpha').checked && box('always', 'beta').checked
+      && !isSet(ON_DEMAND) && box('on_demand', 'beta').checked && dirtyShown();
+    await saveAll('editor saved');
+    const written = (await file('config/agents/team.yaml')).text;
+    const editorPart = written.slice(written.indexOf('    editor:'));
+    return before && after && editorPart.includes('always') && editorPart.includes('beta')
+      && !editorPart.includes('on_demand') && !isSet(ON_DEMAND) && box('on_demand', 'beta').checked;
+  });
+
+  await check('the skill lists filter what they show, and a click keeps its row', async () => {
+    await choose('writer');  // always: none of its own or inherited; on demand: beta
+    openTab('prompt');
+    const shown = (kind) => all(`#skillLists [data-kind="${kind}"]`).map((box) => box.dataset.skill).join();
+    const count = (kind) => text(`#skillLists [data-skills-shown="${kind}"]`);
+    const filter = (value) => {
+      const select = $('#tab-prompt [data-skill-filter]');
+      select.value = value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return `${shown('always')}|${shown('on_demand')}`;
+    };
+    const byState = filter('on') === '|beta' && count('on_demand') === '1 of 2 skills' && count('always') === '0 of 2 skills'
+      && filter('off') === 'alpha,beta|alpha' && filter('all') === 'alpha,beta|alpha,beta' && count('always') === '2 skills';
+    filter('on');
+    $('#skillLists [data-kind="on_demand"][data-skill="beta"]').click();
+    const stays = shown('on_demand') === 'beta' && !$('#skillLists [data-kind="on_demand"][data-skill="beta"]').checked && dirtyShown();
+    const refiltered = filter('on') === '|';
+    $('#revert').click();
+    await until('writer reverted', () => !dirtyShown());
+    filter('all');
+    const search = $('#tab-prompt [data-skill-search]');
+    type(search, 'second');
+    const searched = `${shown('always')}|${shown('on_demand')}` === 'beta|beta' && filter('off') === 'beta|';
+    type($('#tab-prompt [data-skill-search]'), '');
+    filter('all');
+    await choose('twin');
+    openTab('prompt');
+    const readOnly = $('#tab-prompt [data-skill-filter]').matches(':enabled')
+      && $('#skillLists [data-kind="always"][data-skill="alpha"]').matches(':disabled') && filter('on') === '|';
+    filter('all');
+    openTab('general');
+    return byState && stays && refiltered && searched && readOnly;
+  });
+
+  await check('resetting Based on makes the tree follow the defaults', async () => {
+    await choose('editor');
+    openTab('tools');
+    const count = () => $('#toolSummary [data-tool-count]')?.dataset.toolCount;
+    const files = () => $('#tools-allowed [data-tree-server="files"]');
+    await until('the child count', () => count() === '3');
+    openTab('general');
+    fieldOf(TYPE).querySelector('[data-reset]').click();
+    await until('the defaults', () => chainOf(CHAIN) === 'fast' && count() === '1');
+    const followed = !isSet(TYPE) && control(TYPE).value === 'basic_agent' && !$('#head [data-goto]')
+      && text('#head').includes('basic_agent') && !files().checked && !files().disabled
+      && text('#tools-allowed').includes('Nothing.') && dirtyShown();
+    $('#revert').click();
+    await until('the parent again', () => count() === '3' && Boolean($('#head [data-goto="writer"]')) && !dirtyShown());
+    return followed;
+  });
+
+  await check('the hooks tab writes an override for one agent', async () => {
+    await choose('writer');
+    openTab('hooks');
+    const select = () => $('#tab-hooks [data-hook-enabled="probe.mark"]');
+    const before = Boolean(select()) && select().value === '' && select().options[0].textContent === 'Default (on)'
+      && text('#tab-hooks').includes('Marks every call') && !$('#tab-hooks input[type="number"]');
+    select().value = 'false';
+    select().dispatchEvent(new Event('change', { bubbles: true }));
+    const marked = dirtyShown() && !$('#save').disabled;
+    await saveAll('writer saved');
+    const written = (await file('config/agents/team.yaml')).text;
+    const writerPart = written.slice(written.indexOf('    writer:'), written.indexOf('    editor:'));
+    return before && marked && writerPart.includes('probe.mark') && writerPart.includes('enabled: false')
+      && select().value === 'false';
+  });
+
+  await check('the tool tree and the hook table filter what they show, on a read-only agent too', async () => {
+    const pick = (selector, value) => {
+      const box = $(selector);
+      box.value = value;
+      box.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    // tools: scout with an own list that holds the files server only
+    await choose('scout');
+    // disabled: the head says so, and no banner repeats it
+    const quiet = text('#banners') === '' && Boolean($('#head [data-state="off"]'));
+    openTab('tools');
+    $('#toolTab-allowed').click();
+    const servers = () => all('#tools-allowed [data-tree-server]').map((box) => box.dataset.treeServer).join();
+    const shownText = () => text('#tools-allowed [data-tree-shown]');
+    const treeFilter = (value) => { pick('#tab-tools [data-tree-filter]', value); return servers(); };
+    $('#tools-allowed [data-list-mode][value="own"]').click();
+    await until('an own list', () => $('#tools-allowed [data-list-mode][value="own"]').checked);
+    $('#tools-allowed [data-tree-server="files"]').click();
+    await until('files in the list', () => $('#tools-allowed [data-tree-server="files"]').checked);
+    await until('the count on the tab', () => text('#toolTabCount') === '2');
+    const tools = treeFilter('in') === 'files' && shownText() === '1 of 2 servers' && treeFilter('out') === 'web';
+    // a click does not take its own row away: the rows stay until the filter or the search is set again
+    const web = () => $('#tools-allowed [data-tree-server="web"]');
+    web().focus();
+    web().click();
+    await until('web in the list', () => web()?.checked);
+    const stays = servers() === 'web' && doc().activeElement === web();
+    const refiltered = treeFilter('out') === '' && treeFilter('in') === 'files,web';
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await sleep(300);
+    web().click();
+    await until('web out again', () => web() && !web().checked);
+    // an unchanged catalogue keeps the rows as well
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await sleep(300);
+    const staysIn = servers() === 'files,web' && treeFilter('all') === 'files,web' && shownText() === '2 servers';
+    // a server that comes up meanwhile is drawn at the refresh (the form is edited, so nothing else redraws)
+    treeFilter('out');
+    const panelWindow = frame.contentWindow;
+    const realFetch = panelWindow.fetch;
+    let grown = false;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });  // the tools answer held: the catalogue alone redraws
+    try {
+      panelWindow.fetch = async (url, options) => {
+        if (String(url).endsWith('/plugins/agent_editor/tools/effective')) await held;
+        const answer = await realFetch(url, options);
+        if (!String(url).endsWith('/plugins/agent_editor/tools')) return answer;
+        const catalogue = await answer.json();
+        catalogue.servers.push({ server: 'notes', type: 'example', tools: [{ name: 'notes_add', description: 'Adds a note' }] });
+        return new Response(JSON.stringify(catalogue), { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+      doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+      grown = await until('the new server', () => servers() === 'notes,web');
+    } finally {
+      release();
+      panelWindow.fetch = realFetch;
+    }
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await until('the new server gone', () => servers() === 'web');
+    treeFilter('all');
+    // the search goes by tool names as well, and adds to the filter
+    type($('#tab-tools [data-tree-search]'), 'fetch');
+    const searched = servers() === 'web' && Boolean($('#tools-allowed [data-tree-tool="web_fetch"]'))
+      && !$('#tools-allowed [data-tree-tool="web_search"]') && treeFilter('in') === '' && text('#tools-allowed').includes('No server matches');
+    treeFilter('all');
+    type($('#tab-tools [data-tree-search]'), '');
+    $('#revert').click();
+    await until('scout reverted', () => !dirtyShown());
+    // set before an agent's tools are known: what it inherits counts once they are
+    treeFilter('in');
+    await choose('editor');
+    await until('the inherited server kept', () => servers() === 'files,web');
+    // another parent: its tools count once they are known, not the old parent's
+    const based = control(TYPE);
+    based.value = 'basic_agent';
+    based.dispatchEvent(new Event('change', { bubbles: true }));
+    await until('the old parent gone', () => servers() === 'web');
+    $('#revert').click();
+    await until('editor reverted', () => !dirtyShown());
+    treeFilter('all');
+    // hooks: writer turned probe.mark off for itself; probe.trace runs by default
+    await choose('writer');
+    openTab('hooks');
+    const hooks = () => all('#hookTable [data-hook-enabled]').map((box) => box.dataset.hookEnabled).join();
+    const hookFilter = (value) => { pick('#tab-hooks [data-hook-filter]', value); return hooks(); };
+    const hookType = (value) => { pick('#tab-hooks [data-hook-type]', value); return hooks(); };
+    const byState = hookFilter('all') === 'probe.mark,probe.trace' && text('#hookTable [data-hooks-shown]') === '2 hooks'
+      && hookFilter('set') === 'probe.mark' && text('#hookTable [data-hooks-shown]') === '1 of 2 hooks'
+      && hookFilter('on') === 'probe.trace' && hookFilter('off') === 'probe.mark';
+    hookFilter('all');
+    const byType = hookType('post_llm_call') === 'probe.trace' && hookType('pre_tool_call') === 'probe.mark'
+      && hookType('') === 'probe.mark,probe.trace' && all('#hookTable [data-hook-enabled="probe.mark"]').length === 1;
+    // typing redraws the table only: the search keeps the focus
+    $('#tab-hooks [data-hook-search]').focus();
+    type($('#tab-hooks [data-hook-search]'), 'MARKS');
+    const search = () => $('#tab-hooks [data-hook-search]');
+    const byText = hooks() === 'probe.mark' && doc().activeElement === search();
+    // a full redraw (the refresh button) keeps the focus in the search, and what it holds
+    const drawn = search();
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await until('the tab drawn anew', () => search() && search() !== drawn);
+    const redrawn = doc().activeElement === search() && search().value === 'MARKS' && hooks() === 'probe.mark';
+    type($('#tab-hooks [data-hook-search]'), '');
+    // with the hooks switched off for the agent, none is on
+    control(['agent_config', 'hooks', 'enabled']).click();
+    const masterOff = hookFilter('on') === '' && hookFilter('off') === 'probe.mark,probe.trace';
+    hookFilter('all');
+    // YAML that does not parse in a row the filter hides: Save clears the filter and shows the row with its error
+    $('#hookTable [data-hook-open="probe.trace"]').click();
+    const traceArea = () => $('#hookTable [data-yaml][data-hook="probe.trace"]');
+    await until('the trace settings', () => traceArea());
+    type(traceArea(), 'depth: [');
+    // in sight under the filter: Save leaves the filter as it is and goes to the row
+    hookType('post_llm_call');
+    openTab('general');
+    clearToasts();
+    $('#save').click();
+    await toasted('error', 'Fix the YAML marked in red');
+    await until('the hooks tab', () => !$('#tab-hooks').hidden && doc().activeElement === traceArea());
+    const filterKept = $('#tab-hooks [data-hook-type]').value === 'post_llm_call';
+    hookType('');
+    // hidden by the filter: Save clears it
+    hookFilter('set');
+    const hidden = !traceArea();
+    openTab('general');
+    clearToasts();
+    $('#save').click();
+    await toasted('error', 'Fix the YAML marked in red');
+    await until('the row back in sight', () => traceArea() && !traceArea().closest('[data-yaml-box]').querySelector('[data-yaml-error]').hidden
+      && !$('#tab-hooks').hidden && doc().activeElement === traceArea());
+    const shownAgain = $('#tab-hooks [data-hook-filter]').value === 'all' && traceArea().value === 'depth: [' && !diff().open
+      && $('#tab-general').hidden;
+    $('#revert').click();
+    await until('writer reverted', () => !dirtyShown());
+    // a read-only agent: the lists are locked, the filters are not
+    await choose('twin');
+    openTab('hooks');
+    const readOnly = ['filter', 'search', 'type'].every((kind) => $(`#tab-hooks [data-hook-${kind}]`).matches(':enabled'))
+      && $('#hookTable [data-hook-enabled="probe.mark"]').matches(':disabled')
+      && hookFilter('set') === '' && text('#hookTable [data-hooks-shown]') === '0 of 2 hooks' && text('#hookTable').includes('No hook matches');
+    hookFilter('all');
+    openTab('tools');
+    const readOnlyTools = ['filter', 'search'].every((kind) => $(`#tab-tools [data-tree-${kind}]`).matches(':enabled'))
+      && treeFilter('in') === '' && shownText() === '0 of 2 servers' && text('#tools-allowed').includes('No server matches');
+    treeFilter('all');
+    openTab('general');
+    return quiet && tools && stays && refiltered && Boolean(grown) && staysIn && searched && byState && byType && masterOff && byText && redrawn
+      && filterKept && hidden && shownAgain && readOnly && readOnlyTools;
+  });
+
+  await check('another agent opens every tab at its top', async () => {
+    const prompt = () => $('#tab-prompt');
+    const scrollDown = async () => {
+      prompt().scrollTop = 150;
+      await until('the prompt tab scrolled', () => prompt().scrollTop > 0);
+    };
+    await choose('writer');
+    openTab('prompt');
+    await scrollDown();
+    await choose('editor');  // the tab in sight
+    const visible = prompt().scrollTop === 0;
+    await scrollDown();
+    openTab('general');
+    await choose('writer');  // a tab out of sight keeps its offset while hidden: reset when it shows
+    openTab('prompt');
+    const shown = prompt().scrollTop === 0;
+    await scrollDown();
+    openTab('general');
+    openTab('prompt');  // the same agent keeps its place
+    const kept = prompt().scrollTop > 0;
+    openTab('general');
+    return visible && shown && kept;
+  });
+
+  await check('an entry whose parent has a ./ template previews the inherited file', async () => {
+    await choose('demo');
+    openTab('prompt');
+    await until('the parent preview', () => text('#promptState') === 'found' && text('#promptPreview') === 'You are the demo.');
+    const parent = control(TEMPLATE).value === './prompts/demo.md';
+    $('#moreMenu [data-menu="child"]').click();
+    await until('the dialog', () => $('#createDialog').open);
+    await create({ name: 'demo_kid' });
+    await until('the draft', () => heading() === 'demo_kid');
+    await until('the inherited preview', () => text('#promptState') === 'found' && text('#promptPreview') === 'You are the demo.');
+    const inherited = control(TEMPLATE).value === '' && control(TEMPLATE).placeholder === 'src/plugins/demo/agents/prompts/demo.md';
+    await saveAll('demo_kid created');
+    await until('the saved preview', () => row('demo_kid') && !$('#head [data-draft]')
+      && text('#promptState') === 'found' && text('#promptPreview') === 'You are the demo.');
+    const written = (await file('config/agents/demo_kid.yaml')).text;
+    openTab('general');
+    return parent && inherited && written.includes('type: demo') && !written.includes('system_template');
+  });
+
+  await check('switching to another agent with unsaved changes asks first', async () => {
+    await choose('writer');
+    openTab('general');
+    type(control(DESCRIPTION), 'Unsaved words');
+    row('scout').click();
+    const asked = await until('the question', question);
+    const says = asked.textContent.includes('Discard the unsaved changes to “writer”');
+    await answer('Cancel');
+    await sleep(200);
+    const stayed = heading() === 'writer' && control(DESCRIPTION).value === 'Unsaved words' && dirtyShown()
+      && row('writer').getAttribute('aria-current') === 'true';
+    row('scout').click();
+    await answer('Discard');
+    await until('scout shown', () => heading() === 'scout');
+    const switched = !dirtyShown();
+    await choose('writer');
+    const discarded = control(DESCRIPTION).value === 'Writes things' && !dirtyShown();
+    return says && stayed && switched && discarded;
+  });
+
+  await check('a file changed behind the panel is not overwritten, and Reload shows what is on disk', async () => {
+    await choose('scout');
+    type(control(DESCRIPTION), 'Mine');
+    await replace('config/agents/extra.yaml', 'Looks everywhere', 'Changed elsewhere');
+    $('#save').click();
+    const asked = await until('the conflict', question);
+    const says = asked.textContent.toLowerCase().includes('changed on disk') && !diff().open;
+    await answer('Reload from disk');
+    await until('the file reloaded', () => control(DESCRIPTION).value === 'Changed elsewhere');
+    await saved();
+    const onDisk = (await file('config/agents/extra.yaml')).text;
+    return says && onDisk.includes('description: Changed elsewhere') && !onDisk.includes('Mine');
+  });
+
+  await check('a sub-agent switch writes the manager file through its diff', async () => {
+    openTab('subagents');
+    const box = () => $('#tab-subagents [data-spawn="manager"]');
+    // :enabled, not .disabled: while a write runs, the switch is off through its fieldset
+    const before = Boolean(box()) && !box().checked && box().matches(':enabled') && text('#tab-subagents [data-rule]') !== ''
+      && !$('#tabButton-subagents').hidden && !$('#tab-general [data-spawn]');
+    box().click();
+    await diffShown();
+    const shown = diffLines('add').some((line) => line.includes('scout')) && text('#diffNotes').includes('config/plugins.yaml');
+    await cancelDiff();
+    await until('the switch back', () => box() && !box().checked && box().matches(':enabled'));
+    const untouched = !(await file('config/plugins.yaml')).text.includes('scout');
+    box().click();
+    await diffShown();
+    await writeDiff();
+    await toasted('ok', 'manager: scout is allowed');
+    await until('the switch on', () => box()?.checked && box().matches(':enabled') && doc().activeElement === box());
+    const written = (await file('config/plugins.yaml')).text.includes('allowed_agents: [writer, scout]');
+    return before && shown && untouched && written && doc().activeElement === box();
+  });
+
+  await check('the sub-agents tab grants a manager, configures it, and creates a new one', async () => {
+    // scout: no manager in its tools; `manager` (not running) starts writer and scout
+    const tab = () => $('#tab-subagents');
+    const use = (name) => tab().querySelector(`[data-use-manager="${name}"]`);
+    const editor = () => $('#managerEditor');
+    const agentBox = (name) => editor().querySelector(`[data-manager-agent="${name}"]`);
+    const listedAgents = () => [...editor().querySelectorAll('[data-manager-agent]')].map((box) => box.dataset.managerAgent).join();
+    const pick = (selector, value) => {
+      const control = editor().querySelector(selector);
+      control.value = value;
+      control.dispatchEvent(new Event('change', { bubbles: true }));
+      return listedAgents();
+    };
+    const rows = text('#managerRows');
+    const before = use('manager') && !use('manager').checked && rows.includes('not running yet')
+      && text('#tab-subagents [data-spawn-count="manager"]') === '2 agents';
+    // the grant is part of the agent: extend the inherited tools, saved with the agent
+    use('manager').click();
+    const granted = use('manager').checked && dirtyShown() && text('#tools-allowed').includes('manager/*')
+      && $('#tools-allowed [data-list-mode][value="extend"]').checked;
+    await saveAll('scout saved');
+    const inFile = (await file('config/agents/extra.yaml')).text.includes('+manager/*');
+    use('manager').click();
+    const taken = !use('manager').checked && !text('#tools-allowed').includes('manager/*') && dirtyShown();
+    $('#revert').click();
+    await until('scout reverted', () => !dirtyShown() && use('manager').checked);
+    // the manager's own entry: its agents and a setting, one diff for both
+    tab().querySelector('[data-configure="manager"]').click();
+    await until('the manager editor', () => !editor().hidden && agentBox('writer'));
+    const listed = agentBox('writer').checked && agentBox('scout').checked && !agentBox('editor').checked
+      && pick('[data-manager-filter]', 'in') === 'scout,writer' && pick('[data-manager-filter]', 'out').split(',').includes('editor');
+    // a limit below 0 is not taken
+    type(editor().querySelector('[data-manager-setting="max_nesting_depth"]'), '-1');
+    const noNegative = editor().querySelector('[data-manager-dirty]').hidden;
+    type(editor().querySelector('[data-manager-setting="max_nesting_depth"]'), '');
+    pick('[data-manager-filter]', 'in');
+    agentBox('writer').click();
+    const kept = listedAgents() === 'scout,writer' && !agentBox('writer').checked
+      && !editor().querySelector('[data-manager-dirty]').hidden && !dirtyShown() && keepsPage();
+    // a reload draws the list anew and keeps the row as well
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await sleep(300);
+    const keptOnReload = listedAgents() === 'scout,writer' && !agentBox('writer').checked;
+    const depth = editor().querySelector('[data-manager-setting="max_nesting_depth"]');
+    type(depth, '3');
+    type(control(DESCRIPTION), 'Edited meanwhile');  // the agent's reload keeps the form, the tab follows anyway
+    editor().querySelector('[data-save-manager]').click();
+    await diffShown();
+    const preview = diffLines('add').some((line) => line.includes('max_nesting_depth: 3')) && text('#diffNotes').includes('config/plugins.yaml');
+    await writeDiff();
+    await toasted('ok', 'manager saved');
+    await until('the rows follow', () => text('#tab-subagents [data-spawn-count="manager"]') === '1 agent'
+      && editor().querySelector('[data-manager-dirty]').hidden);
+    const plugins = (await file('config/plugins.yaml')).text;
+    const saved = plugins.includes('max_nesting_depth: 3') && !plugins.includes('allowed_agents: [writer, scout]');
+    // an agent write to the same file moves the manager's version: its edits still save
+    type(editor().querySelector('[data-manager-setting="max_nesting_depth"]'), '5');
+    agentBox('scout').click();  // this agent's own switch below follows the save
+    const plugins0 = (await file('config/plugins.yaml')).text;
+    await replace('config/plugins.yaml', '      enabled: true\n      allowed_agents:', '      enabled: true\n      # touched\n      allowed_agents:');
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await until('the moved version', async () => {
+      doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+      await sleep(150);
+      clearToasts();
+      editor().querySelector('[data-save-manager]').click();
+      await sleep(300);
+      if (question()) return false;
+      return diff().open;
+    });
+    await writeDiff();
+    await toasted('ok', 'manager saved');
+    await until('the write done', () => !$('#formLock').disabled);
+    const movedSaved = (await file('config/plugins.yaml')).text.includes('max_nesting_depth: 5') && plugins0.includes('max_nesting_depth: 3')
+      && !$('#tab-subagents [data-spawn="manager"]').checked;
+    // a lone "-" is no cleared field: the saved limit stays
+    const limit = editor().querySelector('[data-manager-setting="max_nesting_depth"]');
+    limit.value = '';
+    limit.focus();
+    doc().execCommand('insertText', false, '-');
+    const minusKept = limit.validity.badInput && limit.getAttribute('aria-invalid') === 'true'
+      && editor().querySelector('[data-manager-dirty]').hidden;
+    // unsaved edits of both are named before another agent
+    type(editor().querySelector('[data-manager-setting="max_nesting_depth"]'), '4');
+    type(control(DESCRIPTION), 'Edited too');
+    row('writer').click();
+    const asked = await until('a question', question);
+    const askedText = asked.textContent.includes('“scout” and the manager “manager”');
+    await answer('Discard');
+    await until('writer shown', () => heading() === 'writer' && editor().hidden);
+    // a manager edit alone is asked about as well
+    openTab('subagents');
+    tab().querySelector('[data-configure="manager"]').click();
+    await until('the manager editor again', () => !editor().hidden);
+    type(editor().querySelector('[data-manager-setting="max_nesting_depth"]'), '7');
+    const onlyManager = !dirtyShown() && !editor().querySelector('[data-manager-dirty]').hidden;
+    row('scout').click();
+    const askedAlone = (await until('a question', question)).textContent.includes('the manager “manager”');
+    await answer('Cancel');
+    const stayedWriter = heading() === 'writer' && !editor().hidden;
+    editor().querySelector('[data-revert-manager]').click();
+    // a manager of its own: created after its diff, granted to writer, then configured
+    openTab('subagents');
+    const name = tab().querySelector('[data-new-manager]');
+    type(name, 'writer_sam');
+    tab().querySelector('[data-create-manager]').click();
+    await diffShown();
+    const createPreview = text('#diffNotes').includes('config/agents/writer_sam.yaml') && diffLines('add').some((line) => line.includes('sub_agent_manager'));
+    await writeDiff();
+    await toasted('ok', 'writer_sam created');
+    await until('the new manager open', () => use('writer_sam')?.checked && !editor().hidden && agentBox('scout'));
+    const created = dirtyShown() && text('#tools-allowed').includes('writer_sam/*') && listedAgents().split(',').length > 3
+      && !agentBox('scout').checked && tab().querySelector('[data-new-manager]').value === '';
+    agentBox('scout').click();
+    editor().querySelector('[data-save-manager]').click();
+    await diffShown();
+    await writeDiff();
+    await toasted('ok', 'writer_sam saved');
+    const samFile = (await file('config/agents/writer_sam.yaml')).text;
+    const configured = samFile.includes('type: sub_agent_manager') && samFile.includes('scout');
+    // a list with a pattern: pick the agents instead (and back)
+    await replace('config/agents/writer_sam.yaml', 'scout', "'*'");
+    await until('the pattern shown', async () => {
+      doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+      await sleep(150);
+      return editor().querySelector('[data-manager-patterns]');
+    });
+    editor().querySelector('[data-pick-agents]').click();
+    const picked = agentBox('scout') && !agentBox('scout').checked && !editor().querySelector('[data-manager-dirty]').hidden;
+    editor().querySelector('[data-revert-manager]').click();
+    const reverted = Boolean(editor().querySelector('[data-manager-patterns]')) && editor().querySelector('[data-manager-dirty]').hidden;
+    await saveAll('writer saved');
+    const cleanAgain = !keepsPage();
+    // editor inherits writer's tools: switching the manager off there writes a removal
+    await choose('editor');
+    openTab('subagents');
+    const inheritedOn = use('writer_sam').checked && use('writer_sam').closest('label').title === 'inherited';
+    use('writer_sam').click();
+    const removal = !use('writer_sam').checked && text('#tools-allowed').includes('!writer_sam/*') && dirtyShown();
+    $('#revert').click();
+    await until('editor reverted', () => !dirtyShown() && use('writer_sam').checked);
+    await sleep(500);
+    await until('the tools answer', () => text('#toolTabCount') !== '');
+    type(control(DESCRIPTION), 'Still editing');  // no reload of the form: the tools answer is asked again anyway
+    // the new answer held back: until it comes, the switch waits for it
+    const panelWindow = frame.contentWindow;
+    const realFetch = panelWindow.fetch;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    let waiting = false;
+    try {
+      panelWindow.fetch = async (url, options) => {
+        if (/\/plugins\/agent_editor\/(tools\/effective|managers)$/.test(String(url))) await held;
+        return realFetch(url, options);
+      };
+      await post('/__stub/register?name=writer_sam');
+      await until('writer_sam running', async () => {
+        doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+        await sleep(150);
+        return !text('#managerRows [data-manager="writer_sam"]').includes('not running yet');
+      });
+      waiting = use('writer_sam').matches(':disabled') && use('writer_sam').closest('label').title.startsWith('Waiting')
+        && text('#toolTabCount') === '';
+    } finally {
+      release();
+      panelWindow.fetch = realFetch;
+    }
+    await until('the tree answer', () => use('writer_sam').checked && use('writer_sam').matches(':enabled'));
+    const patternField = $('#tools-allowed [data-pattern-add]');
+    type(patternField, 'writer_*');
+    enter(patternField);
+    await until('the switch locked', () => use('writer_sam').matches(':disabled')
+      && use('writer_sam').closest('label').title === 'Granted by writer_*');
+    $('#revert').click();
+    await until('editor reverted again', () => !dirtyShown() && use('writer_sam').matches(':enabled'));
+    openTab('general');
+    return Boolean(before) && granted && inFile && taken && listed && kept && preview && saved && askedText && createPreview
+      && created && configured && picked && reverted && cleanAgain && inheritedOn && removal && movedSaved
+      && noNegative && keptOnReload && minusKept && waiting && onlyManager && askedAlone && stayedWriter;
+  });
+
+  await check('without the manager plugin the sub-agents tab is gone, from the arrow keys too', async () => {
+    await choose('writer');
+    openTab('subagents');
+    type(control(DESCRIPTION), 'Edited while the app restarts');  // an edited form is not drawn anew
+    const panelWindow = frame.contentWindow;
+    const realFetch = panelWindow.fetch;
+    let gone = false;
+    let skipped = false;
+    try {
+      panelWindow.fetch = async (url, options) => {
+        const answer = await realFetch(url, options);
+        if (!String(url).endsWith('/plugins/agent_editor/meta')) return answer;
+        const meta = await answer.json();
+        meta.sub_agents = false;
+        return new Response(JSON.stringify(meta), { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+      doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+      gone = await until('the tab gone', () => $('#tabButton-subagents').hidden && !$('#tab-general').hidden && $('#tab-subagents').hidden);
+      const tools = $('#tabButton-tools');
+      tools.click();
+      tools.focus();
+      tools.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      skipped = !$('#tab-prompt').hidden && $('#tab-subagents').hidden && doc().activeElement === $('#tabButton-prompt');
+    } finally {
+      panelWindow.fetch = realFetch;
+    }
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await until('the tab back', () => !$('#tabButton-subagents').hidden);
+    openTab('subagents');
+    const back = !$('#tab-subagents').hidden && Boolean($('#tab-subagents [data-use-manager]'));
+    $('#revert').click();
+    await until('writer reverted', () => !dirtyShown());
+    openTab('general');
+    return Boolean(gone) && skipped && back;
+  });
+
+  await check('a new agent starts blank, as a child or as a copy, and saving creates its file', async () => {
+    await choose('scout');
+    clearToasts();
+    const inputs = () => form().elements;
+    const promptTab = () => $('#tab-prompt');
+    const scrolled = async (what) => {
+      promptTab().scrollTop = 120;
+      await until(what, () => promptTab().scrollTop > 0);
+    };
+    frame.style.height = '420px';  // room for a scrolled tab
+    openTab('prompt');
+    await scrolled('scout scrolled');
+    $('#create').click();
+    const opened = $('#createDialog').open && inputs().source.disabled && inputs().start.value === 'blank';
+    await create({ name: 'Bad Name' });
+    await sleep(150);
+    const badName = $('#createDialog').open && $('#createError').hidden && heading() === 'scout';
+    await create({ name: 'writer' });
+    await until('the refusal', () => !$('#createError').hidden);
+    const taken = text('#createError').includes('exists already') && $('#createDialog').open;
+    await create({ name: 'fresh' });
+    await until('the draft', () => heading() === 'fresh');
+    const draftTop = promptTab().scrollTop === 0;
+    await scrolled('the draft scrolled');
+    const draft = !$('#createDialog').open && Boolean($('#head [data-draft]')) && !$('#save').disabled && $('#revert').disabled
+      && control(TYPE).value === 'basic_agent' && control(ENABLED).checked && !$('#list [aria-current="true"]')
+      && control(MAX_STEPS).placeholder === '20' && chainOf(CHAIN) === 'fast';
+    type(control(DESCRIPTION), 'Fresh one');
+    $('#save').click();
+    await diffShown();
+    const preview = diffLines('add').some((line) => line.includes('fresh:')) && text('#diffWrite') === 'Create file'
+      && text('#diffNotes').includes('config/agents/fresh.yaml');
+    await writeDiff();
+    await toasted('ok', 'fresh created');
+    await until('fresh listed and shown', () => row('fresh') && heading() === 'fresh' && !$('#head [data-draft]'));
+    const blank = await file('config/agents/fresh.yaml');
+    const blankFile = blank.exists && blank.text.startsWith('# Created with the Agent Editor.')
+      && blank.text.includes('type: basic_agent') && blank.text.includes('description: Fresh one');
+    const placeKept = promptTab().scrollTop > 0;
+    frame.style.height = '';
+    openTab('general');
+
+    await choose('writer');
+    $('#moreMenu [data-menu="child"]').click();
+    await until('the dialog', () => $('#createDialog').open);
+    const preset = inputs().start.value === 'inherit' && inputs().source.value === 'writer' && !inputs().source.disabled
+      && inputs().name.value === 'writer_child';
+    await create({});
+    await until('the child draft', () => heading() === 'writer_child');
+    const inherits = control(TYPE).value === 'writer' && !isSet(CHAIN) && chainOf(CHAIN) === 'deep,fast';
+    await saveAll('writer_child created');
+    await until('the child listed', () => row('writer_child') && !$('#head [data-draft]'));
+    const child = await file('config/agents/writer_child.yaml');
+    const childFile = child.exists && child.text.includes('type: writer');
+
+    $('#create').click();
+    await create({ start: 'copy', source: 'scout', name: 'scout_copy' });
+    await until('the copy draft', () => heading() === 'scout_copy');
+    const copied = control(DESCRIPTION).value === 'Changed elsewhere' && control(INLINE).value === 'You scout.'
+      && control(ENABLED).checked === false;
+    await saveAll('scout_copy created');
+    await until('the copy listed', () => row('scout_copy'));
+    const copy = await file('config/agents/scout_copy.yaml');
+    const copyFile = copy.exists && copy.text.includes('system_prompt: You scout.')
+      && copy.text.includes('description: Changed elsewhere') && copy.text.includes('enabled: false');
+    return opened && badName && taken && draftTop && draft && preview && blankFile && placeKept && preset && inherits
+      && childFile && copied && copyFile;
+  });
+
+  await check('a template file under a parent with an inline prompt writes an empty system_prompt', async () => {
+    await choose('scout');
+    $('#moreMenu [data-menu="child"]').click();
+    await until('the dialog', () => $('#createDialog').open);
+    await create({ name: 'scout_kid' });
+    await until('the draft', () => heading() === 'scout_kid');
+    openTab('prompt');
+    const inline = $('#tab-prompt [data-prompt-mode][value="inline"]').checked
+      && control(INLINE).value === '' && control(INLINE).placeholder === 'You scout.';
+    $('#tab-prompt [data-prompt-mode][value="template"]').click();
+    const template = $('#tab-prompt [data-prompt-mode][value="template"]').checked && Boolean(control(TEMPLATE)) && !control(INLINE);
+    $('#save').click();
+    await diffShown();
+    const shown = diffLines('add').some((line) => line.includes("system_prompt: ''"));
+    await writeDiff();
+    await toasted('ok', 'scout_kid created');
+    await until('the kid saved', () => row('scout_kid') && !$('#head [data-draft]'));
+    const written = (await file('config/agents/scout_kid.yaml')).text;
+    const stays = $('#tab-prompt [data-prompt-mode][value="template"]').checked;
+    openTab('general');
+    return inline && template && shown && written.includes("system_prompt: ''") && written.includes('type: scout') && stays;
+  });
+
+  await check('deleting shows the diff with a danger button and removes the entry and its emptied file', async () => {
+    clearToasts();
+    await choose('fresh');
+    $('#moreMenu [data-menu="delete"]').click();
+    await diffShown();
+    const preview = text('#diffTitle') === 'Delete fresh' && text('#diffWrite') === 'Delete'
+      && $('#diffWrite').classList.contains('pk-btn--danger') && doc().activeElement === $('#diffCancel')
+      && diffLines('del').some((line) => line.includes('fresh:')) && text('#diffNotes').includes('deleted with it');
+    await cancelDiff();
+    await sleep(200);
+    const kept = (await file('config/agents/fresh.yaml')).exists && Boolean(row('fresh')) && heading() === 'fresh';
+    openTab('subagents');
+    $('#tab-subagents [data-configure="manager"]').click();
+    await until('the manager editor', () => !$('#managerEditor').hidden);
+    type($('#managerEditor [data-manager-setting="max_nesting_depth"]'), '6');
+    $('#moreMenu [data-menu="delete"]').click();
+    const askedFirst = (await until('a question', question)).textContent.includes('the manager “manager”');
+    await answer('Discard');
+    await diffShown();
+    await writeDiff();
+    await toasted('ok', 'fresh deleted');
+    await until('fresh gone', () => !row('fresh'));
+    const gone = !(await file('config/agents/fresh.yaml')).exists && $('#editor').hidden
+      && text('#placeholder').includes('No agent selected')
+      && toasts('ok').some((one) => one.includes('config/agents/fresh.yaml removed')) && !keepsPage();
+    openTab('general');
+    await choose('writer');  // a parent is not deleted: its children are named
+    const guard = $('#moreMenu [data-menu="delete"]');
+    return preview && kept && askedFirst && gone && guard.disabled && guard.title.includes('editor');
+  });
+
+  await check('a read-only agent says why and cannot be edited', async () => {
+    await choose('twin');
+    const says = text('#banners').includes('Read-only') && text('#banners').toLowerCase().includes('defined in 2 files');
+    const locked = $('#tab-general fieldset').disabled && control(DESCRIPTION).matches(':disabled')
+      && $('#tab-model fieldset').disabled && $('#save').disabled && $('#moreMenu [data-menu="delete"]').disabled
+      && $('#tab-general [data-reset]').matches(':disabled');
+    // a date in an entry: the form is locked, delete is not
+    await replace('config/agents/writer_child.yaml', '    writer_child:\n', '    writer_child:\n      since: 2026-09-17\n');
+    await choose('writer_child');
+    const formLocked = async () => {
+      doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+      await sleep(100);
+      return text('#banners').includes('writer_child.since: a date') && text('#banners').includes('the form cannot carry');
+    };
+    await until('the form locked', formLocked);
+    const carried = $('#tab-general fieldset').disabled && $('#save').disabled
+      && !$('#moreMenu [data-menu="delete"]').disabled && badges('writer_child').includes('read-only')
+      && $('#moreMenu [data-menu="duplicate"]').disabled;
+    $('#create').click();
+    await create({ start: 'copy', source: 'writer_child', name: 'child_copy' });
+    await until('the copy refused', () => !$('#createError').hidden && text('#createError').includes('cannot be copied'));
+    $('#createCancel').click();
+    await replace('config/agents/writer_child.yaml', '      since: 2026-09-17\n', '');
+    return says && locked && carried;
+  });
+
+  await check('Reload config refreshes what the running app has, and keeps unsaved edits', async () => {
+    await choose('writer');
+    const before = text('#banners').includes('Needs a restart') && Boolean($('#head [data-state="changed"]'));
+    type(control(DESCRIPTION), 'Typed before the reload');
+    clearToasts();
+    $('#reloadConfig').click();
+    const locked = $('#reloadConfig').disabled;
+    await answer('Reload');
+    await toasted('ok', 'Config reloaded');
+    await until('the live state again', () => text('#banners') === '' && $('#head [data-state="in_sync"]'));
+    const kept = control(DESCRIPTION).value === 'Typed before the reload' && dirtyShown() && !$('#reloadConfig').disabled;
+    $('#revert').click();
+    await until('reverted', () => !dirtyShown());
+    return before && locked && kept;
+  });
+
+  await check('the panel never calls a native dialog', async () => {
+    return nativeCalls === 0 && !toasts('error').some((one) => one.includes('Native'));
+  });
+
+  await check('with authentication off the panel says so and the API refuses', async () => {
+    await go('/plugins/ae_off/');
+    const said = text('.pk-empty-title') === 'Authentication is off' && !$('#list') && !$('#create') && !$('pk-refresh')
+      && !$('script[src$="panel.js"]');
+    const refused = await fetch('/plugins/ae_off/agents');
+    return said && refused.status === 403
+      && (await refused.json()).detail === 'The agent editor needs authentication to be enabled';
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>
