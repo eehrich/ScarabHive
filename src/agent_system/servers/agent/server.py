@@ -1569,9 +1569,8 @@ class Agent(MCPServer):
 
         # Execute session start hooks for new sessions AFTER creating system messages
         # This allows hooks like markdown_formatter to inject additional system prompts
-        # Check if session is empty (new session), not just if it exists (setdefault creates it above)
-        is_new_session = len(session_msgs) == 0
-        if is_new_session:
+        # A session starts once: one taken back to no messages (/undo) is not new again
+        if self._session_tracker.start_session(session_id):
             modified_messages = await self._hook_manager.execute_session_start_hooks(
                 session_id, request_id, messages=messages
             )

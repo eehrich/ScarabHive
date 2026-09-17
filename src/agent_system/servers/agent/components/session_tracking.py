@@ -77,6 +77,11 @@ class SessionTracker:
         # The agent will use these instead of the request's local messages when persisting.
         self._compacted_messages: Dict[str, List[ChatMessage]] = {}
 
+        # Sessions whose start hooks have run: one taken back to no messages (/undo) is not new
+        self._started: set[str] = set()
+        # Sessions that held messages in this process: only such a one is empty on purpose
+        self._held: set[str] = set()
+
         # Lock for concurrent access (appends/drains/lock bookkeeping)
         self._lock = asyncio.Lock()
 
@@ -348,6 +353,8 @@ class SessionTracker:
             messages: The messages to persist
         """
         self._sessions[session_id] = messages
+        if messages:
+            self._held.add(session_id)
 
     def set_compacted_messages(self, session_id: str, messages: List[ChatMessage] | None) -> None:
         """
@@ -404,7 +411,26 @@ class SessionTracker:
         """
         self._sessions.pop(session_id, None)
         self._session_metadata.pop(session_id, None)
+        self._session_template_vars.pop(session_id, None)
         self._compacted_messages.pop(session_id, None)
+        self._started.discard(session_id)
+        self._held.discard(session_id)
+
+    def start_session(self, session_id: str) -> bool:
+        """
+        Mark a session as started.
+
+        Returns:
+            True the first time: the session has neither started before nor holds
+            messages (a history loaded from the store is a started session too).
+        """
+        new = session_id not in self._started and not self._sessions.get(session_id)
+        self._started.add(session_id)
+        return new
+
+    def emptied(self, session_id: str) -> bool:
+        """Whether the session holds no messages although it held some in this process (/undo)."""
+        return session_id in self._held and not self._sessions.get(session_id)
 
     def set_session_metadata(self, session_id: str, metadata: Dict[str, Any]) -> None:
         """
@@ -509,6 +535,8 @@ class SessionTracker:
         
         # Clear session template vars to prevent memory leak
         self._session_template_vars.pop(session_id, None)
+        self._started.discard(session_id)
+        self._held.discard(session_id)
         
         # Clear session locks to prevent memory leak
         if session_id in self._session_lock_owners:
@@ -534,5 +562,7 @@ class SessionTracker:
         self._compacted_messages.clear()
         self._session_metadata.clear()
         self._session_template_vars.clear()
+        self._started.clear()
+        self._held.clear()
         self._session_locks.clear()
         self._session_lock_owners.clear()

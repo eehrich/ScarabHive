@@ -232,7 +232,17 @@ class SessionService:
         try:
             # Get messages from agent using component API
             messages_list = agent._session_tracker.get_session_messages(session_id)
-            if not messages_list:
+
+            # Check if session already exists and find its owner
+            # This is critical for sub-agent sessions which may have different user_ids
+            session_owner = await self.session_manager._find_session_owner_async(session_id)
+            session_exists = session_owner is not None
+
+            # No messages: a new session is not created empty, and a stored one this
+            # process never held is not wiped. One whose conversation was taken back
+            # (/undo) is written empty -- or its record keeps the dropped turn and the
+            # next resume brings it back.
+            if not messages_list and not (session_exists and agent._session_tracker.emptied(session_id)):
                 logger.debug(f"[SESSION] No messages in session {session_id}, skipping save")
                 return False
 
@@ -253,11 +263,6 @@ class SessionService:
             # Explicit title wins; otherwise derive it from the first user message
             explicit_title = title
             title = explicit_title or self._extract_session_title(messages_dicts)
-
-            # Check if session already exists and find its owner
-            # This is critical for sub-agent sessions which may have different user_ids
-            session_owner = await self.session_manager._find_session_owner_async(session_id)
-            session_exists = session_owner is not None
 
             # Use the actual owner's user_id for existing sessions
             actual_user_id = session_owner if session_exists else user_id
