@@ -5,7 +5,6 @@ const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
 const SLOTS = 6;  // role colours in panel.css
 const EXPANDED_KEY = 'debate_forum.expanded_groups';
-const SIDEBAR_WIDTH_KEY = 'debate_forum.sidebar_width';
 
 /** {channels, total} as listed, or null: not loaded, or it could not be. */
 let listed = null;
@@ -479,12 +478,6 @@ $('text').addEventListener('keydown', (event) => {
     $('composer').requestSubmit();
   }
 });
-// the sidebar resizes by CSS (resize: horizontal), which writes its width inline: keep that for the next visit
-const sidebar = document.querySelector('.df-sidebar');
-try { const width = localStorage.getItem(SIDEBAR_WIDTH_KEY); if (width) sidebar.style.width = width; } catch { /* storage unavailable */ }
-new MutationObserver(() => {
-  try { if (sidebar.style.width) localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebar.style.width); } catch { /* not kept */ }
-}).observe(sidebar, { attributes: true, attributeFilter: ['style'] });
 $('newChannel').addEventListener('click', openCreate);
 $('createCancel').addEventListener('click', () => $('create').close());
 $('create').addEventListener('close', () => $('createForm').reset());

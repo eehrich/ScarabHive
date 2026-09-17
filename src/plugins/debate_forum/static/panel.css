@@ -1,11 +1,8 @@
 /* Debate Forum: only what the kit has no component for -- a channel list beside a thread that fill the panel. Tokens only. */
 
-.df-layout { flex: 1; min-height: 0; display: flex; gap: var(--space-4); }
-.df-sidebar {
-  width: 16rem; min-width: 11rem; max-width: 50%; resize: horizontal; overflow: auto;
-  display: flex; flex-direction: column; gap: var(--space-2); padding-right: var(--space-2);
-  border-right: 1px solid var(--border-subtle);
-}
+/* the kit's side pane (pk-sidebar) sizes the channel list */
+.df-layout { gap: var(--space-4); }
+.df-sidebar { display: flex; flex-direction: column; gap: var(--space-2); padding-right: var(--space-2); }
 .df-filters { flex-direction: column; align-items: stretch; }
 .df-filters .pk-select { flex: none; }
 .df-channels { display: flex; flex-direction: column; gap: 1px; }
@@ -104,11 +101,9 @@
 
 @media (max-width: 640px) {
   .pk-panel { height: auto; min-height: 100vh; }
-  .df-layout { flex-direction: column; }
   .df-filters { flex-direction: row; flex-wrap: nowrap; }
   .df-filters .pk-select { flex: 1; min-width: 0; }
-  /* !important: over the width the viewer dragged on a wide panel, kept inline by panel.js */
-  .df-sidebar { width: auto !important; max-width: none; max-height: 40vh; resize: none; padding-right: 0; border-right: 0; border-bottom: 1px solid var(--border-subtle); padding-bottom: var(--space-2); }
+  .df-sidebar { padding-right: 0; padding-bottom: var(--space-2); }
   .df-messages { overflow: visible; }
   .df-head .pk-row { flex-wrap: wrap; }
   .df-name { flex-basis: 100%; }
