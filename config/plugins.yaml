@@ -18,7 +18,7 @@ plugins:
     enabled: false
 
     agent_config:
-      llm_profile: [or-deepseek-flash, chat, normal-stream]
+      llm_profile: [normal, think]
       llm_profile_advanced: []
       max_steps: 20
       system_template: "config/prompts/system_prompt.md"
@@ -52,49 +52,6 @@ plugins:
     example:
       type: example
       enabled: true
-
-    basic_agent:
-      type: basic_agent
-      enabled: true
-      agent_config:
-        # Kette: [0] = Default, Rest = Fallback-Reihenfolge. ALLE Einträge
-        # (Union mit llm_profile_advanced) bleiben als llm_profile-Parameter
-        # im Tool-Schema wählbar. Advanced leer: "think" ist bereits das
-        # stärkste Profil — use_advanced_model wäre hier ein Downgrade.
-        llm_profile: [think, normal, turbo, or-deepseek-flash, chat]
-        llm_profile_advanced: []
-        
-        timeouts:
-          # Queue handler timeouts (prevent cross-session blocking)
-          status_queue_put_timeout: 5.0  # seconds
-          
-          # LLM task timeout - safety net only!
-          # For batch mode: actual timeout is max_wait_hours in llm.yaml
-          # For sync mode: actual timeout is request_timeout in model config
-          llm_task_max_iterations: 864000  # 864000 * 0.1s = 24h safety net
-          
-          # Session lock timeout (prevent same-session deadlock)
-          session_lock_timeout: 5.0  # seconds
-          
-          # NOTE: Hooks and tools have NO hard timeouts - they can run as long as needed
-          # Examples: context_summarizer (10+ min), sub_agent_manager (hours)
-        
-        tools:
-          allowed: []
-        hooks:
-          enabled: true
-          overrides:
-            todo.inject_todo_tasks:
-              enabled: true
-            memory.inject_memory_context:
-              enabled: true
-            sequential_thinking.inject_active_sessions:
-              enabled: true
-
-      metadata:
-        visibility: "tool"  # callable as a tool by other agents
-
-
 
     basic_operations:
       type: basic_operations
@@ -923,6 +880,10 @@ plugins:
 
     user_management:
       type: user_management
+      enabled: true
+
+    agent_editor:
+      type: agent_editor
       enabled: true
 
     context_summarizer:
