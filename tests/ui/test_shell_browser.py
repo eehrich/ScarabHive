@@ -551,7 +551,9 @@ def stub_app() -> FastAPI:
         default = {"nodefault": "missing", "slow": "writer"}.get(mode, "assistant")
         return {"agents": ["assistant", "writer"], "default": default,
                 "details": [{"name": "assistant", "description": "General help", "category": "tools", "tags": ["chat"]},
-                            {"name": "writer", "description": "Writes books", "category": None, "tags": ["prose"]}]}
+                            {"name": "writer", "category": None, "tags": ["prose"],
+                             "description": "Writes books from one request: plans the story, drafts every chapter and "
+                                            "scene, then reviews and repairs the text until it reads well"}]}
 
     @app.get("/llm/profiles")
     async def profiles():
@@ -700,6 +702,7 @@ EXPECTED = [
     'the system panel asks for a tab it may not show only once',
     'a cancel on its way stays disabled when the request list is drawn anew',
     'the palette lists instances of one plugin once and narrows to them',
+    'in the palette a name stays whole beside a long description, and a long name leaves its hint room',
     'a session offers the panels that open on a session',
     'a session panel pinned from a link can follow the chat again',
     'a request id in the chat offers the panels that take a request',

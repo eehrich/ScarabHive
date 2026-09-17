@@ -75,7 +75,7 @@ export class Palette {
       const heading = entry.group !== group ? html`<div class="palette-group">${entry.group}</div>` : '';
       group = entry.group;
       return html`${heading}<div class="palette-item" role="option" data-index="${index}" aria-selected="${String(index === this.selected)}">
-        ${icon(entry.icon)}<span class="pk-truncate">${entry.label}</span><span class="palette-hint">${entry.hint || ''}</span></div>`;
+        ${icon(entry.icon)}<span class="palette-label pk-truncate">${entry.label}</span><span class="palette-hint pk-truncate">${entry.hint || ''}</span></div>`;
     }));
     this.list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
   }

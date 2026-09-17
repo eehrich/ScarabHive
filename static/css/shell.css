@@ -197,6 +197,9 @@ body.app {
 .palette-item[aria-selected="true"] { background: var(--accent-subtle); }
 .palette-item .pk-icon { color: var(--text-muted); }
 .palette-hint { margin-left: auto; font-size: var(--text-xs); color: var(--text-muted); }
+/* the label is what is searched for: a long hint (an agent's description) is cut, not the label. Only a label
+   past 70% of the row is cut itself, so its hint (a session's agent) keeps the rest */
+.palette-label { flex-shrink: 0; max-width: 70%; }
 .picker-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-1) var(--space-2) 0; }
 .picker-head .pk-dialog-title { font-size: var(--text-md); margin-right: auto; }
 .picker-groups { display: flex; gap: var(--space-1); }

@@ -1748,7 +1748,7 @@
 
   await check('the palette lists instances of one plugin once and narrows to them', async () => {
     const input = await openPalette('');
-    const labels = () => $$('#paletteList .palette-item .pk-truncate').map((l) => l.textContent);
+    const labels = () => $$('#paletteList .palette-label').map((l) => l.textContent);
     const unfiltered = labels();
     $$('#paletteList .palette-item').find((row) => row.textContent.includes('2 instances')).click();
     await until('the narrowed list', () => input.value === 'Sub-Agents' && labels().length === 2);
@@ -1757,6 +1757,26 @@
     $('#palette').close();
     return unfiltered.filter((l) => l.startsWith('Sub-Agents')).join('|') === 'Sub-Agents'
       && narrowed === 'Sub-Agents · sam_skills|Sub-Agents · sam_writer' && stillOpen;
+  });
+
+  await check('in the palette a name stays whole beside a long description, and a long name leaves its hint room', async () => {
+    const TITLE = 'Refactor the kit so that every panel shares one look, one set of controls and one way to talk to the shell';
+    await stub('/__stub/sessions', { session_id: 's-long-title', title: TITLE, agent_name: 'writer', has_children: false });
+    await win().sessionManager.loadSessions();
+    await openPalette('writer');
+    const part = (label, which) => $$('#paletteList .palette-item')
+      .find((row) => row.querySelector('.palette-label').textContent === label)?.querySelector(which);
+    const cut = (element) => element.scrollWidth > element.clientWidth;
+    try {
+      const [name, description] = [part('writer', '.palette-label'), part('writer', '.palette-hint')];
+      const [title, agent] = [part(TITLE, '.palette-label'), part(TITLE, '.palette-hint')];
+      const list = $('#paletteList');
+      // the description and the title are longer than the row: both would take the room of what stands beside them
+      return cut(description) && !cut(name) && cut(title) && agent.clientWidth > 0 && !cut(agent)
+        && list.scrollWidth <= list.clientWidth;
+    } finally {
+      $('#palette').close();
+    }
   });
 
   await check('a session offers the panels that open on a session', async () => {
