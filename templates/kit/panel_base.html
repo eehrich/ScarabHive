@@ -22,12 +22,10 @@
   {% block head %}{% endblock %}
 </head>
 <body class="pk-panel">
-  {% block header %}
   <header class="pk-page-header">
     <h1 class="pk-page-title">{{ self.title() }}</h1>
     <div class="pk-toolbar">{% block toolbar %}{% endblock %}</div>
   </header>
-  {% endblock %}
   <main class="pk-page-body">{% block content %}{% endblock %}</main>
   {% block scripts %}{% endblock %}
 </body>

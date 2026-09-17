@@ -273,7 +273,7 @@
     const chart = () => win.Chart.getChart($('#chart'));
     // a line's colour and the axes' -- the axes are no part of the data
     const colours = () => `${chart().data.datasets[0].borderColor}|${chart().options.scales.x.ticks.color}`;
-    const tell = (message) => win.postMessage({ v: 1, ...message }, location.origin);  // this page is the panel's host
+    const tell = (message) => win.postMessage(message, location.origin);  // this page is the panel's host
     tell({ type: 'pk:init', theme: 'light', visible: true, session: null });
     await until('the light chart', () => doc().documentElement.dataset.theme === 'light' && colours().startsWith('rgb'));
     const [lightLine, lightAxis] = colours().split('|');

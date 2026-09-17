@@ -644,7 +644,7 @@ EXPECTED = [
     'the launcher search matches description and keywords',
     'a panel opens docked and the host answers pk:ready with pk:init',
     "a panel's dialog is shown over the whole app",
-    "a panel's title, badge and toast reach the shell",
+    "a panel's title and toast reach the shell",
     'a second docked panel takes the front and the first is told it is hidden',
     'a dock tab is chosen with the keyboard',
     'a framed kit panel leaves its title to the tab and keeps its content',

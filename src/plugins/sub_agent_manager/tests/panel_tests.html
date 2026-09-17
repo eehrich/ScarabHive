@@ -49,7 +49,7 @@
     $('#show').value = value;
     $('#show').dispatchEvent(new Event('change'));
   };
-  const tell = (message) => frame.contentWindow.postMessage({ v: 1, ...message }, location.origin);
+  const tell = (message) => frame.contentWindow.postMessage(message, location.origin);
   const refreshNow = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
   const asked = async () => (await fetch('/__stub/asked')).json();
   const stored = async (session, key) => (await (await fetch(`/__stub/status/${session}/${ids[key]}`)).json()).status;

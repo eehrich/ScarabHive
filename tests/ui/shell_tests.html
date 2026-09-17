@@ -324,7 +324,7 @@
     await until('pk:init at the probe', () => received('pk:init').length);
     const [init] = received('pk:init');
     return !$('#dock').hidden && !$('#launcher').matches(':popover-open') && $$('.dock-tab').length === 1
-      && init.v === 1 && init.visible === true && init.theme === 'system' && init.session === null;
+      && init.visible === true && init.theme === 'system' && init.session === null;
   });
 
   await check("a panel's dialog is shown over the whole app", async () => {
@@ -335,16 +335,18 @@
     return (await answer) === true && inPanel === null;
   });
 
-  await check("a panel's title, badge and toast reach the shell", async () => {
+  await check("a panel's title and toast reach the shell", async () => {
     $('.dock-tab [data-act="close"]').focus();
     probe().pk.setTitle('Probe · 3 new');
-    probe().pk.setBadge(3);
     probe().pk.toast('Saved', { kind: 'ok' });
     await until('the tab title', () => $('.dock-tab .dock-tab-title').textContent === 'Probe · 3 new');
-    await until('the badge', () => $('.dock-tab .pk-badge')?.textContent === '3');
     await until('the toast', () => $$('.pk-toast--ok').some((t) => t.textContent.includes('Saved')));
-    // the bar was drawn anew twice: the keyboard focus stayed on the same button
-    return doc().activeElement.dataset.act === 'close';
+    // the bar was drawn anew: the keyboard focus stayed on the same button
+    if (doc().activeElement.dataset.act !== 'close') return false;
+    $('.dock-tab [data-act="float"]').focus();
+    probe().pk.setTitle('Probe · float');
+    await until('the next title', () => $('.dock-tab .dock-tab-title').textContent === 'Probe · float');
+    return doc().activeElement.dataset.act === 'float';
   });
 
   await check('a second docked panel takes the front and the first is told it is hidden', async () => {
@@ -2338,7 +2340,7 @@
       && !$('.dock-tab[data-dragging]');
     const first = $('.dock-tab');
     drag('dragstart', first);
-    // the bar is drawn anew while the tab is on its way (a resize here; a panel's title or badge alike)
+    // the bar is drawn anew while the tab is on its way (a resize here; a panel's title alike)
     win().dispatchEvent(new Event('resize'));
     await sleep(100);
     const last = $$('.dock-tab').at(-1);

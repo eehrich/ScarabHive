@@ -64,13 +64,11 @@ function draw() {
   const query = $('search').value.trim().toLowerCase();
   const shown = users.filter((user) => !query
     || [user.username, user.email, user.full_name || ''].some((text) => text.toLowerCase().includes(query)));
-  const focused = document.activeElement?.closest('#users [data-key]')?.dataset.key;  // drawn anew, it keeps the focus
   // newest first, as the database lists them, until the admin picks another order
   render($('users'), shown.length ? html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="users">
     <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th aria-sort="descending">Created</th><th>Last login</th><th></th></tr></thead>
     <tbody>${shown.map(row)}</tbody>
   </table></div>` : empty('users', users.length ? `No user matches “${$('search').value.trim()}”` : 'No users'));
-  if (focused) $('users').querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
 }
 
 function row(user) {

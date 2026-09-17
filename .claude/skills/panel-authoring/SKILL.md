@@ -118,7 +118,7 @@ erreichbar.
 `panel_base.html` setzt das Theme aus dem Cookie (kein Aufblitzen), lädt
 `kit.css` und `panel-kit.js`, und im Frame blendet es den eigenen Titel aus —
 den trägt dort der Tab oder die Fensterleiste; die Toolbar bleibt. Weitere
-Blöcke: `head`, `header` (ganz ersetzen), `lang` (Writer: `de`).
+Blöcke: `head`, `lang` (Writer: `de`).
 
 Icons im Template: `{{ icon('refresh-cw') }}`, `{{ icon('bug', size='sm', label='Bug') }}`.
 
@@ -131,16 +131,16 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 | Export | Wofür |
 |---|---|
 | `api(path, {method, json, body, headers, quiet, raw})` | jeder Server-Aufruf. Cookie-Auth, JSON rein und raus, Fehler als `ApiError(status, detail)` **plus Toast** (außer `quiet: true`), abgebrochen, wenn das Panel geht. Wer selbst reagiert (404 → leerer Zustand), nimmt `quiet` und fängt. |
-| ``html`…` ``, `render(el, content)` | Markup bauen: jeder eingesetzte Wert wird escapet, verschachteltes ``html`` `` und Arrays bleiben Markup. `trusted(str)` nur für schon sicheres HTML (z. B. vom Server sanitisiert). `false`, `null` und `undefined` ergeben nichts — damit `${cond && html`…`}` geht; in einem Attribut darum `aria-pressed="${String(on)}"`, sonst steht dort `""`. |
+| ``html`…` ``, `render(el, content)` | Markup bauen: jeder eingesetzte Wert wird escapet, verschachteltes ``html`` `` und Arrays bleiben Markup. `trusted(str)` nur für schon sicheres HTML (z. B. vom Server sanitisiert). `false`, `null` und `undefined` ergeben nichts — damit `${cond && html`…`}` geht; in einem Attribut darum `aria-pressed="${String(on)}"`, sonst steht dort `""`. `render` gibt den Fokus zurück: lag er im Element, bekommt ihn danach das neue Element mit demselben `data-key`. |
 | `escapeHtml(v)`, `jsonView(value)`, `icon(name, {size, label})` | Hilfen für dasselbe. `jsonView` zeigt JSON zum Lesen: alle Ebenen offen, Strings ohne Anführungszeichen und mit ihren Zeilenumbrüchen, Arrays als Liste. Das Roh-JSON bietet das Panel selbst an (Kopieren, Umschalter). |
 | `alert(msg)`, `confirm(msg, {title, confirmLabel, danger})`, `prompt(msg, {title, value, placeholder, confirmLabel})`, `dialog({title, message, actions, input})` | Dialoge — Promise mit dem Ergebnis (`confirm` → `true/false`, `prompt` → Text oder `null`). In der Shell über der ganzen Anwendung, sonst im Panel. |
 | `toast(msg, {kind})` | `info`, `ok`, `warn`, `error`. |
-| `session.current`, `session.id`, `session.onChange(fn)` | die Session, die im Chat offen ist (`{id, title}` oder `null`). |
+| `session.id`, `session.onChange(fn)` | die Session, die im Chat offen ist: ihre ID oder `null`; `onChange` bekommt `{id, title}` oder `null`. |
 | `autoRefresh(fn, ms)` → `{start, stop, running}`; `<pk-refresh interval="s">` | Nachladen, pausiert, solange das Panel nicht sichtbar ist. `<pk-refresh>` feuert `refresh` am `document`; `event.detail.auto` sagt, ob der Takt (true) oder ein Klick (false) fragt — teures Nachladen darf den Takt auslassen. Mit `auto` läuft der Takt von Anfang an (sonst erst nach Klick). `interval` und `auto` sind nur die **Voreinstellung der Seite**: Am Knopf wählt der Nutzer den Takt (5 s, 10 s, 30 s, 1 min, die Voreinstellung, oder aus), und diese Wahl gilt ab dann für diesen Panel-Pfad — gespeichert im localStorage unter `pk.refresh:<pathname>`. |
-| `onVisibilityChange(fn)`, `isVisible()` | Tab im Hintergrund, Fenster zu, Browser-Tab verdeckt. |
+| `isVisible()` | ob das Panel zu sehen ist — nicht bei Tab im Hintergrund, geschlossenem Fenster, verdecktem Browser-Tab. `autoRefresh` fragt es selbst. |
 | `initTabs(root)` | `[data-pk-tabs]` bedienbar machen (Klick, Pfeiltasten, Event `tabchange`). Läuft beim Laden von selbst; nach dem Nachrendern erneut aufrufen ist unschädlich. |
 | `placeMenu(menu, box)` | eigenes Menü positionieren. Ein `.pk-menu[popover]` mit `id`, das per `popovertarget` geöffnet wird, platziert das Kit selbst. |
-| `setTitle(text)`, `setBadge(count)`, `navigate(path)`, `openPanel(id, path)` | Titel im Tab, Zähler am Tab, Pfad im Panel merken (wird beim Wiederherstellen geöffnet und gilt als eigener Pfad: anders als ein Kontext-Link setzt der Starter ihn nicht zurück), anderes Panel öffnen. |
+| `setTitle(text)`, `navigate(path)` | Titel im Tab, Pfad im Panel merken (wird beim Wiederherstellen geöffnet und gilt als eigener Pfad: anders als ein Kontext-Link setzt der Starter ihn nicht zurück). |
 | `setTheme(theme)`, `currentTheme()`, `onThemeChange(fn)`, `THEMES` | Theme-Wahl und -Wechsel (Einstellungen, Kit-Seite); `onThemeChange` meldet auch einen Wechsel aus der Shell. |
 
 Beispiel:
@@ -165,8 +165,11 @@ es gerendert hat (auch die umschließende, wenn nur der `tbody` neu kommt).
   zuerst, jede andere A–Z; der zweite Klick dreht um. Auf der Spalte, nach der
   die Tabelle gerade sortiert ist (auch per `aria-sort` im Markup), dreht schon
   der erste Klick um. Das Kit legt den Kopfinhalt in einen
-  `<button class="pk-sort">` (Tastatur). Köpfe ohne Text, mit eigenem
-  Bedienelement (Link, Button, Eingabefeld, Auswahl, alles mit `tabindex`)
+  `<button class="pk-sort" data-key="sort:<name>:<Kopftext>">` (Tastatur); über
+  den `data-key` bekommt er nach dem Neuzeichnen den Fokus zurück — ein eigener
+  Selektor auf `[data-key]` trifft ihn also mit. Köpfe ohne Text, mit eigenem
+  Bedienelement (Link, Button, Eingabefeld, Auswahl, Label, `summary`, alles
+  mit `tabindex`)
   oder mit `data-pk-nosort` bleiben stumm; `data-pk-nosort` auch dort, wo die
   Werte keine Ordnung haben (eine Reihe Badges).
 - Die Wahl hält über jedes Neuzeichnen (Auto-Refresh) und hängt am
@@ -225,8 +228,8 @@ es gerendert hat (auch die umschließende, wenn nur der `tbody` neu kommt).
 
 ## 6. Das Protokoll (für Neugierige und die Shell)
 
-Alle Nachrichten tragen `type` und `v` (`PROTOCOL_VERSION`). Das Kit spricht
-es; ein Panel ruft nur die Funktionen oben.
+Alle Nachrichten tragen `type`. Das Kit spricht es; ein Panel ruft nur die
+Funktionen oben.
 
 | Richtung | `type` | Inhalt |
 |---|---|---|
@@ -235,7 +238,7 @@ es; ein Panel ruft nur die Funktionen oben.
 | Shell → Panel | `pk:theme` / `pk:session` / `pk:visibility` | `theme` / `session` / `visible` |
 | Panel → Shell | `pk:dialog` → `pk:dialog-result` | `id`, `dialog: {title, message, actions, input}` → `id`, `value` |
 | Panel → Shell | `pk:toast` | `message`, `kind` |
-| Panel → Shell | `pk:title` / `pk:badge` / `pk:navigate` / `pk:open` / `pk:set-theme` | `text` / `count` / `path` / `panel, path` / `theme` |
+| Panel → Shell | `pk:title` / `pk:navigate` / `pk:set-theme` | `text` / `path` / `theme` |
 
 Was ein Panel vor `pk:init` sagt (Titel, Pfad), hält das Kit zurück und
 schickt es nach dem Handschlag. Ohne Shell (eigener Browser-Tab, fremder

@@ -2,18 +2,16 @@
 //
 //   import { api, html, render, toast, confirm, session } from '/static/kit/panel-kit.js';
 //
-// Inside the shell a panel talks to it over postMessage (pk:* messages, see
-// PROTOCOL_VERSION); opened directly in a browser tab, the same calls work on
-// their own. Components and tokens live in kit.css; the catalogue is /ui/kit.
-
-export const PROTOCOL_VERSION = 1;
+// Inside the shell a panel talks to it over postMessage (pk:* messages);
+// opened directly in a browser tab, the same calls work on their own.
+// Components and tokens live in kit.css; the catalogue is /ui/kit.
 
 // A frame counts as "in the shell" once the shell answered with pk:init --
 // any other framer would leave dialogs unanswered and toasts unseen.
 const framed = window.parent !== window;
 const host = framed ? window.parent : null;
 let inShell = false;
-const listeners = { session: new Set(), visibility: new Set(), theme: new Set() };
+const listeners = { session: new Set(), theme: new Set() };
 const pending = new Map();
 let nextId = 1;
 
@@ -33,31 +31,25 @@ export function escapeHtml(value) {
 function fragment(value) {
   if (value instanceof SafeHtml) return value.value;
   if (Array.isArray(value)) return value.map(fragment).join('');
-  if (value === null || value === undefined || value === false) return '';
+  if (value == null || value === false) return '';
   return escapeHtml(value);
 }
 
 /** Tagged template: every interpolated value is escaped unless it is itself html`...`. */
 export function html(strings, ...values) {
-  let out = strings[0];
-  values.forEach((value, i) => { out += fragment(value) + strings[i + 1]; });
-  return new SafeHtml(out);
+  return new SafeHtml(String.raw({ raw: strings }, ...values.map(fragment)));
 }
 
 /** Markup that is already safe (e.g. the server's sanitised HTML). */
 export function trusted(markup) { return new SafeHtml(String(markup)); }
 
 export function render(element, content) {
-  // a redraw replaces the column head the keyboard sorted with: the focus goes to its successor
-  const focused = document.activeElement?.closest('table[data-pk-sort] .pk-sort');
-  const table = focused?.closest('table[data-pk-sort]');
-  const refocus = table && element.contains(table) ? { name: table.dataset.pkSort, key: headKey(focused.parentElement) } : null;
+  // a redraw gives the focus back to the element with the same data-key (a sort head has one)
+  const focused = document.activeElement;
+  const key = element.contains(focused) ? focused.closest('[data-key]')?.dataset.key : undefined;
   element.innerHTML = fragment(content);
   sortTables(element);
-  if (refocus) {
-    [...element.querySelectorAll(`table[data-pk-sort="${CSS.escape(refocus.name)}"] .pk-sort`)]
-      .find((button) => headKey(button.parentElement) === refocus.key)?.focus();
-  }
+  if (key !== undefined) [...element.querySelectorAll('[data-key]')].find((one) => one.dataset.key === key)?.focus();
 }
 
 /**
@@ -153,7 +145,7 @@ window.addEventListener('pagehide', () => inflight.forEach((c) => c.abort()));
 // -------------------------------------------------------------- protocol
 
 function post(type, payload = {}) {
-  host.postMessage({ type, v: PROTOCOL_VERSION, ...payload }, window.location.origin);
+  host.postMessage({ type, ...payload }, window.location.origin);
 }
 
 function request(type, payload) {
@@ -185,13 +177,9 @@ window.addEventListener('message', (event) => {
     case 'pk:visibility':
       setVisible(message.visible);
       break;
-    case 'pk:dialog-result': {
-      const resolve = pending.get(message.id);
+    case 'pk:dialog-result':
+      pending.get(message.id)?.(message.value);
       pending.delete(message.id);
-      if (resolve) resolve(message.value);
-      break;
-    }
-    default:
       break;
   }
 });
@@ -202,12 +190,7 @@ function applyTheme(theme) {
   listeners.theme.forEach((fn) => fn(theme));
 }
 
-function setVisible(value) {
-  const next = value !== false;
-  if (next === visible) return;
-  visible = next;
-  listeners.visibility.forEach((fn) => fn(visible));
-}
+function setVisible(value) { visible = value !== false; }
 
 // What a panel says about itself before the handshake -- typically right at
 // load -- is kept (the latest of each) and sent once the shell has answered.
@@ -229,19 +212,14 @@ let currentSession = null;
 let visible = true;
 
 function setSession(value) {
-  const next = value || null;
-  if ((next && next.id) === (currentSession && currentSession.id)) {
-    currentSession = next;
-    return;
-  }
-  currentSession = next;
-  listeners.session.forEach((fn) => fn(currentSession));
+  const changed = value?.id !== currentSession?.id;
+  currentSession = value || null;
+  if (changed) listeners.session.forEach((fn) => fn(currentSession));
 }
 
 export const session = {
-  /** {id, title} of the shell's active session, or null. */
-  get current() { return currentSession; },
-  get id() { return currentSession ? currentSession.id : null; },
+  /** The id of the shell's active session, or null; onChange gets {id, title} or null. */
+  get id() { return currentSession?.id ?? null; },
   onChange(fn) { listeners.session.add(fn); return () => listeners.session.delete(fn); },
 };
 
@@ -249,11 +227,6 @@ export const session = {
 export function onThemeChange(fn) {
   listeners.theme.add(fn);
   return () => listeners.theme.delete(fn);
-}
-
-export function onVisibilityChange(fn) {
-  listeners.visibility.add(fn);
-  return () => listeners.visibility.delete(fn);
 }
 
 export function isVisible() { return visible && !document.hidden; }
@@ -267,7 +240,7 @@ export function isVisible() { return visible && !document.hidden; }
  */
 export function dialog({ title, message = '', actions, input = null }) {
   const spec = { title, message, actions, input };
-  return inShell ? request('pk:dialog', { dialog: spec }) : localDialog(spec);
+  return inShell ? request('pk:dialog', { dialog: spec }) : showDialog(document, spec);
 }
 
 export function alert(message, { title = 'Notice' } = {}) {
@@ -307,12 +280,11 @@ export function showToast(doc, message, kind = 'info') {
     region.setAttribute('aria-live', 'polite');
     doc.body.appendChild(region);
   }
-  const icons = { ok: () => icon('circle-check'), warn: () => icon('triangle-alert'),
-                  error: () => icon('circle-alert'), info: () => icon('info') };
+  const icons = { ok: 'circle-check', warn: 'triangle-alert', error: 'circle-alert', info: 'info' };
   const known = Object.hasOwn(icons, kind) ? kind : 'info';
   const item = doc.createElement('div');
   item.className = `pk-toast pk-toast--${known}`;
-  render(item, html`${icons[known]()}<div class="pk-grow">${message}</div>`);
+  render(item, html`${icon(icons[known])}<div class="pk-grow">${message}</div>`);
   region.appendChild(item);
   setTimeout(() => item.remove(), kind === 'error' ? 8000 : 4000);
 }
@@ -360,8 +332,6 @@ export function showDialog(doc, { title, message, actions, input }) {
       || element.querySelector('[data-index]:not(.pk-btn--danger)') || element).focus();
   });
 }
-
-function localDialog(spec) { return showDialog(document, spec); }
 
 // ------------------------------------------------------------------ menus
 
@@ -436,9 +406,6 @@ export function currentTheme() {
 
 export function navigate(path) { tell('pk:navigate', { path }); }
 export function setTitle(text) { tell('pk:title', { text }); document.title = text; }
-export function setBadge(count) { tell('pk:badge', { count }); }
-/** Open another panel from the catalogue, e.g. openPanel('message_debugger', '?request_id=...'). */
-export function openPanel(panel, path = '') { tell('pk:open', { panel, path }); }
 
 // ---------------------------------------------------------- auto refresh
 
@@ -452,12 +419,11 @@ export function autoRefresh(fn, ms) {
   const period = Math.min(Math.max(Number(ms) || 0, 1000), 86_400_000);
   let timer = null;
   const tick = () => { if (isVisible()) fn(); };
-  const control = {
+  return {
     get running() { return timer !== null; },
     start() { if (timer === null) timer = setInterval(tick, period); },
     stop() { if (timer !== null) { clearInterval(timer); timer = null; } },
   };
-  return control;
 }
 
 const REFRESH_STEPS = [5, 10, 30, 60];
@@ -531,11 +497,8 @@ class RefreshControl extends HTMLElement {
   disconnectedCallback() { if (this.auto) this.auto.stop(); }
 }
 
-customElements.define('pk-refresh', RefreshControl);
-
 // ------------------------------------------------------------------ tabs
 
-/** Wires every [data-pk-tabs] under root: click and arrow keys switch panels. */
 function showTab(list, tab) {
   list.querySelectorAll('[role="tab"]').forEach((t) => {
     const on = t === tab;
@@ -582,14 +545,14 @@ export function initTabs(root = document) {
 // ---------------------------------------------------------------- sortable tables
 
 /*
- * <table class="pk-table" data-pk-sort="calls">: a click on a column head sorts the rows -- a number
- * column biggest first, any other A to Z, a click on the column sorted by reverses -- and the choice holds through
- * every render() of the table. The name tells a page's tables apart; the choice follows the head's
- * text, so a column shown only sometimes does not shift it. A cell sorts by its data-sort-value,
- * else by its text; a column of numbers as numbers, of ISO timestamps as points in time (without a
- * zone: UTC), any other all naturally ("B9" before "B10"), an empty cell or a lone dash last in either
- * direction. A head with data-pk-nosort, without text or with a control of its own stays plain.
- * aria-sort in the markup is the order until the viewer picks one. A <thead> with one row, one <tbody>, no colspan.
+ * <table class="pk-table" data-pk-sort="calls">: a click on a column head sorts the rows -- a number column
+ * biggest first, any other A to Z, a click on the column sorted by reverses -- and the choice holds through every
+ * render() of the table. The name tells a page's tables apart; the choice follows the head's text, so a column
+ * shown only sometimes does not shift it. A cell sorts by its data-sort-value, else by its text; a column of
+ * numbers as numbers, of ISO timestamps as points in time (without a zone: UTC), any other all naturally ("B9"
+ * before "B10"), an empty cell or a lone dash last in either direction. A head with data-pk-nosort, without text
+ * or with a control of its own stays plain. aria-sort in the markup is the order until the viewer picks one.
+ * A <thead> with one row, one <tbody>, no colspan.
  */
 const sortChoices = new Map();  // table name -> { key, dir }
 const renderedAt = new WeakMap();  // row -> its place as rendered, which breaks ties
@@ -598,14 +561,12 @@ const EMPTY_CELLS = new Set(['', '-', '–', '—']);
 
 const headKey = (th) => th.textContent.trim();
 
-function cellValue(row, column) {
-  const cell = row.cells[column];
-  return cell ? (cell.dataset.sortValue ?? cell.textContent).trim() : '';
-}
+const cellValue = (cell) => (cell ? cell.dataset.sortValue ?? cell.textContent : '').trim();
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}|$)/;
 const WITH_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
-const CONTROLS = 'a[href], button, input, select, textarea, [tabindex]';
+// what answers a click itself: a head holding one is not made a sort button
+const CONTROLS = 'a[href], button, input, select, textarea, label, summary';
 
 // without a zone a time is UTC, as the databases write it: read as local time, a clock change would turn two round
 const instant = (value) => Date.parse(value.length > 10 && !WITH_ZONE.test(value) ? `${value.replace(' ', 'T')}Z` : value);
@@ -617,9 +578,7 @@ const instant = (value) => Date.parse(value.length > 10 && !WITH_ZONE.test(value
 function comparer(values) {
   if (values.every((value) => Number.isFinite(Number(value)))) return (a, b) => Number(a) - Number(b);
   // as text, "10:00:00+00:00" would follow "10:00:00.5+00:00", and a later time with another offset an earlier one
-  if (values.every((value) => ISO_DATE.test(value) && Number.isFinite(instant(value)))) {
-    return (a, b) => instant(a) - instant(b);
-  }
+  if (values.every((value) => ISO_DATE.test(value) && Number.isFinite(instant(value)))) return (a, b) => instant(a) - instant(b);
   return collator.compare;
 }
 
@@ -637,45 +596,35 @@ function sortTable(table) {
   if (!heads.length || !body) return;
   for (const th of heads) {
     // wrapped already, or holding a control of its own: a control inside a button is not allowed
-    if (th.hasAttribute('data-pk-nosort') || !headKey(th) || th.querySelector(CONTROLS)) continue;
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'pk-sort';
+    if (th.hasAttribute('data-pk-nosort') || !headKey(th) || th.querySelector(`${CONTROLS}, [tabindex]`)) continue;
+    const button = Object.assign(document.createElement('button'), { type: 'button', className: 'pk-sort' });
+    button.dataset.key = `sort:${table.dataset.pkSort}:${headKey(th)}`;  // render() gives the focus back by it
     button.append(...th.childNodes);
     th.append(button);
   }
   const choice = sortChoice(table, heads);
   if (!choice) return;
   const column = heads.findIndex((th) => headKey(th) === choice.key);
-  heads.forEach((th, i) => {
-    if (i === column) th.setAttribute('aria-sort', choice.dir > 0 ? 'ascending' : 'descending');
-    else th.removeAttribute('aria-sort');
-  });
+  heads.forEach((th) => th.removeAttribute('aria-sort'));
+  heads[column].setAttribute('aria-sort', choice.dir > 0 ? 'ascending' : 'descending');
   const rows = [...body.rows].map((row, i) => {
     if (!renderedAt.has(row)) renderedAt.set(row, i);
-    return { row, value: cellValue(row, column), at: renderedAt.get(row) };
+    const value = cellValue(row.cells[column]);
+    return { row, value, empty: EMPTY_CELLS.has(value), at: renderedAt.get(row) };
   });
-  const compare = comparer(rows.map(({ value }) => value).filter((value) => !EMPTY_CELLS.has(value)));
-  rows.sort((a, b) => {
-    const emptyA = EMPTY_CELLS.has(a.value);
-    const emptyB = EMPTY_CELLS.has(b.value);
-    if (emptyA !== emptyB) return emptyA ? 1 : -1;
-    return (emptyA ? 0 : choice.dir * compare(a.value, b.value)) || a.at - b.at;
-  });
+  const compare = comparer(rows.filter((one) => !one.empty).map((one) => one.value));
+  rows.sort((a, b) => a.empty - b.empty || (a.empty ? 0 : choice.dir * compare(a.value, b.value)) || a.at - b.at);
   body.append(...rows.map(({ row }) => row));
 }
 
 /** The sortable tables in root, and the one root sits in (a render into a tbody). */
 function sortTables(root) {
-  const tables = [...root.querySelectorAll('table[data-pk-sort]')];
-  const around = root.closest?.('table[data-pk-sort]');
-  if (around) tables.push(around);
-  tables.forEach(sortTable);
+  [...root.querySelectorAll('table[data-pk-sort]'), root.closest?.('table[data-pk-sort]')].filter(Boolean).forEach(sortTable);
 }
 
 document.addEventListener('click', (event) => {
   // the whole head cell, not only its text: the button is what the keyboard reaches
-  const th = event.target instanceof Element ? event.target.closest('th') : null;
+  const th = event.target.closest?.('th');
   const table = th?.querySelector(':scope > .pk-sort') && th.closest('table[data-pk-sort]');
   if (!table) return;
   const current = sortChoice(table, [...th.parentElement.cells]);
@@ -686,6 +635,9 @@ document.addEventListener('click', (event) => {
 });
 
 // ---------------------------------------------------------------- start
+
+// defined last: a custom element on the page is drawn at once, and render() needs everything above
+customElements.define('pk-refresh', RefreshControl);
 
 function start() {
   initTabs();

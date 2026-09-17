@@ -129,7 +129,6 @@ body.app {
 .dock-tab[aria-selected="true"] { color: var(--text-primary); background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--accent); }
 .dock-tab[data-dragging] { opacity: 0.5; }
 .dock-tab .dock-tab-title { overflow: hidden; text-overflow: ellipsis; }
-.dock-tab .pk-badge { height: 16px; padding: 0 5px; }
 .dock-tab .dock-tab-actions { display: inline-flex; }
 .app-dock-frames { position: relative; flex: 1; min-height: 0; }
 .panel-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--surface-2); }

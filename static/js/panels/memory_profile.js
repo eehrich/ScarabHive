@@ -127,10 +127,8 @@ function drawStats() {
 }
 
 function drawCards() {
-  // drawn anew, a button keeps the keyboard focus
-  const focused = document.activeElement?.closest('#cards [data-key]')?.dataset.key;
+  // drawn anew, a button keeps the keyboard focus: render() finds it again by its data-key
   render($('cards'), [tracingCard(), objectsCard(), baselineCard(), leaksCard(), trendCard()]);
-  if (focused) $('cards').querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
   syncButtons();
 }
 
@@ -203,7 +201,8 @@ function trendCard() {
 
 /** Every action button as it is now: off while its action is on its way, or while nothing is loaded. */
 function syncButtons() {
-  for (const button of document.querySelectorAll('button[data-key]')) {
+  // data-act: the kit's sort heads carry a data-key too
+  for (const button of document.querySelectorAll('button[data-act][data-key]')) {
     button.disabled = !shown || pending.has(button.dataset.key);
   }
 }
@@ -228,7 +227,7 @@ async function act(button) {
     syncButtons();
     // disabled, the button lost the focus; it goes back to the button of this action, drawn anew or not
     if (had && (!document.activeElement || document.activeElement === document.body)) {
-      document.querySelector(`button[data-key="${CSS.escape(key)}"]`)?.focus();
+      document.querySelector(`button[data-act][data-key="${CSS.escape(key)}"]`)?.focus();
     }
   }
 }
@@ -237,7 +236,7 @@ async function act(button) {
 
 document.addEventListener('refresh', refresh);
 document.addEventListener('click', (event) => {
-  const button = event.target.closest('button[data-key]');
+  const button = event.target.closest('button[data-act][data-key]');
   // not the second click of a double click: on cards drawn anew in between it would hit the button now in its place
   if (button && !button.disabled && event.detail < 2) act(button);
 });

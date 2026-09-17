@@ -1,6 +1,6 @@
 // The workspace: panels docked as tabs beside the chat, or detached into
 // floating windows -- and the host side of the pk:* protocol every panel speaks.
-import { html, render, icon, showToast, showDialog, PROTOCOL_VERSION } from '/static/kit/panel-kit.js';
+import { html, render, icon, showToast, showDialog } from '/static/kit/panel-kit.js';
 
 // allow-modals only keeps unmigrated panels' native dialogs working; it goes
 // once no panel calls them (docs/webui_konzept.md, section 4.4).
@@ -41,7 +41,7 @@ export class Workspace {
     this.layer = document.getElementById('floatingLayer');
     this.floatingList = document.getElementById('floatingList');
     /**
-     * key -> {key, panelId, path, linked, place: 'dock'|'float', frame, element, title, badge, rect}
+     * key -> {key, panelId, path, linked, place: 'dock'|'float', frame, element, title, rect}
      * linked: the path is where a link sent the panel, not where it navigated itself
      */
     this.items = new Map();
@@ -123,13 +123,12 @@ export class Workspace {
     return frame;
   }
 
-  /** (Re)load the panel where it is placed. A fresh document starts with the catalogue title and no badge. */
+  /** (Re)load the panel where it is placed. A fresh document starts with the catalogue title. */
   mount(item) {
     if (item.frame) item.frame.remove();
     if (item.element) item.element.remove();
     item.element = null;
     item.title = this.panel(item.panelId).title;
-    item.badge = 0;
     item.frame = this.createFrame(item);
     if (item.place === 'dock') {
       this.frameHost.appendChild(item.frame);
@@ -203,25 +202,19 @@ export class Workspace {
     this.resizer.hidden = !open;
     this.body.style.setProperty('--dock-width', `${this.dockWidth}px`);
     if (open && !docked.some((item) => item.key === this.active)) this.active = docked[0].key;
-    // re-rendering the bar must not take the keyboard focus away from it
-    const focused = this.tabBar.contains(document.activeElement) ? document.activeElement : null;
-    const refocus = focused && { key: focused.closest('[data-key]')?.dataset.key, act: focused.dataset.act || '' };
+    // re-rendering the bar keeps the keyboard focus: render() finds the element again by its
+    // data-key, and a tab and each of its buttons have one
     // While a tab is dragged the bar is left alone: a replaced drag source never gets its dragend.
-    // The drag's end draws it again, titles and badges that came meanwhile included.
+    // The drag's end draws it again, titles that came meanwhile included.
     if (!this.draggedTab) render(this.tabBar, docked.map((item) => html`
       <div class="dock-tab" role="tab" tabindex="0" draggable="true" aria-selected="${String(item.key === this.active)}" data-key="${item.key}" title="${item.title}">
         ${icon(this.panel(item.panelId).icon, { size: 'sm' })}
         <span class="dock-tab-title">${item.title}</span>
-        ${item.badge ? html`<span class="pk-badge pk-badge--accent">${item.badge}</span>` : ''}
         <span class="dock-tab-actions">
-          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="float" title="Detach into a window">${icon('picture-in-picture-2', { size: 'sm' })}</button>
-          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="close" title="Close">${icon('x', { size: 'sm' })}</button>
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="float" data-key="${item.key}:float" title="Detach into a window">${icon('picture-in-picture-2', { size: 'sm' })}</button>
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="close" data-key="${item.key}:close" title="Close">${icon('x', { size: 'sm' })}</button>
         </span>
       </div>`));
-    if (refocus) {
-      const tab = this.tabBar.querySelector(`[data-key="${CSS.escape(refocus.key || '')}"]`);
-      (refocus.act ? tab?.querySelector(`[data-act="${refocus.act}"]`) : tab)?.focus();
-    }
     docked.forEach((item) => { item.frame.hidden = item.key !== this.active; });
     this.items.forEach((item) => this.post(item, 'pk:visibility', { visible: this.shown(item) }));
   }
@@ -490,7 +483,7 @@ export class Workspace {
 
   post(item, type, payload = {}) {
     if (item.frame?.contentWindow) {
-      item.frame.contentWindow.postMessage({ type, v: PROTOCOL_VERSION, ...payload }, window.location.origin);
+      item.frame.contentWindow.postMessage({ type, ...payload }, window.location.origin);
     }
   }
 
@@ -521,22 +514,13 @@ export class Workspace {
         this.renderDock();
         this.renderFloatingList();
         break;
-      case 'pk:badge':
-        item.badge = Number(message.count) || 0;
-        this.renderDock();
-        break;
       case 'pk:navigate':
         item.path = String(message.path || '');
         item.linked = false;
         this.save();
         break;
-      case 'pk:open':
-        this.open(String(message.panel), { path: String(message.path || '') });
-        break;
       case 'pk:set-theme':
         this.onSetTheme(String(message.theme));
-        break;
-      default:
         break;
     }
   }

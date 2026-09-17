@@ -91,7 +91,7 @@
   await check('an action acts on the session whose task was clicked, also while the list switches', async () => {
     await go('/plugins/todo/');  // no link: the session is the host's, and this page is the host
     await autoOff();
-    const tell = (message) => frame.contentWindow.postMessage({ v: 1, ...message }, location.origin);
+    const tell = (message) => frame.contentWindow.postMessage(message, location.origin);
     const showing = (name) => card('task_001')?.textContent.includes(`${name} session task 1`);
     const asked = async (session) => (await (await fetch('/__stub/asked')).json())[session] || 0;
     tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-2', title: 'Second' } });

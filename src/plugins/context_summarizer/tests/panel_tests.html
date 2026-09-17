@@ -38,7 +38,7 @@
   const row = (id) => $(`#events tr[data-id="${id}"]`);
   const n = (value) => Number(value).toLocaleString();
   const percent = (ratio) => `${(ratio * 100).toFixed(1)}%`;
-  const tell = (message) => frame.contentWindow.postMessage({ v: 1, ...message }, location.origin);
+  const tell = (message) => frame.contentWindow.postMessage(message, location.origin);
   const refreshNow = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
   const asked = async () => (await fetch('/__stub/asked')).json();
   const event = async (id) => (await fetch(`/plugins/context_summarizer/events/${id}`)).json();

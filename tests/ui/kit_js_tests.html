@@ -185,22 +185,26 @@
   await check('the handshake delivers early calls and visibility', () => new Promise((resolve) => {
     const seen = [];
     let frame;
+    let held = false;
     window.addEventListener('message', (event) => {
       if (!frame || event.source !== frame.contentWindow) return;
       const m = event.data || {};
       if (m.type === 'pk:ready') {
         seen.push('ready');
-        frame.contentWindow.postMessage({ type: 'pk:init', v: 1, theme: 'dark', visible: false, session: null }, location.origin);
+        setTimeout(() => {  // a late answer: what the panel says meanwhile has to wait for it
+          held = seen.length === 1;
+          frame.contentWindow.postMessage({ type: 'pk:init', theme: 'dark', visible: false, session: null }, location.origin);
+        }, 50);
       } else if (m.type === 'pk:title' || m.type === 'pk:navigate') {
         seen.push(m.type === 'pk:title' ? m.text : m.path);
-      } else if (m.probe === 'shell') {
-        setTimeout(() => resolve(m.hiddenAfterInit === true && seen.includes('Early title')
-          && seen.includes('/early/path') && seen[0] === 'ready'), 50);
+        // the last held call: by now the panel has taken the answer's visibility too
+        if (m.path === '/early/path') resolve(held && seen.includes('Early title') && frame.contentWindow.probeVisible() === false);
       }
     });
     frame = document.createElement('iframe');
     frame.src = '/tests/ui/kit_shell_probe.html';
     document.body.appendChild(frame);
+    setTimeout(() => resolve(false), 5000);  // a call held for good
   }));
 
   await check('a menu opens at its button', async () => {

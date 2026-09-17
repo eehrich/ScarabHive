@@ -180,8 +180,6 @@
   vertical-align: -3px;
 }
 .pk-icon--sm { width: 14px; height: 14px; }
-.pk-icon--lg { width: 20px; height: 20px; }
-.pk-spin { animation: pk-spin 0.9s linear infinite; }
 @keyframes pk-spin { to { transform: rotate(360deg); } }
 
 /* ----------------------------------------------------------------- buttons */
@@ -235,10 +233,9 @@
 .pk-search > .pk-icon { position: absolute; left: var(--space-3); color: var(--text-muted); pointer-events: none; }
 .pk-search > .pk-input { padding-left: calc(var(--space-3) + 16px + var(--space-2)); }
 
-.pk-check, .pk-radio { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); cursor: pointer; }
+.pk-check, .pk-radio, .pk-switch { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); cursor: pointer; }
 .pk-check input, .pk-radio input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
 
-.pk-switch { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); cursor: pointer; }
 .pk-switch input {
   appearance: none; margin: 0; position: relative; flex: none;
   width: 30px; height: 18px; border-radius: 9px;
@@ -301,7 +298,7 @@
 .pk-drawer[open] { display: flex; flex-direction: column; overflow: hidden; }
 .pk-drawer > .pk-dialog-body { flex: 1; min-height: 0; }
 
-/* ------------------------------------------------------- menus and tooltips */
+/* -------------------------------------------------------------------- menus */
 
 .pk-menu {
   /* the height stays capped by placeMenu and scrolls: every menu is a popover, and those scroll by themselves */
@@ -318,16 +315,10 @@
 }
 .pk-menu-item:hover, .pk-menu-item:focus-visible { background: var(--surface-3); outline: none; }
 .pk-menu-item--danger { color: var(--danger); }
-.pk-menu-item > .pk-shortcut { margin-left: auto; }
 .pk-menu-separator { height: 1px; margin: var(--space-1) 0; background: var(--border-subtle); border: 0; }
 .pk-menu-label { padding: var(--space-2) var(--space-2) var(--space-1); font-size: var(--text-xs); font-weight: 500; color: var(--text-muted); }
 
-.pk-tooltip {
-  margin: 0; padding: var(--space-1) var(--space-2); font-size: var(--text-xs);
-  color: var(--surface-2); background: var(--text-primary); border: 0; border-radius: var(--radius-sm);
-}
-
-.pk-shortcut, kbd.pk-kbd {
+kbd.pk-kbd {
   display: inline-flex; align-items: center; height: 18px; padding: 0 5px;
   font: 500 11px/1 var(--font-mono); color: var(--text-muted);
   background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);

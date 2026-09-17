@@ -31,7 +31,7 @@
   const doc = () => frame.contentDocument;
   const $ = (selector) => doc().querySelector(selector);
   const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
-  const tell = (message) => frame.contentWindow.postMessage({ v: 1, ...message }, location.origin);
+  const tell = (message) => frame.contentWindow.postMessage(message, location.origin);
   const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
   const statSub = (key) => $(`#stats [data-stat="${key}"] .ce-sub`)?.textContent;
   const rows = () => [...doc().querySelectorAll('#events tbody tr')];

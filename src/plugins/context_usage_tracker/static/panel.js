@@ -333,7 +333,6 @@ function drawCalls() {
     return;
   }
   const own = scoped();
-  const focused = document.activeElement?.closest('#calls tr[data-key]')?.dataset.key;
   // newest first until the viewer sorts; a sort orders the calls shown, the select says which those are
   render($('calls'), html`<div class="pk-table-wrap"><table class="pk-table cu-table cu-calls" data-pk-sort="calls">
     <thead><tr><th>Time</th><th>Agent</th><th>Session · Request</th><th>Model</th><th class="pk-num">Prompt</th>
@@ -353,7 +352,6 @@ function drawCalls() {
       ${cell(call.cost, cost(call.cost, call.cost_is_estimate))}
     </tr>`)}</tbody>
   </table></div>`);
-  if (focused) focusCall(focused);  // a redraw replaces the row the keyboard was on
 }
 
 /** A call has no id of its own: its time and agent tell it apart. */
