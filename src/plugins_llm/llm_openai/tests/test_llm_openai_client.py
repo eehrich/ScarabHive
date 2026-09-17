@@ -693,3 +693,59 @@ class TestOpenAIClientStreamingUsageTracking:
         assert "usage" not in final_event
         assert final_event["assistant"]["content"] == "Test response"
 
+
+async def test_a_failed_stream_reports_an_error_the_server_can_read(openai_client):
+    """agent_system/servers/agent/server.py reads error.message and error.type."""
+    from unittest.mock import AsyncMock
+
+    client, mock_instance = openai_client
+    mock_instance.chat.completions.create = AsyncMock(side_effect=ValueError("boom"))
+    seen = []
+
+    async def post(info):
+        seen.append(info)
+
+    client.set_llm_hooks(on_post_response=post)
+    events = [e async for e in client.chat_tools_streaming([ChatMessage(role="user", content="hi")], [])]
+
+    error = events[-1]["assistant"]["error"]
+    assert error["message"] == "boom" and error["type"] == "openai_api_error"
+    assert [info.get("error") for info in seen] == ["boom"], "the debugger kept a request without its response"
+
+
+async def test_a_stream_that_keeps_failing_reaches_the_post_response_hook(openai_client):
+    client, mock_instance = openai_client
+    mock_instance.chat.completions.create = AsyncMock(side_effect=httpx.ConnectError("down"))
+    client._cancellable_sleep = AsyncMock()
+    seen = []
+
+    async def post(info):
+        seen.append(info)
+
+    client.set_llm_hooks(on_post_response=post)
+    events = [e async for e in client.chat_tools_streaming([ChatMessage(role="user", content="hi")], [])]
+
+    assert "Stream failed after 4 attempts" in events[-1]["assistant"]["error"]["message"]
+    outcome = [info.get("error") for info in seen if info.get("finish_reason") != "retry"]
+    assert outcome == ["Stream failed after 4 attempts: down"], "the debugger kept a request without its response"
+
+
+async def test_a_cancel_mid_stream_is_a_cancel_not_an_upstream_error(openai_client):
+    """server.py reports a CancelledError as a cancel; an error final sends the request through the fallbacks."""
+    import asyncio
+
+    client, mock_instance = openai_client
+    token = SimpleNamespace(is_cancelled=False)
+
+    async def chunks():
+        token.is_cancelled = True
+        yield SimpleNamespace(usage=None, choices=[])
+
+    stream = MagicMock()
+    stream.__aiter__ = lambda self: chunks()
+    mock_instance.chat.completions.create = AsyncMock(return_value=stream)
+
+    with pytest.raises(asyncio.CancelledError):
+        async for _ in client.chat_tools_streaming([ChatMessage(role="user", content="hi")], [],
+                                                   cancellation_token=token):
+            pass

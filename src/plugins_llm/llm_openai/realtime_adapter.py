@@ -1,251 +1,181 @@
-"""Message format adapter for OpenAI Realtime API.
+"""ChatMessage <-> OpenAI Realtime API (GA) conversion.
 
-This module provides conversion between the standard ChatMessage format
-used throughout AgentSystem and the Realtime API's conversation item format.
+A request is ONE ``response.create`` with ``conversation: "none"``: the whole
+history travels as ``input`` items, so no item has to be created and
+confirmed one by one, and nothing of an earlier call lingers on the server.
+The result is read from ``response.done`` -- its ``output`` holds every item
+complete (text, tool name, arguments); the streamed deltas are only for the
+live view.
 """
 from __future__ import annotations
 
+import copy
+import json
 import logging
-from typing import Any
+from typing import Any, Callable, Optional
+
 from agent_system.llm.models import ChatMessage
+from plugins_llm.llm_common import openai_utils
 
 logger = logging.getLogger(__name__)
 
+#: The Realtime models cap a response here (gpt-realtime, gpt-realtime-mini).
+MAX_OUTPUT_TOKENS = 4096
 
-class RealtimeMessageAdapter:
-    """Converts between ChatMessage format and Realtime API conversation items."""
-    
-    @staticmethod
-    def messages_to_conversation_items(messages: list[ChatMessage]) -> list[dict[str, Any]]:
-        """Convert ChatMessage list to Realtime API conversation items.
-        
-        Args:
-            messages: List of ChatMessage objects
-            
-        Returns:
-            List of Realtime API conversation item dictionaries
-            
-        Example:
-            ChatMessage(role='user', content='Hello')
-            ->
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Hello"}]
-            }
-        """
-        items = []
-        
-        for msg in messages:
-            # Skip system messages - they go into session configuration instead
-            if msg.role == "system":
-                continue
-                
-            # Handle tool/function call messages
-            if msg.role == "tool":
-                # Tool result from previous function call
-                items.append({
-                    "type": "function_call_output",
-                    "call_id": msg.tool_call_id,
-                    "output": msg.content or ""
-                })
-                continue
-            
-            # Handle assistant messages with tool calls
-            if msg.role == "assistant" and msg.tool_calls:
-                # Assistant requested function calls
-                for tool_call in msg.tool_calls:
-                    func = tool_call.get("function", {})
-                    items.append({
-                        "type": "function_call",
-                        "call_id": tool_call.get("id"),
-                        "name": func.get("name"),
-                        "arguments": func.get("arguments", "{}")
-                    })
-                # Also add text content if present
-                if msg.content:
-                    items.append({
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": msg.content}]
-                    })
-                continue
-            
-            # Regular user or assistant message
-            content_type = "input_text" if msg.role == "user" else "text"
-            items.append({
-                "type": "message",
-                "role": msg.role,
-                "content": [{
-                    "type": content_type,
-                    "text": msg.content or ""
-                }]
-            })
-        
-        return items
-    
-    @staticmethod
-    def extract_system_instructions(messages: list[ChatMessage]) -> str | None:
-        """Extract system message content to use as session instructions.
-        
-        Args:
-            messages: List of ChatMessage objects
-            
-        Returns:
-            System message content, or None if no system message found
-        """
-        for msg in messages:
-            if msg.role == "system":
-                # Extract text content from content field (str or list)
-                if isinstance(msg.content, str):
-                    return msg.content
-                elif isinstance(msg.content, list):
-                    # Extract text from content array
-                    text_parts = []
-                    for item in msg.content:
-                        if isinstance(item, str):
-                            text_parts.append(item)
-                        elif isinstance(item, dict) and item.get("type") == "text":
-                            text_parts.append(item.get("text", ""))
-                    return " ".join(text_parts) if text_parts else None
+#: Stands in for an audio part: this path sends no audio input.
+AUDIO_NOTE = "[Audio attachment - audio input not supported by this model]"
+
+
+def _content_parts(content: Any) -> list[dict[str, Any]]:
+    """Chat Completions content parts ({type: text | image_url})."""
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    items = [c.model_dump(mode="json", exclude_none=True) if hasattr(c, "model_dump") else c
+             for c in content]
+    parts = openai_utils.normalize_content_list(items)
+    if any(isinstance(i, dict) and i.get("type") in ("audio", "input_audio") for i in items):
+        # normalize_content_list drops it; the model is told, instead of
+        # answering as if nothing had been attached.
+        logger.warning("Realtime: audio input is not sent, the model gets a note")
+        parts.append({"type": "text", "text": AUDIO_NOTE})
+    return parts
+
+
+def _text(content: Any) -> str:
+    return "\n".join(p.get("text", "") for p in _content_parts(content) if p.get("type") == "text")
+
+
+def _message_item(role: str, content: Any) -> dict[str, Any] | None:
+    parts = []
+    for part in _content_parts(content):
+        if part.get("type") == "text":
+            parts.append({"type": "output_text" if role == "assistant" else "input_text",
+                          "text": part.get("text", "")})
+        elif part.get("type") == "image_url" and role == "user":
+            url = part.get("image_url")
+            parts.append({"type": "input_image", "image_url": url.get("url") if isinstance(url, dict) else url})
+        else:
+            logger.warning("Realtime: %s content part %r is not sent", role, part.get("type"))
+    if not parts:
         return None
-    
-    @staticmethod
-    def tools_to_realtime_tools(tools: list[dict]) -> list[dict]:
-        """Convert tool schemas to Realtime API tool format.
-        
-        The Realtime API uses a FLATTENED tool format, different from Chat Completions!
-        Chat Completions: {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
-        Realtime API: {"type": "function", "name": "...", "description": "...", "parameters": {...}}
-        
-        Args:
-            tools: List of tool definition dictionaries in Chat Completions format
-            
-        Returns:
-            List of Realtime API tool dictionaries with flattened structure
-        """
-        import copy
-        realtime_tools = []
-        
-        for tool in tools:
-            if tool.get("type") == "function" and "function" in tool:
-                # Extract function details from nested structure
-                func_def = tool["function"]
-                
-                # Create flattened Realtime API tool
-                realtime_tool = {
-                    "type": "function",
-                    "name": func_def.get("name"),
-                    "description": func_def.get("description", ""),
-                }
-                
-                # Add parameters if present
-                if "parameters" in func_def:
-                    params = copy.deepcopy(func_def["parameters"])
-                    # Remove unsupported fields
-                    if "additionalProperties" in params:
-                        del params["additionalProperties"]
-                    realtime_tool["parameters"] = params
-                
-                realtime_tools.append(realtime_tool)
-            else:
-                logger.warning(f"Skipping invalid tool schema: {tool}")
-        
-        return realtime_tools
-    
-    @staticmethod
-    def parse_response_content(events: list[dict]) -> tuple[str | None, list[dict] | None]:
-        """Extract assistant content and tool calls from response events.
-        
-        Args:
-            events: List of response events from Realtime API
-            
-        Returns:
-            Tuple of (content_text, tool_calls)
-            - content_text: Accumulated text content or None
-            - tool_calls: List of tool call dicts or None
-            
-        Example Response Events:
-            [
-                {"type": "response.content_part.added", "part": {"type": "text"}},
-                {"type": "response.text.delta", "delta": "Hello"},
-                {"type": "response.text.delta", "delta": " there!"},
-                {"type": "response.text.done", "text": "Hello there!"},
-                {"type": "response.done"}
-            ]
-        """
-        text_parts = []
-        tool_calls = []
-        current_tool_call = None
-        
-        for event in events:
-            event_type = event.get("type")
-            
-            # Text content deltas
-            if event_type == "response.text.delta":
-                delta = event.get("delta", "")
-                text_parts.append(delta)
-            
-            # Text content done
-            elif event_type == "response.text.done":
-                # Use final text if available, otherwise use accumulated deltas
-                final_text = event.get("text")
-                if final_text is not None:
-                    text_parts = [final_text]
-            
-            # Function call start
-            elif event_type == "response.function_call_arguments.delta":
-                if current_tool_call is None:
-                    # Start accumulating new tool call
-                    current_tool_call = {
-                        "id": event.get("call_id"),
-                        "type": "function",
-                        "function": {
-                            "name": event.get("name"),
-                            "arguments": event.get("delta", "")
-                        }
-                    }
-                else:
-                    # Accumulate arguments
-                    current_tool_call["function"]["arguments"] += event.get("delta", "")
-            
-            # Function call done
-            elif event_type == "response.function_call_arguments.done":
-                if current_tool_call:
-                    # Use final arguments if provided
-                    final_args = event.get("arguments")
-                    if final_args is not None:
-                        current_tool_call["function"]["arguments"] = final_args
-                    
-                    tool_calls.append(current_tool_call)
-                    current_tool_call = None
-        
-        # Return accumulated content
-        content = "".join(text_parts) if text_parts else None
-        tool_calls_result = tool_calls if tool_calls else None
-        
-        return content, tool_calls_result
-    
-    @staticmethod
-    def build_assistant_message(
-        content: str | None,
-        tool_calls: list[dict] | None
-    ) -> dict[str, Any]:
-        """Build assistant message dict from content and tool calls.
-        
-        Args:
-            content: Text content from assistant
-            tool_calls: List of tool call dicts
-            
-        Returns:
-            Assistant message dictionary in ChatMessage-compatible format
-        """
-        message: dict[str, Any] = {
-            "role": "assistant",
-            "content": content or ""
-        }
-        
-        if tool_calls:
-            message["tool_calls"] = tool_calls
-        
-        return message
+    return {"type": "message", "role": role, "content": parts}
+
+
+def to_request_input(
+    messages: list[ChatMessage],
+    attachment: Optional[Callable[[ChatMessage], Optional[dict]]] = None,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """The instructions and the input items for ``response.create``.
+
+    A leading system message becomes the instructions; any later one stays a
+    system item at its place in the history. ``attachment`` turns a tool
+    message's ``multimodal_content`` into a user message (the client's
+    ``_create_multimodal_injection``), sent right after the tool output.
+    """
+    instructions: str | None = None
+    items: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg.role == "system" and instructions is None and not items:
+            instructions = _text(msg.content) or None
+            continue
+        if msg.role == "tool":
+            output = msg.content if isinstance(msg.content, str) else _text(msg.content)
+            items.append({"type": "function_call_output", "call_id": msg.tool_call_id, "output": output or ""})
+            injection = attachment(msg) if attachment and msg.multimodal_content else None
+            item = _message_item("user", injection.get("content")) if injection else None
+            if item:
+                items.append(item)
+            continue
+        item = _message_item(msg.role, msg.content)
+        if item:
+            items.append(item)
+        if msg.role == "assistant":
+            for call in msg.tool_calls or []:
+                func = call.get("function", {})
+                arguments = func.get("arguments", "{}")
+                items.append({
+                    "type": "function_call",
+                    "call_id": call.get("id"),
+                    "name": func.get("name"),
+                    "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments),
+                })
+    return instructions, items
+
+
+def to_realtime_tools(tools: list[dict]) -> list[dict]:
+    """Chat Completions tools -> the Realtime API's flat form.
+
+    Chat Completions: {"type": "function", "function": {"name", "description", "parameters"}}
+    Realtime API:     {"type": "function", "name", "description", "parameters"}
+    """
+    realtime_tools = []
+    for tool in tools:
+        if tool.get("type") != "function" or "function" not in tool:
+            logger.warning("Realtime: skipping tool schema that is not a function: %s", tool)
+            continue
+        func = tool["function"]
+        realtime_tool = {"type": "function", "name": func.get("name"),
+                         "description": func.get("description", "")}
+        if "parameters" in func:
+            params = copy.deepcopy(func["parameters"])
+            params.pop("additionalProperties", None)
+            realtime_tool["parameters"] = params
+        realtime_tools.append(realtime_tool)
+    return realtime_tools
+
+
+def to_assistant_message(response: dict[str, Any]) -> dict[str, Any]:
+    """The assistant message of a finished response (``response.done``)."""
+    text: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    for item in response.get("output") or []:
+        if item.get("type") == "message":
+            text.extend(part.get("text") or part.get("transcript") or ""
+                        for part in item.get("content") or []
+                        if part.get("type") in ("output_text", "output_audio"))
+        elif item.get("type") == "function_call":
+            tool_calls.append({"id": item.get("call_id"), "type": "function",
+                               "function": {"name": item.get("name"),
+                                            "arguments": item.get("arguments") or "{}"}})
+    message: dict[str, Any] = {"role": "assistant", "content": "".join(text)}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return message
+
+
+def to_openai_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Realtime usage in the Chat Completions shape the cost layer reads."""
+    if not usage:
+        return None
+    details = usage.get("input_token_details") or {}
+    return {
+        "prompt_tokens": usage.get("input_tokens", 0),
+        "completion_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+        "prompt_tokens_details": {"cached_tokens": details.get("cached_tokens", 0)},
+    }
+
+
+def outcome(response: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+    """(finish_reason, error) of a finished response.
+
+    A response cut at ``max_output_tokens`` or by the content filter keeps
+    what it produced and says why, as Chat Completions does ("length",
+    "content_filter") -- the agent loop decides what that means. Anything
+    else that did not complete is an error in the shape the server reads.
+    """
+    status = response.get("status")
+    if status in (None, "completed"):
+        return None, None
+    details = response.get("status_details") or {}
+    reason = details.get("reason")
+    if status == "incomplete" and reason == "max_output_tokens":
+        return "length", None
+    if status == "incomplete" and reason == "content_filter":
+        return "content_filter", None
+    error = details.get("error") or {}
+    return None, {"error": True,
+                  "type": error.get("type") or f"realtime_{status}",
+                  "message": f"realtime response {status}: {error.get('code') or reason or details}"}
