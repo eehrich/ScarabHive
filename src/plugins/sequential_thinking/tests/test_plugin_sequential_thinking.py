@@ -15,7 +15,7 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.sequential_thinking.server import SequentialThinkingServer
 
 
@@ -28,9 +28,9 @@ def system_config():
 
 
 @pytest.fixture
-def mcp_config():
-    """Provide test MCP config with default settings."""
-    config = MCPConfig(type="sequential_thinking", enabled=True)
+def server_config():
+    """Provide test tool server config with default settings."""
+    config = ToolServerConfig(type="sequential_thinking", enabled=True)
     config.max_history_size = 100
     config.session_ttl_seconds = 3600
     config.enable_branching = True
@@ -40,9 +40,9 @@ def mcp_config():
 
 
 @pytest.fixture
-def mcp_config_no_branching():
-    """Provide MCP config with branching disabled."""
-    config = MCPConfig(type="sequential_thinking", enabled=True)
+def server_config_no_branching():
+    """Provide tool server config with branching disabled."""
+    config = ToolServerConfig(type="sequential_thinking", enabled=True)
     config.max_history_size = 100
     config.session_ttl_seconds = 3600
     config.enable_branching = False
@@ -52,9 +52,9 @@ def mcp_config_no_branching():
 
 
 @pytest.fixture
-def mcp_config_no_revisions():
-    """Provide MCP config with revisions disabled."""
-    config = MCPConfig(type="sequential_thinking", enabled=True)
+def server_config_no_revisions():
+    """Provide tool server config with revisions disabled."""
+    config = ToolServerConfig(type="sequential_thinking", enabled=True)
     config.max_history_size = 100
     config.session_ttl_seconds = 3600
     config.enable_branching = True
@@ -64,9 +64,9 @@ def mcp_config_no_revisions():
 
 
 @pytest.fixture
-def server(system_config, mcp_config):
+def server(system_config, server_config):
     """Provide SequentialThinkingServer instance."""
-    return SequentialThinkingServer("sequential_thinking", system_config, mcp_config)
+    return SequentialThinkingServer("sequential_thinking", system_config, server_config)
 
 
 @pytest.fixture
@@ -82,9 +82,9 @@ def mock_status():
 
 # ===== Initialization Tests =====
 
-def test_init_default_config(system_config, mcp_config):
+def test_init_default_config(system_config, server_config):
     """Test server initialization with default config."""
-    server = SequentialThinkingServer("sequential_thinking", system_config, mcp_config)
+    server = SequentialThinkingServer("sequential_thinking", system_config, server_config)
     
     assert server.name == "sequential_thinking"
     assert server.max_history_size == 100
@@ -97,7 +97,7 @@ def test_init_default_config(system_config, mcp_config):
 
 def test_init_custom_config(system_config):
     """Test server initialization with custom config."""
-    config = MCPConfig(type="sequential_thinking", enabled=True)
+    config = ToolServerConfig(type="sequential_thinking", enabled=True)
     config.max_history_size = 50
     config.session_ttl_seconds = 1800
     config.enable_branching = False
@@ -328,9 +328,9 @@ async def test_multiple_branches(server, mock_status):
 
 
 @pytest.mark.asyncio
-async def test_branching_disabled(system_config, mcp_config_no_branching, mock_status):
+async def test_branching_disabled(system_config, server_config_no_branching, mock_status):
     """Test branching is rejected when disabled."""
-    server = SequentialThinkingServer("test", system_config, mcp_config_no_branching)
+    server = SequentialThinkingServer("test", system_config, server_config_no_branching)
     
     result = await server.execute({
         "thought": "First thought",
@@ -452,9 +452,9 @@ async def test_revision_history_tracking(server, mock_status):
 
 
 @pytest.mark.asyncio
-async def test_revisions_disabled(system_config, mcp_config_no_revisions, mock_status):
+async def test_revisions_disabled(system_config, server_config_no_revisions, mock_status):
     """Test revisions are rejected when disabled."""
-    server = SequentialThinkingServer("test", system_config, mcp_config_no_revisions)
+    server = SequentialThinkingServer("test", system_config, server_config_no_revisions)
     
     result = await server.execute({
         "thought": "First thought",
@@ -488,7 +488,7 @@ async def test_revisions_disabled(system_config, mcp_config_no_revisions, mock_s
 async def test_session_ttl_cleanup(system_config, mock_status):
     """Test expired sessions are cleaned up."""
     # Use very short TTL for testing
-    config = MCPConfig(type="sequential_thinking", enabled=True)
+    config = ToolServerConfig(type="sequential_thinking", enabled=True)
     config.session_ttl_seconds = 1  # 1 second
     
     server = SequentialThinkingServer("test", system_config, config)
@@ -753,7 +753,7 @@ async def test_summary_nonexistent_session(server, mock_status):
 async def test_memory_limit_enforcement(system_config, mock_status):
     """Test memory limit removes oldest thoughts."""
     # Use small limit for testing
-    config = MCPConfig(type="sequential_thinking", enabled=True)
+    config = ToolServerConfig(type="sequential_thinking", enabled=True)
     config.max_history_size = 5
     
     server = SequentialThinkingServer("test", system_config, config)

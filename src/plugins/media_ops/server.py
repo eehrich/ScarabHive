@@ -1,4 +1,4 @@
-"""media_ops MCP server — move media between disk and the agent's context.
+"""media_ops tool server — move media between disk and the agent's context.
 
 Both directions, because neither existed:
 
@@ -26,12 +26,12 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.multimodal_tool_content import extract_inline_media
 from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -62,21 +62,21 @@ MEDIA_TYPES: Dict[str, tuple[str, str]] = {
 CONTEXT_MEDIA_TYPES = frozenset({"image", "image_url", "audio", "video"})
 
 
-class MediaOpsServer(SchemaBasedMCPServer):
+class MediaOpsServer(SchemaBasedToolServer):
     """Moves image/audio/video between disk and the conversation.
 
     Every path — read or written — must resolve inside ``allowed_directories``.
     """
 
     def __init__(self, name: str, system_config: "AgentSystemConfig",
-                 mcp_config: "MCPConfig") -> None:
-        super().__init__(name, system_config, mcp_config)
+                 server_config: "ToolServerConfig") -> None:
+        super().__init__(name, system_config, server_config)
 
         # ONE mapping, read once. Config may arrive as top-level plugin keys
-        # (MCPConfig extra="allow") or under a 'config:' sub-block; both are
+        # (ToolServerConfig extra="allow") or under a 'config:' sub-block; both are
         # merged here so neither style is swallowed silently.
-        top_level = getattr(mcp_config, "model_extra", None) or {}
-        sub = getattr(mcp_config, "config", None) or {}
+        top_level = getattr(server_config, "model_extra", None) or {}
+        sub = getattr(server_config, "config", None) or {}
         cfg = {**top_level, **sub}
 
         project_root = Path.cwd()

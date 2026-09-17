@@ -14,12 +14,12 @@ import json
 
 from plugins.weather.server import WeatherServer
 from plugins.weather import sources
-from agent_system.mcp.status import status_bus, StatusPhase
+from agent_system.tools.status import status_bus, StatusPhase
 from plugins.weather.__main__ import main, build_parser
 
 
 def _get_tool_name(tool):
-    """Extract the function.name from either a dict or an MCPTool-like object."""
+    """Extract the function.name from either a dict or a ToolDef-like object."""
     if isinstance(tool, dict):
         func = tool.get("function") or {}
         return func.get("name")
@@ -32,7 +32,7 @@ def _get_tool_name(tool):
 
 
 def _get_tool_function(tool):
-    """Extract the function object from either a dict or an MCPTool-like object."""
+    """Extract the function object from either a dict or a ToolDef-like object."""
     if isinstance(tool, dict):
         return tool.get("function", {})
     return getattr(tool, "function", None)
@@ -41,13 +41,13 @@ def _get_tool_function(tool):
 class TestWeatherServerBasic:
     """Basic unit tests for WeatherServer."""
 
-    def test_weather_server_initialization(self, mock_system_config, mock_mcp_config):
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+    def test_weather_server_initialization(self, mock_system_config, mock_server_config):
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
         assert server.name == "weather"
         assert server.ssl_verify is True
 
-    def test_weather_server_schema(self, mock_system_config, mock_mcp_config):
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+    def test_weather_server_schema(self, mock_system_config, mock_server_config):
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
         tools = server.get_tools()
 
         assert isinstance(tools, list)
@@ -59,7 +59,7 @@ class TestWeatherServerBasic:
 
 
 @pytest.mark.asyncio
-async def test_fetch_wttr_parsing(mock_system_config, mock_mcp_config):
+async def test_fetch_wttr_parsing(mock_system_config, mock_server_config):
     # Mock httpx AsyncClient.get and response
     mock_resp = Mock()
     mock_resp.status_code = 200
@@ -97,7 +97,7 @@ async def test_fetch_wttr_parsing(mock_system_config, mock_mcp_config):
 
 
 @pytest.mark.asyncio
-async def test_fetch_met_no_parsing(mock_system_config, mock_mcp_config):
+async def test_fetch_met_no_parsing(mock_system_config, mock_server_config):
     mock_timeseries = [
         {"time": "2025-08-26T00:00:00Z", "data": {"instant": {"details": {"air_temperature": 20}}}},
         {"time": "2025-08-27T00:00:00Z", "data": {"instant": {"details": {"air_temperature": 22}}}},
@@ -133,11 +133,11 @@ async def test_fetch_met_no_parsing(mock_system_config, mock_mcp_config):
 
 
 @pytest.mark.anyio
-async def test_weather_status_phases(mock_system_config, mock_mcp_config):
-    server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+async def test_weather_status_phases(mock_system_config, mock_server_config):
+    server = WeatherServer("weather", mock_system_config, mock_server_config)
     queue = await status_bus.subscribe(server="weather")
     try:
-        from agent_system.mcp.status import StatusScope
+        from agent_system.tools.status import StatusScope
         async with StatusScope(status_bus, "weather") as status:
             result = await server.call("weather_forecast", {"location": "Munich, Germany", "_status": status})
         await asyncio.sleep(0.1)
@@ -169,11 +169,11 @@ async def test_weather_status_phases(mock_system_config, mock_mcp_config):
 
 
 @pytest.mark.anyio
-async def test_weather_error_status_phases(mock_system_config, mock_mcp_config):
-    server = WeatherServer("weather_error", mock_system_config, mock_mcp_config)
+async def test_weather_error_status_phases(mock_system_config, mock_server_config):
+    server = WeatherServer("weather_error", mock_system_config, mock_server_config)
     queue = await status_bus.subscribe(server="weather_error")
     try:
-        from agent_system.mcp.status import StatusScope
+        from agent_system.tools.status import StatusScope
         async with StatusScope(status_bus, "weather_error") as status:
             # Tool name is weather_error_forecast (server name + suffix)
             result = await server.call("weather_error_forecast", {"_status": status})
@@ -193,16 +193,16 @@ async def test_weather_error_status_phases(mock_system_config, mock_mcp_config):
 
 
 class TestWeatherCLIAndFactory:
-    def test_plugin_factory_basic(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_basic(self, mock_system_config, mock_server_config):
         from plugins.weather.plugin import PLUGIN_FACTORY
-        server = PLUGIN_FACTORY("weather", mock_system_config, mock_mcp_config)
+        server = PLUGIN_FACTORY("weather", mock_system_config, mock_server_config)
         assert server.name == "weather"
 
 
 class TestWeatherCLI:
     """Test the weather plugin CLI functionality."""
 
-    def test_build_parser_basic_args(self, mock_system_config, mock_mcp_config):
+    def test_build_parser_basic_args(self, mock_system_config, mock_server_config):
         """Test basic argument parsing."""
         parser = build_parser()
         args = parser.parse_args(['--location', 'Berlin'])
@@ -213,7 +213,7 @@ class TestWeatherCLI:
         assert args.server is False
         assert args.port == 8080
 
-    def test_build_parser_all_args(self, mock_system_config, mock_mcp_config):
+    def test_build_parser_all_args(self, mock_system_config, mock_server_config):
         """Test parsing with all arguments."""
         parser = build_parser()
         args = parser.parse_args([
@@ -238,7 +238,7 @@ class TestWeatherCLI:
         assert args.server is True
         assert args.port == 9000
 
-    def test_build_parser_defaults(self, mock_system_config, mock_mcp_config):
+    def test_build_parser_defaults(self, mock_system_config, mock_server_config):
         """Test default values."""
         parser = build_parser()
         args = parser.parse_args([])
@@ -259,14 +259,14 @@ class TestWeatherCLI:
         main(['--location', 'Berlin', '--source', 'met.no'])
 
         captured = capsys.readouterr()
-        assert "Weather MCP Server" in captured.out
+        assert "Weather Tool Server" in captured.out
 
         # Parse the JSON output
         lines = captured.out.strip().split('\n')
         json_line = [line for line in lines if line.startswith('{')][0]
         output = json.loads(json_line)
 
-        assert output['description'] == 'Weather MCP Server'
+        assert output['description'] == 'Weather Tool Server'
         assert output['location'] == 'Berlin'
         assert output['source'] == 'met.no'
         assert output['days'] == 3
@@ -292,28 +292,28 @@ class TestWeatherCLI:
 class TestWeatherServer:
     """Test the WeatherServer class functionality."""
 
-    def test_weather_server_initialization(self, mock_system_config, mock_mcp_config):
+    def test_weather_server_initialization(self, mock_system_config, mock_server_config):
         """Test weather server initialization."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
         assert server.name == "weather"
         assert server.ssl_verify is True
 
-    def test_weather_server_initialization_with_config(self, mock_system_config, mock_mcp_config):
+    def test_weather_server_initialization_with_config(self, mock_system_config, mock_server_config):
         """Test weather server initialization with config."""
-        from agent_system.config.models import MCPConfig, AgentConfig
+        from agent_system.config.models import ToolServerConfig, AgentConfig
         
         mock_system_config.ssl_verify = False
-        mcp_config = MCPConfig(type="weather", enabled=True, agent_config=AgentConfig())
-        mcp_config.timeout = 30
-        mcp_config.retries = 3
+        server_config = ToolServerConfig(type="weather", enabled=True, agent_config=AgentConfig())
+        server_config.timeout = 30
+        server_config.retries = 3
         
-        server = WeatherServer("weather", mock_system_config, mcp_config)
+        server = WeatherServer("weather", mock_system_config, server_config)
         assert server.name == "weather"
         assert server.ssl_verify is False
 
-    def test_weather_server_schema(self, mock_system_config, mock_mcp_config):
+    def test_weather_server_schema(self, mock_system_config, mock_server_config):
         """Test weather server tools structure."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
         tools = server.get_tools()
 
         assert isinstance(tools, list)
@@ -335,17 +335,17 @@ class TestWeatherServer:
         # Check required fields
         assert "location" in params["required"]
 
-    def test_weather_server_tool_name(self, mock_system_config, mock_mcp_config):
+    def test_weather_server_tool_name(self, mock_system_config, mock_server_config):
         """Test weather server tool name."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
         tools = server.get_tools()
         assert tools[0]["function"]["name"] == "weather_forecast"
 
     @pytest.mark.asyncio
-    async def test_weather_server_missing_location(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_missing_location(self, mock_system_config, mock_server_config):
         """Test weather server with missing location."""
         from unittest.mock import AsyncMock
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
         status = AsyncMock()
 
         result = await server.call("weather_forecast", {"_status": status})
@@ -353,9 +353,9 @@ class TestWeatherServer:
         assert "Missing required parameter: location" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_weather_server_invalid_tool(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_invalid_tool(self, mock_system_config, mock_server_config):
         """Test weather server with invalid tool name."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
 
         mock_status = AsyncMock()
         # Modern pattern: generic dispatcher raises ValueError for unknown tools
@@ -363,9 +363,9 @@ class TestWeatherServer:
             await server.call("invalid_tool", {"location": "Berlin", "_status": mock_status})
 
     @pytest.mark.asyncio
-    async def test_weather_server_valid_tool(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_valid_tool(self, mock_system_config, mock_server_config):
         """Test weather server with valid tool name."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
 
         mock_status = AsyncMock()
         result = await server.call("weather_forecast", {"location": "Berlin", "_status": mock_status})
@@ -373,9 +373,9 @@ class TestWeatherServer:
         assert "Unknown tool" not in result.get("error", "")
 
     @pytest.mark.asyncio
-    async def test_weather_server_source_selection(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_source_selection(self, mock_system_config, mock_server_config):
         """Test weather server source selection logic."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
 
         # Mock successful response for met.no
         mock_response = {
@@ -413,9 +413,9 @@ class TestWeatherServer:
             assert result["source"] == "met.no"
 
     @pytest.mark.asyncio
-    async def test_weather_server_days_parameter(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_days_parameter(self, mock_system_config, mock_server_config):
         """Test weather server days parameter handling."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
 
         # Mock response for default days
         mock_response = {
@@ -441,9 +441,9 @@ class TestWeatherServer:
             assert len(result["forecast"]) >= 1  # Should have at least one day
 
     @pytest.mark.asyncio
-    async def test_weather_server_units_parameter(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_units_parameter(self, mock_system_config, mock_server_config):
         """Test weather server units parameter handling."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
 
         # Mock response for metric units (met.no always returns metric)
         mock_response = {
@@ -470,9 +470,9 @@ class TestWeatherServer:
             assert result["units"] == "metric"
 
     @pytest.mark.asyncio
-    async def test_weather_server_marine_parameter(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_marine_parameter(self, mock_system_config, mock_server_config):
         """Test weather server marine parameter handling."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
 
         # Mock response for marine data
         mock_response = {
@@ -494,9 +494,9 @@ class TestWeatherServer:
             assert result["source"] in ["marine.weather.gov", "met.no"]
 
     @pytest.mark.asyncio
-    async def test_weather_server_source_switching_logic(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_source_switching_logic(self, mock_system_config, mock_server_config):
         """Test weather server automatic source switching logic."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
 
         # Mock response for met.no (fallback for wttr.in with > 3 days)
         mock_response = {
@@ -518,9 +518,9 @@ class TestWeatherServer:
             assert result["source"] in ["met.no", "wttr.in"]
 
     @pytest.mark.asyncio
-    async def test_weather_server_error_handling(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_error_handling(self, mock_system_config, mock_server_config):
         """Test weather server error handling."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
 
         # Test with invalid location (should still work with real API, but let's test unsupported source)
         mock_status = AsyncMock()
@@ -529,9 +529,9 @@ class TestWeatherServer:
         assert "Unsupported weather source" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_weather_server_unsupported_source(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_unsupported_source(self, mock_system_config, mock_server_config):
         """Test weather server with unsupported source."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
 
         mock_status = AsyncMock()
         result = await server.call("weather_forecast", {"location": "Berlin", "source": "unsupported", "_status": mock_status})
@@ -539,7 +539,7 @@ class TestWeatherServer:
         assert "Unsupported weather source" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_weather_server_ssl_verify_parameter(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_ssl_verify_parameter(self, mock_system_config, mock_server_config):
         """Test weather server SSL verification parameter."""
         # Mock response
         mock_response = {
@@ -555,12 +555,12 @@ class TestWeatherServer:
 
             # Test with SSL verification enabled
             mock_status = AsyncMock()
-            server_ssl = WeatherServer("weather", mock_system_config, mock_mcp_config)
+            server_ssl = WeatherServer("weather", mock_system_config, mock_server_config)
             result = await server_ssl.call("weather_forecast", {"location": "Berlin", "_status": mock_status})
             assert result["status"] == "success"
 
             # Test with SSL verification disabled
-            server_no_ssl = WeatherServer("weather", mock_system_config, mock_mcp_config)
+            server_no_ssl = WeatherServer("weather", mock_system_config, mock_server_config)
             result = await server_no_ssl.call("weather_forecast", {"location": "Berlin", "_status": mock_status})
             assert result["status"] == "success"
 
@@ -569,9 +569,9 @@ class TestWeatherServerIntegration:
     """Integration tests for WeatherServer with mocked external services."""
 
     @pytest.mark.asyncio
-    async def test_weather_server_full_workflow(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_full_workflow(self, mock_system_config, mock_server_config):
         """Test complete weather server workflow."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
 
         # Mock successful response
         mock_response = {
@@ -612,9 +612,9 @@ class TestWeatherServerIntegration:
             assert len(result["forecast"]) >= 1
 
     @pytest.mark.asyncio
-    async def test_weather_server_multiple_sources(self, mock_system_config, mock_mcp_config):
+    async def test_weather_server_multiple_sources(self, mock_system_config, mock_server_config):
         """Test weather server with different sources."""
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
 
         # Mock responses for different sources
         mock_met_no_response = {
@@ -656,33 +656,33 @@ class TestWeatherServerIntegration:
 class TestWeatherPluginFactory:
     """Test the weather plugin factory function."""
 
-    def test_plugin_factory_basic(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_basic(self, mock_system_config, mock_server_config):
         """Test basic plugin factory functionality."""
         from plugins.weather.plugin import PLUGIN_FACTORY
 
-        server = PLUGIN_FACTORY("weather", mock_system_config, mock_mcp_config)
+        server = PLUGIN_FACTORY("weather", mock_system_config, mock_server_config)
         assert server.name == "weather"
         assert server.ssl_verify is True
 
-    def test_plugin_factory_with_config(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_with_config(self, mock_system_config, mock_server_config):
         """Test plugin factory with configuration."""
         from plugins.weather.plugin import PLUGIN_FACTORY
-        from agent_system.config.models import MCPConfig, AgentConfig
+        from agent_system.config.models import ToolServerConfig, AgentConfig
 
         # Mock system config with ssl_verify=False
         mock_system_config.ssl_verify = False
-        mcp_config = MCPConfig(type="weather", enabled=True, agent_config=AgentConfig())
-        mcp_config.timeout = 60
+        server_config = ToolServerConfig(type="weather", enabled=True, agent_config=AgentConfig())
+        server_config.timeout = 60
         
-        server = PLUGIN_FACTORY("weather", mock_system_config, mcp_config)
+        server = PLUGIN_FACTORY("weather", mock_system_config, server_config)
         assert server.name == "weather"
         assert server.ssl_verify is False
 
-    def test_plugin_factory_name_parameter(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_name_parameter(self, mock_system_config, mock_server_config):
         """Test plugin factory with custom name."""
         from plugins.weather.plugin import PLUGIN_FACTORY
 
-        server = PLUGIN_FACTORY("custom_weather", mock_system_config, mock_mcp_config)
+        server = PLUGIN_FACTORY("custom_weather", mock_system_config, mock_server_config)
         assert server.name == "custom_weather"
 
 
@@ -690,12 +690,12 @@ class TestWeatherSummary:
     """Test the weather summary generation feature."""
 
     @pytest.mark.asyncio
-    async def test_summary_field_present(self, mock_system_config, mock_mcp_config):
+    async def test_summary_field_present(self, mock_system_config, mock_server_config):
         """Test that summary field is present in weather response."""
         from plugins.weather.server import WeatherServer
         from unittest.mock import AsyncMock, patch
 
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
         
         mock_weather_data = {
             "location": "TestCity",
@@ -734,12 +734,12 @@ class TestWeatherSummary:
             assert len(result["summary"]) > 0
 
     @pytest.mark.asyncio
-    async def test_summary_content(self, mock_system_config, mock_mcp_config):
+    async def test_summary_content(self, mock_system_config, mock_server_config):
         """Test that summary contains expected weather information."""
         from plugins.weather.server import WeatherServer
         from unittest.mock import AsyncMock, patch
 
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
         
         mock_weather_data = {
             "location": "Berlin",
@@ -781,11 +781,11 @@ class TestWeatherSummary:
             assert "2025-01-01" in summary  # Forecast date
             assert "rain" in summary.lower()  # Precipitation warning
 
-    def test_create_summary_metric_units(self, mock_system_config, mock_mcp_config):
+    def test_create_summary_metric_units(self, mock_system_config, mock_server_config):
         """Test summary generation with metric units."""
         from plugins.weather.server import WeatherServer
 
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
         
         weather_data = {
             "location": "TestCity",
@@ -813,11 +813,11 @@ class TestWeatherSummary:
         assert "18°C to 22°C" in summary
         assert "rain expected" in summary
 
-    def test_create_summary_imperial_units(self, mock_system_config, mock_mcp_config):
+    def test_create_summary_imperial_units(self, mock_system_config, mock_server_config):
         """Test summary generation with imperial units."""
         from plugins.weather.server import WeatherServer
 
-        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        server = WeatherServer("weather", mock_system_config, mock_server_config)
         
         weather_data = {
             "location": "NewYork",

@@ -1,4 +1,4 @@
-"""File Ops MCP Server implementation."""
+"""File Ops Tool Server implementation."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
-from agent_system.config import AgentSystemConfig, MCPConfig
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.config import AgentSystemConfig, ToolServerConfig
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from .security import PathValidator, SecurityError
 from .operations import FileOperations
@@ -37,22 +37,22 @@ async def _end_or_error(status, result: Dict[str, Any], message: str,
     await status.end(message, meta=meta)
 
 
-class FileOpsServer(SchemaBasedMCPServer):
-    """MCP server providing secure file operations with search capabilities."""
+class FileOpsServer(SchemaBasedToolServer):
+    """tool server providing secure file operations with search capabilities."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
         """
         Initialize file operations server.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         # Extract configuration
-        allowed_dirs = getattr(mcp_config, "allowed_directories", [])
+        allowed_dirs = getattr(server_config, "allowed_directories", [])
         if not allowed_dirs:
             # Default to project root subdirectories
             project_root = Path.cwd()
@@ -80,20 +80,20 @@ class FileOpsServer(SchemaBasedMCPServer):
         self.validator = PathValidator(allowed_dirs)
         
         # Read-only mode flag
-        self.read_only = getattr(mcp_config, "read_only", False)
+        self.read_only = getattr(server_config, "read_only", False)
         if self.read_only:
             logger.info("FileOperationsServer running in READ-ONLY mode")
         
         # Get file reading limits from config
-        max_unpaginated_kb = getattr(mcp_config, "max_unpaginated_file_size_kb", 100)
-        default_line_limit = getattr(mcp_config, "default_line_limit", 500)
+        max_unpaginated_kb = getattr(server_config, "max_unpaginated_file_size_kb", 100)
+        default_line_limit = getattr(server_config, "default_line_limit", 500)
         self.operations = FileOperations(
             max_unpaginated_kb=max_unpaginated_kb,
             default_line_limit=default_line_limit
         )
 
         # Initialize search engine with configuration
-        search_config = getattr(mcp_config, "search", {})
+        search_config = getattr(server_config, "search", {})
 
         # Temporarily disable semantic search to avoid ChromaDB conflicts
         if "enable_semantic_search" not in search_config:

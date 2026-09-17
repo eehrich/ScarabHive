@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Task state management - allows LLM to switch between task modes via template_vars"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "workflow"
 tags = ["state", "workflow", "prompt-control"]
 requires = { agent_system = ">=0.6.0" }

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 from agent_system.services.session_service import SessionService
 from agent_system.services.session_manager import SessionManager
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from plugins.sub_agent_manager.manager import SubAgentManager
 
 
@@ -46,7 +46,7 @@ class MockAgent:
 @pytest.fixture
 def mock_registry():
     """Create mock registry with multiple agent types."""
-    registry = MagicMock(spec=MCPRegistry)
+    registry = MagicMock(spec=ToolServerRegistry)
 
     def create_mock_agent(name, llm_profile="normal"):
         return MockAgent(name, llm_profile)

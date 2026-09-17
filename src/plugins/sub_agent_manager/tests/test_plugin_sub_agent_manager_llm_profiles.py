@@ -28,7 +28,7 @@ except ImportError:
             except StopIteration:
                 raise StopAsyncIteration
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.sub_agent_manager.server import SubAgentManagerServer
 
 
@@ -55,13 +55,13 @@ class TestSubAgentManagerSchema:
 
     def test_schema_includes_use_advanced_model(self, mock_system_config):
         """Test that manage_sub_agent tool includes use_advanced_model parameter."""
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="sub_agent_manager",
             enabled=True,
             allowed_agents=["basic_agent", "web_research_agent"]
         )
 
-        server = SubAgentManagerServer("test_manager", mock_system_config, mcp_config)
+        server = SubAgentManagerServer("test_manager", mock_system_config, server_config)
 
         # Get tools
         tools = server.get_tools()
@@ -97,13 +97,13 @@ class TestSubAgentManagerCreateOperation:
     @pytest.mark.asyncio
     async def test_create_with_use_advanced_model_true(self, mock_system_config):
         """Test that create operation passes use_advanced_model to agent.run_events()."""
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="sub_agent_manager",
             enabled=True,
             allowed_agents=["basic_agent"]
         )
 
-        server = SubAgentManagerServer("test_manager", mock_system_config, mcp_config)
+        server = SubAgentManagerServer("test_manager", mock_system_config, server_config)
 
         # Mock dependencies
         mock_registry = Mock()
@@ -160,13 +160,13 @@ class TestSubAgentManagerCreateOperation:
     @pytest.mark.asyncio
     async def test_create_with_use_advanced_model_false(self, mock_system_config):
         """Test that create operation with use_advanced_model=False uses default profile."""
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="sub_agent_manager",
             enabled=True,
             allowed_agents=["basic_agent"]
         )
 
-        server = SubAgentManagerServer("test_manager", mock_system_config, mcp_config)
+        server = SubAgentManagerServer("test_manager", mock_system_config, server_config)
 
         # Mock dependencies
         mock_registry = Mock()
@@ -223,13 +223,13 @@ class TestSubAgentManagerContinueOperation:
     @pytest.mark.asyncio
     async def test_continue_with_use_advanced_model_true(self, mock_system_config):
         """Test that continue operation can switch to advanced model."""
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="sub_agent_manager",
             enabled=True,
             allowed_agents=["basic_agent"]
         )
 
-        server = SubAgentManagerServer("test_manager", mock_system_config, mcp_config)
+        server = SubAgentManagerServer("test_manager", mock_system_config, server_config)
 
         # Mock dependencies
         mock_registry = Mock()
@@ -289,13 +289,13 @@ class TestSubAgentManagerContinueOperation:
     @pytest.mark.asyncio
     async def test_continue_with_use_advanced_model_false(self, mock_system_config):
         """Test that continue operation can use standard model."""
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="sub_agent_manager",
             enabled=True,
             allowed_agents=["basic_agent"]
         )
 
-        server = SubAgentManagerServer("test_manager", mock_system_config, mcp_config)
+        server = SubAgentManagerServer("test_manager", mock_system_config, server_config)
 
         # Mock dependencies
         mock_registry = Mock()
@@ -361,13 +361,13 @@ class TestSubAgentManagerUseCases:
         # Scenario: Agent starts with default model, realizes task is complex,
         # coordinator continues with advanced model
 
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="sub_agent_manager",
             enabled=True,
             allowed_agents=["basic_agent"]
         )
 
-        server = SubAgentManagerServer("test_manager", mock_system_config, mcp_config)
+        server = SubAgentManagerServer("test_manager", mock_system_config, server_config)
 
         # Track which model was used for each call
         model_usage = []

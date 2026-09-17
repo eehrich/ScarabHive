@@ -10,16 +10,16 @@ from typing import Any
 from .hooks import MarkdownFormatterPlugin
 
 
-def PLUGIN_FACTORY(name: str, system_config: Any, mcp_config: Any) -> MarkdownFormatterPlugin:
+def PLUGIN_FACTORY(name: str, system_config: Any, server_config: Any) -> MarkdownFormatterPlugin:
     """Factory function to create plugin instance.
     
     Args:
         name: Plugin instance name
         system_config: System configuration
-        mcp_config: MCP-specific configuration (contains config from plugins.yaml)
+        server_config: instance-specific configuration (contains config from plugins.yaml)
         
     Returns:
         MarkdownFormatterPlugin instance
     """
     plugin_dir = Path(__file__).parent
-    return MarkdownFormatterPlugin(plugin_dir, mcp_config)
+    return MarkdownFormatterPlugin(plugin_dir, server_config)

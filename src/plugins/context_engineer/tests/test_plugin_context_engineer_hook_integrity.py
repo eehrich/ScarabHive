@@ -73,13 +73,13 @@ class TestPerAgentOverrides:
 
     @pytest.mark.asyncio
     async def test_the_compact_tool_brings_the_agents_overrides(self, plugin):
-        from agent_system.config.models import MCPConfig
+        from agent_system.config.models import ToolServerConfig
         from unittest.mock import MagicMock
 
         from plugins.context_engineer.server import ContextEngineerServer
 
         srv = ContextEngineerServer("context_engineer", MagicMock(),
-                                    MCPConfig(type="context_engineer", enabled=True))
+                                    ToolServerConfig(type="context_engineer", enabled=True))
         srv._hooks_impl = plugin
         seen = {}
 
@@ -103,13 +103,13 @@ class TestTheCompactTool:
 
     @staticmethod
     def _tool(plugin, metadata):
-        from agent_system.config.models import MCPConfig
+        from agent_system.config.models import ToolServerConfig
         from unittest.mock import MagicMock
 
         from plugins.context_engineer.server import ContextEngineerServer
 
         srv = ContextEngineerServer("context_engineer", MagicMock(),
-                                    MCPConfig(type="context_engineer", enabled=True))
+                                    ToolServerConfig(type="context_engineer", enabled=True))
         srv._hooks_impl = plugin
         seen = {}
 
@@ -153,13 +153,13 @@ class TestTheCompactTool:
         The model's call below the thresholds changes nothing; a person's
         /compact runs Layer 1 and stores the old results.
         """
-        from agent_system.config.models import MCPConfig
+        from agent_system.config.models import ToolServerConfig
         from unittest.mock import MagicMock
 
         from plugins.context_engineer.server import ContextEngineerServer
 
         srv = ContextEngineerServer("context_engineer", MagicMock(),
-                                    MCPConfig(type="context_engineer", enabled=True))
+                                    ToolServerConfig(type="context_engineer", enabled=True))
         srv._hooks_impl = plugin
         staged = []
         overrides = {"context_engineer.engineer_context": {
@@ -339,7 +339,7 @@ class TestHysteresis:
         latest = iter(snapshots)
         tracker = SimpleNamespace(get_latest=lambda session_id: next(latest))
         registry = SimpleNamespace(get_server=lambda name: SimpleNamespace(tracker=tracker))
-        return SimpleNamespace(system_config=SimpleNamespace(mcp_registry=registry))
+        return SimpleNamespace(system_config=SimpleNamespace(tool_registry=registry))
 
     def test_a_stale_provider_count_is_not_a_whole_reading(self, plugin):
         strategy = plugin._get_session_components("read")["strategy"]
@@ -562,13 +562,13 @@ class TestBookkeeping:
 
     @pytest.mark.asyncio
     async def test_the_tool_answers_a_refused_fact_with_an_error(self, plugin):
-        from agent_system.config.models import MCPConfig
+        from agent_system.config.models import ToolServerConfig
         from unittest.mock import AsyncMock, MagicMock
 
         from plugins.context_engineer.server import ContextEngineerServer
 
         srv = ContextEngineerServer("context_engineer", MagicMock(),
-                                    MCPConfig(type="context_engineer", enabled=True))
+                                    ToolServerConfig(type="context_engineer", enabled=True))
         srv._hooks_impl = plugin
         memory = plugin._get_session_components("full")["core_memory"]
         memory.max_tokens = 5

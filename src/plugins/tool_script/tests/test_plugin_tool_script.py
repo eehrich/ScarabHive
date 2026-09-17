@@ -15,7 +15,7 @@ from typing import Any, Dict
 import pytest
 from unittest.mock import MagicMock
 
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 from agent_system.servers.agent.components.tool_execution import ToolDispatchError
 from plugins.tool_script.server import ToolScriptServer, ToolCallError
 
@@ -112,7 +112,7 @@ def agent():
 def make_server(**config) -> ToolScriptServer:
     return ToolScriptServer(
         "pipe", MagicMock(),
-        MCPConfig(type="tool_script", enabled=True, config=config))
+        ToolServerConfig(type="tool_script", enabled=True, config=config))
 
 
 async def run(server, agent, script, **extra):

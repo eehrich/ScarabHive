@@ -13,12 +13,12 @@ import json
 from typing import Any
 
 from .server import LLMRouterServer
-from agent_system.servers.http_server import serve_mcp_server
+from agent_system.servers.http_server import serve_tool_server
 from agent_system.utils.logging import setup_logging
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="plugins.llm_router", description="LLM Router MCP Server")
+    parser = argparse.ArgumentParser(prog="plugins.llm_router", description="LLM Router Tool Server")
 
     # Core LLM parameters
     parser.add_argument("--message", "--prompt", help="Single message to send to LLM")
@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--default-model", default="gpt-4o-mini", help="Default model")
 
     # Server mode options
-    parser.add_argument("--server", action="store_true", help="Run in server mode (MCP server)")
+    parser.add_argument("--server", action="store_true", help="Run in server mode (tool server)")
     parser.add_argument("--port", type=int, default=8081, help="Port to listen on when in server mode")
 
     # Misc
@@ -47,8 +47,8 @@ async def async_main():
     server = LLMRouterServer("llm_router")
 
     if args.server:
-        print(f"Starting LLM Router MCP Server on port {args.port}")
-        await serve_mcp_server(server, port=args.port)
+        print(f"Starting LLM Router Tool Server on port {args.port}")
+        await serve_tool_server(server, port=args.port)
     else:
         if not args.message:
             print("Error: --message is required when not in server mode")
@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # For tests, print a concise summary showing that the parser accepted the args.
     summary: dict[str, Any] = {
-        "description": "LLM Router MCP Server",
+        "description": "LLM Router Tool Server",
         "message": args.message,
         "provider": args.provider,
         "model": args.model,
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> None:
         "port": args.port,
     }
 
-    print("LLM Router MCP Server")
+    print("LLM Router Tool Server")
     print(json.dumps(summary))
 
 

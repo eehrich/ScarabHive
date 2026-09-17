@@ -31,8 +31,8 @@ async def test_hallucinated_tool_example_writer_audio():
     agent = MagicMock()
     agent.name = "test_agent"
     agent._get_server_from_any_registry = MagicMock(return_value=None)
-    agent._mcp_integration_manager = MagicMock()
-    agent._mcp_integration_manager.mcp_integration = None
+    agent._tool_integration_manager = MagicMock()
+    agent._tool_integration_manager.tool_integration = None
     agent.registry = registry
     agent.agent_config = MagicMock()
     agent.agent_config.timeouts = MagicMock()
@@ -107,8 +107,8 @@ async def test_multiple_hallucinated_tools_no_crash():
     agent = MagicMock()
     agent.name = "test_agent"
     agent._get_server_from_any_registry = MagicMock(return_value=None)
-    agent._mcp_integration_manager = MagicMock()
-    agent._mcp_integration_manager.mcp_integration = None
+    agent._tool_integration_manager = MagicMock()
+    agent._tool_integration_manager.tool_integration = None
     agent.registry = registry
     agent.agent_config = MagicMock()
     agent.agent_config.timeouts = MagicMock()

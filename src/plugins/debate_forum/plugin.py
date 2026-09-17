@@ -1,7 +1,7 @@
 """Debate Forum Plugin - Factory and exports.
 
 Hybrid MCP+Web plugin:
-- MCP tools via DebateForumServer (create_channel, post_message, get_thread, conclude, list_channels)
+- tools via DebateForumServer (create_channel, post_message, get_thread, conclude, list_channels)
 - Web UI via DebateForumWebFactory (the Debate Forum panel and its JSON API)
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Any, TYPE_CHECKING
 from fastapi import APIRouter
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 from .database import DebateForumDB
 from .server import DebateForumServer
@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 
 
 class DebateForumHybridPlugin:
-    """Hybrid plugin providing MCP tools + Web UI for debate forums.
+    """Hybrid plugin providing tools + Web UI for debate forums.
 
-    - Delegates MCP tool calls to DebateForumServer
+    - Delegates tool calls to DebateForumServer
     - Provides web router via DebateForumWebFactory
     """
 
@@ -34,16 +34,16 @@ class DebateForumHybridPlugin:
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPConfig",
+        server_config: "ToolServerConfig",
     ):
         self.name = name
         self.system_config = system_config
-        self.mcp_config = mcp_config
+        self.server_config = server_config
 
         # Resolve DB path from plugin config
         config: dict[str, Any] = {}
-        if mcp_config and hasattr(mcp_config, "config") and mcp_config.config:
-            config = mcp_config.config
+        if server_config and hasattr(server_config, "config") and server_config.config:
+            config = server_config.config
 
         db_path = config.get("db_path")
         if not db_path:
@@ -52,9 +52,9 @@ class DebateForumHybridPlugin:
         # Create shared database
         self._db = DebateForumDB(db_path)
 
-        # Create MCP server (provides tools)
+        # Create tool server (provides tools)
         self.server = DebateForumServer(
-            name, system_config, mcp_config, db=self._db,
+            name, system_config, server_config, db=self._db,
             min_message_length=config.get("min_message_length", 50),
         )
 
@@ -70,7 +70,7 @@ class DebateForumHybridPlugin:
 
         logger.info("DebateForumHybridPlugin initialized: db=%s", db_path)
 
-    # ── MCP Interface (delegate to server) ────────────────────
+    # ── Tool interface (delegate to server) ────────────────────
 
     async def call(self, tool: str | None = None, params: dict | None = None, *args, **kwargs) -> Any:
         return await self.server.call(tool, params, *args, **kwargs)
@@ -106,6 +106,6 @@ class DebateForumHybridPlugin:
 def PLUGIN_FACTORY(
     name: str,
     system_config: "AgentSystemConfig",
-    mcp_config: "MCPConfig",
+    server_config: "ToolServerConfig",
 ) -> DebateForumHybridPlugin:
-    return DebateForumHybridPlugin(name, system_config, mcp_config)
+    return DebateForumHybridPlugin(name, system_config, server_config)

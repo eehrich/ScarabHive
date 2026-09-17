@@ -1,8 +1,8 @@
 """
-Central service for injecting dependencies into agents in the MCP registry.
+Central service for injecting dependencies into agents in the tool registry.
 
 This module provides a unified way to inject session_service and other dependencies
-into all agents registered in the MCPRegistry. Used by CLI, API, and agent_run to
+into all agents registered in the ToolServerRegistry. Used by CLI, API, and agent_run to
 ensure consistent dependency injection across all entry points.
 """
 
@@ -12,34 +12,34 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..mcp.base import MCPRegistry
+    from ..tools.base import ToolServerRegistry
 
 logger = logging.getLogger(__name__)
 
 
 def inject_session_service_into_agents(
-    registry: MCPRegistry,
+    registry: ToolServerRegistry,
     session_service: Any,
 ) -> int:
     """Inject session_service into all Agent instances in the registry.
     
-    Supports both MCPRegistry and PluginMCPRegistry interfaces.
+    Supports both ToolServerRegistry and PluginToolRegistry interfaces.
     
     This is critical for sub-agent management and any tools/hooks that need
     access to session storage. Must be called AFTER bootstrap_servers() creates
     all agents.
     
     Args:
-        registry: MCPRegistry or PluginMCPRegistry containing registered servers and agents
+        registry: ToolServerRegistry or PluginToolRegistry containing registered servers and agents
         session_service: SessionService instance to inject
         
     Returns:
         Number of agents that received session_service injection
         
     Example:
-        >>> from agent_system.mcp.base import MCPRegistry
+        >>> from agent_system.tools.base import ToolServerRegistry
         >>> from agent_system.services.session_service import SessionService
-        >>> registry = MCPRegistry()
+        >>> registry = ToolServerRegistry()
         >>> session_service = SessionService(session_manager)
         >>> count = inject_session_service_into_agents(registry, session_service)
         >>> logger.info(f"Injected session_service into {count} agents")
@@ -49,15 +49,15 @@ def inject_session_service_into_agents(
     
     # Detect registry type and use appropriate interface
     if hasattr(registry, 'list'):
-        # MCPRegistry interface
+        # ToolServerRegistry interface
         server_names = registry.list()
         get_server_func = registry.get
-        logger.debug("[inject] Using MCPRegistry interface (list/get)")
+        logger.debug("[inject] Using ToolServerRegistry interface (list/get)")
     elif hasattr(registry, 'list_servers'):
-        # PluginMCPRegistry interface
+        # PluginToolRegistry interface
         server_names = registry.list_servers()
         get_server_func = registry.get_server
-        logger.debug("[inject] Using PluginMCPRegistry interface (list_servers/get_server)")
+        logger.debug("[inject] Using PluginToolRegistry interface (list_servers/get_server)")
     else:
         raise ValueError(
             f"Unknown registry type: {type(registry).__name__} - "
@@ -70,13 +70,13 @@ def inject_session_service_into_agents(
         try:
             server = get_server_func(server_name)
             
-            # PluginMCPRegistry wraps servers in PluginMCPAdapter - unwrap if needed
+            # PluginToolRegistry wraps servers in PluginToolAdapter - unwrap if needed
             if hasattr(server, 'plugin_server'):
                 actual_server = server.plugin_server
             else:
                 actual_server = server
             
-            # Only inject into Agent instances (not other MCP servers)
+            # Only inject into Agent instances (not other tool servers)
             if isinstance(actual_server, Agent):
                 # Inject session_service
                 actual_server._session_service = session_service
@@ -101,19 +101,19 @@ def inject_session_service_into_agents(
 
 
 def inject_dependencies_into_agents(
-    registry: MCPRegistry,
+    registry: ToolServerRegistry,
     session_service: Any = None,
     **additional_deps: Any,
 ) -> dict[str, int]:
     """Inject multiple dependencies into all Agent instances in the registry.
     
-    Supports both MCPRegistry and PluginMCPRegistry interfaces.
+    Supports both ToolServerRegistry and PluginToolRegistry interfaces.
     
     Generic injection function that can handle session_service and any future
     dependencies that need to be injected into agents.
     
     Args:
-        registry: MCPRegistry or PluginMCPRegistry containing registered servers and agents
+        registry: ToolServerRegistry or PluginToolRegistry containing registered servers and agents
         session_service: SessionService instance to inject (optional)
         **additional_deps: Additional dependencies to inject as _<name> attributes
         
@@ -132,11 +132,11 @@ def inject_dependencies_into_agents(
     
     # Detect registry type and use appropriate interface
     if hasattr(registry, 'list'):
-        # MCPRegistry interface
+        # ToolServerRegistry interface
         server_names = registry.list()
         get_server_func = registry.get
     elif hasattr(registry, 'list_servers'):
-        # PluginMCPRegistry interface
+        # PluginToolRegistry interface
         server_names = registry.list_servers()
         get_server_func = registry.get_server
     else:
@@ -165,7 +165,7 @@ def inject_dependencies_into_agents(
             try:
                 server = get_server_func(server_name)
                 
-                # PluginMCPRegistry wraps servers in PluginMCPAdapter - unwrap if needed
+                # PluginToolRegistry wraps servers in PluginToolAdapter - unwrap if needed
                 if hasattr(server, 'plugin_server'):
                     actual_server = server.plugin_server
                 else:

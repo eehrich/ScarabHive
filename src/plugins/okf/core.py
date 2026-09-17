@@ -6,7 +6,7 @@ is that every concept carries a non-empty ``type``. See docs/okf_support_design.
 and the spec at github.com/GoogleCloudPlatform/knowledge-catalog/okf.
 
 This module owns the format ONCE — parsing/serialization, conformance checking,
-link resolution and graph traversal. The MCP tools (server.py) and the consumer
+link resolution and graph traversal. The tools (server.py) and the consumer
 hook both call in here, so the semantics can never drift between them (same
 lesson as server_matches_patterns / server_resolution in the agent package).
 

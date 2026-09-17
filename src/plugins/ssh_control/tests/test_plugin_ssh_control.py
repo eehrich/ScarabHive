@@ -13,20 +13,20 @@ def mock_system_config():
 
 
 @pytest.fixture
-def empty_mcp_config():
-    """Create empty MCP config for testing."""
-    from agent_system.config.models import MCPConfig
-    config = MCPConfig()
+def empty_server_config():
+    """Create empty tool server config for testing."""
+    from agent_system.config.models import ToolServerConfig
+    config = ToolServerConfig()
     # Add empty ssh_control config
     config.machines = []
     return config
 
 
 @pytest.fixture
-def populated_mcp_config():
-    """Create populated MCP config with test machines."""
-    from agent_system.config.models import MCPConfig
-    config = MCPConfig()
+def populated_server_config():
+    """Create populated tool server config with test machines."""
+    from agent_system.config.models import ToolServerConfig
+    config = ToolServerConfig()
     # Add ssh_control config with machines
     config.machines = [
         {
@@ -57,19 +57,19 @@ def test_ssh_control_plugin_factory_exists():
     assert callable(ssh_control_factory)
 
 
-def test_ssh_control_plugin_instantiation(mock_system_config, empty_mcp_config):
+def test_ssh_control_plugin_instantiation(mock_system_config, empty_server_config):
     """Test that ssh_control plugin can be instantiated."""
-    plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, empty_server_config)
     
     # Verify it's a hybrid plugin
-    assert hasattr(plugin_instance, 'mcp_server')
+    assert hasattr(plugin_instance, 'tool_server')
     assert hasattr(plugin_instance, 'command_history')
     assert hasattr(plugin_instance, 'get_tools')
 
 
-def test_ssh_control_get_tools(mock_system_config, empty_mcp_config):
+def test_ssh_control_get_tools(mock_system_config, empty_server_config):
     """Test that ssh_control plugin exposes correct tools."""
-    plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, empty_server_config)
     tools = plugin_instance.get_tools()
     
     # Verify expected tools are present
@@ -94,12 +94,12 @@ def test_ssh_control_get_tools(mock_system_config, empty_mcp_config):
 
 
 @pytest.mark.asyncio
-async def test_ssh_control_list_machines_empty(mock_system_config, empty_mcp_config):
+async def test_ssh_control_list_machines_empty(mock_system_config, empty_server_config):
     """Test listing machines with no machines configured."""
-    plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, empty_server_config)
     
     # Call list_machines tool
-    result = await plugin_instance.mcp_server.list_machines({})
+    result = await plugin_instance.tool_server.list_machines({})
     
     assert 'machines' in result
     assert 'count' in result
@@ -108,23 +108,23 @@ async def test_ssh_control_list_machines_empty(mock_system_config, empty_mcp_con
 
 
 @pytest.mark.asyncio
-async def test_ssh_control_connection_manager_config(mock_system_config, populated_mcp_config):
+async def test_ssh_control_connection_manager_config(mock_system_config, populated_server_config):
     """Test that connection manager loads machine configs correctly."""
-    plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, populated_mcp_config)
+    plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, populated_server_config)
     
     # Verify machines loaded
-    assert len(plugin_instance.mcp_server.connection_manager.machines) == 2
-    assert 'test-server1' in plugin_instance.mcp_server.connection_manager.machines
-    assert 'test-server2' in plugin_instance.mcp_server.connection_manager.machines
+    assert len(plugin_instance.tool_server.connection_manager.machines) == 2
+    assert 'test-server1' in plugin_instance.tool_server.connection_manager.machines
+    assert 'test-server2' in plugin_instance.tool_server.connection_manager.machines
     
     # Verify machine configs
-    machine1 = plugin_instance.mcp_server.connection_manager.machines['test-server1']
+    machine1 = plugin_instance.tool_server.connection_manager.machines['test-server1']
     assert machine1.host == '192.168.1.100'
     assert machine1.port == 22
     assert machine1.auth_method == 'key'
     assert 'production' in machine1.tags
     
-    machine2 = plugin_instance.mcp_server.connection_manager.machines['test-server2']
+    machine2 = plugin_instance.tool_server.connection_manager.machines['test-server2']
     assert machine2.host == '192.168.1.101'
     assert machine2.port == 2222
     assert machine2.auth_method == 'password'
@@ -132,20 +132,20 @@ async def test_ssh_control_connection_manager_config(mock_system_config, populat
 
 
 @pytest.mark.asyncio
-async def test_ssh_control_list_machines_with_tags(mock_system_config, populated_mcp_config):
+async def test_ssh_control_list_machines_with_tags(mock_system_config, populated_server_config):
     """Test listing machines with tag filtering."""
-    plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, populated_mcp_config)
+    plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, populated_server_config)
     
     # List all machines
-    result = await plugin_instance.mcp_server.list_machines({})
+    result = await plugin_instance.tool_server.list_machines({})
     assert result['count'] == 2
     
     # Filter by production tag
-    result = await plugin_instance.mcp_server.list_machines({'tags': ['production']})
+    result = await plugin_instance.tool_server.list_machines({'tags': ['production']})
     assert result['count'] == 1
     assert result['machines'][0]['name'] == 'test-server1'
     
     # Filter by staging tag
-    result = await plugin_instance.mcp_server.list_machines({'tags': ['staging']})
+    result = await plugin_instance.tool_server.list_machines({'tags': ['staging']})
     assert result['count'] == 1
     assert result['machines'][0]['name'] == 'test-server2'

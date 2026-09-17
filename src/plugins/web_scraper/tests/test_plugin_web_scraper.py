@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from agent_system.config.models import AgentConfig, MCPConfig
+from agent_system.config.models import AgentConfig, ToolServerConfig
 from agent_system.plugins.cache import PluginCache
 from plugins.web_scraper.server import WebScraperSSRFError, WebScraperServer
 
@@ -30,8 +30,8 @@ PAGE = """<html><head><title>Copper (Amiga)</title>
 
 
 @pytest.fixture
-def server(mock_system_config, mock_mcp_config, tmp_path):
-    srv = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+def server(mock_system_config, mock_server_config, tmp_path):
+    srv = WebScraperServer("web_scraper", mock_system_config, mock_server_config)
     # PluginCache persists under data/cache/; keep tests out of it.
     srv.cache = PluginCache("web_scraper", cache_dir=tmp_path / "cache")
     return srv
@@ -39,7 +39,7 @@ def server(mock_system_config, mock_mcp_config, tmp_path):
 
 @pytest.fixture
 def downloader(mock_system_config, tmp_path):
-    cfg = MCPConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
+    cfg = ToolServerConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
     cfg.allowed_directories = [str(tmp_path / "dl")]
     cfg.max_download_mb = 0.001  # 1048 bytes
     srv = WebScraperServer("web_scraper", mock_system_config, cfg)
@@ -460,7 +460,7 @@ async def test_a_configured_user_agent_replaces_the_browser_pool(mock_system_con
     policy). Without the key the pool keeps rotating."""
     from plugins.web_scraper.server import _USER_AGENTS
 
-    cfg = MCPConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
+    cfg = ToolServerConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
     cfg.user_agent = "ScarabHive-research/1.0 (contact@example.com)"
     fixed = WebScraperServer("web_scraper", mock_system_config, cfg)
     fixed.cache = PluginCache("web_scraper", cache_dir=tmp_path / "c1")
@@ -471,7 +471,7 @@ async def test_a_configured_user_agent_replaces_the_browser_pool(mock_system_con
     assert captured["headers"]["User-Agent"] == "ScarabHive-research/1.0 (contact@example.com)"
 
     plain = WebScraperServer("web_scraper", mock_system_config,
-                             MCPConfig(type="web_scraper", enabled=True, agent_config=AgentConfig()))
+                             ToolServerConfig(type="web_scraper", enabled=True, agent_config=AgentConfig()))
     plain.cache = PluginCache("web_scraper", cache_dir=tmp_path / "c2")
     with mock_httpx(captured):
         await plain.call("web_scraper_page", {"url": "https://example.com/", "_status": AsyncMock()})

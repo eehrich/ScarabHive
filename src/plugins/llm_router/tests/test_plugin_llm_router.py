@@ -15,15 +15,15 @@ class TestLLMRouterServerNew:
     """Test the new multi-tool LLM router server functionality."""
 
     @pytest.mark.asyncio
-    async def test_server_initialization(self, mock_system_config, mock_mcp_config):
+    async def test_server_initialization(self, mock_system_config, mock_server_config):
         """Test server initializes correctly."""
-        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
         assert server.name == "llm_router"
         # ssl_verify is not relevant for llm_router (no HTTP requests)
         assert hasattr(server, 'llm_config')
 
     @pytest.mark.asyncio
-    async def test_server_with_parent_llm_config(self, mock_system_config, mock_mcp_config):
+    async def test_server_with_parent_llm_config(self, mock_system_config, mock_server_config):
         """Test server with parent LLM configuration."""
         from types import SimpleNamespace
         
@@ -40,11 +40,11 @@ class TestLLMRouterServerNew:
         )
         mock_system_config.llm_system = mock_llm_system
         
-        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
         assert server.llm_config == mock_llm_system
 
     @pytest.mark.asyncio
-    async def test_get_tools_structure(self, mock_system_config, mock_mcp_config):
+    async def test_get_tools_structure(self, mock_system_config, mock_server_config):
         """Test that get_tools returns correct multi-tool structure."""
         from types import SimpleNamespace
         
@@ -54,7 +54,7 @@ class TestLLMRouterServerNew:
         )
         mock_system_config.llm_system = mock_llm_system
         
-        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
         tools = server.get_tools()
 
         # Should have 2 tools: chat and list_profiles
@@ -76,9 +76,9 @@ class TestLLMRouterServerNew:
         assert "profile" in chat_params["required"]
 
     @pytest.mark.asyncio
-    async def test_chat_tool_missing_profile(self, mock_system_config, mock_mcp_config):
+    async def test_chat_tool_missing_profile(self, mock_system_config, mock_server_config):
         """Test chat tool with missing profile parameter."""
-        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
         mock_status = AsyncMock()
         
         result = await server.call("llm_router_chat", {"message": "Hello", "_status": mock_status})
@@ -86,9 +86,9 @@ class TestLLMRouterServerNew:
         assert "Profile parameter is required" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_chat_tool_missing_message(self, mock_system_config, mock_mcp_config):
+    async def test_chat_tool_missing_message(self, mock_system_config, mock_server_config):
         """Test chat tool with missing message."""
-        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
         mock_status = AsyncMock()
         
         result = await server.call("llm_router_chat", {"profile": "test", "_status": mock_status})
@@ -96,7 +96,7 @@ class TestLLMRouterServerNew:
         assert "No message or messages provided" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_list_profiles_tool(self, mock_system_config, mock_mcp_config):
+    async def test_list_profiles_tool(self, mock_system_config, mock_server_config):
         """Test list_profiles tool functionality."""
         from types import SimpleNamespace
         
@@ -112,7 +112,7 @@ class TestLLMRouterServerNew:
         )
         mock_system_config.llm_system = mock_llm_system
         
-        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
         mock_status = AsyncMock()
         
         result = await server.call("llm_router_list_profiles", {"_status": mock_status})
@@ -126,9 +126,9 @@ class TestLLMRouterServerNew:
         assert "normal" in profiles
 
     @pytest.mark.asyncio
-    async def test_unknown_tool(self, mock_system_config, mock_mcp_config):
+    async def test_unknown_tool(self, mock_system_config, mock_server_config):
         """Test calling unknown tool raises ValueError."""
-        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
         
         with pytest.raises(ValueError, match="not found"):
             await server.call("unknown_tool", {"_status": AsyncMock()})
@@ -137,7 +137,7 @@ class TestLLMRouterServerNew:
     # Old default-action test removed as obsolete.
 
     @pytest.mark.asyncio
-    async def test_chat_with_profile_success(self, mock_system_config, mock_mcp_config):
+    async def test_chat_with_profile_success(self, mock_system_config, mock_server_config):
         """Test successful chat with profile (mocked)."""
         from types import SimpleNamespace
         
@@ -147,7 +147,7 @@ class TestLLMRouterServerNew:
         )
         mock_system_config.llm_system = mock_llm_system
         
-        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
         mock_status = AsyncMock()
         
         # Mock the make_client method to return a mock client

@@ -1,4 +1,4 @@
-"""Server bootstrap for MCP plugin system.
+"""Server bootstrap for plugin system.
 
 Thin facade over ``agent_system.runtime``: discovering, declaring and building
 the configured servers lives there now, in one place instead of in every
@@ -10,14 +10,14 @@ from __future__ import annotations
 import logging
 
 from ..config.models import AgentSystemConfig
-from ..mcp.base import MCPRegistry
+from ..tools.base import ToolServerRegistry
 from ..runtime import Runtime, configure_process_singletons
 
 logger = logging.getLogger(__name__)
 
 
-def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
-    """Discover and register all configured MCP servers into *registry*.
+def bootstrap_servers(config: AgentSystemConfig, registry: ToolServerRegistry) -> None:
+    """Discover and register all configured tool servers into *registry*.
 
     Everything enabled is built here (eager), as before.
     """

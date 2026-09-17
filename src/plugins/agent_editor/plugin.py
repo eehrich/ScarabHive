@@ -10,14 +10,14 @@ from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 from .endpoints import AgentEditorWebEndpoints
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 
 class AgentEditorPlugin(SchemaBasedPluginWebInterface):
     """Web-only plugin: the Agent Editor panel."""
 
-    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name: str, system_config: "AgentSystemConfig", server_config: "ToolServerConfig"):
+        super().__init__(name, system_config, server_config)
         auth = getattr(system_config, "auth", None)
         self.auth_enabled = bool(auth and auth.enabled)
         self.web_endpoints = AgentEditorWebEndpoints(self)

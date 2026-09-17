@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 from agent_system.hooks.plugin_hook import HookContext
 from agent_system.llm.models import ChatMessage
 
@@ -26,9 +26,9 @@ def config():
 
 
 @pytest.fixture
-def mcp_config():
-    """Create test MCP config."""
-    cfg = MagicMock(spec=MCPConfig)
+def server_config():
+    """Create test tool server config."""
+    cfg = MagicMock(spec=ToolServerConfig)
     cfg.max_depth = 10
     cfg.session_ttl_seconds = 60
     cfg.max_frames_in_prompt = 3
@@ -36,9 +36,9 @@ def mcp_config():
 
 
 @pytest.fixture
-def server(config, mcp_config):
+def server(config, server_config):
     """Create test server."""
-    return CognitiveStackServer("test_stack", config, mcp_config)
+    return CognitiveStackServer("test_stack", config, server_config)
 
 
 @pytest.fixture

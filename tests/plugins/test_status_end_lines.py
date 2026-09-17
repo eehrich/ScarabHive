@@ -38,8 +38,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
-from agent_system.mcp.status import StatusPhase, get_status_bus
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.tools.status import StatusPhase, get_status_bus
 
 #: Budget for one status row. terminal/_short_cmd caps the SUBJECT at 70; a
 #: whole line is subject plus a short result, so twice that is generous and
@@ -259,7 +259,7 @@ def todo_server(tmp_path: Path):
     cfg.max_tasks_per_session = 100
     cfg.enable_dependencies = True
     cfg.auto_save = True
-    return TodoServer(name="todo", system_config=MagicMock(), mcp_config=cfg)
+    return TodoServer(name="todo", system_config=MagicMock(), server_config=cfg)
 
 
 async def test_todo_create_names_the_title_not_only_the_id(todo_server):
@@ -307,7 +307,7 @@ def forum_server(tmp_path: Path):
     from plugins.debate_forum.database import DebateForumDB
     from plugins.debate_forum.server import DebateForumServer
     return DebateForumServer(
-        "debate_forum", AgentSystemConfig(), MCPConfig(type="debate_forum"),
+        "debate_forum", AgentSystemConfig(), ToolServerConfig(type="debate_forum"),
         db=DebateForumDB(str(tmp_path / "forum.db")))
 
 
@@ -380,9 +380,9 @@ def test_no_uncovered_entry_is_stale():
 # ── sequential_thinking (pure in-memory) ──────────────────────────────────
 
 async def test_sequential_thinking_names_session_and_count():
-    from agent_system.config.models import MCPConfig as _MCPConfig
+    from agent_system.config.models import ToolServerConfig as _ToolServerConfig
     from plugins.sequential_thinking.server import SequentialThinkingServer
-    cfg = _MCPConfig(type="sequential_thinking", enabled=True)
+    cfg = _ToolServerConfig(type="sequential_thinking", enabled=True)
     cfg.max_history_size = 20
     server = SequentialThinkingServer("seq", AgentSystemConfig(), cfg)
 
@@ -400,9 +400,9 @@ async def test_sequential_thinking_names_session_and_count():
 
 
 async def test_sequential_thinking_clear_names_the_session():
-    from agent_system.config.models import MCPConfig as _MCPConfig
+    from agent_system.config.models import ToolServerConfig as _ToolServerConfig
     from plugins.sequential_thinking.server import SequentialThinkingServer
-    cfg = _MCPConfig(type="sequential_thinking", enabled=True)
+    cfg = _ToolServerConfig(type="sequential_thinking", enabled=True)
     cfg.max_history_size = 20
     server = SequentialThinkingServer("seq", AgentSystemConfig(), cfg)
     await server.execute({"thought": "t", "thought_number": 1, "total_thoughts": 1,
@@ -450,7 +450,7 @@ async def test_script_interpreter_reset_names_the_session():
 
 @pytest.fixture
 def log_server(tmp_path: Path):
-    from plugins.log_viewer.mcp_server import LogViewerMCPServer
+    from plugins.log_viewer.tool_server import LogViewerToolServer
     log = tmp_path / "agent.log"
     log.write_text("\n".join(["first line", "ERROR boom", "third line", ""]),
                    encoding="utf-8")
@@ -461,7 +461,7 @@ def log_server(tmp_path: Path):
     other.write_text("nothing to see here" + chr(10), encoding="utf-8")
     cfg = MagicMock()
     cfg.log_files = [str(log), str(other)]
-    return LogViewerMCPServer("log_viewer", AgentSystemConfig(), cfg), str(log)
+    return LogViewerToolServer("log_viewer", AgentSystemConfig(), cfg), str(log)
 
 
 async def test_log_viewer_list_counts_the_files(log_server):
@@ -502,7 +502,7 @@ async def test_mcp_client_list_servers_counts_them():
     from types import SimpleNamespace
 
     from plugins.mcp_client.server import MCPClientServer
-    server = MCPClientServer("mcp_client", AgentSystemConfig(), MCPConfig(type="mcp_client"))
+    server = MCPClientServer("mcp_client", AgentSystemConfig(), ToolServerConfig(type="mcp_client"))
     # Three CONFIGURED, none connected -- via the pool's own configure(), not
     # a mock. With an empty pool both counts were 0, and then `len(configured)`,
     # `len(connected)` and a hard-coded 0 all render the same: the test could
@@ -601,7 +601,7 @@ async def test_audio_ops_list_counts_the_files(tmp_path: Path):
 async def test_duckduckgo_cache_hit_names_query_and_count():
     from plugins.duckduckgo_search.server import DuckDuckGoSearchServer
     server = DuckDuckGoSearchServer("duckduckgo_search", AgentSystemConfig(),
-                                    MCPConfig(type="duckduckgo_search"))
+                                    ToolServerConfig(type="duckduckgo_search"))
     cached = {"query": "kontextkompaktierung", "results": [1, 2, 3]}
 
     with patch.object(server.cache, "get", return_value=cached):
@@ -624,7 +624,7 @@ async def test_web_scraper_cache_hit_reports_the_operations_own_result(
         operation, expected):
     from plugins.web_scraper.server import WebScraperServer
     server = WebScraperServer("web_scraper", AgentSystemConfig(),
-                              MCPConfig(type="web_scraper"))
+                              ToolServerConfig(type="web_scraper"))
     link = {"href": "/a", "abs_url": "https://example.org/a", "text": "a", "rel": []}
     cached = {"text": "x" * 120, "links": [link, link, link], "status_code": 200,
               "final_url": "https://example.org/a", "title": "A"}
@@ -642,7 +642,7 @@ async def test_tavily_extract_cache_hit_counts_what_was_extracted():
     from plugins.tavily_search.server import TavilySearchServer
     with patch.dict("os.environ", {"TAVILY_API_KEY": "test-key"}):
         server = TavilySearchServer("tavily_search", AgentSystemConfig(),
-                                    MCPConfig(type="tavily_search"))
+                                    ToolServerConfig(type="tavily_search"))
     # A partial extraction, which is cached as-is: one page of three URLs.
     cached = {"results": [{"url": "a"}], "failed_results": [{"url": "b"}, {"url": "c"}],
               "success_count": 1, "failed_count": 2}
@@ -662,7 +662,7 @@ async def test_tool_script_reports_how_many_calls_it_made():
     plugin needs a live one was true of the sandbox, not of the end line."""
     from plugins.tool_script.server import ToolScriptServer
     server = ToolScriptServer("tool_script", AgentSystemConfig(),
-                              MCPConfig(type="tool_script"))
+                              ToolServerConfig(type="tool_script"))
 
     result, closing = await run_tool(server, "tool_script_run_script", {
         "script": "result = 1 + 1", "_agent": MagicMock()})

@@ -8,7 +8,7 @@ import sys
 import types
 from typing import Any, Callable, Dict, Iterable, List, Set
 
-from ..mcp.base import MCPServer
+from ..tools.base import ToolServer
 from .plugin_manifest import load_plugin_metadata
 
 logger = logging.getLogger(__name__)
@@ -139,7 +139,7 @@ def _already_loaded(module_name: str, plugin_file: Path):
     return None
 
 
-def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
+def discover_plugins(path: Path) -> Dict[str, Callable[..., ToolServer]]:
     """Discover plugins in a directory.
 
     Rules:
@@ -148,7 +148,7 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
     - Single file plugin: <dir>/<name>.py with PLUGIN_FACTORY or register(). Name = file stem.
     - If a PLUGIN_NAME constant is present it overrides the folder/file name (backwards compatibility).
     """
-    out: Dict[str, Callable[..., MCPServer]] = {}
+    out: Dict[str, Callable[..., ToolServer]] = {}
     if not (path and path.exists() and path.is_dir()):
         return out
 
@@ -298,27 +298,37 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
     return out
 
 
-def discover_entrypoint_plugins(group: str = "agent_system.mcp_plugins") -> Dict[str, Callable[..., MCPServer]]:
+#: Entry point group a packaged plugin declares to be discovered.
+ENTRYPOINT_GROUP = "agent_system.tool_plugins"
+#: What it was called before the rename; still read, see discover_entrypoint_plugins.
+LEGACY_ENTRYPOINT_GROUP = "agent_system.mcp_plugins"
+
+
+def discover_entrypoint_plugins(group: str = ENTRYPOINT_GROUP) -> Dict[str, Callable[..., ToolServer]]:
     """Discover plugins exposed via Python entry points.
 
-    Entry point group defaults to 'agent_system.mcp_plugins'. Each
+    Entry point group defaults to 'agent_system.tool_plugins'. Each
     entry point should return a callable factory that accepts
-    (name, system_config, mcp_config) -- plus ``registry=`` when the factory
-    carries ``_accepts_registry`` -- and returns an MCPServer
+    (name, system_config, server_config) -- plus ``registry=`` when the factory
+    carries ``_accepts_registry`` -- and returns a ToolServer
     (see ``runtime._construct``).
     """
-    out: Dict[str, Callable[..., MCPServer]] = {}
+    out: Dict[str, Callable[..., ToolServer]] = {}
     try:
         # importlib.metadata.entry_points API varies between Python versions
         from importlib import metadata
         eps = metadata.entry_points()
         # try to select by group if available
+        # The group was called agent_system.mcp_plugins until 17.09.2026. A
+        # plugin installed from outside this repo still declares that name, and
+        # an entry point nobody looks for disappears without a word.
+        groups = (group, LEGACY_ENTRYPOINT_GROUP) if group == ENTRYPOINT_GROUP else (group,)
         try:
-            selected = list(eps.select(group=group))
+            selected = [ep for g in groups for ep in eps.select(group=g)]
         except Exception as e:
             # older API returns a list-like; filter manually
             logger.debug(f"Failed to use entry_points.select(), falling back to manual filtering: {e}")
-            selected = [ep for ep in eps if getattr(ep, "group", None) == group]
+            selected = [ep for ep in eps if getattr(ep, "group", None) in groups]
 
         for ep in selected:
             try:
@@ -400,13 +410,13 @@ def default_plugin_dirs() -> list[Path]:
     return source_dirs
 
 
-def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent_system.mcp_plugins") -> Dict[str, Callable[..., MCPServer]]:
+def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = ENTRYPOINT_GROUP) -> Dict[str, Callable[..., ToolServer]]:
     """Discover plugins from filesystem directories and entry points.
 
     dirs: iterable of Path objects to search for filesystem plugins.
     group: entry point group to query for packaged plugins.
     """
-    plugins: Dict[str, Callable[..., MCPServer]] = {}
+    plugins: Dict[str, Callable[..., ToolServer]] = {}
 
     # Use only explicitly provided `dirs` for filesystem discovery when
     # available. If none are provided, attempt to locate an importable
@@ -489,7 +499,7 @@ async def register_plugin_hooks(
         hooks_config: Global hooks configuration, ``load_hooks_config(settings)``
             (optional; defaults -- no overrides -- if not provided)
         instance_hook_config: The server INSTANCE's ``hook_config`` mapping from
-            its (merged) MCPConfig. ``enabled: false`` disables every hook of
+            its (merged) ToolServerConfig. ``enabled: false`` disables every hook of
             this instance at registration (below the operator's global
             ``hooks.overrides``); any other value changes nothing. Lower-only,
             so an instance can ship dark next to an enabled sibling, while
@@ -637,7 +647,7 @@ async def register_plugin_hooks(
             }
             
             # Skip if hook already registered (e.g., HTTP server registered
-            # it via MCPIntegration AND CLI subprocess calls
+            # it via ToolServerIntegration AND CLI subprocess calls
             # ``register_bootstrapped_plugin_hooks`` in the same process — or
             # any other re-entry path). Without this guard the second pass
             # raises ValueError per hook and floods the log with tracebacks.
@@ -683,7 +693,7 @@ async def register_plugin_hooks(
 
 
 # Override warnings already logged in this process: both registration paths
-# (MCPIntegration and register_bootstrapped_plugin_hooks) may run in one process.
+# (ToolServerIntegration and register_bootstrapped_plugin_hooks) may run in one process.
 _REPORTED_OVERRIDE_WARNINGS: Set[str] = set()
 
 
@@ -699,7 +709,7 @@ def warn_unknown_hook_overrides(settings: Any, registry: Any = None) -> List[str
     Each message is logged once per process. Returns all messages (for tests).
     """
     from ..hooks import get_hook_registry
-    from ..config.settings import get_mcp_config_by_name
+    from ..config.settings import get_tool_server_config
 
     if registry is None:
         registry = get_hook_registry()
@@ -722,7 +732,7 @@ def warn_unknown_hook_overrides(settings: Any, registry: Any = None) -> List[str
         if not getattr(server_cfg, "enabled", False):
             continue
         try:
-            agent_config = getattr(get_mcp_config_by_name(server_name, settings), "agent_config", None)
+            agent_config = getattr(get_tool_server_config(server_name, settings), "agent_config", None)
         except Exception:
             logger.debug("No merged config for '%s'", server_name, exc_info=True)
             continue
@@ -751,7 +761,7 @@ async def register_bootstrapped_plugin_hooks(settings: Any | None = None) -> Lis
     """Register hooks for all plugins already loaded into the global plugin registry.
 
     The HTTP agent server registers plugin hooks via
-    ``MCPIntegration._register_plugin_hooks``. CLI subprocesses (e.g.
+    ``ToolServerIntegration._register_plugin_hooks``. CLI subprocesses (e.g.
     ``writer_audio produce``) only call ``bootstrap_servers`` and never get
     hooks wired up, so listeners like the message debugger silently miss
     every LLM call made from the CLI.
@@ -771,15 +781,15 @@ async def register_bootstrapped_plugin_hooks(settings: Any | None = None) -> Lis
     if _BOOTSTRAPPED_HOOKS_REGISTERED:
         return []
 
-    from ..plugins.mcp_adapter import plugin_mcp_registry
+    from ..plugins.tool_adapter import plugin_tool_registry
     from ..hooks import load_hooks_config
-    from ..config.settings import get_mcp_config_by_name
+    from ..config.settings import get_tool_server_config
 
     hooks_config = load_hooks_config(settings)
     all_registered: List[str] = []
 
-    for server_name in plugin_mcp_registry.list_servers():
-        server = plugin_mcp_registry.get_server(server_name)
+    for server_name in plugin_tool_registry.list_servers():
+        server = plugin_tool_registry.get_server(server_name)
         if not server or not hasattr(server, 'plugin_schema') or not server.plugin_schema:
             continue
         plugin_schema = server.plugin_schema
@@ -791,8 +801,8 @@ async def register_bootstrapped_plugin_hooks(settings: Any | None = None) -> Lis
             plugin_instance = plugin_instance.hooks_plugin
 
         try:
-            mcp_cfg = get_mcp_config_by_name(server_name, settings) if settings else None
-            instance_hook_config = getattr(mcp_cfg, 'hook_config', None) if mcp_cfg else None
+            server_cfg = get_tool_server_config(server_name, settings) if settings else None
+            instance_hook_config = getattr(server_cfg, 'hook_config', None) if server_cfg else None
         except Exception:
             logger.debug("No merged config for '%s'", server_name, exc_info=True)
             instance_hook_config = None

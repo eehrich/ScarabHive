@@ -15,7 +15,7 @@ from typing import Any
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="plugins.sequential_thinking",
-        description="Sequential Thinking MCP Server - Step-by-step reasoning with branching and revision"
+        description="Sequential Thinking Tool Server - Step-by-step reasoning with branching and revision"
     )
 
     # Operation selection
@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # Server mode options
-    parser.add_argument("--server", action="store_true", help="Run in server mode (MCP server)")
+    parser.add_argument("--server", action="store_true", help="Run in server mode (tool server)")
     parser.add_argument("--port", type=int, default=9011, help="Port to listen on when in server mode")
 
     # Misc
@@ -106,23 +106,23 @@ async def async_main():
     args = parser.parse_args()
 
     from .plugin import PLUGIN_FACTORY
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
     
     # Create minimal config for CLI usage
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(type="sequential_thinking", enabled=True)
+    server_config = ToolServerConfig(type="sequential_thinking", enabled=True)
     
-    server = PLUGIN_FACTORY("sequential_thinking", system_config, mcp_config)
+    server = PLUGIN_FACTORY("sequential_thinking", system_config, server_config)
 
     if args.server:
-        print(f"Starting Sequential Thinking MCP Server on port {args.port}")
+        print(f"Starting Sequential Thinking Tool Server on port {args.port}")
         try:
-            from agent_system.servers.http_server import serve_mcp_server
+            from agent_system.servers.http_server import serve_tool_server
         except Exception:
-            print("serve_mcp_server not available; cannot start HTTP server")
+            print("serve_tool_server not available; cannot start HTTP server")
             return
 
-        await serve_mcp_server(server, port=args.port)
+        await serve_tool_server(server, port=args.port)
     else:
         try:
             from unittest.mock import AsyncMock
@@ -176,13 +176,13 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     summary: dict[str, Any] = {
-        "description": "Sequential Thinking MCP Server",
+        "description": "Sequential Thinking Tool Server",
         "operation": args.operation,
         "server_mode": args.server,
         "port": args.port,
     }
 
-    print("Sequential Thinking MCP Server")
+    print("Sequential Thinking Tool Server")
     print(json.dumps(summary))
 
 

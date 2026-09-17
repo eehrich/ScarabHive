@@ -2,7 +2,7 @@
 Lessons Learned Plugin Factory
 
 Hybrid MCP+Hook+Web plugin:
-- MCP tools via LessonsLearnedServer
+- tools via LessonsLearnedServer
 - Hooks via LessonsLearnedServer.on_pre_llm_call / on_session_end
 - Web UI via LessonsWebFactory
 
@@ -20,15 +20,15 @@ from .server import LessonsLearnedServer
 from .web_endpoints import LessonsWebFactory
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
     from agent_system.hooks import HookContext, HookResult
 
 
 class LessonsLearnedHybridPlugin:
     """
-    Hybrid plugin combining MCP tools, hooks, and web interface.
+    Hybrid plugin combining tools, hooks, and web interface.
 
-    - Delegates MCP tools to LessonsLearnedServer
+    - Delegates tools to LessonsLearnedServer
     - Delegates hooks to server.on_pre_llm_call / on_session_end
     - Provides web router via LessonsWebFactory
     """
@@ -37,24 +37,24 @@ class LessonsLearnedHybridPlugin:
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPConfig",
+        server_config: "ToolServerConfig",
     ):
         self.name = name
         self.system_config = system_config
-        self.mcp_config = mcp_config
+        self.server_config = server_config
 
-        # Create MCP server instance (provides tools + hooks)
-        self.server = LessonsLearnedServer(name, system_config, mcp_config)
+        # Create tool server instance (provides tools + hooks)
+        self.server = LessonsLearnedServer(name, system_config, server_config)
 
         # Create web factory (provides REST API + HTML)
         self.web_factory = LessonsWebFactory(self.server)
 
     # =========================================================================
-    # MCP Interface (delegate to server)
+    # Tool interface (delegate to server)
     # =========================================================================
 
     async def call(self, tool: str | None = None, params: dict | None = None, *args: Any, **kwargs: Any) -> Any:
-        """Legacy MCP call interface (delegate to server)."""
+        """Legacy tool call interface (delegate to server)."""
         if tool is None and params is None:
             return {
                 "status": "ok",
@@ -65,7 +65,7 @@ class LessonsLearnedHybridPlugin:
         return await self.server.call_with_status(tool, params or {})
 
     def get_tools(self) -> list[dict[str, Any]]:
-        """Expose MCP tools from server."""
+        """Expose tools from server."""
         return self.server.get_tools()
 
     async def call_tool(self, tool_name: str, arguments: dict) -> Any:
@@ -89,7 +89,7 @@ class LessonsLearnedHybridPlugin:
     # =========================================================================
 
     def get_schema_data(self) -> dict[str, Any]:
-        """Delegate schema loading to MCP server (SchemaBasedMCPServer)."""
+        """Delegate schema loading to tool server (SchemaBasedToolServer)."""
         return self.server.get_schema_data()
 
     # =========================================================================
@@ -108,7 +108,7 @@ class LessonsLearnedHybridPlugin:
 def PLUGIN_FACTORY(
     name: str,
     system_config: "AgentSystemConfig",
-    mcp_config: "MCPConfig",
+    server_config: "ToolServerConfig",
 ) -> LessonsLearnedHybridPlugin:
     """
     Factory function for creating LessonsLearnedHybridPlugin instances.
@@ -116,9 +116,9 @@ def PLUGIN_FACTORY(
     Args:
         name: Plugin name
         system_config: System-level configuration
-        mcp_config: MCP client configuration
+        server_config: MCP client configuration
 
     Returns:
         LessonsLearnedHybridPlugin instance (MCP+Hook+Web)
     """
-    return LessonsLearnedHybridPlugin(name, system_config, mcp_config)
+    return LessonsLearnedHybridPlugin(name, system_config, server_config)

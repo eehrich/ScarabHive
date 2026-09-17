@@ -4,30 +4,30 @@ Comprehensive tests for the Agent System MCP architecture.
 import pytest
 from unittest.mock import AsyncMock
 
-from agent_system.mcp.base import MCPRegistry, MCPServer
+from agent_system.tools.base import ToolServerRegistry, ToolServer
 from agent_system.config.models import AgentConfig
 from agent_system.servers.agent.server import Agent
 
 
-class MockMCPServer(MCPServer):
-    """Mock MCP server for testing."""
+class MockToolServer(ToolServer):
+    """Mock tool server for testing."""
 
     def __init__(self, name: str, config_dict: dict = None):
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
 
         # Create proper config objects
         system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type=name, enabled=True, agent_config=AgentConfig())
+        server_config = ToolServerConfig(type=name, enabled=True, agent_config=AgentConfig())
 
         # Store the config dict for test assertions
         self.config = config_dict or {}
 
-        # Copy config_dict attributes to mcp_config
+        # Copy config_dict attributes to server_config
         if config_dict:
             for key, value in config_dict.items():
-                setattr(mcp_config, key, value)
+                setattr(server_config, key, value)
 
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         self.call_history = []
 
     @property
@@ -73,13 +73,13 @@ class MockMCPServer(MCPServer):
         return "test"
 
 
-class TestMCPRegistry:
-    """Test the MCP Registry functionality."""
+class TestToolServerRegistry:
+    """Test the Tool registry functionality."""
 
     def test_registry_register_and_get(self):
         """Test server registration and retrieval."""
-        registry = MCPRegistry()
-        server = MockMCPServer("test_server")
+        registry = ToolServerRegistry()
+        server = MockToolServer("test_server")
 
         registry.register("test", server)
         retrieved = registry.get("test")
@@ -89,9 +89,9 @@ class TestMCPRegistry:
 
     def test_registry_list(self):
         """Test listing registered servers."""
-        registry = MCPRegistry()
-        server1 = MockMCPServer("server1")
-        server2 = MockMCPServer("server2")
+        registry = ToolServerRegistry()
+        server1 = MockToolServer("server1")
+        server2 = MockToolServer("server2")
 
         registry.register("s1", server1)
         registry.register("s2", server2)
@@ -101,19 +101,19 @@ class TestMCPRegistry:
 
     def test_registry_get_nonexistent(self):
         """Test retrieving non-existent server raises KeyError."""
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
 
         with pytest.raises(KeyError):
             registry.get("nonexistent")
 
 
-class TestMockMCPServer:
-    """Test the mock MCP server."""
+class TestMockToolServer:
+    """Test the mock tool server."""
 
     @pytest.mark.asyncio
     async def test_server_call(self):
         """Test server call functionality."""
-        server = MockMCPServer("test_server")
+        server = MockToolServer("test_server")
 
         result = await server.call("test", {"query": "hello"})
 
@@ -124,7 +124,7 @@ class TestMockMCPServer:
 
     def test_server_schema(self):
         """Test server schema generation."""
-        server = MockMCPServer("test_server")
+        server = MockToolServer("test_server")
         schema = server.get_schema()
 
         assert schema["type"] == "function"
@@ -134,7 +134,7 @@ class TestMockMCPServer:
 
     def test_server_default_action(self):
         """Test default action."""
-        server = MockMCPServer("test_server")
+        server = MockToolServer("test_server")
         assert server.get_default_action() == "test"
 
 
@@ -151,15 +151,15 @@ class TestAgent:
 
     def test_agent_initialization_without_llm(self):
         """Test agent initialization when LLM fails."""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
         agent_config = self.create_test_config()
         system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-        registry = MCPRegistry()
+        server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+        registry = ToolServerRegistry()
 
         # Agent should initialize even if LLM fails
-        agent = Agent("test_agent", system_config, mcp_config, registry)
+        agent = Agent("test_agent", system_config, server_config, registry)
         assert agent.llm is None
         assert agent.agent_config is agent_config
         assert agent.registry is registry
@@ -167,14 +167,14 @@ class TestAgent:
     @pytest.mark.asyncio
     async def test_agent_run_without_llm(self):
         """Test agent run when no LLM is available."""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
         agent_config = self.create_test_config()
         system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-        registry = MCPRegistry()
+        server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+        registry = ToolServerRegistry()
 
-        agent = Agent("test_agent", system_config, mcp_config, registry)
+        agent = Agent("test_agent", system_config, server_config, registry)
 
         from agent_system.servers.agent.result_utils import collect_final_result
         result = await collect_final_result(agent, "test task")
@@ -185,21 +185,21 @@ class TestAgent:
 
     def test_agent_with_mock_registry(self):
         """Test agent with mock registry setup."""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
         agent_config = self.create_test_config()
         system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-        registry = MCPRegistry()
+        server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+        registry = ToolServerRegistry()
 
         # Add mock servers
-        server1 = MockMCPServer("search_server")
-        server2 = MockMCPServer("weather_server")
+        server1 = MockToolServer("search_server")
+        server2 = MockToolServer("weather_server")
 
         registry.register("search", server1)
         registry.register("weather", server2)
 
-        agent = Agent("test_agent", system_config, mcp_config, registry)
+        agent = Agent("test_agent", system_config, server_config, registry)
 
         # Verify registry is properly set up
         assert agent.registry.list() == ["search", "weather"]
@@ -220,14 +220,14 @@ class TestAgentEventStream:
     @pytest.mark.asyncio
     async def test_event_stream_without_llm(self):
         """Test event stream when no LLM is available."""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
         agent_config = self.create_test_config()
         system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-        registry = MCPRegistry()
+        server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+        registry = ToolServerRegistry()
 
-        agent = Agent("test_agent", system_config, mcp_config, registry)
+        agent = Agent("test_agent", system_config, server_config, registry)
 
         events = []
         async for event in agent.run_events("test task"):
@@ -254,18 +254,18 @@ class TestAgentValidation:
     @pytest.mark.asyncio
     async def test_agent_action_validation(self):
         """Test that agent validates actions against server schemas."""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
         agent_config = self.create_test_config()
         system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-        registry = MCPRegistry()
+        server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+        registry = ToolServerRegistry()
 
         # Create a mock server with specific actions
-        server = MockMCPServer("test_server")
+        server = MockToolServer("test_server")
         registry.register("test", server)
 
-        agent = Agent("test_agent", system_config, mcp_config, registry)
+        agent = Agent("test_agent", system_config, server_config, registry)
 
         # Mock the LLM to return a specific tool call
         mock_llm = AsyncMock()
@@ -293,12 +293,12 @@ class TestIntegration:
 
     def test_registry_with_multiple_servers(self):
         """Test registry with multiple different server types."""
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
 
         # Create different types of mock servers
-        search_server = MockMCPServer("search", {"type": "search"})
-        weather_server = MockMCPServer("weather", {"type": "weather"})
-        datetime_server = MockMCPServer("datetime", {"type": "datetime"})
+        search_server = MockToolServer("search", {"type": "search"})
+        weather_server = MockToolServer("weather", {"type": "weather"})
+        datetime_server = MockToolServer("datetime", {"type": "datetime"})
 
         registry.register("search", search_server)
         registry.register("weather", weather_server)
@@ -318,10 +318,10 @@ class TestIntegration:
 @pytest.fixture
 def mock_registry():
     """Fixture providing a registry with mock servers."""
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
 
-    search_server = MockMCPServer("search_server")
-    weather_server = MockMCPServer("weather_server")
+    search_server = MockToolServer("search_server")
+    weather_server = MockToolServer("weather_server")
 
     registry.register("search", search_server)
     registry.register("weather", weather_server)
@@ -340,12 +340,12 @@ def test_config():
 @pytest.fixture
 def test_agent(test_config, mock_registry):
     """Fixture providing a test agent."""
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=test_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=test_config)
 
-    return Agent("test_agent", system_config, mcp_config, mock_registry)
+    return Agent("test_agent", system_config, server_config, mock_registry)
 
 
 class TestWithFixtures:

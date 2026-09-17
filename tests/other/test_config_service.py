@@ -21,18 +21,18 @@ def config_service():
 @pytest.fixture
 def mock_config():
     """Fixture providing a mock AgentSystemConfig with new structure."""
-    from agent_system.config.models import PluginsConfig, MCPConfig
+    from agent_system.config.models import PluginsConfig, ToolServerConfig
     return AgentSystemConfig(
         plugins=PluginsConfig(
             plugin_dirs=["src/plugins", "external/plugins"],
             servers={
-                "test_server": MCPConfig(
+                "test_server": ToolServerConfig(
                     enabled=True,
                     type="basic_agent",
                     command="test_command",
                     args=["arg1", "arg2"]
                 ),
-                "disabled_server": MCPConfig(
+                "disabled_server": ToolServerConfig(
                     enabled=False,
                     type="basic_agent",
                     command="disabled_command"
@@ -165,36 +165,36 @@ class TestConfigServiceLogging:
             assert call_kwargs['level'] == logging.INFO
 
 
-class TestMCPServerConfig:
-    """Test MCP server configuration access."""
+class TestToolServerConfig:
+    """Test tool server configuration access."""
 
     def test_get_mcp_server_config_found(self, config_service, mock_config):
-        """Test getting existing MCP server config."""
+        """Test getting existing tool server config."""
         config_service._config = mock_config
         
-        server_config = config_service.get_mcp_server_config("test_server")
+        server_config = config_service.get_tool_server_config("test_server")
         
         assert server_config is not None
         assert server_config.enabled is True
         assert server_config.command == "test_command"
 
     def test_get_mcp_server_config_not_found(self, config_service, mock_config):
-        """Test getting non-existent MCP server config."""
+        """Test getting non-existent tool server config."""
         config_service._config = mock_config
         
-        server_config = config_service.get_mcp_server_config("nonexistent")
+        server_config = config_service.get_tool_server_config("nonexistent")
         
         assert server_config is None
 
     def test_get_mcp_server_config_no_config_loaded(self, config_service):
-        """Test getting MCP server config when no config is loaded."""
-        server_config = config_service.get_mcp_server_config("test_server")
+        """Test getting tool server config when no config is loaded."""
+        server_config = config_service.get_tool_server_config("test_server")
         
         assert server_config is None
 
     def test_get_mcp_server_config_with_explicit_config(self, config_service, mock_config):
-        """Test getting MCP server config with explicit config parameter."""
-        server_config = config_service.get_mcp_server_config(
+        """Test getting tool server config with explicit config parameter."""
+        server_config = config_service.get_tool_server_config(
             "test_server",
             config=mock_config
         )
@@ -204,13 +204,13 @@ class TestMCPServerConfig:
 
 
 class TestListMCPServers:
-    """Test MCP server listing functionality."""
+    """Test tool server listing functionality."""
 
     def test_list_all_servers(self, config_service, mock_config):
-        """Test listing all MCP servers."""
+        """Test listing all tool servers."""
         config_service._config = mock_config
         
-        servers = config_service.list_mcp_servers()
+        servers = config_service.list_tool_servers()
         
         assert len(servers) == 2
         assert "test_server" in servers
@@ -220,7 +220,7 @@ class TestListMCPServers:
         """Test listing only enabled servers."""
         config_service._config = mock_config
         
-        servers = config_service.list_mcp_servers(enabled_only=True)
+        servers = config_service.list_tool_servers(enabled_only=True)
         
         assert len(servers) == 1
         assert "test_server" in servers
@@ -228,13 +228,13 @@ class TestListMCPServers:
 
     def test_list_servers_no_config_loaded(self, config_service):
         """Test listing servers when no config is loaded."""
-        servers = config_service.list_mcp_servers()
+        servers = config_service.list_tool_servers()
         
         assert servers == {}
 
     def test_list_servers_with_explicit_config(self, config_service, mock_config):
         """Test listing servers with explicit config parameter."""
-        servers = config_service.list_mcp_servers(config=mock_config)
+        servers = config_service.list_tool_servers(config=mock_config)
         
         assert len(servers) == 2
 
@@ -342,9 +342,9 @@ plugins:
         
         # Access various parts
         assert config is not None
-        assert len(config_service.list_mcp_servers()) == 1
+        assert len(config_service.list_tool_servers()) == 1
         
-        server_config = config_service.get_mcp_server_config("test_server")
+        server_config = config_service.get_tool_server_config("test_server")
         assert server_config is not None
         assert server_config.command == "test_cmd"
         

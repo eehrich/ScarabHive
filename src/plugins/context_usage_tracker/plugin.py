@@ -173,17 +173,17 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
 class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
     """Hybrid plugin combining hooks and web UI for context usage tracking."""
 
-    def __init__(self, name: str, system_config: Dict[str, Any], mcp_config: Dict[str, Any]):
+    def __init__(self, name: str, system_config: Dict[str, Any], server_config: Dict[str, Any]):
         """
         Initialize the context usage tracker plugin.
 
         Args:
             name: Plugin name
             system_config: System configuration
-            mcp_config: MCP configuration
+            server_config: tool server configuration
         """
         # Initialize base class (loads schema automatically)
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         plugin_dir = Path(__file__).parent
 
@@ -192,13 +192,13 @@ class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
         # same machine) does not open the production store: constructing this
         # plugin now creates a database and migrates a legacy file, which is
         # not something an unrelated test should do to data/.
-        # getattr, not dict access: mcp_config is an MCPConfig pydantic model in
+        # getattr, not dict access: server_config is a ToolServerConfig pydantic model in
         # production (extra="allow", so config keys arrive as attributes) and a
         # plain dict only in tests. A dict-only read left both knobs inert.
         def _cfg(key: str, default: Any) -> Any:
-            if isinstance(mcp_config, dict):
-                return mcp_config.get(key, default)
-            return getattr(mcp_config, key, default)
+            if isinstance(server_config, dict):
+                return server_config.get(key, default)
+            return getattr(server_config, key, default)
 
         storage_path = _cfg("storage_path", None)
         self.tracker = UsageTracker(

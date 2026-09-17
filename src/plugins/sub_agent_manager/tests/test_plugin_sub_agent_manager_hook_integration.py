@@ -6,7 +6,7 @@ from datetime import datetime, UTC
 from plugins.sub_agent_manager.server import SubAgentManagerServer
 from agent_system.hooks.plugin_hook import HookContext, HookType
 from agent_system.llm.models import ChatMessage
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 
 
 @pytest.fixture
@@ -16,9 +16,9 @@ def system_config():
 
 
 @pytest.fixture
-def mcp_config():
-    """Mock MCP configuration with hook settings."""
-    return MCPConfig(
+def server_config():
+    """Mock tool server configuration with hook settings."""
+    return ToolServerConfig(
         enabled=True,
         storage_type="json",
         session_storage_dir="data/sessions",
@@ -35,9 +35,9 @@ def mcp_config():
 
 
 @pytest.mark.asyncio
-async def test_server_implements_hook_interface(system_config, mcp_config):
+async def test_server_implements_hook_interface(system_config, server_config):
     """Test that server correctly implements PluginHook interface."""
-    server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
+    server = SubAgentManagerServer("sub_agent_manager", system_config, server_config)
 
     # Verify hook method exists
     assert hasattr(server, "on_pre_llm_call")
@@ -45,9 +45,9 @@ async def test_server_implements_hook_interface(system_config, mcp_config):
 
 
 @pytest.mark.asyncio
-async def test_on_pre_llm_call_lazy_loading(system_config, mcp_config):
+async def test_on_pre_llm_call_lazy_loading(system_config, server_config):
     """Test that hook injector is lazy-loaded on first call."""
-    server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
+    server = SubAgentManagerServer("sub_agent_manager", system_config, server_config)
 
     # Mock manager
     with patch.object(server, '_get_manager') as mock_get_manager:
@@ -74,9 +74,9 @@ async def test_on_pre_llm_call_lazy_loading(system_config, mcp_config):
 
 
 @pytest.mark.asyncio
-async def test_on_pre_llm_call_injects_context(system_config, mcp_config):
+async def test_on_pre_llm_call_injects_context(system_config, server_config):
     """Test that hook properly injects sub-agent context."""
-    server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
+    server = SubAgentManagerServer("sub_agent_manager", system_config, server_config)
 
     # Mock sub-agent data
     sub_agents = [
@@ -128,9 +128,9 @@ async def test_on_pre_llm_call_injects_context(system_config, mcp_config):
 
 
 @pytest.mark.asyncio
-async def test_on_pre_llm_call_error_handling(system_config, mcp_config):
+async def test_on_pre_llm_call_error_handling(system_config, server_config):
     """Test that hook handles errors gracefully."""
-    server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
+    server = SubAgentManagerServer("sub_agent_manager", system_config, server_config)
 
     with patch.object(server, '_get_manager') as mock_get_manager:
         # Mock manager to raise exception
@@ -160,7 +160,7 @@ async def test_on_pre_llm_call_error_handling(system_config, mcp_config):
 async def test_on_pre_llm_call_disabled_hook(system_config):
     """Test behavior when hook is disabled in config."""
     # Config with hook disabled
-    mcp_config = MCPConfig(
+    server_config = ToolServerConfig(
         enabled=True,
         storage_type="json",
         hook_config={
@@ -170,7 +170,7 @@ async def test_on_pre_llm_call_disabled_hook(system_config):
         }
     )
 
-    server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
+    server = SubAgentManagerServer("sub_agent_manager", system_config, server_config)
 
     with patch.object(server, '_get_manager') as mock_get_manager:
         mock_manager = MagicMock()
@@ -196,9 +196,9 @@ async def test_on_pre_llm_call_disabled_hook(system_config):
 
 
 @pytest.mark.asyncio
-async def test_on_pre_llm_call_reuses_injector(system_config, mcp_config):
+async def test_on_pre_llm_call_reuses_injector(system_config, server_config):
     """Test that hook can be called multiple times."""
-    server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
+    server = SubAgentManagerServer("sub_agent_manager", system_config, server_config)
 
     with patch.object(server, '_get_manager') as mock_get_manager:
         mock_manager = MagicMock()

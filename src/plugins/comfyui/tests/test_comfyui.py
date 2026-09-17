@@ -362,8 +362,8 @@ class TestComfyUIServer:
         return config
     
     @pytest.fixture
-    def mock_mcp_config(self, tmp_path: Path) -> MagicMock:
-        """Create mock MCP config with workflows."""
+    def mock_server_config(self, tmp_path: Path) -> MagicMock:
+        """Create mock tool server config with workflows."""
         config = MagicMock()
         # Set as attributes (server reads via getattr)
         config.host = "127.0.0.1"
@@ -392,9 +392,9 @@ class TestComfyUIServer:
         return config
     
     @pytest.fixture
-    def workflow_file(self, mock_mcp_config: MagicMock) -> Path:
+    def workflow_file(self, mock_server_config: MagicMock) -> Path:
         """Create a test workflow file."""
-        workflow_dir = Path(mock_mcp_config.workflow_files_dir)
+        workflow_dir = Path(mock_server_config.workflow_files_dir)
         workflow_dir.mkdir(parents=True, exist_ok=True)
         
         workflow = {
@@ -414,13 +414,13 @@ class TestComfyUIServer:
     async def test_workflow_list(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test listing workflows."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         result = await server.workflow({"operation": "list"})
         
@@ -433,13 +433,13 @@ class TestComfyUIServer:
     async def test_workflow_list_with_category(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test listing workflows filtered by category."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Filter by matching category
         result = await server.workflow({"operation": "list", "category": "test"})
@@ -453,13 +453,13 @@ class TestComfyUIServer:
     async def test_workflow_execute(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test executing a workflow."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Mock the client's queue_prompt method
         server.client.queue_prompt = AsyncMock(return_value={
@@ -481,13 +481,13 @@ class TestComfyUIServer:
     async def test_workflow_execute_missing_required_param(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test executing workflow without required parameter."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         result = await server.workflow({
             "operation": "execute",
@@ -503,13 +503,13 @@ class TestComfyUIServer:
     async def test_workflow_execute_unknown_workflow(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test executing unknown workflow."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         result = await server.workflow({
             "operation": "execute",
@@ -525,13 +525,13 @@ class TestComfyUIServer:
     async def test_workflow_status(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test getting workflow status."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Register a job first
         server.job_tracker.register_job(
@@ -559,13 +559,13 @@ class TestComfyUIServer:
     async def test_workflow_server_status(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test server status check."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         server.client.ping = AsyncMock(return_value={
             "status": "online",
@@ -581,13 +581,13 @@ class TestComfyUIServer:
     async def test_workflow_cancel(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test cancelling a job."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Register a job first
         server.job_tracker.register_job(
@@ -616,13 +616,13 @@ class TestComfyUIServer:
     async def test_wait_for_completion_success(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test wait_for_completion operation with successful completion."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Mock client to return completed status
         server.client.get_status = AsyncMock(return_value={
@@ -651,15 +651,15 @@ class TestComfyUIServer:
     async def test_wait_for_completion_timeout(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test wait_for_completion operation with timeout."""
         from plugins.comfyui.server import ComfyUIServer
         
         # Set short timeout via config
-        mock_mcp_config.timeout_seconds = 1
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        mock_server_config.timeout_seconds = 1
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Mock client to always return pending status
         server.client.get_status = AsyncMock(return_value={
@@ -687,13 +687,13 @@ class TestComfyUIServer:
     async def test_wait_for_completion_failed(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test wait_for_completion operation with job failure."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Mock client to return failed status
         server.client.get_status = AsyncMock(return_value={
@@ -722,7 +722,7 @@ class TestComfyUIServer:
     async def test_wait_for_completion_unknown_job_detection(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test wait_for_completion fails early when job stays unknown.
@@ -735,9 +735,9 @@ class TestComfyUIServer:
         import time
         
         # Set a long timeout (30s) but short unknown threshold (2s)
-        mock_mcp_config.timeout_seconds = 30
-        mock_mcp_config.unknown_threshold_seconds = 2  # Fail after 2s of unknown
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        mock_server_config.timeout_seconds = 30
+        mock_server_config.unknown_threshold_seconds = 2  # Fail after 2s of unknown
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Mock client to always return unknown status (job never arrived at ComfyUI)
         server.client.get_status = AsyncMock(return_value={
@@ -774,13 +774,13 @@ class TestComfyUIServer:
     async def test_inject_value(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test parameter injection into workflow."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         workflow = {
             "3": {
@@ -798,13 +798,13 @@ class TestComfyUIServer:
     async def test_get_web_router(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test web router creation."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         router = server.get_web_router()
         
@@ -816,13 +816,13 @@ class TestComfyUIServer:
     async def test_workflow_result_with_text_outputs(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test retrieving results with text outputs from workflow."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Register a job
         server.job_tracker.register_job(
@@ -875,7 +875,7 @@ class TestComfyUIServer:
     async def test_a_text_output_without_a_file_attaches_nothing_invalid(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """download=false leaves text without a file: it must not become an attachment
@@ -883,7 +883,7 @@ class TestComfyUIServer:
         from agent_system.llm.models import MultimodalToolContent
         from plugins.comfyui.server import ComfyUIServer
 
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         server.job_tracker.register_job("test-text-id", "test_workflow", "Test", {}, "test")
         server.client.get_history = AsyncMock(return_value={
             "test-text-id": {
@@ -910,13 +910,13 @@ class TestComfyUIServer:
     async def test_workflow_result_with_multiple_text_outputs(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test retrieving results with multiple text outputs."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Register a job
         server.job_tracker.register_job(
@@ -956,18 +956,18 @@ class TestComfyUIServer:
     async def test_load_text_file(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path,
         tmp_path: Path
     ) -> None:
         """Test loading a text file for LLM analysis."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Create a test text file in output directory
-        text_file = Path(mock_mcp_config.output_dir) / "test_output.txt"
-        Path(mock_mcp_config.output_dir).mkdir(parents=True, exist_ok=True)
+        text_file = Path(mock_server_config.output_dir) / "test_output.txt"
+        Path(mock_server_config.output_dir).mkdir(parents=True, exist_ok=True)
         text_file.write_text("This is test text content for LLM analysis", encoding="utf-8")
         
         result = await server.workflow({
@@ -990,17 +990,17 @@ class TestComfyUIServer:
     async def test_load_text_by_prompt_id(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path,
         tmp_path: Path
     ) -> None:
         """Test loading text outputs by prompt_id."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Create text file
-        output_dir = Path(mock_mcp_config.output_dir)
+        output_dir = Path(mock_server_config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         text_file = output_dir / "test_text_node1_0.txt"
         text_file.write_text("Generated text from workflow", encoding="utf-8")
@@ -1036,13 +1036,13 @@ class TestComfyUIServer:
     async def test_get_content_type_from_path(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path
     ) -> None:
         """Test content type detection for various file extensions."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Test text extensions
         assert server._get_content_type_from_path(Path("test.txt")) == "text"
@@ -1065,14 +1065,14 @@ class TestComfyUIServer:
     async def test_build_multimodal_content_with_text(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         workflow_file: Path,
         tmp_path: Path
     ) -> None:
         """Test _build_multimodal_content includes text properly."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Create test file
         text_path = tmp_path / "test_text.txt"
@@ -1293,7 +1293,7 @@ class TestComfyUICleanup:
     async def test_cleanup_disabled_when_zero(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         temp_output_dir: Path
     ) -> None:
         """Test that cleanup is disabled when cleanup_age_hours is 0."""
@@ -1310,10 +1310,10 @@ class TestComfyUICleanup:
         os.utime(old_file, (old_time, old_time))
         
         # Set cleanup to 0 (disabled) and configure output_dir
-        mock_mcp_config.cleanup_age_hours = 0
-        mock_mcp_config.output_dir = str(temp_output_dir)
+        mock_server_config.cleanup_age_hours = 0
+        mock_server_config.output_dir = str(temp_output_dir)
         
-        _ = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        _ = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Wait a bit for startup cleanup (should not run)
         import asyncio
@@ -1326,7 +1326,7 @@ class TestComfyUICleanup:
     async def test_cleanup_old_files(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         temp_output_dir: Path
     ) -> None:
         """Test that old files are cleaned up."""
@@ -1346,10 +1346,10 @@ class TestComfyUICleanup:
         os.utime(old_file, (old_time, old_time))
         
         # Set cleanup to 48 hours and configure output_dir
-        mock_mcp_config.cleanup_age_hours = 48
-        mock_mcp_config.output_dir = str(temp_output_dir)
+        mock_server_config.cleanup_age_hours = 48
+        mock_server_config.output_dir = str(temp_output_dir)
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Manually trigger cleanup
         await server._cleanup_old_files()
@@ -1362,7 +1362,7 @@ class TestComfyUICleanup:
     async def test_cleanup_respects_age_threshold(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         temp_output_dir: Path
     ) -> None:
         """Test that cleanup respects the age threshold."""
@@ -1391,10 +1391,10 @@ class TestComfyUICleanup:
         os.utime(recent_file, (time.time() - 3600, time.time() - 3600))
         
         # Set cleanup to 48 hours and configure output_dir
-        mock_mcp_config.cleanup_age_hours = 48
-        mock_mcp_config.output_dir = str(temp_output_dir)
+        mock_server_config.cleanup_age_hours = 48
+        mock_server_config.output_dir = str(temp_output_dir)
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         await server._cleanup_old_files()
         
         # Very old should be deleted, borderline and recent should remain
@@ -1406,7 +1406,7 @@ class TestComfyUICleanup:
     async def test_cleanup_handles_subdirectories(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         temp_output_dir: Path
     ) -> None:
         """Test that cleanup handles subdirectories correctly."""
@@ -1430,10 +1430,10 @@ class TestComfyUICleanup:
         os.utime(old_in_root, (old_time, old_time))
         
         # Set cleanup to 48 hours and configure output_dir
-        mock_mcp_config.cleanup_age_hours = 48
-        mock_mcp_config.output_dir = str(temp_output_dir)
+        mock_server_config.cleanup_age_hours = 48
+        mock_server_config.output_dir = str(temp_output_dir)
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         await server._cleanup_old_files()
         
         # Both files should be deleted
@@ -1444,7 +1444,7 @@ class TestComfyUICleanup:
     async def test_cleanup_handles_errors_gracefully(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         temp_output_dir: Path
     ) -> None:
         """Test that cleanup handles errors gracefully."""
@@ -1459,10 +1459,10 @@ class TestComfyUICleanup:
         old_time = time.time() - (72 * 3600)
         os.utime(old_file, (old_time, old_time))
         
-        mock_mcp_config.cleanup_age_hours = 48
-        mock_mcp_config.output_dir = str(temp_output_dir)
+        mock_server_config.cleanup_age_hours = 48
+        mock_server_config.output_dir = str(temp_output_dir)
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Mock Path.unlink to raise an error
         with patch.object(Path, 'unlink', side_effect=PermissionError("Access denied")):
@@ -1476,7 +1476,7 @@ class TestComfyUICleanup:
     async def test_cleanup_after_job_completion(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         temp_output_dir: Path,
         tmp_path: Path
     ) -> None:
@@ -1492,8 +1492,8 @@ class TestComfyUICleanup:
         old_time = time.time() - (72 * 3600)
         os.utime(old_file, (old_time, old_time))
         
-        mock_mcp_config.cleanup_age_hours = 48
-        mock_mcp_config.output_dir = str(temp_output_dir)
+        mock_server_config.cleanup_age_hours = 48
+        mock_server_config.output_dir = str(temp_output_dir)
         
         # Create workflow file
         workflow_dir = tmp_path / "workflows"
@@ -1502,8 +1502,8 @@ class TestComfyUICleanup:
         workflow_file.write_text('{"3": {"inputs": {}}}')
         
         # Configure workflow_files_dir and update config to have the test workflow
-        mock_mcp_config.workflow_files_dir = str(workflow_dir)
-        mock_mcp_config.workflows = [{
+        mock_server_config.workflow_files_dir = str(workflow_dir)
+        mock_server_config.workflows = [{
             "id": "test_workflow",
             "name": "Test Workflow",
             "description": "Test",
@@ -1512,7 +1512,7 @@ class TestComfyUICleanup:
             "parameters": [{"name": "prompt", "type": "string", "required": True, "node_id": "3", "field": "inputs.text"}]
         }]
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         
         # Mock client and tracker
         server.client.queue_workflow = AsyncMock(return_value="test-prompt-id")
@@ -1542,7 +1542,7 @@ class TestComfyUICleanup:
     async def test_cleanup_with_2hour_threshold(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config: MagicMock,
+        mock_server_config: MagicMock,
         temp_output_dir: Path
     ) -> None:
         """Test cleanup with 2-hour threshold (for writer_tts_comfyui)."""
@@ -1565,10 +1565,10 @@ class TestComfyUICleanup:
         os.utime(recent_file, (time.time() - 3600, time.time() - 3600))
         
         # Set cleanup to 2 hours (writer_tts_comfyui config) and configure output_dir
-        mock_mcp_config.cleanup_age_hours = 2
-        mock_mcp_config.output_dir = str(temp_output_dir)
+        mock_server_config.cleanup_age_hours = 2
+        mock_server_config.output_dir = str(temp_output_dir)
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
         await server._cleanup_old_files()
         
         # Old file should be deleted, recent should remain
@@ -1589,8 +1589,8 @@ class TestSessionIsolation:
         return MagicMock()
     
     @pytest.fixture
-    def mock_mcp_config_with_template(self, tmp_path: Path) -> MagicMock:
-        """Create mock MCP config with {session_id} template in output_dir."""
+    def mock_server_config_with_template(self, tmp_path: Path) -> MagicMock:
+        """Create mock tool server config with {session_id} template in output_dir."""
         config = MagicMock()
         config.host = "127.0.0.1"
         config.port = 8188
@@ -1603,8 +1603,8 @@ class TestSessionIsolation:
         return config
     
     @pytest.fixture
-    def mock_mcp_config_without_template(self, tmp_path: Path) -> MagicMock:
-        """Create mock MCP config without template (traditional static path)."""
+    def mock_server_config_without_template(self, tmp_path: Path) -> MagicMock:
+        """Create mock tool server config without template (traditional static path)."""
         config = MagicMock()
         config.host = "127.0.0.1"
         config.port = 8188
@@ -1618,13 +1618,13 @@ class TestSessionIsolation:
     def test_resolve_output_dir_with_session_id(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config_with_template: MagicMock,
+        mock_server_config_with_template: MagicMock,
         tmp_path: Path
     ) -> None:
         """Test that {session_id} is resolved to session-specific directory."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config_with_template)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config_with_template)
         
         # Resolve with session ID
         resolved = server._resolve_output_dir("session_abc123")
@@ -1636,13 +1636,13 @@ class TestSessionIsolation:
     def test_resolve_output_dir_without_session_id_falls_back(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config_with_template: MagicMock,
+        mock_server_config_with_template: MagicMock,
         tmp_path: Path
     ) -> None:
         """Test that missing session_id falls back to base path."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config_with_template)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config_with_template)
         
         # Resolve without session ID
         resolved = server._resolve_output_dir(None)
@@ -1654,13 +1654,13 @@ class TestSessionIsolation:
     def test_resolve_output_dir_no_template(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config_without_template: MagicMock,
+        mock_server_config_without_template: MagicMock,
         tmp_path: Path
     ) -> None:
         """Test that paths without template are returned unchanged."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config_without_template)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config_without_template)
         
         # Resolve with or without session ID - should be same
         resolved_with = server._resolve_output_dir("session_abc123")
@@ -1673,13 +1673,13 @@ class TestSessionIsolation:
     def test_multiple_sessions_get_isolated_directories(
         self,
         mock_system_config: MagicMock,
-        mock_mcp_config_with_template: MagicMock,
+        mock_server_config_with_template: MagicMock,
         tmp_path: Path
     ) -> None:
         """Test that different sessions get different directories."""
         from plugins.comfyui.server import ComfyUIServer
         
-        server = ComfyUIServer("comfyui", mock_system_config, mock_mcp_config_with_template)
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config_with_template)
         
         # Two different sessions
         dir1 = server._resolve_output_dir("session_001")

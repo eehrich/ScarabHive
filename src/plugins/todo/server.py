@@ -1,5 +1,5 @@
 """
-TODO Management Plugin - MCP Server Implementation
+TODO Management Plugin - Tool Server Implementation
 
 Provides persistent task tracking and lifecycle management for agent workflows.
 Complements sequential_thinking plugin: tracks WHAT to do (vs HOW to think).
@@ -28,11 +28,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_serializer
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -151,30 +151,30 @@ class StorageError(TodoError):
 # TODO Management Server
 # =============================================================================
 
-class TodoServer(SchemaBasedMCPServer, PluginHook):
+class TodoServer(SchemaBasedToolServer, PluginHook):
     """
-    TODO Management MCP Server with Hook Integration
+    TODO Management Tool Server with Hook Integration
 
     Provides task lifecycle tracking with dependency management and persistence.
     Implements PluginHook to inject tasks into system prompts (hooks defined in schema.yaml).
     Hook configuration is loaded from schema.yaml config section.
     """
 
-    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
+    def __init__(self, name: str, system_config: "AgentSystemConfig", server_config: "ToolServerConfig"):
         """
         Initialize TODO Management server.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration with:
+            server_config: Plugin-specific configuration with:
                 - storage_path: Path to JSON storage directory
                 - max_tasks_per_session: Limit on tasks per session
                 - enable_dependencies: Whether to enforce dependencies
                 - auto_save: Auto-save on modifications
         """
-        # Initialize MCP server (loads schema.yaml for tools)
-        SchemaBasedMCPServer.__init__(self, name, system_config, mcp_config)
+        # Initialize tool server (loads schema.yaml for tools)
+        SchemaBasedToolServer.__init__(self, name, system_config, server_config)
 
         # Initialize PluginHook with hook config from schema.yaml
         # Extract hook config defaults from loaded schema
@@ -183,16 +183,16 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         # Configuration (using getattr like sequential_thinking)
         self._storage_path = Path(
-            getattr(mcp_config, "storage_path", "data/todos")
+            getattr(server_config, "storage_path", "data/todos")
         )
-        self._max_tasks = int(getattr(mcp_config, "max_tasks_per_session", 1000))
-        self._enable_deps = bool(getattr(mcp_config, "enable_dependencies", True))
-        self._auto_save = bool(getattr(mcp_config, "auto_save", True))
+        self._max_tasks = int(getattr(server_config, "max_tasks_per_session", 1000))
+        self._enable_deps = bool(getattr(server_config, "enable_dependencies", True))
+        self._auto_save = bool(getattr(server_config, "auto_save", True))
 
         # In-memory cache: session_id → TaskCollection
         # Limited to prevent memory leaks - sessions are persisted to disk
         self._sessions: Dict[str, TaskCollection] = {}
-        self._max_cache_size = int(getattr(mcp_config, 'max_cache_size', 50))
+        self._max_cache_size = int(getattr(server_config, 'max_cache_size', 50))
 
         # Task ID counter per session
         self._task_counters: Dict[str, int] = {}
@@ -222,7 +222,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         """
         Extract hook configuration defaults from schema.yaml.
 
-        SchemaBasedMCPServer already loaded schema.yaml via SchemaBaseMixin.
+        SchemaBasedToolServer already loaded schema.yaml via SchemaBaseMixin.
         This method extracts the config section and converts it to runtime values.
 
         Returns:
@@ -251,7 +251,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         Extract or generate session ID from context.
 
         Args:
-            context: MCP tool call context with session metadata
+            context: tool call context with session metadata
 
         Returns:
             Session ID string
@@ -935,7 +935,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             depends_on: List of task IDs this task depends on
             allow_duplicates: Allow creating duplicate tasks (default: False)
             idempotency_key: Optional key to prevent duplicate creation on retries
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Created task details with task_id OR existing task if duplicate found
@@ -1142,7 +1142,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             remove_depends_on: Dependencies to remove (incremental)
             only_from: Statuses the task must be in, else nothing changes and the answer is
                 ``status_changed`` -- for a change decided on a view of the task that may be out of date
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Updated task with change summary
@@ -1495,7 +1495,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             sort_by: Sort field (priority/created_at/updated_at/progress)
             limit: Max results to return
             offset: Number of results to skip (for pagination)
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Filtered task list with metadata
@@ -1614,7 +1614,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         Args:
             task_id: Task identifier
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Full task object with dependency info
@@ -1703,7 +1703,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         Args:
             task_id: Task identifier
             cascade: If true, also delete dependent tasks
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Deletion summary with cascade list
@@ -1727,7 +1727,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         Args:
             task_id: Task identifier
             cascade: If true, also delete dependent tasks
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Deletion summary with cascade list
@@ -1841,7 +1841,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         Args:
             group_by: Grouping field (status/priority)
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Progress summary with completion metrics

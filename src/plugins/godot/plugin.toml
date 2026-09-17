@@ -10,7 +10,7 @@ version = "1.0.0"
 description = "Control Godot 4: run and check projects headless, and drive a running editor (scene tree, nodes, frozen-time playtesting, input, screenshots, logs) through the vendored godot_mcp addon"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "development"
 tags = ["godot", "gamedev", "3d", "2d", "playtest"]
 requires = { python = ">=3.10", agent_system = ">=0.6.0" }

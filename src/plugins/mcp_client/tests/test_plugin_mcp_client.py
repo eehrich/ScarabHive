@@ -567,13 +567,13 @@ class TestPluginRole:
         If registration depended on a successful connection, the core would
         find no provider and silently behave as if no external servers existed.
         """
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
         from agent_system.plugins import capabilities
         from plugins.mcp_client.server import MCPClientServer
 
         capabilities.reset()
         try:
-            plugin = MCPClientServer("mcp_client", AgentSystemConfig(), MCPConfig(type="mcp_client"))
+            plugin = MCPClientServer("mcp_client", AgentSystemConfig(), ToolServerConfig(type="mcp_client"))
             assert plugin.pool.configured_servers == {}
             await plugin.start_plugin()
             assert capabilities.get_provider(capabilities.EXTERNAL_TOOLS) is plugin
@@ -584,12 +584,12 @@ class TestPluginRole:
 
     @pytest.mark.asyncio
     async def test_management_tools_report_state(self):
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
         from agent_system.plugins import capabilities
         from plugins.mcp_client.server import MCPClientServer
 
         capabilities.reset()
-        plugin = MCPClientServer("mcp_client", AgentSystemConfig(), MCPConfig(type="mcp_client"))
+        plugin = MCPClientServer("mcp_client", AgentSystemConfig(), ToolServerConfig(type="mcp_client"))
         plugin.pool.configure({"probe": make_config()})
         try:
             listed = await plugin.list_servers({})
@@ -611,10 +611,10 @@ class TestPluginRole:
 
     @pytest.mark.asyncio
     async def test_connect_reports_failure_instead_of_raising(self):
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
         from plugins.mcp_client.server import MCPClientServer
 
-        plugin = MCPClientServer("mcp_client", AgentSystemConfig(), MCPConfig(type="mcp_client"))
+        plugin = MCPClientServer("mcp_client", AgentSystemConfig(), ToolServerConfig(type="mcp_client"))
         result = await plugin.connect({"server": "nope"})
         assert result["success"] is False and result["error"]
         assert (await plugin.connect({}))["success"] is False

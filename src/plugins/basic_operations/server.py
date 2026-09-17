@@ -1,4 +1,4 @@
-"""BasicOperations MCP Server implementation.
+"""BasicOperations Tool Server implementation.
 
 This module provides basic utility operations including wait, countdown,
 echo functionality, and ping operations.
@@ -12,38 +12,38 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class BasicOperationsServer(SchemaBasedMCPServer):
-    """BasicOperations MCP server providing utility operations.
+class BasicOperationsServer(SchemaBasedToolServer):
+    """BasicOperations tool server providing utility operations.
 
     This server provides:
     - Wait operation with countdown status updates
     - Ping operation for connectivity testing
     
-    All tools are automatically loaded from schema.yaml by SchemaBasedMCPServer.
+    All tools are automatically loaded from schema.yaml by SchemaBasedToolServer.
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """
         Modern constructor signature.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
-        # Extract configuration with sensible defaults from mcp_config
-        self.max_wait_seconds = float(getattr(mcp_config, 'max_wait_seconds', 3600))
-        self.default_update_interval = float(getattr(mcp_config, 'default_update_interval', 1.0))
+        # Extract configuration with sensible defaults from server_config
+        self.max_wait_seconds = float(getattr(server_config, 'max_wait_seconds', 3600))
+        self.default_update_interval = float(getattr(server_config, 'default_update_interval', 1.0))
         
         logger.info(
             f"BasicOperations server '{name}' initialized - max_wait_seconds={self.max_wait_seconds}, "

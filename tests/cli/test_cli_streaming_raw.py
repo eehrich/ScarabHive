@@ -17,7 +17,7 @@ class DummyAgent:
         # returning a final aggregated result dict
         result = {"task": task, "calls": []}
         for e in self._events:
-            if e.get("type") == "mcp_result":
+            if e.get("type") == "tool_result":
                 result.setdefault("calls", []).append({
                     "server": e.get("server"),
                     "action": e.get("action"),
@@ -34,7 +34,7 @@ DEFAULT_EVENTS = []
 
 class AgentStub:
     # accept the modern Agent signature but only keep events
-    def __init__(self, name, system_config, mcp_config, registry, llm=None, llm_factory=None, events=None, session_service=None):
+    def __init__(self, name, system_config, server_config, registry, llm=None, llm_factory=None, events=None, session_service=None):
         self._events = events or DEFAULT_EVENTS
         # minimal attributes used by CLI
         self.registry = registry
@@ -55,7 +55,7 @@ class AgentStub:
         # keep compatibility with non-streaming path
         result = {"task": task, "calls": []}
         for e in self._events:
-            if e.get("type") == "mcp_result":
+            if e.get("type") == "tool_result":
                 result.setdefault("calls", []).append({
                     "server": e.get("server"),
                     "action": e.get("action"),
@@ -67,10 +67,10 @@ class AgentStub:
 
 
 def test_cli_raw_flag_outputs_json(monkeypatch, capsys):
-    # Prepare a dummy agent that yields one mcp_result and a final summary
+    # Prepare a dummy agent that yields one tool_result and a final summary
     events = [
-        {"type": "mcp_call", "server": "s", "action": "a", "params": {"x": 1}},
-        {"type": "mcp_result", "server": "s", "action": "a", "result": {"ok": True}},
+        {"type": "tool_call", "server": "s", "action": "a", "params": {"x": 1}},
+        {"type": "tool_result", "server": "s", "action": "a", "result": {"ok": True}},
         {"type": "final", "summary": "done"},
         {"type": "end"},
     ]
@@ -153,8 +153,8 @@ def test_cli_raw_flag_outputs_json(monkeypatch, capsys):
 
 def test_cli_streaming_prints_human_readable(monkeypatch, capsys):
     events = [
-        {"type": "mcp_call", "server": "s", "action": "a", "params": {"x": 1}},
-        {"type": "mcp_result", "server": "s", "action": "a", "result": {"ok": True}},
+        {"type": "tool_call", "server": "s", "action": "a", "params": {"x": 1}},
+        {"type": "tool_result", "server": "s", "action": "a", "result": {"ok": True}},
         {"type": "final", "summary": "done"},
         {"type": "end"},
     ]
@@ -189,12 +189,12 @@ def test_cli_streaming_prints_human_readable(monkeypatch, capsys):
 
     monkeypatch.setattr('agent_system.services.initialization_service.InitializationService', FakeInitService)
 
-    monkeypatch.setattr("sys.argv", ["agent-cli", "--show-mcp", "run", "do it"])
+    monkeypatch.setattr("sys.argv", ["agent-cli", "--show-tools", "run", "do it"])
     cli.main()
     out = capsys.readouterr().out
     # Should contain human readable header and summary (now printed during streaming without "Summary:" prefix)
-    assert "MCP CALL" in out
-    assert "MCP RESULT" in out
+    assert "TOOL CALL" in out
+    assert "TOOL RESULT" in out
     assert "done" in out  # The summary content
     # The double honours the async contract AND the CLI really persisted:
     # without this, reverting save_session to a plain MagicMock stays green

@@ -7,7 +7,7 @@ Events are pushed directly to the list by the StatusBus handler - no queue, no t
 import logging
 from typing import List, Dict, Any, Optional
 
-from ....mcp.status import status_bus, StatusHandler, StatusEvent
+from ....tools.status import status_bus, StatusHandler, StatusEvent
 
 logger = logging.getLogger(__name__)
 

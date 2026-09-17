@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 from .server import FileOpsServer
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -26,11 +26,11 @@ def create_test_server(allowed_dirs: list[str]) -> FileOpsServer:
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(Path.cwd())
 
-    mcp_config = MCPConfig(type="file_ops", enabled=True)
-    mcp_config.allowed_directories = allowed_dirs
-    mcp_config.search = {"enable_indexing": False}  # Disable for CLI testing
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
+    server_config.allowed_directories = allowed_dirs
+    server_config.search = {"enable_indexing": False}  # Disable for CLI testing
 
-    return FileOpsServer("cli_file_ops", system_config, mcp_config)
+    return FileOpsServer("cli_file_ops", system_config, server_config)
 
 
 async def cmd_read(args: Namespace) -> dict[str, Any]:

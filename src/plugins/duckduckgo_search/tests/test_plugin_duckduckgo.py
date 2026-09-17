@@ -14,8 +14,8 @@ HITS = [
 
 
 @pytest.fixture
-def server(mock_system_config, mock_mcp_config, tmp_path):
-    srv = DuckDuckGoSearchServer("ddg", mock_system_config, mock_mcp_config)
+def server(mock_system_config, mock_server_config, tmp_path):
+    srv = DuckDuckGoSearchServer("ddg", mock_system_config, mock_server_config)
     # PluginCache persists to data/cache/<plugin>/ on disk; a test must not
     # read what another test (or a real run) left there.
     srv.cache = PluginCache("duckduckgo_search", cache_dir=tmp_path)
@@ -149,9 +149,9 @@ async def test_every_engine_failing_is_retried_not_reported_as_zero_hits(server)
     assert result["results"] == HITS and sleep.await_count == 1
 
 
-def test_factory_builds_a_named_server(mock_system_config, mock_mcp_config):
+def test_factory_builds_a_named_server(mock_system_config, mock_server_config):
     from plugins.duckduckgo_search.plugin import PLUGIN_FACTORY
-    assert PLUGIN_FACTORY("custom_ddg", mock_system_config, mock_mcp_config).name == "custom_ddg"
+    assert PLUGIN_FACTORY("custom_ddg", mock_system_config, mock_server_config).name == "custom_ddg"
 
 
 async def test_a_missing_package_is_an_error_not_zero_hits(server, monkeypatch):

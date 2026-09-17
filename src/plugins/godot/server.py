@@ -49,10 +49,10 @@ import uuid
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 #: The vendored editor addon, copied into every project ``setup`` touches.
 ADDON_SOURCE = Path(__file__).parent / "addon" / "godot_mcp"
@@ -67,7 +67,7 @@ CHECK_SCRIPT = Path(__file__).parent / "scripts" / "check_scripts.gd"
 MAX_RESULT_CHARS = 60_000
 #: A game screenshot at max_width 900 is ~1 MB of base64; leave room.
 MAX_WS_BYTES = 32 * 1024 * 1024
-#: One status row (``mcp/base.py`` and ``tests/plugins/test_status_end_lines.py``).
+#: One status row (``tools/base.py`` and ``tests/plugins/test_status_end_lines.py``).
 STATUS_LINE_LIMIT = 140
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
@@ -223,21 +223,21 @@ def _clean_stdout(stdout: str) -> str:
     return "\n".join(lines).rstrip()
 
 
-class GodotServer(SchemaBasedMCPServer):
+class GodotServer(SchemaBasedToolServer):
     """Headless Godot runs and a live editor, behind one tool surface."""
 
     def __init__(self, name: str, system_config: "AgentSystemConfig",
-                 mcp_config: "MCPConfig") -> None:
-        super().__init__(name, system_config, mcp_config)
-        binary = getattr(mcp_config, "godot_binary", "godot")
+                 server_config: "ToolServerConfig") -> None:
+        super().__init__(name, system_config, server_config)
+        binary = getattr(server_config, "godot_binary", "godot")
         # A list so a test can substitute an interpreter + stub script.
         self._godot: list[str] = [binary]
-        self._host: str = getattr(mcp_config, "host", "127.0.0.1")
-        self._port: int = int(getattr(mcp_config, "port", 6550))
-        self._timeout: float = float(getattr(mcp_config, "timeout", 60))
-        self._long_timeout: float = float(getattr(mcp_config, "long_timeout", 600))
-        self._projects_root: Path = self._abs(getattr(mcp_config, "projects_root", "data/workspace"))
-        self._out_dir: Path = self._abs(getattr(mcp_config, "output_directory", "data/workspace/godot"))
+        self._host: str = getattr(server_config, "host", "127.0.0.1")
+        self._port: int = int(getattr(server_config, "port", 6550))
+        self._timeout: float = float(getattr(server_config, "timeout", 60))
+        self._long_timeout: float = float(getattr(server_config, "long_timeout", 600))
+        self._projects_root: Path = self._abs(getattr(server_config, "projects_root", "data/workspace"))
+        self._out_dir: Path = self._abs(getattr(server_config, "output_directory", "data/workspace/godot"))
 
     @staticmethod
     def _abs(value: str) -> Path:

@@ -6,7 +6,7 @@ import pytest
 
 from agent_system.app import resolve_agent_for_request
 from agent_system.config.settings import load_settings as load_config
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.agent.server import Agent
 
 
@@ -30,7 +30,7 @@ class FakeRegistry:
 
 
 def _build_real_agent(name: str) -> Agent:
-    from agent_system.config.models import MCPConfig
+    from agent_system.config.models import ToolServerConfig
 
     system_config = load_config("config/config.yaml")
     agent_config = system_config.agent_config if getattr(system_config, 'agent_config', None) else None
@@ -38,8 +38,8 @@ def _build_real_agent(name: str) -> Agent:
         from agent_system.config.models import AgentConfig
         agent_config = AgentConfig()
 
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    return Agent(name, system_config, mcp_config, MCPRegistry())
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    return Agent(name, system_config, server_config, ToolServerRegistry())
 
 
 DEFAULT = SimpleNamespace(name="basic_agent")

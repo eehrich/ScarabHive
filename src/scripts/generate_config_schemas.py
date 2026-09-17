@@ -18,7 +18,7 @@ of truth:
 Every object with declared properties gets ``additionalProperties: false``
 on top — the runtime ignores unknown keys (pydantic ``extra="ignore"``),
 which is exactly why a dead key survives silently; the editor is the place
-where it should light up. Models that declare ``extra="allow"`` (MCPConfig:
+where it should light up. Models that declare ``extra="allow"`` (ToolServerConfig:
 plugin-specific keys) keep their permissiveness, pydantic emits
 ``additionalProperties: true`` for them explicitly.
 
@@ -116,7 +116,7 @@ def _null_or(schema: dict) -> dict:
 def _require_server_type(defs: dict) -> None:
     """A server entry must name its ``type``.
 
-    ``MCPConfig`` is ``extra="allow"`` — plugin-specific keys like
+    ``ToolServerConfig`` is ``extra="allow"`` — plugin-specific keys like
     ``max_nesting_depth`` or ``allowed_agents`` live directly under a server
     entry, so the editor cannot flag a typo there. Requiring the one key every
     entry needs recovers half of that class: a misspelled ``typ:`` now shows up
@@ -126,7 +126,7 @@ def _require_server_type(defs: dict) -> None:
     The model keeps a default (``type`` is optional there for entries built in
     code), which is why the schema says it and the model does not.
     """
-    mcp = defs.get("MCPConfig")
+    mcp = defs.get("ToolServerConfig")
     if mcp is not None and "type" in mcp.get("properties", {}):
         mcp["required"] = sorted(set(mcp.get("required") or []) | {"type"})
 

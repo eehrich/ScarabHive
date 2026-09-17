@@ -13,23 +13,23 @@ from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.skills import get_skill_registry
 from agent_system.skills.registry import DEFAULT_ENTRY, TEXT_ENCODING
 from agent_system.utils.suggest import suggest_path
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 #: Guard against a huge reference file blowing up the context in one call.
 MAX_READ_CHARS = 100_000
 
 
-class SkillsServer(SchemaBasedMCPServer):
+class SkillsServer(SchemaBasedToolServer):
     """Expose discovered skills and their bundled files."""
 
-    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig") -> None:
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name: str, system_config: "AgentSystemConfig", server_config: "ToolServerConfig") -> None:
+        super().__init__(name, system_config, server_config)
         self._system_config = system_config
 
     def _registry(self):

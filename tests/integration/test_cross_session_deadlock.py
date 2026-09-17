@@ -3,7 +3,7 @@ Test cross-session deadlock prevention (StatusBus and queue handling).
 """
 import asyncio
 import pytest
-from agent_system.mcp.status import (
+from agent_system.tools.status import (
     StatusBus, StatusEvent, StatusPhase, 
     QueueStatusHandler, FilteredQueueStatusHandler
 )

@@ -27,7 +27,7 @@ def _config(tmp_path: Path, **overrides) -> MagicMock:
 
 
 def _server(tmp_path: Path, **overrides) -> MemoryServer:
-    return MemoryServer(name="memory", system_config=MagicMock(), mcp_config=_config(tmp_path, **overrides))
+    return MemoryServer(name="memory", system_config=MagicMock(), server_config=_config(tmp_path, **overrides))
 
 
 class TestConfigWiring:
@@ -53,7 +53,7 @@ class TestConfigWiring:
                      "search_n_results", "use_semantic_injection",
                      "auto_extract_keywords"):
             delattr(cfg, attr)  # force getattr(..., None) -> schema default
-        srv = MemoryServer(name="memory", system_config=MagicMock(), mcp_config=cfg)
+        srv = MemoryServer(name="memory", system_config=MagicMock(), server_config=cfg)
         assert srv.max_memories == 10
         assert srv.max_memories_per_session == 5000
         assert srv.search_n_results == 5

@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Secure Python script execution plugin with sandboxed environment for mathematical expressions, basic operations, and simple programming constructs"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "utilities"
 license = "MIT"
 requires = { agent_system = ">=0.6.0" }

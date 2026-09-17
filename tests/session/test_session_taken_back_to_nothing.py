@@ -16,10 +16,10 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
 )
 from agent_system.llm.models import ChatMessage
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.agent.components.session_tracking import SessionTracker
 from agent_system.servers.agent.server import Agent
 from agent_system.services.session_manager import SessionManager
@@ -93,8 +93,8 @@ def _agent() -> Agent:
         profiles={"normal": LLMProfile(model_ref="gpt-4")},
         default_profile="normal",
     )
-    config = MCPConfig(type="agent", enabled=True, agent_config=AgentConfig(max_steps=1))
-    agent = Agent("test_agent", AgentSystemConfig(llm_system=llm_system), config, MCPRegistry())
+    config = ToolServerConfig(type="agent", enabled=True, agent_config=AgentConfig(max_steps=1))
+    agent = Agent("test_agent", AgentSystemConfig(llm_system=llm_system), config, ToolServerRegistry())
     agent.llm = _LLM()
     agent._hook_manager.execute_session_start_hooks = AsyncMock(return_value=None)
     return agent

@@ -19,7 +19,7 @@ import pytest
 
 from agent_system.config.models import (
     AgentConfig, AgentSystemConfig, LLMModelConfig, LLMProfile, LLMSystemConfig,
-    MCPConfig, PluginsConfig,
+    ToolServerConfig, PluginsConfig,
 )
 from agent_system.config.settings import load_settings
 from agent_system.runtime import Runtime
@@ -28,7 +28,7 @@ from agent_system.servers.agent.server import Agent
 REPO = Path(__file__).resolve().parents[2]
 
 
-def _config(servers: dict[str, MCPConfig], *,
+def _config(servers: dict[str, ToolServerConfig], *,
             plugin_dirs: list[str] | None = None,
             profiles: dict[str, LLMProfile] | None = None) -> AgentSystemConfig:
     return AgentSystemConfig(
@@ -44,8 +44,8 @@ def _config(servers: dict[str, MCPConfig], *,
     )
 
 
-def _agent_server(**kwargs) -> MCPConfig:
-    return MCPConfig(type="basic_agent", enabled=True,
+def _agent_server(**kwargs) -> ToolServerConfig:
+    return ToolServerConfig(type="basic_agent", enabled=True,
                      agent_config=AgentConfig(llm_profile="normal", **kwargs))
 
 
@@ -87,9 +87,9 @@ class TestTheFlagIsReadFromTheManifest:
         _plugin_dir(root, "stringly_probe", 'lazy = "yes"\n', AGENT_PLUGIN)
 
         runtime = Runtime(_config(
-            {"probe_silent": MCPConfig(type="silent_probe", enabled=True,
+            {"probe_silent": ToolServerConfig(type="silent_probe", enabled=True,
                                        agent_config=AgentConfig(llm_profile="normal")),
-             "probe_stringly": MCPConfig(type="stringly_probe", enabled=True,
+             "probe_stringly": ToolServerConfig(type="stringly_probe", enabled=True,
                                          agent_config=AgentConfig(llm_profile="normal"))},
             plugin_dirs=[str(root)]))
 
@@ -117,7 +117,7 @@ class TestALazyTypeMustBuildAnAgent:
         assert lazy_types, "no type declares lazy = true -- this test measures nothing"
         for typ in lazy_types:
             name = f"probe_contract_{typ}"
-            runtime = Runtime(_config({name: MCPConfig(
+            runtime = Runtime(_config({name: ToolServerConfig(
                 type=typ, enabled=True,
                 agent_config=AgentConfig(llm_profile="normal"))}, plugin_dirs=dirs))
 
@@ -137,7 +137,7 @@ class TestALazyTypeMustBuildAnAgent:
                     "from plugins.file_ops.server import FileOpsServer\n"
                     "PLUGIN_FACTORY = FileOpsServer\n")
 
-        runtime = Runtime(_config({"probe_liar": MCPConfig(type="lazy_liar", enabled=True)},
+        runtime = Runtime(_config({"probe_liar": ToolServerConfig(type="lazy_liar", enabled=True)},
                                   plugin_dirs=[str(root)]))
 
         with pytest.raises(TypeError, match="not an Agent"):
@@ -175,7 +175,7 @@ class TestValidateFindsWhatBuildingUsedToShow:
         _plugin_dir(root, "eager_probe", "", AGENT_PLUGIN)
 
         runtime = Runtime(_config(
-            {"probe_eager": MCPConfig(type="eager_probe", enabled=True,
+            {"probe_eager": ToolServerConfig(type="eager_probe", enabled=True,
                                       agent_config=AgentConfig(llm_profile="normal")),
              "probe_lazy": _agent_server()},
             plugin_dirs=[str(REPO / "src" / "plugins"), str(root)],
@@ -213,7 +213,7 @@ class TestValidateFindsWhatBuildingUsedToShow:
         ``Agent.__init__`` raises on a missing agent_config, so this server
         would not exist at all -- and lazily, nobody would notice until the
         request that needed it."""
-        runtime = Runtime(_config({"probe_naked": MCPConfig(type="basic_agent", enabled=True)}))
+        runtime = Runtime(_config({"probe_naked": ToolServerConfig(type="basic_agent", enabled=True)}))
 
         findings = runtime.validate()
 

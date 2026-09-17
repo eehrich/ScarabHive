@@ -6,10 +6,10 @@ from typing import Any, TYPE_CHECKING
 import pytz
 import calendar
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 
 # operation -> the field(s) that hold ITS answer, first match wins. Read off
@@ -50,8 +50,8 @@ _ANSWER_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
-class DateTimeServer(SchemaBasedMCPServer):
-    """DateTime MCP Server that provides comprehensive date and time information.
+class DateTimeServer(SchemaBasedToolServer):
+    """DateTime Tool Server that provides comprehensive date and time information.
 
     Supports:
     - Current date and time in various formats and timezones
@@ -63,23 +63,23 @@ class DateTimeServer(SchemaBasedMCPServer):
     - Business day calculations
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """
         Modern constructor signature.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
     async def operations(self, params: dict[str, Any]) -> dict[str, Any]:
         """
         Execute datetime operations.
         
         Tool method - automatically called by generic dispatcher.
-        Method name is 'operations' - the 'datetime_' prefix is stripped by SchemaBasedMCPServer.
+        Method name is 'operations' - the 'datetime_' prefix is stripped by SchemaBasedToolServer.
         """
         status = params["_status"]  # Status is mandatory from framework
 

@@ -315,12 +315,12 @@ async def test_the_compact_tool_sizes_by_the_model_answering_the_step():
     hook agent.llm — Pre-Layer T then sized by the configured model's window."""
     from unittest.mock import MagicMock
 
-    from agent_system.config.models import MCPConfig
+    from agent_system.config.models import ToolServerConfig
     from agent_system.hooks import HookResult
     from plugins.context_engineer.server import ContextEngineerServer
 
     srv = ContextEngineerServer("context_engineer", MagicMock(),
-                                MCPConfig(type="context_engineer", enabled=True))
+                                ToolServerConfig(type="context_engineer", enabled=True))
     seen = {}
 
     async def capture(context):

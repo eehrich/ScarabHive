@@ -14,14 +14,14 @@ from typing import Any
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="plugins.datetime", description="DateTime MCP Server")
+    parser = argparse.ArgumentParser(prog="plugins.datetime", description="DateTime Tool Server")
 
     # Core datetime parameters
     parser.add_argument("--timezone", default="UTC", help="Timezone for datetime operations")
     parser.add_argument("--format", default="%Y-%m-%d %H:%M:%S", help="Datetime format string")
 
     # Server mode options
-    parser.add_argument("--server", action="store_true", help="Run in server mode (MCP server)")
+    parser.add_argument("--server", action="store_true", help="Run in server mode (tool server)")
     parser.add_argument("--port", type=int, default=9003, help="Port to listen on when in server mode")
 
     # Misc
@@ -36,24 +36,24 @@ async def async_main():
     args = parser.parse_args()
 
     from .plugin import PLUGIN_FACTORY
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
     
     # Create minimal config for CLI usage
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(type="datetime", enabled=True)
+    server_config = ToolServerConfig(type="datetime", enabled=True)
     
-    server = PLUGIN_FACTORY("datetime", system_config, mcp_config)
+    server = PLUGIN_FACTORY("datetime", system_config, server_config)
 
     if args.server:
-        print(f"Starting DateTime MCP Server on port {args.port}")
+        print(f"Starting DateTime Tool Server on port {args.port}")
         try:
             # Import lazily because the test subprocess may not have the full package on sys.path
-            from agent_system.servers.http_server import serve_mcp_server
+            from agent_system.servers.http_server import serve_tool_server
         except Exception:
-            print("serve_mcp_server not available; cannot start HTTP server in this environment")
+            print("serve_tool_server not available; cannot start HTTP server in this environment")
             return
 
-        await serve_mcp_server(server, port=args.port)
+        await serve_tool_server(server, port=args.port)
     else:
         try:
             from unittest.mock import AsyncMock
@@ -86,14 +86,14 @@ def main(argv: list[str] | None = None) -> None:
 
     # For tests, print a concise summary showing that the parser accepted the args.
     summary: dict[str, Any] = {
-        "description": "DateTime MCP Server",
+        "description": "DateTime Tool Server",
         "timezone": args.timezone,
         "format": args.format,
         "server_mode": args.server,
         "port": args.port,
     }
 
-    print("DateTime MCP Server")
+    print("DateTime Tool Server")
     print(json.dumps(summary))
 
 

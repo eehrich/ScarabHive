@@ -1,4 +1,4 @@
-"""Tests for context_summarizer MCP tools (manual summarization)."""
+"""Tests for context_summarizer tools (manual summarization)."""
 from __future__ import annotations
 
 import pytest
@@ -6,14 +6,14 @@ from unittest.mock import AsyncMock, Mock
 
 from agent_system.config.models import (
     AgentSystemConfig, AgentConfig, LLMSystemConfig,
-    LLMModelConfig, LLMProfile, MCPConfig
+    LLMModelConfig, LLMProfile, ToolServerConfig
 )
 from plugins.context_summarizer.plugin import PLUGIN_FACTORY
 
 
 @pytest.fixture
 def plugin():
-    """Create context summarizer plugin with MCP server."""
+    """Create context summarizer plugin with tool server."""
     system_config = AgentSystemConfig()
     system_config.llm_system = LLMSystemConfig(
         models={
@@ -29,9 +29,9 @@ def plugin():
         }
     )
 
-    mcp_config = MCPConfig()
+    server_config = ToolServerConfig()
 
-    plugin = PLUGIN_FACTORY("context_summarizer", system_config, mcp_config)
+    plugin = PLUGIN_FACTORY("context_summarizer", system_config, server_config)
 
     # Pin the summariser's OWN llm. Until the config chain was fixed, the
     # configured profile was the invalid 'fast', client creation failed, and
@@ -120,12 +120,12 @@ def mock_agent_with_session():
 
 @pytest.mark.asyncio
 async def test_mcp_tools_registration(plugin):
-    """Test that MCP tools are properly registered."""
+    """Test that tools are properly registered."""
     tools = await plugin.list_tools()  # Use list_tools() instead of get_tools()
 
-    assert len(tools) >= 2, "Should have at least 2 MCP tools"
+    assert len(tools) >= 2, "Should have at least 2 tools"
 
-    # Tools are MCPTool objects with .name attribute
+    # Tools are ToolDef objects with .name attribute
     tool_names = [t.name for t in tools]
     assert 'context_summarizer_summarize' in tool_names
     assert 'context_summarizer_check_stats' in tool_names
@@ -180,7 +180,7 @@ async def test_check_stats_empty_conversation(plugin, mock_agent_with_session):
 
 @pytest.mark.asyncio
 async def test_summarize_tool_basic(plugin, mock_agent_with_session):
-    """Test basic summarization via MCP tool."""
+    """Test basic summarization via tool."""
     params = {
         '_session_id': 'test-session-123',
         '_agent': mock_agent_with_session,
@@ -377,7 +377,7 @@ async def test_tool_schema_validation(plugin):
     tools = await plugin.list_tools()  # Fix: use list_tools() instead of get_tools()
 
     for tool in tools:
-        # Tools are MCPTool objects with attributes
+        # Tools are ToolDef objects with attributes
         assert hasattr(tool, 'name')
         assert hasattr(tool, 'description')
         assert hasattr(tool, 'input_schema')

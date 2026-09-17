@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Secure file operations for text files with sandboxed directory access"
 author = "Enrico Ehrich"
 entrypoint = "server:FileOpsServer"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "utilities"
 requires = { agent_system = ">=0.6.0" }
 # .gitignore semantics for search; without it the walk covers gitignored

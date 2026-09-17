@@ -6,7 +6,7 @@ Tests the on_pre_llm_call hook that injects active sessions into system prompt.
 import pytest
 from unittest.mock import AsyncMock
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.hooks import HookContext, HookType
 from agent_system.llm.models import ChatMessage
 from plugins.sequential_thinking.server import SequentialThinkingServer
@@ -21,7 +21,7 @@ def system_config():
 @pytest.fixture
 def server(system_config):
     """Create SequentialThinkingServer instance with hook config."""
-    mcp_config = MCPConfig(
+    server_config = ToolServerConfig(
         type="sequential_thinking",
         enabled=True,
         max_history_size=100,
@@ -38,7 +38,7 @@ def server(system_config):
     return SequentialThinkingServer(
         name="sequential_thinking",
         system_config=system_config,
-        mcp_config=mcp_config
+        server_config=server_config
     )
 
 

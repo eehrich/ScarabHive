@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.ssh_control.auth import SSHAuthenticator
 
 
@@ -32,7 +32,7 @@ def plugin(monkeypatch, connect, **machine):
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
 
     monkeypatch.setattr(SSHAuthenticator, "create_connection", staticmethod(connect))
-    config = MCPConfig()
+    config = ToolServerConfig()
     config.machines = [{"name": "m", "host": "m.test", "username": "root", **machine}]
     config.security = {"audit_log": False}
     return PLUGIN_FACTORY("ssh_control_test", AgentSystemConfig(), config)
@@ -42,7 +42,7 @@ async def test_an_agent_gets_the_reason_of_a_timeout(monkeypatch):
     async def blackholed(*args, **kwargs):
         raise TimeoutError()  # what asyncssh's connect_timeout raises
 
-    server = plugin(monkeypatch, blackholed, command_timeout=1).mcp_server
+    server = plugin(monkeypatch, blackholed, command_timeout=1).tool_server
     connect_timeout = (await server.execute({"machine": "m", "command": "uptime"}))["results"][0]
 
     async def reachable(*args, **kwargs):
@@ -60,7 +60,7 @@ async def test_a_call_cancelled_while_connecting_gives_its_slot_back(monkeypatch
     async def slow(*args, **kwargs):
         await asyncio.sleep(10)
 
-    manager = plugin(monkeypatch, slow, max_connections=1).mcp_server.connection_manager
+    manager = plugin(monkeypatch, slow, max_connections=1).tool_server.connection_manager
     call = asyncio.create_task(manager.execute_command("m", "uptime"))
     await asyncio.sleep(0.1)
     call.cancel()
@@ -74,7 +74,7 @@ async def test_a_call_cancelled_during_the_first_latency_ping_gives_its_slot_bac
     async def lagging(*args, **kwargs):
         return Connection(ping_delay=0.5)
 
-    manager = plugin(monkeypatch, lagging, max_connections=1).mcp_server.connection_manager
+    manager = plugin(monkeypatch, lagging, max_connections=1).tool_server.connection_manager
     call = asyncio.create_task(manager.execute_command("m", "uptime"))
     await asyncio.sleep(0.1)
     call.cancel()

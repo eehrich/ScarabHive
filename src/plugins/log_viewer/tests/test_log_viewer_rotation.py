@@ -2,7 +2,7 @@
 
 import pytest
 from plugins.log_viewer.endpoints import LogViewerWebEndpoints
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 
 @pytest.fixture
@@ -30,10 +30,10 @@ def mock_system_config():
 
 
 @pytest.fixture
-def mock_mcp_config():
-    """Create mock MCP config"""
+def mock_server_config():
+    """Create mock tool server config"""
     from agent_system.config.models import AgentConfig
-    return MCPConfig(
+    return ToolServerConfig(
         type="log_viewer",
         enabled=True,
         agent_config=AgentConfig()
@@ -41,15 +41,15 @@ def mock_mcp_config():
 
 
 @pytest.fixture
-def mock_server(mock_mcp_config):
-    """Create mock MCP server; its allowlist is the config's, as in the real server"""
+def mock_server(mock_server_config):
+    """Create mock tool server; its allowlist is the config's, as in the real server"""
     class MockServer:
         def __init__(self):
             self.name = "log_viewer"
 
         @property
         def log_files(self):
-            return mock_mcp_config.log_files
+            return mock_server_config.log_files
 
         def get_schema_data(self):
             return {}
@@ -60,19 +60,19 @@ def mock_server(mock_mcp_config):
 class TestRotationFileDetection:
     """Test rotation file detection logic"""
     
-    def test_find_rotation_files_single(self, temp_log_dir, mock_system_config, mock_mcp_config, mock_server):
+    def test_find_rotation_files_single(self, temp_log_dir, mock_system_config, mock_server_config, mock_server):
         """Test detection with only base log file"""
         # Create base log file
         log_file = temp_log_dir / "agent.log"
         log_file.write_text("test content\n")
         
         # Update config to point to our temp log
-        mock_mcp_config.log_files = [str(log_file)]
+        mock_server_config.log_files = [str(log_file)]
         
         endpoints = LogViewerWebEndpoints(
             name="log_viewer",
             system_config=mock_system_config,
-            mcp_config=mock_mcp_config,
+            server_config=mock_server_config,
             server=mock_server
         )
         
@@ -81,7 +81,7 @@ class TestRotationFileDetection:
         assert len(rotation_files) == 1
         assert rotation_files[0] == log_file
     
-    def test_find_rotation_files_with_backups(self, temp_log_dir, mock_system_config, mock_mcp_config, mock_server):
+    def test_find_rotation_files_with_backups(self, temp_log_dir, mock_system_config, mock_server_config, mock_server):
         """Test detection with rotation files"""
         # Create base and rotation files
         log_file = temp_log_dir / "agent.log"
@@ -90,12 +90,12 @@ class TestRotationFileDetection:
         (temp_log_dir / "agent.log.1").write_text("older content\n")
         (temp_log_dir / "agent.log.2").write_text("oldest content\n")
         
-        mock_mcp_config.log_files = [str(log_file)]
+        mock_server_config.log_files = [str(log_file)]
         
         endpoints = LogViewerWebEndpoints(
             name="log_viewer",
             system_config=mock_system_config,
-            mcp_config=mock_mcp_config,
+            server_config=mock_server_config,
             server=mock_server
         )
         
@@ -107,7 +107,7 @@ class TestRotationFileDetection:
         assert str(rotation_files[1]).endswith("agent.log.1")
         assert str(rotation_files[2]).endswith("agent.log")
     
-    def test_find_rotation_files_missing_base(self, temp_log_dir, mock_system_config, mock_mcp_config, mock_server):
+    def test_find_rotation_files_missing_base(self, temp_log_dir, mock_system_config, mock_server_config, mock_server):
         """Test detection when base file doesn't exist but rotations do"""
         log_file = temp_log_dir / "agent.log"
         
@@ -115,12 +115,12 @@ class TestRotationFileDetection:
         (temp_log_dir / "agent.log.1").write_text("content 1\n")
         (temp_log_dir / "agent.log.2").write_text("content 2\n")
         
-        mock_mcp_config.log_files = [str(log_file)]
+        mock_server_config.log_files = [str(log_file)]
         
         endpoints = LogViewerWebEndpoints(
             name="log_viewer",
             system_config=mock_system_config,
-            mcp_config=mock_mcp_config,
+            server_config=mock_server_config,
             server=mock_server
         )
         
@@ -130,7 +130,7 @@ class TestRotationFileDetection:
         assert str(rotation_files[0]).endswith("agent.log.2")
         assert str(rotation_files[1]).endswith("agent.log.1")
     
-    def test_find_rotation_files_gaps(self, temp_log_dir, mock_system_config, mock_mcp_config, mock_server):
+    def test_find_rotation_files_gaps(self, temp_log_dir, mock_system_config, mock_server_config, mock_server):
         """Test detection stops at first gap"""
         log_file = temp_log_dir / "agent.log"
         log_file.write_text("newest\n")
@@ -139,12 +139,12 @@ class TestRotationFileDetection:
         # Skip .2
         (temp_log_dir / "agent.log.3").write_text("shouldn't be found\n")
         
-        mock_mcp_config.log_files = [str(log_file)]
+        mock_server_config.log_files = [str(log_file)]
         
         endpoints = LogViewerWebEndpoints(
             name="log_viewer",
             system_config=mock_system_config,
-            mcp_config=mock_mcp_config,
+            server_config=mock_server_config,
             server=mock_server
         )
         
@@ -155,16 +155,16 @@ class TestRotationFileDetection:
         assert rotation_files[0] == temp_log_dir / "agent.log.1"
         assert rotation_files[1] == log_file
     
-    def test_find_rotation_files_nonexistent(self, temp_log_dir, mock_system_config, mock_mcp_config, mock_server):
+    def test_find_rotation_files_nonexistent(self, temp_log_dir, mock_system_config, mock_server_config, mock_server):
         """Test detection with completely nonexistent log"""
         log_file = temp_log_dir / "nonexistent.log"
         
-        mock_mcp_config.log_files = [str(log_file)]
+        mock_server_config.log_files = [str(log_file)]
         
         endpoints = LogViewerWebEndpoints(
             name="log_viewer",
             system_config=mock_system_config,
-            mcp_config=mock_mcp_config,
+            server_config=mock_server_config,
             server=mock_server
         )
         
@@ -176,7 +176,7 @@ class TestRotationFileDetection:
 class TestRotationOrderPreservation:
     """Test that chronological order is preserved when reading rotation files"""
     
-    def test_order_in_combined_output(self, temp_log_dir, mock_system_config, mock_mcp_config, mock_server):
+    def test_order_in_combined_output(self, temp_log_dir, mock_system_config, mock_server_config, mock_server):
         """Test that messages from rotation files appear in correct order"""
         log_file = temp_log_dir / "agent.log"
         
@@ -195,12 +195,12 @@ class TestRotationOrderPreservation:
             "2026-01-01 10:00:05,000 INFO test Message 006\n"
         )
         
-        mock_mcp_config.log_files = [str(log_file)]
+        mock_server_config.log_files = [str(log_file)]
         
         endpoints = LogViewerWebEndpoints(
             name="log_viewer",
             system_config=mock_system_config,
-            mcp_config=mock_mcp_config,
+            server_config=mock_server_config,
             server=mock_server
         )
         
@@ -231,7 +231,7 @@ class TestRotationOrderPreservation:
 class TestRotationAPIEndpoints:
     """Test API endpoints with rotation files"""
     
-    async def test_list_log_files_with_rotations(self, temp_log_dir, mock_system_config, mock_mcp_config, mock_server):
+    async def test_list_log_files_with_rotations(self, temp_log_dir, mock_system_config, mock_server_config, mock_server):
         """Test list_log_files includes rotation info"""
         from fastapi import Request
         from unittest.mock import MagicMock
@@ -241,12 +241,12 @@ class TestRotationAPIEndpoints:
         (temp_log_dir / "agent.log.1").write_text("b" * 2000)
         (temp_log_dir / "agent.log.2").write_text("c" * 3000)
         
-        mock_mcp_config.log_files = [str(log_file)]
+        mock_server_config.log_files = [str(log_file)]
         
         endpoints = LogViewerWebEndpoints(
             name="log_viewer",
             system_config=mock_system_config,
-            mcp_config=mock_mcp_config,
+            server_config=mock_server_config,
             server=mock_server
         )
         
@@ -265,7 +265,7 @@ class TestRotationAPIEndpoints:
         assert log_info["size"] == 6000  # Sum of all files
         assert len(log_info["rotation_files"]) == 3
     
-    async def test_list_log_files_no_rotations(self, temp_log_dir, mock_system_config, mock_mcp_config, mock_server):
+    async def test_list_log_files_no_rotations(self, temp_log_dir, mock_system_config, mock_server_config, mock_server):
         """Test list_log_files with single file (no rotations)"""
         from fastapi import Request
         from unittest.mock import MagicMock
@@ -275,12 +275,12 @@ class TestRotationAPIEndpoints:
         # Use write_bytes to ensure consistent line endings across platforms
         log_file.write_bytes(test_content.encode("utf-8"))
         
-        mock_mcp_config.log_files = [str(log_file)]
+        mock_server_config.log_files = [str(log_file)]
         
         endpoints = LogViewerWebEndpoints(
             name="log_viewer",
             system_config=mock_system_config,
-            mcp_config=mock_mcp_config,
+            server_config=mock_server_config,
             server=mock_server
         )
         

@@ -17,9 +17,9 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
 )
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.agent.server import Agent
 
 
@@ -30,10 +30,10 @@ def _agent():
         profiles={"normal": LLMProfile(model_ref="gpt-4")},
         default_profile="normal",
     )
-    mcp_config = MCPConfig(type="agent", enabled=True,
+    server_config = ToolServerConfig(type="agent", enabled=True,
                            agent_config=AgentConfig(max_steps=2))
     return Agent("test_agent", AgentSystemConfig(llm_system=llm_system),
-                 mcp_config, MCPRegistry())
+                 server_config, ToolServerRegistry())
 
 
 @pytest.mark.asyncio

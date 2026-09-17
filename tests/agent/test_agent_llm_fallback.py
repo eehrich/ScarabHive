@@ -8,13 +8,13 @@ from unittest.mock import MagicMock, patch
 from agent_system.servers.agent.server import Agent
 from agent_system.config.models import (
     AgentSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
     AgentConfig,
     LLMSystemConfig,
     LLMModelConfig,
     LLMProfile,
 )
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.llm.model_health import FIRST_RATE_LIMIT_PAUSE, model_health
 from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError, LLMConnectionError, LLMServerError
 
@@ -128,18 +128,18 @@ def test_llm_quota_exhausted_error_inherits():
 
 def test_agent_create_fallback_llm(system_config_with_profiles, agent_config_with_fallbacks):
     """Test Agent._create_fallback_llm method."""
-    mcp_config = MCPConfig(
+    server_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=agent_config_with_fallbacks
     )
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     mock_llm = MagicMock()
     
     agent = Agent(
         "test_agent",
         system_config_with_profiles,
-        mcp_config,
+        server_config,
         registry,
         llm=mock_llm
     )
@@ -166,18 +166,18 @@ def test_agent_create_fallback_llm(system_config_with_profiles, agent_config_wit
 
 def test_agent_create_fallback_llm_failure(system_config_with_profiles, agent_config_with_fallbacks):
     """Test Agent._create_fallback_llm returns None on failure."""
-    mcp_config = MCPConfig(
+    server_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=agent_config_with_fallbacks
     )
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     mock_llm = MagicMock()
     
     agent = Agent(
         "test_agent",
         system_config_with_profiles,
-        mcp_config,
+        server_config,
         registry,
         llm=mock_llm
     )
@@ -247,8 +247,8 @@ def _chain_agent(system_config, llm, fallback=None, **agent_cfg):
     agent_cfg.setdefault("max_steps", 3)
     agent_config = AgentConfig(**agent_cfg)
     agent_config.tools.allowed = ["*"]
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    agent = Agent("test_agent", system_config, mcp_config, MCPRegistry(), llm=llm)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    agent = Agent("test_agent", system_config, server_config, ToolServerRegistry(), llm=llm)
     if fallback is not None:
         # The net boundary: the switch itself runs as in production, only the
         # fallback client is not built (that would be a real API client).

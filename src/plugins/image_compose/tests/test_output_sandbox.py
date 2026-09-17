@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.image_compose.server import PLUGIN_FACTORY
 
 SPEC = {"size": [8, 8], "background": "#ffffff",
@@ -25,9 +25,9 @@ def make_server(tmp_path: Path, confined: bool):
     allowed = tmp_path / "allowed"
     allowed.mkdir(exist_ok=True)
     kwargs = {"output_directories": [str(allowed)]} if confined else {}
-    config = MCPConfig(type="image_compose", enabled=True,
+    config = ToolServerConfig(type="image_compose", enabled=True,
                        fonts_dir=str(tmp_path / "fonts"), **kwargs)
-    srv = PLUGIN_FACTORY(name="images", system_config=AgentSystemConfig(), mcp_config=config)
+    srv = PLUGIN_FACTORY(name="images", system_config=AgentSystemConfig(), server_config=config)
     srv.project_root = tmp_path
     return srv, allowed
 

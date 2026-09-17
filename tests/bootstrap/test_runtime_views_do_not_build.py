@@ -20,16 +20,16 @@ import pytest
 
 from agent_system.config.models import (
     AgentConfig, AgentMetadata, AgentSystemConfig, LLMModelConfig, LLMProfile,
-    LLMSystemConfig, MCPConfig, PluginsConfig, ToolConfig,
+    LLMSystemConfig, ToolServerConfig, PluginsConfig, ToolConfig,
 )
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.runtime import Runtime
 
 REPO = Path(__file__).resolve().parents[2]
 
 #: one agent per visibility -- all FOUR, because the flag pair has four
 #: states and leaving "ui" out left (True, False) unmeasured: the mutation
-#: ``mcp_public = (visibility == "both")`` stayed green, and three shipped
+#: ``tool_public = (visibility == "both")`` stayed green, and three shipped
 #: servers really are visibility "ui" (file_ops_test_agent, okf_agent,
 #: mcp_external_test_agent).
 VISIBILITIES = {"probe_private": "private", "probe_tool": "tool",
@@ -40,7 +40,7 @@ VISIBILITIES = {"probe_private": "private", "probe_tool": "tool",
 def declared_only() -> Runtime:
     """Three lazy agents, declared and NOT started."""
     servers = {
-        name: MCPConfig(type="basic_agent", enabled=True,
+        name: ToolServerConfig(type="basic_agent", enabled=True,
                         agent_config=AgentConfig(llm_profile="normal"),
                         metadata=AgentMetadata(visibility=visibility))
         for name, visibility in VISIBILITIES.items()
@@ -64,7 +64,7 @@ def declared_only() -> Runtime:
 class TestTheViewAnswersWithoutAnInstance:
     def test_each_visibility_maps_to_the_flags_the_instance_would_get(self, declared_only):
         views = {n: declared_only.registry.describe(n) for n in VISIBILITIES}
-        flags = {n: (v.mcp_public, v.mcp_tool_visible) for n, v in views.items()}
+        flags = {n: (v.tool_public, v.tool_visible) for n, v in views.items()}
 
         # all four corners of the pair, or one of the two mappings is free
         assert flags == {
@@ -86,17 +86,17 @@ class TestTheViewAnswersWithoutAnInstance:
         after = {n: declared_only.registry.describe(n) for n in VISIBILITIES}
 
         for name in VISIBILITIES:
-            assert (after[name].is_agent, after[name].mcp_public, after[name].mcp_tool_visible) == \
-                   (before[name].is_agent, before[name].mcp_public, before[name].mcp_tool_visible), name
+            assert (after[name].is_agent, after[name].tool_public, after[name].tool_visible) == \
+                   (before[name].is_agent, before[name].tool_public, before[name].tool_visible), name
             assert after[name].built and not before[name].built
 
     def test_the_instance_wins_once_it_exists(self, declared_only):
         """A subclass may set its own flags in __init__, and a running process
         serves what the instance says -- not what the config said."""
         agent = declared_only.materialize("probe_private")
-        agent._mcp_public = True
+        agent._tool_public = True
 
-        assert declared_only.registry.describe("probe_private").mcp_public is True
+        assert declared_only.registry.describe("probe_private").tool_public is True
 
     def test_an_unknown_name_has_no_view(self, declared_only):
         assert declared_only.registry.describe("probe_nonexistent") is None
@@ -104,7 +104,7 @@ class TestTheViewAnswersWithoutAnInstance:
     def test_an_unbound_registry_says_nothing(self):
         """Unbound it is the plain dict it always was, and describe() has to
         admit it knows nothing -- the walkers fall back to the instance."""
-        assert MCPRegistry().describe("anything") is None
+        assert ToolServerRegistry().describe("anything") is None
 
 
 class TestOnlyALazyDeclarationMayAnswer:
@@ -135,12 +135,12 @@ class TestOnlyALazyDeclarationMayAnswer:
             plugins=PluginsConfig(
                 plugin_dirs=[str(REPO / "src" / "plugins")],
                 servers={
-                    "probe_lazy": MCPConfig(
+                    "probe_lazy": ToolServerConfig(
                         type="basic_agent", enabled=True,
                         agent_config=AgentConfig(llm_profile="normal"),
                         metadata=AgentMetadata(visibility="both")),
                     # no metadata at all -- the shape 40+ shipped plugins have
-                    "probe_plain": MCPConfig(type="file_ops", enabled=True),
+                    "probe_plain": ToolServerConfig(type="file_ops", enabled=True),
                 },
             ),
         )
@@ -162,7 +162,7 @@ class TestOnlyALazyDeclarationMayAnswer:
         mixed.materialize("probe_plain")
         view = mixed.registry.describe("probe_plain")
 
-        assert (view.mcp_public, view.mcp_tool_visible) == (True, True), \
+        assert (view.tool_public, view.tool_visible) == (True, True), \
             "a non-agent plugin carries no flags, so the getattr defaults rule"
         assert view.is_agent is False and view.built is True
         # and that is the exact opposite of what "private" would have said
@@ -178,7 +178,7 @@ class TestOnlyALazyDeclarationMayAnswer:
         service = ToolDiscoveryService(
             agent_name="probe_caller",
             agent_config=AgentConfig(llm_profile="normal", tools=ToolConfig()),
-            mcp_integration_manager=None,
+            tool_integration_manager=None,
             registry=mixed.registry,
         )
 
@@ -194,7 +194,7 @@ class TestToolVisibilityDoesNotBuild:
         return ToolDiscoveryService(
             agent_name="probe_caller",
             agent_config=AgentConfig(llm_profile="normal", tools=ToolConfig()),
-            mcp_integration_manager=None,
+            tool_integration_manager=None,
             registry=runtime.registry,
         )
 
@@ -220,17 +220,17 @@ class TestToolVisibilityDoesNotBuild:
         """``describe()`` is asked with ``isinstance``, not ``is not None``.
 
         A Mock answers any call with a truthy Mock whose every attribute is
-        truthy too, so ``view.mcp_tool_visible`` would be true for every
+        truthy too, so ``view.tool_visible`` would be true for every
         server and this filter would quietly become "everything is visible" --
         while the ``get()`` those tests steer is never consulted again. The
-        suite is full of Mock registries; the real-``MCPRegistry`` sibling
+        suite is full of Mock registries; the real-``ToolServerRegistry`` sibling
         below cannot see this, because there ``describe()`` honestly returns
         None either way.
         """
         from unittest.mock import MagicMock
 
         class Hidden:
-            _mcp_tool_visible = False
+            _tool_visible = False
 
         registry = MagicMock()
         registry.get.return_value = Hidden()
@@ -241,11 +241,11 @@ class TestToolVisibilityDoesNotBuild:
 
     def test_an_unbound_registry_still_reads_the_instance(self):
         """The fallback path, or converting the walker would have broken every
-        test and caller that hands it a bare MCPRegistry."""
-        registry = MCPRegistry()
+        test and caller that hands it a bare ToolServerRegistry."""
+        registry = ToolServerRegistry()
 
         class Hidden:
-            _mcp_tool_visible = False
+            _tool_visible = False
 
         class Plain:
             pass

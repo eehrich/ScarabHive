@@ -18,8 +18,8 @@ class TestToolSchemaBuilderAllowedPatterns:
     @pytest.fixture
     def schema_builder(self):
         """Create a ToolSchemaBuilder for testing."""
-        # Mock MCP integration manager
-        class MockMCPIntegrationManager:
+        # Mock tool integration manager
+        class MockToolIntegrationManager:
             async def build_tool_schemas(self, tools):
                 return [], {}
 
@@ -29,7 +29,7 @@ class TestToolSchemaBuilderAllowedPatterns:
 
         return ToolSchemaBuilder(
             agent_name="test_agent",
-            mcp_integration_manager=MockMCPIntegrationManager(),
+            tool_integration_manager=MockToolIntegrationManager(),
             server_getter_func=mock_server_getter
         )
 
@@ -153,13 +153,13 @@ def test_build_schemas_with_allowed_patterns():
     from agent_system.servers.agent.tool_schema_builder import ToolSchemaBuilder
     
     # Create a schema builder (mocks don't matter for this test)
-    class MockMCPIntegrationManager:
+    class MockToolIntegrationManager:
         async def build_tool_schemas(self, tools):
             return [], {}
     
     schema_builder = ToolSchemaBuilder(
         agent_name="test_agent",
-        mcp_integration_manager=MockMCPIntegrationManager(),
+        tool_integration_manager=MockToolIntegrationManager(),
         server_getter_func=lambda x: None
     )
     

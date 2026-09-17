@@ -5,7 +5,7 @@ Validate agent YAML configuration files for syntax and schema errors.
 This script validates agent configuration files against:
 1. YAML syntax (proper formatting)
 2. Schema structure (plugins.servers hierarchy)
-3. Pydantic models (MCPConfig from agent_system.config.models)
+3. Pydantic models (ToolServerConfig from agent_system.config.models)
 
 Usage:
     python src/scripts/validate_agent_configs.py <yaml_file1> [yaml_file2] ...
@@ -34,7 +34,7 @@ from pydantic import ValidationError
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 
 
 def validate_yaml_file(file_path: Path) -> Tuple[bool, str]:
@@ -69,7 +69,7 @@ def validate_yaml_file(file_path: Path) -> Tuple[bool, str]:
         # Step 3: Validate each server config against Pydantic model
         for server_name, server_config in servers.items():
             try:
-                MCPConfig(**server_config)
+                ToolServerConfig(**server_config)
             except ValidationError as e:
                 error_lines = []
                 for error in e.errors():

@@ -101,7 +101,7 @@ async def collect_final_result(
             event_type = event.get("type")
             
             # Collect MCP calls for the result
-            if event_type == "mcp_call":
+            if event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
                 # Initialize the call entry
                 call_entry = {
                     "server": event.get("server"),
@@ -110,7 +110,7 @@ async def collect_final_result(
                 }
                 result["calls"].append(call_entry)
             
-            elif event_type == "mcp_result":
+            elif event_type in ("tool_result", "mcp_result"):  # the old name until every deployed side is new (rename 17.09.2026)
                 # Find matching call and add result
                 server = event.get("server")
                 action = event.get("action")

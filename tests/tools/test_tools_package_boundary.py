@@ -1,11 +1,11 @@
-"""Pins the layering inside ``agent_system.mcp``.
+"""Pins the layering inside ``agent_system.tools``.
 
 The package holds two layers that only look like one:
 
-* the **plugin base** -- ``core``, ``status``, ``base``, ``schema_mixin``,
+* the **plugin base** -- ``base``, ``status``, ``schema_mixin``,
   ``schema_based`` -- which every plugin is written against, and
-* the **integration layer** -- ``security``, ``tool_cache``, ``integration``
-  -- which bootstraps plugins and finds whoever federates external tools.
+* the **integration layer** -- ``tool_cache``, ``integration`` -- which
+  bootstraps plugins and finds whoever federates external tools.
 
 The upper layer may know the base. The base must never know the upper layer.
 That independence is what allowed the external MCP client to move out into the
@@ -28,21 +28,16 @@ import pytest
 
 #: Everything a plugin needs. Importing any of these must stay client-free.
 PLUGIN_BASE_MODULES = [
-    "agent_system.mcp.schema_based",  # what the 44 plugins actually import
-    "agent_system.mcp.base",
-    "agent_system.mcp.core",
-    "agent_system.mcp.status",
-    "agent_system.mcp.schema_mixin",
+    "agent_system.tools.schema_based",  # what the 44 plugins actually import
+    "agent_system.tools.base",
+    "agent_system.tools.status",
+    "agent_system.tools.schema_mixin",
 ]
 
-#: The protocol client. None of it may be dragged in by the modules above.
-#: ``security`` belongs here even though nothing in the base reaches for it
-#: today: it drags in pydantic through ..config.models, which the plugin base
-#: is currently free of.
+#: The integration layer. None of it may be dragged in by the modules above.
 PROTOCOL_CLIENT_MODULES = {
-    "agent_system.mcp.integration",
-    "agent_system.mcp.tool_cache",
-    "agent_system.mcp.security",
+    "agent_system.tools.integration",
+    "agent_system.tools.tool_cache",
 }
 
 
@@ -74,20 +69,20 @@ def test_plugin_base_does_not_import_protocol_client(target):
     assert not leaked, (
         f"Importing {target} pulled in the protocol client: {leaked}. "
         "The plugin base must stay independent of it -- check for a new "
-        "top-level import, or for an eager re-export in mcp/__init__.py."
+        "top-level import, or for an eager re-export in tools/__init__.py."
     )
 
 
 def test_package_init_stays_lazy():
     """Importing the package itself must not load any submodule eagerly.
 
-    mcp/__init__.py runs on every submodule import, so an eager re-export
+    tools/__init__.py runs on every submodule import, so an eager re-export
     there costs every plugin the whole client (PEP 562 defers them instead).
     """
-    loaded = set(_imported_modules("agent_system.mcp"))
-    submodules = sorted(m for m in loaded if m.startswith("agent_system.mcp."))
+    loaded = set(_imported_modules("agent_system.tools"))
+    submodules = sorted(m for m in loaded if m.startswith("agent_system.tools."))
     assert not submodules, (
-        f"agent_system.mcp imported submodules eagerly: {submodules}. "
+        f"agent_system.tools imported submodules eagerly: {submodules}. "
         "Re-exports belong in _LAZY_EXPORTS, not in a top-level import."
     )
 
@@ -95,17 +90,18 @@ def test_package_init_stays_lazy():
 def test_every_module_is_assigned_to_a_layer():
     """No module in the package may sit outside both lists.
 
-    This is how the ``security`` gap happened: the two lists are hand-written,
+    This is how the gap around the old ``security`` module happened: the two
+    lists are hand-written,
     nothing compared them against the directory, and a module that appears in
     neither is simply not guarded -- while the file still reads as if it
     covered the package. A new module now has to be classified, or this fails.
     """
     from pathlib import Path
 
-    import agent_system.mcp as pkg
+    import agent_system.tools as pkg
 
     on_disk = {
-        f"agent_system.mcp.{p.stem}"
+        f"agent_system.tools.{p.stem}"
         for p in Path(pkg.__file__).parent.glob("*.py")
         if p.stem != "__init__"
     }
@@ -113,7 +109,7 @@ def test_every_module_is_assigned_to_a_layer():
 
     unclassified = sorted(on_disk - classified)
     assert not unclassified, (
-        f"Modules in agent_system.mcp belong to neither layer: {unclassified}. "
+        f"Modules in agent_system.tools belong to neither layer: {unclassified}. "
         "Add each to PLUGIN_BASE_MODULES (plugin-facing) or "
         "PROTOCOL_CLIENT_MODULES (talks to external servers)."
     )
@@ -129,7 +125,7 @@ def test_lazy_exports_all_resolve():
     _LAZY_EXPORTS would otherwise surface only when some caller happens to
     touch that one name.
     """
-    import agent_system.mcp as pkg
+    import agent_system.tools as pkg
 
     for name in pkg.__all__:
         assert getattr(pkg, name) is not None, f"{name} did not resolve"

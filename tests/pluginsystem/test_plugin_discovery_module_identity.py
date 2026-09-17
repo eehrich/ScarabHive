@@ -51,7 +51,7 @@ def test_a_different_file_under_the_same_module_name_is_still_loaded(tmp_path):
         (d / "plugin.toml").write_text('[plugin]\nname = "identity_probe"\n', encoding="utf-8")
         (d / "plugin.py").write_text(
             f"LABEL = {label!r}\n"
-            "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+            "def PLUGIN_FACTORY(name, system_config, server_config):\n"
             "    return None\n",
             encoding="utf-8")
 
@@ -90,7 +90,7 @@ def test_a_plugin_that_failed_to_execute_is_not_remembered_as_loaded(tmp_path, c
         "the half-executed module stayed behind and would be reused as 'loaded'"
 
     (d / "plugin.py").write_text(
-        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
         "    return None\n",
         encoding="utf-8")
     repaired = discover_all_plugins(dirs=[root])
@@ -119,7 +119,7 @@ def test_a_module_that_exits_hard_leaves_nothing_behind(tmp_path):
         "the torso of the exited module stayed behind and would be reused as 'loaded'"
 
     (d / "plugin.py").write_text(
-        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
         "    return None\n",
         encoding="utf-8")
     assert "exit_probe" in discover_all_plugins(dirs=[root])
@@ -136,11 +136,11 @@ def test_a_single_file_plugin_does_not_take_a_packages_name(tmp_path):
     d.mkdir(parents=True)
     (d / "plugin.toml").write_text('[plugin]\nname = "twin_dir"\n', encoding="utf-8")
     (d / "plugin.py").write_text(
-        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
         "    return 'from-the-directory'\n",
         encoding="utf-8")
     (root / "twin.py").write_text(
-        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
         "    return 'from-the-file'\n",
         encoding="utf-8")
 

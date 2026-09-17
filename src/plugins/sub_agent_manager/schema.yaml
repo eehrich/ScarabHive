@@ -1,4 +1,4 @@
-# MCP tool definition for Sub-Agent Manager (unified tool approach).
+# tool definition for Sub-Agent Manager (unified tool approach).
 
 tools:
   - type: function

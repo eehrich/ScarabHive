@@ -29,9 +29,9 @@ except ImportError:
             except StopIteration:
                 raise StopAsyncIteration
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig, LLMSystemConfig, LLMProfile
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig, LLMSystemConfig, LLMProfile
 from plugins.basic_agent.server import BasicAgent
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 
 
 @pytest.fixture
@@ -60,8 +60,8 @@ def mock_system_config():
 
 @pytest.fixture
 def mock_registry():
-    """Create a mock MCP registry."""
-    return Mock(spec=MCPRegistry)
+    """Create a mock tool registry."""
+    return Mock(spec=ToolServerRegistry)
 
 
 class TestBasicAgentMultiProfile:
@@ -70,13 +70,13 @@ class TestBasicAgentMultiProfile:
     def test_multi_profile_schema_includes_llm_profile_enum(self, mock_system_config, mock_registry):
         """Test that multi-profile agent includes llm_profile with enum in schema."""
         agent_config = AgentConfig(llm_profile=["normal", "think"], llm_profile_advanced=["fast"])
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         # Get tools
         tools = agent.get_tools()
@@ -108,13 +108,13 @@ class TestBasicAgentMultiProfile:
     def test_multi_profile_default_profile(self, mock_system_config, mock_registry):
         """Test that first profile in list is default; available = Union beider Ketten."""
         agent_config = AgentConfig(llm_profile=["normal", "think"], llm_profile_advanced=["fast"])
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         assert agent.agent_config.default_llm_profile == "normal"
         assert agent.agent_config.available_llm_profiles == ["normal", "think", "fast"]
@@ -123,13 +123,13 @@ class TestBasicAgentMultiProfile:
     async def test_execute_task_with_explicit_llm_profile(self, mock_system_config, mock_registry):
         """Test execute_task with explicit llm_profile parameter."""
         agent_config = AgentConfig(llm_profile=["normal", "think"])
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         # Mock run_events to return an async iterator
         async def mock_run_events(*args, **kwargs):
@@ -156,13 +156,13 @@ class TestBasicAgentMultiProfile:
     async def test_execute_task_with_invalid_profile(self, mock_system_config, mock_registry):
         """Test execute_task with invalid profile returns error."""
         agent_config = AgentConfig(llm_profile=["normal", "think"])
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         # Try to use profile not in agent's list
         result = await agent.execute_task({
@@ -178,13 +178,13 @@ class TestBasicAgentMultiProfile:
     async def test_execute_task_with_use_advanced_model(self, mock_system_config, mock_registry):
         """Test execute_task with use_advanced_model=True uses llm_profile_advanced[0]."""
         agent_config = AgentConfig(llm_profile=["normal", "think"], llm_profile_advanced=["fast"])
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         # Mock run_events to return an async iterator
         async def mock_run_events(*args, **kwargs):
@@ -213,13 +213,13 @@ class TestBasicAgentMultiProfile:
     async def test_llm_profile_takes_precedence_over_use_advanced_model(self, mock_system_config, mock_registry):
         """Test that explicit llm_profile takes precedence over use_advanced_model."""
         agent_config = AgentConfig(llm_profile=["normal", "think"], llm_profile_advanced=["fast"])
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         # Mock run_events to return an async iterator
         async def mock_run_events(*args, **kwargs):
@@ -250,13 +250,13 @@ class TestBasicAgentSingleProfile:
     def test_single_profile_schema_excludes_llm_profile(self, mock_system_config, mock_registry):
         """Test that single-profile agent excludes llm_profile from schema (token optimization)."""
         agent_config = AgentConfig(llm_profile="normal")
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         # Get tools
         tools = agent.get_tools()
@@ -285,13 +285,13 @@ class TestBasicAgentSingleProfile:
     def test_single_profile_default(self, mock_system_config, mock_registry):
         """Test single profile configuration."""
         agent_config = AgentConfig(llm_profile="normal")
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         assert agent.agent_config.default_llm_profile == "normal"
         assert agent.agent_config.available_llm_profiles == ["normal"]
@@ -300,13 +300,13 @@ class TestBasicAgentSingleProfile:
     async def test_use_advanced_model_has_no_effect_on_single_profile(self, mock_system_config, mock_registry):
         """Test that use_advanced_model has no effect on single-profile agent."""
         agent_config = AgentConfig(llm_profile="normal")
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         # Mock run_events to return an async iterator
         async def mock_run_events(*args, **kwargs):
@@ -335,13 +335,13 @@ class TestAgentRunEventsLLMOverride:
     async def test_run_events_use_advanced_model_creates_override(self, mock_system_config, mock_registry):
         """Test that run_events with use_advanced_model=True creates LLM override."""
         agent_config = AgentConfig(llm_profile=["normal"], llm_profile_advanced=["think"])
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         # Mock _run_events to return an async iterator
         async def mock_run_events_impl(*args, **kwargs):
@@ -365,13 +365,13 @@ class TestAgentRunEventsLLMOverride:
     async def test_run_events_explicit_llm_override_takes_precedence(self, mock_system_config, mock_registry):
         """Test that explicit llm_override takes precedence over use_advanced_model."""
         agent_config = AgentConfig(llm_profile=["normal"], llm_profile_advanced=["think"])
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         # Mock _run_events to return an async iterator
         async def mock_run_events_impl(*args, **kwargs):
@@ -404,13 +404,13 @@ class TestTemplateVariableInjection:
     def test_get_template_vars_includes_llm_profiles(self, mock_system_config, mock_registry):
         """Test that get_template_vars includes llm_profiles (Union) + has_advanced."""
         agent_config = AgentConfig(llm_profile=["normal", "think"], llm_profile_advanced=["fast"])
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         template_vars = agent.get_template_vars()
 
@@ -424,13 +424,13 @@ class TestTemplateVariableInjection:
     def test_get_template_vars_single_profile(self, mock_system_config, mock_registry):
         """Test template vars for single-profile agent."""
         agent_config = AgentConfig(llm_profile="normal")
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
 
-        agent = BasicAgent("test_agent", mock_system_config, mcp_config, mock_registry)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
 
         template_vars = agent.get_template_vars()
 

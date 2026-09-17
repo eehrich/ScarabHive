@@ -54,24 +54,24 @@ from agent_system.utils.suggest import suggest_path
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.id import short_id
 from agent_system.utils.json_utils import repair_json, strip_markdown_fences
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class JsonStoreServer(SchemaBasedMCPServer):
+class JsonStoreServer(SchemaBasedToolServer):
     """In-memory, validated JSON document store."""
 
     def __init__(self, name: str, system_config: "AgentSystemConfig",
-                 mcp_config: "MCPConfig") -> None:
-        super().__init__(name, system_config, mcp_config)
+                 server_config: "ToolServerConfig") -> None:
+        super().__init__(name, system_config, server_config)
 
-        config_dict = getattr(mcp_config, "config", None) or {}
+        config_dict = getattr(server_config, "config", None) or {}
         self._session_scoped: bool = bool(config_dict.get("session_scoped", True))
         # A missing ``namespace`` silently falls back to the caller's own
         # session (see ``_ns``). For a store whose ONLY purpose is a shared

@@ -1,4 +1,4 @@
-"""Tests for BasicOperations MCP plugin.
+"""Tests for BasicOperations plugin.
 
 This module contains comprehensive tests for the BasicOperations plugin,
 covering wait operations with status updates, echo functionality, and ping operations.
@@ -17,35 +17,35 @@ from plugins.basic_operations.plugin import PLUGIN_FACTORY
 class TestBasicOperationsServer:
     """Test the BasicOperationsServer class functionality."""
 
-    def test_server_initialization(self, mock_system_config, mock_mcp_config):
+    def test_server_initialization(self, mock_system_config, mock_server_config):
         """Test basic server initialization."""
-        server = BasicOperationsServer("test_basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("test_basic_ops", mock_system_config, mock_server_config)
         assert server.name == "test_basic_ops"
         assert server.max_wait_seconds == 3600  # default
         assert server.default_update_interval == 1.0  # default
 
     def test_server_initialization_with_config(self, mock_system_config):
         """Test server initialization with custom config."""
-        from agent_system.config.models import MCPConfig, AgentConfig
+        from agent_system.config.models import ToolServerConfig, AgentConfig
         
-        # Create MCPConfig with custom max_wait_seconds
-        mcp_config = MCPConfig(
+        # Create ToolServerConfig with custom max_wait_seconds
+        server_config = ToolServerConfig(
             type="basic_operations",
             enabled=True,
             agent_config=AgentConfig()
         )
         # Add custom attributes
-        mcp_config.max_wait_seconds = 60
-        mcp_config.default_update_interval = 0.5
+        server_config.max_wait_seconds = 60
+        server_config.default_update_interval = 0.5
         
-        server = BasicOperationsServer("test_basic_ops", mock_system_config, mcp_config)
+        server = BasicOperationsServer("test_basic_ops", mock_system_config, server_config)
         assert server.name == "test_basic_ops"
         assert server.max_wait_seconds == 60
         assert server.default_update_interval == 0.5
 
-    def test_server_tools_schema(self, mock_system_config, mock_mcp_config):
+    def test_server_tools_schema(self, mock_system_config, mock_server_config):
         """Test server tools structure."""
-        server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
         tools = server.get_tools()
         
         assert isinstance(tools, list)
@@ -64,16 +64,16 @@ class TestBasicOperationsServer:
             assert "description" in tool["function"]
             assert "parameters" in tool["function"]
 
-    def test_server_default_action(self, mock_system_config, mock_mcp_config):
+    def test_server_default_action(self, mock_system_config, mock_server_config):
         """Test default action - get_default_action() removed in modern pattern."""
-        server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
         # get_default_action() is obsolete in modern dispatcher
         assert not hasattr(server, 'get_default_action') or True  # Skip this test
 
     @pytest.mark.asyncio
-    async def test_ping_tool_basic(self, mock_system_config, mock_mcp_config):
+    async def test_ping_tool_basic(self, mock_system_config, mock_server_config):
         """Test basic ping functionality."""
-        server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
         
         result = await server.call("basic_ops_ping", {})
         
@@ -84,9 +84,9 @@ class TestBasicOperationsServer:
         assert "details" not in result  # default is no details
 
     @pytest.mark.asyncio
-    async def test_ping_tool_with_details(self, mock_system_config, mock_mcp_config):
+    async def test_ping_tool_with_details(self, mock_system_config, mock_server_config):
         """Test ping with detailed information."""
-        server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
         
         result = await server.call("basic_ops_ping", {"include_details": True})
         
@@ -100,9 +100,9 @@ class TestBasicOperationsServer:
 
 
     @pytest.mark.asyncio
-    async def test_wait_tool_basic(self, mock_system_config, mock_mcp_config):
+    async def test_wait_tool_basic(self, mock_system_config, mock_server_config):
         """Test basic wait functionality."""
-        server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
         
         start_time = time.time()
         # Provide a mock status because the server assumes one is always present
@@ -118,9 +118,9 @@ class TestBasicOperationsServer:
         assert result["user_message"] == "Waiting"  # default message
 
     @pytest.mark.asyncio
-    async def test_wait_tool_with_message(self, mock_system_config, mock_mcp_config):
+    async def test_wait_tool_with_message(self, mock_system_config, mock_server_config):
         """Test wait with custom message."""
-        server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
         
         mock_status = AsyncMock()
         mock_status.progress = AsyncMock()
@@ -134,7 +134,7 @@ class TestBasicOperationsServer:
         assert result["user_message"] == "Test Operation"
 
     @pytest.mark.asyncio
-    async def test_wait_tool_with_status_updates(self, mock_system_config, mock_mcp_config):
+    async def test_wait_tool_with_status_updates(self, mock_system_config, mock_server_config):
         """Test wait with status update monitoring."""
         server = BasicOperationsServer("basic_ops", mock_system_config, {"default_update_interval": 0.1})
         
@@ -163,19 +163,19 @@ class TestBasicOperationsServer:
         # so we just verify the initial status update was sent
 
     @pytest.mark.asyncio
-    async def test_wait_tool_parameter_validation(self, mock_system_config, mock_mcp_config):
+    async def test_wait_tool_parameter_validation(self, mock_system_config, mock_server_config):
         """Test wait tool parameter validation."""
-        from agent_system.config.models import MCPConfig, AgentConfig
+        from agent_system.config.models import ToolServerConfig, AgentConfig
         
-        # Create MCPConfig with max_wait_seconds=5
-        mcp_config = MCPConfig(
+        # Create ToolServerConfig with max_wait_seconds=5
+        server_config = ToolServerConfig(
             type="basic_operations",
             enabled=True,
             agent_config=AgentConfig()
         )
-        mcp_config.max_wait_seconds = 5
+        server_config.max_wait_seconds = 5
         
-        server = BasicOperationsServer("basic_ops", mock_system_config, mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, server_config)
         
         # Test negative seconds
         mock_status = AsyncMock()
@@ -199,9 +199,9 @@ class TestBasicOperationsServer:
         assert "exceeds maximum" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_wait_tool_custom_update_interval(self, mock_system_config, mock_mcp_config):
+    async def test_wait_tool_custom_update_interval(self, mock_system_config, mock_server_config):
         """Test wait with custom update interval."""
-        server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
         
         mock_status = AsyncMock()
         status_calls = []
@@ -225,9 +225,9 @@ class TestBasicOperationsServer:
         assert len(status_calls) >= 2  # At least: starting countdown + completed
 
     @pytest.mark.asyncio
-    async def test_invalid_tool_name(self, mock_system_config, mock_mcp_config):
+    async def test_invalid_tool_name(self, mock_system_config, mock_server_config):
         """Test calling an invalid tool name."""
-        server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
         
         # Modern pattern: generic dispatcher raises ValueError
         with pytest.raises(ValueError, match="Tool 'invalid_tool' not found"):
@@ -237,34 +237,34 @@ class TestBasicOperationsServer:
 class TestBasicOperationsPlugin:
     """Test the plugin factory and configuration."""
 
-    def test_plugin_factory_basic(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_basic(self, mock_system_config, mock_server_config):
         """Test basic plugin factory functionality."""
-        server = PLUGIN_FACTORY("test_basic_ops", mock_system_config, mock_mcp_config)
+        server = PLUGIN_FACTORY("test_basic_ops", mock_system_config, mock_server_config)
         
         assert isinstance(server, BasicOperationsServer)
         assert server.name == "test_basic_ops"
 
     def test_plugin_factory_with_config(self, mock_system_config):
         """Test plugin factory with custom configuration."""
-        from agent_system.config.models import MCPConfig, AgentConfig
+        from agent_system.config.models import ToolServerConfig, AgentConfig
         
-        # Create MCPConfig with custom values
-        mcp_config = MCPConfig(
+        # Create ToolServerConfig with custom values
+        server_config = ToolServerConfig(
             type="basic_operations",
             enabled=True,
             agent_config=AgentConfig()
         )
-        mcp_config.max_wait_seconds = 120
-        mcp_config.default_update_interval = 2.0
+        server_config.max_wait_seconds = 120
+        server_config.default_update_interval = 2.0
         
-        server = PLUGIN_FACTORY("test_basic_ops", mock_system_config, mcp_config)
+        server = PLUGIN_FACTORY("test_basic_ops", mock_system_config, server_config)
         
         assert isinstance(server, BasicOperationsServer)
         assert server.name == "test_basic_ops"
         assert server.max_wait_seconds == 120
         assert server.default_update_interval == 2.0
 
-    def test_plugin_discovery(self, mock_system_config, mock_mcp_config):
+    def test_plugin_discovery(self, mock_system_config, mock_server_config):
         """Test that plugin can be discovered from plugin directory."""
         # Check that the plugin files exist
         plugin_dir = Path(__file__).parent.parent.parent.parent.parent / "src" / "plugins" / "basic_operations"
@@ -274,7 +274,7 @@ class TestBasicOperationsPlugin:
         assert (plugin_dir / "plugin.py").exists()
         assert (plugin_dir / "schema.yaml").exists()
 
-    def test_plugin_info_metadata(self, mock_system_config, mock_mcp_config):
+    def test_plugin_info_metadata(self, mock_system_config, mock_server_config):
         """Test plugin metadata if provided by the plugin.
 
         Many plugins do not currently provide `PLUGIN_INFO`. Instead of
@@ -300,9 +300,9 @@ class TestBasicOperationsIntegration:
     """Integration tests for BasicOperations plugin."""
 
     @pytest.mark.asyncio
-    async def test_multiple_concurrent_waits(self, mock_system_config, mock_mcp_config):
+    async def test_multiple_concurrent_waits(self, mock_system_config, mock_server_config):
         """Test multiple concurrent wait operations."""
-        server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
         
         # Start multiple wait operations concurrently
         # Provide status mocks for each concurrent task
@@ -323,9 +323,9 @@ class TestBasicOperationsIntegration:
         assert elapsed < 0.5  # Much less than 3 * 0.1 = 0.3
 
     @pytest.mark.asyncio
-    async def test_wait_with_interrupt_simulation(self, mock_system_config, mock_mcp_config):
+    async def test_wait_with_interrupt_simulation(self, mock_system_config, mock_server_config):
         """Test wait behavior with simulated interruption."""
-        server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
         
         # Start a wait operation and then "cancel" it by timing out the test
         try:
@@ -340,9 +340,9 @@ class TestBasicOperationsIntegration:
             pass
 
     @pytest.mark.asyncio
-    async def test_comprehensive_tool_workflow(self, mock_system_config, mock_mcp_config):
+    async def test_comprehensive_tool_workflow(self, mock_system_config, mock_server_config):
         """Test a complete workflow using all tools."""
-        server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
         
         # 1. Start with a ping
         ping_result = await server.call("basic_ops_ping", {"include_details": True})

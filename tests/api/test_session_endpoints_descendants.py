@@ -31,7 +31,7 @@ async def _create(sm, sid, agent_name, parent_id=None, context_vars=None):
 @pytest.mark.asyncio
 async def test_descendants_empty_when_no_children(sm):
     await _create(sm, "root", "linear_book")
-    tree = await _build_descendants_context_vars(sm, mcp_registry=None, user_id="user1", root_session_id="root")
+    tree = await _build_descendants_context_vars(sm, tool_registry=None, user_id="user1", root_session_id="root")
     assert tree == []
 
 
@@ -45,7 +45,7 @@ async def test_descendants_two_levels(sm):
     await _create(sm, "grand_a", "v5b_synopsis_writer", parent_id="child_a",
                   context_vars={"phase": "synopsis", "Stil_Autor": "Hesse"})
 
-    tree = await _build_descendants_context_vars(sm, mcp_registry=None, user_id="user1", root_session_id="root")
+    tree = await _build_descendants_context_vars(sm, tool_registry=None, user_id="user1", root_session_id="root")
 
     # Find child_a node
     by_sid = {n["session_id"]: n for n in tree}
@@ -68,5 +68,5 @@ async def test_descendants_skip_unrelated_sessions(sm):
     await _create(sm, "child_x", "v5b_story_designer", parent_id="other_root",
                   context_vars={"x": "y"})
 
-    tree = await _build_descendants_context_vars(sm, mcp_registry=None, user_id="user1", root_session_id="root")
+    tree = await _build_descendants_context_vars(sm, tool_registry=None, user_id="user1", root_session_id="root")
     assert tree == []

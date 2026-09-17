@@ -35,10 +35,10 @@ import socket
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 #: How the addon spells "only the selected objects" per exporter. Measured
 #: against Blender 5.2.0 LTS, because it is spelled five different ways and
@@ -73,7 +73,7 @@ _EXPORTERS: dict[str, dict[str, Any]] = {
 #: 4000, which is ~21x this budget, so that cap does not protect us.
 MAX_RESULT_CHARS = 60_000
 
-#: One status row. Same number as ``mcp/base.py`` and the fleet guard in
+#: One status row. Same number as ``tools/base.py`` and the fleet guard in
 #: ``tests/plugins/test_status_end_lines.py`` — a Blender object name may be 63
 #: characters and ``get_object_info`` returns unrounded floats, so an ordinary
 #: asset name overruns this without help.
@@ -84,18 +84,18 @@ class BlenderNotReachable(RuntimeError):
     """Raised with an actionable message when nothing answers on the socket."""
 
 
-class BlenderServer(SchemaBasedMCPServer):
+class BlenderServer(SchemaBasedToolServer):
     """Scene inspection, bpy execution, screenshots and exports."""
 
     def __init__(self, name: str, system_config: "AgentSystemConfig",
-                 mcp_config: "MCPConfig") -> None:
-        super().__init__(name, system_config, mcp_config)
-        self._host: str = getattr(mcp_config, "host", "127.0.0.1")
-        self._port: int = int(getattr(mcp_config, "port", 9876))
-        self._timeout: float = float(getattr(mcp_config, "timeout", 60))
+                 server_config: "ToolServerConfig") -> None:
+        super().__init__(name, system_config, server_config)
+        self._host: str = getattr(server_config, "host", "127.0.0.1")
+        self._port: int = int(getattr(server_config, "port", 9876))
+        self._timeout: float = float(getattr(server_config, "timeout", 60))
         # Renders and heavy scripts run for minutes; the plain queries do not.
-        self._long_timeout: float = float(getattr(mcp_config, "long_timeout", 600))
-        out = getattr(mcp_config, "output_directory", "data/workspace/blender")
+        self._long_timeout: float = float(getattr(server_config, "long_timeout", 600))
+        out = getattr(server_config, "output_directory", "data/workspace/blender")
         self._out_dir: Path = Path(out) if Path(out).is_absolute() else Path.cwd() / out
 
     # ── the wire ────────────────────────────────────────────────────────

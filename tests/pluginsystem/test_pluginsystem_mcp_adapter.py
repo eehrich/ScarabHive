@@ -1,13 +1,13 @@
 """
-Tests for MCP Plugin Integration
+Tests for Tool plugin Integration
 """
 
 import pytest
 from unittest.mock import AsyncMock
 from typing import Any, Dict
 
-from agent_system.plugins.mcp_adapter import PluginMCPAdapter, PluginMCPRegistry
-from agent_system.mcp.core import MCPCapability
+from agent_system.plugins.tool_adapter import PluginToolAdapter, PluginToolRegistry
+from agent_system.tools.base import ToolServerCapability
 
 
 class MockPluginServer:
@@ -46,16 +46,16 @@ def mock_plugin_server():
 
 @pytest.fixture
 def plugin_adapter(mock_plugin_server):
-    return PluginMCPAdapter("test_plugin", mock_plugin_server)
+    return PluginToolAdapter("test_plugin", mock_plugin_server)
 
 
-class TestPluginMCPAdapter:
+class TestPluginToolAdapter:
     """Test plugin MCP adapter"""
 
     def test_plugins_mcp_adapter_initialization(self, plugin_adapter):
         assert plugin_adapter.name == "test_plugin"
         assert plugin_adapter.description == "AgentSystem test_plugin plugin"
-        assert MCPCapability.TOOLS in plugin_adapter.capabilities
+        assert ToolServerCapability.TOOLS in plugin_adapter.capabilities
 
     @pytest.mark.asyncio
     async def test_plugins_mcp_adapter_list_tools_from_schema(self, plugin_adapter):
@@ -102,7 +102,7 @@ class TestPluginMCPAdapter:
             await plugin_adapter.call_tool("test_tool", {})
 
 
-class TestPluginMCPAdapterWithoutSchema:
+class TestPluginToolAdapterWithoutSchema:
     """Test plugin adapter without schema"""
 
     @pytest.fixture
@@ -118,7 +118,7 @@ class TestPluginMCPAdapterWithoutSchema:
                 return "default"
 
         plugin_server = PluginWithoutSchema()
-        return PluginMCPAdapter("no_schema_plugin", plugin_server)
+        return PluginToolAdapter("no_schema_plugin", plugin_server)
 
     @pytest.mark.asyncio
     async def test_plugins_mcp_adapter_list_tools_fallback_to_default(self, plugin_without_schema):
@@ -132,7 +132,7 @@ class TestPluginMCPAdapterWithoutSchema:
         assert tools[0].input_schema["type"] == "object"
 
 
-class TestPluginMCPAdapterWithExternalSchema:
+class TestPluginToolAdapterWithExternalSchema:
     """Test plugin adapter with external schema"""
 
     @pytest.fixture
@@ -155,7 +155,7 @@ class TestPluginMCPAdapterWithExternalSchema:
         }
 
         plugin_server = PluginWithExternalSchema()
-        return PluginMCPAdapter("external_schema_plugin", plugin_server, schema)
+        return PluginToolAdapter("external_schema_plugin", plugin_server, schema)
 
     @pytest.mark.asyncio
     async def test_plugins_mcp_adapter_list_tools_from_external_schema(self, plugin_with_external_schema):
@@ -169,23 +169,23 @@ class TestPluginMCPAdapterWithExternalSchema:
         assert "external" in (tools[0].description or "").lower()
 
 
-class TestPluginMCPRegistry:
-    """Test plugin MCP registry"""
+class TestPluginToolRegistry:
+    """Test plugin tool registry"""
 
     @pytest.fixture
     def registry(self):
-        return PluginMCPRegistry()
+        return PluginToolRegistry()
 
-    def test_plugins_mcp_registry_initialization(self, registry):
+    def test_plugins_tool_registry_initialization(self, registry):
         assert len(registry.plugin_servers) == 0
         assert len(registry.plugin_factories) == 0
 
-    def test_plugins_mcp_registry_list_servers_empty(self, registry):
+    def test_plugins_tool_registry_list_servers_empty(self, registry):
         assert registry.list_servers() == []
         assert registry.list_available_plugins() == []
 
     @pytest.mark.asyncio
-    async def test_plugins_mcp_registry_register_plugin(self, registry):
+    async def test_plugins_tool_registry_register_plugin(self, registry):
         # Mock factory
         def mock_factory(name, config, ssl_verify=True):
             return MockPluginServer(name)
@@ -198,12 +198,12 @@ class TestPluginMCPRegistry:
         assert registry.get_server("test_plugin") is not None
 
     @pytest.mark.asyncio
-    async def test_plugins_mcp_registry_register_unknown_plugin(self, registry):
+    async def test_plugins_tool_registry_register_unknown_plugin(self, registry):
         with pytest.raises(Exception, match="Unknown plugin: unknown"):
             await registry.register_plugin("unknown")
 
     @pytest.mark.asyncio
-    async def test_plugins_mcp_registry_unregister_plugin(self, registry):
+    async def test_plugins_tool_registry_unregister_plugin(self, registry):
         # Mock factory and register plugin
         def mock_factory(name, config, ssl_verify=True):
             return MockPluginServer(name)
@@ -218,7 +218,7 @@ class TestPluginMCPRegistry:
         assert registry.get_server("test_plugin") is None
 
     @pytest.mark.asyncio
-    async def test_plugins_mcp_registry_register_from_config(self, registry):
+    async def test_plugins_tool_registry_register_from_config(self, registry):
         # Mock factories
         def mock_factory1(name, config, ssl_verify=True):
             return MockPluginServer(name)
@@ -231,12 +231,12 @@ class TestPluginMCPRegistry:
 
         enabled_servers = ["plugin1", "plugin2"]
         
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
         system_config = AgentSystemConfig()
         
         servers_config = {
-            "plugin1": MCPConfig(type="plugin1", enabled=True, agent_config=AgentConfig()),
-            "plugin2": MCPConfig(type="plugin2", enabled=True, agent_config=AgentConfig())
+            "plugin1": ToolServerConfig(type="plugin1", enabled=True, agent_config=AgentConfig()),
+            "plugin2": ToolServerConfig(type="plugin2", enabled=True, agent_config=AgentConfig())
         }
 
         await registry.register_from_config(enabled_servers, servers_config, system_config)
@@ -246,21 +246,21 @@ class TestPluginMCPRegistry:
         assert "plugin2" in registry.list_servers()
 
     @pytest.mark.asyncio
-    async def test_plugins_mcp_registry_register_from_config_key_ne_type(self, registry):
+    async def test_plugins_tool_registry_register_from_config_key_ne_type(self, registry):
         """Config-Agent-Fall: Server-Key != Plugin-Typ (z.B. 'slovak_tutor' mit
         type='basic_agent'). Die Factory MUSS über den Typ aufgelöst werden —
         der alte Key-Lookup errorte für jeden Config-Agenten, sobald der
         Integration-Fallback lief (Startreihenfolge), und konnte ihn nie
         registrieren."""
-        def mock_factory(name, system_config, mcp_config):
+        def mock_factory(name, system_config, server_config):
             return MockPluginServer(name)
 
         registry.plugin_factories["basic_agent"] = mock_factory
 
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
         system_config = AgentSystemConfig()
         servers_config = {
-            "slovak_tutor": MCPConfig(
+            "slovak_tutor": ToolServerConfig(
                 type="basic_agent", enabled=True, agent_config=AgentConfig()),
         }
 
@@ -271,13 +271,13 @@ class TestPluginMCPRegistry:
         assert registry.get_server("slovak_tutor") is not None
 
     @pytest.mark.asyncio
-    async def test_plugins_mcp_registry_register_from_config_unknown_type_skips(self, registry):
+    async def test_plugins_tool_registry_register_from_config_unknown_type_skips(self, registry):
         """Unbekannter TYP wird geloggt und übersprungen — kein Abbruch,
         keine Registrierung (Fehlermeldung nennt Typ UND Server-Key)."""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
         system_config = AgentSystemConfig()
         servers_config = {
-            "ghost": MCPConfig(
+            "ghost": ToolServerConfig(
                 type="does_not_exist", enabled=True, agent_config=AgentConfig()),
         }
 
@@ -286,7 +286,7 @@ class TestPluginMCPRegistry:
         assert "ghost" not in registry.list_servers()
 
     @pytest.mark.asyncio
-    async def test_plugins_mcp_registry_get_all_tools(self, registry):
+    async def test_plugins_tool_registry_get_all_tools(self, registry):
         # Mock factory
         def mock_factory(name, config, ssl_verify=True):
             return MockPluginServer(name)
@@ -302,7 +302,7 @@ class TestPluginMCPRegistry:
         assert all_tools["test_plugin"][0].name == "test_plugin"
 
     @pytest.mark.asyncio
-    async def test_plugins_mcp_registry_call_plugin_tool(self, registry):
+    async def test_plugins_tool_registry_call_plugin_tool(self, registry):
         # Mock factory
         def mock_factory(name, config, ssl_verify=True):
             return MockPluginServer(name)
@@ -315,6 +315,6 @@ class TestPluginMCPRegistry:
         assert result == "Called test_tool with {'param': 'value'}"
 
     @pytest.mark.asyncio
-    async def test_plugins_mcp_registry_call_plugin_tool_unknown_plugin(self, registry):
+    async def test_plugins_tool_registry_call_plugin_tool_unknown_plugin(self, registry):
         with pytest.raises(Exception, match="Plugin unknown not registered"):
             await registry.call_plugin_tool("unknown", "tool", {})

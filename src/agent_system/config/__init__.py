@@ -7,21 +7,19 @@ from .models import (
     AgentSystemConfig,
     AgentConfig,
     LLMSystemConfig,
-    MCPSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
     PluginsConfig,
     MCPServersConfig,
 )
-from .settings import load_settings, get_mcp_config_by_name
+from .settings import load_settings, get_tool_server_config
 
 __all__ = [
     "AgentSystemConfig",
     "AgentConfig",
     "LLMSystemConfig",
-    "MCPSystemConfig",  # DEPRECATED - use PluginsConfig, MCPServersConfig instead
-    "MCPConfig",
+    "ToolServerConfig",
     "PluginsConfig",
     "MCPServersConfig",
     "load_settings",
-    "get_mcp_config_by_name",
+    "get_tool_server_config",
 ]

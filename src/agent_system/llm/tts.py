@@ -228,7 +228,7 @@ async def notify_tts_response(
 def _current_request_id() -> str:
     """Request id of the surrounding API call, empty outside one."""
     try:
-        from agent_system.mcp.status import current_request_id
+        from agent_system.tools.status import current_request_id
         return current_request_id.get('') or ''
     except Exception:
         return ''

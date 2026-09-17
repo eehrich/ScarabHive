@@ -22,7 +22,7 @@ import logging
 from agent_system.config.models import (
     AgentSystemConfig,
     AgentConfig,
-    MCPConfig,
+    ToolServerConfig,
     LLMSystemConfig,
     LLMModelConfig,
     LLMProfile,
@@ -30,9 +30,9 @@ from agent_system.config.models import (
     HooksConfig
 )
 from agent_system.servers.agent.server import Agent
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.hooks.registry import HookRegistry
-from agent_system.mcp.status import status_bus
+from agent_system.tools.status import status_bus
 
 
 logger = logging.getLogger(__name__)
@@ -113,8 +113,8 @@ def agent_config():
 
 @pytest.fixture
 def mock_registry():
-    """Create a mock MCPRegistry with minimal tools"""
-    registry = MCPRegistry()
+    """Create a mock ToolServerRegistry with minimal tools"""
+    registry = ToolServerRegistry()
     
     # Add a simple mock server
     mock_server = MagicMock()
@@ -149,8 +149,8 @@ async def test_agent_initialization_complete(test_config, agent_config, mock_reg
     # Create mock LLM
     mock_llm = MockLLMClient()
     
-    # Create MCP config
-    mcp_config = MCPConfig(
+    # Create tool server config
+    server_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=agent_config
@@ -160,7 +160,7 @@ async def test_agent_initialization_complete(test_config, agent_config, mock_reg
     agent = Agent(
         name="test_agent",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -199,31 +199,31 @@ async def test_tool_filtering_applied(test_config, agent_config, mock_registry):
     agent_config.tools = ToolConfig(allowed=["datetime/*"])
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="test_agent",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
     
-    # Get available tools (MCPServer interface - what this agent OFFERS to others)
+    # Get available tools (ToolServer interface - what this agent OFFERS to others)
     tools = await agent.list_tools()
     
-    # Agent.list_tools() returns the agent itself as a single callable tool (MCPServer interface)
+    # Agent.list_tools() returns the agent itself as a single callable tool (ToolServer interface)
     # This is what OTHER agents see when they query this agent's tools
-    assert len(tools) == 1, "Agent should return itself as a single MCPTool"
+    assert len(tools) == 1, "Agent should return itself as a single ToolDef"
     
     tool = tools[0]
-    # MCPTool has .name, .description, .input_schema attributes
+    # ToolDef has .name, .description, .input_schema attributes
     assert tool.name == "test_agent", f"Expected tool name 'test_agent', got {tool.name}"
     assert tool.description, "Tool should have description"
     assert tool.input_schema, "Tool should have input_schema"
     assert "properties" in tool.input_schema, "input_schema should have properties"
     
-    logger.info("✓ Agent exposes itself as MCPTool via list_tools() interface")
+    logger.info("✓ Agent exposes itself as ToolDef via list_tools() interface")
 
 
 @pytest.mark.asyncio
@@ -231,12 +231,12 @@ async def test_message_list_construction(test_config, agent_config, mock_registr
     """Test 3: Message list is constructed correctly with system prompt and user message"""
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="test_agent",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -285,12 +285,12 @@ async def test_status_events_generated(test_config, agent_config, mock_registry)
     """Test 4: Status events are generated during execution"""
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="test_agent",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -365,12 +365,12 @@ async def test_hooks_executed_correctly(test_config, agent_config, mock_registry
     
     # Create agent (uses hooks from plugin system, not directly testable this way)
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="test_agent",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -389,12 +389,12 @@ async def test_output_formatting_applied(test_config, agent_config, mock_registr
     """Test 6: Output format is applied correctly"""
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="test_agent",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -418,12 +418,12 @@ async def test_no_external_calls_made(test_config, agent_config, mock_registry):
     """Test 7: Verify no external HTTP calls are made during execution"""
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="test_agent",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -455,12 +455,12 @@ async def test_logging_captures_warnings(test_config, agent_config, mock_registr
     agent_config.tools = ToolConfig(allowed=["nonexistent_server/*"])
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="test_agent",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )

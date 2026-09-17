@@ -1,4 +1,4 @@
-"""Schema-based Tool Mixin for MCP servers and agents with tool support.
+"""Schema-based Tool Mixin for tool servers and agents with tool support.
 
 This mixin extends SchemaBaseMixin to add tool-specific functionality:
 - Tool loading from schema.yaml
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class SchemaBasedToolMixin(SchemaBaseMixin):
     """Mixin providing schema-based tool loading and dispatching.
 
-    This mixin can be used by any MCPServer subclass to add automatic
+    This mixin can be used by any ToolServer subclass to add automatic
     schema.yaml loading and generic tool dispatching.
 
     Classes using this mixin should:
@@ -34,7 +34,7 @@ class SchemaBasedToolMixin(SchemaBaseMixin):
     4. Implement methods matching their tool names
 
     Example:
-        class MyServer(MCPServer, SchemaBasedToolMixin):
+        class MyServer(ToolServer, SchemaBasedToolMixin):
             def __init__(self, ...):
                 super().__init__(...)
                 self._init_schema_mixin()
@@ -44,7 +44,7 @@ class SchemaBasedToolMixin(SchemaBaseMixin):
                 pass
     """
 
-    # Type hints for attributes that will be provided by MCPServer
+    # Type hints for attributes that will be provided by ToolServer
     name: str
 
     def _init_schema_mixin(self) -> None:
@@ -116,7 +116,7 @@ class SchemaBasedToolMixin(SchemaBaseMixin):
         Override this method in subclasses for more complex routing logic.
 
         Args:
-            tool_name: The tool name from the MCP call
+            tool_name: The tool name from the tool call
 
         Returns:
             The method name to call on self

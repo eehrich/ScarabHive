@@ -1,8 +1,8 @@
 """
-Tool caching for MCP integration to avoid re-initializing tools on every request.
+Tool caching for tool integration to avoid re-initializing tools on every request.
 
 This module provides a configuration-aware cache that invalidates automatically
-when the MCP configuration changes (detected via config hash).
+when the tool server configuration changes (detected via config hash).
 """
 
 import asyncio
@@ -44,7 +44,7 @@ class CacheStatistics:
 
 class ToolCache:
     """
-    Configuration-aware cache for MCP tools.
+    Configuration-aware cache for tools.
     
     Automatically invalidates when configuration changes are detected via config hash.
     Thread-safe for concurrent access.

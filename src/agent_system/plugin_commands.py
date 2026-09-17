@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 #: underscores removed so ``requestId`` and ``request_id`` are the same name.
 #:
 #: Everything with a LEADING underscore, and ``request_id``/``requestId`` (the
-#: status channel's routing key, ``MCPServer.call_with_status``), is dropped by
+#: status channel's routing key, ``ToolServer.call_with_status``), is dropped by
 #: ``dispatch_tool_call`` before the real runtime params are injected -- a
 #: command bound to one would silently lose its argument. The other two get
 #: past the strip, because they are read AFTER it: ``session_id`` is read as an
@@ -264,7 +264,7 @@ def format_command_result(result: Any) -> str:
 
 
 #: Rows a command prints before it starts summarising. Twenty sub-agents or
-#: twenty MCP servers is already more than anyone reads at a prompt.
+#: twenty tool servers is already more than anyone reads at a prompt.
 _MAX_ROWS = 20
 
 

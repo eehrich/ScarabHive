@@ -17,7 +17,7 @@ import yaml
 from agent_system.utils import yaml_io
 import glob as glob_module
 
-from .models import AgentSystemConfig, MCPConfig, strip_empty_yaml_keys
+from .models import AgentSystemConfig, ToolServerConfig, strip_empty_yaml_keys
 
 logger = logging.getLogger(__name__)
 
@@ -450,7 +450,7 @@ def _resolve_model_inheritance(data: dict) -> None:
         models[name] = copy.deepcopy(resolve(name, ()))
 
 
-#: Already-reported (agent, keys) pairs. get_mcp_config_by_name re-validates on
+#: Already-reported (agent, keys) pairs. get_tool_server_config re-validates on
 #: every agent creation; the operator needs the line once, not per spawn.
 _reported_stale_llm_params: set = set()
 
@@ -655,10 +655,10 @@ def _resolve_server_inheritance(
     return (parent_type, merged)
 
 
-def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig] = None) -> Optional[MCPConfig]:
-    """Get an MCPConfig by name with inheritance from default_config and parent servers.
+def get_tool_server_config(server_name: str, config: Optional[AgentSystemConfig] = None) -> Optional[ToolServerConfig]:
+    """Get a ToolServerConfig by name with inheritance from default_config and parent servers.
     
-    This function creates a final MCPConfig by:
+    This function creates a final ToolServerConfig by:
     1. Starting with the default_config (from plugins or legacy mcp_system)
     2. Resolving inheritance if type refers to another server (e.g., type: writer_agent)
     3. Overlaying/merging the specific server configuration
@@ -679,9 +679,9 @@ def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig]
         config: Optional AgentSystemConfig instance. If None, loads from default path.
         
     Returns:
-        MCPConfig instance with inherited values, or None if server not found
+        ToolServerConfig instance with inherited values, or None if server not found
     """
-    from .models import MCPConfig
+    from .models import ToolServerConfig
     
     if config is None:
         config = load_settings()
@@ -714,11 +714,11 @@ def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig]
     merged_config = default_config_dict.copy()
     merged_config = _deep_merge_dict(merged_config, resolved_config_dict, server_name)
     
-    # Create and return final MCPConfig instance. Same tolerance as the config
+    # Create and return final ToolServerConfig instance. Same tolerance as the config
     # load: a stale profile key that only appears AFTER inheritance (child
     # overrides the chains, inherits the keyed params) would otherwise raise
     # here — moving the abort from startup to agent creation, not removing it.
-    final = MCPConfig.model_validate(
+    final = ToolServerConfig.model_validate(
         merged_config, context={"drop_stale_llm_params": True})
     _warn_stale_llm_params(
         server_name, (merged_config.get("agent_config") or {}).get("llm_params"),

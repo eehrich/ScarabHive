@@ -1,4 +1,4 @@
-"""image_compose MCP server — thin wrapper around compositor.compose()."""
+"""image_compose tool server — thin wrapper around compositor.compose()."""
 from __future__ import annotations
 
 import asyncio
@@ -7,12 +7,12 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from .compositor import CompositionError, analyze_image, compose, find_text_region
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -23,21 +23,21 @@ _MIME_BY_FORMAT = {
 }
 
 
-class ImageComposeServer(SchemaBasedMCPServer):
+class ImageComposeServer(SchemaBasedToolServer):
     """Renders layered images from a JSON spec."""
 
     def __init__(self, name: str, system_config: "AgentSystemConfig",
-                 mcp_config: "MCPConfig") -> None:
-        super().__init__(name, system_config, mcp_config)
+                 server_config: "ToolServerConfig") -> None:
+        super().__init__(name, system_config, server_config)
 
         project_root = Path.cwd()
-        fonts_dir_cfg = getattr(mcp_config, "fonts_dir", "data/fonts") or "data/fonts"
+        fonts_dir_cfg = getattr(server_config, "fonts_dir", "data/fonts") or "data/fonts"
 
         self.project_root = project_root
         self.fonts_dir = (project_root / fonts_dir_cfg).resolve() \
             if not Path(fonts_dir_cfg).is_absolute() else Path(fonts_dir_cfg)
 
-        aliases_cfg = getattr(mcp_config, "font_aliases", {}) or {}
+        aliases_cfg = getattr(server_config, "font_aliases", {}) or {}
         self.font_aliases: dict[str, str] = dict(aliases_cfg) if isinstance(aliases_cfg, dict) else {}
 
         # Optional write sandbox. Empty (the default) keeps the historical
@@ -46,7 +46,7 @@ class ImageComposeServer(SchemaBasedMCPServer):
         # on. A non-empty list confines all three to those directories, so an
         # instance handed to a sub-agent cannot write into another agent's
         # tree on a model-chosen path.
-        dirs_cfg = getattr(mcp_config, "output_directories", None) or []
+        dirs_cfg = getattr(server_config, "output_directories", None) or []
         self.output_directories: list[Path] = [
             (project_root / d).resolve() if not Path(d).is_absolute() else Path(d).resolve()
             for d in dirs_cfg
@@ -55,11 +55,11 @@ class ImageComposeServer(SchemaBasedMCPServer):
         # Inter-layer overlap check (text/svg pairs only). Defaults match the
         # cover_artist prompt's HARTE REGEL #7. Plugin users with different
         # composition policies can disable or retune via plugin config.
-        overlap_enabled = getattr(mcp_config, "overlap_check_enabled", True)
+        overlap_enabled = getattr(server_config, "overlap_check_enabled", True)
         self.overlap_check_enabled: bool = (
             bool(overlap_enabled) if overlap_enabled is not None else True
         )
-        overlap_gap = getattr(mcp_config, "overlap_min_gap_px", 30)
+        overlap_gap = getattr(server_config, "overlap_min_gap_px", 30)
         try:
             self.overlap_min_gap_px: int = max(0, int(overlap_gap))
         except (TypeError, ValueError):

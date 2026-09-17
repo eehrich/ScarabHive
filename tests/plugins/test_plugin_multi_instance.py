@@ -79,7 +79,7 @@ def test_multi_instance_plugin_loading():
     """Test that plugins can actually be loaded multiple times with different configs."""
     from unittest.mock import Mock
     from plugins.basic_agent.plugin import PLUGIN_FACTORY
-    from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
     
     # Create mock system config with LLM system
     system_config = Mock(spec=AgentSystemConfig)
@@ -96,7 +96,7 @@ def test_multi_instance_plugin_loading():
     system_config.network.ssl_verify = False
     
     # Load first instance
-    mcp_config1 = MCPConfig(
+    server_config1 = ToolServerConfig(
         type='basic_agent',
         enabled=True,
         agent_config=AgentConfig(llm_profile='normal', max_steps=10)
@@ -104,11 +104,11 @@ def test_multi_instance_plugin_loading():
     plugin1 = PLUGIN_FACTORY(
         name='agent_instance_1',
         system_config=system_config,
-        mcp_config=mcp_config1
+        server_config=server_config1
     )
     
     # Load second instance with different config
-    mcp_config2 = MCPConfig(
+    server_config2 = ToolServerConfig(
         type='basic_agent',
         enabled=True,
         agent_config=AgentConfig(llm_profile='turbo', max_steps=20)
@@ -116,7 +116,7 @@ def test_multi_instance_plugin_loading():
     plugin2 = PLUGIN_FACTORY(
         name='agent_instance_2',
         system_config=system_config,
-        mcp_config=mcp_config2
+        server_config=server_config2
     )
     
     # Verify both plugins loaded
@@ -130,7 +130,7 @@ def test_multi_instance_plugin_loading():
     assert plugin1.name == 'agent_instance_1'
     assert plugin2.name == 'agent_instance_2'
     
-    # Verify both have get_tools method (MCP plugins)
+    # Verify both have get_tools method (plugins)
     assert hasattr(plugin1, 'get_tools')
     assert hasattr(plugin2, 'get_tools')
     
@@ -145,8 +145,8 @@ def test_multi_instance_hook_plugins():
     """Test that hook plugins can be loaded multiple times."""
     from plugins.message_validator.plugin import PLUGIN_FACTORY as ValidatorFactory
 
-    validator1 = ValidatorFactory(name='validator_1', system_config={}, mcp_config=None)
-    validator2 = ValidatorFactory(name='validator_2', system_config={}, mcp_config=None)
+    validator1 = ValidatorFactory(name='validator_1', system_config={}, server_config=None)
+    validator2 = ValidatorFactory(name='validator_2', system_config={}, server_config=None)
 
     # Verify both loaded
     assert validator1 is not None
@@ -239,7 +239,7 @@ def test_instance_name_is_preserved():
     """Test that the instance name is passed to the plugin and preserved."""
     from unittest.mock import Mock
     from plugins.basic_agent.plugin import PLUGIN_FACTORY
-    from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
     
     # Create mock system config
     system_config = Mock(spec=AgentSystemConfig)
@@ -252,7 +252,7 @@ def test_instance_name_is_preserved():
     
     # Load with custom instance name
     custom_name = 'my_special_agent_v2'
-    mcp_config = MCPConfig(
+    server_config = ToolServerConfig(
         type='basic_agent',
         enabled=True,
         agent_config=AgentConfig(llm_profile='normal', max_steps=10)
@@ -260,7 +260,7 @@ def test_instance_name_is_preserved():
     plugin = PLUGIN_FACTORY(
         name=custom_name,
         system_config=system_config,
-        mcp_config=mcp_config
+        server_config=server_config
     )
     
     assert plugin is not None

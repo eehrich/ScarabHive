@@ -62,7 +62,7 @@ def _rendered_tool_names(config, instance_name):
     server_config = config.plugins.servers[instance_name]
     factory = factories[server_config.type]
     server = factory(
-        name=instance_name, system_config=config, mcp_config=server_config
+        name=instance_name, system_config=config, server_config=server_config
     )
     return {t["function"]["name"] for t in server.get_tools()}
 

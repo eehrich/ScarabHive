@@ -1,4 +1,4 @@
-"""Sequential Thinking MCP Server implementation.
+"""Sequential Thinking Tool Server implementation.
 
 This module provides step-by-step reasoning tools for LLMs to break down
 complex problems dynamically with support for branching and revision.
@@ -11,12 +11,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.utils.id import short_id
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,8 @@ class SessionState:
             )
 
 
-class SequentialThinkingServer(SchemaBasedMCPServer):
-    """Sequential Thinking MCP server for step-by-step reasoning.
+class SequentialThinkingServer(SchemaBasedToolServer):
+    """Sequential Thinking tool server for step-by-step reasoning.
 
     This server provides:
     - sequentialthinking: Main reasoning tool with branching/revision support
@@ -89,23 +89,23 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
     - Memory limit enforcement
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """
         Initialize Sequential Thinking server.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         # Configuration
-        self.max_history_size = int(getattr(mcp_config, 'max_history_size', 100))
-        self.session_ttl_seconds = int(getattr(mcp_config, 'session_ttl_seconds', 3600))
-        self.enable_branching = bool(getattr(mcp_config, 'enable_branching', True))
-        self.enable_revisions = bool(getattr(mcp_config, 'enable_revisions', True))
-        self.max_summary_thoughts = int(getattr(mcp_config, 'max_summary_thoughts', 10))
+        self.max_history_size = int(getattr(server_config, 'max_history_size', 100))
+        self.session_ttl_seconds = int(getattr(server_config, 'session_ttl_seconds', 3600))
+        self.enable_branching = bool(getattr(server_config, 'enable_branching', True))
+        self.enable_revisions = bool(getattr(server_config, 'enable_revisions', True))
+        self.max_summary_thoughts = int(getattr(server_config, 'max_summary_thoughts', 10))
 
         # Session storage (in-memory)
         self._sessions: dict[str, SessionState] = {}
@@ -832,10 +832,10 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
 
         try:
             # Get hook config from schema.yaml
-            max_thoughts = getattr(self.mcp_config, "max_thoughts_in_prompt", 5)
-            show_branch_info = getattr(self.mcp_config, "show_branch_info", True)
-            format_type = getattr(self.mcp_config, "format", "markdown")
-            max_sessions_in_prompt = getattr(self.mcp_config, "max_sessions_in_prompt", 1)
+            max_thoughts = getattr(self.server_config, "max_thoughts_in_prompt", 5)
+            show_branch_info = getattr(self.server_config, "show_branch_info", True)
+            format_type = getattr(self.server_config, "format", "markdown")
+            max_sessions_in_prompt = getattr(self.server_config, "max_sessions_in_prompt", 1)
 
             # Find active sequential thinking sessions for this agent session
             agent_session_id = context.session_id
@@ -941,7 +941,7 @@ sequential_thinking(
         run changed the front of the prompt and re-billed the whole
         conversation behind it, on steps that never touched this tool.
         """
-        show_quick_actions = getattr(self.mcp_config, "show_quick_actions", True)
+        show_quick_actions = getattr(self.server_config, "show_quick_actions", True)
 
         if format_type == "markdown":
             lines = []
@@ -1035,7 +1035,7 @@ sequential_thinking(
                     lines.append("")
 
             # Add quick actions for all sessions
-            show_quick_actions = getattr(self.mcp_config, "show_quick_actions", True)
+            show_quick_actions = getattr(self.server_config, "show_quick_actions", True)
             if show_quick_actions:
                 lines.append("\n**Quick actions:**")
                 lines.append("- Continue session: `sequential_thinking(thought='...', session_id='<session_id>', ...)`")

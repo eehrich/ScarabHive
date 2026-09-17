@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_system.config.settings import get_mcp_config_by_name, load_settings
+from agent_system.config.settings import get_tool_server_config, load_settings
 from agent_system.servers.agent.prompt_strategies import PromptContext, PromptRenderer
 from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 from agent_system.skills.registry import SkillRegistry
@@ -30,7 +30,7 @@ def config():
 
 @pytest.fixture(scope="module")
 def agent(config):
-    cfg = get_mcp_config_by_name("research_agent", config)
+    cfg = get_tool_server_config("research_agent", config)
     assert cfg is not None, "research_agent is not configured"
     return cfg
 
@@ -95,9 +95,9 @@ def test_it_has_search_reading_and_nothing_that_touches_the_machine(agent):
 
 def test_the_tool_instances_it_is_built_on_exist_and_are_on(config):
     for name in INSTANCES:
-        cfg = get_mcp_config_by_name(name, config)
+        cfg = get_tool_server_config(name, config)
         assert cfg is not None and cfg.enabled, f"{name} is not a configured, enabled server"
-    scraper = get_mcp_config_by_name("web_scraper", config)
+    scraper = get_tool_server_config("web_scraper", config)
     dirs = [Path(d) for d in getattr(scraper, "allowed_directories", None) or []]
     assert Path("data/workspace") in dirs, "download must land where the harnesses read"
 
@@ -129,7 +129,7 @@ def test_the_branch_runs_no_hook_that_has_nothing_to_do(config):
     Formatting for a screen and listing its own sub-agents are both a call per
     step that cannot change its answer.
     """
-    worker = get_mcp_config_by_name("research_worker", config)
+    worker = get_tool_server_config("research_worker", config)
     overrides = getattr(worker.agent_config.hooks, "overrides", None) or {}
     for hook in ("markdown_formatter.format_markdown_output",
                  "research_sam.inject_sub_agent_context"):
@@ -148,12 +148,12 @@ def test_a_branch_cannot_branch_because_it_owns_no_manager(config):
     and not a depth cap: `depth` is absolute over the whole session tree, so
     no single cap can both allow research_agent to branch when it is itself a
     sub-agent and stop a branch from branching when it is not."""
-    sam = get_mcp_config_by_name("research_sam", config)
+    sam = get_tool_server_config("research_sam", config)
     assert sam is not None and sam.enabled
     assert getattr(sam, "allowed_agents") == ["research_worker"]
     assert getattr(sam, "max_sub_agents_per_type") <= 4, "four parallel branches is the width cap"
 
-    worker = get_mcp_config_by_name("research_worker", config)
+    worker = get_tool_server_config("research_worker", config)
     assert worker is not None and worker.enabled
     for pattern in worker.agent_config.tools.allowed:
         assert "sam" not in pattern and "sub_agent" not in pattern, \
@@ -170,7 +170,7 @@ async def test_the_agent_can_still_branch_when_it_is_itself_a_sub_agent(config):
 
     from plugins.sub_agent_manager.manager import SubAgentManager
 
-    sam = get_mcp_config_by_name("research_sam", config)
+    sam = get_tool_server_config("research_sam", config)
     service = MagicMock()
     service.session_manager = MagicMock()
     service.session_manager.create_session = AsyncMock()
@@ -194,7 +194,7 @@ def test_the_branch_is_told_to_branch_only_when_it_can(config):
     reach the one that has the tool -- an instruction to call something that
     is not there costs a step and reads as a broken tool."""
     for name, expected in (("research_agent", True), ("research_worker", False)):
-        cfg = get_mcp_config_by_name(name, config)
+        cfg = get_tool_server_config(name, config)
         ctx = PromptContext(agent_name=name, agent_config=cfg.agent_config,
                             system_config=config, available_tools=[], max_steps=10,
                             current_step=0, agent_instance=object())
@@ -208,7 +208,7 @@ def test_the_branch_is_told_to_branch_only_when_it_can(config):
 
 @pytest.mark.parametrize("manager", ["sub_agent_manager", "sysadmin_agent_manager"])
 def test_it_is_registered_with_the_managers_that_used_to_spawn_its_predecessor(config, manager):
-    cfg = get_mcp_config_by_name(manager, config)
+    cfg = get_tool_server_config(manager, config)
     assert cfg is not None, manager
     assert "research_agent" in getattr(cfg, "allowed_agents", [])
 

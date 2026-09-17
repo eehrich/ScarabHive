@@ -30,7 +30,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.ui.resources import STATIC_DIR
 from tests.ui.browser import find_browser, run_app_test_page
@@ -96,11 +96,11 @@ def panel_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         return Connection(machine_config.host, broken)
 
     monkeypatch.setattr(SSHAuthenticator, "create_connection", staticmethod(connect))
-    config = MCPConfig()
+    config = ToolServerConfig()
     config.machines = MACHINES
     config.security = {"audit_log": False}
     plugin = PLUGIN_FACTORY("ssh_control", AgentSystemConfig(), config)
-    manager = plugin.mcp_server.connection_manager
+    manager = plugin.tool_server.connection_manager
     app = FastAPI()
     asked = {"lazy": 0, "active": 0, "added": 0}
 
@@ -160,7 +160,7 @@ def panel_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
 
     @app.post("/__stub/agent-add")
     async def agent_add():
-        await plugin.mcp_server.add_machine({"name": "rack/epsilon", "host": "epsilon.test", "username": "root"})
+        await plugin.tool_server.add_machine({"name": "rack/epsilon", "host": "epsilon.test", "username": "root"})
         return {}
 
     @app.post("/__stub/break")

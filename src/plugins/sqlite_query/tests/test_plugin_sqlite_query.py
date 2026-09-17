@@ -9,7 +9,7 @@ import tempfile
 import sqlite3
 from src.plugins.sqlite_query.server import SqliteQueryServer
 from unittest.mock import AsyncMock, MagicMock
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 
 @pytest.fixture
@@ -17,11 +17,11 @@ def plugin(test_db):
     """Create plugin instance with test database."""
     # Mock configs
     system_config = MagicMock(spec=AgentSystemConfig)
-    mcp_config = MagicMock(spec=MCPConfig)
-    mcp_config.database = test_db
-    mcp_config.query_timeout = 30
+    server_config = MagicMock(spec=ToolServerConfig)
+    server_config.database = test_db
+    server_config.query_timeout = 30
     
-    return SqliteQueryServer(name="test_sqlite", system_config=system_config, mcp_config=mcp_config)
+    return SqliteQueryServer(name="test_sqlite", system_config=system_config, server_config=server_config)
 
 
 @pytest.fixture
@@ -193,11 +193,11 @@ async def test_join_query(plugin, test_db, mock_status):
 async def test_database_not_found(mock_status):
     """Test error handling for missing database."""
     system_config = MagicMock(spec=AgentSystemConfig)
-    mcp_config = MagicMock(spec=MCPConfig)
-    mcp_config.database = "/nonexistent/database.db"
-    mcp_config.query_timeout = 30
+    server_config = MagicMock(spec=ToolServerConfig)
+    server_config.database = "/nonexistent/database.db"
+    server_config.query_timeout = 30
     
-    plugin = SqliteQueryServer(name="test_sqlite", system_config=system_config, mcp_config=mcp_config)
+    plugin = SqliteQueryServer(name="test_sqlite", system_config=system_config, server_config=server_config)
     result = await plugin.execute_sql({
         "sql": "SELECT * FROM books",
         "_status": mock_status
@@ -328,7 +328,7 @@ class TestCommandLine:
 
         repo = Path(__file__).resolve().parents[4]
         target = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))[
-            "project"]["scripts"]["mcp-sqlite-query"]
+            "project"]["scripts"]["tool-sqlite-query"]
         module, func = target.split(":")
 
         assert callable(getattr(importlib.import_module(module), func))

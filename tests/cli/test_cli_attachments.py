@@ -22,7 +22,7 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
     PluginsConfig,
 )
 
@@ -125,12 +125,12 @@ def booted(tmp_path, monkeypatch):
             profiles={"normal": LLMProfile(model_ref="m")},
         ))
     config.plugins = PluginsConfig(servers={
-        AGENT: MCPConfig(type="agent", enabled=True,
+        AGENT: ToolServerConfig(type="agent", enabled=True,
                          agent_config=AgentConfig(system_prompt="x")),
     })
     config.default_agent = AGENT
 
-    from agent_system.mcp.base import MCPRegistry
+    from agent_system.tools.base import ToolServerRegistry
     from agent_system.services.initialization_service import InitializationService
     from agent_system.services.session_manager import SessionManager
     from agent_system.services.session_service import SessionService
@@ -140,7 +140,7 @@ def booted(tmp_path, monkeypatch):
 
     def fake_init(self):
         self._session_manager = manager
-        return MCPRegistry(), service
+        return ToolServerRegistry(), service
 
     monkeypatch.setattr(cli, "load_settings", lambda path=None: config)
     monkeypatch.setattr(agent_run, "load_settings", lambda path=None: config)
@@ -149,7 +149,7 @@ def booted(tmp_path, monkeypatch):
     monkeypatch.setattr("agent_system.agent_cli.Agent", _DummyAgent)
 
     async def fake_initialize_system(cfg):
-        return MCPRegistry(), service
+        return ToolServerRegistry(), service
 
     async def fake_create_agent(cfg, registry, agent_name, session_service=None):
         return _DummyAgent()
@@ -594,9 +594,9 @@ class TestAFinishedRunAlwaysPrintsItsResult:
                 _sent.append(task)
                 # Call before result, as the real agent emits them: the --raw
                 # collector only attaches a result to its preceding call.
-                yield {"type": "mcp_call", "step": 1, "server": "pipe",
+                yield {"type": "tool_call", "step": 1, "server": "pipe",
                        "action": "pipe", "params": {}}
-                yield {"type": "mcp_result", "step": 1, "server": "pipe",
+                yield {"type": "tool_result", "step": 1, "server": "pipe",
                        "action": "pipe", "result": cls.SET_RESULT}
                 yield {"type": "final", "summary": "done"}
                 yield {"type": "end"}

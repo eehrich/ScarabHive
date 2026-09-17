@@ -6,16 +6,16 @@ import logging
 import os
 from typing import Any, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins.cache import PluginCache
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class TavilySearchServer(SchemaBasedMCPServer):
+class TavilySearchServer(SchemaBasedToolServer):
     """Tavily search server with caching and async support.
     
     Provides two main tools:
@@ -23,18 +23,18 @@ class TavilySearchServer(SchemaBasedMCPServer):
     - extract: Content extraction from URLs with better success than traditional scraping
     """
     
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """Initialize Tavily search server.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration (api_key, cache_ttl, etc.)
+            server_config: Plugin-specific configuration (api_key, cache_ttl, etc.)
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
         # Get API key from config or environment
-        self.api_key = getattr(mcp_config, 'api_key', None) or os.environ.get('TAVILY_API_KEY', '')
+        self.api_key = getattr(server_config, 'api_key', None) or os.environ.get('TAVILY_API_KEY', '')
         if not self.api_key:
             # Without a key the server stays loadable but offers NO tools (see
             # get_template_vars): an agent must not see a tool whose every call
@@ -43,13 +43,13 @@ class TavilySearchServer(SchemaBasedMCPServer):
                            "Set TAVILY_API_KEY or api_key in plugins.yaml", name)
         
         # Initialize cache (30 minutes default for search results)
-        cache_ttl = getattr(mcp_config, 'cache_ttl', 1800)
+        cache_ttl = getattr(server_config, 'cache_ttl', 1800)
         self.cache = PluginCache(plugin_name="tavily_search", default_ttl=cache_ttl)
-        self.cache_enabled = getattr(mcp_config, 'cache_enabled', True)
+        self.cache_enabled = getattr(server_config, 'cache_enabled', True)
         
         # Default settings
-        self.default_max_results = getattr(mcp_config, 'default_max_results', 5)
-        self.default_search_depth = getattr(mcp_config, 'default_search_depth', 'basic')
+        self.default_max_results = getattr(server_config, 'default_max_results', 5)
+        self.default_search_depth = getattr(server_config, 'default_search_depth', 'basic')
         
         # Lazy-loaded client
         self._client: Any = None

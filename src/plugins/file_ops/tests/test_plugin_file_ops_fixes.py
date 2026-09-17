@@ -11,7 +11,7 @@ All issues have been resolved.
 
 import pytest
 from unittest.mock import Mock
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 from agent_system.utils.vector_store import VectorStoreError
 from plugins.file_ops.server import FileOpsServer
 
@@ -20,10 +20,10 @@ from plugins.file_ops.server import FileOpsServer
 def workspace_config():
     """Configuration for workspace-wide file operations."""
     system_config = Mock(spec=AgentSystemConfig)
-    mcp_config = MCPConfig(type="file_ops", enabled=True)
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
     # Limit to only tests/ and src/ directories for faster indexing
-    mcp_config.allowed_directories = ["tests", "src"]
-    mcp_config.search = {
+    server_config.allowed_directories = ["tests", "src"]
+    server_config.search = {
         "enable_indexing": True,
         "enable_semantic_search": False,  # Disabled for faster tests
         "index_on_startup": False,  # On-demand indexing
@@ -38,7 +38,7 @@ def workspace_config():
             "**/tmp/**"
         ]
     }
-    return system_config, mcp_config
+    return system_config, server_config
 
 
 @pytest.mark.asyncio
@@ -51,8 +51,8 @@ async def test_grep_search_needs_no_index(workspace_config):
     the index reads every file before answering a question about a few. The
     index still exists for semantic search; nothing else waits for it.
     """
-    system_config, mcp_config = workspace_config
-    server = FileOpsServer("test", system_config, mcp_config)
+    system_config, server_config = workspace_config
+    server = FileOpsServer("test", system_config, server_config)
 
     assert len(server.search_engine.file_mtimes) == 0
 
@@ -74,8 +74,8 @@ async def test_grep_search_needs_no_index(workspace_config):
 @pytest.mark.asyncio
 async def test_grep_search_with_include_pattern(workspace_config):
     """Test that include_pattern filtering works correctly."""
-    system_config, mcp_config = workspace_config
-    server = FileOpsServer("test", system_config, mcp_config)
+    system_config, server_config = workspace_config
+    server = FileOpsServer("test", system_config, server_config)
     
     # Search in test files only
     result = await server.search_engine.grep_search(
@@ -98,8 +98,8 @@ async def test_grep_search_with_include_pattern(workspace_config):
 @pytest.mark.asyncio
 async def test_grep_search_finds_short_tokens(workspace_config):
     """A two-character query matches: there is no word index to fall below."""
-    system_config, mcp_config = workspace_config
-    server = FileOpsServer("test", system_config, mcp_config)
+    system_config, server_config = workspace_config
+    server = FileOpsServer("test", system_config, server_config)
 
     result = await server.search_engine.grep_search(
         query="if ",
@@ -118,13 +118,13 @@ async def test_grep_search_finds_short_tokens(workspace_config):
 @pytest.mark.asyncio
 async def test_semantic_search_indexes_root_files(workspace_config, tmp_path):
     """Test that semantic search includes root-level files."""
-    system_config, mcp_config = workspace_config
-    mcp_config.search["enable_semantic_search"] = True
+    system_config, server_config = workspace_config
+    server_config.search["enable_semantic_search"] = True
     # tmp_path, not data/cache: a fixed path keeps the index BETWEEN runs, and
     # one written by an older chromadb makes this test fail on a healthy tree.
-    mcp_config.search["chroma_db_path"] = str(tmp_path / "semantic_root")
+    server_config.search["chroma_db_path"] = str(tmp_path / "semantic_root")
     
-    server = FileOpsServer("test", system_config, mcp_config)
+    server = FileOpsServer("test", system_config, server_config)
     
     # Build index
     await server.search_engine.rebuild_index(incremental=False)
@@ -158,11 +158,11 @@ async def test_semantic_search_indexes_root_files(workspace_config, tmp_path):
 @pytest.mark.asyncio
 async def test_chromadb_batch_size_handling(workspace_config, tmp_path):
     """Test that large file sets don't exceed ChromaDB batch limits."""
-    system_config, mcp_config = workspace_config
-    mcp_config.search["enable_semantic_search"] = True
-    mcp_config.search["chroma_db_path"] = str(tmp_path / "batch_limit")
+    system_config, server_config = workspace_config
+    server_config.search["enable_semantic_search"] = True
+    server_config.search["chroma_db_path"] = str(tmp_path / "batch_limit")
     
-    server = FileOpsServer("test", system_config, mcp_config)
+    server = FileOpsServer("test", system_config, server_config)
     
     # Build index with many files
     await server.search_engine.rebuild_index(incremental=False)
@@ -179,8 +179,8 @@ async def test_chromadb_batch_size_handling(workspace_config, tmp_path):
 @pytest.mark.asyncio
 async def test_file_search_finds_root_files(workspace_config):
     """Test that file search can find Python test files."""
-    system_config, mcp_config = workspace_config
-    server = FileOpsServer("test", system_config, mcp_config)
+    system_config, server_config = workspace_config
+    server = FileOpsServer("test", system_config, server_config)
     
     # Search for test files (more reliable than README)
     result = await server.search_engine.search_files("test_*.py")
@@ -209,10 +209,10 @@ async def test_an_unreadable_semantic_index_raises_instead_of_filling_nothing(
     measured on a real stale store from 2026-05 that failed with
     'PersistentData' object has no attribute 'max_seq_id'.
     """
-    system_config, mcp_config = workspace_config
-    mcp_config.search["enable_semantic_search"] = True
-    mcp_config.search["chroma_db_path"] = str(tmp_path / "unreadable")
-    server = FileOpsServer("test", system_config, mcp_config)
+    system_config, server_config = workspace_config
+    server_config.search["enable_semantic_search"] = True
+    server_config.search["chroma_db_path"] = str(tmp_path / "unreadable")
+    server = FileOpsServer("test", system_config, server_config)
 
     class Unreadable:
         backend = "chromadb"
@@ -245,8 +245,8 @@ async def test_disabled_semantic_search_says_so_instead_of_finding_nothing(
     the file_ops server disables semantic search unless it is configured, so
     it was what every default instance answered.
     """
-    system_config, mcp_config = workspace_config
-    server = FileOpsServer("test", system_config, mcp_config)
+    system_config, server_config = workspace_config
+    server = FileOpsServer("test", system_config, server_config)
 
     result = await server.search_engine.semantic_search("anything")
 
@@ -265,8 +265,8 @@ async def test_searches_walk_the_disk_off_the_event_loop(workspace_config, monke
     import threading
     from plugins.file_ops import textsearch
 
-    system_config, mcp_config = workspace_config
-    server = FileOpsServer("test", system_config, mcp_config)
+    system_config, server_config = workspace_config
+    server = FileOpsServer("test", system_config, server_config)
     loop_thread = threading.current_thread()
     ran_on = []
 

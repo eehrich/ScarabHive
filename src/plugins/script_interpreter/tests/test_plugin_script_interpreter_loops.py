@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import Mock
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from src.plugins.script_interpreter.server import ScriptInterpreterServer
 
 
@@ -25,12 +25,12 @@ class MockStatus:
 def server():
     """Create script interpreter server with loops enabled."""
     system_config = Mock(spec=AgentSystemConfig)
-    mcp_config = MCPConfig(
+    server_config = ToolServerConfig(
         type="script_interpreter",
         enabled=True,
         script_interpreter={"enable_loops": True, "enable_functions": True}
     )
-    return ScriptInterpreterServer("script_interpreter", system_config, mcp_config)
+    return ScriptInterpreterServer("script_interpreter", system_config, server_config)
 
 
 @pytest.fixture

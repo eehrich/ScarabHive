@@ -1,6 +1,6 @@
 """
 Tool Execution Manager for Agent Server
-Handles execution of both internal plugin tools and external MCP tools.
+Handles execution of both internal plugin tools and external tools.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Optional, TYPE_CHECKING, AsyncGenerator
 
 if TYPE_CHECKING:
     from ..server import Agent
-    from ....mcp.base import MCPRegistry
+    from ....tools.base import ToolServerRegistry
     from .status_forwarding import StatusEventForwarder
 
 from ....core.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
@@ -21,7 +21,7 @@ from ....core.request_context import register_request_user
 from .server_resolution import resolve_longest_prefix
 from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm, sanitize_json_content
-from ....mcp.integration import get_mcp_integration
+from ....tools.integration import get_tool_integration
 from ....utils.json_utils import parse_tool_arguments
 
 logger = logging.getLogger(__name__)
@@ -82,9 +82,9 @@ def inject_runtime_params(params: Dict[str, Any], *,
 class ToolExecutionManager:
     """Manages execution of tools and handles results."""
 
-    def __init__(self, registry: MCPRegistry, agent: Optional[Agent] = None):
+    def __init__(self, registry: ToolServerRegistry, agent: Optional[Agent] = None):
         self.registry = registry  # Legacy fallback; the shared one since bootstrap passes it in
-        # Optional Agent instance for centralized counters and MCP integration access
+        # Optional Agent instance for centralized counters and tool integration access
         self._agent = agent
         # NOTE: session_id/user_id are deliberately NOT instance state — they are
         # passed through the call chain per request (see execute_tools_streaming)
@@ -119,25 +119,25 @@ class ToolExecutionManager:
 
         # First, try to get plugin adapter (important for status forwarding)
         plugin_adapter = None
-        if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
-            mcp_integration = self._agent._mcp_integration_manager.mcp_integration
-            if mcp_integration is not None:  # type: ignore[unreachable]
-                if mcp_integration.initialized:  # type: ignore[unreachable]
+        if self._agent and hasattr(self._agent, '_tool_integration_manager'):
+            tool_integration = self._agent._tool_integration_manager.tool_integration
+            if tool_integration is not None:  # type: ignore[unreachable]
+                if tool_integration.initialized:  # type: ignore[unreachable]
                     # First try exact match (legacy behavior)
-                    plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
+                    plugin_adapter = tool_integration.plugin_registry.get_server(tool_name)
 
                     # If not found, resolve the server name embedded in the flat
                     # tool name (servername_toolname) via the shared prefix walk.
                     if not plugin_adapter:
                         plugin_adapter, adapter_server_name = resolve_longest_prefix(
-                            mcp_integration.plugin_registry.get_server, tool_name)
+                            tool_integration.plugin_registry.get_server, tool_name)
                         if plugin_adapter:
                             logger.debug(f"Found plugin adapter for {tool_name} via server name {adapter_server_name}")
 
         if plugin_adapter:
-            # Use the PluginMCPAdapter which handles tool routing and status forwarding correctly
+            # Use the PluginToolAdapter which handles tool routing and status forwarding correctly
             try:
-                # Call through the PluginMCPAdapter with the tool name directly
+                # Call through the PluginToolAdapter with the tool name directly
                 result = await plugin_adapter.call_tool(tool_name, params)
                 return result
             except Exception as e:
@@ -157,7 +157,7 @@ class ToolExecutionManager:
             raise RuntimeError(f"Unknown tool: {tool_name}")
 
         try:
-            # Check if server has call_with_status (MCP server interface)
+            # Check if server has call_with_status (tool server interface)
             if hasattr(server, 'call_with_status'):
                 result = await server.call_with_status(tool_name, params)
             else:
@@ -584,7 +584,7 @@ class ToolExecutionManager:
     async def _execute_external_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                    params: Dict[str, Any], step: int, request_id: str | None = None,
                                    session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
-        """Execute an external MCP tool."""
+        """Execute an external tool."""
         server_name, actual_tool_name = tool_name.split(".", 1)
 
         # NOTE: no session-context injection here. External servers are
@@ -596,10 +596,10 @@ class ToolExecutionManager:
         # Create serializable params for events (exclude non-JSON-serializable objects like StatusScope)
         serializable_params = self._make_params_serializable(params)
 
-        # Emit MCP call event (include request_id for correlation)
+        # Emit tool call event (include request_id for correlation)
         # Prefer tool-specific request_id from params over the general request_id
         event_request_id = serializable_params.get('request_id') or request_id
-        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, "params": serializable_params, "request_id": event_request_id}
+        call_event = {"type": "tool_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, "params": serializable_params, "request_id": event_request_id}
         events = [call_event]
         results = []
 
@@ -607,20 +607,20 @@ class ToolExecutionManager:
             logger.info("Invoking external tool %s on server %s with params %s", actual_tool_name, server_name, params)
             # Use the integration the agent already set up.
             #
-            # This used to call get_mcp_integration(config=agent_config) --
+            # This used to call get_tool_integration(config=agent_config) --
             # an AgentConfig where an AgentSystemConfig is expected. It only
             # ever worked because the lookup returns the existing global
             # instance before it looks at config at all; the moment it had to
             # build one, it died with AttributeError on external_servers.
-            manager = getattr(self._agent, "_mcp_integration_manager", None) if self._agent else None
-            mcp_integration = getattr(manager, "mcp_integration", None) if manager else None
-            if mcp_integration is None:
+            manager = getattr(self._agent, "_tool_integration_manager", None) if self._agent else None
+            tool_integration = getattr(manager, "tool_integration", None) if manager else None
+            if tool_integration is None:
                 system_config = getattr(self._agent, "system_config", None) if self._agent else None
                 if system_config is None:
-                    raise RuntimeError("Cannot access MCP integration without system config")
-                mcp_integration = get_mcp_integration(config=system_config)
+                    raise RuntimeError("Cannot access tool integration without system config")
+                tool_integration = get_tool_integration(config=system_config)
             # Use serializable_params to avoid passing non-JSON-serializable objects (like CancellationToken) to external servers
-            tool_result = await mcp_integration.call_tool(server_name, actual_tool_name, serializable_params, "external")
+            tool_result = await tool_integration.call_tool(server_name, actual_tool_name, serializable_params, "external")
             logger.info("External tool %s returned: %s", tool_name, str(tool_result)[:500])
 
             results.append({
@@ -631,7 +631,7 @@ class ToolExecutionManager:
             })
 
             # Emit MCP result event (include request_id for correlation)
-            result_event = {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": actual_tool_name, "result": tool_result, "request_id": event_request_id}
+            result_event = {"type": "tool_result", "step": step + 1, "server": tool_name, "action": actual_tool_name, "result": tool_result, "request_id": event_request_id}
             events.append(result_event)
 
             # Create tool result message
@@ -689,12 +689,12 @@ class ToolExecutionManager:
 
         # Legacy fallback paths (for systems not using _get_server_from_any_registry)
         if not server:
-            # Get plugin server from MCP integration plugin registry
-            if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
-                mcp_integration = self._agent._mcp_integration_manager.mcp_integration
-                if mcp_integration is not None:  # type: ignore[unreachable]
-                    if mcp_integration.initialized:  # type: ignore[unreachable]
-                        plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
+            # Get plugin server from tool integration plugin registry
+            if self._agent and hasattr(self._agent, '_tool_integration_manager'):
+                tool_integration = self._agent._tool_integration_manager.tool_integration
+                if tool_integration is not None:  # type: ignore[unreachable]
+                    if tool_integration.initialized:  # type: ignore[unreachable]
+                        plugin_adapter = tool_integration.plugin_registry.get_server(tool_name)
                         if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
                             server = plugin_adapter.plugin_server
 
@@ -728,7 +728,7 @@ class ToolExecutionManager:
 
         serializable_params = self._make_params_serializable(params)
         event_request_id = serializable_params.get('request_id') or request_id
-        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": openai_tool_name, "params": serializable_params, "request_id": event_request_id}
+        call_event = {"type": "tool_call", "step": step + 1, "server": tool_name, "action": openai_tool_name, "params": serializable_params, "request_id": event_request_id}
         events = [call_event]
         results = []
 
@@ -785,7 +785,7 @@ class ToolExecutionManager:
                 "result": tool_result
             })
 
-            result_event = {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": openai_tool_name, "result": tool_result, "request_id": event_request_id}
+            result_event = {"type": "tool_result", "step": step + 1, "server": tool_name, "action": openai_tool_name, "result": tool_result, "request_id": event_request_id}
             events.append(result_event)
 
             # Create tool result message with optional multimodal content

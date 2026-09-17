@@ -176,7 +176,7 @@ def test_a_server_entry_must_name_its_type():
     """The one key that recovers half of what extra="allow" hides.
 
     Plugin-specific keys (max_nesting_depth, allowed_agents, api_key) live
-    directly under a server entry, so MCPConfig cannot forbid unknown keys and
+    directly under a server entry, so ToolServerConfig cannot forbid unknown keys and
     a typo there is invisible. `type` is the exception: every entry needs it,
     so a misspelled `typ:` surfaces as the MISSING `type`.
     """

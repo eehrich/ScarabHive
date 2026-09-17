@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 from agent_system.hooks.plugin_hook import HookContext, HookType
 from agent_system.llm.models import ChatMessage
 from agent_system.servers.agent.server import Agent
@@ -116,7 +116,7 @@ async def test_the_hint_names_the_instance_tool():
 
 
 async def test_the_injector_reads_its_options_from_hook_config():
-    config = MCPConfig(enabled=True, hook_config={
+    config = ToolServerConfig(enabled=True, hook_config={
         "inject_sub_agent_context": {"max_sub_agents_shown": 1, "format": "markdown"}})
     server = SubAgentManagerServer("work_sam", MagicMock(), config)
     agent = MagicMock()
@@ -134,22 +134,22 @@ async def test_the_injector_reads_its_options_from_hook_config():
 
 
 def _server(allowed, blocked=(), phase_agents=None):
-    config = MCPConfig(enabled=True, allowed_agents=list(allowed), blocked_agents=list(blocked),
+    config = ToolServerConfig(enabled=True, allowed_agents=list(allowed), blocked_agents=list(blocked),
                        phase_filtering={"enabled": phase_agents is not None,
                                         "phase_agents": phase_agents or {}})
     return SubAgentManagerServer("work_sam", MagicMock(), config)
 
 
 def test_a_glob_in_allowed_agents_lists_the_agents_it_lets_through(monkeypatch):
-    from agent_system.plugins import mcp_adapter
+    from agent_system.plugins import tool_adapter
 
     servers = {}
     for name in ("coder_explorer", "coder_reviewer", "other_agent"):
         srv = MagicMock(spec=Agent)
-        srv._mcp_public, srv._mcp_tool_visible = False, True
+        srv._tool_public, srv._tool_visible = False, True
         servers[name] = MagicMock(plugin_server=srv)
-    monkeypatch.setattr(mcp_adapter.plugin_mcp_registry, "plugin_servers", servers)
-    monkeypatch.setattr(mcp_adapter.plugin_mcp_registry, "list_servers", lambda: list(servers))
+    monkeypatch.setattr(tool_adapter.plugin_tool_registry, "plugin_servers", servers)
+    monkeypatch.setattr(tool_adapter.plugin_tool_registry, "list_servers", lambda: list(servers))
     server = _server(["coder_*"])
 
     listed = server.get_template_vars()["allowed_agents"]
@@ -173,9 +173,9 @@ async def test_a_denial_names_the_check_that_denied_it(agent, expected):
 
 
 async def test_a_reload_applies_changed_injector_options():
-    server = SubAgentManagerServer("work_sam", MagicMock(), MCPConfig(enabled=True, hook_config={
+    server = SubAgentManagerServer("work_sam", MagicMock(), ToolServerConfig(enabled=True, hook_config={
         "inject_sub_agent_context": {"max_sub_agents_shown": 3}}))
-    server.reload_config(MCPConfig(enabled=True, hook_config={
+    server.reload_config(ToolServerConfig(enabled=True, hook_config={
         "inject_sub_agent_context": {"max_sub_agents_shown": 1}}))
     context = HookContext(hook_type=HookType.PRE_LLM_CALL, request_id="req", session_id="parent",
                           agent=MagicMock(), agent_name="coordinator",

@@ -27,8 +27,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from agent_system.config.models import AgentConfig, AgentSystemConfig, MCPConfig
-from agent_system.mcp.base import MCPRegistry
+from agent_system.config.models import AgentConfig, AgentSystemConfig, ToolServerConfig
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.services.session_manager import SessionManager
 from agent_system.services.session_service import SessionService
@@ -50,8 +50,8 @@ CONFIG = dict(max_sub_agents_per_type=10, info_max_limit=15, allowed_agents=["st
                                "phase_agents": {"planning": ["story_designer"], "_default": []}})
 
 
-def registry() -> MCPRegistry:
-    agents = MCPRegistry()
+def registry() -> ToolServerRegistry:
+    agents = ToolServerRegistry()
     for name in ("research_agent", "writer_agent", "other_agent"):
         agent = Mock()
         agent.name = name
@@ -109,11 +109,11 @@ async def seed(server, service) -> dict[str, str]:
 def panel_app(tmp_path: Path) -> FastAPI:
     from plugins.sub_agent_manager.plugin import PLUGIN_FACTORY
 
-    seeding = PLUGIN_FACTORY(NAME, AgentSystemConfig(), MCPConfig(**CONFIG))
+    seeding = PLUGIN_FACTORY(NAME, AgentSystemConfig(), ToolServerConfig(**CONFIG))
     ids = asyncio.run(seed(seeding.server, SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))))
     assert len(set(ids.values())) == 8
 
-    plugin = PLUGIN_FACTORY(NAME, AgentSystemConfig(), MCPConfig(**CONFIG))  # served in the app's own event loop
+    plugin = PLUGIN_FACTORY(NAME, AgentSystemConfig(), ToolServerConfig(**CONFIG))  # served in the app's own event loop
     service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))
     plugin.server._running_agents.add(ids["a"])
     app = FastAPI()

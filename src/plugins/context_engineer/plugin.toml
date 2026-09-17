@@ -8,6 +8,6 @@ version = "1.0.0"
 description = "Advanced context management with tool result clearing, variable substitution, core memory, and archival storage"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server", "hooks", "web"]
+type = ["tool-server", "hooks", "web"]
 category = "hooks"
 requires = { agent_system = ">=0.7.0" }

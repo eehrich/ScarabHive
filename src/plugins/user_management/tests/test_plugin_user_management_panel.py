@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from agent_system.auth import database
 from agent_system.auth.models import UserCreate, UserRole
 from agent_system.auth.security import create_access_token, verify_password
-from agent_system.config.models import AgentSystemConfig, AuthConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, AuthConfig, ToolServerConfig
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.ui.resources import STATIC_DIR
 from tests.ui.browser import find_browser, run_app_test_page
@@ -122,8 +122,8 @@ def panel_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         return {}
 
     registry = PluginWebRegistry()  # the plugin's router and static files, mounted and secured as the app does it
-    registry.register_web_plugin("user_management", PLUGIN_FACTORY("user_management", AgentSystemConfig(auth=auth), MCPConfig()))
-    registry.register_web_plugin("um_off", PLUGIN_FACTORY("um_off", AgentSystemConfig(), MCPConfig()))
+    registry.register_web_plugin("user_management", PLUGIN_FACTORY("user_management", AgentSystemConfig(auth=auth), ToolServerConfig()))
+    registry.register_web_plugin("um_off", PLUGIN_FACTORY("um_off", AgentSystemConfig(), ToolServerConfig()))
     registry.apply_to_app(app, auth)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.mount("/tests/user_management", StaticFiles(directory=TESTS), name="panel-tests")

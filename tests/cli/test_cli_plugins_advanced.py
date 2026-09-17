@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_system import agent_cli as cli
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 
 
 def _make_cfg(tmp_path: Path, plugin_dirs):
@@ -32,7 +32,7 @@ def _plugin_dir(tmp_path: Path, name: str) -> Path:
 def test_cli_plugins_list_json_reports_enabled(monkeypatch, tmp_path, capsys):
     pdir = _plugin_dir(tmp_path, "st_example")
     cfg = _make_cfg(tmp_path, [str(pdir)])
-    cfg.plugins.servers = {"st_example": MCPConfig(type="st_example", enabled=True, agent_config=None)}
+    cfg.plugins.servers = {"st_example": ToolServerConfig(type="st_example", enabled=True, agent_config=None)}
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 
     monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "list", "--format", "json"])
@@ -49,7 +49,7 @@ def test_cli_plugins_info_enabled_follows_instances_of_the_type(monkeypatch, tmp
     an audio_ops. Matching the TYPE against instance names said NO for it."""
     pdir = _plugin_dir(tmp_path, "st_example")
     cfg = _make_cfg(tmp_path, [str(pdir)])
-    cfg.plugins.servers = {"renamed_instance": MCPConfig(type="st_example", enabled=instance_enabled, agent_config=None)}
+    cfg.plugins.servers = {"renamed_instance": ToolServerConfig(type="st_example", enabled=instance_enabled, agent_config=None)}
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 
     monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "info", "st_example", "--format", "json"])
@@ -63,8 +63,8 @@ def test_cli_plugins_follow_a_type_that_names_another_server(monkeypatch, tmp_pa
     pdir = _plugin_dir(tmp_path, "st_example")
     cfg = _make_cfg(tmp_path, [str(pdir)])
     cfg.plugins.servers = {
-        "base": MCPConfig(type="st_example", enabled=False, agent_config=None),
-        "child": MCPConfig(type="base", enabled=True, agent_config=None),
+        "base": ToolServerConfig(type="st_example", enabled=False, agent_config=None),
+        "child": ToolServerConfig(type="base", enabled=True, agent_config=None),
     }
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 

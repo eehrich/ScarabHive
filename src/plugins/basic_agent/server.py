@@ -5,8 +5,8 @@ import logging
 from typing import Dict, Any, Optional
 
 from agent_system.servers.agent.schema_based import SchemaBasedAgent
-from agent_system.config.models import AgentSystemConfig, MCPConfig
-from agent_system.mcp.base import MCPRegistry
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.llm.factory import create_llm_from_profile
 
 logger = logging.getLogger(__name__)
@@ -23,10 +23,10 @@ class BasicAgent(SchemaBasedAgent):
     Note: The MCP standard method list_tools() is inherited from Agent base class.
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig, registry: MCPRegistry,
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig, registry: ToolServerRegistry,
                  session_service: object | None = None):
         """Initialize BasicAgent with modern config system."""
-        super().__init__(name, system_config, mcp_config, registry, session_service=session_service)
+        super().__init__(name, system_config, server_config, registry, session_service=session_service)
 
     async def execute_task(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a task using the basic agent.
@@ -124,7 +124,7 @@ class BasicAgent(SchemaBasedAgent):
                     if status:
                         await status.progress("Starting analysis...")
 
-                elif event_type == "mcp_call":
+                elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
                     step_count += 1
                     tool_name = event.get("server", "unknown")
                     action = event.get("action", "unknown")
@@ -139,7 +139,7 @@ class BasicAgent(SchemaBasedAgent):
                         "params": filtered_params
                     })
 
-                elif event_type == "mcp_result":
+                elif event_type in ("tool_result", "mcp_result"):  # the old name until every deployed side is new (rename 17.09.2026)
                     tool_name = event.get("server", "unknown")
                     if status:
                         await status.progress(f"Processing results from {tool_name}...")

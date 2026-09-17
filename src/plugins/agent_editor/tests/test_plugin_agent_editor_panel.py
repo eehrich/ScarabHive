@@ -35,11 +35,11 @@ from fastapi.staticfiles import StaticFiles
 from agent_system.auth import database
 from agent_system.auth.models import UserCreate, UserRole
 from agent_system.auth.security import create_access_token
-from agent_system.config.models import AgentSystemConfig, AuthConfig, MCPConfig
-from agent_system.config.settings import get_mcp_config_by_name, load_settings
+from agent_system.config.models import AgentSystemConfig, AuthConfig, ToolServerConfig
+from agent_system.config.settings import get_tool_server_config, load_settings
 from agent_system.hooks import registry as hook_registry
 from agent_system.hooks.plugin_hook import HookType, PluginHook
-from agent_system.mcp.base import MCPRegistry, MCPServer
+from agent_system.tools.base import ToolServerRegistry, ToolServer
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.runtime import ServerDecl, ServerView
 from agent_system.ui.resources import STATIC_DIR
@@ -184,11 +184,11 @@ def config_files(root: Path) -> dict[str, str]:
     }
 
 
-class ToolServer(MCPServer):
+class ToolServer(ToolServer):
     """A built tool server: its tools carry the instance prefix, as every plugin's do."""
 
     def __init__(self, name: str, tools: dict[str, str]):
-        super().__init__(name, AgentSystemConfig(), MCPConfig(type="example", enabled=True))
+        super().__init__(name, AgentSystemConfig(), ToolServerConfig(type="example", enabled=True))
         self._tools = tools
 
     def get_tools(self):
@@ -214,7 +214,7 @@ class RuntimeStandIn:
         if decl is None:
             return None
         agent = name in AGENTS
-        return ServerView(name=name, is_agent=agent, mcp_public=agent, mcp_tool_visible=False, built=False)
+        return ServerView(name=name, is_agent=agent, tool_public=agent, tool_visible=False, built=False)
 
 
 def running_app(config, as_started: bool = True) -> RuntimeStandIn:
@@ -223,11 +223,11 @@ def running_app(config, as_started: bool = True) -> RuntimeStandIn:
     for name, server in config.plugins.servers.items():
         if not server.enabled or name == "demo":
             continue
-        merged = get_mcp_config_by_name(name, config)
+        merged = get_tool_server_config(name, config)
         if name == "writer" and as_started:
             merged = merged.model_copy(update={
                 "agent_config": merged.agent_config.model_copy(update={"max_steps": 25})})
-        declarations[name] = ServerDecl(name=name, type=merged.type, mcp_config=merged, factory=None,
+        declarations[name] = ServerDecl(name=name, type=merged.type, server_config=merged, factory=None,
                                         plugin_metadata={"lazy": True} if name in AGENTS else None)
     return RuntimeStandIn(declarations)
 
@@ -257,7 +257,7 @@ def panel_app(root: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     auth = AuthConfig(enabled=True)
     auth.endpoint_security.audit_enabled = False
     config = load_settings(str(config_path))
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     registry.register("files", ToolServer("files", {"read": "Read a file", "write": "Write a file"}))
     registry.register("web", ToolServer("web", {"search": "Search the web", "fetch": "Fetch a page"}))
 
@@ -265,7 +265,7 @@ def panel_app(root: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     app.state.config = config
     app.state.config_path = str(config_path)
     app.state.runtime = running_app(config)
-    app.state.mcp_registry = registry
+    app.state.tool_registry = registry
     app.state.agent = None
 
     @app.get("/__stub/token")
@@ -306,8 +306,8 @@ def panel_app(root: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     plugin_config = {"type": "agent_editor", "enabled": True, "config_path": str(config_path), "root": str(root)}
     web = PluginWebRegistry()  # the plugin's router and static files, mounted and secured as the app does it
     web.register_web_plugin("agent_editor", PLUGIN_FACTORY(
-        "agent_editor", config.model_copy(update={"auth": auth}), MCPConfig(**plugin_config)))
-    web.register_web_plugin("ae_off", PLUGIN_FACTORY("ae_off", config, MCPConfig(**plugin_config)))
+        "agent_editor", config.model_copy(update={"auth": auth}), ToolServerConfig(**plugin_config)))
+    web.register_web_plugin("ae_off", PLUGIN_FACTORY("ae_off", config, ToolServerConfig(**plugin_config)))
     web.apply_to_app(app, auth)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.mount("/tests/agent_editor", StaticFiles(directory=TESTS), name="panel-tests")

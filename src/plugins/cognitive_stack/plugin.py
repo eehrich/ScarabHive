@@ -2,7 +2,7 @@
 Cognitive Stack Plugin Factory
 
 Hybrid MCP+Hook plugin:
-- MCP tools via CognitiveStackServer
+- tools via CognitiveStackServer
 - Hooks via CognitiveStackServer.on_pre_llm_call
 
 Exports PLUGIN_FACTORY for AgentSystem plugin discovery.
@@ -15,15 +15,15 @@ from typing import TYPE_CHECKING, Any
 from .server import CognitiveStackServer
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
     from agent_system.hooks import HookContext, HookResult
 
 
 class CognitiveStackHybridPlugin:
     """
-    Hybrid plugin combining MCP tools and hooks.
+    Hybrid plugin combining tools and hooks.
 
-    - Delegates MCP tools to CognitiveStackServer
+    - Delegates tools to CognitiveStackServer
     - Delegates hooks to server.on_pre_llm_call
     """
 
@@ -31,22 +31,22 @@ class CognitiveStackHybridPlugin:
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPConfig"
+        server_config: "ToolServerConfig"
     ):
         self.name = name
         self.system_config = system_config
-        self.mcp_config = mcp_config
+        self.server_config = server_config
 
-        # Create MCP server instance (provides tools + hooks)
-        self.server = CognitiveStackServer(name, system_config, mcp_config)
+        # Create tool server instance (provides tools + hooks)
+        self.server = CognitiveStackServer(name, system_config, server_config)
 
     # =========================================================================
-    # MCP Interface (delegate to server)
+    # Tool interface (delegate to server)
     # =========================================================================
 
     async def call(self, tool: str | None = None, params: dict | None = None, *args, **kwargs) -> Any:
         """
-        Legacy MCP call interface (delegate to server).
+        Legacy tool call interface (delegate to server).
 
         Args:
             tool: Tool name
@@ -68,7 +68,7 @@ class CognitiveStackHybridPlugin:
         return await self.server.call_with_status(tool, params or {})
 
     def get_tools(self) -> list[dict[str, Any]]:
-        """Expose MCP tools from server"""
+        """Expose tools from server"""
         return self.server.get_tools()
 
     async def call_tool(self, tool_name: str, arguments: dict) -> Any:
@@ -91,14 +91,14 @@ class CognitiveStackHybridPlugin:
     # =========================================================================
 
     def get_schema_data(self) -> dict[str, Any]:
-        """Delegate schema loading to MCP server (SchemaBasedMCPServer)"""
+        """Delegate schema loading to tool server (SchemaBasedToolServer)"""
         return self.server.get_schema_data()
 
 
 def PLUGIN_FACTORY(
     name: str,
     system_config: "AgentSystemConfig",
-    mcp_config: "MCPConfig"
+    server_config: "ToolServerConfig"
 ) -> CognitiveStackHybridPlugin:
     """
     Factory function for creating CognitiveStackHybridPlugin instances.
@@ -106,9 +106,9 @@ def PLUGIN_FACTORY(
     Args:
         name: Plugin name
         system_config: System-level configuration
-        mcp_config: MCP client configuration
+        server_config: MCP client configuration
 
     Returns:
         CognitiveStackHybridPlugin instance (MCP+Hook)
     """
-    return CognitiveStackHybridPlugin(name, system_config, mcp_config)
+    return CognitiveStackHybridPlugin(name, system_config, server_config)

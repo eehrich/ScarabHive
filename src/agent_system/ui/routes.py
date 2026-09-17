@@ -39,7 +39,7 @@ async def viewer_role(request: Request) -> str:
 def plugin_panels(auth_config) -> list[Panel]:
     """Panels declared by the registered web plugins' schemas, each for the roles its routes admit."""
     from agent_system.auth.enforcement import EndpointSecurityEnforcer
-    from agent_system.plugins.mcp_adapter import plugin_mcp_registry
+    from agent_system.plugins.tool_adapter import plugin_tool_registry
     from agent_system.plugins.web_adapter import get_plugin_security_enforcer, plugin_web_registry
 
     plugin_security = get_plugin_security_enforcer()
@@ -52,7 +52,7 @@ def plugin_panels(auth_config) -> list[Panel]:
     endpoint_security = EndpointSecurityEnforcer(auth_config)
     panels = []
     for instance in plugin_web_registry.web_plugins:
-        web_ui = plugin_mcp_registry.get_server(instance).plugin_schema.get("web_ui") or {}
+        web_ui = plugin_tool_registry.get_server(instance).plugin_schema.get("web_ui") or {}
         try:
             if not isinstance(web_ui, dict):
                 raise PanelSpecError(f"{instance}: web_ui must be a mapping")

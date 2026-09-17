@@ -1,6 +1,6 @@
-"""Log Viewer MCP Server
+"""Log Viewer Tool Server
 
-Provides MCP tools for log management and querying.
+Provides tools for log management and querying.
 """
 
 from __future__ import annotations
@@ -9,10 +9,10 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -20,18 +20,18 @@ logger = logging.getLogger(__name__)
 DEFAULT_LOG_FILES = ['logs/api.log', 'logs/cli.log', 'logs/profiling.log', 'logs/security.log']
 
 
-class LogViewerMCPServer(SchemaBasedMCPServer):
-    """MCP server component for log viewer plugin"""
+class LogViewerToolServer(SchemaBasedToolServer):
+    """tool server component for log viewer plugin"""
     
-    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
+    def __init__(self, name: str, system_config: "AgentSystemConfig", server_config: "ToolServerConfig"):
         """Initialize with new signature."""
-        super().__init__(name, system_config, mcp_config)
-        self.log_files = getattr(mcp_config, 'log_files', DEFAULT_LOG_FILES)
+        super().__init__(name, system_config, server_config)
+        self.log_files = getattr(server_config, 'log_files', DEFAULT_LOG_FILES)
         
-        logger.info(f"LogViewerMCPServer initialized: {name}")
+        logger.info(f"LogViewerToolServer initialized: {name}")
     
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        """MCP call interface - handle tool calls"""
+        """tool call interface - handle tool calls"""
         status = params.get("_status")
         
         # Status is mandatory for proper operation tracking

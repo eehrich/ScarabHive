@@ -10,50 +10,50 @@ from plugins.tavily_search.server import TavilySearchServer
 class TestTavilySearchServerInit:
     """Test TavilySearchServer initialization."""
 
-    def test_server_initialization(self, mock_system_config, mock_mcp_config):
+    def test_server_initialization(self, mock_system_config, mock_server_config):
         """Test basic server initialization."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test-api-key'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             assert server.name == "tavily"
             assert server.api_key == "test-api-key"
 
     def test_server_initialization_with_config_api_key(self, mock_system_config):
         """Test server initialization with API key from config."""
-        from agent_system.config.models import MCPConfig, AgentConfig
-        mcp_config = MCPConfig(type="tavily_search", enabled=True, agent_config=AgentConfig())
-        mcp_config.api_key = "config-api-key"
+        from agent_system.config.models import ToolServerConfig, AgentConfig
+        server_config = ToolServerConfig(type="tavily_search", enabled=True, agent_config=AgentConfig())
+        server_config.api_key = "config-api-key"
         
         with patch.dict('os.environ', {}, clear=True):
-            server = TavilySearchServer("tavily", mock_system_config, mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, server_config)
             assert server.api_key == "config-api-key"
 
-    def test_server_initialization_without_api_key(self, mock_system_config, mock_mcp_config):
+    def test_server_initialization_without_api_key(self, mock_system_config, mock_server_config):
         """Test server initialization without API key logs warning."""
         with patch.dict('os.environ', {}, clear=True):
             with patch('plugins.tavily_search.server.logger') as mock_logger:
-                server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+                server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
                 assert server.api_key == ""
                 mock_logger.warning.assert_called()
 
     def test_server_initialization_with_cache_config(self, mock_system_config):
         """Test server initialization with cache configuration."""
-        from agent_system.config.models import MCPConfig, AgentConfig
-        mcp_config = MCPConfig(type="tavily_search", enabled=True, agent_config=AgentConfig())
-        mcp_config.cache_ttl = 600
-        mcp_config.cache_enabled = False
+        from agent_system.config.models import ToolServerConfig, AgentConfig
+        server_config = ToolServerConfig(type="tavily_search", enabled=True, agent_config=AgentConfig())
+        server_config.cache_ttl = 600
+        server_config.cache_enabled = False
         
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, server_config)
             assert server.cache_enabled is False
 
 
 class TestTavilySearchServerSchema:
     """Test TavilySearchServer schema/tools."""
 
-    def test_server_provides_tools(self, mock_system_config, mock_mcp_config):
+    def test_server_provides_tools(self, mock_system_config, mock_server_config):
         """Test server provides search and extract tools."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             tools = server.get_tools()
             
             assert isinstance(tools, list)
@@ -63,10 +63,10 @@ class TestTavilySearchServerSchema:
             assert "tavily_web_search" in tool_names
             assert "tavily_extract" in tool_names
 
-    def test_web_search_tool_schema(self, mock_system_config, mock_mcp_config):
+    def test_web_search_tool_schema(self, mock_system_config, mock_server_config):
         """Test web_search tool schema structure."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             tools = server.get_tools()
             
             search_tool = next(t for t in tools if "web_search" in t["function"]["name"])
@@ -80,10 +80,10 @@ class TestTavilySearchServerSchema:
             assert "include_domains" in params
             assert "exclude_domains" in params
 
-    def test_extract_tool_schema(self, mock_system_config, mock_mcp_config):
+    def test_extract_tool_schema(self, mock_system_config, mock_server_config):
         """Test extract tool schema structure."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             tools = server.get_tools()
             
             extract_tool = next(t for t in tools if "extract" in t["function"]["name"])
@@ -99,10 +99,10 @@ class TestTavilyWebSearch:
     """Test TavilySearchServer web_search functionality."""
 
     @pytest.mark.asyncio
-    async def test_web_search_empty_query(self, mock_system_config, mock_mcp_config):
+    async def test_web_search_empty_query(self, mock_system_config, mock_server_config):
         """Test web_search with empty query returns error."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             
             mock_status = AsyncMock()
             result = await server.call("web_search", {"query": "", "_status": mock_status})
@@ -111,10 +111,10 @@ class TestTavilyWebSearch:
             assert "Empty query" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_web_search_no_api_key(self, mock_system_config, mock_mcp_config):
+    async def test_web_search_no_api_key(self, mock_system_config, mock_server_config):
         """Test web_search without API key returns error."""
         with patch.dict('os.environ', {}, clear=True):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             
             mock_status = AsyncMock()
             result = await server.call("web_search", {"query": "test", "_status": mock_status})
@@ -122,10 +122,10 @@ class TestTavilyWebSearch:
             assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_web_search_success(self, mock_system_config, mock_mcp_config):
+    async def test_web_search_success(self, mock_system_config, mock_server_config):
         """Test successful web search."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             server.cache_enabled = False  # Disable cache for this test
             
             mock_response = {
@@ -158,10 +158,10 @@ class TestTavilyWebSearch:
                 assert result["answer"] == "Test answer"
 
     @pytest.mark.asyncio
-    async def test_web_search_with_filters(self, mock_system_config, mock_mcp_config):
+    async def test_web_search_with_filters(self, mock_system_config, mock_server_config):
         """Test web search with domain filters."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             server.cache_enabled = False  # Disable cache for this test
             
             mock_response = {"results": []}
@@ -191,10 +191,10 @@ class TestTavilyWebSearch:
                 assert call_kwargs["search_depth"] == "advanced"
 
     @pytest.mark.asyncio
-    async def test_web_search_cancellation(self, mock_system_config, mock_mcp_config):
+    async def test_web_search_cancellation(self, mock_system_config, mock_server_config):
         """Test web search respects cancellation token."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             
             mock_status = AsyncMock()
             mock_cancel = MagicMock()
@@ -209,10 +209,10 @@ class TestTavilyWebSearch:
             assert result.get("cancelled") is True
 
     @pytest.mark.asyncio
-    async def test_web_search_cache_hit(self, mock_system_config, mock_mcp_config):
+    async def test_web_search_cache_hit(self, mock_system_config, mock_server_config):
         """Test web search returns cached results."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             
             cached_data = {"query": "test", "results": [], "result_count": 0}
             
@@ -232,10 +232,10 @@ class TestTavilyExtract:
     """Test TavilySearchServer extract functionality."""
 
     @pytest.mark.asyncio
-    async def test_extract_no_urls(self, mock_system_config, mock_mcp_config):
+    async def test_extract_no_urls(self, mock_system_config, mock_server_config):
         """Test extract with no URLs returns error."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             
             mock_status = AsyncMock()
             result = await server.call("extract", {"urls": [], "_status": mock_status})
@@ -244,10 +244,10 @@ class TestTavilyExtract:
             assert "No URLs" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_extract_too_many_urls(self, mock_system_config, mock_mcp_config):
+    async def test_extract_too_many_urls(self, mock_system_config, mock_server_config):
         """Test extract with too many URLs returns error."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             
             mock_status = AsyncMock()
             urls = [f"https://example.com/{i}" for i in range(25)]
@@ -257,10 +257,10 @@ class TestTavilyExtract:
             assert "Too many URLs" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_extract_success(self, mock_system_config, mock_mcp_config):
+    async def test_extract_success(self, mock_system_config, mock_server_config):
         """Test successful content extraction."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             server.cache_enabled = False  # Disable cache for this test
             
             mock_response = {
@@ -289,10 +289,10 @@ class TestTavilyExtract:
                 assert result["results"][0]["raw_content"] == "# Page Content\n\nHello world"
 
     @pytest.mark.asyncio
-    async def test_extract_with_failures(self, mock_system_config, mock_mcp_config):
+    async def test_extract_with_failures(self, mock_system_config, mock_server_config):
         """Test extraction with some failures."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             server.cache_enabled = False  # Disable cache for this test
             
             mock_response = {
@@ -322,10 +322,10 @@ class TestTavilyExtract:
                 assert result["failed_results"][0]["error"] == "Access denied"
 
     @pytest.mark.asyncio
-    async def test_extract_cancellation(self, mock_system_config, mock_mcp_config):
+    async def test_extract_cancellation(self, mock_system_config, mock_server_config):
         """Test extract respects cancellation token."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             
             mock_status = AsyncMock()
             mock_cancel = MagicMock()
@@ -344,10 +344,10 @@ class TestTavilyErrorHandling:
     """Test error handling in TavilySearchServer."""
 
     @pytest.mark.asyncio
-    async def test_invalid_api_key_error(self, mock_system_config, mock_mcp_config):
+    async def test_invalid_api_key_error(self, mock_system_config, mock_server_config):
         """Test handling of invalid API key error."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'invalid'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             server.cache_enabled = False
             
             mock_client = AsyncMock()
@@ -364,10 +364,10 @@ class TestTavilyErrorHandling:
                 assert "Invalid" in result["error"] or "API key" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_rate_limit_error(self, mock_system_config, mock_mcp_config):
+    async def test_rate_limit_error(self, mock_system_config, mock_server_config):
         """Test handling of rate limit error."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             server.cache_enabled = False
             
             mock_client = AsyncMock()
@@ -387,21 +387,21 @@ class TestTavilyErrorHandling:
 class TestTavilyPluginFactory:
     """Test the Tavily plugin factory."""
 
-    def test_plugin_factory_creates_server(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_creates_server(self, mock_system_config, mock_server_config):
         """Test plugin factory creates server instance."""
         from plugins.tavily_search.plugin import PLUGIN_FACTORY
         
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = PLUGIN_FACTORY("tavily", mock_system_config, mock_mcp_config)
+            server = PLUGIN_FACTORY("tavily", mock_system_config, mock_server_config)
             assert server.name == "tavily"
             assert isinstance(server, TavilySearchServer)
 
-    def test_plugin_factory_custom_name(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_custom_name(self, mock_system_config, mock_server_config):
         """Test plugin factory with custom name."""
         from plugins.tavily_search.plugin import PLUGIN_FACTORY
         
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
-            server = PLUGIN_FACTORY("custom_tavily", mock_system_config, mock_mcp_config)
+            server = PLUGIN_FACTORY("custom_tavily", mock_system_config, mock_server_config)
             assert server.name == "custom_tavily"
 
 
@@ -410,14 +410,14 @@ class TestToolsHiddenWithoutKey:
     with 'API key not configured' -- costs an agent a step per session to
     find out, and a prompt rule to avoid. The schema hides them instead."""
 
-    def test_without_a_key_the_server_offers_nothing(self, mock_system_config, mock_mcp_config):
+    def test_without_a_key_the_server_offers_nothing(self, mock_system_config, mock_server_config):
         with patch.dict('os.environ', {}, clear=True):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             assert server.api_key == ""
             assert server.get_tools() == []
 
-    def test_with_a_key_both_tools_are_back(self, mock_system_config, mock_mcp_config):
+    def test_with_a_key_both_tools_are_back(self, mock_system_config, mock_server_config):
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'tvly-x'}):
-            server = TavilySearchServer("tavily", mock_system_config, mock_mcp_config)
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             names = {t["function"]["name"] for t in server.get_tools()}
         assert names == {"tavily_web_search", "tavily_extract"}

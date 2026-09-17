@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from plugins.json_store.server import JsonStoreServer
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def _isolated_storage(tmp_path, monkeypatch):
 @pytest.fixture
 def server(mock_system_config):
     return JsonStoreServer(
-        "json_store", mock_system_config, MCPConfig(type="json_store", enabled=True)
+        "json_store", mock_system_config, ToolServerConfig(type="json_store", enabled=True)
     )
 
 
@@ -244,7 +244,7 @@ class TestMerge:
     async def test_merge_and_set_value_enforce_max_docs(self, mock_system_config):
         small = JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True, config={"max_docs": 1}),
+            ToolServerConfig(type="json_store", enabled=True, config={"max_docs": 1}),
         )
         await small.write({**SID, "doc": "one", "data": {"a": 1}})
         res = await small.merge({**SID, "doc": "two", "data": {"b": 2}})
@@ -311,7 +311,7 @@ class TestMergeDoc:
     async def test_merge_doc_respects_key_model(self, mock_system_config):
         srv = JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True,
+            ToolServerConfig(type="json_store", enabled=True,
                       config={"key_models": {"synopsis": {"genre": {}}}}))
         await srv.write({**SID, "doc": "synopsis", "data": {"genre": "X"}})
         await srv.write({**SID, "doc": "delta", "data": {"erfunden": 1}})
@@ -438,7 +438,7 @@ class TestMisc:
         # with persistence the doc would reload from disk, see TestPersistence)
         server = JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True, config={"persist": False}))
+            ToolServerConfig(type="json_store", enabled=True, config={"persist": False}))
         await server.write({"_session_id": "old", "doc": "syn", "data": {"a": 1}})
         # backdate the old namespace beyond the TTL, then touch another namespace
         server._ns_last_access["old"] = _time.time() - server._namespace_ttl_s - 1
@@ -451,7 +451,7 @@ class TestMisc:
     async def test_max_doc_bytes(self, mock_system_config):
         small = JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True, config={"max_doc_bytes": 50}),
+            ToolServerConfig(type="json_store", enabled=True, config={"max_doc_bytes": 50}),
         )
         res = await small.write({**SID, "doc": "big", "data": {"t": "x" * 100}})
         assert res["status"] == "error"
@@ -504,7 +504,7 @@ def modeled_server(mock_system_config):
     """Server with a key model for doc 'synopsis' (incl. '*' wildcard)."""
     return JsonStoreServer(
         "json_store", mock_system_config,
-        MCPConfig(type="json_store", enabled=True, config={
+        ToolServerConfig(type="json_store", enabled=True, config={
             "key_models": {
                 "synopsis": {
                     "synopsis": {},
@@ -616,7 +616,7 @@ def typed_server(mock_system_config):
     """Server whose key model enforces leaf TYPES (string node = type name)."""
     return JsonStoreServer(
         "json_store", mock_system_config,
-        MCPConfig(type="json_store", enabled=True, config={
+        ToolServerConfig(type="json_store", enabled=True, config={
             "key_models": {
                 "synopsis": {
                     "title_suggestion": "string",
@@ -693,7 +693,7 @@ class TestKeyModelTypes:
         # a config typo in the type name must not punish the agent.
         srv = JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True,
+            ToolServerConfig(type="json_store", enabled=True,
                       config={"key_models": {"d": {"x": "strng"}}}))
         res = await srv.write({**SID, "doc": "d", "data": {"x": [1, 2]}})
         assert res["status"] == "ok"
@@ -702,7 +702,7 @@ class TestKeyModelTypes:
     async def test_boolean_not_counted_as_integer(self, mock_system_config):
         srv = JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True,
+            ToolServerConfig(type="json_store", enabled=True,
                       config={"key_models": {"d": {"n": "integer"}}}))
         assert (await srv.write({**SID, "doc": "d", "data": {"n": True}}))["status"] == "error"
         assert (await srv.write({**SID, "doc": "d", "data": {"n": 5},
@@ -715,7 +715,7 @@ def star_server(mock_system_config):
     uses a list model for an array-of-objects field."""
     return JsonStoreServer(
         "json_store", mock_system_config,
-        MCPConfig(type="json_store", enabled=True, config={
+        ToolServerConfig(type="json_store", enabled=True, config={
             "key_models": {
                 "*": {
                     "title_suggestion": "string",
@@ -919,7 +919,7 @@ class TestWriteProtection:
     async def test_default_shared_config_restores_old_behavior(self, mock_system_config):
         srv = JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True,
+            ToolServerConfig(type="json_store", enabled=True,
                       config={"default_write_access": "shared"}))
         await srv.write({**COORD, "doc": "d", "data": {"a": 1}})
         assert (await srv.merge({**WRITER_A, "doc": "d",
@@ -1036,7 +1036,7 @@ class TestUndo:
     async def test_depth_caps_history(self, mock_system_config):
         srv = JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True, config={"undo_depth": 2}))
+            ToolServerConfig(type="json_store", enabled=True, config={"undo_depth": 2}))
         await srv.write({**SID, "doc": "d", "data": {"n": 0}})
         for n in range(1, 5):
             await srv.merge({**SID, "doc": "d", "data": {"n": n}})
@@ -1050,7 +1050,7 @@ class TestUndo:
     async def test_undo_disabled(self, mock_system_config):
         srv = JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True, config={"undo_depth": 0}))
+            ToolServerConfig(type="json_store", enabled=True, config={"undo_depth": 0}))
         await srv.write({**SID, "doc": "d", "data": {"a": 1}})
         await srv.merge({**SID, "doc": "d", "data": {"b": 2}})
         res = await srv.undo({**SID, "doc": "d"})
@@ -1104,7 +1104,7 @@ class TestUndo:
     async def test_history_bounded_across_name_churn(self, mock_system_config):
         srv = JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True,
+            ToolServerConfig(type="json_store", enabled=True,
                       config={"max_docs": 10, "undo_depth": 5}))
         S = {"_session_id": "s", "namespace": "g"}
         # churn 200 distinct auto-id docs (create + delete) — history for dead
@@ -1118,7 +1118,7 @@ class TestUndo:
     async def test_live_docs_keep_history_under_churn(self, mock_system_config):
         srv = JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True,
+            ToolServerConfig(type="json_store", enabled=True,
                       config={"max_docs": 10, "undo_depth": 5}))
         S = {"_session_id": "s", "namespace": "g"}
         await srv.write({**S, "doc": "keep", "data": {"v": 0}})
@@ -1257,7 +1257,7 @@ class TestKeyAliases:
     def aliased_server(self, mock_system_config):
         return JsonStoreServer(
             "json_store", mock_system_config,
-            MCPConfig(type="json_store", enabled=True, config={
+            ToolServerConfig(type="json_store", enabled=True, config={
                 "key_aliases": {"synopsis": "synopsis_text"},
                 "key_models": {"synopsis": {"synopsis_text": {}, "genre": {}}},
             }),
@@ -1325,7 +1325,7 @@ def _restartable(mock_system_config, tmp_path, **cfg):
     cfg.setdefault("storage_path", str(tmp_path / "jsstore"))
     return JsonStoreServer(
         "json_store", mock_system_config,
-        MCPConfig(type="json_store", enabled=True, config=cfg))
+        ToolServerConfig(type="json_store", enabled=True, config=cfg))
 
 
 class TestPersistence:
@@ -1642,7 +1642,7 @@ def shared_only_server(mock_system_config):
     """A store that exists ONLY as a shared workspace."""
     return JsonStoreServer(
         "json_store", mock_system_config,
-        MCPConfig(type="json_store", enabled=True,
+        ToolServerConfig(type="json_store", enabled=True,
                   config={"require_namespace": True}),
     )
 

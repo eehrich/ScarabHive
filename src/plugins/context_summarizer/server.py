@@ -1,6 +1,6 @@
-"""Context Summarizer MCP Server - Manual context summarization tool with hook support.
+"""Context Summarizer Tool Server - Manual context summarization tool with hook support.
 
-Unified implementation combining MCP tools and hook functionality.
+Unified implementation combining tools and hook functionality.
 Allows LLMs to manually trigger context summarization and automatically
 summarizes when context exceeds configured thresholds.
 """
@@ -10,20 +10,20 @@ import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Dict, List
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count, estimate_tools_token_count
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
-    """Unified MCP server and hook for context summarization.
+class ContextSummarizerServer(SchemaBasedToolServer, PluginHook):
+    """Unified tool server and hook for context summarization.
 
-    Provides MCP tools:
+    Provides tools:
     - summarize: Manually trigger summarization of current conversation
     - check_stats: Check current context statistics (token count, message count)
 
@@ -31,19 +31,19 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
     exceeds configured thresholds.
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """Initialize ContextSummarizerServer.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        # Initialize MCP server
-        SchemaBasedMCPServer.__init__(self, name, system_config, mcp_config)
+        # Initialize tool server
+        SchemaBasedToolServer.__init__(self, name, system_config, server_config)
 
         # Initialize hook
-        hook_config = getattr(mcp_config, 'hook_config', {})
+        hook_config = getattr(server_config, 'hook_config', {})
         PluginHook.__init__(self, name, config=hook_config)
 
         # Load configuration. ONE mapping, handed over whole — the hook merges
@@ -58,7 +58,7 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
         # on this exact path: the summarizer called the LLM with an empty user
         # message. Neither key is set in plugins.yaml, so the wrong fallback
         # was always the effective value.
-        config_dict = dict(mcp_config.config) if getattr(mcp_config, 'config', None) else {}
+        config_dict = dict(server_config.config) if getattr(server_config, 'config', None) else {}
 
         # Web UI history tracking
         self.summarization_history: List[Dict[str, Any]] = []
@@ -73,7 +73,7 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
         )
         self._hooks_impl.apply_config(config_dict)
 
-        # The MCP tool below reports the threshold; read it off the hook so
+        # The tool below reports the threshold; read it off the hook so
         # there is one source rather than a copy that can disagree.
         self.trigger_percentage = self._hooks_impl.trigger_percentage
 
@@ -87,11 +87,11 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
         )
 
     # =========================================================================
-    # MCP Tools Interface
+    # Tools Interface
     # =========================================================================
 
     async def list_tools(self) -> list:
-        """List available MCP tools from schema.
+        """List available tools from schema.
 
         Returns tools defined in schema.yaml for this plugin.
         """
@@ -359,8 +359,8 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
 
             # Try to get actual tokens from context_usage_tracker (more accurate)
             try:
-                if hasattr(agent, 'system_config') and hasattr(agent.system_config, 'mcp_registry'):
-                    registry = agent.system_config.mcp_registry
+                if hasattr(agent, 'system_config') and hasattr(agent.system_config, 'tool_registry'):
+                    registry = agent.system_config.tool_registry
                     usage_tracker = registry.get_server('context_usage_tracker')
                     if usage_tracker and hasattr(usage_tracker, 'tracker'):
                         # get_latest(session_id=...) instead of the tracker's

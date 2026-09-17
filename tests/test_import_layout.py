@@ -3,11 +3,12 @@
 pytest.ini legt tests/ als zweiten Import-Root auf sys.path (fuer geteilte
 Test-Helper wie tool_execution_test_helpers.py). Dadurch wird jedes
 tests/-Unterverzeichnis als Top-Level-NAMESPACE-Package importierbar —
-tests/mcp, tests/config, tests/utils etc. kollidieren namentlich mit echten
-Import-Roots (site-packages `mcp`!, src-Packages). Das haelt heute nur,
+tests/config, tests/llm, tests/utils etc. kollidieren namentlich mit echten
+Import-Roots (src-Packages; tests/mcp tat es bis zur Umbenennung am
+17.09.2026 mit dem site-packages-Package `mcp`). Das haelt heute nur,
 weil REGULAERE Packages (mit __init__.py) Namespace-Portionen immer schlagen.
 
-Ein einziges kuenftiges __init__.py unter tests/ (z.B. tests/mcp/__init__.py)
+Ein einziges kuenftiges __init__.py unter tests/ (z.B. tests/config/__init__.py)
 wuerde das gleichnamige echte Package still shadowen und Imports fernab der
 Ursache brechen. Dieser Meta-Test macht daraus einen lauten, lokalisierten
 Fehler.

@@ -14,15 +14,15 @@ import pytest
 
 from agent_system.config.models import (
     AgentConfig, AgentSystemConfig, LLMModelConfig, LLMProfile, LLMSystemConfig,
-    AgentMetadata, MCPConfig, PluginsConfig,
+    AgentMetadata, ToolServerConfig, PluginsConfig,
 )
-from agent_system.plugins.mcp_adapter import plugin_mcp_registry
+from agent_system.plugins.tool_adapter import plugin_tool_registry
 from agent_system.runtime import Runtime, ServerDecl
 
 REPO = Path(__file__).resolve().parents[2]
 
 
-def _config(servers: dict[str, MCPConfig], plugin_dirs: list[str] | None = None) -> AgentSystemConfig:
+def _config(servers: dict[str, ToolServerConfig], plugin_dirs: list[str] | None = None) -> AgentSystemConfig:
     return AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"m": LLMModelConfig(provider="openai", model="m", api_key="fake")},
@@ -36,8 +36,8 @@ def _config(servers: dict[str, MCPConfig], plugin_dirs: list[str] | None = None)
     )
 
 
-def _agent_server(**kwargs) -> MCPConfig:
-    return MCPConfig(type="basic_agent", enabled=True,
+def _agent_server(**kwargs) -> ToolServerConfig:
+    return ToolServerConfig(type="basic_agent", enabled=True,
                      agent_config=AgentConfig(llm_profile="normal"), **kwargs)
 
 
@@ -48,7 +48,7 @@ def test_declaring_does_not_build():
 
     assert isinstance(decl, ServerDecl)
     assert decl.type == "basic_agent"
-    assert decl.mcp_config.agent_config.llm_profile == "normal"
+    assert decl.server_config.agent_config.llm_profile == "normal"
     assert runtime.registry._servers == {}, "declaring a server already built it"
 
 
@@ -60,7 +60,7 @@ def test_materialize_builds_once_and_registers_in_both_registries():
 
     assert first is second, "the second call built a new instance"
     assert runtime.registry.get("probe_once") is first
-    assert "probe_once" in plugin_mcp_registry.plugin_servers
+    assert "probe_once" in plugin_tool_registry.plugin_servers
     assert first.registry is runtime.registry, "the agent did not get the shared registry"
 
 
@@ -77,7 +77,7 @@ def test_materialize_applies_the_instance_config():
 
     assert agent._description == "what this instance is"
     assert agent._metadata["version"] == "9.9"
-    assert agent._mcp_public is True and agent._mcp_tool_visible is True
+    assert agent._tool_public is True and agent._tool_visible is True
     assert agent._self_tool_descriptions == {"probe_meta_execute_task": "run it"}
 
 
@@ -93,8 +93,8 @@ def test_visibility_defaults_to_private():
 
     agent = runtime.materialize("probe_hidden")
 
-    assert agent._mcp_public is False
-    assert agent._mcp_tool_visible is False
+    assert agent._tool_public is False
+    assert agent._tool_visible is False
 
 
 def test_the_manifest_supplies_the_visibility_when_the_instance_does_not(tmp_path):
@@ -112,7 +112,7 @@ def test_the_manifest_supplies_the_visibility_when_the_instance_does_not(tmp_pat
         "PLUGIN_FACTORY = make_agent_plugin_factory(Agent)\n",
         encoding="utf-8")
 
-    config = _config({"probe_manifest": MCPConfig(
+    config = _config({"probe_manifest": ToolServerConfig(
         type="visible_probe", enabled=True,
         agent_config=AgentConfig(llm_profile="normal"))},
         plugin_dirs=[str(root)])
@@ -120,17 +120,17 @@ def test_the_manifest_supplies_the_visibility_when_the_instance_does_not(tmp_pat
 
     assert runtime.describe("probe_manifest").visibility == "ui"
     agent = runtime.materialize("probe_manifest")
-    assert agent._mcp_public is True
-    assert agent._mcp_tool_visible is False
+    assert agent._tool_public is True
+    assert agent._tool_visible is False
 
 
 def test_the_direct_agent_type_stays_out_of_the_plugin_registry():
     """Asymmetry kept from bootstrap on purpose: the ``type: agent`` branch
-    registered its agent in the MCPRegistry and did nothing else -- no plugin
+    registered its agent in the ToolServerRegistry and did nothing else -- no plugin
     registry, no metadata, no description, no visibility. No shipped config
     uses the type, so both readings are equivalent today; this pins the one
     that keeps behaviour identical rather than the one that looks tidier."""
-    runtime = Runtime(_config({"probe_direct": MCPConfig(
+    runtime = Runtime(_config({"probe_direct": ToolServerConfig(
         type="agent", enabled=True,
         agent_config=AgentConfig(llm_profile="normal"),
         description="would be applied for a plugin agent",
@@ -139,13 +139,13 @@ def test_the_direct_agent_type_stays_out_of_the_plugin_registry():
     agent = runtime.materialize("probe_direct")
 
     assert agent.registry is runtime.registry, "the shared registry it always got"
-    assert "probe_direct" not in plugin_mcp_registry.plugin_servers
+    assert "probe_direct" not in plugin_tool_registry.plugin_servers
     assert getattr(agent, "_description", None) is None, "the direct branch applied no description"
-    assert agent._mcp_public is False, "visibility 'both' was applied although the branch never did"
+    assert agent._tool_public is False, "visibility 'both' was applied although the branch never did"
 
 
 def test_a_disabled_server_is_not_declared():
-    runtime = Runtime(_config({"probe_off": MCPConfig(
+    runtime = Runtime(_config({"probe_off": ToolServerConfig(
         type="basic_agent", enabled=False,
         agent_config=AgentConfig(llm_profile="normal"))}))
 
@@ -156,7 +156,7 @@ def test_a_disabled_server_is_not_declared():
 
 def test_an_unknown_type_is_reported_and_skipped(caplog):
     with caplog.at_level(logging.WARNING, logger="agent_system.runtime"):
-        runtime = Runtime(_config({"probe_unknown": MCPConfig(
+        runtime = Runtime(_config({"probe_unknown": ToolServerConfig(
             type="no_such_plugin", enabled=True)}))
 
     assert runtime.describe("probe_unknown") is None
@@ -171,7 +171,7 @@ def test_one_broken_server_does_not_stop_the_others(tmp_path, caplog):
     broken.mkdir(parents=True)
     (broken / "plugin.toml").write_text('[plugin]\nname = "broken_probe"\n', encoding="utf-8")
     (broken / "plugin.py").write_text(
-        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
         "    raise RuntimeError('boom')\n",
         encoding="utf-8")
 
@@ -179,7 +179,7 @@ def test_one_broken_server_does_not_stop_the_others(tmp_path, caplog):
         "fixture: under a working directory containing 'test' the policy re-raises"
 
     config = _config(
-        {"probe_broken": MCPConfig(type="broken_probe", enabled=True),
+        {"probe_broken": ToolServerConfig(type="broken_probe", enabled=True),
          "probe_good": _agent_server()},
         plugin_dirs=[str(REPO / "src" / "plugins"), str(root)])
 
@@ -199,13 +199,13 @@ def test_under_a_test_directory_a_broken_server_raises(tmp_path, monkeypatch):
     broken.mkdir(parents=True)
     (broken / "plugin.toml").write_text('[plugin]\nname = "raise_probe"\n', encoding="utf-8")
     (broken / "plugin.py").write_text(
-        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
         "    raise RuntimeError('boom')\n",
         encoding="utf-8")
 
     monkeypatch.setattr("agent_system.runtime.Path.cwd", lambda: Path("/somewhere/tests/here"))
 
-    config = _config({"probe_broken": MCPConfig(type="raise_probe", enabled=True)},
+    config = _config({"probe_broken": ToolServerConfig(type="raise_probe", enabled=True)},
                      plugin_dirs=[str(root)])
 
     with pytest.raises(RuntimeError, match="boom"):

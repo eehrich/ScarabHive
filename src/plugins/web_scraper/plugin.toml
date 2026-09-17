@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Fetch and extract readable text and structured data (tables/forms/lists) from web pages."
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "tools"
 requires = { agent_system = ">=0.6.0" }
 dependencies = ["beautifulsoup4>=4.12", "lxml>=5.0"]

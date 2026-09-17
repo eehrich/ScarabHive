@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 from plugins.task_switch.server import TaskSwitchServer
 
 
@@ -47,7 +47,7 @@ class FakeAgent:
 @pytest.fixture
 def server():
     return TaskSwitchServer(
-        "v6_workflow", MagicMock(), MCPConfig(type="task_switch", enabled=True))
+        "v6_workflow", MagicMock(), ToolServerConfig(type="task_switch", enabled=True))
 
 
 def _set_context_source() -> str:

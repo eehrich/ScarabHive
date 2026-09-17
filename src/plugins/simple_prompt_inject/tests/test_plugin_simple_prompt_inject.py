@@ -31,14 +31,14 @@ def make_plugin(plugin_dir):
 
     def _make(prompt_text: str = "Injected.", position: str = "before_last_user",
               role: str = "system", prompt_file: str = ""):
-        mcp_config = MagicMock()
-        mcp_config.config = {
+        server_config = MagicMock()
+        server_config.config = {
             "prompt_text": prompt_text,
             "prompt_file": prompt_file,
             "injection_position": position,
             "role": role,
         }
-        return SimplePromptInjectPlugin(plugin_dir, mcp_config)
+        return SimplePromptInjectPlugin(plugin_dir, server_config)
 
     return _make
 
@@ -108,12 +108,12 @@ class TestSchemaLoading:
 
     def test_config_defaults(self, plugin_dir):
         from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
-        p = SimplePromptInjectPlugin(plugin_dir)  # no mcp_config → uses schema defaults
+        p = SimplePromptInjectPlugin(plugin_dir)  # no server_config → uses schema defaults
         assert p.prompt_template == ""
         assert p.injection_position == "before_last_user"
         assert p.role == "system"
 
-    def test_config_override_via_mcp_config(self, make_plugin):
+    def test_config_override_via_server_config(self, make_plugin):
         p = make_plugin("custom text", "end", "user")
         assert p.prompt_template == "custom text"
         assert p.injection_position == "end"
@@ -133,11 +133,11 @@ class TestPluginFactory:
         assert plugin is not None
         assert plugin.name == "simple_prompt_inject"
 
-    def test_factory_with_mcp_config(self):
+    def test_factory_with_server_config(self):
         from plugins.simple_prompt_inject.plugin import PLUGIN_FACTORY
-        mcp_config = MagicMock()
-        mcp_config.config = {"prompt_text": "hello"}
-        plugin = PLUGIN_FACTORY(mcp_config=mcp_config)
+        server_config = MagicMock()
+        server_config.config = {"prompt_text": "hello"}
+        plugin = PLUGIN_FACTORY(server_config=server_config)
         assert plugin.prompt_template == "hello"
 
 
@@ -364,9 +364,9 @@ class TestPromptFile:
         md_file = tmp_path / "test_prompt.md"
         md_file.write_text("# Instructions\nBe helpful.", encoding="utf-8")
 
-        mcp_config = MagicMock()
-        mcp_config.config = {"prompt_file": str(md_file)}
-        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+        server_config = MagicMock()
+        server_config.config = {"prompt_file": str(md_file)}
+        p = SimplePromptInjectPlugin(plugin_dir, server_config)
 
         assert p.prompt_template == "# Instructions\nBe helpful."
 
@@ -376,9 +376,9 @@ class TestPromptFile:
         md_file = tmp_path / "test_prompt.md"
         md_file.write_text("<!-- editor note -->\nBe helpful.", encoding="utf-8")
 
-        mcp_config = MagicMock()
-        mcp_config.config = {"prompt_file": str(md_file)}
-        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+        server_config = MagicMock()
+        server_config.config = {"prompt_file": str(md_file)}
+        p = SimplePromptInjectPlugin(plugin_dir, server_config)
 
         assert p.prompt_template == "Be helpful."
 
@@ -389,12 +389,12 @@ class TestPromptFile:
         md_file = tmp_path / "from_file.md"
         md_file.write_text("From file", encoding="utf-8")
 
-        mcp_config = MagicMock()
-        mcp_config.config = {
+        server_config = MagicMock()
+        server_config.config = {
             "prompt_text": "From text",
             "prompt_file": str(md_file),
         }
-        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+        p = SimplePromptInjectPlugin(plugin_dir, server_config)
 
         assert p.prompt_template == "From file"
 
@@ -402,19 +402,19 @@ class TestPromptFile:
         """Missing prompt_file should raise FileNotFoundError."""
         from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
 
-        mcp_config = MagicMock()
-        mcp_config.config = {"prompt_file": "/nonexistent/path.md"}
+        server_config = MagicMock()
+        server_config.config = {"prompt_file": "/nonexistent/path.md"}
 
         with pytest.raises(FileNotFoundError, match="prompt_file not found"):
-            SimplePromptInjectPlugin(plugin_dir, mcp_config)
+            SimplePromptInjectPlugin(plugin_dir, server_config)
 
     def test_empty_prompt_file_fallback_to_text(self, plugin_dir):
         """Empty prompt_file string should fall back to prompt_text."""
         from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
 
-        mcp_config = MagicMock()
-        mcp_config.config = {"prompt_file": "", "prompt_text": "fallback text"}
-        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+        server_config = MagicMock()
+        server_config.config = {"prompt_file": "", "prompt_text": "fallback text"}
+        p = SimplePromptInjectPlugin(plugin_dir, server_config)
 
         assert p.prompt_template == "fallback text"
 
@@ -426,9 +426,9 @@ class TestPromptFile:
         md_file = tmp_path / "inject.md"
         md_file.write_text("File-based prompt", encoding="utf-8")
 
-        mcp_config = MagicMock()
-        mcp_config.config = {"prompt_file": str(md_file)}
-        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+        server_config = MagicMock()
+        server_config.config = {"prompt_file": str(md_file)}
+        p = SimplePromptInjectPlugin(plugin_dir, server_config)
 
         ctx = make_context()
         result = await p.inject_prompt(ctx)
@@ -452,9 +452,9 @@ class TestTemplateRendering:
         """prompt_text should be rendered with template_vars."""
         from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
 
-        mcp_config = MagicMock()
-        mcp_config.config = {"prompt_text": "Hello {{ user_name }}, respond in {{ lang }}."}
-        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+        server_config = MagicMock()
+        server_config.config = {"prompt_text": "Hello {{ user_name }}, respond in {{ lang }}."}
+        p = SimplePromptInjectPlugin(plugin_dir, server_config)
 
         ctx = make_context(agent=mock_agent)
         result = await p.inject_prompt(ctx)
@@ -471,9 +471,9 @@ class TestTemplateRendering:
         md_file = tmp_path / "tmpl.md"
         md_file.write_text("# Guide for {{ user_name }}\nLanguage: {{ lang }}", encoding="utf-8")
 
-        mcp_config = MagicMock()
-        mcp_config.config = {"prompt_file": str(md_file)}
-        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+        server_config = MagicMock()
+        server_config.config = {"prompt_file": str(md_file)}
+        p = SimplePromptInjectPlugin(plugin_dir, server_config)
 
         ctx = make_context(agent=mock_agent)
         result = await p.inject_prompt(ctx)
@@ -487,9 +487,9 @@ class TestTemplateRendering:
         """Session-scoped template_vars should override agent_config vars."""
         from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
 
-        mcp_config = MagicMock()
-        mcp_config.config = {"prompt_text": "Hello {{ user_name }}, lang={{ lang }}, extra={{ extra }}."}
-        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+        server_config = MagicMock()
+        server_config.config = {"prompt_text": "Hello {{ user_name }}, lang={{ lang }}, extra={{ extra }}."}
+        p = SimplePromptInjectPlugin(plugin_dir, server_config)
 
         ctx = make_context(agent=mock_agent_with_session)
         result = await p.inject_prompt(ctx)
@@ -516,9 +516,9 @@ class TestTemplateRendering:
         agent.agent_config.template_vars = None
         agent._session_tracker = None
 
-        mcp_config = MagicMock()
-        mcp_config.config = {"prompt_text": "Literal {{ braces }}."}
-        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+        server_config = MagicMock()
+        server_config.config = {"prompt_text": "Literal {{ braces }}."}
+        p = SimplePromptInjectPlugin(plugin_dir, server_config)
 
         ctx = make_context(agent=agent)
         result = await p.inject_prompt(ctx)
@@ -531,9 +531,9 @@ class TestTemplateRendering:
         """Invalid Jinja2 syntax should gracefully fall back to raw template."""
         from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
 
-        mcp_config = MagicMock()
-        mcp_config.config = {"prompt_text": "Bad syntax {% if %}"}
-        p = SimplePromptInjectPlugin(plugin_dir, mcp_config)
+        server_config = MagicMock()
+        server_config.config = {"prompt_text": "Bad syntax {% if %}"}
+        p = SimplePromptInjectPlugin(plugin_dir, server_config)
 
         ctx = make_context(agent=mock_agent)
         result = await p.inject_prompt(ctx)

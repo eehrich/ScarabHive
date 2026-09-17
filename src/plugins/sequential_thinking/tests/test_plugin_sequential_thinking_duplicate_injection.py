@@ -8,10 +8,10 @@ from plugins.sequential_thinking.server import SequentialThinkingServer
 @pytest.fixture
 def server(tmp_path):
     """Create SequentialThinkingServer instance for testing."""
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
     
     config = AgentSystemConfig(data_dir=tmp_path)
-    mcp_config = MCPConfig(
+    server_config = ToolServerConfig(
         name="sequential_thinking",
         plugin_config={
             "max_history_size": 100,
@@ -19,7 +19,7 @@ def server(tmp_path):
         }
     )
     
-    return SequentialThinkingServer("sequential_thinking", config, mcp_config)
+    return SequentialThinkingServer("sequential_thinking", config, server_config)
 
 
 @pytest.mark.asyncio

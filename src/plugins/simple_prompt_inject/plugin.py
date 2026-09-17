@@ -12,23 +12,23 @@ from typing import TYPE_CHECKING
 from .hooks import SimplePromptInjectPlugin
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 
 def PLUGIN_FACTORY(
     name: str = None,
     system_config: "AgentSystemConfig" = None,
-    mcp_config: "MCPConfig" = None,
+    server_config: "ToolServerConfig" = None,
 ) -> SimplePromptInjectPlugin:
     """Factory function to create plugin instance.
 
     Args:
         name: Plugin name (ignored, for compatibility)
         system_config: System configuration (ignored, for compatibility)
-        mcp_config: MCP configuration (contains config from plugins.yaml)
+        server_config: tool server configuration (contains config from plugins.yaml)
 
     Returns:
         SimplePromptInjectPlugin instance
     """
     plugin_dir = Path(__file__).parent
-    return SimplePromptInjectPlugin(plugin_dir, mcp_config)
+    return SimplePromptInjectPlugin(plugin_dir, server_config)

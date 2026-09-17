@@ -91,7 +91,7 @@ def _read_manifest(plugin_dir: Path) -> Dict:
 
     Parsed with tomllib directly, NOT via agent_system.plugins.plugin_manifest:
     importing that submodule executes the plugins package __init__, which
-    pulls the whole MCP/Web runtime (fastapi, starlette, ...) — measured at
+    pulls the whole tool/Web runtime (fastapi, starlette, ...) — measured at
     ~0.4s and ~330 modules. Config validation calls into this scan, so it
     must stay light.
     """

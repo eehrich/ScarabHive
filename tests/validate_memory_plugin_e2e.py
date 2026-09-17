@@ -35,7 +35,7 @@ async def validate_e2e():
     # 2. Create Mock Configs
     print("\n[2] Configuration")
     mock_sys_config = type('obj', (object,), {})()
-    mock_mcp_config = type('obj', (object,), {
+    mock_server_config = type('obj', (object,), {
         'storage_path': './data/memories',
         'max_memories': 10,
         'max_memories_per_session': 1000,
@@ -50,7 +50,7 @@ async def validate_e2e():
     plugin = PLUGIN_FACTORY(
         name="memory",
         system_config=mock_sys_config,
-        mcp_config=mock_mcp_config,
+        server_config=mock_server_config,
     )
     assert isinstance(plugin, MemoryManagementHybridPlugin)
     print(f"✓ Plugin instance: {type(plugin).__name__}")
@@ -59,7 +59,7 @@ async def validate_e2e():
     print("\n[4] Plugin Components")
     assert hasattr(plugin, 'server')
     assert isinstance(plugin.server, MemoryServer)
-    print(f"✓ MCP Server: {type(plugin.server).__name__}")
+    print(f"✓ Tool server: {type(plugin.server).__name__}")
     
     assert hasattr(plugin, 'web_factory')
     print(f"✓ Web Factory: {type(plugin.web_factory).__name__}")

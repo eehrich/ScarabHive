@@ -51,8 +51,8 @@ def mock_system_config() -> MagicMock:
 
 
 @pytest.fixture
-def mock_mcp_config(temp_storage: Path) -> MagicMock:
-    """Mock MCPConfig with storage_path."""
+def mock_server_config(temp_storage: Path) -> MagicMock:
+    """Mock ToolServerConfig with storage_path."""
     config = MagicMock()
     config.storage_path = str(temp_storage)
     return config
@@ -69,10 +69,10 @@ def mock_status() -> MagicMock:
 
 
 @pytest.fixture
-def server(mock_system_config: MagicMock, mock_mcp_config: MagicMock) -> "AudioOpsServer":
+def server(mock_system_config: MagicMock, mock_server_config: MagicMock) -> "AudioOpsServer":
     """Create AudioOpsServer instance."""
     from plugins.audio_ops.server import AudioOpsServer
-    return AudioOpsServer("audio_ops", mock_system_config, mock_mcp_config)
+    return AudioOpsServer("audio_ops", mock_system_config, mock_server_config)
 
 
 @pytest.fixture
@@ -2355,35 +2355,35 @@ class TestSessionIsolation:
         return MagicMock()
     
     @pytest.fixture
-    def mock_mcp_config_with_template(self, tmp_path: Path) -> MagicMock:
-        """Mock MCPConfig with {session_id} template in storage_path."""
+    def mock_server_config_with_template(self, tmp_path: Path) -> MagicMock:
+        """Mock ToolServerConfig with {session_id} template in storage_path."""
         config = MagicMock()
         # Use {session_id} template
         config.storage_path = str(tmp_path / "audio" / "{session_id}")
         return config
     
     @pytest.fixture
-    def mock_mcp_config_without_template(self, tmp_path: Path) -> MagicMock:
-        """Mock MCPConfig without template (traditional static path)."""
+    def mock_server_config_without_template(self, tmp_path: Path) -> MagicMock:
+        """Mock ToolServerConfig without template (traditional static path)."""
         config = MagicMock()
         config.storage_path = str(tmp_path / "audio")  # No {session_id}
         return config
     
     @pytest.fixture
     def server_with_template(
-        self, mock_system_config: MagicMock, mock_mcp_config_with_template: MagicMock
+        self, mock_system_config: MagicMock, mock_server_config_with_template: MagicMock
     ) -> "AudioOpsServer":
         """Create AudioOpsServer with session template."""
         from plugins.audio_ops.server import AudioOpsServer
-        return AudioOpsServer("audio_ops", mock_system_config, mock_mcp_config_with_template)
+        return AudioOpsServer("audio_ops", mock_system_config, mock_server_config_with_template)
     
     @pytest.fixture
     def server_without_template(
-        self, mock_system_config: MagicMock, mock_mcp_config_without_template: MagicMock
+        self, mock_system_config: MagicMock, mock_server_config_without_template: MagicMock
     ) -> "AudioOpsServer":
         """Create AudioOpsServer without session template."""
         from plugins.audio_ops.server import AudioOpsServer
-        return AudioOpsServer("audio_ops", mock_system_config, mock_mcp_config_without_template)
+        return AudioOpsServer("audio_ops", mock_system_config, mock_server_config_without_template)
     
     def test_resolve_storage_path_with_session_id(
         self, server_with_template: "AudioOpsServer", tmp_path: Path

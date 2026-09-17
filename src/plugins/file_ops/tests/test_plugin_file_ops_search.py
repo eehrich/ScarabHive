@@ -7,7 +7,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import Mock
 
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 from plugins.file_ops.server import FileOpsServer
 
 
@@ -25,13 +25,13 @@ async def file_ops_server(tmp_allowed_dir):
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(tmp_allowed_dir.parent)
 
-    mcp_config = MCPConfig(type="file_ops", enabled=True)
-    mcp_config.allowed_directories = [str(tmp_allowed_dir)]
-    mcp_config.search = {
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
+    server_config.allowed_directories = [str(tmp_allowed_dir)]
+    server_config.search = {
         "enable_indexing": False  # Disable for faster tests
     }
 
-    server = FileOpsServer("file_ops", system_config, mcp_config)
+    server = FileOpsServer("file_ops", system_config, server_config)
     yield server
 
     # Cleanup: stop background indexing and close resources
@@ -129,11 +129,11 @@ async def test_search_files_relative_to_allowed_dir(tmp_path):
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(tmp_path)
 
-    mcp_config = MCPConfig(type="file_ops", enabled=True)
-    mcp_config.allowed_directories = [str(project_dir)]
-    mcp_config.search = {"enable_indexing": False}
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
+    server_config.allowed_directories = [str(project_dir)]
+    server_config.search = {"enable_indexing": False}
 
-    server = FileOpsServer("file_ops", system_config, mcp_config)
+    server = FileOpsServer("file_ops", system_config, server_config)
 
     try:
         # Pattern should be relative to allowed_dir (project/)
@@ -171,14 +171,14 @@ async def test_search_files_with_indexing_enabled(tmp_path):
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(tmp_path)
 
-    mcp_config = MCPConfig(type="file_ops", enabled=True)
-    mcp_config.allowed_directories = [str(allowed_dir)]
-    mcp_config.search = {
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
+    server_config.allowed_directories = [str(allowed_dir)]
+    server_config.search = {
         "enable_indexing": True,
         "index_on_startup": False  # Don't start background task
     }
 
-    server = FileOpsServer("file_ops", system_config, mcp_config)
+    server = FileOpsServer("file_ops", system_config, server_config)
 
     try:
         # Manually trigger indexing
@@ -226,11 +226,11 @@ async def test_search_files_allowed_dir_is_subdirectory(tmp_path):
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(project_root)
 
-    mcp_config = MCPConfig(type="file_ops", enabled=True)
-    mcp_config.allowed_directories = [str(workspace_dir)]  # The subdirectory!
-    mcp_config.search = {"enable_indexing": False}
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
+    server_config.allowed_directories = [str(workspace_dir)]  # The subdirectory!
+    server_config.search = {"enable_indexing": False}
 
-    server = FileOpsServer("file_ops", system_config, mcp_config)
+    server = FileOpsServer("file_ops", system_config, server_config)
 
     try:
         # BUG: User searches for "data/workspace/*.txt"

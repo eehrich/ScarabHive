@@ -1,7 +1,8 @@
 """
-Plugin to MCP Server Adapter
+Plugin to tool-source adapter
 
-Adapts existing AgentSystem plugins to be MCP-compatible servers.
+Wraps an AgentSystem plugin so that callers can list and call its tools the same
+way they use an external server of the mcp_client plugin.
 """
 
 from __future__ import annotations
@@ -10,36 +11,42 @@ import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pathlib import Path
 
-from ..mcp.core import MCPServer, MCPTool, MCPCapability
+from ..tools.base import ToolDef, ToolServerCapability
 from . import capabilities
 from .web_adapter import PluginWebInterface, plugin_web_registry
 from .schema_loader import load_schema_from_dir
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class PluginMCPAdapter(MCPServer):
-    """Adapts an AgentSystem plugin to be an MCP server"""
+class PluginToolAdapter:
+    """Presents an AgentSystem plugin as a source of tools: list_tools() and call_tool().
+
+    Deliberately no base class. It used to inherit an abstract JSON-RPC server
+    that carried resources and prompts nobody ever implemented or called; what
+    remained of it were these three attributes.
+    """
 
     def __init__(self, plugin_name: str, plugin_server, plugin_schema: Optional[Dict[str, Any]] = None):
-        super().__init__(plugin_name, f"AgentSystem {plugin_name} plugin")
+        self.name = plugin_name
+        self.description = f"AgentSystem {plugin_name} plugin"
         self.plugin_server = plugin_server
         self.plugin_schema = plugin_schema or {}
-        self.capabilities = [MCPCapability.TOOLS]  # Most plugins expose tools
-        self._tools_cache: Optional[List[MCPTool]] = None
+        self.capabilities = [ToolServerCapability.TOOLS]  # Most plugins expose tools
+        self._tools_cache: Optional[List[ToolDef]] = None
 
-    async def list_tools(self) -> List[MCPTool]:
-        """List tools available from the plugin - converts plugin interfaces to MCPTool objects"""
+    async def list_tools(self) -> List[ToolDef]:
+        """List tools available from the plugin - converts plugin interfaces to ToolDef objects"""
         if self._tools_cache is not None:
             return self._tools_cache
 
         tools = []
 
         # If the plugin_server offers list_tools(), delegate to it. Duck-typed
-        # on purpose: the old check additionally required MCPServer among the
+        # on purpose: the old check additionally required ToolServer among the
         # DIRECT bases, which a hybrid wrapper (plain class delegating
         # list_tools to its inner server, e.g. SubAgentManagerHybridPlugin)
         # never satisfies -- the adapter then fell through all fallbacks and
@@ -61,7 +68,7 @@ class PluginMCPAdapter(MCPServer):
                 for tool_schema in tool_schemas:
                     if isinstance(tool_schema, dict) and 'function' in tool_schema:
                         func_def = tool_schema['function']
-                        tool = MCPTool(
+                        tool = ToolDef(
                             name=func_def['name'],
                             description=func_def.get('description', f'Tool {func_def["name"]}'),
                             input_schema=func_def.get('parameters', {})
@@ -74,7 +81,7 @@ class PluginMCPAdapter(MCPServer):
         if not tools and self.plugin_schema:
             if 'functions' in self.plugin_schema:
                 for func_def in self.plugin_schema['functions']:
-                    tool = MCPTool(
+                    tool = ToolDef(
                         name=func_def['name'],
                         description=func_def.get('description', f'Tool {func_def["name"]}'),
                         input_schema=func_def.get('parameters', {})
@@ -88,7 +95,7 @@ class PluginMCPAdapter(MCPServer):
             # dispatch it -- for hook-/web-only plugins (no call path) the
             # fabricated tool existed only to fail on every invocation; they
             # legitimately have zero tools.
-            tool = MCPTool(
+            tool = ToolDef(
                 name=self.name,
                 description=f"Generic action for {self.name}",
                 input_schema={
@@ -120,11 +127,11 @@ class PluginMCPAdapter(MCPServer):
             raise
 
 
-class PluginMCPRegistry:
-    """Registry for plugin-based MCP servers"""
+class PluginToolRegistry:
+    """Registry for the plugins built as tool servers"""
 
     def __init__(self):
-        self.plugin_servers: Dict[str, PluginMCPAdapter] = {}
+        self.plugin_servers: Dict[str, PluginToolAdapter] = {}
         self.plugin_factories: Dict[str, Any] = {}
         #: Plugins whose start_plugin() hook has run, so it runs exactly once.
         self._started: set[str] = set()
@@ -141,11 +148,11 @@ class PluginMCPRegistry:
                 self.plugin_factories.update(factories)
                 logger.info(f"Discovered {len(factories)} plugins from {plugin_dir}")
 
-    def register_existing_plugin_instance(self, name: str, plugin_instance, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def register_existing_plugin_instance(self, name: str, plugin_instance, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """Register an already-instantiated plugin instance (to prevent duplicate creation).
         
         Used when bootstrap has already created the plugin and we want to register it
-        in the plugin_mcp_registry without creating a second instance.
+        in the plugin_tool_registry without creating a second instance.
         """
         if name in self.plugin_servers:
             logger.debug(f"Plugin {name} already registered, skipping duplicate registration")
@@ -162,25 +169,25 @@ class PluginMCPRegistry:
             except Exception as e:
                 logger.warning(f"Failed to load schema from plugin instance {name}: {e}")
         
-        # Create MCP adapter
-        mcp_adapter = PluginMCPAdapter(name, plugin_instance, schema)
-        self.plugin_servers[name] = mcp_adapter
+        # Create tool adapter
+        tool_adapter = PluginToolAdapter(name, plugin_instance, schema)
+        self.plugin_servers[name] = tool_adapter
         
         # Register web capabilities if supported
         if hasattr(plugin_instance, 'get_web_router'):
             plugin_web_registry.register_web_plugin(name, plugin_instance)
             logger.debug(f"Registered web capabilities for existing plugin {name}")
         
-        logger.info(f"Registered existing plugin instance {name} in plugin_mcp_registry")
+        logger.info(f"Registered existing plugin instance {name} in plugin_tool_registry")
     
     async def register_plugin(self, name: str, config: Optional[Dict[str, Any]] = None, parent_config: Optional[Dict[str, Any]] = None) -> None:
-        """Register a plugin as an MCP server"""
+        """Register a plugin as a tool server"""
         if name not in self.plugin_factories:
             raise Exception(f"Unknown plugin: {name}")
 
         # Check if already registered and log for debugging
         if name in self.plugin_servers:
-            logger.warning(f"Plugin {name} already registered in MCP registry. Re-registering with new config: {config}")
+            logger.warning(f"Plugin {name} already registered in tool registry. Re-registering with new config: {config}")
             # Continue to re-register instead of skipping
 
         # Create plugin instance with parent config injection
@@ -205,7 +212,7 @@ class PluginMCPRegistry:
                 logger.debug(f"Injected parent_llm configuration into plugin {name}")
 
         # Ensure generic Agent plugin factories receive a full AgentConfig via parent_agent_config.
-        # bootstrap() already injects this, but the CLI MCP adapter path builds its own instances.
+        # bootstrap() already injects this, but the CLI adapter path builds its own instances.
         try:  # pragma: no cover - defensive
             if 'parent_agent_config' not in plugin_config and parent_config is not None:
                 try:
@@ -222,10 +229,10 @@ class PluginMCPRegistry:
             pass
 
         try:
-            logger.info(f"MCP registry creating plugin {name} with config: {plugin_config}")
-            # Modern factory signature: (name, system_config, mcp_config)
+            logger.info(f"tool registry creating plugin {name} with config: {plugin_config}")
+            # Modern factory signature: (name, system_config, server_config)
             # Extract or build the required config objects
-            from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+            from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
             
             # Build system_config from parent_config if available
             if parent_config and isinstance(parent_config, AgentSystemConfig):
@@ -240,13 +247,13 @@ class PluginMCPRegistry:
             else:
                 system_config = AgentSystemConfig()
             
-            # Build mcp_config from plugin_config
-            if isinstance(plugin_config, MCPConfig):
-                mcp_config = plugin_config
+            # Build server_config from plugin_config
+            if isinstance(plugin_config, ToolServerConfig):
+                server_config = plugin_config
             else:
-                # Build MCPConfig from dict
+                # Build ToolServerConfig from dict
                 agent_config = plugin_config.get('parent_agent_config') or AgentConfig()
-                mcp_config = MCPConfig(
+                server_config = ToolServerConfig(
                     type=name,
                     enabled=True,
                     agent_config=agent_config,
@@ -254,7 +261,7 @@ class PluginMCPRegistry:
                 )
             
             # Call factory with modern signature
-            plugin_server = factory(name, system_config, mcp_config)
+            plugin_server = factory(name, system_config, server_config)
         except Exception as e:
             logger.error(f"Failed to create plugin {name}: {e}")
             raise
@@ -298,9 +305,9 @@ class PluginMCPRegistry:
                 except Exception as e:
                     logger.warning(f"Failed to load schema for plugin {name}: {e}")
 
-        # Create MCP adapter
-        mcp_adapter = PluginMCPAdapter(name, plugin_server, schema)
-        self.plugin_servers[name] = mcp_adapter
+        # Create tool adapter
+        tool_adapter = PluginToolAdapter(name, plugin_server, schema)
+        self.plugin_servers[name] = tool_adapter
 
         # Register web capabilities if plugin supports them
         if isinstance(plugin_server, PluginWebInterface):
@@ -313,7 +320,7 @@ class PluginMCPRegistry:
 
         await self.start_plugin(name)
 
-        logger.info(f"Registered plugin {name} as MCP server")
+        logger.info(f"Registered plugin {name} as tool server")
 
     async def start_plugin(self, name: str) -> None:
         """Run a plugin's optional ``start_plugin()`` hook, at most once.
@@ -346,7 +353,7 @@ class PluginMCPRegistry:
             await self.start_plugin(name)
 
     async def unregister_plugin(self, name: str) -> None:
-        """Unregister a plugin MCP server"""
+        """Unregister a plugin tool server"""
         if name in self.plugin_servers:
             adapter = self.plugin_servers[name]
             # Counterpart to start_plugin: give the plugin the chance to close
@@ -372,12 +379,12 @@ class PluginMCPRegistry:
             self._started.discard(name)
             logger.debug("Stopped plugin %s", name)
 
-    def get_server(self, name: str) -> Optional[PluginMCPAdapter]:
-        """Get a plugin MCP server by name"""
+    def get_server(self, name: str) -> Optional[PluginToolAdapter]:
+        """Get a plugin tool server by name"""
         return self.plugin_servers.get(name)
 
     def list_servers(self) -> List[str]:
-        """List all registered plugin MCP servers"""
+        """List all registered plugin tool servers"""
         return list(self.plugin_servers.keys())
 
     def list_available_plugins(self) -> List[str]:
@@ -389,13 +396,13 @@ class PluginMCPRegistry:
         
         Args:
             enabled_servers: List of plugin names to register
-            servers_config: Dict[str, MCPConfig] OR Dict[str, dict] with plugin configurations
+            servers_config: Dict[str, ToolServerConfig] OR Dict[str, dict] with plugin configurations
             system_config: Complete AgentSystemConfig (not AgentConfig!)
         """
-        logger.debug(f"MCP register_from_config - servers_config keys: {list(servers_config.keys())}")
+        logger.debug(f"register_from_config - servers_config keys: {list(servers_config.keys())}")
 
         for server_name in enabled_servers:
-            # Get MCPConfig for this server FIRST — the factory is resolved via
+            # Get ToolServerConfig for this server FIRST — the factory is resolved via
             # the server's TYPE, not its key. Config agents use arbitrary keys
             # with e.g. type=basic_agent (same rule as servers/bootstrap.py);
             # the old key-based lookup errored for every such server whenever
@@ -403,31 +410,31 @@ class PluginMCPRegistry:
             # with one error per config agent).
             server_config = servers_config.get(server_name)
 
-            # Import MCPConfig here to avoid circular dependency
-            from agent_system.config.models import MCPConfig as MCPConfigClass, AgentConfig
+            # Import ToolServerConfig here to avoid circular dependency
+            from agent_system.config.models import ToolServerConfig as ToolServerConfigClass, AgentConfig
 
-            # Convert dict to MCPConfig if necessary
+            # Convert dict to ToolServerConfig if necessary
             if isinstance(server_config, dict):
-                # Build MCPConfig from dict
+                # Build ToolServerConfig from dict
                 config_dict = dict(server_config)
                 config_type = config_dict.pop('type', server_name)
                 enabled = config_dict.pop('enabled', True)
                 agent_config = AgentConfig()  # Default agent config
 
-                # Create MCPConfig with extra fields allowed
-                server_mcp_config = MCPConfigClass(
+                # Create ToolServerConfig with extra fields allowed
+                resolved_config = ToolServerConfigClass(
                     type=config_type,
                     enabled=enabled,
                     agent_config=agent_config,
                     **config_dict  # Pass remaining fields as extra
                 )
-            elif isinstance(server_config, MCPConfigClass):
-                server_mcp_config = server_config
+            elif isinstance(server_config, ToolServerConfigClass):
+                resolved_config = server_config
             else:
                 logger.error(f"Plugin {server_name} config is invalid type: {type(server_config)}")
                 continue
 
-            plugin_type = server_mcp_config.type or server_name
+            plugin_type = resolved_config.type or server_name
             if plugin_type not in self.plugin_factories:
                 logger.error(
                     f"Plugin type '{plugin_type}' (server '{server_name}') is enabled "
@@ -437,26 +444,26 @@ class PluginMCPRegistry:
                 )
                 continue
 
-            logger.debug(f"MCP register_from_config - plugin {server_name} type: {server_mcp_config.type}")
+            logger.debug(f"register_from_config - plugin {server_name} type: {resolved_config.type}")
 
             try:
-                await self.register_plugin_simple(server_name, system_config, server_mcp_config)
+                await self.register_plugin_simple(server_name, system_config, resolved_config)
             except Exception as e:
                 logger.error(f"Failed to register plugin {server_name}: {e}")
 
-    async def register_plugin_simple(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
-        """SIMPLIFIED: Register a plugin with system_config and mcp_config (modern signature).
+    async def register_plugin_simple(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
+        """SIMPLIFIED: Register a plugin with system_config and server_config (modern signature).
         
         Args:
             name: Server key (instance name; may differ from the plugin type)
             system_config: Complete AgentSystemConfig with LLM, network, context, etc.
-            mcp_config: MCPConfig with agent_config, enabled, type, etc.
+            server_config: ToolServerConfig with agent_config, enabled, type, etc.
         """
-        # Factory is keyed by plugin TYPE (mcp_config.type); the server key is
+        # Factory is keyed by plugin TYPE (server_config.type); the server key is
         # the instance name. For classic plugins key == type; config agents
         # (e.g. key 'slovak_tutor' with type 'basic_agent') differ — same
         # resolution rule as servers/bootstrap.py.
-        plugin_type = getattr(mcp_config, "type", None) or name
+        plugin_type = getattr(server_config, "type", None) or name
         if plugin_type not in self.plugin_factories:
             raise Exception(f"Unknown plugin type: {plugin_type} (server '{name}')")
 
@@ -465,19 +472,19 @@ class PluginMCPRegistry:
             logger.debug(f"Plugin {name} already registered, skipping duplicate instantiation")
             return  # CRITICAL: Don't re-instantiate! Bootstrap already created it.
 
-        # Create plugin instance with modern factory signature: (name, system_config, mcp_config)
+        # Create plugin instance with modern factory signature: (name, system_config, server_config)
         factory = self.plugin_factories[plugin_type]
 
         try:
-            logger.info(f"MCP registry creating plugin {name} (type={plugin_type}) with AgentSystemConfig and MCPConfig")
-            plugin_server = factory(name, system_config, mcp_config)  # Modern call - clean interface
+            logger.info(f"tool registry creating plugin {name} (type={plugin_type}) with AgentSystemConfig and ToolServerConfig")
+            plugin_server = factory(name, system_config, server_config)  # Modern call - clean interface
         except Exception as e:
             logger.error(f"Failed to create plugin instance {name}: {e}")
             raise
 
         # Sichtbarer Degraded-Mode statt stillem Drift: Agenten, die ueber
         # diesen FALLBACK-Pfad entstehen (statt ueber bootstrap_servers),
-        # bekommen keine shared MCPRegistry injiziert — Tool-Zugriff laeuft
+        # bekommen keine shared ToolServerRegistry injiziert — Tool-Zugriff laeuft
         # dann nur ueber die Plugin-Registry. Der Primaerpfad bleibt bootstrap.
         if plugin_type != name:
             try:
@@ -485,7 +492,7 @@ class PluginMCPRegistry:
                 if isinstance(plugin_server, _Agent):
                     logger.warning(
                         f"Config agent '{name}' (type={plugin_type}) registered via "
-                        f"MCP-integration fallback WITHOUT shared agent registry — "
+                        f"Tool-integration fallback WITHOUT shared agent registry — "
                         f"normally bootstrap_servers registers it first. Check startup order."
                     )
             except Exception:
@@ -530,9 +537,9 @@ class PluginMCPRegistry:
                 except Exception as e:
                     logger.warning(f"Failed to load schema for plugin {name}: {e}")
 
-        # Create MCP adapter
-        mcp_adapter = PluginMCPAdapter(name, plugin_server, schema)
-        self.plugin_servers[name] = mcp_adapter
+        # Create tool adapter
+        tool_adapter = PluginToolAdapter(name, plugin_server, schema)
+        self.plugin_servers[name] = tool_adapter
 
         # Register web capabilities if plugin supports them
         if isinstance(plugin_server, PluginWebInterface):
@@ -544,9 +551,9 @@ class PluginMCPRegistry:
 
         await self.start_plugin(name)
 
-        logger.info(f"Registered plugin {name} as MCP server")
+        logger.info(f"Registered plugin {name} as tool server")
 
-    async def get_all_tools(self) -> Dict[str, List[MCPTool]]:
+    async def get_all_tools(self) -> Dict[str, List[ToolDef]]:
         """Get all tools from all registered plugins"""
         all_tools = {}
         for name, server in self.plugin_servers.items():
@@ -568,4 +575,4 @@ class PluginMCPRegistry:
 
 
 # Global plugin registry instance
-plugin_mcp_registry = PluginMCPRegistry()
+plugin_tool_registry = PluginToolRegistry()

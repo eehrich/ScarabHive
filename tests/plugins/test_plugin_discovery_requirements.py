@@ -8,7 +8,7 @@ These tests verify that:
 
 Background: Bug 2025-11-09 - Writer plugins not discovered because:
 - PLUGIN_FACTORY was in server.py instead of plugin.py
-- MCPIntegration used hardcoded plugin_dirs instead of config
+- ToolServerIntegration used hardcoded plugin_dirs instead of config
 """
 
 import pytest
@@ -131,13 +131,13 @@ class TestPluginDirsConfiguration:
             f"No writer plugins found - src/plugins_writer not discovered? Found: {list(all_plugins.keys())}"
 
 
-class TestMCPIntegrationPluginDirs:
-    """Verify MCPIntegration reads plugin_dirs from config."""
+class TestToolServerIntegrationPluginDirs:
+    """Verify ToolServerIntegration reads plugin_dirs from config."""
     
     @pytest.mark.asyncio
-    async def test_mcp_integration_uses_config_plugin_dirs(self):
-        """CRITICAL: MCPIntegration must use config.plugins.plugin_dirs."""
-        from agent_system.mcp.integration import MCPIntegration
+    async def test_tool_integration_uses_config_plugin_dirs(self):
+        """CRITICAL: ToolServerIntegration must use config.plugins.plugin_dirs."""
+        from agent_system.tools.integration import ToolServerIntegration
         
         # Create config with custom plugin_dirs
         config = AgentSystemConfig(
@@ -147,9 +147,9 @@ class TestMCPIntegrationPluginDirs:
             )
         )
         
-        # Create MCPIntegration with config (not mock_registry)
-        # MCPIntegration requires AgentSystemConfig as parameter
-        MCPIntegration(app=None, config=config)
+        # Create ToolServerIntegration with config (not mock_registry)
+        # ToolServerIntegration requires AgentSystemConfig as parameter
+        ToolServerIntegration(app=None, config=config)
         
         # The _discover_and_register_plugins method should use config.plugins.plugin_dirs
         # We can't easily test the private method, but we can verify the config is accessible

@@ -1,4 +1,4 @@
-"""Script Interpreter MCP Plugin
+"""Script Interpreter Tool plugin
 
 A secure sandboxed Python interpreter for LLM tool calls.
 Allows LLMs to execute mathematical expressions and basic Python code safely.

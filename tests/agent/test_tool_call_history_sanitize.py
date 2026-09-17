@@ -34,10 +34,10 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
 )
 from agent_system.llm.models import ChatMessage
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.agent.server import Agent
 from agent_system.utils.json_utils import history_safe_tool_calls, repair_json
 
@@ -146,8 +146,8 @@ def _agent(max_steps=2):
     )
     agent_config = AgentConfig(max_steps=max_steps)
     system_config = AgentSystemConfig(llm_system=llm_system)
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    return Agent("test_agent", system_config, mcp_config, MCPRegistry())
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    return Agent("test_agent", system_config, server_config, ToolServerRegistry())
 
 
 def _capturing_llm(responses, seen):

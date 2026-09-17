@@ -12,10 +12,10 @@ def mock_system_config():
 
 
 @pytest.fixture
-def empty_mcp_config():
-    """Create empty MCP config for testing."""
-    from agent_system.config.models import MCPConfig
-    config = MCPConfig()
+def empty_server_config():
+    """Create empty tool server config for testing."""
+    from agent_system.config.models import ToolServerConfig
+    config = ToolServerConfig()
     config.machines = []
     return config
 
@@ -34,17 +34,17 @@ def mock_connection():
 
 
 @pytest.mark.asyncio
-async def test_add_machine_success(mock_system_config, empty_mcp_config, mock_connection):
+async def test_add_machine_success(mock_system_config, empty_server_config, mock_connection):
     """Test successful addition of a new SSH machine."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
     
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     
     # Mock SSH connection
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
                AsyncMock(return_value=mock_connection)):
         
-        result = await plugin.mcp_server.add_machine({
+        result = await plugin.tool_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser',
@@ -57,20 +57,20 @@ async def test_add_machine_success(mock_system_config, empty_mcp_config, mock_co
         })
     
     assert result['success'] is True
-    assert 'test-machine' in plugin.mcp_server.connection_manager.machines
-    assert plugin.mcp_server.connection_manager.machines['test-machine'].host == '192.168.1.100'
-    assert plugin.mcp_server.connection_manager.machines['test-machine'].username == 'testuser'
+    assert 'test-machine' in plugin.tool_server.connection_manager.machines
+    assert plugin.tool_server.connection_manager.machines['test-machine'].host == '192.168.1.100'
+    assert plugin.tool_server.connection_manager.machines['test-machine'].username == 'testuser'
 
 
 @pytest.mark.asyncio
-async def test_add_machine_missing_required_params(mock_system_config, empty_mcp_config):
+async def test_add_machine_missing_required_params(mock_system_config, empty_server_config):
     """Test add_machine with missing required parameters."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
     
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     
     # Missing 'name'
-    result = await plugin.mcp_server.add_machine({
+    result = await plugin.tool_server.add_machine({
         'host': '192.168.1.100',
         'username': 'testuser'
     })
@@ -78,7 +78,7 @@ async def test_add_machine_missing_required_params(mock_system_config, empty_mcp
     assert 'required' in result['error'].lower()
     
     # Missing 'host'
-    result = await plugin.mcp_server.add_machine({
+    result = await plugin.tool_server.add_machine({
         'name': 'test-machine',
         'username': 'testuser'
     })
@@ -86,7 +86,7 @@ async def test_add_machine_missing_required_params(mock_system_config, empty_mcp
     assert 'required' in result['error'].lower()
     
     # Missing 'username'
-    result = await plugin.mcp_server.add_machine({
+    result = await plugin.tool_server.add_machine({
         'name': 'test-machine',
         'host': '192.168.1.100'
     })
@@ -95,16 +95,16 @@ async def test_add_machine_missing_required_params(mock_system_config, empty_mcp
 
 
 @pytest.mark.asyncio
-async def test_add_machine_duplicate_name(mock_system_config, empty_mcp_config, mock_connection):
+async def test_add_machine_duplicate_name(mock_system_config, empty_server_config, mock_connection):
     """Test add_machine with duplicate machine name."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
     
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     
     # Add first machine
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
                AsyncMock(return_value=mock_connection)):
-        result = await plugin.mcp_server.add_machine({
+        result = await plugin.tool_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser'
@@ -112,7 +112,7 @@ async def test_add_machine_duplicate_name(mock_system_config, empty_mcp_config, 
         assert result['success'] is True
     
     # Try to add duplicate
-    result = await plugin.mcp_server.add_machine({
+    result = await plugin.tool_server.add_machine({
         'name': 'test-machine',
         'host': '192.168.1.101',
         'username': 'testuser2'
@@ -123,18 +123,18 @@ async def test_add_machine_duplicate_name(mock_system_config, empty_mcp_config, 
 
 
 @pytest.mark.asyncio
-async def test_add_machine_connection_test_failure(mock_system_config, empty_mcp_config):
+async def test_add_machine_connection_test_failure(mock_system_config, empty_server_config):
     """Test add_machine when connection test fails."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
     import asyncssh
     
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     
     # Mock failed connection - asyncssh.Error requires code and reason
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                side_effect=asyncssh.PermissionDenied('Authentication failed', 'PERMISSION_DENIED')):
         
-        result = await plugin.mcp_server.add_machine({
+        result = await plugin.tool_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser'
@@ -142,16 +142,16 @@ async def test_add_machine_connection_test_failure(mock_system_config, empty_mcp
     
     assert result['success'] is False
     assert 'failed' in result['error'].lower()
-    assert 'test-machine' not in plugin.mcp_server.connection_manager.machines
+    assert 'test-machine' not in plugin.tool_server.connection_manager.machines
 
 
 @pytest.mark.asyncio
-async def test_add_machine_connection_timeout(mock_system_config, empty_mcp_config):
+async def test_add_machine_connection_timeout(mock_system_config, empty_server_config):
     """Test add_machine when connection times out."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
     import asyncio
     
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     
     # Mock connection timeout
     async def timeout_connection(*args, **kwargs):
@@ -160,7 +160,7 @@ async def test_add_machine_connection_timeout(mock_system_config, empty_mcp_conf
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                side_effect=timeout_connection):
         
-        result = await plugin.mcp_server.add_machine({
+        result = await plugin.tool_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser'
@@ -168,12 +168,12 @@ async def test_add_machine_connection_timeout(mock_system_config, empty_mcp_conf
     
     assert result['success'] is False
     assert 'timeout' in result['error'].lower()
-    assert 'test-machine' not in plugin.mcp_server.connection_manager.machines
+    assert 'test-machine' not in plugin.tool_server.connection_manager.machines
 
 
 @pytest.mark.asyncio
 async def test_add_machine_persistent_writes_the_store(
-        mock_system_config, empty_mcp_config, mock_connection, isolated_machine_store):
+        mock_system_config, empty_server_config, mock_connection, isolated_machine_store):
     """persistent=True must land in data/ssh_control/machines.<instance>.yaml.
 
     A real file, not mocked yaml: the mocks were what let this pass while the
@@ -183,11 +183,11 @@ async def test_add_machine_persistent_writes_the_store(
 
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
 
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
 
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                AsyncMock(return_value=mock_connection)):
-        result = await plugin.mcp_server.add_machine({
+        result = await plugin.tool_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser',
@@ -206,7 +206,7 @@ async def test_add_machine_persistent_writes_the_store(
 
 @pytest.mark.asyncio
 async def test_a_persisted_machine_survives_a_restart(
-        mock_system_config, empty_mcp_config, mock_connection):
+        mock_system_config, empty_server_config, mock_connection):
     """The point of `persistent`, and the bug that hid here for as long as it existed.
 
     add_machine wrote config/mcp.yaml, which config/config.yaml does not
@@ -217,10 +217,10 @@ async def test_a_persisted_machine_survives_a_restart(
     """
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
 
-    first = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    first = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                AsyncMock(return_value=mock_connection)):
-        await first.mcp_server.add_machine({
+        await first.tool_server.add_machine({
             'name': 'survivor',
             'host': '192.168.1.101',
             'username': 'testuser',
@@ -231,23 +231,23 @@ async def test_a_persisted_machine_survives_a_restart(
     # test would pass on a store that simply keeps everything.
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                AsyncMock(return_value=mock_connection)):
-        await first.mcp_server.add_machine({
+        await first.tool_server.add_machine({
             'name': 'ephemeral',
             'host': '192.168.1.102',
             'username': 'testuser',
             'persistent': False,
         })
 
-    restarted = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    restarted = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
 
-    assert 'survivor' in restarted.mcp_server.connection_manager.machines
-    assert 'ephemeral' not in restarted.mcp_server.connection_manager.machines
-    assert restarted.mcp_server.connection_manager.machines['survivor'].host == '192.168.1.101'
+    assert 'survivor' in restarted.tool_server.connection_manager.machines
+    assert 'ephemeral' not in restarted.tool_server.connection_manager.machines
+    assert restarted.tool_server.connection_manager.machines['survivor'].host == '192.168.1.101'
 
 
 @pytest.mark.asyncio
 async def test_a_password_machine_is_refused_not_half_stored(
-        mock_system_config, empty_mcp_config, mock_connection, isolated_machine_store):
+        mock_system_config, empty_server_config, mock_connection, isolated_machine_store):
     """Storing it without the password would restore a machine that cannot connect.
 
     The secret must not go into a plain file -- but writing the entry WITHOUT
@@ -258,11 +258,11 @@ async def test_a_password_machine_is_refused_not_half_stored(
     """
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
 
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
 
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                AsyncMock(return_value=mock_connection)):
-        result = await plugin.mcp_server.add_machine({
+        result = await plugin.tool_server.add_machine({
             'name': 'pw-machine',
             'host': '192.168.1.103',
             'username': 'testuser',
@@ -273,7 +273,7 @@ async def test_a_password_machine_is_refused_not_half_stored(
 
     # Added to the running session, but NOT stored, and it says why.
     assert result['success'] is True
-    assert 'pw-machine' in plugin.mcp_server.connection_manager.machines
+    assert 'pw-machine' in plugin.tool_server.connection_manager.machines
     assert result['persistent'] is False
     assert 'password' in result['config_error'], result
     assert not (isolated_machine_store / 'machines.ssh_control_test.yaml').exists()
@@ -281,7 +281,7 @@ async def test_a_password_machine_is_refused_not_half_stored(
 
 @pytest.mark.asyncio
 async def test_a_restored_machine_can_actually_connect(
-        mock_system_config, empty_mcp_config, mock_connection):
+        mock_system_config, empty_server_config, mock_connection):
     """Surviving the restart is worthless if the entry cannot be used.
 
     add_machine defaults key_path to '~/.ssh/id_rsa', and the first version of
@@ -293,10 +293,10 @@ async def test_a_restored_machine_can_actually_connect(
     """
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
 
-    first = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    first = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                AsyncMock(return_value=mock_connection)):
-        await first.mcp_server.add_machine({
+        await first.tool_server.add_machine({
             'name': 'usable',
             'host': '192.168.1.104',
             'username': 'testuser',
@@ -304,8 +304,8 @@ async def test_a_restored_machine_can_actually_connect(
         })
 
     restored = PLUGIN_FACTORY(
-        'ssh_control_test', mock_system_config, empty_mcp_config
-    ).mcp_server.connection_manager.machines['usable']
+        'ssh_control_test', mock_system_config, empty_server_config
+    ).tool_server.connection_manager.machines['usable']
 
     # The real check: the authenticator's own precondition, not a field test.
     assert restored.key_path, "restored without a key path -- auth.py would raise"
@@ -316,7 +316,7 @@ async def test_a_restored_machine_can_actually_connect(
 
 def test_configured_machines_win_over_the_store(mock_system_config, isolated_machine_store):
     """A stored entry must not silently shadow what an admin wrote in config."""
-    from agent_system.config.models import MCPConfig
+    from agent_system.config.models import ToolServerConfig
     from plugins.ssh_control import machine_store
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
 
@@ -324,50 +324,50 @@ def test_configured_machines_win_over_the_store(mock_system_config, isolated_mac
         'name': 'hosta', 'host': '10.0.0.99', 'username': 'stale',
         'auth_method': 'key', 'key_path': '~/.ssh/id_rsa'})
 
-    config = MCPConfig()
+    config = ToolServerConfig()
     config.machines = [
         {'name': 'hosta', 'host': '192.0.2.2', 'username': 'root', 'auth_method': 'key'}]
 
     plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, config)
 
-    machines = plugin.mcp_server.connection_manager.machines
+    machines = plugin.tool_server.connection_manager.machines
     assert machines['hosta'].host == '192.0.2.2',         "the stored entry overrode the configured one"
     assert machines['hosta'].username == 'root'
 @pytest.mark.asyncio
-async def test_remove_machine_success(mock_system_config, empty_mcp_config, mock_connection):
+async def test_remove_machine_success(mock_system_config, empty_server_config, mock_connection):
     """Test successful removal of an SSH machine."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
     
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     
     # First add a machine
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
                AsyncMock(return_value=mock_connection)):
-        await plugin.mcp_server.add_machine({
+        await plugin.tool_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser'
         })
     
-    assert 'test-machine' in plugin.mcp_server.connection_manager.machines
+    assert 'test-machine' in plugin.tool_server.connection_manager.machines
     
     # Now remove it
-    result = await plugin.mcp_server.remove_machine({
+    result = await plugin.tool_server.remove_machine({
         'name': 'test-machine'
     })
     
     assert result['success'] is True
-    assert 'test-machine' not in plugin.mcp_server.connection_manager.machines
+    assert 'test-machine' not in plugin.tool_server.connection_manager.machines
 
 
 @pytest.mark.asyncio
-async def test_remove_machine_not_found(mock_system_config, empty_mcp_config):
+async def test_remove_machine_not_found(mock_system_config, empty_server_config):
     """Test remove_machine for non-existent machine."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
     
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     
-    result = await plugin.mcp_server.remove_machine({
+    result = await plugin.tool_server.remove_machine({
         'name': 'nonexistent-machine'
     })
     
@@ -376,29 +376,29 @@ async def test_remove_machine_not_found(mock_system_config, empty_mcp_config):
 
 
 @pytest.mark.asyncio
-async def test_remove_machine_missing_name(mock_system_config, empty_mcp_config):
+async def test_remove_machine_missing_name(mock_system_config, empty_server_config):
     """Test remove_machine with missing name parameter."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
     
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     
-    result = await plugin.mcp_server.remove_machine({})
+    result = await plugin.tool_server.remove_machine({})
     
     assert result['success'] is False
     assert 'required' in result['error'].lower()
 
 
 @pytest.mark.asyncio
-async def test_remove_machine_cleanup_connections(mock_system_config, empty_mcp_config, mock_connection):
+async def test_remove_machine_cleanup_connections(mock_system_config, empty_server_config, mock_connection):
     """Test that remove_machine properly closes active connections."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
     
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     
     # Add machine
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
                AsyncMock(return_value=mock_connection)):
-        await plugin.mcp_server.add_machine({
+        await plugin.tool_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser'
@@ -407,22 +407,22 @@ async def test_remove_machine_cleanup_connections(mock_system_config, empty_mcp_
     # Create a mock connection pool
     mock_pool = AsyncMock()
     mock_pool.close_all = AsyncMock()
-    plugin.mcp_server.connection_manager.pools['test-machine'] = mock_pool
+    plugin.tool_server.connection_manager.pools['test-machine'] = mock_pool
     
     # Remove machine
-    result = await plugin.mcp_server.remove_machine({
+    result = await plugin.tool_server.remove_machine({
         'name': 'test-machine'
     })
     
     assert result['success'] is True
     # Verify pool was closed
     mock_pool.close_all.assert_called_once()
-    assert 'test-machine' not in plugin.mcp_server.connection_manager.pools
+    assert 'test-machine' not in plugin.tool_server.connection_manager.pools
 
 
 @pytest.mark.asyncio
 async def test_remove_machine_from_the_store(
-        mock_system_config, empty_mcp_config, mock_connection, isolated_machine_store):
+        mock_system_config, empty_server_config, mock_connection, isolated_machine_store):
     """A real round trip: remove must find what add WROTE.
 
     A hand-built dict is what let the two halves drift apart -- add wrote
@@ -434,12 +434,12 @@ async def test_remove_machine_from_the_store(
 
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
 
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     store_file = isolated_machine_store / 'machines.ssh_control_test.yaml'
 
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                AsyncMock(return_value=mock_connection)):
-        add_result = await plugin.mcp_server.add_machine({
+        add_result = await plugin.tool_server.add_machine({
             'name': 'persisted-machine',
             'host': '192.168.1.101',
             'username': 'testuser',
@@ -449,7 +449,7 @@ async def test_remove_machine_from_the_store(
     assert add_result['persistent'] is True, add_result.get('config_error')
     assert 'persisted-machine' in store_file.read_text(encoding='utf-8'),         "nothing was stored -- the round trip would be vacuous"
 
-    result = await plugin.mcp_server.remove_machine({
+    result = await plugin.tool_server.remove_machine({
         'name': 'persisted-machine',
         'remove_from_config': True,
     })
@@ -468,15 +468,15 @@ async def test_removing_a_configured_machine_says_it_was_not_stored(
     The old code answered "removed from config" for these, because it wrote a
     file it had just created and then reported the requested flag.
     """
-    from agent_system.config.models import MCPConfig
+    from agent_system.config.models import ToolServerConfig
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
 
-    config = MCPConfig()
+    config = ToolServerConfig()
     config.machines = [
         {'name': 'hosta', 'host': '192.0.2.2', 'username': 'root', 'auth_method': 'key'}]
     plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, config)
 
-    result = await plugin.mcp_server.remove_machine({
+    result = await plugin.tool_server.remove_machine({
         'name': 'hosta',
         'remove_from_config': True,
     })
@@ -485,16 +485,16 @@ async def test_removing_a_configured_machine_says_it_was_not_stored(
     assert result['removed_from_config'] is False
     assert 'not in' in result['config_error'], result
 @pytest.mark.asyncio
-async def test_add_remove_machine_integration(mock_system_config, empty_mcp_config, mock_connection):
+async def test_add_remove_machine_integration(mock_system_config, empty_server_config, mock_connection):
     """Integration test: add then remove a machine."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
     
-    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
     
     # Add machine
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
                AsyncMock(return_value=mock_connection)):
-        add_result = await plugin.mcp_server.add_machine({
+        add_result = await plugin.tool_server.add_machine({
             'name': 'integration-test',
             'host': '192.168.1.200',
             'username': 'admin',
@@ -502,25 +502,25 @@ async def test_add_remove_machine_integration(mock_system_config, empty_mcp_conf
         })
     
     assert add_result['success'] is True
-    assert 'integration-test' in plugin.mcp_server.connection_manager.machines
+    assert 'integration-test' in plugin.tool_server.connection_manager.machines
     
     # Verify machine config
-    machine = plugin.mcp_server.connection_manager.machines['integration-test']
+    machine = plugin.tool_server.connection_manager.machines['integration-test']
     assert machine.host == '192.168.1.200'
     assert machine.username == 'admin'
     assert 'test' in machine.tags
     
     # Remove machine
-    remove_result = await plugin.mcp_server.remove_machine({
+    remove_result = await plugin.tool_server.remove_machine({
         'name': 'integration-test'
     })
     
     assert remove_result['success'] is True
-    assert 'integration-test' not in plugin.mcp_server.connection_manager.machines
+    assert 'integration-test' not in plugin.tool_server.connection_manager.machines
 
 
 def test_the_old_never_read_file_is_reported_not_migrated(
-        mock_system_config, empty_mcp_config, caplog):
+        mock_system_config, empty_server_config, caplog):
     """Machines stranded in config/mcp.yaml get a warning, not a resurrection.
 
     Those entries have been inert since they were written (nothing included
@@ -542,10 +542,10 @@ def test_the_old_never_read_file_is_reported_not_migrated(
         ]}}}
     }), encoding='utf-8')
 
-    with caplog.at_level(logging.WARNING, logger='plugins.ssh_control.mcp_server'):
-        plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
+    with caplog.at_level(logging.WARNING, logger='plugins.ssh_control.tool_server'):
+        plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
 
     assert '2 machine(s)' in caplog.text, caplog.text
     assert str(machine_store.LEGACY_PATH) in caplog.text
     # Reported, NOT loaded.
-    assert plugin.mcp_server.connection_manager.machines == {}
+    assert plugin.tool_server.connection_manager.machines == {}

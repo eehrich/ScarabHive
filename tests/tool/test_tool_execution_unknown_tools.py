@@ -33,9 +33,9 @@ def mock_agent():
     # Mock _get_server_from_any_registry to return None (tool not found)
     agent._get_server_from_any_registry = MagicMock(return_value=None)
     
-    # Mock MCP integration manager
-    agent._mcp_integration_manager = MagicMock()
-    agent._mcp_integration_manager.mcp_integration = None
+    # Mock tool integration manager
+    agent._tool_integration_manager = MagicMock()
+    agent._tool_integration_manager.tool_integration = None
     
     # Mock registry (empty)
     agent.registry = MagicMock()

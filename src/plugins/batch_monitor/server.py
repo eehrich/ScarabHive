@@ -13,7 +13,7 @@ from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +38,10 @@ def job_row(job, now: datetime) -> dict:
 class BatchMonitorWebFactory:
     """Web UI factory for batch queue monitoring."""
 
-    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig") -> None:
+    def __init__(self, name: str, system_config: "AgentSystemConfig", server_config: "ToolServerConfig") -> None:
         self.name = name
         self.system_config = system_config
-        self.mcp_config = mcp_config
+        self.server_config = server_config
         self.plugin_dir = Path(__file__).parent
         self.templates = ui_templates(self.plugin_dir / "templates")
         self._load_schema()

@@ -7,7 +7,7 @@ version = "1.0.0"
 description = "Connects to external MCP servers via the official MCP SDK and federates their tools"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "integration"
 requires = { agent_system = ">=0.6.0" }
 dependencies = ["mcp>=1.14.1"]

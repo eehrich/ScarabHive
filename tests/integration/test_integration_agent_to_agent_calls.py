@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock
 
 from agent_system.servers.agent.server import Agent
 from agent_system.config.models import (
-    AgentSystemConfig, MCPConfig, AgentConfig,
+    AgentSystemConfig, ToolServerConfig, AgentConfig,
     LLMSystemConfig, LLMModelConfig, LLMProfile, ToolConfig
 )
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 
 
 def create_mock_llm(responses: list[dict]) -> AsyncMock:
@@ -55,10 +55,10 @@ async def test_agent_calls_another_agent_as_tool():
     This tests the core agent-as-tool functionality.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
 
     # Create specialist agent (the one being called)
-    specialist_config = MCPConfig(
+    specialist_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(max_steps=2)
@@ -74,7 +74,7 @@ async def test_agent_calls_another_agent_as_tool():
     registry.register("specialist_agent", specialist_agent)
 
     # Create coordinator agent
-    coordinator_config = MCPConfig(
+    coordinator_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(
@@ -123,11 +123,11 @@ async def test_agent_calls_multiple_agents_in_parallel():
     simultaneously to gather information faster.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
 
     # Create two specialist agents
     for name, answer in [("math_agent", "2+2=4"), ("history_agent", "Rome fell in 476 AD")]:
-        agent_config = MCPConfig(
+        agent_config = ToolServerConfig(
             type="agent",
             enabled=True,
             agent_config=AgentConfig(max_steps=2)
@@ -137,7 +137,7 @@ async def test_agent_calls_multiple_agents_in_parallel():
         registry.register(name, agent)
 
     # Create coordinator that calls both
-    coordinator_config = MCPConfig(
+    coordinator_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(
@@ -196,10 +196,10 @@ async def test_agent_call_with_missing_task_parameter():
     System should handle this without crashing.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
 
     # Create agent
-    agent_config = MCPConfig(
+    agent_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(max_steps=2)
@@ -223,12 +223,12 @@ async def test_agent_schema_exposes_correct_tool_interface():
     Schema must be accurate and complete.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
 
-    agent_config = MCPConfig(
+    agent_config = ToolServerConfig(
         type="agent",
         enabled=True,
-        description="A helpful assistant that analyzes data",  # Description goes in MCPConfig
+        description="A helpful assistant that analyzes data",  # Description goes in ToolServerConfig
         agent_config=AgentConfig(
             llm_profile="default",  # Need to specify profile
             max_steps=2
@@ -264,12 +264,12 @@ async def test_agent_list_tools_returns_self_as_callable():
     this agent should appear in the list.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
 
-    agent_config = MCPConfig(
+    agent_config = ToolServerConfig(
         type="agent",
         enabled=True,
-        description="Test agent",  # Description goes in MCPConfig
+        description="Test agent",  # Description goes in ToolServerConfig
         agent_config=AgentConfig(max_steps=2)
     )
     agent = Agent("test_agent", system_config, agent_config, registry)
@@ -294,10 +294,10 @@ async def test_circular_agent_calls_detected():
     System should prevent infinite loops.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
 
     # Create two agents that will try to call each other
-    agent_a_config = MCPConfig(
+    agent_a_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(
@@ -307,7 +307,7 @@ async def test_circular_agent_calls_detected():
     )
     agent_a = Agent("agent_a", system_config, agent_a_config, registry)
 
-    agent_b_config = MCPConfig(
+    agent_b_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(
@@ -376,11 +376,11 @@ async def test_agent_respects_tool_filtering_for_other_agents():
     be able to call agents it's explicitly allowed to call.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
 
     # Create three agents
     for name in ["agent_allowed", "agent_blocked", "agent_also_blocked"]:
-        agent_config = MCPConfig(
+        agent_config = ToolServerConfig(
             type="agent",
             enabled=True,
             agent_config=AgentConfig(llm_profile="default", max_steps=1)
@@ -388,11 +388,11 @@ async def test_agent_respects_tool_filtering_for_other_agents():
         agent = Agent(name, system_config, agent_config, registry)
         agent.llm = create_mock_llm([{"assistant": {"content": f"I am {name}"}}])
         # Make agents visible as tools so they can be discovered
-        agent._mcp_tool_visible = True
+        agent._tool_visible = True
         registry.register(name, agent)
 
     # Create main agent that can only call agent_allowed
-    main_config = MCPConfig(
+    main_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(

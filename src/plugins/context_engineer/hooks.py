@@ -21,7 +21,7 @@ from typing import Any
 
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.models import ChatMessage
-from agent_system.mcp.status import StatusScope, status_bus
+from agent_system.tools.status import StatusScope, status_bus
 
 from .archival_memory import ARCHIVAL_COLLECTION, ArchivalMemory
 from .compaction import (
@@ -367,7 +367,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
     2. Semi-Reversible: Archive old messages with summaries
     3. Irreversible: Drop very old messages
     
-    All stored information can be retrieved via MCP tools.
+    All stored information can be retrieved via tools.
     
     Configuration is loaded from schema.yaml.
     """
@@ -1379,8 +1379,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Access the plugin registry via agent's system_config
             if context.agent and hasattr(context.agent, 'system_config'):
                 system_config = context.agent.system_config
-                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
-                    registry = system_config.mcp_registry
+                if hasattr(system_config, 'tool_registry') and system_config.tool_registry:
+                    registry = system_config.tool_registry
 
                     # Get context_usage_tracker plugin
                     usage_tracker_plugin = registry.get_server('context_usage_tracker')
@@ -1438,8 +1438,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         try:
             if context.agent and hasattr(context.agent, 'system_config'):
                 system_config = context.agent.system_config
-                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
-                    registry = system_config.mcp_registry
+                if hasattr(system_config, 'tool_registry') and system_config.tool_registry:
+                    registry = system_config.tool_registry
                     usage_tracker_plugin = registry.get_server('context_usage_tracker')
                     if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
                         usage_tracker_plugin.tracker.invalidate_session(session_id, reason)
@@ -1447,7 +1447,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             logger.debug(f"[ContextEngineer] Could not invalidate usage_tracker session: {e}")
     
     # === MCP Tool Handlers ===
-    # These are called by the MCP server when tools are invoked
+    # These are called by the tool server when tools are invoked
 
     async def _handle_store_fact(
         self,

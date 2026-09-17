@@ -22,7 +22,7 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
     PluginsConfig,
 )
 from agent_system.services.session_manager import SessionManager, SessionPermissionError
@@ -62,11 +62,11 @@ def cli_env(tmp_path, monkeypatch):
             },
         ))
     config.plugins = PluginsConfig(servers={
-        STORED_AGENT: MCPConfig(type="agent", enabled=True,
+        STORED_AGENT: ToolServerConfig(type="agent", enabled=True,
                                 agent_config=AgentConfig(
                                     system_prompt="x",
                                     llm_profile=AGENT_DEFAULT_PROFILE)),
-        "config_default_agent": MCPConfig(type="agent", enabled=True,
+        "config_default_agent": ToolServerConfig(type="agent", enabled=True,
                                           agent_config=AgentConfig(system_prompt="y")),
     })
     config.default_agent = "config_default_agent"
@@ -75,14 +75,14 @@ def cli_env(tmp_path, monkeypatch):
     manager = SessionManager(storage_path=str(tmp_path / "sessions"))
     service = SessionService(manager)
 
-    from agent_system.mcp.base import MCPRegistry
+    from agent_system.tools.base import ToolServerRegistry
     from agent_system.services.initialization_service import InitializationService
 
     def fake_init(self):
         # session_manager is a lazy property over _session_manager; setting the
         # backing field is how the real initialize_for_cli fills it too.
         self._session_manager = manager
-        return MCPRegistry(), service
+        return ToolServerRegistry(), service
 
     monkeypatch.setattr(InitializationService, "initialize_for_cli", fake_init)
     monkeypatch.setattr("agent_system.servers.agent.server.Agent", _DummyAgent)
@@ -327,7 +327,7 @@ class TestSessionPresence:
             shut.append("mcp")
 
         monkeypatch.setattr(cli, "shutdown_batch_system", batch)
-        monkeypatch.setattr(cli, "shutdown_mcp", mcp)
+        monkeypatch.setattr(cli, "shutdown_tools", mcp)
         return shut
 
     def test_stepping_aside_for_the_holder_still_shuts_the_runtime_down(

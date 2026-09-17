@@ -12,7 +12,7 @@ hooks:
       after: ["begin"]
       before: ["context_summarization", "prompt_injection"]
 
-# MCP Tools - Manual context management controls
+# Tools - Manual context management controls
 #
 # The browsing surface is list / read — the verbs every model already uses for
 # files, pointed at YOUR OWN conversation instead. They replaced `recall`, a

@@ -13,13 +13,13 @@ from agent_system.llm.models import ChatMessage
 def plugin_server():
     """Create SequentialThinkingServer instance with test config."""
     from plugins.sequential_thinking.server import SequentialThinkingServer
-    from agent_system.config.models import MCPConfig, AgentSystemConfig
+    from agent_system.config.models import ToolServerConfig, AgentSystemConfig
     
     # System config
     system_config = AgentSystemConfig()
     
     # Mock config with UX improvement settings
-    mcp_config = MCPConfig(
+    server_config = ToolServerConfig(
         type="sequential_thinking",
         enabled=True,
         max_history_size=100,
@@ -37,7 +37,7 @@ def plugin_server():
     return SequentialThinkingServer(
         name="sequential_thinking",
         system_config=system_config,
-        mcp_config=mcp_config
+        server_config=server_config
     )
 
 
@@ -165,7 +165,7 @@ async def test_hook_with_quick_actions(plugin_server):
 async def test_hook_without_quick_actions(plugin_server):
     """Test that quick actions are hidden when config disabled."""
     # Disable quick actions
-    plugin_server.mcp_config.show_quick_actions = False
+    plugin_server.server_config.show_quick_actions = False
     
     agent_session_id = "test_agent_session"
     
@@ -228,7 +228,7 @@ async def test_hook_multiple_sessions_display(plugin_server):
     session2_id = result2["session_id"]
     
     # Configure to show 2 sessions
-    plugin_server.mcp_config.max_sessions_in_prompt = 2
+    plugin_server.server_config.max_sessions_in_prompt = 2
     
     # Call hook
     context = HookContext(
@@ -274,7 +274,7 @@ async def test_hook_limits_sessions_displayed(plugin_server):
         session_ids.append(result["session_id"])
     
     # Configure to show only 1 session
-    plugin_server.mcp_config.max_sessions_in_prompt = 1
+    plugin_server.server_config.max_sessions_in_prompt = 1
     
     # Call hook
     context = HookContext(

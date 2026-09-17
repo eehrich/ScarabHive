@@ -14,8 +14,8 @@ from agent_system.plugins.web_adapter import PluginWebInterface
 from agent_system.ui.resources import ui_templates
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
-    from .mcp_server import LogViewerMCPServer
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+    from .tool_server import LogViewerToolServer
 
 MAX_ENTRIES = 5000
 CHUNK_BYTES = 65536
@@ -62,17 +62,17 @@ def parse_entry(text: str) -> dict:
 class LogViewerWebEndpoints(PluginWebInterface):
     """Web endpoints component for log viewer plugin"""
 
-    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig", server: "LogViewerMCPServer"):
+    def __init__(self, name: str, system_config: "AgentSystemConfig", server_config: "ToolServerConfig", server: "LogViewerToolServer"):
         self.name = name
         self.system_config = system_config
-        self.mcp_config = mcp_config
+        self.server_config = server_config
         self.server = server
         self.plugin_dir = Path(__file__).parent
         self.templates = ui_templates(self.plugin_dir / "templates")
 
     @property
     def log_files(self) -> List[str]:
-        """The MCP server's allowlist: the panel opens exactly what the tools may."""
+        """The tool server's allowlist: the panel opens exactly what the tools may."""
         return self.server.log_files
 
     def _find_rotation_files(self, base_log_path: Path) -> List[Path]:

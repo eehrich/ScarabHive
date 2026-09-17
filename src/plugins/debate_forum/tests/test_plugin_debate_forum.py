@@ -2,7 +2,7 @@
 
 Tests cover:
 - Database layer (channels + messages CRUD, stats, format_thread)
-- MCP tool methods via DebateForumServer
+- tool methods via DebateForumServer
 - Error handling and edge cases
 """
 import pytest
@@ -30,19 +30,19 @@ def mock_system_config() -> MagicMock:
 
 
 @pytest.fixture
-def mock_mcp_config() -> MagicMock:
+def mock_server_config() -> MagicMock:
     config = MagicMock()
     config.config = {}
     return config
 
 
 @pytest.fixture
-def server(db: DebateForumDB, mock_system_config: MagicMock, mock_mcp_config: MagicMock) -> DebateForumServer:
-    """DebateForumServer with test DB (bypasses SchemaBasedMCPServer schema loading)."""
+def server(db: DebateForumDB, mock_system_config: MagicMock, mock_server_config: MagicMock) -> DebateForumServer:
+    """DebateForumServer with test DB (bypasses SchemaBasedToolServer schema loading)."""
     srv = DebateForumServer.__new__(DebateForumServer)
     srv.name = "debate_forum"
     srv.system_config = mock_system_config
-    srv.mcp_config = mock_mcp_config
+    srv.server_config = mock_server_config
     srv.db = db
     srv.min_message_length = 50
     return srv
@@ -283,7 +283,7 @@ class TestDebateForumDB:
 # =============================================================================
 
 class TestDebateForumServer:
-    """Tests for MCP tool methods."""
+    """Tests for tool methods."""
 
     @pytest.mark.asyncio
     async def test_create_channel_tool(self, server: DebateForumServer, status_mock: AsyncMock):

@@ -2,7 +2,7 @@ import pytest
 
 from agent_system import agent_cli as cli
 from agent_system.cli_utils import common
-from agent_system.config.models import AgentSystemConfig, MCPConfig, PluginsConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig, PluginsConfig
 
 
 @pytest.mark.parametrize("no_color, mode, expected", [
@@ -29,7 +29,7 @@ def test_color_flags_decide_the_escape_sequences(monkeypatch, tmp_path, capsys, 
     (pdir / "plugin.py").write_text('PLUGIN_NAME = "color_probe"\nPLUGIN_FACTORY = lambda name, config, ssl_verify=True: None\n')
     cfg = AgentSystemConfig(plugins=PluginsConfig(
         plugin_dirs=[str(tmp_path / "plugins")],
-        servers={"color_probe": MCPConfig(type="color_probe", enabled=True)}))
+        servers={"color_probe": ToolServerConfig(type="color_probe", enabled=True)}))
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 
     monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "list", *flags])

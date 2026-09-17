@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, Mock
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from src.plugins.script_interpreter.server import ScriptInterpreterServer
 
 
@@ -22,8 +22,8 @@ class MockStatus:
 async def server():
     """Create a script interpreter server for testing."""
     system_config = Mock(spec=AgentSystemConfig)
-    mcp_config = MCPConfig(type="script_interpreter", enabled=True)
-    server = ScriptInterpreterServer("script_interpreter", system_config, mcp_config)
+    server_config = ToolServerConfig(type="script_interpreter", enabled=True)
+    server = ScriptInterpreterServer("script_interpreter", system_config, server_config)
     yield server
 
 

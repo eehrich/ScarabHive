@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from agent_system.hooks import HookType
-from agent_system.mcp.status import current_request_id
+from agent_system.tools.status import current_request_id
 from agent_system.servers.agent.components.hook_integration import HookIntegrationManager
 from agent_system.servers.agent.components.session_tracking import SessionTracker
 

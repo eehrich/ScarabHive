@@ -165,7 +165,11 @@ class AgentService:
             if result_event:
                 return {
                     "result": result_event.get("data", {}).get("result", ""),
-                    "steps": [e for e in events if e.get("type") in ("step", "thought", "tool_call")],
+                    # NOT tool_call: nothing emitted that name until the rename
+                    # of 17.09.2026, so this list has always been step+thought.
+                    # Adding them now would put every call's parameters and
+                    # result into the answer of a caller that never saw them.
+                    "steps": [e for e in events if e.get("type") in ("step", "thought")],
                     "request_id": request_id,
                     "session_id": session_id,
                     "status": "success"

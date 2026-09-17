@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
-from agent_system.mcp.status import StatusPhase, get_status_bus
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.tools.status import StatusPhase, get_status_bus
 from plugins.sub_agent_manager.server import SubAgentManagerServer
 
 
@@ -36,7 +36,7 @@ def system_config():
 
 @pytest.fixture
 def server(system_config):
-    return SubAgentManagerServer("test_manager", system_config, MCPConfig(
+    return SubAgentManagerServer("test_manager", system_config, ToolServerConfig(
         type="sub_agent_manager", enabled=True, allowed_agents=["basic_agent"]))
 
 

@@ -1,4 +1,4 @@
-"""Cognitive Stack MCP Server implementation.
+"""Cognitive Stack Tool Server implementation.
 
 This module provides a stack-based working memory for LLMs to manage nested
 contexts, interrupt-and-resume patterns, and hierarchical problem-solving.
@@ -11,12 +11,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.utils.id import short_id
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,8 @@ class CognitiveStack:
     max_depth: int = 20  # Prevent infinite recursion
 
 
-class CognitiveStackServer(SchemaBasedMCPServer):
-    """Cognitive Stack MCP server for working memory management.
+class CognitiveStackServer(SchemaBasedToolServer):
+    """Cognitive Stack tool server for working memory management.
 
     This server provides:
     - push_batch: Push one or more contexts onto stack
@@ -60,21 +60,21 @@ class CognitiveStackServer(SchemaBasedMCPServer):
     - Depth limit protection
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """
         Initialize Cognitive Stack server.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         # Configuration
-        self.max_depth = int(getattr(mcp_config, 'max_depth', 20))
-        self.max_frames_in_prompt = int(getattr(mcp_config, 'max_frames_in_prompt', 3))
-        self.session_ttl_seconds = int(getattr(mcp_config, 'session_ttl_seconds', 3600))
+        self.max_depth = int(getattr(server_config, 'max_depth', 20))
+        self.max_frames_in_prompt = int(getattr(server_config, 'max_frames_in_prompt', 3))
+        self.session_ttl_seconds = int(getattr(server_config, 'session_ttl_seconds', 3600))
 
         # Session storage (in-memory) with TTL cleanup
         self._stacks: dict[str, CognitiveStack] = {}

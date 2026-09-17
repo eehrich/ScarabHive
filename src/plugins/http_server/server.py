@@ -9,11 +9,11 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 import uvicorn
 
-from agent_system.mcp.base import MCPServer
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.base import ToolServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -32,25 +32,25 @@ class CallRequest(BaseModel):
     params: dict[str, Any] = {}
 
 
-class HTTPServer(SchemaBasedMCPServer):
-    """HTTP Server MCP adapter that wraps other MCP servers with FastAPI REST endpoints."""
+class HTTPServer(SchemaBasedToolServer):
+    """HTTP Server MCP adapter that wraps other tool servers with FastAPI REST endpoints."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
-        super().__init__(name, system_config, mcp_config)
-        # Extract config from MCPConfig object using getattr
-        self.host = getattr(mcp_config, 'host', None) or os.getenv("HOST", "127.0.0.1")
-        self.port = int(getattr(mcp_config, 'port', None) or os.getenv("PORT", "9000"))
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
+        super().__init__(name, system_config, server_config)
+        # Extract config from ToolServerConfig object using getattr
+        self.host = getattr(server_config, 'host', None) or os.getenv("HOST", "127.0.0.1")
+        self.port = int(getattr(server_config, 'port', None) or os.getenv("PORT", "9000"))
         # Optional API key guarding the HTTP /call endpoint. When unset, /call is
         # only allowed to bind to a loopback host (enforced in serve()).
         self.auth_key = (
-            getattr(mcp_config, 'auth_key', None)
+            getattr(server_config, 'auth_key', None)
             or os.getenv("HTTP_SERVER_AUTH_KEY")
             or None
         )
         self.wrapped_server = None
 
-    def wrap_server(self, server: MCPServer) -> None:
-        """Wrap an MCP server to expose it via HTTP."""
+    def wrap_server(self, server: ToolServer) -> None:
+        """Wrap a tool server to expose it via HTTP."""
         self.wrapped_server = server
 
     async def ops(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -91,7 +91,7 @@ class HTTPServer(SchemaBasedMCPServer):
         if not self.wrapped_server:
             raise ValueError("No server wrapped - use wrap_server() first")
 
-        app = FastAPI(title=f"MCP Server: {self.wrapped_server.name}")
+        app = FastAPI(title=f"Tool server: {self.wrapped_server.name}")
 
         auth_key = self.auth_key
 
@@ -149,7 +149,7 @@ class HTTPServer(SchemaBasedMCPServer):
                 f"http_server refuses to bind non-loopback host '{self.host}' "
                 "without authentication: the /call endpoint would let any network "
                 "client invoke every wrapped tool. Set HTTP_SERVER_AUTH_KEY "
-                "(or mcp_config.auth_key), or bind 127.0.0.1."
+                "(or server_config.auth_key), or bind 127.0.0.1."
             )
 
     async def serve(self) -> None:

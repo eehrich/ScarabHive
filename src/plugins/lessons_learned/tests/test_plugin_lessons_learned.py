@@ -54,10 +54,10 @@ def mock_system_config() -> MagicMock:
 
 
 @pytest.fixture
-def mock_mcp_config(temp_storage: Path) -> MagicMock:
-    """Mock MCPServerConfig with lessons_learned settings."""
+def mock_server_config(temp_storage: Path) -> MagicMock:
+    """Mock ToolServerConfig with lessons_learned settings."""
     config = MagicMock()
-    # Set attributes directly (like production MCPConfig with extra="allow")
+    # Set attributes directly (like production ToolServerConfig with extra="allow")
     config.database_path = str(temp_storage / "lessons.db")
     config.max_lessons_per_agent = 200
     config.dedup_similarity_threshold = 0.82
@@ -75,12 +75,12 @@ def mock_mcp_config(temp_storage: Path) -> MagicMock:
 
 
 @pytest.fixture
-def server(mock_system_config: MagicMock, mock_mcp_config: MagicMock, temp_storage: Path) -> LessonsLearnedServer:
+def server(mock_system_config: MagicMock, mock_server_config: MagicMock, temp_storage: Path) -> LessonsLearnedServer:
     """LessonsLearnedServer instance with clean state."""
     srv = LessonsLearnedServer(
         name="lessons_learned",
         system_config=mock_system_config,
-        mcp_config=mock_mcp_config,
+        server_config=mock_server_config,
     )
     return srv
 

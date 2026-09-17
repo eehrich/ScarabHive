@@ -5,7 +5,7 @@ Tests for infinite loop and recursion protection in the script interpreter plugi
 import pytest
 from unittest.mock import Mock, AsyncMock
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from src.plugins.script_interpreter.server import ScriptInterpreterServer
 
 
@@ -24,8 +24,8 @@ def extract_error_message(result):
 async def server():
     """Create a ScriptInterpreterServer instance for testing."""
     system_config = Mock(spec=AgentSystemConfig)
-    mcp_config = MCPConfig(type="script_interpreter", enabled=True)
-    server = ScriptInterpreterServer("script_interpreter", system_config, mcp_config)
+    server_config = ToolServerConfig(type="script_interpreter", enabled=True)
+    server = ScriptInterpreterServer("script_interpreter", system_config, server_config)
     return server
 
 

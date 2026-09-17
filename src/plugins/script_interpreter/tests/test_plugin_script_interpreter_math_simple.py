@@ -3,7 +3,7 @@ Simple tests for math functions in the script interpreter plugin.
 """
 
 import pytest
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from src.plugins.script_interpreter.server import ScriptInterpreterServer
 
 
@@ -27,8 +27,8 @@ def server():
     """Create script interpreter server for testing."""
     from unittest.mock import Mock
     system_config = Mock(spec=AgentSystemConfig)
-    mcp_config = MCPConfig(type="script_interpreter", enabled=True)
-    return ScriptInterpreterServer("script_interpreter", system_config, mcp_config)
+    server_config = ToolServerConfig(type="script_interpreter", enabled=True)
+    return ScriptInterpreterServer("script_interpreter", system_config, server_config)
 
 
 @pytest.fixture

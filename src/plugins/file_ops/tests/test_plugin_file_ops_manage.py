@@ -6,7 +6,7 @@ import gc
 import pytest
 from unittest.mock import Mock
 
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 from plugins.file_ops.server import FileOpsServer
 
 
@@ -24,13 +24,13 @@ async def file_ops_server(tmp_allowed_dir):
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(tmp_allowed_dir.parent)
 
-    mcp_config = MCPConfig(type="file_ops", enabled=True)
-    mcp_config.allowed_directories = [str(tmp_allowed_dir)]
-    mcp_config.search = {
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
+    server_config.allowed_directories = [str(tmp_allowed_dir)]
+    server_config.search = {
         "enable_indexing": False  # Disable for faster tests
     }
 
-    server = FileOpsServer("file_ops", system_config, mcp_config)
+    server = FileOpsServer("file_ops", system_config, server_config)
     yield server
 
     # Cleanup

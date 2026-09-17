@@ -1,7 +1,7 @@
 """
-Agent MCP Server - Base agent that can be used as an MCP Server by other agents.
+Agent Tool Server - Base agent that can be used as a Tool server by other agents.
 
-This is the core Agent class that extends MCPServer, enabling direct agent-to-agent 
+This is the core Agent class that extends ToolServer, enabling direct agent-to-agent 
 communication without wrapper classes.
 
 Two agent base classes are provided:

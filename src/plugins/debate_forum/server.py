@@ -1,6 +1,6 @@
 """Debate Forum Plugin - MCP Tool Server.
 
-Provides MCP tools for creating/managing debate channels and posting messages.
+Provides tools for creating/managing debate channels and posting messages.
 Used by agent pipelines (e.g., V5a story design) to run structured LLM debates.
 """
 from __future__ import annotations
@@ -9,10 +9,10 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from agent_system.core.session_presence import presence_for
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPServerConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 from .database import DebateForumDB
 
@@ -21,22 +21,22 @@ logger = logging.getLogger(__name__)
 PRESENCE_OFF = "Session presence is off (session_presence.enabled in config.yaml)"
 
 
-class DebateForumServer(SchemaBasedMCPServer):
-    """MCP server providing debate forum tools.
+class DebateForumServer(SchemaBasedToolServer):
+    """tool server providing debate forum tools.
 
     Tools follow the schema.yaml definitions and are auto-routed
-    by the SchemaBasedMCPServer dispatcher.
+    by the SchemaBasedToolServer dispatcher.
     """
 
     def __init__(
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPServerConfig",
+        server_config: "ToolServerConfig",
         db: DebateForumDB,
         min_message_length: int = 50,
     ):
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         self.db = db
         self.min_message_length = min_message_length
 

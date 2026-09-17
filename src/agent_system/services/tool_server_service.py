@@ -10,15 +10,15 @@ import asyncio
 import logging
 from typing import Any, Optional
 
-from agent_system.mcp.integration import MCPIntegration
+from agent_system.tools.integration import ToolServerIntegration
 from agent_system.config.models import AgentSystemConfig
 
 
 logger = logging.getLogger(__name__)
 
 
-class MCPService:
-    """Centralized MCP server management service.
+class ToolServerService:
+    """Centralized tool server management service.
 
     This service eliminates duplicated MCP management code between
     CLI and API interfaces, providing a clean abstraction for:
@@ -27,14 +27,14 @@ class MCPService:
     - Server testing and health checks
     """
 
-    def __init__(self, mcp_integration: MCPIntegration, config: AgentSystemConfig):
-        """Initialize the MCPService.
+    def __init__(self, tool_integration: ToolServerIntegration, config: AgentSystemConfig):
+        """Initialize the ToolServerService.
 
         Args:
-            mcp_integration: MCPIntegration instance for server management.
-            config: AgentSystemConfig with MCP server configurations.
+            tool_integration: ToolServerIntegration instance for server management.
+            config: AgentSystemConfig with tool server configurations.
         """
-        self._mcp = mcp_integration
+        self._mcp = tool_integration
         self._config = config
 
     async def list_servers(
@@ -42,7 +42,7 @@ class MCPService:
         enabled_only: bool = False,
         include_tools: bool = False
     ) -> list[dict[str, Any]]:
-        """List all configured MCP servers.
+        """List all configured tool servers.
 
         Args:
             enabled_only: If True, return only enabled servers.
@@ -119,7 +119,7 @@ class MCPService:
         server_name: str,
         include_tools: bool = True
     ) -> Optional[dict[str, Any]]:
-        """Get detailed status for a specific MCP server.
+        """Get detailed status for a specific tool server.
 
         Args:
             server_name: Name of the server.
@@ -189,7 +189,7 @@ class MCPService:
         return status
 
     async def test_server(self, server_name: str) -> dict[str, Any]:
-        """Test connectivity and basic functionality of an MCP server.
+        """Test connectivity and basic functionality of a tool server.
 
         Args:
             server_name: Name of the server to test.
@@ -255,7 +255,7 @@ class MCPService:
         server_name: Optional[str] = None,
         include_blocked: bool = True
     ) -> dict[str, list[dict[str, Any]]]:
-        """List all available tools across MCP servers.
+        """List all available tools across tool servers.
 
         Args:
             server_name: If specified, list tools only from this server.
@@ -336,7 +336,7 @@ class MCPService:
 
         Args:
             server_id: Plugin server ID
-            registry: MCPRegistry instance
+            registry: ToolServerRegistry instance
 
         Returns:
             True if server exists in registry, False otherwise
@@ -395,16 +395,16 @@ class MCPService:
         registry=None,
         check_connectivity: bool = True
     ) -> dict[str, Any]:
-        """Get comprehensive MCP server status including plugins and external servers.
+        """Get comprehensive tool server status including plugins and external servers.
 
         This method aggregates status from multiple sources:
         - Plugin servers from registry
-        - External servers from MCP integration
+        - External servers from tool integration
         - Tool lists with filtering information
         - Connection status with optional real-time checks
 
         Args:
-            registry: Optional MCPRegistry for plugin server discovery
+            registry: Optional ToolServerRegistry for plugin server discovery
             check_connectivity: If True, perform real-time connectivity checks
 
         Returns:
@@ -427,21 +427,21 @@ class MCPService:
                     # Skip if already processed or private
                     if server_id in processed_server_ids:
                         continue
-                    if getattr(server_obj, '_mcp_public', True) is False:
+                    if getattr(server_obj, '_tool_public', True) is False:
                         continue
 
                     # Get tools.
                     #
-                    # The registry holds the RAW plugin server. Only MCPServer
+                    # The registry holds the RAW plugin server. Only ToolServer
                     # subclasses carry list_tools(); a hybrid plugin (Web+MCP)
                     # is a plain class and exposes get_tools() -- or nothing at
                     # all, with its tools declared in a schema file next to it.
-                    # PluginMCPAdapter is the piece that knows all three shapes,
+                    # PluginToolAdapter is the piece that knows all three shapes,
                     # so ask it whenever the raw object cannot answer. Without
                     # this fallback 18 public plugins report tool_count 0
                     # (ssh_control, writer_player, log_viewer, ... = 22 tools).
                     #
-                    # The _mcp_public check above deliberately stays on the RAW
+                    # The _tool_public check above deliberately stays on the RAW
                     # object: the adapter does not carry that flag, and reading
                     # it there would leak the 138 private agent servers into the
                     # admin UI again.
@@ -455,14 +455,14 @@ class MCPService:
                             tool_source = adapter
                     if hasattr(tool_source, 'list_tools'):
                         try:
-                            mcp_tools = await tool_source.list_tools()
-                            if mcp_tools:
-                                for mcp_tool in mcp_tools:
-                                    tools.append(mcp_tool.name)
+                            tool_defs = await tool_source.list_tools()
+                            if tool_defs:
+                                for tool_def in tool_defs:
+                                    tools.append(tool_def.name)
                                     detailed_tools.append({
-                                        'name': mcp_tool.name,
-                                        'description': mcp_tool.description,
-                                        'parameters': mcp_tool.input_schema
+                                        'name': tool_def.name,
+                                        'description': tool_def.description,
+                                        'parameters': tool_def.input_schema
                                     })
                         except Exception as e:
                             logger.debug(f"list_tools() failed for {server_id}: {e}")
@@ -490,7 +490,7 @@ class MCPService:
                 except Exception as e:
                     logger.debug(f"Failed to get info for registry server {server_id}: {e}")
 
-        # Add external servers from MCP integration
+        # Add external servers from tool integration
         if self._mcp and self._mcp.initialized:
             try:
                 # Get connected servers from client manager

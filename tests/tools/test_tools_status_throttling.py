@@ -3,7 +3,7 @@ import asyncio
 import time
 import pytest
 from unittest.mock import patch
-from agent_system.mcp.status import StatusBus, StatusEvent, StatusPhase
+from agent_system.tools.status import StatusBus, StatusEvent, StatusPhase
 
 
 @pytest.mark.asyncio
@@ -22,7 +22,7 @@ async def test_queue_full_warning_throttled_by_count():
         if "queue full" in msg or "dropped" in msg:
             warning_count += 1
     
-    with patch('agent_system.mcp.status.logger') as mock_logger:
+    with patch('agent_system.tools.status.logger') as mock_logger:
         mock_logger.warning.side_effect = count_warnings
         
         # Publish 100 events (will drop many)
@@ -57,7 +57,7 @@ async def test_queue_full_warning_throttled_by_time():
         if "queue full" in msg or "dropped" in msg:
             warning_times.append(time.time())
     
-    with patch('agent_system.mcp.status.logger') as mock_logger:
+    with patch('agent_system.tools.status.logger') as mock_logger:
         mock_logger.warning.side_effect = track_warning_time
         
         # Publish events slowly to trigger time-based throttling
@@ -97,7 +97,7 @@ async def test_warning_shows_aggregated_drop_count():
             formatted = msg % args if args else msg
             warning_messages.append(formatted)
     
-    with patch('agent_system.mcp.status.logger') as mock_logger:
+    with patch('agent_system.tools.status.logger') as mock_logger:
         mock_logger.warning.side_effect = capture_warnings
         
         # Publish enough events to trigger multiple throttled warnings
@@ -137,7 +137,7 @@ async def test_first_drop_triggers_warning():
         if "dropped" in msg:
             warning_triggered = True
     
-    with patch('agent_system.mcp.status.logger') as mock_logger:
+    with patch('agent_system.tools.status.logger') as mock_logger:
         mock_logger.warning.side_effect = check_first_warning
         
         # Publish 3 events (2nd and 3rd will be dropped)
@@ -171,7 +171,7 @@ async def test_drop_counter_persists_across_events():
             # Format: "... dropped %d events so far"
             drop_counts.append(args[0] if args else 0)
     
-    with patch('agent_system.mcp.status.logger') as mock_logger:
+    with patch('agent_system.tools.status.logger') as mock_logger:
         mock_logger.warning.side_effect = extract_drop_count
         
         # Publish in batches to see counter increase

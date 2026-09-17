@@ -30,7 +30,7 @@ def test_entrypoint_plugin_metadata(monkeypatch, tmp_path):
 
     ep = FakeEP("fakepkg", factory)
     # mimic metadata.entry_points() objects that include a .group attribute
-    ep.group = "agent_system.mcp_plugins"
+    ep.group = "agent_system.tool_plugins"
 
     # Monkeypatch importlib.metadata.entry_points to return our fake entrypoint
     monkeypatch.setattr("importlib.metadata.entry_points", lambda: [ep])

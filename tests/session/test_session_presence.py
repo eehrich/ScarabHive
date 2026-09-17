@@ -25,11 +25,11 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
     SessionPresenceConfig,
 )
 from agent_system.core import session_presence as sp
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.agent.server import Agent
 from agent_system.services.session_manager import SessionManager
 
@@ -394,8 +394,8 @@ def _agent(tmp_path, monkeypatch, during_call, session_service=None, tool_call_f
     system_config = AgentSystemConfig(
         llm_system=llm_system, session_presence=SessionPresenceConfig(enabled=True))
     agent = Agent("test_agent", system_config,
-                  MCPConfig(type="agent", enabled=True, agent_config=AgentConfig(max_steps=3)),
-                  MCPRegistry(), session_service=session_service)
+                  ToolServerConfig(type="agent", enabled=True, agent_config=AgentConfig(max_steps=3)),
+                  ToolServerRegistry(), session_service=session_service)
     agent._session_tracker.set_session_metadata(
         "s1", {"user_id": USER, "agent_name": "test_agent", "llm_profile": "normal"})
 

@@ -22,8 +22,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
-from agent_system.mcp.status import StatusPhase, get_status_bus
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.tools.status import StatusPhase, get_status_bus
 from plugins.blender.plugin import PLUGIN_FACTORY
 
 
@@ -139,10 +139,10 @@ def addon(tmp_path):
 
 @pytest.fixture
 def server(addon, tmp_path):
-    config = MCPConfig(type="blender", enabled=True, port=addon.port,
+    config = ToolServerConfig(type="blender", enabled=True, port=addon.port,
                        output_directory=str(tmp_path), timeout=5, long_timeout=5)
     return PLUGIN_FACTORY(name="blender", system_config=AgentSystemConfig(),
-                          mcp_config=config)
+                          server_config=config)
 
 
 async def run_tool(server, action, params):
@@ -385,10 +385,10 @@ async def test_unreachable_blender_says_what_to_click(tmp_path):
     port = free.getsockname()[1]
     free.close()
 
-    config = MCPConfig(type="blender", enabled=True, port=port,
+    config = ToolServerConfig(type="blender", enabled=True, port=port,
                        output_directory=str(tmp_path), timeout=2)
     server = PLUGIN_FACTORY(name="blender", system_config=AgentSystemConfig(),
-                            mcp_config=config)
+                            server_config=config)
     result, line = await run_tool(server, "blender_status", {})
     assert result["status"] == "error"
     assert result["error_type"] == "BlenderNotReachable"

@@ -2,7 +2,7 @@ import pytest
 from agent_system.utils.id import short_id
 
 from agent_system.servers.agent.server import Agent
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.config.settings import load_settings as load_config
 
 
@@ -19,7 +19,7 @@ class DummyLLM:
 
 def _build_agent() -> Agent:
     """Build a minimal Agent instance like the original append test does."""
-    from agent_system.config.models import MCPConfig
+    from agent_system.config.models import ToolServerConfig
 
     system_config = load_config("config/config.yaml")
     agent_config = system_config.agent_config if hasattr(system_config, 'agent_config') and system_config.agent_config else None
@@ -27,9 +27,9 @@ def _build_agent() -> Agent:
         from agent_system.config.models import AgentConfig
         agent_config = AgentConfig()
 
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
-    return Agent("test_agent", system_config, mcp_config, registry)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    registry = ToolServerRegistry()
+    return Agent("test_agent", system_config, server_config, registry)
 
 
 class NonStreamingDummyLLM(DummyLLM):
@@ -70,7 +70,7 @@ class MidCallInjectingLLM:
 
 @pytest.mark.asyncio
 async def test_append_message_consumed(tmp_path):
-    from agent_system.config.models import MCPConfig
+    from agent_system.config.models import ToolServerConfig
     
     # Load default config - returns AgentSystemConfig
     system_config = load_config("config/config.yaml")
@@ -83,10 +83,10 @@ async def test_append_message_consumed(tmp_path):
         from agent_system.config.models import AgentConfig
         agent_config = AgentConfig()
     
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    registry = ToolServerRegistry()
     
-    agent = Agent("test_agent", system_config, mcp_config, registry)
+    agent = Agent("test_agent", system_config, server_config, registry)
     # Inject dummy LLM
     agent.llm = DummyLLM()
 

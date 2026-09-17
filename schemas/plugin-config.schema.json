@@ -38,11 +38,11 @@
       "description": "Plugin capabilities as a list. Combine values to describe multi-capability plugins.",
       "items": {
         "type": "string",
-        "enum": ["mcp-server", "web", "hooks", "library", "llm-provider", "custom"]
+        "enum": ["tool-server", "tool-server", "web", "hooks", "library", "llm-provider", "custom"]
       },
       "minItems": 1,
       "uniqueItems": true,
-      "default": ["mcp-server"]
+      "default": ["tool-server"]
     },
     "provides": {
       "type": "array",
@@ -126,7 +126,7 @@
     },
     "tools": {
       "type": "array",
-      "description": "List of MCP tools provided by this plugin",
+      "description": "List of tools provided by this plugin",
       "items": {
         "type": "string"
       }

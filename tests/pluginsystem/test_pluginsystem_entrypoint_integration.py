@@ -44,7 +44,7 @@ async def test_plugins_integration_discover_entrypoint_and_filesystem(monkeypatc
 
         return X(name)
 
-    fake_ep = FakeEP('ep_example', 'agent_system.mcp_plugins', factory)
+    fake_ep = FakeEP('ep_example', 'agent_system.tool_plugins', factory)
     fake_dist = FakeDist([fake_ep])
 
     # monkeypatch metadata.distributions or entry_points depending on API
@@ -65,13 +65,13 @@ async def test_plugins_integration_discover_entrypoint_and_filesystem(monkeypatc
     fs_factory = plugins_map['example']
     ep_factory = plugins_map['ep_example']
 
-    from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
     system_config = AgentSystemConfig()
-    mcp_config_fs = MCPConfig(type="example", enabled=True, agent_config=AgentConfig())
-    mcp_config_ep = MCPConfig(type="ep_example", enabled=True, agent_config=AgentConfig())
+    server_config_fs = ToolServerConfig(type="example", enabled=True, agent_config=AgentConfig())
+    server_config_ep = ToolServerConfig(type="ep_example", enabled=True, agent_config=AgentConfig())
 
-    fs_server = fs_factory('example', system_config, mcp_config_fs)
-    ep_server = ep_factory('ep_example', system_config, mcp_config_ep)
+    fs_server = fs_factory('example', system_config, server_config_fs)
+    ep_server = ep_factory('ep_example', system_config, server_config_ep)
 
     # Call their call() methods (filesystem plugin is async)
     res1 = await fs_server.call("example_status", {})

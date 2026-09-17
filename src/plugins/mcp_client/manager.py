@@ -1,6 +1,6 @@
 """The pool of external MCP server connections.
 
-This is the part that used to live in ``MCPIntegration`` as ``client_manager``
+This is the part that used to live in ``ToolServerIntegration`` as ``client_manager``
 plus ``configured_external_servers``. It keeps the same observable behaviour --
 including the two details that are easy to get wrong:
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_system.config.settings import config_files, get_mcp_config_by_name, load_settings
+from agent_system.config.settings import config_files, get_tool_server_config, load_settings
 from plugins.agent_editor.store import CREATED_HEADER, Store, StoreError, splice, version_of
 
 REPO = Path(__file__).resolve().parents[4]
@@ -208,7 +208,7 @@ def test_the_fixture_needs_the_merge_and_loads(store, tmp_path):
     snap = store.snapshot()
     assert not snap.errors and not snap.resolve_errors
     assert {"writer", "critic", "helper", "twin", "demo_agent", "team_sam"} <= set(snap.config.plugins.servers)
-    assert get_mcp_config_by_name("critic", snap.config).agent_config.tools.allowed == ["files/*", "notes", "search/*"]
+    assert get_tool_server_config("critic", snap.config).agent_config.tools.allowed == ["files/*", "notes", "search/*"]
     # the file is not reproduced by a plain round-trip, so a save has to splice
     from plugins.agent_editor.store import dump, load
     src = team(tmp_path).read_bytes().decode().replace("\r\n", "\n")
@@ -380,7 +380,7 @@ def test_create_writes_an_included_file(store, tmp_path):
     assert path.read_text(encoding="utf-8").startswith(f"# {CREATED_HEADER}\nplugins:\n  servers:\n    scribe:\n")
     assert result["version"] == version_of(path.read_bytes())
     assert path.resolve() in [p.resolve() for p in config_files(str(store.config_path))]
-    resolved = get_mcp_config_by_name("scribe", load_settings(str(store.config_path)))
+    resolved = get_tool_server_config("scribe", load_settings(str(store.config_path)))
     assert resolved.agent_config.max_steps == 30 and resolved.description == "A second writer"
 
 
@@ -407,7 +407,7 @@ def test_create_from_a_source_rebases_its_template(store, tmp_path):
     entry = store.own("demo_agent")
     result = store.create("demo_copy", entry, "demo_agent", dry_run=False)
     written = load_settings(str(store.config_path))
-    template = get_mcp_config_by_name("demo_copy", written).agent_config.system_template
+    template = get_tool_server_config("demo_copy", written).agent_config.system_template
     assert Path(template) == (tmp_path / "src/plugins/demo/agents/prompts/demo.md").resolve()
     assert "system_template: ../../src/plugins/demo/agents/prompts/demo.md" in result["diff"]
     assert store.own("demo_agent")["agent_config"]["system_template"] == "./prompts/demo.md"
@@ -1067,7 +1067,7 @@ def test_the_editors_own_loads_do_not_repeat_the_loader_report(tree, tmp_path, c
     store.save("writer", {**store.own("writer"), "enabled": False}, store.version("writer"), dry_run=False)
     assert "nope" not in reported() and "loop_a" not in reported()
     config = load_settings(str(tree))  # the app's own load and resolving still report
-    get_mcp_config_by_name("loop_a", config)
+    get_tool_server_config("loop_a", config)
     assert "nope" in reported() and "loop_a" in reported()
 
 

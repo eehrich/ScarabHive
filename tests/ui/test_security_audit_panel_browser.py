@@ -3,7 +3,7 @@
 The app: the UI and admin routers behind configure_security_middleware with the route rules of config/config.yaml
 (plus open rules for the test's own routes), a users database and logs/security.log under tmp_path, a test signing
 secret. Accounts: ``root`` (admin) and ``bob`` (user). What the panel shows is what the page's own requests left in the
-audit: ``GET|POST|DELETE /mcp/probe/<anything>?status=<code>`` answers that status, open to anyone, so the page seeds
+audit: ``GET|POST|DELETE /tools/probe/<anything>?status=<code>`` answers that status, open to anyone, so the page seeds
 the log by asking it. GET /__stub/token?user= signs a token for that account, /__stub/forged one for root with another
 secret; GET /__stub/asked counts the audit loads the panel asked for and names the query of the last. With the cookie
 ``sa=slow`` a load is answered after 1.5 s, ``slower`` after 3 s, ``fails`` fails it, ``slowfail`` fails it after 1.5 s.
@@ -38,7 +38,7 @@ pytestmark = [pytest.mark.skipif(BROWSER is None, reason="no Chromium-based brow
 UI_TESTS = Path(__file__).resolve().parent
 SECRET = "test-only-secret-not-the-config-one-0123456789"
 DATA = "/admin/security/audit"
-OPEN = ["* /tests/*", "* /__stub/*", "POST /__results", "* /mcp/probe/*"]
+OPEN = ["* /tests/*", "* /__stub/*", "POST /__results", "* /tools/probe/*"]
 
 
 def held(payload: bytes, status: int, seconds: float) -> StreamingResponse:
@@ -67,7 +67,7 @@ def panel_app(root: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     app.state.config = SimpleNamespace(auth=auth)
     asked = {"loads": 0, "last": ""}
 
-    @app.api_route("/mcp/probe/{rest:path}", methods=["GET", "POST", "DELETE"])
+    @app.api_route("/tools/probe/{rest:path}", methods=["GET", "POST", "DELETE"])
     async def probe(rest: str, status: int = 200):
         return Response(status_code=status, headers={"Cache-Control": "no-store"})
 

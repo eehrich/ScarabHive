@@ -30,8 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
-from agent_system.mcp.core import MCPTool
-from agent_system.mcp.status import StatusPhase, publish_status
+from agent_system.tools.base import ToolDef
+from agent_system.tools.status import StatusPhase, publish_status
 
 logger = logging.getLogger(__name__)
 
@@ -365,7 +365,7 @@ class ServerConnection:
         return factory
 
     def _auth_headers(self) -> Dict[str, str]:
-        from agent_system.mcp.security import build_auth_headers
+        from .auth import build_auth_headers
 
         headers = dict(build_auth_headers(getattr(self.config, "auth", None)))
         if getattr(self.config, "initialization_options", None):
@@ -396,12 +396,12 @@ class ServerConnection:
 
     # ------------------------------------------------------------------- calls
 
-    async def list_tools(self) -> List[MCPTool]:
-        """Fetch the server's tools as this project's ``MCPTool`` objects."""
-        async def run(session: Any) -> List[MCPTool]:
+    async def list_tools(self) -> List[ToolDef]:
+        """Fetch the server's tools as this project's ``ToolDef`` objects."""
+        async def run(session: Any) -> List[ToolDef]:
             result = await session.list_tools()
             return [
-                MCPTool(
+                ToolDef(
                     name=t.name,
                     description=t.description or "",
                     input_schema=t.inputSchema or {},

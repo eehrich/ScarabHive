@@ -22,7 +22,7 @@ def plugin(tmp_path):
     plugin = ContextUsageTrackerPlugin(
         name="context_usage_tracker",
         system_config={},
-        mcp_config={"storage_path": str(tmp_path / "plugin_usage.json")}
+        server_config={"storage_path": str(tmp_path / "plugin_usage.json")}
     )
     plugin.tracker = tracker
     plugin.hooks_plugin.tracker = tracker

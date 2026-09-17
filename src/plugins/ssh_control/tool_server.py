@@ -1,6 +1,6 @@
-"""SSH Control MCP Server Component
+"""SSH Control Tool Server Component
 
-Provides MCP tools for SSH-based remote machine control.
+Provides tools for SSH-based remote machine control.
 """
 
 from __future__ import annotations
@@ -10,49 +10,49 @@ import logging
 from collections import deque
 from typing import Any, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from . import machine_store
 from .connection_manager import SSHConnectionManager
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class SSHControlMCPServer(SchemaBasedMCPServer):
-    """MCP server component for SSH control plugin."""
+class SSHControlToolServer(SchemaBasedToolServer):
+    """tool server component for SSH control plugin."""
 
     def __init__(
         self,
         name: str,
         system_config: AgentSystemConfig,
-        mcp_config: MCPConfig,
+        server_config: ToolServerConfig,
         command_history: deque | None = None
     ):
-        """Initialize SSH control MCP server.
+        """Initialize SSH control tool server.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
             command_history: Shared command history deque (for web UI)
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         # Shared command history for web UI
         self.command_history = command_history if command_history is not None else deque(maxlen=1000)
 
         # Initialize connection manager with shared command history
-        if isinstance(mcp_config, dict):
-            config_dict = mcp_config
-        elif hasattr(mcp_config, 'model_dump'):
+        if isinstance(server_config, dict):
+            config_dict = server_config
+        elif hasattr(server_config, 'model_dump'):
             # Pydantic v2
-            config_dict = mcp_config.model_dump()
+            config_dict = server_config.model_dump()
         else:
             # Fallback
-            config_dict = dict(mcp_config)
+            config_dict = dict(server_config)
 
         # Machines added at runtime are read back HERE, which is the whole
         # point: before this, `persistent: true` wrote a file that no loader
@@ -79,11 +79,11 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             )
 
         logger.info(
-            f"SSH Control MCP Server '{name}' initialized with "
+            f"SSH Control Tool Server '{name}' initialized with "
             f"{len(self.connection_manager.machines)} machines"
         )
 
-    # MCP Tool Handlers - auto-dispatched by SchemaBasedMCPServer
+    # MCP Tool Handlers - auto-dispatched by SchemaBasedToolServer
 
     async def list_machines(self, params: dict[str, Any]) -> dict[str, Any]:
         """List all configured SSH machines.
@@ -500,7 +500,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         # Check connections in parallel
         tasks = []
         for machine_name in machines:
-            # Use lazy=False for explicit connection checks via MCP tool
+            # Use lazy=False for explicit connection checks via tool
             # (LLM explicitly requested status check, so actually test connection)
             task = self.connection_manager.check_connection(machine_name, lazy=False)
             tasks.append(task)
@@ -852,5 +852,5 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
 
     async def close(self) -> None:
         """Clean up resources."""
-        logger.info(f"Closing SSH Control MCP Server '{self.name}'")
+        logger.info(f"Closing SSH Control Tool Server '{self.name}'")
         await self.connection_manager.close_all()

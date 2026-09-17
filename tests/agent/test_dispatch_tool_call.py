@@ -48,13 +48,13 @@ MATCH_MATRIX = [
 class TestMatcherParity:
     @pytest.fixture
     def schema_builder(self):
-        class MockMCPIntegrationManager:
+        class MockToolIntegrationManager:
             async def build_tool_schemas(self, tools):
                 return [], {}
 
         return ToolSchemaBuilder(
             agent_name="test_agent",
-            mcp_integration_manager=MockMCPIntegrationManager(),
+            tool_integration_manager=MockToolIntegrationManager(),
             server_getter_func=lambda name: None,
         )
 

@@ -5,7 +5,7 @@ of those swaps fails silently when it goes wrong: a `!` that removes
 nothing, a `+` that lands in a list that was replaced, a hook that still
 injects the coder's Python conventions into a Godot task, a sub-agent name
 that no registry knows. So each swap is asserted on the RESOLVED config --
-``get_mcp_config_by_name`` -- which is where inheritance materialises;
+``get_tool_server_config`` -- which is where inheritance materialises;
 the raw ``config.plugins.servers[...]`` still holds the unmerged child.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_system.config.settings import get_mcp_config_by_name, load_settings
+from agent_system.config.settings import get_tool_server_config, load_settings
 from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 
 PLUGIN = Path(__file__).resolve().parent.parent
@@ -33,7 +33,7 @@ def config():
 
 
 def resolved(config, name):
-    cfg = get_mcp_config_by_name(name, config)
+    cfg = get_tool_server_config(name, config)
     assert cfg is not None, f"{name} is not configured"
     return cfg
 
@@ -155,7 +155,7 @@ def test_the_asset_agents_cannot_touch_the_projects(config):
 
 def _rendered_godot_tools(config):
     from plugins.godot.plugin import PLUGIN_FACTORY
-    server = PLUGIN_FACTORY(name="godot", system_config=config, mcp_config=config.plugins.servers["godot"])
+    server = PLUGIN_FACTORY(name="godot", system_config=config, server_config=config.plugins.servers["godot"])
     return {t["function"]["name"] for t in server.get_tools()}
 
 

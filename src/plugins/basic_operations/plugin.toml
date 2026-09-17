@@ -8,6 +8,6 @@ version = "1.0.0"
 description = "Basic utility operations including wait and ping"
 author = "Enrico Ehrich"
 entrypoint = "server:BasicOperationsServer"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "utilities"
 requires = { agent_system = ">=0.6.0" }

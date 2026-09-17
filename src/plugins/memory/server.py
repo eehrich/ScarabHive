@@ -1,5 +1,5 @@
 """
-Memory Plugin - MCP Server Implementation
+Memory Plugin - Tool Server Implementation
 
 Provides persistent memory storage and retrieval for agent conversations.
 Uses ChromaDB for semantic vector search and JSON for metadata.
@@ -22,13 +22,13 @@ import re
 
 from pydantic import BaseModel, Field, field_serializer
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
 from agent_system.utils.vector_store import VectorStore
 from agent_system.utils.suggest import suggest_path
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -113,12 +113,12 @@ class ChromaDBError(MemoryError):
 # Memory Management Server
 # =============================================================================
 
-class MemoryServer(SchemaBasedMCPServer, PluginHook):
+class MemoryServer(SchemaBasedToolServer, PluginHook):
     """
     Memory Management Server with ChromaDB vector search.
 
     Implements:
-    - MCP tool: 'memory' with operations (store/recall/search/list/delete)
+    - tool: 'memory' with operations (store/recall/search/list/delete)
     - Hook: inject_memory_context (pre_llm_call)
     - Storage: ChromaDB (vectors) + JSON (metadata)
     """
@@ -127,12 +127,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPConfig"
+        server_config: "ToolServerConfig"
     ):
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         # Storage paths (use config if available, otherwise default)
-        config_storage = getattr(mcp_config, 'storage_path', None)
+        config_storage = getattr(server_config, 'storage_path', None)
         if config_storage:
             self.storage_path = Path(config_storage)
         else:
@@ -160,14 +160,14 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         # Behavioral config from schema.yaml (defaults mirror schema). Previously
         # these were dead config — the inject hook hardcoded values and the
         # per-session cap was never enforced (unbounded growth).
-        self.max_memories = int(getattr(mcp_config, 'max_memories', None) or 10)
+        self.max_memories = int(getattr(server_config, 'max_memories', None) or 10)
         self.max_memories_per_session = int(
-            getattr(mcp_config, 'max_memories_per_session', None) or 5000
+            getattr(server_config, 'max_memories_per_session', None) or 5000
         )
-        self.search_n_results = int(getattr(mcp_config, 'search_n_results', None) or 5)
-        _semantic = getattr(mcp_config, 'use_semantic_injection', None)
+        self.search_n_results = int(getattr(server_config, 'search_n_results', None) or 5)
+        _semantic = getattr(server_config, 'use_semantic_injection', None)
         self.use_semantic_injection = True if _semantic is None else bool(_semantic)
-        _auto_kw = getattr(mcp_config, 'auto_extract_keywords', None)
+        _auto_kw = getattr(server_config, 'auto_extract_keywords', None)
         self.auto_extract_keywords = True if _auto_kw is None else bool(_auto_kw)
 
         logger.info(
@@ -1043,7 +1043,7 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             if not collection.memories or len(collection.memories) == 0:
                 return HookResult(success=True, modified=False)
 
-            # Config-driven (wired from mcp_config in __init__)
+            # Config-driven (wired from server_config in __init__)
             max_memories = self.max_memories
             use_semantic = self.use_semantic_injection
 

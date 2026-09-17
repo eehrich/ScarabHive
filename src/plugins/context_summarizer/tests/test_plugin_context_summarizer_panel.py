@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.hooks import HookContext, HookType
 from agent_system.llm.models import ChatMessage
 from agent_system.plugins.web_adapter import PluginWebRegistry
@@ -52,7 +52,7 @@ async def run(hooks, session: str, request: str, count: int) -> None:
 def panel_app():
     from plugins.context_summarizer.plugin import PLUGIN_FACTORY
 
-    plugin = PLUGIN_FACTORY("context_summarizer", AgentSystemConfig(), MCPConfig())
+    plugin = PLUGIN_FACTORY("context_summarizer", AgentSystemConfig(), ToolServerConfig())
     hooks = plugin.server._hooks_impl
     reply = {"text": "The user asked for a plan."}
     hooks._summarizer_llm = AsyncMock(model_name="stub", chat=AsyncMock(side_effect=lambda *a, **k: reply["text"]))

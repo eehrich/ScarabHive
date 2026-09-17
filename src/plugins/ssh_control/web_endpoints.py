@@ -33,7 +33,7 @@ class NewMachine(BaseModel):
 
 
 class SSHControlWebEndpoints:
-    """The panel works on the MCP server's connection manager and history, and adds and removes machines through its tools."""
+    """The panel works on the tool server's connection manager and history, and adds and removes machines through its tools."""
 
     def __init__(self, server):
         self.server = server

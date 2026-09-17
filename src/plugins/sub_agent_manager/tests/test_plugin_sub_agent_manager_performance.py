@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 from agent_system.services.session_service import SessionService
 from agent_system.services.session_manager import SessionManager
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from plugins.sub_agent_manager.manager import SubAgentManager
 
 
@@ -37,7 +37,7 @@ async def session_service(temp_storage):
 @pytest.fixture
 def mock_registry():
     """Create mock registry with test agents."""
-    registry = MagicMock(spec=MCPRegistry)
+    registry = MagicMock(spec=ToolServerRegistry)
 
     # Create mock agent with proper attributes
     mock_agent = MagicMock()

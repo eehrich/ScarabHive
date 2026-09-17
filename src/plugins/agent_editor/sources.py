@@ -6,7 +6,7 @@ import fnmatch
 from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.hooks.registry import get_hook_registry
 from agent_system.plugins.catalog import PluginCatalog
 from agent_system.runtime import VISIBILITIES, ServerDecl
@@ -65,22 +65,22 @@ def is_agent_rule(state: Any, catalog: PluginCatalog) -> Callable[[str, str], bo
 
 def reload_reaches(name: str) -> bool:
     """Whether POST /admin/reload-config refreshes this server: it walks the plugin registry."""
-    from agent_system.plugins.mcp_adapter import plugin_mcp_registry
+    from agent_system.plugins.tool_adapter import plugin_tool_registry
     from agent_system.services.config_reload import _reload_target
-    adapter = plugin_mcp_registry.get_server(name)
+    adapter = plugin_tool_registry.get_server(name)
     return adapter is not None and _reload_target(getattr(adapter, "plugin_server", None)) is not None
 
 
-def inherited(snap: Snapshot, name: str, typ: Optional[str]) -> Optional[MCPConfig]:
+def inherited(snap: Snapshot, name: str, typ: Optional[str]) -> Optional[ToolServerConfig]:
     """What an entry of type `typ` gets without keys of its own; `enabled` is never inherited (the runtime reads it
     from the entry itself). No type means the loader's default, basic_agent."""
     resolved = resolve_with(snap.config, name, {"type": typ} if typ else {})
     return resolved.model_copy(update={"enabled": False}) if resolved is not None else None
 
 
-def visibility(resolved: MCPConfig, catalog: PluginCatalog) -> str:
+def visibility(resolved: ToolServerConfig, catalog: PluginCatalog) -> str:
     """The same answer the runtime gives: own metadata, then the plugin manifest, else private."""
-    return ServerDecl(name="", type=resolved.type, mcp_config=resolved, plugin_metadata=catalog.manifest(resolved.type)).visibility
+    return ServerDecl(name="", type=resolved.type, server_config=resolved, plugin_metadata=catalog.manifest(resolved.type)).visibility
 
 
 def _differing(a: dict, b: dict, nested: Callable[[str], bool]) -> list[str]:
@@ -110,7 +110,7 @@ def changed_keys(live: dict, disk: dict) -> list[str]:
     return sorted(agent + _differing(live, disk, lambda key: True))
 
 
-def live_state(name: str, resolved: Optional[MCPConfig], enabled: bool, state: Any) -> dict:
+def live_state(name: str, resolved: Optional[ToolServerConfig], enabled: bool, state: Any) -> dict:
     """How the disk entry relates to what the app runs. Without a runtime in the app there is nothing to compare.
 
     The running side is the declaration, with the agent_config of the built instance when there is one: a config
@@ -127,10 +127,10 @@ def live_state(name: str, resolved: Optional[MCPConfig], enabled: bool, state: A
         return {**result, "state": "removed", "restart": True}
     if resolved is None:  # running, but the entry on disk does not resolve: a restart would not start it
         return {**result, "state": "changed", "restart": True}
-    registry = getattr(state, "mcp_registry", None)
+    registry = getattr(state, "tool_registry", None)
     instance = registry.get(name) if registry is not None and name in registry.list() else None
     built = isinstance(instance, agent_server.Agent)
-    live = decl.mcp_config.model_dump(mode="json")
+    live = decl.server_config.model_dump(mode="json")
     if isinstance(instance, agent_server.Agent):
         live["agent_config"] = instance.agent_config.model_dump(mode="json") if instance.agent_config else None
     changed = changed_keys(live, resolved.model_dump(mode="json"))
@@ -201,11 +201,11 @@ def meta(store: Store, state: Any) -> dict:
 
 
 class _InternalServers:
-    """Stands in for the agent's MCP integration: the plugin registry, and no external MCP servers."""
+    """Stands in for the agent's tool integration: the plugin registry, and no external MCP servers."""
 
     def __init__(self):
-        from agent_system.plugins.mcp_adapter import plugin_mcp_registry
-        self.mcp_integration = SimpleNamespace(initialized=True, plugin_registry=plugin_mcp_registry)
+        from agent_system.plugins.tool_adapter import plugin_tool_registry
+        self.tool_integration = SimpleNamespace(initialized=True, plugin_registry=plugin_tool_registry)
 
     async def build_tool_schemas(self, available_tools: list[str]) -> tuple[list, dict]:
         return [], {}
@@ -214,11 +214,11 @@ class _InternalServers:
 async def tool_catalog(state: Any) -> list[dict]:
     """The tools an agent can be given, found the way tool discovery finds them: every server of the plugin registry
     plus every tool-visible server of the app's registry, each mapped to its tools as the schema build does it."""
-    registry = getattr(state, "mcp_registry", None)
+    registry = getattr(state, "tool_registry", None)
     runtime = getattr(state, "runtime", None)
     integration = _InternalServers()
     visible = ToolDiscoveryService("agent_editor", None, integration, registry)._is_tool_visible
-    names = list(dict.fromkeys([*integration.mcp_integration.plugin_registry.list_servers(),
+    names = list(dict.fromkeys([*integration.tool_integration.plugin_registry.list_servers(),
                                 *(name for name in (registry.list() if registry is not None else []) if visible(name))]))
     builder = ToolSchemaBuilder("agent_editor", integration,
                                 lambda name: resolve_registry_server(registry, integration, name) if name in names else None)

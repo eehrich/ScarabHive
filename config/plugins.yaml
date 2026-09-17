@@ -1,7 +1,7 @@
 # ================================
 # Plugin Configuration
 # ================================
-# Configuration for local MCP plugins (servers)
+# Configuration for local plugins (servers)
 # Note: Additional plugin configs are loaded via includes in config/config.yaml
 # (e.g., agents_writer/writer_plugin_configs.yaml, agents_trading/trading_plugin_configs.yaml)
 

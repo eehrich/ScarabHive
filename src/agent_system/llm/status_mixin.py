@@ -10,7 +10,7 @@ import logging
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..mcp.status import StatusScope
+    from ..tools.status import StatusScope
 
 logger = logging.getLogger(__name__)
 

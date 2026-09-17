@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 from agent_system.hooks import HookContext
 from agent_system.llm.models import ChatMessage
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 
 # ============================================================================
@@ -47,10 +47,10 @@ def hybrid_plugin(tmp_path):
     from plugins.message_debugger.plugin import MessageDebuggerHybridPlugin
 
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig()
-    mcp_config.config = {"db_path": str(tmp_path / "hybrid_test.db")}
+    server_config = ToolServerConfig()
+    server_config.config = {"db_path": str(tmp_path / "hybrid_test.db")}
 
-    return MessageDebuggerHybridPlugin("message_debugger", system_config, mcp_config)
+    return MessageDebuggerHybridPlugin("message_debugger", system_config, server_config)
 
 
 @pytest.fixture
@@ -437,7 +437,7 @@ class TestMessageDebuggerHooks:
     async def test_max_field_chars_zero_keeps_everything(self, plugin_dir, db):
         from plugins.message_debugger.hooks import MessageDebuggerPlugin
         plugin = MessageDebuggerPlugin(
-            plugin_dir, db=db, mcp_config=SimpleNamespace(config={"max_field_chars": 0}))
+            plugin_dir, db=db, server_config=SimpleNamespace(config={"max_field_chars": 0}))
         blob = "x" * 5000
         context = HookContext(
             hook_type="pre_llm_call", request_id="r", session_id="s", agent_name="a",
@@ -470,7 +470,7 @@ class TestMessageDebuggerHooks:
     async def test_tool_call_details_can_be_left_out(self, plugin_dir, sample_messages_with_tools, db):
         from plugins.message_debugger.hooks import MessageDebuggerPlugin
         plugin = MessageDebuggerPlugin(
-            plugin_dir, db=db, mcp_config=SimpleNamespace(config={"include_tool_calls": False}))
+            plugin_dir, db=db, server_config=SimpleNamespace(config={"include_tool_calls": False}))
         context = HookContext(
             hook_type="pre_llm_call", request_id="r", session_id="s", agent_name="a",
             messages=sample_messages_with_tools,

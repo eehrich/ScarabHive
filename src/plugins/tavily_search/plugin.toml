@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "AI-powered web search and content extraction via Tavily API"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "tools"
 requires = { agent_system = ">=0.6.0" }
 

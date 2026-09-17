@@ -28,12 +28,12 @@ from typing import Any, TYPE_CHECKING
 import httpx
 from bs4 import BeautifulSoup
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins.cache import PluginCache
 from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -120,13 +120,13 @@ def _number(params: dict[str, Any], key: str, default: float) -> float:
         return default
 
 
-class WebScraperServer(SchemaBasedMCPServer):
+class WebScraperServer(SchemaBasedToolServer):
     """``page`` and ``download``, with per-session cookie jars and a cache."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
+        super().__init__(name, system_config, server_config)
         self.ssl_verify = getattr(system_config, "ssl_verify", True)
-        self._proxies: list[str] = list(getattr(mcp_config, "proxies", None) or [])
+        self._proxies: list[str] = list(getattr(server_config, "proxies", None) or [])
 
         # Cookie jars keyed by (session, domain), so one user's login cookies
         # never ride along on another user's request to the same site.
@@ -135,8 +135,8 @@ class WebScraperServer(SchemaBasedMCPServer):
         self._max_cookie_jars = 2000
 
         self.cache = PluginCache(plugin_name="web_scraper",
-                                 default_ttl=getattr(mcp_config, "cache_ttl", 1800))
-        self.cache_enabled = getattr(mcp_config, "cache_enabled", True)
+                                 default_ttl=getattr(server_config, "cache_ttl", 1800))
+        self.cache_enabled = getattr(server_config, "cache_enabled", True)
 
         # One fixed identity instead of the rotating browser pool. Some sites
         # require a descriptive agent with a contact address and refuse every
@@ -144,13 +144,13 @@ class WebScraperServer(SchemaBasedMCPServer):
         # its own bot-policy text, and a descriptive one with normal traffic.
         # Measured 05.09.2026. Configuring it is the operator's call -- the
         # contact address has to be real.
-        self.user_agent: str | None = getattr(mcp_config, "user_agent", None) or None
+        self.user_agent: str | None = getattr(server_config, "user_agent", None) or None
 
         # Downloads exist only where a directory was granted (fail closed):
         # without one the tool is not even rendered into the schema.
-        directories = list(getattr(mcp_config, "allowed_directories", None) or [])
+        directories = list(getattr(server_config, "allowed_directories", None) or [])
         self.download_sandbox = PathSandbox.from_config(directories, base=Path.cwd()) if directories else None
-        self.max_download_mb = float(getattr(mcp_config, "max_download_mb", 100))
+        self.max_download_mb = float(getattr(server_config, "max_download_mb", 100))
 
     def get_template_vars(self) -> dict[str, Any]:
         vars = super().get_template_vars()

@@ -46,13 +46,13 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         role: 'system' or 'user'
     """
 
-    def __init__(self, plugin_dir: Path | str, mcp_config: Any = None) -> None:
+    def __init__(self, plugin_dir: Path | str, server_config: Any = None) -> None:
         super().__init__(plugin_dir)
 
         # Merge schema defaults with runtime config from plugins.yaml
         config = self.get_config()
-        if mcp_config and hasattr(mcp_config, "config") and mcp_config.config:
-            config.update(mcp_config.config)
+        if server_config and hasattr(server_config, "config") and server_config.config:
+            config.update(server_config.config)
 
         self.injection_position: str = str(config.get("injection_position", "before_last_user"))
         self.role: str = str(config.get("role", "system"))

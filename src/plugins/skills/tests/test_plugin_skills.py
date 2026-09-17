@@ -1,7 +1,7 @@
 """Tests for the skills plugin (tool surface over the core skill registry)."""
 import pytest
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.skills.server import MAX_READ_CHARS, SkillsServer
 
 
@@ -60,7 +60,7 @@ def server(tmp_path, monkeypatch):
         lambda *a, **k: SkillRegistry(),
     )
     cfg = AgentSystemConfig(skills={"skill_dirs": [str(root)]})
-    srv = SkillsServer("skills", cfg, MCPConfig(type="skills", enabled=True))
+    srv = SkillsServer("skills", cfg, ToolServerConfig(type="skills", enabled=True))
     return srv, root
 
 

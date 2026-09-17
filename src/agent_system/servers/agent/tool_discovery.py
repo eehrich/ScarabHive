@@ -18,8 +18,8 @@ from ...runtime import ServerView
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentConfig
-    from agent_system.mcp.base import MCPRegistry
-    from agent_system.servers.agent.components.mcp_integration import MCPIntegrationManager
+    from agent_system.tools.base import ToolServerRegistry
+    from agent_system.servers.agent.components.tool_integration import ToolIntegrationManager
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +31,8 @@ class ToolDiscoveryService:
         self,
         agent_name: str,
         agent_config: AgentConfig,
-        mcp_integration_manager: MCPIntegrationManager,
-        registry: Optional[MCPRegistry] = None
+        tool_integration_manager: ToolIntegrationManager,
+        registry: Optional[ToolServerRegistry] = None
     ):
         """
         Initialize tool discovery service.
@@ -40,12 +40,12 @@ class ToolDiscoveryService:
         Args:
             agent_name: Name of the agent
             agent_config: Agent configuration with tool settings
-            mcp_integration_manager: MCP integration manager
-            registry: Optional local MCP registry
+            tool_integration_manager: tool integration manager
+            registry: Optional local tool registry
         """
         self.agent_name = agent_name
         self.agent_config = agent_config
-        self.mcp_integration_manager = mcp_integration_manager
+        self.tool_integration_manager = tool_integration_manager
         self.registry = registry
     
     async def discover_allowed_tools(self) -> Tuple[List[str], Optional[List[str]], Optional[List[str]]]:
@@ -55,7 +55,7 @@ class ToolDiscoveryService:
         Combines tools from:
         1. Plugin-provided tool servers
         2. External MCP servers
-        3. Local registry (filtered by _mcp_tool_visible flag)
+        3. Local registry (filtered by _tool_visible flag)
         
         Then applies allow-list filtering at server level. Both allowed and blocked
         patterns are returned for fine-grained filtering after tool expansion.
@@ -130,7 +130,7 @@ class ToolDiscoveryService:
         plugin_tools = self._get_plugin_tools()
         
         # Get external + plugin + adapter tools
-        available_tools = await self.mcp_integration_manager.get_available_tools(plugin_tools)
+        available_tools = await self.tool_integration_manager.get_available_tools(plugin_tools)
         
         # NOTE: Do NOT expand tools here - build_schemas() will do that when building tool schemas
         # Expansion here causes duplicate processing and breaks schema building
@@ -145,17 +145,17 @@ class ToolDiscoveryService:
     
     def _get_plugin_tools(self) -> List[str]:
         """Get list of plugin-provided tool servers."""
-        if not (self.mcp_integration_manager.mcp_integration and
-                self.mcp_integration_manager.mcp_integration.initialized):
+        if not (self.tool_integration_manager.tool_integration and
+                self.tool_integration_manager.tool_integration.initialized):
             return []
         
-        return self.mcp_integration_manager.mcp_integration.plugin_registry.list_servers()
+        return self.tool_integration_manager.tool_integration.plugin_registry.list_servers()
     
     def _get_registry_tools(self) -> List[str]:
         """
-        Get tools from local registry, filtered by _mcp_tool_visible flag.
+        Get tools from local registry, filtered by _tool_visible flag.
         
-        Only includes agents that have _mcp_tool_visible=True or don't have
+        Only includes agents that have _tool_visible=True or don't have
         the attribute (backward compatibility).
         
         Returns:
@@ -175,7 +175,7 @@ class ToolDiscoveryService:
     
     def _is_tool_visible(self, tool_name: str) -> bool:
         """
-        Check if a tool is visible (exposed as MCP tool).
+        Check if a tool is visible (exposed as tool).
         
         Args:
             tool_name: Name of the tool to check
@@ -200,10 +200,10 @@ class ToolDiscoveryService:
             # consulting the get() those tests steer.
             view = self.registry.describe(tool_name)
             if isinstance(view, ServerView):
-                if not view.mcp_tool_visible:
+                if not view.tool_visible:
                     logger.debug(
                         f"Skipping agent '{tool_name}' in tool discovery "
-                        f"(not exposed as tool: _mcp_tool_visible=False)"
+                        f"(not exposed as tool: _tool_visible=False)"
                     )
                     return False
                 return True
@@ -211,15 +211,15 @@ class ToolDiscoveryService:
             # Unbound registry, or a declaration that cannot answer for its
             # instance: the instance is the only source. Verbatim the old path.
             server = self.registry.get(tool_name)
-            if server and hasattr(server, '_mcp_tool_visible'):
-                visible = getattr(server, '_mcp_tool_visible', True)
+            if server and hasattr(server, '_tool_visible'):
+                visible = getattr(server, '_tool_visible', True)
                 if not visible:
                     logger.debug(
                         f"Skipping agent '{tool_name}' in tool discovery "
-                        f"(not exposed as tool: _mcp_tool_visible=False)"
+                        f"(not exposed as tool: _tool_visible=False)"
                     )
                     return False
-            # No _mcp_tool_visible attribute → include as tool (backward compat)
+            # No _tool_visible attribute → include as tool (backward compat)
             return True
         except Exception as e:
             logger.debug(f"Failed to check tool visibility for '{tool_name}': {e}")
@@ -261,7 +261,7 @@ class ToolDiscoveryService:
         Fallback for wildcard patterns that produced empty results.
         
         If '*' was specified but nothing matched, try fetching plugin
-        server names directly from the MCP plugin registry.
+        server names directly from the plugin registry.
         
         Args:
             patterns: Allowed patterns
@@ -273,12 +273,12 @@ class ToolDiscoveryService:
         if not any(p == '*' for p in patterns):
             return []
         
-        if not (self.mcp_integration_manager.mcp_integration and
-                self.mcp_integration_manager.mcp_integration.initialized):
+        if not (self.tool_integration_manager.tool_integration and
+                self.tool_integration_manager.tool_integration.initialized):
             return []
         
         try:
-            plugin_registry = self.mcp_integration_manager.mcp_integration.plugin_registry
+            plugin_registry = self.tool_integration_manager.tool_integration.plugin_registry
             plugin_names = list(plugin_registry.list_servers())
             
             if plugin_names:

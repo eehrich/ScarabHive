@@ -134,7 +134,7 @@ class AgentEditorWebEndpoints:
 
     def _store(self, request: Request) -> Store:
         """The config tree: the plugin's `config_path`/`root` if set, else the app's config and the working directory."""
-        config = self.plugin.mcp_config
+        config = self.plugin.server_config
         config_path = (getattr(config, "config_path", None) or getattr(request.app.state, "config_path", None)
                        or "config/config.yaml")
         root = getattr(config, "root", None) or Path.cwd()
@@ -226,10 +226,10 @@ class AgentEditorWebEndpoints:
 
     @staticmethod
     def _removed_row(snap: Snapshot, name: str, decl: Any) -> dict:
-        metadata = decl.mcp_config.metadata
+        metadata = decl.server_config.metadata
         return {
             "name": name, "type": decl.type, "base": decl.type, "enabled": False,
-            "description": snap.mask(decl.mcp_config.description), "visibility": decl.visibility,
+            "description": snap.mask(decl.server_config.description), "visibility": decl.visibility,
             "category": metadata.category if metadata else None, "tags": (metadata.tags or []) if metadata else [],
             "group": "config", "file": None, "files": [],
             "editable": False, "readonly_reason": "no longer in the config files",
@@ -250,7 +250,7 @@ class AgentEditorWebEndpoints:
                 raise StoreError(404, f"{name} is not an agent in the config")
             return {"name": name, "file": None, "files": [], "version": None, "editable": False,
                     "readonly_reason": "no longer in the config files", "form_reason": None, "own": None, "parent": None,
-                    "inherited": None, "effective": store.present(decl.mcp_config.model_dump(mode="json"), snap),
+                    "inherited": None, "effective": store.present(decl.server_config.model_dump(mode="json"), snap),
                     "state": "removed", "changed": [], "reload_fields": [], "restart": True,
                     "children": [], "spawnable": [], "prompt": None}
         server = snap.config.plugins.servers[name]

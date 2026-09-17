@@ -17,7 +17,7 @@ from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count
 from agent_system.llm.models import ChatMessage
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
-from agent_system.mcp.status import status_bus, StatusScope
+from agent_system.tools.status import status_bus, StatusScope
 
 logger = logging.getLogger(__name__)
 
@@ -633,8 +633,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             # Access the plugin registry via agent's system_config
             if context.agent and hasattr(context.agent, 'system_config'):
                 system_config = context.agent.system_config
-                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
-                    registry = system_config.mcp_registry
+                if hasattr(system_config, 'tool_registry') and system_config.tool_registry:
+                    registry = system_config.tool_registry
 
                     # Get context_usage_tracker plugin
                     usage_tracker_plugin = registry.get_server('context_usage_tracker')
@@ -691,8 +691,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         try:
             if context.agent and hasattr(context.agent, 'system_config'):
                 system_config = context.agent.system_config
-                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
-                    registry = system_config.mcp_registry
+                if hasattr(system_config, 'tool_registry') and system_config.tool_registry:
+                    registry = system_config.tool_registry
                     usage_tracker_plugin = registry.get_server('context_usage_tracker')
                     if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
                         usage_tracker_plugin.tracker.invalidate_session(session_id, reason)

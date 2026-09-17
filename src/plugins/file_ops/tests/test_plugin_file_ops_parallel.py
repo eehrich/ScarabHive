@@ -6,8 +6,8 @@ import asyncio
 import pytest
 from unittest.mock import Mock
 
-from agent_system.config import AgentSystemConfig, MCPConfig
-from agent_system.mcp.status import StatusBus
+from agent_system.config import AgentSystemConfig, ToolServerConfig
+from agent_system.tools.status import StatusBus
 from plugins.file_ops.server import FileOpsServer
 
 
@@ -25,13 +25,13 @@ async def file_ops_server(tmp_allowed_dir):
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(tmp_allowed_dir.parent)
 
-    mcp_config = MCPConfig(type="file_ops", enabled=True)
-    mcp_config.allowed_directories = [str(tmp_allowed_dir)]
-    mcp_config.search = {
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
+    server_config.allowed_directories = [str(tmp_allowed_dir)]
+    server_config.search = {
         "enable_indexing": False  # Disable for faster tests
     }
 
-    server = FileOpsServer("file_ops", system_config, mcp_config)
+    server = FileOpsServer("file_ops", system_config, server_config)
     yield server
 
     # Cleanup
@@ -54,7 +54,7 @@ async def test_parallel_security_violations(file_ops_server, tmp_allowed_dir, st
 
     # Helper to call with status scope (like call_with_status does)
     async def call_with_scope(request_id: str, params: dict):
-        from agent_system.mcp.status import status_scope
+        from agent_system.tools.status import status_scope
         async with status_scope(status_bus, "file_ops", request_id=request_id) as status:
             params_with_status = params.copy()
             params_with_status["_status"] = status
@@ -119,7 +119,7 @@ async def test_parallel_tool_execution_status_completion(file_ops_server, tmp_al
 
     # Helper to call with status scope (like call_with_status does)
     async def call_with_scope(request_id: str, file_path: str):
-        from agent_system.mcp.status import status_scope
+        from agent_system.tools.status import status_scope
         async with status_scope(status_bus, "file_ops", request_id=request_id) as status:
             params = {
                 "filePath": file_path,
@@ -174,7 +174,7 @@ async def test_parallel_mixed_operations(file_ops_server, tmp_allowed_dir, statu
 
     # Helper to call with status scope (like call_with_status does)
     async def call_with_scope(request_id: str, file_path: str):
-        from agent_system.mcp.status import status_scope
+        from agent_system.tools.status import status_scope
         async with status_scope(status_bus, "file_ops", request_id=request_id) as status:
             params = {
                 "filePath": file_path,

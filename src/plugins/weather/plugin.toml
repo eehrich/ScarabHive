@@ -5,9 +5,9 @@
 [plugin]
 name = "weather"
 version = "0.1.0"
-description = "Weather MCP server plugin (wttr.in, met.no, weather.gov, marine.weather.gov)"
+description = "Weather tool server plugin (wttr.in, met.no, weather.gov, marine.weather.gov)"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "data"
 requires = { agent_system = ">=0.6.0" }

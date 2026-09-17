@@ -2,7 +2,7 @@
 
 import asyncio
 import pytest
-from agent_system.mcp.status import (
+from agent_system.tools.status import (
     publish_status, StatusPhase, StatusScope,
     _calculate_tree_metadata, get_status_bus
 )

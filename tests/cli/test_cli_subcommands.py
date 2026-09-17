@@ -39,7 +39,7 @@ def test_hooks_list_loads_the_plugins_that_register_them(monkeypatch, capsys):
         registry.hooks["probe.on_pre_llm_call"] = {"name": "probe.on_pre_llm_call"}
 
     integration.initialize.side_effect = initialize
-    monkeypatch.setattr(cli, "MCPIntegration", lambda config: integration)
+    monkeypatch.setattr(cli, "ToolServerIntegration", lambda config: integration)
 
     monkeypatch.setattr("sys.argv", ["agent-cli", "hooks", "list", "--format", "json"])
     cli.main()
@@ -149,7 +149,7 @@ def test_users_config_comes_only_from_before_the_subcommand(monkeypatch, argv, c
 def _plugins_loaded_with(monkeypatch, registry):
     monkeypatch.setattr(hooks_cmd, "get_hook_registry", lambda: registry)
     monkeypatch.setattr(cli, "load_settings", lambda path=None: AgentSystemConfig())
-    monkeypatch.setattr(cli, "MCPIntegration", lambda config: AsyncMock())
+    monkeypatch.setattr(cli, "ToolServerIntegration", lambda config: AsyncMock())
 
 
 def test_hooks_inspect_of_an_unknown_hook_exits_1(monkeypatch, capsys):
@@ -234,7 +234,7 @@ def test_hooks_refuses_a_partial_list_when_plugins_fail_to_load(monkeypatch, cap
     monkeypatch.setattr(cli, "load_settings", lambda path=None: AgentSystemConfig())
     integration = AsyncMock()
     integration.initialize.side_effect = RuntimeError("circular inheritance")
-    monkeypatch.setattr(cli, "MCPIntegration", lambda config: integration)
+    monkeypatch.setattr(cli, "ToolServerIntegration", lambda config: integration)
 
     monkeypatch.setattr("sys.argv", ["agent-cli", "hooks", "list"])
     with pytest.raises(SystemExit) as exit_info:

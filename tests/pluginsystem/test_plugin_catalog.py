@@ -62,7 +62,7 @@ def test_a_manifest_name_does_not_rename_a_plugin():
 
 def test_a_library_plugin_is_not_a_type():
     """A manifest without an entrypoint module (coder, writer_publish: agents
-    and skills, no MCP server) is skipped by discovery -- the catalog skips it
+    and skills, no tool server) is skipped by discovery -- the catalog skips it
     the same way, or config inheritance would resolve against a type that
     cannot be built."""
     from agent_system.plugins.plugin_manifest import load_plugin_metadata
@@ -96,10 +96,10 @@ def test_config_inheritance_imports_no_plugin():
     """The production path that paid for it: resolving every server's config."""
     out = _run("""
         import sys
-        from agent_system.config.settings import load_settings, get_mcp_config_by_name
+        from agent_system.config.settings import load_settings, get_tool_server_config
         cfg = load_settings()
         for name in cfg.plugins.servers:
-            get_mcp_config_by_name(name, cfg)
+            get_tool_server_config(name, cfg)
         loaded = [m for m in sys.modules if m.startswith('plugins.') or m.startswith('plugins_')]
         print('servers', len(cfg.plugins.servers))
         print('plugin_modules', len(loaded))
@@ -115,7 +115,7 @@ def test_a_form_the_catalog_cannot_name_falls_back_to_discovery(tmp_path):
     legacy = root / "legacy_probe"
     legacy.mkdir(parents=True)
     (legacy / "plugin.py").write_text(
-        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
         "    return None\n",
         encoding="utf-8")
 
@@ -123,7 +123,7 @@ def test_a_form_the_catalog_cannot_name_falls_back_to_discovery(tmp_path):
     modern.mkdir()
     (modern / "plugin.toml").write_text('[plugin]\nname = "modern_probe"\n', encoding="utf-8")
     (modern / "plugin.py").write_text(
-        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
         "    return None\n",
         encoding="utf-8")
 
@@ -158,7 +158,7 @@ def test_an_unreadable_entry_file_hands_over_to_discovery(tmp_path, monkeypatch)
     probe.mkdir(parents=True)
     (probe / "plugin.toml").write_text('[plugin]\nname = "unreadable_probe"\n', encoding="utf-8")
     (probe / "plugin.py").write_text(
-        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
         "    return None\n",
         encoding="utf-8")
 
@@ -178,7 +178,7 @@ def test_an_entrypoint_without_a_colon_keeps_both_defaults(tmp_path):
     (probe / "plugin.toml").write_text(
         '[plugin]\nname = "colonless_probe"\nentrypoint = "server"\n', encoding="utf-8")
     (probe / "plugin.py").write_text(
-        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
         "    return None\n",
         encoding="utf-8")
 
@@ -198,7 +198,7 @@ def test_a_plugin_named_by_its_register_falls_back_to_discovery(tmp_path):
     probe.mkdir(parents=True)
     (probe / "plugin.toml").write_text('[plugin]\nname = "register_probe"\n', encoding="utf-8")
     (probe / "plugin.py").write_text(
-        "def _build(name, system_config, mcp_config):\n"
+        "def _build(name, system_config, server_config):\n"
         "    return None\n"
         "def register():\n"
         "    return 'named_by_register', _build\n",
@@ -222,7 +222,7 @@ def test_a_plugin_that_renames_itself_falls_back_to_discovery(tmp_path):
     (d / "plugin.toml").write_text('[plugin]\nname = "folder_name"\n', encoding="utf-8")
     (d / "plugin.py").write_text(
         'PLUGIN_NAME = "its_own_name"\n'
-        "def PLUGIN_FACTORY(name, system_config, mcp_config):\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
         "    return None\n",
         encoding="utf-8")
 

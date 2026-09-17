@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Simple SQL execution for debugging SQLite databases"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "tools"
 tags = ["database", "sql", "sqlite", "debugging"]
 requires = { agent_system = ">=0.6.0" }

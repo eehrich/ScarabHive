@@ -150,11 +150,11 @@ class TestRegistryIntegration:
 
     @pytest.mark.asyncio
     async def test_start_is_idempotent_across_paths(self):
-        from agent_system.plugins.mcp_adapter import PluginMCPAdapter, PluginMCPRegistry
+        from agent_system.plugins.tool_adapter import PluginToolAdapter, PluginToolRegistry
 
-        registry = PluginMCPRegistry()
+        registry = PluginToolRegistry()
         plugin = Recorder()
-        registry.plugin_servers["rec"] = PluginMCPAdapter("rec", plugin)
+        registry.plugin_servers["rec"] = PluginToolAdapter("rec", plugin)
 
         await registry.start_plugin("rec")
         await registry.start_plugin("rec")   # direct repeat
@@ -163,12 +163,12 @@ class TestRegistryIntegration:
 
     @pytest.mark.asyncio
     async def test_shutdown_all_stops_started_plugins_only_once(self):
-        from agent_system.plugins.mcp_adapter import PluginMCPAdapter, PluginMCPRegistry
+        from agent_system.plugins.tool_adapter import PluginToolAdapter, PluginToolRegistry
 
-        registry = PluginMCPRegistry()
+        registry = PluginToolRegistry()
         started, never = Recorder(), Recorder()
-        registry.plugin_servers["started"] = PluginMCPAdapter("started", started)
-        registry.plugin_servers["never"] = PluginMCPAdapter("never", never)
+        registry.plugin_servers["started"] = PluginToolAdapter("started", started)
+        registry.plugin_servers["never"] = PluginToolAdapter("never", never)
 
         await registry.start_plugin("started")
         await registry.shutdown_all()
@@ -181,7 +181,7 @@ class TestRegistryIntegration:
 
     @pytest.mark.asyncio
     async def test_the_core_actually_runs_the_hooks(self):
-        """MCPIntegration must wire start_all/shutdown_all up, not just own them.
+        """ToolServerIntegration must wire start_all/shutdown_all up, not just own them.
 
         The seam is only worth anything if the core uses it. Without this test
         both wirings could be deleted and the whole suite stayed green -- the
@@ -189,15 +189,15 @@ class TestRegistryIntegration:
         like "none configured" rather than like a bug.
         """
         from agent_system.config.models import AgentSystemConfig
-        from agent_system.mcp.integration import MCPIntegration
-        from agent_system.plugins.mcp_adapter import PluginMCPAdapter, PluginMCPRegistry
+        from agent_system.tools.integration import ToolServerIntegration
+        from agent_system.plugins.tool_adapter import PluginToolAdapter, PluginToolRegistry
 
-        registry = PluginMCPRegistry()
+        registry = PluginToolRegistry()
         plugin = Recorder()
-        registry.plugin_servers["rec"] = PluginMCPAdapter("rec", plugin)
+        registry.plugin_servers["rec"] = PluginToolAdapter("rec", plugin)
 
         config = AgentSystemConfig()
-        integration = MCPIntegration(config=config)
+        integration = ToolServerIntegration(config=config)
         integration.plugin_registry = registry
         integration.servers_bootstrapped = True  # skip the real bootstrap
 
@@ -210,11 +210,11 @@ class TestRegistryIntegration:
     @pytest.mark.asyncio
     async def test_a_stopped_plugin_can_be_started_again(self):
         """shutdown_all releases resources; it does not deregister."""
-        from agent_system.plugins.mcp_adapter import PluginMCPAdapter, PluginMCPRegistry
+        from agent_system.plugins.tool_adapter import PluginToolAdapter, PluginToolRegistry
 
-        registry = PluginMCPRegistry()
+        registry = PluginToolRegistry()
         plugin = Recorder()
-        registry.plugin_servers["rec"] = PluginMCPAdapter("rec", plugin)
+        registry.plugin_servers["rec"] = PluginToolAdapter("rec", plugin)
 
         await registry.start_plugin("rec")
         await registry.shutdown_all()

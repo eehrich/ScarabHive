@@ -1,12 +1,12 @@
 """Schema-based Agent - Agent that loads tools from schema.yaml files.
 
 This class extends the base Agent with automatic schema.yaml loading,
-following the same pattern as SchemaBasedMCPServer.
+following the same pattern as SchemaBasedToolServer.
 
 Most agent plugins should inherit from this class instead of Agent directly,
 as it provides the standard tool definition mechanism via schema.yaml.
 
-This class uses SchemaBasedToolMixin for shared functionality with SchemaBasedMCPServer.
+This class uses SchemaBasedToolMixin for shared functionality with SchemaBasedToolServer.
 
 Features:
 - Automatic schema.yaml loading with template variable support
@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 
 from .server import Agent
-from ...mcp.schema_mixin import SchemaBasedToolMixin
+from ...tools.schema_mixin import SchemaBasedToolMixin
 
 logger = logging.getLogger(__name__)
 
@@ -97,34 +97,34 @@ class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
         return vars
 
     async def list_tools(self) -> list:
-        """Return tools defined in schema.yaml (MCPServer interface).
+        """Return tools defined in schema.yaml (ToolServer interface).
 
         Override base Agent.list_tools() to return multiple tools from schema.yaml
         instead of just a single agent tool.
 
         Returns:
-            List[MCPTool] - Tools defined in this agent's schema.yaml
+            List[ToolDef] - Tools defined in this agent's schema.yaml
         """
         # Return cached tools to avoid creating new objects on every call
         if self._list_tools_cache is not None:
             return self._list_tools_cache
 
-        from agent_system.mcp.core import MCPTool
+        from agent_system.tools.base import ToolDef
 
         # Get tools from schema.yaml
         tools_defs = self.get_tools()
 
-        # Convert to MCPTool format
-        mcp_tools = []
+        # Convert to ToolDef format
+        tool_defs = []
         for tool_def in tools_defs:
             func = tool_def.get("function", {})
-            tool = MCPTool(
+            tool = ToolDef(
                 name=func.get("name", "unknown"),
                 description=func.get("description", ""),
                 input_schema=func.get("parameters", {})
             )
-            mcp_tools.append(tool)
+            tool_defs.append(tool)
 
-        self._list_tools_cache = mcp_tools
+        self._list_tools_cache = tool_defs
         return self._list_tools_cache
 

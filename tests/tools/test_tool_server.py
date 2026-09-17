@@ -1,8 +1,8 @@
 """
-Comprehensive tests for modernized MCPServer base class.
+Comprehensive tests for modernized ToolServer base class.
 
 Tests the new modern interface with:
-- Constructor: (name, system_config, mcp_config)
+- Constructor: (name, system_config, server_config)
 - Generic call() dispatcher
 - Automatic tool routing by method name
 - No legacy code or backwards compatibility
@@ -12,16 +12,16 @@ from __future__ import annotations
 import pytest
 from typing import Any
 
-from agent_system.mcp.base import MCPServer, MCPRegistry
-from agent_system.mcp.core import MCPTool
-from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+from agent_system.tools.base import ToolServer, ToolServerRegistry
+from agent_system.tools.base import ToolDef
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
 
 
 # ============================================================================
 # Mock Server Implementations
 # ============================================================================
 
-class SimpleToolServer(MCPServer):
+class SimpleToolServer(ToolServer):
     """Simple server with single tool for basic tests."""
     
     def get_tools(self):
@@ -47,7 +47,7 @@ class SimpleToolServer(MCPServer):
         return f"Hello, {params['name']}!"
 
 
-class MultiToolServer(MCPServer):
+class MultiToolServer(ToolServer):
     """Server with multiple tools for comprehensive tests."""
     
     def get_tools(self):
@@ -112,7 +112,7 @@ class MultiToolServer(MCPServer):
         return f"{params['first']} {params['last']}"
 
 
-class SyncMethodServer(MCPServer):
+class SyncMethodServer(ToolServer):
     """Server with synchronous tool methods (should still work)."""
     
     def get_tools(self):
@@ -138,14 +138,14 @@ class SyncMethodServer(MCPServer):
         return params['text'].upper()
 
 
-class EmptyToolsServer(MCPServer):
+class EmptyToolsServer(ToolServer):
     """Server with no tools defined."""
     
     def get_tools(self):
         return []
 
 
-class MissingMethodServer(MCPServer):
+class MissingMethodServer(ToolServer):
     """Server that declares tools but doesn't implement methods."""
     
     def get_tools(self):
@@ -172,9 +172,9 @@ def system_config():
 
 
 @pytest.fixture
-def mcp_config():
-    """Create test MCP config."""
-    return MCPConfig(
+def server_config():
+    """Create test tool server config."""
+    return ToolServerConfig(
         type='plugin',
         enabled=True,
         agent_config=AgentConfig()
@@ -182,37 +182,37 @@ def mcp_config():
 
 
 @pytest.fixture
-def simple_server(system_config, mcp_config):
+def simple_server(system_config, server_config):
     """Create simple test server."""
-    return SimpleToolServer('simple', system_config, mcp_config)
+    return SimpleToolServer('simple', system_config, server_config)
 
 
 @pytest.fixture
-def multi_server(system_config, mcp_config):
+def multi_server(system_config, server_config):
     """Create multi-tool test server."""
-    return MultiToolServer('multi', system_config, mcp_config)
+    return MultiToolServer('multi', system_config, server_config)
 
 
 @pytest.fixture
-def sync_server(system_config, mcp_config):
+def sync_server(system_config, server_config):
     """Create server with sync methods."""
-    return SyncMethodServer('sync', system_config, mcp_config)
+    return SyncMethodServer('sync', system_config, server_config)
 
 
 # ============================================================================
 # Test: Constructor and Initialization
 # ============================================================================
 
-class TestMCPServerConstructor:
-    """Test MCPServer constructor with modern signature."""
+class TestToolServerConstructor:
+    """Test ToolServer constructor with modern signature."""
     
-    def test_constructor_signature(self, system_config, mcp_config):
-        """Test that constructor accepts (name, system_config, mcp_config)."""
-        server = SimpleToolServer('test', system_config, mcp_config)
+    def test_constructor_signature(self, system_config, server_config):
+        """Test that constructor accepts (name, system_config, server_config)."""
+        server = SimpleToolServer('test', system_config, server_config)
         
         assert server.name == 'test'
         assert server.system_config == system_config
-        assert server.mcp_config == mcp_config
+        assert server.server_config == server_config
     
     def test_no_legacy_attributes(self, simple_server):
         """Test that legacy attributes are not present."""
@@ -228,11 +228,11 @@ class TestMCPServerConstructor:
         assert hasattr(simple_server.system_config, 'network')
         assert hasattr(simple_server.system_config.network, 'ssl_verify')
     
-    def test_mcp_config_access(self, simple_server):
-        """Test that MCP config is accessible."""
-        assert simple_server.mcp_config.type == 'plugin'
-        assert simple_server.mcp_config.enabled is True
-        assert simple_server.mcp_config.agent_config is not None
+    def test_server_config_access(self, simple_server):
+        """Test that tool server config is accessible."""
+        assert simple_server.server_config.type == 'plugin'
+        assert simple_server.server_config.enabled is True
+        assert simple_server.server_config.agent_config is not None
 
 
 # ============================================================================
@@ -281,9 +281,9 @@ class TestGenericCallDispatcher:
         assert 'greet' in error_msg  # available tool
     
     @pytest.mark.asyncio
-    async def test_missing_method_error(self, system_config, mcp_config):
+    async def test_missing_method_error(self, system_config, server_config):
         """Test error when tool declared but method not implemented."""
-        server = MissingMethodServer('missing', system_config, mcp_config)
+        server = MissingMethodServer('missing', system_config, server_config)
         
         with pytest.raises(ValueError) as exc_info:
             await server.call('missing_tool', {})
@@ -321,7 +321,7 @@ class TestListTools:
         tools = await simple_server.list_tools()
         
         assert len(tools) == 1
-        assert isinstance(tools[0], MCPTool)
+        assert isinstance(tools[0], ToolDef)
         assert tools[0].name == 'greet'
         assert tools[0].description == 'Greet someone'
         assert 'name' in tools[0].input_schema['properties']
@@ -337,12 +337,12 @@ class TestListTools:
         assert 'multiply' in tool_names
         assert 'format_name' in tool_names
         
-        # Check they're all MCPTool instances
-        assert all(isinstance(t, MCPTool) for t in tools)
+        # Check they're all ToolDef instances
+        assert all(isinstance(t, ToolDef) for t in tools)
     
     @pytest.mark.asyncio
     async def test_list_tools_returns_mcp_tool_objects(self, multi_server):
-        """Test that list_tools converts schemas to MCPTool objects."""
+        """Test that list_tools converts schemas to ToolDef objects."""
         tools = await multi_server.list_tools()
         
         for tool in tools:
@@ -352,22 +352,22 @@ class TestListTools:
             assert isinstance(tool.input_schema, dict)
     
     @pytest.mark.asyncio
-    async def test_empty_tools_list(self, system_config, mcp_config):
+    async def test_empty_tools_list(self, system_config, server_config):
         """Test server with no tools raises error."""
-        server = EmptyToolsServer('empty', system_config, mcp_config)
+        server = EmptyToolsServer('empty', system_config, server_config)
         
         # Should return empty list
         tools = await server.list_tools()
         assert tools == []
     
     @pytest.mark.asyncio
-    async def test_list_tools_error_handling(self, system_config, mcp_config):
+    async def test_list_tools_error_handling(self, system_config, server_config):
         """Test error when server doesn't implement get_tools()."""
         
-        class NoToolsServer(MCPServer):
+        class NoToolsServer(ToolServer):
             pass  # Doesn't implement get_tools()
         
-        server = NoToolsServer('no_tools', system_config, mcp_config)
+        server = NoToolsServer('no_tools', system_config, server_config)
         
         with pytest.raises(NotImplementedError) as exc_info:
             await server.list_tools()
@@ -393,10 +393,10 @@ class TestCallWithStatus:
         assert result == "Hello, Bob!"
     
     @pytest.mark.asyncio
-    async def test_call_with_status_injects_params(self, system_config, mcp_config):
+    async def test_call_with_status_injects_params(self, system_config, server_config):
         """Test that call_with_status injects status params."""
         
-        class InspectParamsServer(MCPServer):
+        class InspectParamsServer(ToolServer):
             def get_tools(self):
                 return [{
                     'type': 'function',
@@ -414,7 +414,7 @@ class TestCallWithStatus:
                     'original_params': {k: v for k, v in params.items() if not k.startswith('_')}
                 }
         
-        server = InspectParamsServer('inspect', system_config, mcp_config)
+        server = InspectParamsServer('inspect', system_config, server_config)
         result = await server.call_with_status('inspect', {'request_id': 'test-123', 'data': 'test'})
         
         assert result['has_status'] is True
@@ -423,10 +423,10 @@ class TestCallWithStatus:
         assert result['original_params'] == {'request_id': 'test-123', 'data': 'test'}
     
     @pytest.mark.asyncio
-    async def test_call_with_status_supports_both_request_id_formats(self, system_config, mcp_config):
+    async def test_call_with_status_supports_both_request_id_formats(self, system_config, server_config):
         """Test support for both request_id and requestId (JS convention)."""
         
-        class RequestIdServer(MCPServer):
+        class RequestIdServer(ToolServer):
             def get_tools(self):
                 return [{
                     'type': 'function',
@@ -440,7 +440,7 @@ class TestCallWithStatus:
             async def get_request_id(self, params: dict[str, Any]) -> str:
                 return params.get('_request_id', 'no-id')
         
-        server = RequestIdServer('reqid', system_config, mcp_config)
+        server = RequestIdServer('reqid', system_config, server_config)
         
         # Test snake_case (Python convention)
         result1 = await server.call_with_status('get_request_id', {'request_id': 'python-123'})
@@ -452,15 +452,15 @@ class TestCallWithStatus:
 
 
 # ============================================================================
-# Test: MCPRegistry Integration
+# Test: ToolServerRegistry Integration
 # ============================================================================
 
-class TestMCPRegistry:
-    """Test MCPRegistry with modernized MCPServer."""
+class TestToolServerRegistry:
+    """Test ToolServerRegistry with modernized ToolServer."""
     
     def test_register_server(self, simple_server):
         """Test registering a server."""
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
         registry.register('simple', simple_server)
         
         assert 'simple' in registry.list()
@@ -468,7 +468,7 @@ class TestMCPRegistry:
     
     def test_register_multiple_servers(self, simple_server, multi_server):
         """Test registering multiple servers."""
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
         registry.register('simple', simple_server)
         registry.register('multi', multi_server)
         
@@ -479,7 +479,7 @@ class TestMCPRegistry:
     @pytest.mark.asyncio
     async def test_call_through_registry(self, simple_server):
         """Test calling tools through registry."""
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
         registry.register('simple', simple_server)
         
         server = registry.get('simple')
@@ -518,9 +518,9 @@ class TestNoLegacyCode:
         """Test that agent_config backwards compatibility alias is gone."""
         assert not hasattr(simple_server, 'agent_config')
         
-        # Should use system_config and mcp_config instead
+        # Should use system_config and server_config instead
         assert hasattr(simple_server, 'system_config')
-        assert hasattr(simple_server, 'mcp_config')
+        assert hasattr(simple_server, 'server_config')
 
 
 # ============================================================================
@@ -547,13 +547,13 @@ class TestErrorMessages:
         assert 'format_name' in error_msg
     
     @pytest.mark.asyncio
-    async def test_not_implemented_error_message(self, system_config, mcp_config):
+    async def test_not_implemented_error_message(self, system_config, server_config):
         """Test error message when plugin doesn't implement required methods."""
         
-        class IncompleteServer(MCPServer):
+        class IncompleteServer(ToolServer):
             pass  # No get_tools() implementation
         
-        server = IncompleteServer('incomplete', system_config, mcp_config)
+        server = IncompleteServer('incomplete', system_config, server_config)
         
         with pytest.raises(NotImplementedError) as exc_info:
             await server.list_tools()
@@ -580,7 +580,7 @@ class TestErrorResultsReachTheStatusStream:
     @staticmethod
     async def _events(server, action, params=None):
         """Run one tool call and return the status events it published."""
-        from agent_system.mcp.status import get_status_bus
+        from agent_system.tools.status import get_status_bus
 
         bus = get_status_bus()
         queue = await bus.subscribe(server=f"{server.name}.{action}()")
@@ -595,8 +595,8 @@ class TestErrorResultsReachTheStatusStream:
         return result, events
 
     @staticmethod
-    def _server(system_config, mcp_config):
-        class ResultShapeServer(MCPServer):
+    def _server(system_config, server_config):
+        class ResultShapeServer(ToolServer):
             """One tool per result shape the fleet actually returns."""
 
             def get_tools(self):
@@ -649,7 +649,7 @@ class TestErrorResultsReachTheStatusStream:
                 await params["_status"].end("Checked db-1: unhealthy")
                 return {"status": "error", "error": "db-1 is down"}
 
-        return ResultShapeServer('shapes', system_config, mcp_config)
+        return ResultShapeServer('shapes', system_config, server_config)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("action,expected", [
@@ -658,10 +658,10 @@ class TestErrorResultsReachTheStatusStream:
         ("bare_error", "name is required"),
     ])
     async def test_a_returned_error_is_published_as_error(
-            self, system_config, mcp_config, action, expected):
-        from agent_system.mcp.status import StatusPhase
+            self, system_config, server_config, action, expected):
+        from agent_system.tools.status import StatusPhase
 
-        server = self._server(system_config, mcp_config)
+        server = self._server(system_config, server_config)
         result, events = await self._events(server, action)
 
         assert result["error"] == expected, "the result must pass through untouched"
@@ -673,29 +673,29 @@ class TestErrorResultsReachTheStatusStream:
 
     @pytest.mark.asyncio
     async def test_a_hostile_result_cannot_break_the_call(self, system_config,
-                                                          mcp_config):
+                                                          server_config):
         """The net inspects a value the TOOL produced. If that inspection can
         raise, a call that returned cleanly would start failing."""
-        server = self._server(system_config, mcp_config)
+        server = self._server(system_config, server_config)
         result = await server.call_with_status("hostile_result", {})
         assert isinstance(result, dict), "the result must still reach the caller"
 
     @pytest.mark.asyncio
-    async def test_a_structured_error_is_capped(self, system_config, mcp_config):
-        from agent_system.mcp.base import _STATUS_MESSAGE_LIMIT
-        from agent_system.mcp.status import StatusPhase
+    async def test_a_structured_error_is_capped(self, system_config, server_config):
+        from agent_system.tools.base import _STATUS_MESSAGE_LIMIT
+        from agent_system.tools.status import StatusPhase
 
-        server = self._server(system_config, mcp_config)
+        server = self._server(system_config, server_config)
         _, events = await self._events(server, "structured_error")
         error = next(e for e in events if e.phase is StatusPhase.ERROR)
         assert len(error.message) <= _STATUS_MESSAGE_LIMIT, len(error.message)
         assert error.message.endswith("..."), error.message
 
     @pytest.mark.asyncio
-    async def test_error_type_travels_as_meta(self, system_config, mcp_config):
-        from agent_system.mcp.status import StatusPhase
+    async def test_error_type_travels_as_meta(self, system_config, server_config):
+        from agent_system.tools.status import StatusPhase
 
-        server = self._server(system_config, mcp_config)
+        server = self._server(system_config, server_config)
         _, events = await self._events(server, "status_error")
         error = next(e for e in events if e.phase is StatusPhase.ERROR)
         assert error.meta == {"error_type": "PermissionError"}
@@ -711,12 +711,12 @@ class TestErrorResultsReachTheStatusStream:
         # queried, not the call.
         "status_about_the_thing",
     ])
-    async def test_a_successful_call_still_ends(self, system_config, mcp_config,
+    async def test_a_successful_call_still_ends(self, system_config, server_config,
                                                 action):
         """Counter-check: the net must not turn healthy calls into errors."""
-        from agent_system.mcp.status import StatusPhase
+        from agent_system.tools.status import StatusPhase
 
-        server = self._server(system_config, mcp_config)
+        server = self._server(system_config, server_config)
         _, events = await self._events(server, action)
         assert [e.phase for e in events] == [StatusPhase.START, StatusPhase.END]
 
@@ -728,11 +728,11 @@ class TestErrorResultsReachTheStatusStream:
         # its payload, not its outcome. The net must keep its hands off.
         ("reports_error_as_data", "END", "Checked db-1: unhealthy"),
     ])
-    async def test_the_plugins_own_verdict_wins(self, system_config, mcp_config,
+    async def test_the_plugins_own_verdict_wins(self, system_config, server_config,
                                                 action, phase, message):
-        from agent_system.mcp.status import StatusPhase
+        from agent_system.tools.status import StatusPhase
 
-        server = self._server(system_config, mcp_config)
+        server = self._server(system_config, server_config)
         _, events = await self._events(server, action)
         terminal = [e for e in events if e.phase is not StatusPhase.START]
         assert len(terminal) == 1, [(e.phase, e.message) for e in terminal]
@@ -742,3 +742,27 @@ class TestErrorResultsReachTheStatusStream:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+class TestToolDef:
+    """A tool definition carries the name, the description and the JSON Schema.
+
+    Came from tests/mcp/test_mcp_core.py; the rest of that file tested the
+    JSON-RPC shells (MCPMessage, MCPTransport, MCPClient) that no caller ever
+    used and that went with the rename.
+    """
+
+    def test_create_tool(self):
+        tool = ToolDef(
+            name="test_tool",
+            description="A test tool",
+            input_schema={
+                "type": "object",
+                "properties": {"param": {"type": "string"}},
+                "required": ["param"]
+            }
+        )
+
+        assert tool.name == "test_tool"
+        assert tool.description == "A test tool"
+        assert tool.input_schema["type"] == "object"
+        assert "param" in tool.input_schema["properties"]

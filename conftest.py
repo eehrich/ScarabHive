@@ -595,11 +595,11 @@ def mock_system_config():
 
 
 @pytest.fixture
-def mock_mcp_config():
-    """Create a mock MCPConfig object for plugin tests with agent_config."""
-    from agent_system.config.models import MCPConfig, AgentConfig
+def mock_server_config():
+    """Create a mock ToolServerConfig object for plugin tests with agent_config."""
+    from agent_system.config.models import ToolServerConfig, AgentConfig
     agent_config = AgentConfig()
-    return MCPConfig(type="test", enabled=True, agent_config=agent_config)
+    return ToolServerConfig(type="test", enabled=True, agent_config=agent_config)
 
 
 # ============================================================================
@@ -633,10 +633,10 @@ def _reset_all_global_state():
     
     # Reset plugin registries.
     #
-    # mcp/integration.py aliases this registry at IMPORT time
-    # (`from ...mcp_adapter import plugin_mcp_registry`) and MCPIntegration
+    # tools/integration.py aliases this registry at IMPORT time
+    # (`from ...tool_adapter import plugin_tool_registry`) and ToolServerIntegration
     # stores that alias as self.plugin_registry. REBINDING the attribute here
-    # (the old `plugin_mcp_registry = PluginMCPRegistry()`) therefore does NOT
+    # (the old `plugin_tool_registry = PluginToolRegistry()`) therefore does NOT
     # reach the stale alias — it keeps pointing at the fully-discovered
     # registry a prior app-building test populated. A later bare-agent test
     # then discovers every plugin and renders an extra tool-system prompt
@@ -645,23 +645,23 @@ def _reset_all_global_state():
     # every alias observes it empty, and unify both module references on one
     # instance.
     try:
-        from agent_system.plugins import mcp_adapter
-        reg = mcp_adapter.plugin_mcp_registry
+        from agent_system.plugins import tool_adapter
+        reg = tool_adapter.plugin_tool_registry
         reg.plugin_servers.clear()
         reg.plugin_factories.clear()
         try:
-            from agent_system.mcp import integration as _mcp_int_mod
-            stale = getattr(_mcp_int_mod, "plugin_mcp_registry", None)
+            from agent_system.tools import integration as _tools_int_mod
+            stale = getattr(_tools_int_mod, "plugin_tool_registry", None)
             if stale is not None and stale is not reg:
                 stale.plugin_servers.clear()
                 stale.plugin_factories.clear()
-                _mcp_int_mod.plugin_mcp_registry = reg
+                _tools_int_mod.plugin_tool_registry = reg
         except ImportError:
             pass
     except (ImportError, AttributeError):
         pass
     
-    # The web registry likewise: mcp_adapter registers into its import-time
+    # The web registry likewise: tool_adapter registers into its import-time
     # alias, the UI catalogue reads web_adapter's -- clear in place so both
     # stay one object.
     try:
@@ -679,10 +679,9 @@ def _reset_all_global_state():
     try:
         from agent_system import app as app_module
         app_module._app_registry = None
-        app_module._mcp_integration = None
-        app_module._mcp_server_handler = None
+        app_module._tool_integration = None
         app_module._config_service = None
-        app_module._mcp_service = None
+        app_module._tool_server_service = None
         app_module._tool_service = None
         app_module._agent_service = None
         app_module._initialization_service = None
@@ -700,20 +699,10 @@ def _reset_all_global_state():
     except ImportError:
         pass
     
-    # Reset MCP service module state
+    # Reset tool integration global instance
     try:
-        from agent_system.mcp import service as mcp_service_module
-        if hasattr(mcp_service_module, '_service'):
-            mcp_service_module._service = None
-        if hasattr(mcp_service_module, '_mcp_registry'):
-            mcp_service_module._mcp_registry = None
-    except ImportError:
-        pass
-    
-    # Reset MCP integration global instance
-    try:
-        from agent_system.mcp import integration as mcp_integration_module
-        mcp_integration_module.mcp_integration = None
+        from agent_system.tools import integration as tool_integration_module
+        tool_integration_module.tool_integration = None
     except ImportError:
         pass
     

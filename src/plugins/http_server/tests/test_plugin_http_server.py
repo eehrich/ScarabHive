@@ -13,30 +13,30 @@ from plugins.http_server.__main__ import build_parser, cli_main
 class TestHTTPServer:
     """Test the HTTP server MCP adapter."""
 
-    def test_http_server_initialization(self, mock_system_config, mock_mcp_config):
+    def test_http_server_initialization(self, mock_system_config, mock_server_config):
         """Test HTTP server initialization with default config."""
-        server = HTTPServer("http_server", mock_system_config, mock_mcp_config)
+        server = HTTPServer("http_server", mock_system_config, mock_server_config)
         assert server.name == "http_server"
         assert server.host == "127.0.0.1"
         assert server.port == 9000
         assert server.wrapped_server is None
 
-    def test_http_server_initialization_with_config(self, mock_system_config, mock_mcp_config):
+    def test_http_server_initialization_with_config(self, mock_system_config, mock_server_config):
         """Test HTTP server initialization with custom config."""
-        from agent_system.config.models import MCPConfig, AgentConfig
+        from agent_system.config.models import ToolServerConfig, AgentConfig
         
-        # Create MCPConfig with custom host and port
-        mcp_config = MCPConfig(type="http_server", enabled=True, agent_config=AgentConfig())
-        mcp_config.host = "0.0.0.0"
-        mcp_config.port = 8080
+        # Create ToolServerConfig with custom host and port
+        server_config = ToolServerConfig(type="http_server", enabled=True, agent_config=AgentConfig())
+        server_config.host = "0.0.0.0"
+        server_config.port = 8080
         
-        server = HTTPServer("http_server", mock_system_config, mcp_config)
+        server = HTTPServer("http_server", mock_system_config, server_config)
         assert server.host == "0.0.0.0"
         assert server.port == 8080
 
-    def test_http_server_schema(self, mock_system_config, mock_mcp_config):
+    def test_http_server_schema(self, mock_system_config, mock_server_config):
         """Test HTTP server schema generation."""
-        server = HTTPServer("http_server", mock_system_config, mock_mcp_config)
+        server = HTTPServer("http_server", mock_system_config, mock_server_config)
         tools = server.get_tools()
 
         assert len(tools) == 1
@@ -49,14 +49,14 @@ class TestHTTPServer:
     # Old default-action test removed as obsolete.
 
     @pytest.mark.asyncio
-    async def test_http_server_call_without_wrapped_server(self, mock_system_config, mock_mcp_config):
+    async def test_http_server_call_without_wrapped_server(self, mock_system_config, mock_server_config):
         """Test HTTP server call without wrapped server."""
-        server = HTTPServer("http_server", mock_system_config, mock_mcp_config)
+        server = HTTPServer("http_server", mock_system_config, mock_server_config)
         result = await server.call("http_server_ops", {"operation": "call", "tool": "test_tool"})
         assert result["error"] == "No server wrapped - use wrap_server() first"
 
     @pytest.mark.asyncio
-    async def test_http_server_call_with_wrapped_server(self, mock_system_config, mock_mcp_config):
+    async def test_http_server_call_with_wrapped_server(self, mock_system_config, mock_server_config):
         """Test HTTP server call with wrapped server."""
         # Create mock wrapped server
 
@@ -64,7 +64,7 @@ class TestHTTPServer:
         mock_server.call.return_value = {"result": "success"}
 
         # Create HTTP server and wrap it
-        server = HTTPServer("http_server", mock_system_config, mock_mcp_config)
+        server = HTTPServer("http_server", mock_system_config, mock_server_config)
         server.wrap_server(mock_server)
 
         # Test the call via http_server_ops
@@ -78,20 +78,20 @@ class TestHTTPServer:
         mock_server.call.assert_called_once_with("test_tool", {"param": "value"})
         assert result == {"result": "success"}
 
-    def test_create_fastapi_app_without_wrapped_server(self, mock_system_config, mock_mcp_config):
+    def test_create_fastapi_app_without_wrapped_server(self, mock_system_config, mock_server_config):
         """Test creating FastAPI app without wrapped server raises error."""
-        server = HTTPServer("http_server", mock_system_config, mock_mcp_config)
+        server = HTTPServer("http_server", mock_system_config, mock_server_config)
         with pytest.raises(ValueError, match="No server wrapped"):
             server.create_fastapi_app()
 
-    def test_create_fastapi_app_with_wrapped_server(self, mock_system_config, mock_mcp_config):
+    def test_create_fastapi_app_with_wrapped_server(self, mock_system_config, mock_server_config):
         """Test creating FastAPI app with wrapped server."""
         # Create mock wrapped server (use regular Mock for FastAPI tests)
         mock_server = Mock()
         mock_server.name = "test_server"
 
         # Create HTTP server and wrap it
-        server = HTTPServer("http_server", mock_system_config, mock_mcp_config)
+        server = HTTPServer("http_server", mock_system_config, mock_server_config)
         server.wrap_server(mock_server)
 
         # Create FastAPI app
@@ -99,7 +99,7 @@ class TestHTTPServer:
 
         # Verify app was created
         assert isinstance(app, FastAPI)
-        assert app.title == "MCP Server: test_server"
+        assert app.title == "Tool server: test_server"
 
         # Test health endpoint
         client = TestClient(app)
@@ -108,7 +108,7 @@ class TestHTTPServer:
         assert response.json() == {"status": "ok", "server": "test_server"}
 
     @pytest.mark.asyncio
-    async def test_create_fastapi_app_call_endpoint(self, mock_system_config, mock_mcp_config):
+    async def test_create_fastapi_app_call_endpoint(self, mock_system_config, mock_server_config):
         """Test FastAPI app call endpoint."""
         # Create mock wrapped server (use regular Mock but make call async)
         mock_server = Mock()
@@ -119,7 +119,7 @@ class TestHTTPServer:
         mock_server.call = async_call
 
         # Create HTTP server and wrap it
-        server = HTTPServer("http_server", mock_system_config, mock_mcp_config)
+        server = HTTPServer("http_server", mock_system_config, mock_server_config)
         server.wrap_server(mock_server)
 
         # Create FastAPI app and test client
@@ -135,29 +135,29 @@ class TestHTTPServer:
 class TestHTTPPluginFactory:
     """Test the HTTP server plugin factory function."""
 
-    def test_plugin_factory_basic(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_basic(self, mock_system_config, mock_server_config):
         """Test basic plugin factory creation."""
-        server = PLUGIN_FACTORY("http_server", mock_system_config, mock_mcp_config)
+        server = PLUGIN_FACTORY("http_server", mock_system_config, mock_server_config)
         assert isinstance(server, HTTPServer)
         assert server.name == "http_server"
 
-    def test_plugin_factory_with_config(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_with_config(self, mock_system_config, mock_server_config):
         """Test plugin factory with configuration."""
-        from agent_system.config.models import MCPConfig, AgentConfig
+        from agent_system.config.models import ToolServerConfig, AgentConfig
         
-        # Create MCPConfig with custom host and port
-        mcp_config = MCPConfig(type="http_server", enabled=True, agent_config=AgentConfig())
-        mcp_config.host = "0.0.0.0"
-        mcp_config.port = 8080
+        # Create ToolServerConfig with custom host and port
+        server_config = ToolServerConfig(type="http_server", enabled=True, agent_config=AgentConfig())
+        server_config.host = "0.0.0.0"
+        server_config.port = 8080
         
-        server = PLUGIN_FACTORY("http_server", mock_system_config, mcp_config)
+        server = PLUGIN_FACTORY("http_server", mock_system_config, server_config)
         assert server.host == "0.0.0.0"
         assert server.port == 8080
 
-    def test_plugin_factory_ssl_verify(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_ssl_verify(self, mock_system_config, mock_server_config):
         """Test plugin factory SSL verification handling.
 
-        The HTTP server plugin wraps other MCP servers and does not perform
+        The HTTP server plugin wraps other tool servers and does not perform
         outbound HTTP requests itself. The test asserts that providing
         ssl_verify in the system config does not cause an error and that any
         ssl-related setting is not unexpectedly required.
@@ -165,7 +165,7 @@ class TestHTTPPluginFactory:
         # The plugin may not expose `ssl_verify` attribute; ensure no exception
         # and that behavior is stable when system config toggles ssl_verify.
         mock_system_config.ssl_verify = False
-        server = PLUGIN_FACTORY("http_server", mock_system_config, mock_mcp_config)
+        server = PLUGIN_FACTORY("http_server", mock_system_config, mock_server_config)
         # If the plugin exposes ssl_verify, it should reflect the system setting;
         # otherwise, just ensure attribute access doesn't raise.
         if hasattr(server, 'ssl_verify'):
@@ -175,7 +175,7 @@ class TestHTTPPluginFactory:
 class TestHTTPCLI:
     """Test the HTTP server CLI interface."""
 
-    def test_build_parser_basic_args(self, mock_system_config, mock_mcp_config):
+    def test_build_parser_basic_args(self, mock_system_config, mock_server_config):
         """Test building parser with basic arguments."""
         parser = build_parser()
         args = parser.parse_args(["--server-name", "test_server"])
@@ -185,7 +185,7 @@ class TestHTTPCLI:
         assert args.port == 9000
         assert args.no_ssl_verify is False
 
-    def test_build_parser_all_args(self, mock_system_config, mock_mcp_config):
+    def test_build_parser_all_args(self, mock_system_config, mock_server_config):
         """Test building parser with all arguments."""
         parser = build_parser()
         args = parser.parse_args([
@@ -200,7 +200,7 @@ class TestHTTPCLI:
         assert args.port == 8080
         assert args.no_ssl_verify is True
 
-    def test_build_parser_defaults(self, mock_system_config, mock_mcp_config):
+    def test_build_parser_defaults(self, mock_system_config, mock_server_config):
         """Test parser default values."""
         parser = build_parser()
         args = parser.parse_args(["--server-name", "test_server"])

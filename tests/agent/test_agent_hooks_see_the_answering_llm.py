@@ -17,11 +17,11 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
 )
 from agent_system.llm.model_health import model_health
 from agent_system.llm.models import LLMRateLimitError, LLMServerError
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.agent.escalation import StuckEscalator
 from agent_system.servers.agent.server import Agent
 
@@ -76,8 +76,8 @@ class _ScriptedLLM:
 def _agent(system_config, original, max_steps=1, llm_profile=("big", "small"), **agent_cfg):
     agent_config = AgentConfig(llm_profile=list(llm_profile), max_steps=max_steps, **agent_cfg)
     agent_config.tools.allowed = ["*"]
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    return Agent("test_agent", system_config, mcp_config, MCPRegistry(), llm=original)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    return Agent("test_agent", system_config, server_config, ToolServerRegistry(), llm=original)
 
 
 def _block(llm):

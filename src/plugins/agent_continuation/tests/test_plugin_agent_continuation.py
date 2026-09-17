@@ -64,14 +64,14 @@ def _make_plugin(
     plugin itself does NOT gate by agent name — when the hook fires,
     the agent already opted in.
     """
-    mcp_config = MagicMock()
-    mcp_config.config = {
+    server_config = MagicMock()
+    server_config.config = {
         "strategy": strategy,
         "max_continuations": max_continuations,
         "agent_rules": agent_rules or {},
         "default_continue_message": default_continue_message,
     }
-    return AgentContinuationPlugin(PLUGIN_DIR, mcp_config)
+    return AgentContinuationPlugin(PLUGIN_DIR, server_config)
 
 
 # ===========================================================================
@@ -82,10 +82,10 @@ class TestPluginInitialization:
     """Test plugin construction and configuration."""
 
     def test_default_config_from_schema(self):
-        """Plugin initializes with schema defaults when mcp_config has no config."""
-        mcp_config = MagicMock()
-        mcp_config.config = None
-        plugin = AgentContinuationPlugin(PLUGIN_DIR, mcp_config)
+        """Plugin initializes with schema defaults when server_config has no config."""
+        server_config = MagicMock()
+        server_config.config = None
+        plugin = AgentContinuationPlugin(PLUGIN_DIR, server_config)
 
         assert plugin._strategy == "rules"
         assert plugin._max_continuations == 10

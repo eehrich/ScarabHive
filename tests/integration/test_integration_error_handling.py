@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock
 
 from agent_system.servers.agent.server import Agent
 from agent_system.config.models import (
-    AgentSystemConfig, MCPConfig, AgentConfig,
+    AgentSystemConfig, ToolServerConfig, AgentConfig,
     LLMSystemConfig, LLMModelConfig, LLMProfile, ToolConfig
 )
-from agent_system.mcp.base import MCPRegistry, MCPServer
+from agent_system.tools.base import ToolServerRegistry, ToolServer
 
 
 def create_test_system_config() -> AgentSystemConfig:
@@ -47,11 +47,11 @@ def create_mock_llm(responses: list[dict]) -> AsyncMock:
     return mock_llm
 
 
-class FailingToolServer(MCPServer):
+class FailingToolServer(ToolServer):
     """Mock tool server that always fails."""
     
     def __init__(self, name: str, error_message: str = "Tool failed"):
-        super().__init__(name, create_test_system_config(), MCPConfig(type="agent", enabled=True))
+        super().__init__(name, create_test_system_config(), ToolServerConfig(type="agent", enabled=True))
         self.error_message = error_message
     
     async def call(self, tool: str, params: dict) -> dict:
@@ -72,19 +72,19 @@ class FailingToolServer(MCPServer):
         }
     
     async def list_tools(self) -> list:
-        from agent_system.mcp.core import MCPTool
-        return [MCPTool(
+        from agent_system.tools.base import ToolDef
+        return [ToolDef(
             name=self.name,
             description="A tool that always fails",
             input_schema={"type": "object", "properties": {}}
         )]
 
 
-class SlowToolServer(MCPServer):
+class SlowToolServer(ToolServer):
     """Mock tool server that takes a long time."""
     
     def __init__(self, name: str, delay_seconds: float = 5.0):
-        super().__init__(name, create_test_system_config(), MCPConfig(type="agent", enabled=True))
+        super().__init__(name, create_test_system_config(), ToolServerConfig(type="agent", enabled=True))
         self.delay_seconds = delay_seconds
     
     async def call(self, tool: str, params: dict) -> dict:
@@ -106,8 +106,8 @@ class SlowToolServer(MCPServer):
         }
     
     async def list_tools(self) -> list:
-        from agent_system.mcp.core import MCPTool
-        return [MCPTool(
+        from agent_system.tools.base import ToolDef
+        return [ToolDef(
             name=self.name,
             description="A slow tool",
             input_schema={"type": "object", "properties": {}}
@@ -122,14 +122,14 @@ async def test_agent_handles_tool_failure_gracefully():
     Agent should report the error but not crash itself.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     
     # Register a failing tool
     failing_tool = FailingToolServer("failing_tool", "Database connection failed")
     registry.register("failing_tool", failing_tool)
     
     # Create agent that will call the failing tool
-    agent_config = MCPConfig(
+    agent_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(
@@ -177,9 +177,9 @@ async def test_agent_handles_llm_error_in_response():
     (e.g., rate limit, invalid request, context window exceeded).
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     
-    agent_config = MCPConfig(
+    agent_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(max_steps=2)
@@ -217,12 +217,12 @@ async def test_agent_handles_malformed_tool_call_arguments():
     System should handle this gracefully, not crash.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     
     # Create a working tool
-    class SimpleToolServer(MCPServer):
+    class SimpleToolServer(ToolServer):
         def __init__(self):
-            super().__init__("simple_tool", system_config, MCPConfig(type="agent", enabled=True))
+            super().__init__("simple_tool", system_config, ToolServerConfig(type="agent", enabled=True))
         
         async def call(self, tool: str, params: dict) -> dict:
             return {"result": "Success"}
@@ -238,12 +238,12 @@ async def test_agent_handles_malformed_tool_call_arguments():
             }
         
         async def list_tools(self) -> list:
-            from agent_system.mcp.core import MCPTool
-            return [MCPTool(name="simple_tool", description="Simple", input_schema={})]
+            from agent_system.tools.base import ToolDef
+            return [ToolDef(name="simple_tool", description="Simple", input_schema={})]
     
     registry.register("simple_tool", SimpleToolServer())
     
-    agent_config = MCPConfig(
+    agent_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(max_steps=3)
@@ -289,9 +289,9 @@ async def test_agent_handles_empty_llm_responses():
     - After 5 consecutive empty responses (2 + 3), it gives up and emits error
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     
-    agent_config = MCPConfig(
+    agent_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(max_steps=10)  # More steps to test loop detection
@@ -337,13 +337,13 @@ async def test_agent_handles_tool_timeout():
     Note: This tests the cancellation mechanism works for tool calls.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     
     # Register a very slow tool
     slow_tool = SlowToolServer("slow_tool", delay_seconds=10.0)
     registry.register("slow_tool", slow_tool)
     
-    agent_config = MCPConfig(
+    agent_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(max_steps=2)
@@ -389,15 +389,15 @@ async def test_agent_handles_multiple_tool_failures():
     System should handle partial failures gracefully.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     
     # Register failing and working tools
     registry.register("failing_1", FailingToolServer("failing_1", "Error 1"))
     registry.register("failing_2", FailingToolServer("failing_2", "Error 2"))
     
-    class WorkingTool(MCPServer):
+    class WorkingTool(ToolServer):
         def __init__(self):
-            super().__init__("working_tool", system_config, MCPConfig(type="agent", enabled=True))
+            super().__init__("working_tool", system_config, ToolServerConfig(type="agent", enabled=True))
         
         async def call(self, tool: str, params: dict) -> dict:
             return {"result": "Success"}
@@ -413,12 +413,12 @@ async def test_agent_handles_multiple_tool_failures():
             }
         
         async def list_tools(self) -> list:
-            from agent_system.mcp.core import MCPTool
-            return [MCPTool(name="working_tool", description="Working", input_schema={})]
+            from agent_system.tools.base import ToolDef
+            return [ToolDef(name="working_tool", description="Working", input_schema={})]
     
     registry.register("working_tool", WorkingTool())
     
-    agent_config = MCPConfig(
+    agent_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(max_steps=3)
@@ -461,9 +461,9 @@ async def test_agent_handles_missing_tool():
     System should handle this gracefully.
     """
     system_config = create_test_system_config()
-    registry = MCPRegistry()  # Empty registry
+    registry = ToolServerRegistry()  # Empty registry
     
-    agent_config = MCPConfig(
+    agent_config = ToolServerConfig(
         type="agent",
         enabled=True,
         agent_config=AgentConfig(max_steps=2)

@@ -2,7 +2,7 @@
 TODO Management Plugin - CLI Interface
 
 Provides command-line interface for task management operations.
-Supports both direct CLI mode and MCP server mode.
+Supports both direct CLI mode and tool server mode.
 
 Usage:
     # Direct CLI commands
@@ -11,7 +11,7 @@ Usage:
     python -m plugins.todo update task_001 --status completed
     python -m plugins.todo summary
     
-    # MCP server mode
+    # tool server mode
     python -m plugins.todo --server --port 9012
 """
 
@@ -366,13 +366,13 @@ def cli_main():
     parser.add_argument(
         "--server",
         action="store_true",
-        help="Run as MCP server",
+        help="Run as tool server",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=9012,
-        help="MCP server port (default: 9012)",
+        help="tool server port (default: 9012)",
     )
     
     # Subcommands
@@ -517,10 +517,10 @@ def cli_main():
     
     args = parser.parse_args()
     
-    # MCP server mode
+    # tool server mode
     if args.server:
-        print(f"Starting TODO Management MCP server on port {args.port}...")
-        print("(MCP server implementation pending)")
+        print(f"Starting TODO Management tool server on port {args.port}...")
+        print("(tool server implementation pending)")
         sys.exit(1)
     
     # CLI mode - execute command
@@ -529,10 +529,10 @@ def cli_main():
         sys.exit(1)
     
     # Create server instance with proper config objects
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
     
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(
+    server_config = ToolServerConfig(
         type="todo",
         enabled=True,
         storage_path="data/todos",
@@ -542,7 +542,7 @@ def cli_main():
     )
     
     from .plugin import PLUGIN_FACTORY
-    server = PLUGIN_FACTORY("todo", system_config, mcp_config)
+    server = PLUGIN_FACTORY("todo", system_config, server_config)
     
     # Dispatch command
     handlers = {

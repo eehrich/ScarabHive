@@ -1,6 +1,6 @@
 """The external MCP client, as a plugin.
 
-Talking to foreign MCP servers used to be welded into ``MCPIntegration`` in the
+Talking to foreign MCP servers used to be welded into ``ToolServerIntegration`` in the
 core, next to the plugin bootstrap that has nothing to do with it. This plugin
 takes over that half: it owns the connections, speaks the current protocol
 through the official SDK, and offers the foreign tools back to the agent core
@@ -25,23 +25,23 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins import capabilities
 
 from .connection import MCPConnectionError
 from .manager import ExternalServerPool
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class MCPClientServer(SchemaBasedMCPServer):
+class MCPClientServer(SchemaBasedToolServer):
     """Connects to external MCP servers and federates their tools."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
+        super().__init__(name, system_config, server_config)
 
         network = getattr(system_config, "network", None)
         external = getattr(system_config, "external_servers", None)

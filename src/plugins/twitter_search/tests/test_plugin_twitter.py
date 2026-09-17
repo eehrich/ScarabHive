@@ -7,14 +7,14 @@ from plugins.twitter_search.server import TwitterSearchServer
 
 
 @pytest.mark.asyncio
-async def test_twitter_plugin_discovered(mock_system_config, mock_mcp_config):
+async def test_twitter_plugin_discovered(mock_system_config, mock_server_config):
     repo_root = Path(__file__).resolve().parents[3]
     default_dir = repo_root / 'plugins'
     if not default_dir.exists():
         alt = repo_root / 'src' / 'plugins'
         if alt.exists():
             default_dir = alt
-    # Note: Factory now requires (name, system_config, mcp_config) signature
+    # Note: Factory now requires (name, system_config, server_config) signature
     # This test will be updated when bootstrap system is modernized
         from agent_system.plugins import discover_all_plugins
 
@@ -27,27 +27,27 @@ async def test_twitter_plugin_discovered(mock_system_config, mock_mcp_config):
 class TestTwitterSearchServer:
     """Test the Twitter Search server functionality."""
 
-    def test_twitter_server_initialization(self, mock_system_config, mock_mcp_config):
+    def test_twitter_server_initialization(self, mock_system_config, mock_server_config):
         """Test Twitter Search server initialization."""
-        server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+        server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
         assert server.name == "twitter"
         assert server.ssl_verify is True
 
-    def test_twitter_server_initialization_with_config(self, mock_system_config, mock_mcp_config):
+    def test_twitter_server_initialization_with_config(self, mock_system_config, mock_server_config):
         """Test Twitter Search server initialization with config."""
-        from agent_system.config.models import MCPConfig, AgentConfig
+        from agent_system.config.models import ToolServerConfig, AgentConfig
         
         mock_system_config.ssl_verify = False
-        mcp_config = MCPConfig(type="twitter_search", enabled=True, agent_config=AgentConfig())
-        mcp_config.timeout = 30
+        server_config = ToolServerConfig(type="twitter_search", enabled=True, agent_config=AgentConfig())
+        server_config.timeout = 30
         
-        server = TwitterSearchServer("twitter", mock_system_config, mcp_config)
+        server = TwitterSearchServer("twitter", mock_system_config, server_config)
         assert server.name == "twitter"
         assert server.ssl_verify is False
 
-    def test_twitter_server_schema(self, mock_system_config, mock_mcp_config):
+    def test_twitter_server_schema(self, mock_system_config, mock_server_config):
         """Test Twitter Search server tools structure."""
-        server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+        server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
         tools = server.get_tools()
 
         assert isinstance(tools, list)
@@ -62,20 +62,20 @@ class TestTwitterSearchServer:
         params = tool["function"]["parameters"]
         assert "query" in params["properties"]
 
-    def test_twitter_server_tool_name(self, mock_system_config, mock_mcp_config):
+    def test_twitter_server_tool_name(self, mock_system_config, mock_server_config):
         """Test Twitter Search server tool name."""
-        server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+        server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
         tools = server.get_tools()
         assert tools[0]["function"]["name"] == "twitter_tweets"
 
     @pytest.mark.asyncio
-    async def test_twitter_server_search_no_credentials(self, mock_system_config, mock_mcp_config):
+    async def test_twitter_server_search_no_credentials(self, mock_system_config, mock_server_config):
         """Test Twitter Search server without credentials returns setup guide."""
         from unittest.mock import patch
         
         # Mock tweepy as available but no credentials
         with patch('plugins.twitter_search.server.TWEEPY_AVAILABLE', True):
-            server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+            server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
 
             mock_status = AsyncMock()
             result = await server.call("twitter_tweets", {"query": "test", "_status": mock_status})
@@ -89,9 +89,9 @@ class TestTwitterSearchServer:
             assert isinstance(result["alternatives"], list)
 
     @pytest.mark.asyncio
-    async def test_twitter_server_invalid_tool(self, mock_system_config, mock_mcp_config):
+    async def test_twitter_server_invalid_tool(self, mock_system_config, mock_server_config):
         """Test Twitter Search server with invalid tool name."""
-        server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+        server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
 
         mock_status = AsyncMock()
         # Modern pattern: generic dispatcher raises ValueError for unknown tools
@@ -99,13 +99,13 @@ class TestTwitterSearchServer:
             await server.call("invalid_tool", {"query": "test", "_status": mock_status})
 
     @pytest.mark.asyncio
-    async def test_twitter_server_empty_query(self, mock_system_config, mock_mcp_config):
+    async def test_twitter_server_empty_query(self, mock_system_config, mock_server_config):
         """Test Twitter Search server with empty query (no credentials)."""
         from unittest.mock import patch
         
         # Mock tweepy as available but no credentials
         with patch('plugins.twitter_search.server.TWEEPY_AVAILABLE', True):
-            server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+            server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
 
             mock_status = AsyncMock()
             result = await server.call("twitter_tweets", {"query": "", "_status": mock_status})
@@ -115,7 +115,7 @@ class TestTwitterSearchServer:
             assert "setup_instructions" in result
 
     @pytest.mark.asyncio
-    async def test_twitter_server_with_mock_api(self, mock_system_config, mock_mcp_config):
+    async def test_twitter_server_with_mock_api(self, mock_system_config, mock_server_config):
         """Test Twitter Search server with mocked tweepy module."""
         from unittest.mock import patch, MagicMock
         
@@ -134,7 +134,7 @@ class TestTwitterSearchServer:
                     server_module.tweepy = fake_tweepy
                     
                     # Create server
-                    server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+                    server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
                     server.client = fake_client_instance
                     
                     # Create mock tweet
@@ -170,11 +170,11 @@ class TestTwitterSearchServer:
                     assert result["tweets"][0]["metrics"]["likes"] == 10
 
     @pytest.mark.asyncio
-    async def test_twitter_server_cancellation(self, mock_system_config, mock_mcp_config):
+    async def test_twitter_server_cancellation(self, mock_system_config, mock_server_config):
         """Test Twitter Search server respects cancellation token."""
         from unittest.mock import MagicMock
         
-        server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+        server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
 
         mock_status = AsyncMock()
         mock_token = MagicMock()
@@ -192,13 +192,13 @@ class TestTwitterSearchServer:
         assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_twitter_server_tweepy_not_installed(self, mock_system_config, mock_mcp_config):
+    async def test_twitter_server_tweepy_not_installed(self, mock_system_config, mock_server_config):
         """Test Twitter Search server when tweepy is not installed."""
         from unittest.mock import patch
         
         # Mock TWEEPY_AVAILABLE to be False
         with patch('plugins.twitter_search.server.TWEEPY_AVAILABLE', False):
-            server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+            server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
             
             mock_status = AsyncMock()
             result = await server.call("twitter_tweets", {"query": "test", "_status": mock_status})
@@ -212,30 +212,30 @@ class TestTwitterSearchServer:
 class TestTwitterSearchPluginFactory:
     """Test the Twitter Search plugin factory function."""
 
-    def test_plugin_factory_basic(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_basic(self, mock_system_config, mock_server_config):
         """Test basic plugin factory functionality."""
         from plugins.twitter_search.plugin import PLUGIN_FACTORY
 
-        server = PLUGIN_FACTORY("twitter", mock_system_config, mock_mcp_config)
+        server = PLUGIN_FACTORY("twitter", mock_system_config, mock_server_config)
         assert server.name == "twitter"
         assert server.ssl_verify is True
 
-    def test_plugin_factory_with_config(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_with_config(self, mock_system_config, mock_server_config):
         """Test plugin factory with configuration."""
         from plugins.twitter_search.plugin import PLUGIN_FACTORY
-        from agent_system.config.models import MCPConfig, AgentConfig
+        from agent_system.config.models import ToolServerConfig, AgentConfig
 
         mock_system_config.ssl_verify = False
-        mcp_config = MCPConfig(type="twitter_search", enabled=True, agent_config=AgentConfig())
-        mcp_config.timeout = 60
+        server_config = ToolServerConfig(type="twitter_search", enabled=True, agent_config=AgentConfig())
+        server_config.timeout = 60
         
-        server = PLUGIN_FACTORY("twitter", mock_system_config, mcp_config)
+        server = PLUGIN_FACTORY("twitter", mock_system_config, server_config)
         assert server.name == "twitter"
         assert server.ssl_verify is False
 
-    def test_plugin_factory_name_parameter(self, mock_system_config, mock_mcp_config):
+    def test_plugin_factory_name_parameter(self, mock_system_config, mock_server_config):
         """Test plugin factory with custom name."""
         from plugins.twitter_search.plugin import PLUGIN_FACTORY
 
-        server = PLUGIN_FACTORY("custom_twitter", mock_system_config, mock_mcp_config)
+        server = PLUGIN_FACTORY("custom_twitter", mock_system_config, mock_server_config)
         assert server.name == "custom_twitter"

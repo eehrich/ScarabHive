@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 from agent_system.services.session_manager import SessionManager
 from agent_system.services.session_service import SessionService
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.config.models import AgentConfig
 from plugins.sub_agent_manager.manager import SubAgentManager
 
@@ -42,7 +42,7 @@ async def session_service(session_manager):
 @pytest.fixture
 def sub_agent_manager(session_service):
     """Create SubAgentManager with mock agents in registry."""
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     
     # Register all mock agents that E2E tests expect with proper agent_config
     mock_agents = [
@@ -290,7 +290,7 @@ async def test_e2e_max_nesting_depth_enforcement(
     """Test that max nesting depth is enforced."""
     
     # Create manager with max_depth=3 and mock agents
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     
     # Register required mock agents
     for agent_name in ["agent_l2", "agent_l3", "agent_l4"]:
@@ -567,7 +567,7 @@ async def test_create_sub_session_eventually_gives_up_on_persistent_collision(
 
 def _registry(*agent_names):
     """Registry holding a mock agent per name."""
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     for name in agent_names:
         agent = Mock()
         agent.name = name

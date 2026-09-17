@@ -468,7 +468,7 @@ class EndpointSecurityMiddleware:
 
 
 #: What the audit log sorts a request into; static files are never kept.
-AUDIT_CATEGORIES = ("plugin", "api", "agent", "auth", "mcp", "debug", "health", "other")
+AUDIT_CATEGORIES = ("plugin", "api", "agent", "auth", "tools", "debug", "health", "other")
 AUDIT_STATUS_CLASSES = ("2xx", "3xx", "4xx", "5xx")
 #: Where the Security Audit panel reads the log (api/admin_endpoints.py).
 AUDIT_LOG_PATH = "/admin/security/audit"
@@ -596,8 +596,8 @@ class SecurityAuditMiddleware:
             return "static"
         elif path.startswith("/auth/") or path.startswith("/login") or path.startswith("/logout"):
             return "auth"
-        elif path.startswith("/mcp/"):
-            return "mcp"
+        elif path.startswith("/tools/"):
+            return "tools"
         elif path.startswith("/debug/"):
             return "debug"
         elif path.startswith("/health") or path.startswith("/meta"):

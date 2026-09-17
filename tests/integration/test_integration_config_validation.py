@@ -20,14 +20,14 @@ from unittest.mock import AsyncMock, MagicMock
 from agent_system.config.models import (
     AgentSystemConfig,
     AgentConfig,
-    MCPConfig,
+    ToolServerConfig,
     ToolConfig,
     LLMSystemConfig,
     LLMModelConfig,
     LLMProfile
 )
 from agent_system.servers.agent.server import Agent
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ def base_system_config():
 @pytest.fixture
 def mock_registry_with_servers():
     """Registry with multiple mock servers"""
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
 
     for server_name in ["datetime", "weather", "calculator", "database"]:
         mock_server = MagicMock()
@@ -117,13 +117,13 @@ async def test_llm_profile_resolution(base_system_config):
     )
 
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    registry = ToolServerRegistry()
 
     agent = Agent(
         name="profile_test",
         system_config=base_system_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=registry,
         llm=mock_llm
     )
@@ -141,7 +141,7 @@ async def test_llm_profile_resolution(base_system_config):
     agent2 = Agent(
         name="profile_test_2",
         system_config=base_system_config,
-        mcp_config=MCPConfig(type="agent", enabled=True, agent_config=agent_config),
+        server_config=ToolServerConfig(type="agent", enabled=True, agent_config=agent_config),
         registry=registry,
         llm=mock_llm
     )
@@ -156,7 +156,7 @@ async def test_llm_profile_resolution(base_system_config):
     agent3 = Agent(
         name="profile_test_3",
         system_config=base_system_config,
-        mcp_config=MCPConfig(type="agent", enabled=True, agent_config=agent_config),
+        server_config=ToolServerConfig(type="agent", enabled=True, agent_config=agent_config),
         registry=registry,
         llm=mock_llm
     )
@@ -178,12 +178,12 @@ async def test_tool_server_filtering_config(base_system_config, mock_registry_wi
     )
 
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
 
     agent = Agent(
         name="filter_test",
         system_config=base_system_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry_with_servers,
         llm=mock_llm
     )
@@ -212,12 +212,12 @@ async def test_empty_allowed_tools_means_none(base_system_config, mock_registry_
     )
 
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
 
     agent = Agent(
         name="no_tools_test",
         system_config=base_system_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry_with_servers,
         llm=mock_llm
     )
@@ -267,8 +267,8 @@ async def test_hook_disablement_config(base_system_config):
     )
 
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    registry = ToolServerRegistry()
 
     from unittest.mock import patch
 
@@ -277,7 +277,7 @@ async def test_hook_disablement_config(base_system_config):
         agent = Agent(
             name="hook_test",
             system_config=base_system_config,
-            mcp_config=mcp_config,
+            server_config=server_config,
             registry=registry,
             llm=mock_llm
         )
@@ -306,15 +306,15 @@ async def test_system_prompt_override(base_system_config):
     )
 
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    registry = ToolServerRegistry()
 
     from unittest.mock import patch, AsyncMock
 
     agent = Agent(
         name="prompt_test",
         system_config=base_system_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=registry,
         llm=mock_llm
     )
@@ -349,13 +349,13 @@ async def test_output_format_config(base_system_config):
     )
 
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    registry = ToolServerRegistry()
 
     agent = Agent(
         name="format_test",
         system_config=base_system_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=registry,
         llm=mock_llm
     )
@@ -384,13 +384,13 @@ async def test_max_iterations_config(base_system_config):
     )
 
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    registry = ToolServerRegistry()
 
     agent = Agent(
         name="steps_test",
         system_config=base_system_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=registry,
         llm=mock_llm
     )
@@ -413,15 +413,15 @@ async def test_config_with_missing_profile_fails_gracefully(base_system_config):
     )
 
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    registry = ToolServerRegistry()
 
     # Should raise an error or handle gracefully
     try:
         _agent = Agent(
             name="missing_profile_test",
             system_config=base_system_config,
-            mcp_config=mcp_config,
+            server_config=server_config,
             registry=registry,
             llm=mock_llm
         )
@@ -445,12 +445,12 @@ async def test_config_with_all_tools_disabled(base_system_config, mock_registry_
     )
 
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
 
     agent = Agent(
         name="no_tools_test",
         system_config=base_system_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry_with_servers,
         llm=mock_llm
     )
@@ -491,13 +491,13 @@ async def test_config_max_steps_override(base_system_config):
         )
 
         mock_llm = MockLLMClient()
-        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-        registry = MCPRegistry()
+        server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+        registry = ToolServerRegistry()
 
         agent = Agent(
             name=f"steps_test_{profile_name}",
             system_config=base_system_config,
-            mcp_config=mcp_config,
+            server_config=server_config,
             registry=registry,
             llm=mock_llm
         )

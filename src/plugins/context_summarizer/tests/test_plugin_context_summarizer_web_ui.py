@@ -3,13 +3,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.context_summarizer.plugin import PLUGIN_FACTORY
 
 
 @pytest.fixture
 def plugin():
-    return PLUGIN_FACTORY("context_summarizer", AgentSystemConfig(), MCPConfig())
+    return PLUGIN_FACTORY("context_summarizer", AgentSystemConfig(), ToolServerConfig())
 
 
 @pytest.fixture

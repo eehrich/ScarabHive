@@ -1,4 +1,4 @@
-"""Sub-Agent Manager MCP Server implementation."""
+"""Sub-Agent Manager Tool Server implementation."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, List, Optional
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
 from agent_system.services.session_manager import SessionNotFoundError
 from agent_system.utils.id import short_id
 from agent_system.llm.token_utils import extract_text_from_content
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 from plugins.sub_agent_manager.manager import SubAgentManager
 
@@ -75,15 +75,15 @@ def _register_request_user(request_id: str, user_id: str) -> None:
     logger.debug(f"Registered sub-request {request_id} for user {user_id}")
 
 
-def _injector_options(mcp_config: Any) -> dict:
+def _injector_options(server_config: Any) -> dict:
     """The inject_sub_agent_context options: the server entry's
     ``hook_config.inject_sub_agent_context`` block."""
-    hook_config = getattr(mcp_config, 'hook_config', None) or {}
+    hook_config = getattr(server_config, 'hook_config', None) or {}
     return dict(hook_config.get("inject_sub_agent_context") or {})
 
 
-class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
-    """MCP server for sub-agent management with hook support.
+class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
+    """tool server for sub-agent management with hook support.
 
     Provides a unified tool `manage_sub_agent` with 5 operations:
     - create: Create and execute new sub-agent
@@ -95,33 +95,33 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
     Also implements pre_llm_call hook to inject sub-agent context into system prompt.
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """Initialize SubAgentManagerServer.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        # Initialize MCP server
-        SchemaBasedMCPServer.__init__(self, name, system_config, mcp_config)
+        # Initialize tool server
+        SchemaBasedToolServer.__init__(self, name, system_config, server_config)
 
         # Initialize hook
-        hook_config = getattr(mcp_config, 'hook_config', {})
+        hook_config = getattr(server_config, 'hook_config', {})
         PluginHook.__init__(self, name, config=hook_config)
 
         # Configuration
-        self.max_sub_agents = int(getattr(mcp_config, 'max_sub_agents_per_session', 10))
-        self.max_nesting_depth = int(getattr(mcp_config, 'max_nesting_depth', 5))
-        self.max_history = int(getattr(mcp_config, 'max_message_history', 100))
-        self.max_nesting_depth = int(getattr(mcp_config, 'max_nesting_depth', 5))
-        self.max_sub_agents_per_type = int(getattr(mcp_config, 'max_sub_agents_per_type', 3))
+        self.max_sub_agents = int(getattr(server_config, 'max_sub_agents_per_session', 10))
+        self.max_nesting_depth = int(getattr(server_config, 'max_nesting_depth', 5))
+        self.max_history = int(getattr(server_config, 'max_message_history', 100))
+        self.max_nesting_depth = int(getattr(server_config, 'max_nesting_depth', 5))
+        self.max_sub_agents_per_type = int(getattr(server_config, 'max_sub_agents_per_type', 3))
         
         # Auto-archive oldest sub-agent when limit is reached
-        self.auto_archive_on_limit = bool(getattr(mcp_config, 'auto_archive_on_limit', False))
+        self.auto_archive_on_limit = bool(getattr(server_config, 'auto_archive_on_limit', False))
 
         # Timeout configuration
-        self.default_wait_timeout = int(getattr(mcp_config, 'default_wait_timeout', 3600))  # Default 1 hour
+        self.default_wait_timeout = int(getattr(server_config, 'default_wait_timeout', 3600))  # Default 1 hour
 
         # 'info' pagination (see _handle_info): the coordinator most often
         # wants the tail, but has to be able to page through the FULL
@@ -129,13 +129,13 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         # info_max_limit is a hard per-call cap, not a policy choice — it stops
         # one call from dumping the entire history back into the coordinator's
         # own context; page with 'offset' instead.
-        self.info_default_limit = int(getattr(mcp_config, 'info_default_limit', 20))
-        self.info_max_limit = int(getattr(mcp_config, 'info_max_limit', 200))
-        self.info_default_max_chars = int(getattr(mcp_config, 'info_default_max_chars', 4000))
+        self.info_default_limit = int(getattr(server_config, 'info_default_limit', 20))
+        self.info_max_limit = int(getattr(server_config, 'info_max_limit', 200))
+        self.info_default_max_chars = int(getattr(server_config, 'info_default_max_chars', 4000))
 
         # Agent filtering (multi-instance support - by instance name, not type)
-        self.allowed_agents = list(getattr(mcp_config, 'allowed_agents', ['*']))
-        self.blocked_agents = list(getattr(mcp_config, 'blocked_agents', []))
+        self.allowed_agents = list(getattr(server_config, 'allowed_agents', ['*']))
+        self.blocked_agents = list(getattr(server_config, 'blocked_agents', []))
 
         # Kosten-Riegel: darf der AUFRUFER use_advanced_model=true setzen?
         # LLM-Caller setzen das Flag gern aus Eigeninitiative (Prod-Befund
@@ -143,7 +143,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         # use_advanced_model=true, ohne dass sein Prompt es verlangt — der
         # komplette Moderator-Run lief still auf der advanced-Kette).
         # False = Flag wird ignoriert (mit Log); Default True = Bestand.
-        self.allow_advanced_model = bool(getattr(mcp_config, 'allow_advanced_model', True))
+        self.allow_advanced_model = bool(getattr(server_config, 'allow_advanced_model', True))
 
         # Same class of guard, one notch finer: for these agent types the
         # caller's use_advanced_model is honoured on `create` only; a
@@ -152,17 +152,17 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         # moderator's prompt legitimately asks for advanced continues
         # (synthesis, stuck), and each of those would be a premium call over
         # a 100k+ context. Empty by default = existing behaviour.
-        raw_create_only = getattr(mcp_config, 'advanced_create_only_agents', None)
+        raw_create_only = getattr(server_config, 'advanced_create_only_agents', None)
         self.advanced_create_only_agents = (
             set(raw_create_only) if isinstance(raw_create_only, (list, tuple, set)) else set()
         )
 
         # Options of the inject_sub_agent_context hook (hook_config block)
-        self._injector_config = _injector_options(mcp_config)
+        self._injector_config = _injector_options(server_config)
 
         # Phase-based agent filtering (affects both tool schema and create validation)
         # Config is at top-level (same as allowed_agents), not inside hook_config
-        phase_config = getattr(mcp_config, 'phase_filtering', {}) or {}
+        phase_config = getattr(server_config, 'phase_filtering', {}) or {}
         self.phase_filtering_enabled = phase_config.get('enabled', False)
         self.phase_variable = phase_config.get('phase_variable', 'workflow_phase')
         self.phase_agents = phase_config.get('phase_agents', {})
@@ -170,10 +170,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         # Min result length per agent type: auto-retry if result is too short.
         # Config: {"v5b_synopsis_writer": 500, "v5b_beat_generator": 50}
         self._min_result_length_by_agent: dict[str, int] = dict(
-            getattr(mcp_config, 'min_result_length_by_agent', {}) or {}
+            getattr(server_config, 'min_result_length_by_agent', {}) or {}
         )
         self._min_result_retries: int = int(
-            getattr(mcp_config, 'min_result_retries', 2)
+            getattr(server_config, 'min_result_retries', 2)
         )
 
         # Track running sub-agent instances to prevent concurrent execution
@@ -186,9 +186,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self._async_jobs: dict[str, dict[str, Any]] = {}
         self._async_jobs_lock = __import__('asyncio').Lock()
 
-    def reload_config(self, mcp_config: Any) -> dict:
+    def reload_config(self, server_config: Any) -> dict:
         """Hot-reload the mutable, config-derived fields from a freshly parsed
-        MCPConfig — WITHOUT tearing down this instance or its running sub-agents.
+        ToolServerConfig — WITHOUT tearing down this instance or its running sub-agents.
 
         Called by the deliberate config-reload flow (POST /admin/reload-config,
         `agent-cli reload`). Only the plain filter/limit knobs are refreshed;
@@ -208,33 +208,33 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 changes[attr] = {"old": old_value, "new": new_value}
                 setattr(self, attr, new_value)
 
-        _upd("allowed_agents", list(getattr(mcp_config, 'allowed_agents', ['*'])))
-        _upd("blocked_agents", list(getattr(mcp_config, 'blocked_agents', [])))
-        _upd("allow_advanced_model", bool(getattr(mcp_config, 'allow_advanced_model', True)))
-        _upd("max_sub_agents", int(getattr(mcp_config, 'max_sub_agents_per_session', 10)))
-        _upd("max_nesting_depth", int(getattr(mcp_config, 'max_nesting_depth', 5)))
-        _upd("max_sub_agents_per_type", int(getattr(mcp_config, 'max_sub_agents_per_type', 3)))
-        _upd("max_history", int(getattr(mcp_config, 'max_message_history', 100)))
-        _upd("auto_archive_on_limit", bool(getattr(mcp_config, 'auto_archive_on_limit', False)))
-        _upd("default_wait_timeout", int(getattr(mcp_config, 'default_wait_timeout', 3600)))
-        _upd("info_default_limit", int(getattr(mcp_config, 'info_default_limit', 20)))
-        _upd("info_max_limit", int(getattr(mcp_config, 'info_max_limit', 200)))
-        _upd("info_default_max_chars", int(getattr(mcp_config, 'info_default_max_chars', 4000)))
+        _upd("allowed_agents", list(getattr(server_config, 'allowed_agents', ['*'])))
+        _upd("blocked_agents", list(getattr(server_config, 'blocked_agents', [])))
+        _upd("allow_advanced_model", bool(getattr(server_config, 'allow_advanced_model', True)))
+        _upd("max_sub_agents", int(getattr(server_config, 'max_sub_agents_per_session', 10)))
+        _upd("max_nesting_depth", int(getattr(server_config, 'max_nesting_depth', 5)))
+        _upd("max_sub_agents_per_type", int(getattr(server_config, 'max_sub_agents_per_type', 3)))
+        _upd("max_history", int(getattr(server_config, 'max_message_history', 100)))
+        _upd("auto_archive_on_limit", bool(getattr(server_config, 'auto_archive_on_limit', False)))
+        _upd("default_wait_timeout", int(getattr(server_config, 'default_wait_timeout', 3600)))
+        _upd("info_default_limit", int(getattr(server_config, 'info_default_limit', 20)))
+        _upd("info_max_limit", int(getattr(server_config, 'info_max_limit', 200)))
+        _upd("info_default_max_chars", int(getattr(server_config, 'info_default_max_chars', 4000)))
 
-        raw_create_only = getattr(mcp_config, 'advanced_create_only_agents', None)
+        raw_create_only = getattr(server_config, 'advanced_create_only_agents', None)
         _upd("advanced_create_only_agents",
              set(raw_create_only) if isinstance(raw_create_only, (list, tuple, set)) else set())
 
-        _upd("_injector_config", _injector_options(mcp_config))
+        _upd("_injector_config", _injector_options(server_config))
 
-        phase_config = getattr(mcp_config, 'phase_filtering', {}) or {}
+        phase_config = getattr(server_config, 'phase_filtering', {}) or {}
         _upd("phase_filtering_enabled", phase_config.get('enabled', False))
         _upd("phase_variable", phase_config.get('phase_variable', 'workflow_phase'))
         _upd("phase_agents", phase_config.get('phase_agents', {}))
 
         _upd("_min_result_length_by_agent",
-             dict(getattr(mcp_config, 'min_result_length_by_agent', {}) or {}))
-        _upd("_min_result_retries", int(getattr(mcp_config, 'min_result_retries', 2)))
+             dict(getattr(server_config, 'min_result_length_by_agent', {}) or {}))
+        _upd("_min_result_retries", int(getattr(server_config, 'min_result_retries', 2)))
 
         if changes:
             logger.info(
@@ -299,34 +299,34 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
         Uses same filtering logic as GET /agents endpoint:
         - Check if server is an Agent instance
-        - Respect _mcp_public visibility flag
+        - Respect _tool_public visibility flag
 
         This is called dynamically at runtime (not cached) to ensure
         the agent list is always up-to-date.
         """
-        from agent_system.plugins.mcp_adapter import plugin_mcp_registry
+        from agent_system.plugins.tool_adapter import plugin_tool_registry
         from agent_system.servers.agent.server import Agent
 
         agent_names = []
-        for name in plugin_mcp_registry.list_servers():
+        for name in plugin_tool_registry.list_servers():
             if name.startswith('_') or name in self.blocked_agents:
                 continue
 
             try:
-                # Access plugin_servers dict directly (PluginMCPRegistry has no .get() method)
-                adapter = plugin_mcp_registry.plugin_servers.get(name)
+                # Access plugin_servers dict directly (PluginToolRegistry has no .get() method)
+                adapter = plugin_tool_registry.plugin_servers.get(name)
                 if not adapter:
                     continue
 
                 # Get the actual plugin instance from the adapter
-                srv = adapter.plugin_server  # PluginMCPAdapter.plugin_server is the actual server instance
+                srv = adapter.plugin_server  # PluginToolAdapter.plugin_server is the actual server instance
 
                 # Same logic as GET /agents endpoint
                 if isinstance(srv, Agent):
-                    # Check visibility flags: need either _mcp_public (UI) OR _mcp_tool_visible (tool)
+                    # Check visibility flags: need either _tool_public (UI) OR _tool_visible (tool)
                     # Skip only if BOTH are explicitly False (private agents)
-                    is_ui_visible = getattr(srv, '_mcp_public', False)
-                    is_tool_visible = getattr(srv, '_mcp_tool_visible', False)
+                    is_ui_visible = getattr(srv, '_tool_public', False)
+                    is_tool_visible = getattr(srv, '_tool_visible', False)
 
                     if not is_ui_visible and not is_tool_visible:
                         continue  # Skip truly private agents
@@ -392,7 +392,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
         Args:
             session_service: SessionService instance (injected from params["_session_service"])
-            registry: MCPRegistry instance (injected from params["_registry"], optional for some ops)
+            registry: ToolServerRegistry instance (injected from params["_registry"], optional for some ops)
 
         Returns:
             SubAgentManager instance
@@ -422,7 +422,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             params: Tool parameters with injected _agent
 
         Returns:
-            MCPRegistry instance
+            ToolServerRegistry instance
 
         Raises:
             RuntimeError: If registry not found
@@ -763,7 +763,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                             await manager.update_sub_agent_activity(
                                 parent_session_id, sub_session_id, "💭 Thinking..."
                             )
-                        elif event_type == "mcp_call":
+                        elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
                             tool_name = event.get("action", "tool")
                             await manager.update_sub_agent_activity(
                                 parent_session_id, sub_session_id, f"🔧 Running tool: {tool_name}"
@@ -1065,7 +1065,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                             await manager.update_sub_agent_activity(
                                 parent_session_id, instance_id, "💭 Thinking..."
                             )
-                        elif event_type == "mcp_call":
+                        elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
                             tool_name = event.get("action", "tool")
                             await manager.update_sub_agent_activity(
                                 parent_session_id, instance_id, f"🔧 Running tool: {tool_name}"
@@ -1727,7 +1727,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                             await manager.update_sub_agent_activity(
                                 parent_session_id, instance_id, "💭 Thinking..."
                             )
-                        elif event_type == "mcp_call":
+                        elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
                             tool_name = event.get("action", "tool")
                             await manager.update_sub_agent_activity(
                                 parent_session_id, instance_id, f"🔧 Running tool: {tool_name}"

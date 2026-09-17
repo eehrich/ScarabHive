@@ -12,7 +12,7 @@ import logging
 import fnmatch
 
 if TYPE_CHECKING:
-    from agent_system.servers.agent.components.mcp_integration import MCPIntegrationManager
+    from agent_system.servers.agent.components.tool_integration import ToolIntegrationManager
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ def server_matches_patterns(name: str, patterns: List[str]) -> bool:
     - globs:            fnmatch on the full name (``*``, ``?``, ``[seq]``)
 
     STRICT for dotted externals: ``server/*`` and bare ``server`` deliberately
-    do NOT admit ``server.tool`` names — external MCP tools are selected with
+    do NOT admit ``server.tool`` names — external tools are selected with
     the dot form (``server.*`` / exact). This keeps the discovery security
     gate as strict as it historically was; the looser dot-prefix matching that
     once lived in server.py's copy was never a production gate.
@@ -118,12 +118,12 @@ def server_matches_patterns(name: str, patterns: List[str]) -> bool:
 
 
 class ToolSchemaBuilder:
-    """Builds OpenAI-compatible tool schemas from MCP servers."""
+    """Builds OpenAI-compatible tool schemas from tool servers."""
 
     def __init__(
         self,
         agent_name: str,
-        mcp_integration_manager: MCPIntegrationManager,
+        tool_integration_manager: ToolIntegrationManager,
         server_getter_func
     ):
         """
@@ -131,11 +131,11 @@ class ToolSchemaBuilder:
 
         Args:
             agent_name: Name of the agent
-            mcp_integration_manager: MCP integration manager
+            tool_integration_manager: tool integration manager
             server_getter_func: Function to get server by name (checks all registries)
         """
         self.agent_name = agent_name
-        self.mcp_integration_manager = mcp_integration_manager
+        self.tool_integration_manager = tool_integration_manager
         self.get_server = server_getter_func
 
     async def build_schemas(
@@ -148,7 +148,7 @@ class ToolSchemaBuilder:
         Build tool schemas for LLM and maintain name mapping.
 
         Processes:
-        1. External MCP tools (e.g., "server.tool_name")
+        1. External tools (e.g., "server.tool_name")
         2. Internal tools (plugins, agents) from available_tools list
         3. Apply allowed patterns to filter to only wanted tools (if specified)
         4. Apply blocked patterns to filter out unwanted tools
@@ -168,8 +168,8 @@ class ToolSchemaBuilder:
         tools_schema: List[Dict] = []
         tool_name_mapping: Dict[str, str] = {}
 
-        # Build schemas for external MCP tools
-        external_schemas, external_mapping = await self.mcp_integration_manager.build_tool_schemas(
+        # Build schemas for external tools
+        external_schemas, external_mapping = await self.tool_integration_manager.build_tool_schemas(
             available_tools
         )
         tools_schema.extend(external_schemas)
@@ -466,7 +466,7 @@ class ToolSchemaBuilder:
         Build schemas using server.list_tools() (modern interface with custom descriptions).
 
         Args:
-            server: MCP server instance
+            server: tool server instance
             server_name: Name of the server
             tools_schema: Schema list to append to
             tool_name_mapping: Mapping dict to update
@@ -475,19 +475,19 @@ class ToolSchemaBuilder:
             List of individual tool names added
         """
         try:
-            mcp_tools = await server.list_tools()
+            tool_defs = await server.list_tools()
 
-            # Convert MCPTool objects to OpenAI function format
+            # Convert ToolDef objects to OpenAI function format
             server_tools = []
-            for mcp_tool in mcp_tools:
-                # MCPTool uses snake_case (input_schema) internally
+            for tool_def in tool_defs:
+                # ToolDef uses snake_case (input_schema) internally
                 # The MCP client converts from JSON camelCase (inputSchema) to Python snake_case
-                input_schema = mcp_tool.input_schema
+                input_schema = tool_def.input_schema
                 tool_schema = {
                     "type": "function",
                     "function": {
-                        "name": mcp_tool.name,
-                        "description": mcp_tool.description,
+                        "name": tool_def.name,
+                        "description": tool_def.description,
                         "parameters": input_schema
                     }
                 }
@@ -528,7 +528,7 @@ class ToolSchemaBuilder:
         Build schemas using server.get_tools() (fallback, no custom descriptions).
 
         Args:
-            server: MCP server instance
+            server: tool server instance
             server_name: Name of the server
             tools_schema: Schema list to append to
             tool_name_mapping: Mapping dict to update
@@ -579,7 +579,7 @@ class ToolSchemaBuilder:
         Build schema using server.get_schema() (legacy single-tool interface).
 
         Args:
-            server: MCP server instance
+            server: tool server instance
             server_name: Name of the server
             tools_schema: Schema list to append to
         """

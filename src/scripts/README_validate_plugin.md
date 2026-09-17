@@ -92,11 +92,11 @@ python src/scripts/validate_plugin.py --all --merge-config
 ### plugin.toml Validation
 - ✓ Valid against JSON schema (`schemas/plugin-config.schema.json`)
 - ✓ Required fields: `name`, `version`, `description`, `requires.agent_system`
-- ✓ Valid plugin type (list of: `mcp-server`, `web`, `hooks`, `library`, `llm-provider`, `custom`)
+- ✓ Valid plugin type (list of: `tool-server`, `web`, `hooks`, `library`, `llm-provider`, `custom`)
 - ✓ Entrypoint format: `module:FACTORY`
 
 ### schema.yaml Validation
-- ✓ Tools section structure for MCP plugins
+- ✓ Tools section structure for plugins
 - ✓ Tool definitions with required fields
 - ✓ Parameter schemas with type and description
 - ✓ Hook definitions for hook plugins
@@ -105,7 +105,7 @@ python src/scripts/validate_plugin.py --all --merge-config
 
 ### Cross-Validation
 - ✓ Plugin type matches schema content
-- ✓ MCP plugins have tools defined
+- ✓ plugins have tools defined
 - ✓ Hooks plugins have hooks defined
 - ✓ Entrypoint module file exists
 

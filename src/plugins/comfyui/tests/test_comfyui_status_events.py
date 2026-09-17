@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent_system.mcp.status import StatusPhase, get_status_bus
+from agent_system.tools.status import StatusPhase, get_status_bus
 from plugins.comfyui.server import ComfyUIServer
 
 

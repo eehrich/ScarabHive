@@ -1,5 +1,5 @@
 """
-Enhanced Agent Core - Agent extends MCPServer for direct agent-to-agent communication
+Enhanced Agent Core - Agent extends ToolServer for direct agent-to-agent communication
 Supports multiple tool calls per conversation turn for better efficiency
 """
 from __future__ import annotations
@@ -16,10 +16,10 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 if TYPE_CHECKING:
     from ...services.session_service import SessionService
 
-from ...config.models import AgentSystemConfig, MCPConfig
+from ...config.models import AgentSystemConfig, ToolServerConfig
 from ...core.cancellation import get_cancellation_manager, CancellationToken
 from ...core.session_presence import SessionBusy, presence_for
-from ...mcp.base import MCPRegistry, MCPServer
+from ...tools.base import ToolServerRegistry, ToolServer
 from ...utils.id import short_id
 from ...utils.json_utils import history_safe_tool_calls
 from ...utils.reasoning_artifacts import (
@@ -31,13 +31,13 @@ import httpx
 from ...llm.model_health import model_health
 from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
 from ...llm.text_sanitizer import sanitize_for_llm
-from ...mcp.status import (
+from ...tools.status import (
     status_scope,
     StatusScope,
     status_bus,
     current_request_id
 )
-from .components.mcp_integration import MCPIntegrationManager
+from .components.tool_integration import ToolIntegrationManager
 from .components.tool_execution import ToolExecutionManager
 from .components.status_forwarding import StatusEventForwarder
 from .components.session_tracking import SessionTracker
@@ -136,7 +136,7 @@ class ConversationContext:
     session_id: Optional[str] = None  # Session ID for session-scoped operations
 
 
-class Agent(MCPServer):
+class Agent(ToolServer):
     """Enhanced Agent with dual interface: execution engine + callable tool.
 
     TOOL INTERFACE CLARITY:
@@ -144,8 +144,8 @@ class Agent(MCPServer):
     Agent has TWO distinct tool interfaces that are easily confused:
 
     1. EXTERNAL (what this agent OFFERS to others):
-       - list_tools() → List[MCPTool] - Returns this agent as a callable tool
-       - MCPServer interface: What OTHER agents see when they query our tools
+       - list_tools() → List[ToolDef] - Returns this agent as a callable tool
+       - ToolServer interface: What OTHER agents see when they query our tools
        - Used by: ToolSchemaBuilder when other agents discover available tools
 
     2. INTERNAL (what this agent CAN USE):
@@ -160,43 +160,43 @@ class Agent(MCPServer):
        - For debugging/introspection, not for execution
 
     REMEMBER:
-    - list_tools() = what I OFFER (MCPServer standard)
+    - list_tools() = what I OFFER (ToolServer standard)
     - list_usable_tools() = what I CAN USE (internal execution)
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig,
-                 registry: MCPRegistry | None = None,
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig,
+                 registry: ToolServerRegistry | None = None,
                  llm: LLMClient | None = None, llm_factory: Any = None,
                  session_service: "SessionService | None" = None) -> None:
         """
-        Initialize Agent as both an executor and an MCP Server.
+        Initialize Agent as both an executor and a Tool server.
 
         Modern signature matching plugin pattern:
         - system_config: Complete system configuration
-        - mcp_config: MCP configuration object (contains agent_config, type, enabled)
-        - registry: MCP Registry with available tools (required for agents)
+        - server_config: tool server configuration object (contains agent_config, type, enabled)
+        - registry: Tool registry with available tools (required for agents)
         - session_service: SessionService for managing agent sessions (optional, will be injected if available)
 
         Args:
-            name: Name of this agent (used when serving as MCP Server)
+            name: Name of this agent (used when serving as Tool server)
             system_config: Complete system configuration (includes llm_system, network, context, etc.)
-            mcp_config: MCP configuration object (MCPConfig with agent_config)
-            registry: MCP Registry with available tools
+            server_config: tool server configuration object (ToolServerConfig with agent_config)
+            registry: Tool registry with available tools
             llm: Optional LLM client instance (for testing)
             llm_factory: Optional LLM factory for creating client (for testing)
             session_service: Optional SessionService for session management (injected by CLI/App)
         """
-        # Initialize as MCPServer with MCPConfig object
-        super().__init__(name, system_config, mcp_config)
+        # Initialize as ToolServer with ToolServerConfig object
+        super().__init__(name, system_config, server_config)
 
-        # Extract agent_config from MCPConfig (required, no fallbacks)
-        if not mcp_config.agent_config:
-            raise ValueError(f"Agent '{name}' requires agent_config in MCPConfig")
-        self.agent_config = mcp_config.agent_config
+        # Extract agent_config from ToolServerConfig (required, no fallbacks)
+        if not server_config.agent_config:
+            raise ValueError(f"Agent '{name}' requires agent_config in ToolServerConfig")
+        self.agent_config = server_config.agent_config
 
         # Agent-specific initialization (registry required for agents)
         if registry is None:
-            raise ValueError(f"Agent '{name}' requires MCPRegistry instance")
+            raise ValueError(f"Agent '{name}' requires ToolServerRegistry instance")
         self.registry = registry
 
         # Store session_service for tools that need session access (e.g., sub-agent manager)
@@ -204,11 +204,11 @@ class Agent(MCPServer):
         self._session_service: "SessionService | None" = session_service
 
         # Visibility flags control where the agent appears
-        # _mcp_public: Show in UI agent dropdown (GET /agents endpoint)
-        # _mcp_tool_visible: Available as tool for other agents
+        # _tool_public: Show in UI agent dropdown (GET /agents endpoint)
+        # _tool_visible: Available as tool for other agents
         # Default both to False for config agents, can be overridden based on metadata
-        self._mcp_public = False
-        self._mcp_tool_visible = False
+        self._tool_public = False
+        self._tool_visible = False
 
         # Allow dependency injection of an LLM client or a factory that
         # creates one. This makes testing and runtime wiring explicit.
@@ -321,7 +321,7 @@ class Agent(MCPServer):
         # Session presence: request id -> the session it holds (_presence_step)
         self._presence_holds: dict[str, tuple] = {}
 
-        # Cache for list_tools() to avoid creating new MCPTool objects on every call
+        # Cache for list_tools() to avoid creating new ToolDef objects on every call
         self._list_tools_cache: list | None = None
 
         # Per-session live conversation state (request-scoped). This agent is a
@@ -345,7 +345,7 @@ class Agent(MCPServer):
         self._request_manager = AgentRequestManager(self.name)
         # Session tracker shares the same _active_requests dict for coordination
         self._session_tracker = SessionTracker(self._request_manager._active_requests)
-        self._mcp_integration_manager = MCPIntegrationManager(self.system_config, self.agent_config)
+        self._tool_integration_manager = ToolIntegrationManager(self.system_config, self.agent_config)
         # Note: StatusEventForwarder is now created per-request (not shared) to prevent race conditions
         self._tool_execution_manager = ToolExecutionManager(
             self.registry,
@@ -393,7 +393,7 @@ class Agent(MCPServer):
             if loop_config and not loop_config.enabled:
                 logger.debug(f"[{self.name}] Loop detection disabled via config")
 
-        # Set agent reference in MCP integration for cancellation support
+        # Set agent reference in tool integration for cancellation support
         self._set_agent_reference_in_mcp()
 
     #: Agent-config knobs that a deliberate reload may change on a LIVE agent.
@@ -405,7 +405,7 @@ class Agent(MCPServer):
     #: refreshing only the config would desync the two:
     #:   - llm_profile / advanced_llm_profile / llm_params / fallback_chain:
     #:     ``self.llm`` was built from these at startup.
-    #:   - tools: the tool schemas are wired into the MCP integration at startup.
+    #:   - tools: the tool schemas are wired into the tool integration at startup.
     #:   - loop_detection / reasoning_loop / timeouts: read once into derived
     #:     objects (``_loop_detection_config``, ``_reasoning_loop_config``,
     #:     ``self.timeouts``).
@@ -419,7 +419,7 @@ class Agent(MCPServer):
         "fallback_recovery_seconds",
     )
 
-    def reload_config(self, mcp_config: Any) -> dict:
+    def reload_config(self, server_config: Any) -> dict:
         """Refresh the live agent's plain config knobs from a fresh parse.
 
         Called by the deliberate config-reload flow (POST /admin/reload-config,
@@ -430,7 +430,7 @@ class Agent(MCPServer):
         Returns the fields that actually changed ({} if none), so the caller
         can report exactly what took effect.
         """
-        new_agent_cfg = getattr(mcp_config, "agent_config", None)
+        new_agent_cfg = getattr(server_config, "agent_config", None)
         if new_agent_cfg is None or self.agent_config is None:
             return {}
 
@@ -696,7 +696,7 @@ class Agent(MCPServer):
     # ------------------------------------------------------------------
     # Unified Server Resolution (Central Method)
     # ------------------------------------------------------------------
-    def _get_server_from_any_registry(self, server_name: str) -> Optional[MCPServer]:
+    def _get_server_from_any_registry(self, server_name: str) -> Optional[ToolServer]:
         """Get a server from either plugin_registry or self.registry.
 
         This is the CENTRAL method for resolving servers. All code that needs to
@@ -713,7 +713,7 @@ class Agent(MCPServer):
             The server instance or None if not found
         """
         registry = self.registry if hasattr(self, 'registry') else None
-        return resolve_registry_server(registry, self._mcp_integration_manager, server_name)
+        return resolve_registry_server(registry, self._tool_integration_manager, server_name)
 
     # ------------------------------------------------------------------
     # Programmatic tool dispatch (used by tool_script and other in-process
@@ -790,7 +790,7 @@ class Agent(MCPServer):
         from .components.tool_execution import (
             FRAMEWORK_REQUEST_ID_KEYS, ToolDispatchError, inject_runtime_params)
 
-        # External MCP tools (dotted names) take a different execution branch
+        # External tools (dotted names) take a different execution branch
         # (MCP client sessions) that programmatic dispatch does not replicate.
         if "." in tool_name:
             raise ToolDispatchError(
@@ -1072,23 +1072,23 @@ class Agent(MCPServer):
 
 
     def _set_agent_reference_in_mcp(self) -> None:
-        """Set agent reference in MCP integration for cancellation support."""
+        """Set agent reference in tool integration for cancellation support."""
         try:
-            # Set agent reference in MCP integration manager
-            self._mcp_integration_manager._agent_ref = self
+            # Set agent reference in tool integration manager
+            self._tool_integration_manager._agent_ref = self
 
-            # Try to set agent reference in MCP integration when it's available
-            if hasattr(self._mcp_integration_manager, 'mcp_integration') and self._mcp_integration_manager.mcp_integration:
-                self._mcp_integration_manager.mcp_integration.main_agent_ref = self
+            # Try to set agent reference in tool integration when it's available
+            if hasattr(self._tool_integration_manager, 'tool_integration') and self._tool_integration_manager.tool_integration:
+                self._tool_integration_manager.tool_integration.main_agent_ref = self
         except Exception as e:
-            logger.debug("Failed to set agent reference in MCP integration: %s", e)
+            logger.debug("Failed to set agent reference in tool integration: %s", e)
 
     @property
     def description(self) -> str:
         """Get the agent description."""
-        # Try to get description from mcp_config
-        if hasattr(self, 'mcp_config') and self.mcp_config:
-            desc = getattr(self.mcp_config, 'description', None)
+        # Try to get description from server_config
+        if hasattr(self, 'server_config') and self.server_config:
+            desc = getattr(self.server_config, 'description', None)
             if desc:
                 return desc
         return f"Agent: {self.name}"
@@ -1222,14 +1222,14 @@ class Agent(MCPServer):
             - List of allowed patterns (for fine-grained filtering after tool expansion)
             - List of blocked patterns (to be applied after tool expansion)
         """
-        # Initialize MCP integration (idempotent)
-        await self._mcp_integration_manager.setup_mcp_integration()
+        # Initialize tool integration (idempotent)
+        await self._tool_integration_manager.setup_tool_integration()
 
         # Use ToolDiscoveryService for clean tool filtering
         discovery_service = ToolDiscoveryService(
             agent_name=self.name,
             agent_config=self.agent_config,
-            mcp_integration_manager=self._mcp_integration_manager,
+            tool_integration_manager=self._tool_integration_manager,
             registry=self.registry if hasattr(self, 'registry') else None
         )
 
@@ -1265,7 +1265,7 @@ class Agent(MCPServer):
         """The LLM schemas for an ALREADY discovered set of tools."""
         schema_builder = ToolSchemaBuilder(
             agent_name=self.name,
-            mcp_integration_manager=self._mcp_integration_manager,
+            tool_integration_manager=self._tool_integration_manager,
             server_getter_func=self._get_server_from_any_registry,
         )
         tools_schema, _mapping, _usable, _display = await schema_builder.build_schemas(
@@ -1279,7 +1279,7 @@ class Agent(MCPServer):
         """The tool schemas this agent hands the model, exactly as they go out.
 
         EXACTLY the pipeline that builds the LLM schema -- discovery (deny-all
-        on empty allowed, _mcp_tool_visible, externals) plus ToolSchemaBuilder
+        on empty allowed, _tool_visible, externals) plus ToolSchemaBuilder
         (tool-level allow/block, both tool interfaces, every schema dialect).
         A caller that re-implements half of it diverges on every point it
         skips: hybrid plugins (list_tools-only) went missing entirely, an
@@ -1534,7 +1534,7 @@ class Agent(MCPServer):
         4. Initialize session storage
         5. Use pre-created status event forwarder (passed from caller)
         6. Validate LLM availability
-        7. Initialize MCP integration
+        7. Initialize tool integration
         8. Discover usable tools
         9. Render system prompts
         10. Load session history
@@ -1583,8 +1583,8 @@ class Agent(MCPServer):
         if active_llm is None:
             raise RuntimeError("No LLM available; agent requires an LLM to run")
 
-        # Initialize MCP integration
-        await self._mcp_integration_manager.setup_mcp_integration()
+        # Initialize tool integration
+        await self._tool_integration_manager.setup_tool_integration()
 
         # Get tools this agent can use (filtered by agent_config)
         # Returns tuple: (tools, allowed_patterns, blocked_patterns)
@@ -1650,7 +1650,7 @@ class Agent(MCPServer):
         # Pass allowed_patterns and blocked_patterns so they can be applied AFTER tools are expanded
         schema_builder = ToolSchemaBuilder(
             agent_name=self.name,
-            mcp_integration_manager=self._mcp_integration_manager,
+            tool_integration_manager=self._tool_integration_manager,
             server_getter_func=self._get_server_from_any_registry
         )
 
@@ -1746,7 +1746,7 @@ class Agent(MCPServer):
         2. Unregister cancellation token
         3. Clean up request tracking
         4. Persist session messages (conversation history only)
-        5. Shutdown MCP integration
+        5. Shutdown tool integration
         6. Reset context vars
         7. Publish final status events
         8. Stop status forwarding
@@ -1853,7 +1853,7 @@ class Agent(MCPServer):
         # NOTE: no MCP shutdown here. The integration is process-wide state;
         # tearing it down at the end of EVERY request broke bootstrap-only
         # processes (writer pipelines) after their first request, because
-        # MCPIntegration.shutdown() stops all plugins but leaves
+        # ToolServerIntegration.shutdown() stops all plugins but leaves
         # `initialized` True -- so the next request found a half-dead
         # integration and never re-initialized it. Shutdown belongs to
         # Agent.shutdown() / process end, where it already happens.
@@ -3686,29 +3686,29 @@ class Agent(MCPServer):
         """Shutdown the agent and clean up resources"""
         logger.info("Agent shutdown initiated")
 
-        # Shut down the MCP integration -- but only one WE created.
+        # Shut down the tool integration -- but only one WE created.
         #
-        # This used to call mcp_integration.shutdown() directly, skipping the
-        # mcp_initialized_locally check the manager makes. The integration is
+        # This used to call tool_integration.shutdown() directly, skipping the
+        # tools_initialized_locally check the manager makes. The integration is
         # usually the process-wide one, so one agent finishing tore down the
         # external connections of every other agent. It stops plugins now, so
         # the same call would stop them for the whole process.
-        if hasattr(self, '_mcp_integration_manager') and self._mcp_integration_manager:
+        if hasattr(self, '_tool_integration_manager') and self._tool_integration_manager:
             try:
-                await self._mcp_integration_manager.shutdown()
-                logger.debug("MCP integration shutdown completed")
+                await self._tool_integration_manager.shutdown()
+                logger.debug("tool integration shutdown completed")
             except Exception as e:
-                logger.warning(f"Error during MCP integration shutdown: {e}")
+                logger.warning(f"Error during tool integration shutdown: {e}")
 
         # Clear sessions and request mappings
         self._session_tracker.clear()
 
         logger.info("Agent shutdown completed")
 
-    # MCPServer interface implementation
+    # ToolServer interface implementation
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """
-        MCPServer interface: Handle tool calls from other agents.
+        ToolServer interface: Handle tool calls from other agents.
 
         An agent is a tool that executes tasks. No special "actions" needed.
 
@@ -3762,15 +3762,15 @@ class Agent(MCPServer):
 
     def get_schema(self) -> dict[str, Any]:
         """
-        MCPServer interface: Return the OpenAI function schema for this agent.
+        ToolServer interface: Return the OpenAI function schema for this agent.
 
         Returns:
             OpenAI function schema dict
         """
-        # Try to get description from: mcp_config.description -> fallback to agent name
+        # Try to get description from: server_config.description -> fallback to agent name
         description = None
-        if hasattr(self, 'mcp_config') and self.mcp_config:
-            description = getattr(self.mcp_config, 'description', None)
+        if hasattr(self, 'server_config') and self.server_config:
+            description = getattr(self.server_config, 'description', None)
         if not description:
             description = getattr(self, '_agent_description', f"Agent: {self.name}")
 
@@ -3793,7 +3793,7 @@ class Agent(MCPServer):
         }
 
     async def list_tools(self) -> List:
-        """Return tools this agent OFFERS to other agents (MCPServer interface).
+        """Return tools this agent OFFERS to other agents (ToolServer interface).
 
         EXTERNAL INTERFACE - What this agent exposes as callable tools.
         When other agents query available tools, they get this agent's schema.
@@ -3801,20 +3801,20 @@ class Agent(MCPServer):
         Contrast with list_usable_tools() which returns tools this agent CAN USE.
 
         Returns:
-            List[MCPTool] - Single MCPTool representing this agent
+            List[ToolDef] - Single ToolDef representing this agent
         """
         # Return cached tools to avoid creating new objects on every call
         if self._list_tools_cache is not None:
             return self._list_tools_cache
 
-        from agent_system.mcp.core import MCPTool
+        from agent_system.tools.base import ToolDef
 
         # Get the agent's schema (what it offers as a callable tool)
         schema = self.get_schema()
         func = schema.get("function", {})
 
-        # Convert to MCPTool format
-        tool = MCPTool(
+        # Convert to ToolDef format
+        tool = ToolDef(
             name=func.get("name", self.name),
             description=func.get("description", f"Agent: {self.name}"),
             input_schema=func.get("parameters", {})

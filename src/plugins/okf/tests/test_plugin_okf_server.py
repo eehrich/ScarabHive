@@ -1,4 +1,4 @@
-"""Tests for the OKF MCP server — sandboxed tools + consumer hook.
+"""Tests for the OKF tool server — sandboxed tools + consumer hook.
 
 Exercises each tool against a real bundle in a tmp sandbox, the sandbox
 boundary, the write conformance gate, and the pre_llm_call context injection.
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock
 
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 from plugins.okf.server import OkfServer
 
 
@@ -43,7 +43,7 @@ def bundle(tmp_path):
 
 @pytest.fixture
 def server(mock_system_config, tmp_path):
-    cfg = MCPConfig(type="okf", enabled=True,
+    cfg = ToolServerConfig(type="okf", enabled=True,
                     config={"allowed_directories": [str(tmp_path)]})
     return OkfServer("okf", mock_system_config, cfg)
 
@@ -569,7 +569,7 @@ class TestSymlinkSafety:
 class TestReadOnly:
     @pytest.mark.asyncio
     async def test_write_blocked(self, mock_system_config, tmp_path, bundle):
-        cfg = MCPConfig(type="okf", enabled=True, config={
+        cfg = ToolServerConfig(type="okf", enabled=True, config={
             "allowed_directories": [str(tmp_path)], "read_only": True})
         ro = OkfServer("okf", mock_system_config, cfg)
         res = await ro.write_concept({
@@ -585,7 +585,7 @@ class TestReadOnly:
 
 class TestContextHook:
     def _server_with_hook(self, mock_system_config, tmp_path, bundle):
-        cfg = MCPConfig(type="okf", enabled=True, config={
+        cfg = ToolServerConfig(type="okf", enabled=True, config={
             "allowed_directories": [str(tmp_path)],
             "hook_bundle": str(bundle),
             "hook_max_concepts": 4,
@@ -666,7 +666,7 @@ class TestContextHook:
     @pytest.mark.asyncio
     async def test_hook_config_per_agent_overrides(self, mock_system_config, tmp_path, bundle):
         # Server has NO hook_bundle default; the per-agent hooks.overrides supplies it.
-        cfg = MCPConfig(type="okf", enabled=True,
+        cfg = ToolServerConfig(type="okf", enabled=True,
                         config={"allowed_directories": [str(tmp_path)]})
         srv = OkfServer("okf", mock_system_config, cfg)
         ctx = SimpleNamespace(
@@ -703,7 +703,7 @@ class TestContextHook:
 
     @pytest.mark.asyncio
     async def test_disabled_without_bundle(self, mock_system_config, tmp_path, bundle):
-        cfg = MCPConfig(type="okf", enabled=True,
+        cfg = ToolServerConfig(type="okf", enabled=True,
                         config={"allowed_directories": [str(tmp_path)]})
         srv = OkfServer("okf", mock_system_config, cfg)
         ctx = SimpleNamespace(
@@ -910,10 +910,10 @@ class TestCrossProcessWrites:
         "import sys, asyncio\n"
         "sys.path.insert(0, 'src')\n"
         "from unittest.mock import MagicMock\n"
-        "from agent_system.config.models import MCPConfig\n"
+        "from agent_system.config.models import ToolServerConfig\n"
         "from plugins.okf.server import OkfServer\n"
         "root, tag = sys.argv[1], sys.argv[2]\n"
-        "cfg = MCPConfig(type='okf', enabled=True,\n"
+        "cfg = ToolServerConfig(type='okf', enabled=True,\n"
         "                config={'allowed_directories': [root]})\n"
         "s = OkfServer('okf', MagicMock(), cfg)\n"
         "async def main():\n"
@@ -1006,7 +1006,7 @@ class TestAppendLogTime:
         from datetime import datetime
         import pytz
         mock_system_config.context.timezone = "Pacific/Kiritimati"  # UTC+14
-        cfg = MCPConfig(type="okf", enabled=True,
+        cfg = ToolServerConfig(type="okf", enabled=True,
                         config={"allowed_directories": [str(tmp_path)]})
         srv = OkfServer("okf", mock_system_config, cfg)
         root = tmp_path / "t5"

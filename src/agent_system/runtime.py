@@ -1,7 +1,7 @@
 """The composition root: one place that turns a config into running servers.
 
 Five entry points used to assemble the process each in their own way
-(``build_app``, ``InitializationService``, ``MCPIntegration.initialize`` and
+(``build_app``, ``InitializationService``, ``ToolServerIntegration.initialize`` and
 four writer tools), and each of them repeated the same twelve steps:
 discover, merge the server config, call the factory with the right signature,
 register in BOTH registries, then post-process an agent instance (shared
@@ -24,9 +24,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .config.models import AgentSystemConfig, MCPConfig
-from .config.settings import get_mcp_config_by_name
-from .mcp.base import MCPRegistry
+from .config.models import AgentSystemConfig, ToolServerConfig
+from .config.settings import get_tool_server_config
+from .tools.base import ToolServerRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +76,8 @@ class ServerView:
 
     name: str
     is_agent: bool
-    mcp_public: bool
-    mcp_tool_visible: bool
+    tool_public: bool
+    tool_visible: bool
     #: True when the answer came from an instance, False when from a
     #: declaration. Provenance, so a test can tell the two paths apart.
     built: bool
@@ -89,7 +89,7 @@ class ServerDecl:
 
     name: str
     type: str
-    mcp_config: MCPConfig
+    server_config: ToolServerConfig
     factory: Optional[Callable[..., Any]] = None      # None: the direct "agent" type
     plugin_metadata: Optional[dict] = field(default=None, repr=False)
 
@@ -120,9 +120,9 @@ class ServerDecl:
     @property
     def visibility(self) -> str:
         """ui | tool | both | private -- priority as bootstrap always had it:
-        the instance's own MCPConfig metadata first, then the plugin manifest,
+        the instance's own ToolServerConfig metadata first, then the plugin manifest,
         else private (not visible; secure by default)."""
-        metadata = self.mcp_config.metadata
+        metadata = self.server_config.metadata
         if metadata and metadata.visibility:
             return metadata.visibility
         if self.plugin_metadata:
@@ -131,7 +131,7 @@ class ServerDecl:
                 return declared
         return "private"
 
-    def apply_to(self, instance: Any, registry: MCPRegistry) -> None:
+    def apply_to(self, instance: Any, registry: ToolServerRegistry) -> None:
         """The post-processing every agent instance got in bootstrap."""
         from .servers.agent.server import Agent
 
@@ -142,24 +142,24 @@ class ServerDecl:
         logger.debug("Updated agent %s to use shared registry with %d servers",
                      self.name, len(registry._servers))
 
-        if self.mcp_config.metadata:
-            instance._metadata = self.mcp_config.metadata.model_dump()
+        if self.server_config.metadata:
+            instance._metadata = self.server_config.metadata.model_dump()
             logger.debug("Applied instance metadata to agent '%s': %s", self.name, instance._metadata)
 
-        if self.mcp_config.description:
-            instance._description = self.mcp_config.description
+        if self.server_config.description:
+            instance._description = self.server_config.description
             logger.debug("Applied instance description to agent '%s': %s",
-                         self.name, self.mcp_config.description)
+                         self.name, self.server_config.description)
 
         if not hasattr(instance, "_visibility_set_explicitly"):
             visibility = self.visibility
-            instance._mcp_public = visibility in ("ui", "both")
-            instance._mcp_tool_visible = visibility in ("tool", "both")
+            instance._tool_public = visibility in ("ui", "both")
+            instance._tool_visible = visibility in ("tool", "both")
             logger.debug("Plugin agent '%s' visibility set: %s (ui=%s, tool=%s)",
-                         self.name, visibility, instance._mcp_public, instance._mcp_tool_visible)
+                         self.name, visibility, instance._tool_public, instance._tool_visible)
 
-        if self.mcp_config.self_tool_descriptions:
-            instance._self_tool_descriptions = self.mcp_config.self_tool_descriptions
+        if self.server_config.self_tool_descriptions:
+            instance._self_tool_descriptions = self.server_config.self_tool_descriptions
             logger.debug("Applied self_tool_descriptions to agent '%s': %d overrides",
                          self.name, len(instance._self_tool_descriptions))
 
@@ -172,10 +172,10 @@ class Runtime:
     last_started: Optional["Runtime"] = None
 
     def __init__(self, config: AgentSystemConfig, *,
-                 registry: Optional[MCPRegistry] = None,
+                 registry: Optional[ToolServerRegistry] = None,
                  session_service: Any = None):
         self.config = config
-        self.registry = registry if registry is not None else MCPRegistry()
+        self.registry = registry if registry is not None else ToolServerRegistry()
         self._session_service = session_service
         self._decls: dict[str, ServerDecl] = {}
         self._plugins: dict[str, Callable[..., Any]] = {}
@@ -188,7 +188,7 @@ class Runtime:
         self.config_findings: list[str] = []
         self._declare_all()
         # Bound registries answer describe()/built() from here; an
-        # unbound MCPRegistry keeps behaving exactly as it always did.
+        # unbound ToolServerRegistry keeps behaving exactly as it always did.
         self.registry.bind(self)
 
     # ------------------------------------------------------------------
@@ -205,16 +205,16 @@ class Runtime:
         self._plugins = discover_all_plugins(dirs=dirs if dirs else None)
 
         if self._plugins:
-            logger.info("Discovered MCP plugins: %s", ", ".join(sorted(self._plugins.keys())))
+            logger.info("Discovered plugins: %s", ", ".join(sorted(self._plugins.keys())))
         else:
-            logger.debug("No external MCP plugins discovered")
+            logger.debug("No external plugins discovered")
 
         for name, server in self.config.plugins.servers.items():
             if not server.enabled:
                 continue
-            merged = get_mcp_config_by_name(name, self.config)
+            merged = get_tool_server_config(name, self.config)
             if not merged:
-                logger.warning("Failed to resolve MCP config for server '%s', skipping", name)
+                logger.warning("Failed to resolve tool server config for server '%s', skipping", name)
                 self.problems.append(f"server '{name}': config could not be resolved")
                 continue
             logger.debug(f"Bootstrap server '{name}': type={merged.type}, enabled={merged.enabled}")
@@ -232,7 +232,7 @@ class Runtime:
                 continue
 
             self._decls[name] = ServerDecl(
-                name=name, type=merged.type, mcp_config=merged, factory=factory,
+                name=name, type=merged.type, server_config=merged, factory=factory,
                 plugin_metadata=getattr(factory, "_plugin_metadata", None),
             )
 
@@ -278,8 +278,8 @@ class Runtime:
             return ServerView(
                 name=name,
                 is_agent=isinstance(instance, Agent),
-                mcp_public=bool(getattr(instance, "_mcp_public", True)),
-                mcp_tool_visible=bool(getattr(instance, "_mcp_tool_visible", True)),
+                tool_public=bool(getattr(instance, "_tool_public", True)),
+                tool_visible=bool(getattr(instance, "_tool_visible", True)),
                 built=True,
             )
 
@@ -290,8 +290,8 @@ class Runtime:
         return ServerView(
             name=name,
             is_agent=True,
-            mcp_public=visibility in ("ui", "both"),
-            mcp_tool_visible=visibility in ("tool", "both"),
+            tool_public=visibility in ("ui", "both"),
+            tool_visible=visibility in ("tool", "both"),
             built=False,
         )
 
@@ -348,7 +348,7 @@ class Runtime:
         return findings
 
     def _findings_for(self, name: str, decl: ServerDecl) -> list[str]:
-        agent_config = decl.mcp_config.agent_config
+        agent_config = decl.server_config.agent_config
         if agent_config is None:
             # Agent.__init__ raises on this one -- so this is the only finding
             # here that would take the server down rather than degrade it.
@@ -388,7 +388,7 @@ class Runtime:
         for name in list(self._decls):
             self._build_logged(name)
         try:
-            logger.info("Registered MCP servers: %s", ", ".join(self.registry.list()))
+            logger.info("Registered tool servers: %s", ", ".join(self.registry.list()))
         except Exception:
             logger.debug("Could not list registered servers after bootstrap")
         return self
@@ -419,7 +419,7 @@ class Runtime:
         # under this name keeps its place (bootstrap used to overwrite it) and
         # then never sees the plugin-registry entry or the post-processing.
         # No caller can reach that today: every one of them passes a fresh
-        # MCPRegistry, and the only other writer, create_and_register_agent,
+        # ToolServerRegistry, and the only other writer, create_and_register_agent,
         # runs after the bootstrap.
         existing = self.registry._servers.get(name)
         if existing is not None:
@@ -455,15 +455,15 @@ class Runtime:
         if decl.factory is not None:
             # Asymmetric on purpose, exactly as bootstrap always was: the
             # direct ``type: agent`` branch registered the instance in the
-            # MCPRegistry and did nothing else. Doing the two steps below for
-            # it as well would publish it as an MCP plugin server and give it
+            # ToolServerRegistry and did nothing else. Doing the two steps below for
+            # it as well would publish it as an plugin server and give it
             # a visibility flag it never had -- and the default, "private",
             # would take it OUT of GET /agents, which shows agents that carry
-            # no _mcp_public at all.
-            from .plugins.mcp_adapter import plugin_mcp_registry
-            plugin_mcp_registry.register_existing_plugin_instance(
-                name, instance, self.config, decl.mcp_config)
-            logger.debug(f"Registered plugin '{name}' in both registries (MCPRegistry + PluginMCPRegistry)")
+            # no _tool_public at all.
+            from .plugins.tool_adapter import plugin_tool_registry
+            plugin_tool_registry.register_existing_plugin_instance(
+                name, instance, self.config, decl.server_config)
+            logger.debug(f"Registered plugin '{name}' in both registries (ToolServerRegistry + PluginToolRegistry)")
 
             decl.apply_to(instance, self.registry)
         if self._session_service is not None:
@@ -474,15 +474,15 @@ class Runtime:
 
     def _construct(self, decl: ServerDecl) -> Any:
         if decl.factory is not None:
-            # All plugins take (name, system_config, mcp_config); agent
+            # All plugins take (name, system_config, server_config); agent
             # factories additionally take the shared registry, and it must
             # reach __init__ -- see plugins/factory_utils.
             if getattr(decl.factory, "_accepts_registry", False):
-                return decl.factory(decl.name, self.config, decl.mcp_config, registry=self.registry)
-            return decl.factory(decl.name, self.config, decl.mcp_config)
+                return decl.factory(decl.name, self.config, decl.server_config, registry=self.registry)
+            return decl.factory(decl.name, self.config, decl.server_config)
 
         from .servers.agent.server import Agent
-        return Agent(decl.name, self.config, decl.mcp_config, self.registry)
+        return Agent(decl.name, self.config, decl.server_config, self.registry)
 
 
 def configure_process_singletons(config: AgentSystemConfig) -> None:

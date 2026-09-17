@@ -8,7 +8,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
 from plugins.basic_agent.plugin import PLUGIN_FACTORY
 from plugins.basic_agent.server import BasicAgent
 
@@ -37,34 +37,34 @@ class TestBasicAgentPluginFactory:
         system_config.network = Mock()
         system_config.network.ssl_verify = False
         
-        # Create MCP config with agent config
+        # Create tool server config with agent config
         agent_config = AgentConfig(llm_profile="normal", max_steps=25)
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
         
-        agent = PLUGIN_FACTORY("test_basic_agent", system_config, mcp_config)
+        agent = PLUGIN_FACTORY("test_basic_agent", system_config, server_config)
         
         assert isinstance(agent, BasicAgent)
         assert agent.name == "test_basic_agent"
 
     def test_plugin_instantiation_missing_llm_config(self):
-        """Test factory requires agent_config in MCPConfig."""
+        """Test factory requires agent_config in ToolServerConfig."""
         system_config = Mock(spec=AgentSystemConfig)
         system_config.llm_system = None
         system_config.network = Mock()
         system_config.network.ssl_verify = False
         
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True
         )
         
         # Should raise ValueError because agent_config is missing
-        with pytest.raises(ValueError, match="requires agent_config in MCPConfig"):
-            PLUGIN_FACTORY("test_basic_agent", system_config, mcp_config)
+        with pytest.raises(ValueError, match="requires agent_config in ToolServerConfig"):
+            PLUGIN_FACTORY("test_basic_agent", system_config, server_config)
 
     def test_plugin_instantiation_with_debug_config(self):
         """Test factory with debug configuration."""
@@ -81,14 +81,14 @@ class TestBasicAgentPluginFactory:
         system_config.network.ssl_verify = True
         
         agent_config = AgentConfig(llm_profile="normal", max_steps=50)
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config,
             enable_debug=True
         )
         
-        agent = PLUGIN_FACTORY("debug_agent", system_config, mcp_config)
+        agent = PLUGIN_FACTORY("debug_agent", system_config, server_config)
         
         assert isinstance(agent, BasicAgent)
         assert agent.name == "debug_agent"
@@ -140,7 +140,7 @@ class TestBasicAgentServer:
         system_config.llm_system.profiles = {"normal": Mock(model_ref="gpt-5-nano")}
         system_config.llm_system.models = {"gpt-5-nano": Mock(provider="openai", model="gpt-5-nano")}
         
-        # Create MCP config. tools.allowed is EXPLICIT: an agent without it is
+        # Create tool server config. tools.allowed is EXPLICIT: an agent without it is
         # deny-all in the LLM schema (tool_discovery), and the detail listing
         # follows the same pipeline now -- it used to silently mean allow-all
         # here, reporting tools the model never had.
@@ -149,14 +149,14 @@ class TestBasicAgentServer:
             llm_profile="normal",
             tools=ToolConfig(allowed=["datetime/*", "script_interpreter/*", "weather/*"]),
         )
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
         )
         
         # Create agent instance with new signature
-        self.agent = BasicAgent("test_agent", system_config, mcp_config, self.mock_registry)
+        self.agent = BasicAgent("test_agent", system_config, server_config, self.mock_registry)
 
     def test_agent_initialization(self):
         """Test basic agent initialization."""
@@ -207,7 +207,7 @@ class TestBasicAgentServer:
         system_config.network.ssl_verify = True
         
         agent_config = AgentConfig(llm_profile="normal")
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="basic_agent",
             enabled=True,
             agent_config=agent_config
@@ -218,7 +218,7 @@ class TestBasicAgentServer:
         empty_registry.list.return_value = []
         empty_registry.get.return_value = None
         
-        agent = BasicAgent("empty_agent", system_config, mcp_config, empty_registry)
+        agent = BasicAgent("empty_agent", system_config, server_config, empty_registry)
         
         result = await agent._list_usable_tools_with_details({})
         

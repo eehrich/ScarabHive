@@ -538,20 +538,20 @@ async def test_phase_filtering_disabled_shows_all_allowed():
 async def test_server_phase_filtering_blocks_wrong_phase_agent():
     """Test that server blocks agent creation if not allowed in current phase."""
     from plugins.sub_agent_manager.server import SubAgentManagerServer
-    from agent_system.config import MCPConfig, AgentSystemConfig
+    from agent_system.config import ToolServerConfig, AgentSystemConfig
     
     # Create mock configs
-    mcp_config = MagicMock(spec=MCPConfig)
-    mcp_config.max_sub_agents_per_session = 10
-    mcp_config.max_nesting_depth = 3
-    mcp_config.max_message_history = 100
-    mcp_config.max_sub_agents_per_type = 3
-    mcp_config.default_wait_timeout = 3600
-    mcp_config.allowed_agents = ["story_designer", "character_designer", "scene_writer"]
-    mcp_config.blocked_agents = []
-    mcp_config.hook_config = {}
+    server_config = MagicMock(spec=ToolServerConfig)
+    server_config.max_sub_agents_per_session = 10
+    server_config.max_nesting_depth = 3
+    server_config.max_message_history = 100
+    server_config.max_sub_agents_per_type = 3
+    server_config.default_wait_timeout = 3600
+    server_config.allowed_agents = ["story_designer", "character_designer", "scene_writer"]
+    server_config.blocked_agents = []
+    server_config.hook_config = {}
     # Phase filtering config at top-level
-    mcp_config.phase_filtering = {
+    server_config.phase_filtering = {
         "enabled": True,
         "phase_variable": "workflow_phase",
         "phase_agents": {
@@ -562,7 +562,7 @@ async def test_server_phase_filtering_blocks_wrong_phase_agent():
     
     system_config = MagicMock(spec=AgentSystemConfig)
     
-    server = SubAgentManagerServer("test_sam", system_config, mcp_config)
+    server = SubAgentManagerServer("test_sam", system_config, server_config)
     
     # Verify phase filtering config was loaded
     assert server.phase_filtering_enabled is True
@@ -598,15 +598,15 @@ async def test_server_phase_filtering_blocks_wrong_phase_agent():
 async def test_the_tool_list_marks_a_sub_agent_without_a_run_interrupted_and_clears_its_activity(tmp_path):
     """A sub-agent still reporting an activity with no run in this process: the tool's list answers it interrupted
     without the stale activity, and stores it so -- a manager made for the call knows no earlier activity to compare."""
-    from agent_system.config.models import AgentConfig, AgentSystemConfig, MCPConfig
-    from agent_system.mcp.base import MCPRegistry
+    from agent_system.config.models import AgentConfig, AgentSystemConfig, ToolServerConfig
+    from agent_system.tools.base import ToolServerRegistry
     from agent_system.services.session_manager import SessionManager
     from agent_system.services.session_service import SessionService
     from plugins.sub_agent_manager.server import SubAgentManagerServer
 
     service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))
-    server = SubAgentManagerServer("sam", AgentSystemConfig(), MCPConfig(allowed_agents=["*"]))
-    registry = MCPRegistry()
+    server = SubAgentManagerServer("sam", AgentSystemConfig(), ToolServerConfig(allowed_agents=["*"]))
+    registry = ToolServerRegistry()
     agent = MagicMock()
     agent.name = "writer_agent"
     agent.agent_config = AgentConfig(llm_profile="normal")
@@ -629,21 +629,21 @@ async def test_the_sub_agent_list_carries_the_phase_of_the_session():
     """The panel's list names the session's phase and the agents it lets the tool spawn, by the tool's own rule."""
     from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
     from plugins.sub_agent_manager.server import SubAgentManagerServer
-    from agent_system.config import MCPConfig, AgentSystemConfig
+    from agent_system.config import ToolServerConfig, AgentSystemConfig
     from fastapi import Request
     from unittest.mock import AsyncMock, patch
     
     # Create mock configs with phase filtering
-    mcp_config = MagicMock(spec=MCPConfig)
-    mcp_config.max_sub_agents_per_session = 10
-    mcp_config.max_nesting_depth = 3
-    mcp_config.max_message_history = 100
-    mcp_config.max_sub_agents_per_type = 3
-    mcp_config.default_wait_timeout = 3600
-    mcp_config.allowed_agents = ["story_designer", "character_designer", "scene_writer"]
-    mcp_config.blocked_agents = []
-    mcp_config.hook_config = {}
-    mcp_config.phase_filtering = {
+    server_config = MagicMock(spec=ToolServerConfig)
+    server_config.max_sub_agents_per_session = 10
+    server_config.max_nesting_depth = 3
+    server_config.max_message_history = 100
+    server_config.max_sub_agents_per_type = 3
+    server_config.default_wait_timeout = 3600
+    server_config.allowed_agents = ["story_designer", "character_designer", "scene_writer"]
+    server_config.blocked_agents = []
+    server_config.hook_config = {}
+    server_config.phase_filtering = {
         "enabled": True,
         "phase_variable": "workflow_phase",
         "phase_agents": {
@@ -655,7 +655,7 @@ async def test_the_sub_agent_list_carries_the_phase_of_the_session():
     
     system_config = MagicMock(spec=AgentSystemConfig)
     
-    server = SubAgentManagerServer("test_sam", system_config, mcp_config)
+    server = SubAgentManagerServer("test_sam", system_config, server_config)
     factory = SubAgentManagerWebFactory(server)
     
     # Mock session manager (used by web endpoint)

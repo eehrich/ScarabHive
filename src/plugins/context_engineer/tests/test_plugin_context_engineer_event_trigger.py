@@ -211,7 +211,7 @@ class TestEventBasedMediaCompaction:
         Shipped behaviour was a static 'Context engineering completed' —
         while the CompactionResult with all the numbers sat right beside it.
         """
-        from agent_system.mcp.status import get_status_bus
+        from agent_system.tools.status import get_status_bus
 
         published = []
 

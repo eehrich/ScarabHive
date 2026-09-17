@@ -8,6 +8,6 @@ version = "1.0.0"
 description = "Lists, tails and searches the configured log files, with the Logs panel"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server", "web"]
+type = ["tool-server", "web"]
 category = "monitoring"
 requires = { agent_system = ">=0.7.0" }

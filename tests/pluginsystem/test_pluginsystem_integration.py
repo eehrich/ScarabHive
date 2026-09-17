@@ -87,8 +87,8 @@ def create_test_config(workspace_path: Path):
     with open(workspace_path / "config" / "config.yaml", "w") as f:
         yaml.safe_dump(agent_config, f, allow_unicode=True, sort_keys=False)
 
-    # MCP config - use new format with plugins.servers
-    mcp_config = {
+    # tool server config - use new format with plugins.servers
+    server_config = {
         "plugins": {
             "plugin_dirs": ["plugins"],
             "servers": {
@@ -109,14 +109,17 @@ def create_test_config(workspace_path: Path):
     }
 
     with open(workspace_path / "config" / "mcp.yaml", "w") as f:
-        yaml.safe_dump(mcp_config, f, allow_unicode=True, sort_keys=False)
+        yaml.safe_dump(server_config, f, allow_unicode=True, sort_keys=False)
 
 
 def run_cli_command(workspace_path: Path, command: List[str], env: Dict[str, str] = None) -> subprocess.CompletedProcess:
     """Run a CLI command in the test workspace."""
     cmd_env = os.environ.copy()
     # Include both the workspace src and the original src directory
-    original_src = Path(__file__).parent.parent / "src"
+    # parents[2] is the repo root: parent.parent was tests/, so `src` did not
+    # exist and the subprocess silently fell back to the INSTALLED package --
+    # it tested whatever was in site-packages, not this checkout.
+    original_src = Path(__file__).parents[2] / "src"
     path_sep = ";" if os.name == "nt" else ":"
     cmd_env["PYTHONPATH"] = f"{workspace_path / 'src'}{path_sep}{original_src}"
     # Ensure we're using the test workspace and not the main project
@@ -207,7 +210,7 @@ class TestPluginDiscoveryIntegration:
         plugins = discover_all_plugins([temp_workspace / "plugins"])
 
         # Only check metadata for plugins that carry a manifest (plugin.toml);
-        # some plugins (e.g. MCP servers) may only have schema.yaml and carry
+        # some plugins (e.g. tool servers) may only have schema.yaml and carry
         # no metadata.
         plugins_with_metadata = {}
         for plugin_name, factory in plugins.items():
@@ -290,7 +293,7 @@ class TestIndividualPluginClis:
         )
 
         assert result.returncode == 0, f"CLI help failed: {result.stderr}"
-        assert "LLM Router MCP Server" in result.stdout, "Help text not found"
+        assert "LLM Router Tool Server" in result.stdout, "Help text not found"
 
     def test_web_scraper_cli_help(self, temp_workspace):
         """Test web_scraper plugin CLI help."""
@@ -300,7 +303,7 @@ class TestIndividualPluginClis:
         )
 
         assert result.returncode == 0, f"CLI help failed: {result.stderr}"
-        assert "Web Scraper MCP Server" in result.stdout, "Help text not found"
+        assert "Web Scraper Tool Server" in result.stdout, "Help text not found"
 
     def test_http_server_cli_help(self, temp_workspace):
         """Test http_server plugin CLI help."""
@@ -310,7 +313,7 @@ class TestIndividualPluginClis:
         )
 
         assert result.returncode == 0, f"CLI help failed: {result.stderr}"
-        assert "HTTP Server MCP Plugin" in result.stdout, "Help text not found"
+        assert "HTTP Server Tool plugin" in result.stdout, "Help text not found"
 
 
         def test_plugin_server_startup_shutdown(self, temp_workspace):
@@ -318,7 +321,7 @@ class TestIndividualPluginClis:
 
             Starting plugin servers in subprocess mode is brittle across test
             environments because many plugin CLIs expect dependency injection
-            (system_config, mcp_config). Instead of launching a full server here,
+            (system_config, server_config). Instead of launching a full server here,
             assert that the plugin discovery exposes a factory callable for
             `llm_router` so higher-level integration tests can exercise startup
             paths in controlled environments.
@@ -339,8 +342,8 @@ class TestPluginConfigurationIntegration:
         config_path = temp_workspace / "config" / "config.yaml"
 
         # Modify mcp.yaml to mark only llm_router as enabled in the new servers mapping
-        mcp_config_path = temp_workspace / "config" / "mcp.yaml"
-        with open(mcp_config_path) as f:
+        server_config_path = temp_workspace / "config" / "mcp.yaml"
+        with open(server_config_path) as f:
             config = yaml.safe_load(f) or {}
 
         # Normalize to top-level mcp block if necessary
@@ -365,7 +368,7 @@ class TestPluginConfigurationIntegration:
         existing["servers"] = servers
         config["mcp"] = existing
 
-        with open(mcp_config_path, "w") as f:
+        with open(server_config_path, "w") as f:
             yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
 
         # Test that the CLI reflects the config changes using in-process invocation
@@ -401,8 +404,8 @@ class TestPluginConfigurationIntegration:
     def test_plugin_directory_configuration(self, temp_workspace):
         """Test that plugin directory configuration works."""
         # Modify config to use a different plugin directory
-        mcp_config_path = temp_workspace / "config" / "mcp.yaml"
-        with open(mcp_config_path) as f:
+        server_config_path = temp_workspace / "config" / "mcp.yaml"
+        with open(server_config_path) as f:
             config = yaml.safe_load(f)
 
         # Create a subdirectory for plugins
@@ -415,7 +418,7 @@ class TestPluginConfigurationIntegration:
 
         config["plugin_dirs"] = ["custom_plugins", "plugins"]
 
-        with open(mcp_config_path, "w") as f:
+        with open(server_config_path, "w") as f:
             yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
 
         # Test that plugins are still discovered

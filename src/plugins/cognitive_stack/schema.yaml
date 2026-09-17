@@ -1,4 +1,4 @@
-# Cognitive Stack MCP Server Schema
+# Cognitive Stack Tool Server Schema
 # Jinja2 variables: {{ name }}, {{ max_depth }}
 
 tools:

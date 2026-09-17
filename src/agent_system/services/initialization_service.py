@@ -4,10 +4,10 @@ This module consolidates all plugin/agent bootstrap and dependency injection log
 that was previously duplicated across app.py, agent_cli.py, and agent_run.py.
 
 Key responsibilities:
-- MCP server/plugin bootstrap and registration
+- tool server/plugin bootstrap and registration
 - SessionManager and SessionService initialization
 - Dependency injection (session_service) into all agents
-- Support for both MCPRegistry (CLI/agent_run) and PluginMCPRegistry (API)
+- Support for both ToolServerRegistry (CLI/agent_run) and PluginToolRegistry (API)
 - Work in both sync and async contexts
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config.models import AgentSystemConfig
-from ..mcp.base import MCPRegistry
+from ..tools.base import ToolServerRegistry
 from .session_manager import SessionManager
 from .session_service import SessionService
 
@@ -73,14 +73,14 @@ class InitializationService:
 
     def bootstrap_and_inject(
         self,
-        registry: Optional[MCPRegistry] = None,
+        registry: Optional[ToolServerRegistry] = None,
         inject_sessions: bool = True
-    ) -> MCPRegistry:
+    ) -> ToolServerRegistry:
         """
-        Bootstrap all MCP servers and inject dependencies.
+        Bootstrap all tool servers and inject dependencies.
         
         This method:
-        1. Creates a new MCPRegistry if not provided
+        1. Creates a new ToolServerRegistry if not provided
         2. Calls bootstrap_servers() to discover and register all plugins/agents
         3. Injects session_service into all agents (optional)
         4. Returns the fully initialized registry
@@ -90,19 +90,19 @@ class InitializationService:
             inject_sessions: Whether to inject session_service into agents (default: True)
         
         Returns:
-            MCPRegistry with all servers bootstrapped and dependencies injected
+            ToolServerRegistry with all servers bootstrapped and dependencies injected
         """
         from ..runtime import Runtime, configure_process_singletons
 
         # Create registry if not provided
         if registry is None:
-            registry = MCPRegistry()
-            logger.debug("Created new MCPRegistry")
+            registry = ToolServerRegistry()
+            logger.debug("Created new ToolServerRegistry")
 
         # Bootstrap all configured servers/plugins. The Runtime is KEPT: it
         # holds the declaration of every configured server, so a caller can
         # later ask about one -- or build it -- without a second discovery.
-        logger.info("Bootstrapping MCP servers from config")
+        logger.info("Bootstrapping tool servers from config")
         configure_process_singletons(self.config)
         self._runtime = Runtime(
             self.config, registry=registry,
@@ -121,7 +121,7 @@ class InitializationService:
         self._initialized = True
         return registry
 
-    def initialize_for_cli(self) -> tuple[MCPRegistry, SessionService]:
+    def initialize_for_cli(self) -> tuple[ToolServerRegistry, SessionService]:
         """
         Full initialization for CLI context.
         
@@ -150,12 +150,12 @@ class InitializationService:
         Initialization for API context (FastAPI app).
         
         API context is more complex because:
-        - PluginMCPRegistry (singleton) is used instead of MCPRegistry
+        - PluginToolRegistry (singleton) is used instead of ToolServerRegistry
         - Agents might be created via build_mcp_app() which does its own bootstrap
         - We need to inject into the global plugin_registry
         
         Args:
-            plugin_registry: The global PluginMCPRegistry instance (singleton)
+            plugin_registry: The global PluginToolRegistry instance (singleton)
         
         Returns:
             SessionService ready for use in API context

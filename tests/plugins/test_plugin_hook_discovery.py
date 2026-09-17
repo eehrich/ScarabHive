@@ -21,7 +21,7 @@ from agent_system.hooks import (
 
 
 class MockHookPlugin(PluginHook):
-    """Mock plugin implementing ONLY PluginHook interface (no MCP tools)."""
+    """Mock plugin implementing ONLY PluginHook interface (no tools)."""
     
     def __init__(self, name: str, config: Dict[str, Any] = None):
         super().__init__(name, config or {})

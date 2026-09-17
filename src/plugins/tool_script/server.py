@@ -37,12 +37,12 @@ import fnmatch
 import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from plugins.script_interpreter.config import ScriptInterpreterConfig
 from plugins.script_interpreter.executor import ScriptExecutor
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -90,14 +90,14 @@ class _ScriptContext:
         self.n_calls = 0
 
 
-class ToolScriptServer(SchemaBasedMCPServer):
+class ToolScriptServer(SchemaBasedToolServer):
     """Executes agent-authored Python scripts that chain tool calls in-process."""
 
     def __init__(self, name: str, system_config: "AgentSystemConfig",
-                 mcp_config: "MCPConfig") -> None:
-        super().__init__(name, system_config, mcp_config)
+                 server_config: "ToolServerConfig") -> None:
+        super().__init__(name, system_config, server_config)
 
-        config_dict = getattr(mcp_config, "config", None) or {}
+        config_dict = getattr(server_config, "config", None) or {}
         self._timeout: float = float(config_dict.get("timeout", 120))
         self._per_call_timeout: float = float(config_dict.get("per_call_timeout", 60))
         self._max_tool_calls: int = int(config_dict.get("max_tool_calls", 20))

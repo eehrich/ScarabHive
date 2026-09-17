@@ -5,7 +5,7 @@
 [plugin]
 name = "basic_agent"
 version = "1.0.0"
-description = "Basic agent plugin providing agent execution capabilities as MCP tools"
+description = "Basic agent plugin providing agent execution capabilities as tools"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
 # The constructor reads config and builds an LLM client -- no I/O, no
@@ -13,7 +13,7 @@ entrypoint = "plugin:PLUGIN_FACTORY"
 # instead of at start. Enforced: agent_system.runtime refuses to register
 # a lazy type that builds something other than an Agent.
 lazy = true
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "tools"
 tags = ["agent", "execution", "llm", "task", "basic"]
 requires = { python = ">=3.11", agent_system = ">=0.6.0" }

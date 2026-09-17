@@ -201,18 +201,18 @@ class TestWebScraperCaching:
     def mock_scraper(self, tmp_path):
         """Create a mock web scraper with cache enabled."""
         from unittest.mock import Mock
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
         from plugins.web_scraper.server import WebScraperServer
         
         system_config = Mock(spec=AgentSystemConfig)
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="web_scraper",
             enabled=True,
             cache_enabled=True,
             cache_ttl=60
         )
         
-        server = WebScraperServer("test_scraper", system_config, mcp_config)
+        server = WebScraperServer("test_scraper", system_config, server_config)
         # Override cache to use temp directory
         server.cache = PluginCache("test_scraper", tmp_path, default_ttl=60)
         
@@ -252,18 +252,18 @@ class TestDuckDuckGoSearchCaching:
     def mock_ddg_search(self, tmp_path):
         """Create a mock DuckDuckGo search server with cache enabled."""
         from unittest.mock import Mock
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
         from plugins.duckduckgo_search.server import DuckDuckGoSearchServer
         
         system_config = Mock(spec=AgentSystemConfig)
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="duckduckgo_search",
             enabled=True,
             cache_enabled=True,
             cache_ttl=900
         )
         
-        server = DuckDuckGoSearchServer("test_ddg", system_config, mcp_config)
+        server = DuckDuckGoSearchServer("test_ddg", system_config, server_config)
         # Override cache to use temp directory
         server.cache = PluginCache("test_ddg", tmp_path, default_ttl=900)
         

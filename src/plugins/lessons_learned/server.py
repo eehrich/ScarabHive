@@ -1,7 +1,7 @@
 """
 Lessons Learned Server - Core SQLite CRUD + VectorStore integration.
 
-Provides MCP tool interface for storing, searching, and managing
+Provides tool interface for storing, searching, and managing
 persistent lessons that agents learn across sessions.
 """
 
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agent_system.hooks.plugin_hook import HookContext, HookResult, PluginHook
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.json_utils import repair_json
 from agent_system.utils.vector_store import VectorStore
 
@@ -28,7 +28,7 @@ from .models import (
 from .prompt_builder import build_lesson_prompt
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPServerConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -179,12 +179,12 @@ CREATE TABLE IF NOT EXISTS extraction_log (
 """
 
 
-class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
+class LessonsLearnedServer(SchemaBasedToolServer, PluginHook):
     """
-    Lessons Learned MCP Server with semantic search.
+    Lessons Learned Tool Server with semantic search.
 
     Implements:
-    - MCP tool: lessons_learned with operations (store/search/list/update/confirm/teach)
+    - tool: lessons_learned with operations (store/search/list/update/confirm/teach)
     - Hooks: inject_lessons (pre_llm_call), extract_lessons (session_end)
     - Storage: SQLite (structured) + VectorStore (semantic search/dedup)
     """
@@ -193,17 +193,17 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPServerConfig",
+        server_config: "ToolServerConfig",
     ) -> None:
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         self._system_config = system_config
 
-        # Resolve paths from mcp_config (runtime overrides) with sensible defaults
-        # Follows pattern from todo/memory plugins: getattr(mcp_config, key, default)
-        db_path_str = str(getattr(mcp_config, "database_path", "data/lessons_learned/lessons.db"))
+        # Resolve paths from server_config (runtime overrides) with sensible defaults
+        # Follows pattern from todo/memory plugins: getattr(server_config, key, default)
+        db_path_str = str(getattr(server_config, "database_path", "data/lessons_learned/lessons.db"))
         # Also support dict-style config (used in tests via MagicMock)
-        if hasattr(mcp_config, "config") and isinstance(mcp_config.config, dict):
-            db_path_str = mcp_config.config.get("database_path", db_path_str)
+        if hasattr(server_config, "config") and isinstance(server_config.config, dict):
+            db_path_str = server_config.config.get("database_path", db_path_str)
         self.db_path = Path(db_path_str)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -212,15 +212,15 @@ class LessonsLearnedServer(SchemaBasedMCPServer, PluginHook):
         self.vector_store_path.mkdir(parents=True, exist_ok=True)
         self.vector_store = VectorStore(persist_path=str(self.vector_store_path))
 
-        # Plugin config - read from mcp_config attributes (set from plugins.yaml)
-        self.max_lessons_per_agent = int(getattr(mcp_config, "max_lessons_per_agent", 200))
-        self.dedup_similarity_threshold = float(getattr(mcp_config, "dedup_similarity_threshold", 0.82))
-        self.exact_duplicate_threshold = float(getattr(mcp_config, "exact_duplicate_threshold", 0.95))
-        self.consolidation_llm_profile = str(getattr(mcp_config, "consolidation_llm_profile", "turbo"))
+        # Plugin config - read from server_config attributes (set from plugins.yaml)
+        self.max_lessons_per_agent = int(getattr(server_config, "max_lessons_per_agent", 200))
+        self.dedup_similarity_threshold = float(getattr(server_config, "dedup_similarity_threshold", 0.82))
+        self.exact_duplicate_threshold = float(getattr(server_config, "exact_duplicate_threshold", 0.95))
+        self.consolidation_llm_profile = str(getattr(server_config, "consolidation_llm_profile", "turbo"))
         # Deployment default for extraction. A per-agent hook may override it
         # with `extraction_llm_profile`; without this the plugin-level key was
         # declared in schema.yaml, shipped in plugins.yaml, and read by nobody.
-        self.llm_profile = str(getattr(mcp_config, "llm_profile", "turbo"))
+        self.llm_profile = str(getattr(server_config, "llm_profile", "turbo"))
 
         # Lesson ID counters (agent_name -> int)
         self._lesson_counters: Dict[str, int] = {}

@@ -21,21 +21,21 @@ logger = logging.getLogger(__name__)
 class MarkdownFormatterPlugin(SchemaBasedPluginHook):
     """Hook plugin for Markdown formatting and HTML conversion."""
     
-    def __init__(self, plugin_dir: Path, mcp_config: Any = None):
+    def __init__(self, plugin_dir: Path, server_config: Any = None):
         """Initialize the markdown formatter plugin.
         
         Args:
             plugin_dir: Directory containing plugin configuration files
-            mcp_config: MCP configuration (contains config from plugins.yaml)
+            server_config: tool server configuration (contains config from plugins.yaml)
         """
         super().__init__(plugin_dir)
         
         # Get config from schema defaults
         config = self.config or {}
         
-        # Merge with mcp_config.config if provided (overrides schema defaults)
-        if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
-            config.update(mcp_config.config)
+        # Merge with server_config.config if provided (overrides schema defaults)
+        if server_config and hasattr(server_config, 'config') and server_config.config:
+            config.update(server_config.config)
         
         def get_config_value(key: str, default):
             val = config.get(key, default)

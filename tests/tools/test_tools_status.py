@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 
-from agent_system.mcp.status import StatusBus, StatusEvent, publish_status, status_bus
+from agent_system.tools.status import StatusBus, StatusEvent, publish_status, status_bus
 
 
 class TestStatusEvent:

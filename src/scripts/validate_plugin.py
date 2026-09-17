@@ -126,12 +126,16 @@ class PluginValidator:
     #: shape the runtime supports.
     CODELESS_TYPES = frozenset({"library", "llm-provider"})
 
+    #: The type was called "tool-server" until 17.09.2026. A plugin from outside
+    #: this repo still says so, and its meaning has not changed.
+    LEGACY_TYPES = {"tool-server": "tool-server"}
+
     def declared_types(self) -> list[str]:
-        """The manifest's `type` list, old string form converted."""
-        declared = (self.manifest or {}).get("type", ["mcp-server"])
+        """The manifest's `type` list, old string form and old names converted."""
+        declared = (self.manifest or {}).get("type", ["tool-server"])
         if isinstance(declared, str):
-            return self._convert_old_type_format(declared)
-        return list(declared or [])
+            declared = self._convert_old_type_format(declared)
+        return [self.LEGACY_TYPES.get(name, name) for name in (declared or [])]
 
     def _is_codeless(self) -> bool:
         return bool(self.CODELESS_TYPES & set(self.declared_types()))
@@ -236,22 +240,21 @@ class PluginValidator:
         if not self.schema_yaml:
             return  # schema.yaml is optional
 
-        # Check for tools section (if MCP plugin)
-        plugin_types = self.manifest.get("type", ["mcp-server"])
+        # Check for tools section (if plugin)
+        raw_types = self.manifest.get("type", ["tool-server"])
 
         # Handle both old string format and new list format for backward compatibility
-        if isinstance(plugin_types, str):
+        if isinstance(raw_types, str):
             self.warnings.append(
-                f"Plugin type is using deprecated string format: '{plugin_types}'. "
-                "Please update to list format (e.g., ['mcp-server'], ['web'], ['mcp-server', 'web'])"
+                f"Plugin type is using deprecated string format: '{raw_types}'. "
+                "Please update to list format (e.g., ['tool-server'], ['web'], ['tool-server', 'web'])"
             )
-            # Convert old string format to list for validation
-            plugin_types = self._convert_old_type_format(plugin_types)
+        plugin_types = self.declared_types()
 
-        if "mcp-server" in plugin_types:
+        if "tool-server" in plugin_types:
             if "tools" not in self.schema_yaml:
                 self.errors.append(
-                    f"MCP plugin type {plugin_types} requires 'tools' section in schema.yaml"
+                    f"plugin type {plugin_types} requires 'tools' section in schema.yaml"
                 )
             else:
                 self._validate_tools_section()
@@ -265,7 +268,7 @@ class PluginValidator:
             else:
                 self._validate_hooks_section()
 
-        # A web_ui section is checked wherever it is: plugins typed mcp-server
+        # A web_ui section is checked wherever it is: plugins typed tool-server
         # (comfyui, ssh_control) serve panels too.
         if "web_ui" in self.schema_yaml:
             self._validate_web_ui_section()
@@ -367,12 +370,12 @@ class PluginValidator:
 
         if "description" not in tool:
             self.warnings.append(
-                f"MCP tool '{tool_name}' missing description - highly recommended"
+                f"tool '{tool_name}' missing description - highly recommended"
             )
 
         if "inputSchema" not in tool:
             self.warnings.append(
-                f"MCP tool '{tool_name}' missing inputSchema - tools should define parameters"
+                f"tool '{tool_name}' missing inputSchema - tools should define parameters"
             )
         else:
             # Validate inputSchema as parameters
@@ -548,19 +551,15 @@ class PluginValidator:
         if not self.manifest or not self.schema_yaml:
             return
 
-        plugin_types = self.manifest.get("type", ["mcp-server"])
-
-        # Handle both old string format and new list format
-        if isinstance(plugin_types, str):
-            plugin_types = self._convert_old_type_format(plugin_types)
+        plugin_types = self.declared_types()
 
         # Check consistency between plugin type and schema content
         has_tools = "tools" in self.schema_yaml
         has_hooks = "hooks" in self.schema_yaml
 
-        if "mcp-server" in plugin_types and not has_tools:
+        if "tool-server" in plugin_types and not has_tools:
             self.warnings.append(
-                f"Plugin type {plugin_types} suggests MCP tools but schema.yaml has no 'tools' section"
+                f"Plugin type {plugin_types} suggests tools but schema.yaml has no 'tools' section"
             )
 
         if plugin_types == ["hooks"] and has_tools:
@@ -577,24 +576,24 @@ class PluginValidator:
         """Convert old string type format to new list format.
 
         Mapping:
-        - mcp_only -> ["mcp-server"]
+        - mcp_only -> ["tool-server"]
         - web_only -> ["web"]
         - hooks_only -> ["hooks"]
-        - hybrid -> ["mcp-server", "web"]
-        - mcp_with_hooks -> ["mcp-server", "hooks"]
+        - hybrid -> ["tool-server", "web"]
+        - mcp_with_hooks -> ["tool-server", "hooks"]
         - web_with_hooks -> ["web", "hooks"]
-        - hybrid_with_hooks -> ["mcp-server", "web", "hooks"]
+        - hybrid_with_hooks -> ["tool-server", "web", "hooks"]
         """
         mapping = {
-            "mcp_only": ["mcp-server"],
+            "mcp_only": ["tool-server"],
             "web_only": ["web"],
             "hooks_only": ["hooks"],
-            "hybrid": ["mcp-server", "web"],
-            "mcp_with_hooks": ["mcp-server", "hooks"],
+            "hybrid": ["tool-server", "web"],
+            "mcp_with_hooks": ["tool-server", "hooks"],
             "web_with_hooks": ["web", "hooks"],
-            "hybrid_with_hooks": ["mcp-server", "web", "hooks"],
+            "hybrid_with_hooks": ["tool-server", "web", "hooks"],
         }
-        return mapping.get(old_type, ["mcp-server"])
+        return mapping.get(old_type, ["tool-server"])
 
     def _validate_template_variables(self) -> None:
         """Validate template variable usage in schema.yaml."""

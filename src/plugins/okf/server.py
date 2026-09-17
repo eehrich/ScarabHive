@@ -1,8 +1,8 @@
-"""OKF MCP server — tools + consumer hook for the Open Knowledge Format.
+"""OKF tool server — tools + consumer hook for the Open Knowledge Format.
 
 Thin IO/dispatch layer over :mod:`plugins.okf.core` (which owns the format).
 The server adds: a sandboxed filesystem (reuses the file_ops ``allowed_directories``
-pattern), bundle loading from disk, the MCP tool surface, and the opt-in
+pattern), bundle loading from disk, the tool surface, and the opt-in
 ``pre_llm_call`` consumer hook that folds a bundle into agent context
 (graph-anchored + lexical retrieval).
 
@@ -25,13 +25,13 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from filelock import FileLock, Timeout
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.suggest import siblings_of, suggest_path
 
 from . import core
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
     from agent_system.hooks import HookContext, HookResult
 
 logger = logging.getLogger(__name__)
@@ -160,19 +160,19 @@ async def _exclusive(root: Path, fn: Callable[[], Any]) -> Any:
     return await asyncio.to_thread(_run_locked, root, fn)
 
 
-class OkfServer(SchemaBasedMCPServer):
+class OkfServer(SchemaBasedToolServer):
     """Sandboxed read/write/validate/graph/search over OKF bundles, plus a
     context-injection hook."""
 
     def __init__(self, name: str, system_config: "AgentSystemConfig",
-                 mcp_config: "MCPConfig") -> None:
-        super().__init__(name, system_config, mcp_config)
+                 server_config: "ToolServerConfig") -> None:
+        super().__init__(name, system_config, server_config)
 
         # Config may arrive either as top-level plugin keys (file_ops style,
-        # via MCPConfig extra="allow") or under a 'config:' sub-block
+        # via ToolServerConfig extra="allow") or under a 'config:' sub-block
         # (json_store style). Merge both, the explicit sub-block winning.
-        top_level = getattr(mcp_config, "model_extra", None) or {}
-        sub = getattr(mcp_config, "config", None) or {}
+        top_level = getattr(server_config, "model_extra", None) or {}
+        sub = getattr(server_config, "config", None) or {}
         cfg = {**top_level, **sub}
 
         # Sandbox roots — same contract as file_ops: relative paths resolve
@@ -349,7 +349,7 @@ class OkfServer(SchemaBasedMCPServer):
         return scored[:limit]
 
     # ------------------------------------------------------------------
-    # MCP tools  (schema tool  okf_<op>  ->  method <op>)
+    # tools  (schema tool  okf_<op>  ->  method <op>)
     # ------------------------------------------------------------------
 
     async def validate(self, params: Dict[str, Any]) -> Dict[str, Any]:

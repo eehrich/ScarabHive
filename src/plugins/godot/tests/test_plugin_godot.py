@@ -23,8 +23,8 @@ from pathlib import Path
 import pytest
 from websockets.asyncio.server import serve
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
-from agent_system.mcp.status import StatusPhase, get_status_bus
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.tools.status import StatusPhase, get_status_bus
 from plugins.godot.plugin import PLUGIN_FACTORY
 from plugins.godot.server import (ADDON_RES_PATH, ADDON_SOURCE, dedupe_load_failures,
                                   parse_godot_stderr)
@@ -165,10 +165,10 @@ def project(tmp_path):
 def server(addon, project, tmp_path, monkeypatch):
     log = tmp_path / "stub_calls.jsonl"
     monkeypatch.setenv("GODOT_STUB_LOG", str(log))
-    config = MCPConfig(type="godot", enabled=True, port=addon.port,
+    config = ToolServerConfig(type="godot", enabled=True, port=addon.port,
                        godot_binary="unused", projects_root=str(project.parent),
                        output_directory=str(tmp_path / "out"), timeout=3, long_timeout=5)
-    srv = PLUGIN_FACTORY(name="godot", system_config=AgentSystemConfig(), mcp_config=config)
+    srv = PLUGIN_FACTORY(name="godot", system_config=AgentSystemConfig(), server_config=config)
     srv._godot = [sys.executable, str(STUB)]
     srv._stub_log = log  # test-only handle
     addon.project_path = str(project)  # the editor has this project open

@@ -1,10 +1,10 @@
 import textwrap
 
 from agent_system.plugins import discover_plugins
-from agent_system.mcp.base import MCPRegistry, MCPServer
+from agent_system.tools.base import ToolServerRegistry, ToolServer
 from agent_system.servers.bootstrap import bootstrap_servers
 from agent_system.config.models import (
-    AgentSystemConfig, PluginsConfig, MCPConfig,
+    AgentSystemConfig, PluginsConfig, ToolServerConfig,
     LLMSystemConfig, LLMModelConfig
 )
 
@@ -12,9 +12,9 @@ from agent_system.config.models import (
 def test_plugins_discovery_and_bootstrap(tmp_path, monkeypatch):
     # Create a fake plugin file
     plugin_code = textwrap.dedent('''
-    from agent_system.mcp.base import MCPServer
+    from agent_system.tools.base import ToolServer
 
-    class FakeServer(MCPServer):
+    class FakeServer(ToolServer):
         async def call(self, tool, params):
             return {"tool": tool, "params": params}
         def get_schema(self):
@@ -44,18 +44,18 @@ def test_plugins_discovery_and_bootstrap(tmp_path, monkeypatch):
         ),
         plugins=PluginsConfig(
             plugin_dirs=[str(plugins_dir)],  # Explicitly specify the plugin directory
-            servers={"fake_plugin": MCPConfig(type="fake_plugin", enabled=True)}
+            servers={"fake_plugin": ToolServerConfig(type="fake_plugin", enabled=True)}
         )
     )
 
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     # Temporarily change cwd so bootstrap finds plugin dir via relative path
     monkeypatch.chdir(tmp_path)
     bootstrap_servers(cfg, registry)
 
     assert registry.list() == ["fake_plugin"]
     srv = registry.get("fake_plugin")
-    assert isinstance(srv, MCPServer)
+    assert isinstance(srv, ToolServer)
 
 
 def test_plugins_discovery_respects_plugin_dirs(tmp_path, monkeypatch):
@@ -63,9 +63,9 @@ def test_plugins_discovery_respects_plugin_dirs(tmp_path, monkeypatch):
     custom_dir = tmp_path / "my_plugins"
     custom_dir.mkdir()
     plugin_code = textwrap.dedent('''
-    from agent_system.mcp.base import MCPServer
+    from agent_system.tools.base import ToolServer
 
-    class CustomServer(MCPServer):
+    class CustomServer(ToolServer):
         async def call(self, tool, params):
             return {"ok": True}
         def get_schema(self):
@@ -86,10 +86,10 @@ def test_plugins_discovery_respects_plugin_dirs(tmp_path, monkeypatch):
         ),
         plugins=PluginsConfig(
             plugin_dirs=[str(custom_dir)],
-            servers={"custom_plugin": MCPConfig(type="custom_plugin", enabled=True)}
+            servers={"custom_plugin": ToolServerConfig(type="custom_plugin", enabled=True)}
         )
     )
 
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     bootstrap_servers(cfg, registry)
     assert registry.list() == ["custom_plugin"]

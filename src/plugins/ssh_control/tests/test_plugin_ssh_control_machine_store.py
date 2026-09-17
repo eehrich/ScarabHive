@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.ssh_control import machine_store
 from plugins.ssh_control.web_endpoints import NewMachine
 
@@ -21,7 +21,7 @@ def panel():
     """The web endpoints of a plugin instance without configured machines."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
 
-    config = MCPConfig()
+    config = ToolServerConfig()
     config.machines = []
     return PLUGIN_FACTORY('ssh_control_test', AgentSystemConfig(), config).web_endpoints
 
@@ -70,13 +70,13 @@ async def test_the_panel_removes_what_the_tool_stored(
     """
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
 
-    config = MCPConfig()
+    config = ToolServerConfig()
     config.machines = []
     tool = PLUGIN_FACTORY('ssh_control_test', mock_system_config, config)
 
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                AsyncMock(return_value=ssh_ok)):
-        add = await tool.mcp_server.add_machine({
+        add = await tool.tool_server.add_machine({
             'name': 'crossed', 'host': '10.1.0.2', 'username': 'root',
             'persistent': True})
     assert add['persistent'] is True, add.get('config_error')

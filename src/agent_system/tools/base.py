@@ -1,12 +1,35 @@
+"""What a tool server is: its tool definitions, the base class plugins inherit, the registry.
+
+A tool server is a plain Python object with ``call(tool, params)``. It speaks no
+protocol -- the Model Context Protocol lives in the ``mcp_client`` plugin, which
+talks to foreign servers through the official SDK.
+"""
+
 from __future__ import annotations
 
 import logging
 from abc import ABC
-from typing import Any, List, TYPE_CHECKING
-from .core import MCPTool
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+
+
+class ToolServerCapability(Enum):
+    """What a tool server offers."""
+    TOOLS = "tools"
+    RESOURCES = "resources"
+    PROMPTS = "prompts"
+
+
+@dataclass
+class ToolDef:
+    """One tool: the name the model calls, what it does, and its JSON Schema."""
+    name: str
+    description: str
+    input_schema: Dict[str, Any]  # JSON Schema for input validation
 
 
 #: One status row's worth of text. The WebUI renders it on a single line
@@ -77,21 +100,20 @@ def _error_result_message(result: Any) -> str | None:
     return text if len(text) <= _STATUS_MESSAGE_LIMIT else text[:_STATUS_MESSAGE_LIMIT - 3] + "..."
 
 
-class MCPServer(ABC):
-    """Base class for MCP servers.
-    
-    Modern interface: receives both system-wide config and MCP-specific config.
+class ToolServer(ABC):
+    """Base class for tool servers -- what every plugin inherits.
+
     - system_config: Complete system configuration (network, logging, LLM, etc.)
-    - mcp_config: MCP-specific configuration (enabled, type, agent_config overrides)
+    - server_config: this instance's own entry (enabled, type, agent_config overrides)
     """
     name: str
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         self.name = name
         self.system_config = system_config
-        self.mcp_config = mcp_config
-        # Cache for list_tools() to avoid creating new MCPTool objects on every call
-        self._list_tools_cache: List[MCPTool] | None = None
+        self.server_config = server_config
+        # Cache for list_tools() to avoid creating new ToolDef objects on every call
+        self._list_tools_cache: List[ToolDef] | None = None
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """Generic tool dispatcher that routes to tool methods by name.
@@ -133,7 +155,7 @@ class MCPServer(ABC):
         """Call tool with automatic StatusScope management
 
         Supports both 'request_id' (Python convention) and 'requestId' (JS convention)
-        for compatibility with different MCP clients.
+        for compatibility with different callers.
         """
         from .status import get_status_bus, status_scope
 
@@ -190,20 +212,18 @@ class MCPServer(ABC):
 
             return result
 
-    async def list_tools(self) -> List[MCPTool]:
-        """List tools available from this MCP server.
+    async def list_tools(self) -> List[ToolDef]:
+        """List tools available from this tool server.
         
         Plugins must implement this method directly or override get_tools() 
         to return a list of tool schemas in OpenAI function calling format.
         
-        This method applies custom self_tool_descriptions from mcp_config if configured.
-        Results are cached to avoid creating new MCPTool objects on every call.
+        This method applies custom self_tool_descriptions from server_config if configured.
+        Results are cached to avoid creating new ToolDef objects on every call.
         """
         # Return cached tools if available
         if self._list_tools_cache is not None:
             return self._list_tools_cache
-
-        from .core import MCPTool
 
         # Try get_tools() method
         if hasattr(self, 'get_tools'):
@@ -217,7 +237,7 @@ class MCPServer(ABC):
                 for tool_schema in tool_schemas:
                     if isinstance(tool_schema, dict) and 'function' in tool_schema:
                         func_def = tool_schema['function']
-                        tool = MCPTool(
+                        tool = ToolDef(
                             name=func_def['name'],
                             description=func_def.get('description', f'Tool {func_def["name"]}'),
                             input_schema=func_def.get('parameters', {})
@@ -235,7 +255,7 @@ class MCPServer(ABC):
         )
 
     def _apply_custom_tool_descriptions(self, tools_schema: List[dict]) -> None:
-        """Apply custom self tool descriptions from MCP configuration.
+        """Apply custom self tool descriptions from tool server configuration.
         
         Allows instances to override tool descriptions without modifying the base plugin code.
         For example, a sysadmin_agent based on basic_agent can customize the description
@@ -246,10 +266,10 @@ class MCPServer(ABC):
         """
         logger = logging.getLogger(__name__)
 
-        if not self.mcp_config or not hasattr(self.mcp_config, 'self_tool_descriptions'):
+        if not self.server_config or not hasattr(self.server_config, 'self_tool_descriptions'):
             return
         
-        self_tool_descriptions = getattr(self.mcp_config, 'self_tool_descriptions', None)
+        self_tool_descriptions = getattr(self.server_config, 'self_tool_descriptions', None)
         if not self_tool_descriptions:
             return
         
@@ -266,7 +286,7 @@ class MCPServer(ABC):
         for tool_name, new_desc in self_tool_descriptions.items():
             if tool_name not in available_tool_names:
                 logger.warning(
-                    f"MCP Server '{self.name}': self_tool_descriptions contains non-existent tool '{tool_name}'. "
+                    f"Tool server '{self.name}': self_tool_descriptions contains non-existent tool '{tool_name}'. "
                     f"Available tools: {sorted(available_tool_names)}"
                 )
                 continue
@@ -279,20 +299,20 @@ class MCPServer(ABC):
                         tool_schema["function"]["description"] = new_desc
                         applied_count += 1
                         logger.debug(
-                            f"MCP Server '{self.name}': Overriding self tool description for '{tool_name}': "
+                            f"Tool server '{self.name}': Overriding self tool description for '{tool_name}': "
                             f"'{old_desc[:50]}...' -> '{new_desc[:50]}...'"
                         )
                         break
         
         if applied_count > 0:
             logger.info(
-                f"MCP Server '{self.name}': Applied {applied_count} custom self tool description(s)"
+                f"Tool server '{self.name}': Applied {applied_count} custom self tool description(s)"
             )
 
 
 
 
-class MCPRegistry:
+class ToolServerRegistry:
     """The built servers, and -- when bound to a Runtime -- what is declared.
 
     Unbound it is the plain dict it always was; every test that builds one by
@@ -302,17 +322,17 @@ class MCPRegistry:
     """
 
     def __init__(self) -> None:
-        self._servers: dict[str, MCPServer] = {}
+        self._servers: dict[str, ToolServer] = {}
         self._runtime: Any = None
 
     def bind(self, runtime: Any) -> None:
         """Called by Runtime.__init__ for the registry it owns."""
         self._runtime = runtime
 
-    def register(self, name: str, server: MCPServer) -> None:
+    def register(self, name: str, server: ToolServer) -> None:
         self._servers[name] = server
 
-    def get(self, name: str) -> MCPServer:
+    def get(self, name: str) -> ToolServer:
         # Deliberately NOT materializing yet: the lazy build belongs to the
         # stage that stops building at start (B5). Until then every declared
         # server is built, and `resolve_longest_prefix` probes names that do

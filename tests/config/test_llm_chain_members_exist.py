@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from agent_system.config.models import (
     AgentConfig, AgentSystemConfig, LLMProfile, LLMModelConfig, LLMSystemConfig,
-    MCPConfig, PluginsConfig,
+    ToolServerConfig, PluginsConfig,
 )
 from agent_system.config.settings import _report_unknown_llm_profiles
 
@@ -32,7 +32,7 @@ def _config(chain, advanced=None):
             profiles={"good": LLMProfile(model_ref="m"),
                       "also_good": LLMProfile(model_ref="m")},
         ),
-        plugins=PluginsConfig(servers={"an_agent": MCPConfig(
+        plugins=PluginsConfig(servers={"an_agent": ToolServerConfig(
             agent_config=AgentConfig(llm_profile=chain,
                                      llm_profile_advanced=advanced))}),
     )
@@ -69,7 +69,7 @@ class TestUnknownChainMembersAreReported:
     def test_an_entry_that_sets_no_chain_is_silent(self, caplog):
         """An unset llm_profile reads as the model default "normal" -- not a choice of the entry, so no alarm."""
         config = _config(["good"])
-        config.plugins.servers["a_child"] = MCPConfig(agent_config=AgentConfig(max_steps=3))
+        config.plugins.servers["a_child"] = ToolServerConfig(agent_config=AgentConfig(max_steps=3))
         assert _errors(caplog, config) == []
 
     def test_a_config_without_profiles_is_silent(self, caplog):

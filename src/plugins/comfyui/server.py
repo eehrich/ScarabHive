@@ -1,6 +1,6 @@
 """ComfyUI Plugin Server.
 
-MCP server for executing ComfyUI workflows with web monitoring interface.
+tool server for executing ComfyUI workflows with web monitoring interface.
 """
 
 from __future__ import annotations
@@ -13,19 +13,19 @@ from typing import Any, TYPE_CHECKING
 
 from fastapi import APIRouter
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from .comfyui_client import ComfyUIClient
 from .job_tracker import ACTIVE_STATUSES, ComfyUIJobTracker
 from .web_endpoints import ComfyUIWebEndpoints
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ComfyUIServer(SchemaBasedMCPServer):
-    """MCP Server for ComfyUI workflow execution.
+class ComfyUIServer(SchemaBasedToolServer):
+    """Tool server for ComfyUI workflow execution.
     
     Provides tools for:
     - Listing configured workflows
@@ -41,28 +41,28 @@ class ComfyUIServer(SchemaBasedMCPServer):
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPConfig"
+        server_config: "ToolServerConfig"
     ) -> None:
         """Initialize ComfyUI server.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
-        # Server configuration - directly from mcp_config attributes
-        self.host = getattr(mcp_config, 'host', "127.0.0.1")
-        self.port = getattr(mcp_config, 'port', 8188)
-        self.timeout = getattr(mcp_config, 'timeout_seconds', 300)
+        # Server configuration - directly from server_config attributes
+        self.host = getattr(server_config, 'host', "127.0.0.1")
+        self.port = getattr(server_config, 'port', 8188)
+        self.timeout = getattr(server_config, 'timeout_seconds', 300)
         # Threshold for detecting lost jobs (unknown status) - fail early if job stays unknown
-        self.unknown_threshold = getattr(mcp_config, 'unknown_threshold_seconds', 60)
-        self._lb_strategy = getattr(mcp_config, 'strategy', 'least_loaded') or 'least_loaded'
+        self.unknown_threshold = getattr(server_config, 'unknown_threshold_seconds', 60)
+        self._lb_strategy = getattr(server_config, 'strategy', 'least_loaded') or 'least_loaded'
 
         # Build server list for load balancing.
         # If 'servers' list is configured, use it; otherwise fall back to single host/port.
-        raw_servers = getattr(mcp_config, 'servers', None)
+        raw_servers = getattr(server_config, 'servers', None)
         if raw_servers and isinstance(raw_servers, list) and len(raw_servers) > 0:
             self._servers: list[dict[str, Any]] = [
                 {"host": s["host"], "port": int(s.get("port", 8188))}
@@ -77,13 +77,13 @@ class ComfyUIServer(SchemaBasedMCPServer):
             self._servers = [{"host": self.host, "port": self.port}]
         
         # Output directory - supports {session_id} template for session isolation
-        self._output_dir_template = getattr(mcp_config, 'output_dir', "data/comfyui/outputs")
+        self._output_dir_template = getattr(server_config, 'output_dir', "data/comfyui/outputs")
         # Base output dir (without session_id substitution) for cleanup and fallback
         self._output_dir_base = Path(self._output_dir_template.replace("{session_id}", "").rstrip("/\\"))
         self._output_dir_base.mkdir(parents=True, exist_ok=True)
         # Legacy: self.output_dir for backward compatibility (uses base path)
         self.output_dir = self._output_dir_base
-        self.cleanup_age_hours = int(getattr(mcp_config, 'cleanup_age_hours', 48))
+        self.cleanup_age_hours = int(getattr(server_config, 'cleanup_age_hours', 48))
 
         # upload_image security allowlist — list of absolute roots that
         # _op_upload_image is allowed to read from. LLM-controlled
@@ -100,7 +100,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # would re-open the confused-deputy class the allowlist was
         # introduced to close. Operators who need broader access opt in
         # explicitly via the ``upload_source_dirs`` config.
-        raw_allowlist = getattr(mcp_config, 'upload_source_dirs', None)
+        raw_allowlist = getattr(server_config, 'upload_source_dirs', None)
         if raw_allowlist is None:
             raw_allowlist = [
                 str(self._output_dir_base),
@@ -124,8 +124,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # Permitted file extensions for upload_image (case-insensitive).
         # Defense-in-depth against exfil of non-image bytes (DB files,
         # JSON traces, .env, etc.) even if they sit inside an allowed
-        # root. Override via mcp_config.upload_image_extensions.
-        raw_exts = getattr(mcp_config, 'upload_image_extensions', None)
+        # root. Override via server_config.upload_image_extensions.
+        raw_exts = getattr(server_config, 'upload_image_extensions', None)
         if raw_exts is None:
             raw_exts = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
         if isinstance(raw_exts, str):
@@ -138,9 +138,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         # Parse workflow configurations
         self.workflows: dict[str, dict[str, Any]] = {}
-        self.workflow_files_dir = Path(getattr(mcp_config, 'workflow_files_dir', "config/comfyui_workflows"))
+        self.workflow_files_dir = Path(getattr(server_config, 'workflow_files_dir', "config/comfyui_workflows"))
         
-        for wf_config in getattr(mcp_config, 'workflows', []):
+        for wf_config in getattr(server_config, 'workflows', []):
             wf_id = wf_config.get("id") if isinstance(wf_config, dict) else None
             if wf_id:
                 self.workflows[wf_id] = wf_config

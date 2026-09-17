@@ -20,7 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.ui.resources import STATIC_DIR
 from tests.ui.browser import find_browser, run_app_test_page
@@ -77,9 +77,9 @@ def seed(db) -> tuple[int, int]:
 def panel_app(tmp_path: Path):
     from plugins.message_debugger.plugin import MessageDebuggerHybridPlugin
 
-    mcp_config = MCPConfig()
-    mcp_config.config = {"db_path": str(tmp_path / "debugger.db")}
-    plugin = MessageDebuggerHybridPlugin("message_debugger", AgentSystemConfig(), mcp_config)
+    server_config = ToolServerConfig()
+    server_config.config = {"db_path": str(tmp_path / "debugger.db")}
+    plugin = MessageDebuggerHybridPlugin("message_debugger", AgentSystemConfig(), server_config)
     slow_turn, gone_turn = seed(plugin._db)
 
     app = FastAPI()

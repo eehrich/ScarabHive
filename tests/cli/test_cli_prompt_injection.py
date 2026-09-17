@@ -5,7 +5,7 @@ from agent_system import agent_cli as cli
 
 class DummyAgent:
     def __init__(self, *args, events=None, **kwargs):
-        # Accept the Agent constructor signature (name, system_config, mcp_config, registry)
+        # Accept the Agent constructor signature (name, system_config, server_config, registry)
         # The real AgentConfig, not a stand-in: the CLI reads
         # agent_config.default_llm_profile to decide whether a stored session
         # profile is an override at all, and a fake without it hides that.
@@ -38,17 +38,17 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
         return agent
 
     # Monkeypatch load_settings to provide a minimal AgentSystemConfig-like object
-    from agent_system.config.models import AgentSystemConfig, LLMSystemConfig, LLMModelConfig, MCPConfig, AgentConfig
+    from agent_system.config.models import AgentSystemConfig, LLMSystemConfig, LLMModelConfig, ToolServerConfig, AgentConfig
     mock_config = AgentSystemConfig(llm_system=LLMSystemConfig(models={"test-model": LLMModelConfig(provider="openai", model="test-model")}, profiles={}))
     monkeypatch.setattr(cli, "load_settings", lambda path=None: mock_config)
 
     # Mock InitializationService to not load any plugins
     from agent_system.services.initialization_service import InitializationService
-    from agent_system.mcp.base import MCPRegistry
+    from agent_system.tools.base import ToolServerRegistry
     
     def fake_initialize_for_cli(self):
         # Return empty registry and a minimal session_service
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
         from agent_system.services.session_manager import SessionManager
         from agent_system.services.session_service import SessionService
         session_manager = SessionManager(storage_path="data/sessions")
@@ -58,11 +58,11 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
     monkeypatch.setattr(InitializationService, 'initialize_for_cli', fake_initialize_for_cli)
 
     # The entry agent's config comes from the MERGED server config
-    # (get_mcp_config_by_name), which reads config.plugins -- so the plugins
+    # (get_tool_server_config), which reads config.plugins -- so the plugins
     # section goes on the config itself, not behind a patched accessor.
     from agent_system.config.models import PluginsConfig
     mock_config.plugins = PluginsConfig(servers={
-        "basic_agent": MCPConfig(
+        "basic_agent": ToolServerConfig(
             type="agent",
             enabled=True,
             agent_config=AgentConfig(system_prompt="test")
@@ -70,15 +70,15 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
     })
 
     # Patch the Agent class used by CLI to return our fake entry agent so main() will use it.
-    # The CLI constructs the Agent as Agent(name, system_config, mcp_config, registry).
+    # The CLI constructs the Agent as Agent(name, system_config, server_config, registry).
     # Call fake_entry_agent(name, system_config, registry) to capture the runtime config.
     monkeypatch.setattr(
         'agent_system.servers.agent.server.Agent',
-        lambda name, system_config, mcp_config=None, registry=None, **k: fake_entry_agent(name, system_config, registry)
+        lambda name, system_config, server_config=None, registry=None, **k: fake_entry_agent(name, system_config, registry)
     )
     monkeypatch.setattr(
         'agent_system.agent_cli.Agent',
-        lambda name, system_config, mcp_config=None, registry=None, **k: fake_entry_agent(name, system_config, registry)
+        lambda name, system_config, server_config=None, registry=None, **k: fake_entry_agent(name, system_config, registry)
     )
     # Run CLI in raw mode to take the non-streaming path (simpler output)
     monkeypatch.setattr('sys.argv', ['agent-cli', '--raw', 'run', 'do it'])

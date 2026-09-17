@@ -134,7 +134,7 @@ class BackgroundJobManager:
         self._default_agent: Any = None
 
     def set_agent_registry(self, registry: Any, default_agent: Any) -> None:
-        """Wire the MCP registry + default agent into cancel_job.
+        """Wire the tool registry + default agent into cancel_job.
 
         Idempotent. Called once at startup from app.py after the
         registry is fully populated. The setter pattern keeps the
@@ -316,7 +316,7 @@ class BackgroundJobManager:
            check ``is_cancelled()`` at every LLM-result handler / tool
            dispatch / sub-agent join and shut down cleanly.
 
-        2. **Agent-server cancel** — walk the registered MCP servers
+        2. **Agent-server cancel** — walk the registered tool servers
            and call ``cancel_request(request_id)`` on the one that
            actually owns the request. Without this the
            per-server ``_request_manager`` flag never flips, so the

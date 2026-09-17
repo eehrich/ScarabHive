@@ -1,10 +1,10 @@
 """
-MCP Integration Module
+Tool integration Module
 
-Integrates MCP functionality with the AgentSystem:
-- Exposes plugins as MCP servers
+Wires the tool servers into the AgentSystem:
+- Builds a tool server per configured plugin
 - Connects to external MCP servers as clients
-- Provides unified interface for MCP operations
+- Provides one interface for listing and calling tools
 """
 
 from __future__ import annotations
@@ -14,28 +14,24 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI
 
 from ..plugins import capabilities
-from ..plugins.mcp_adapter import plugin_mcp_registry
-from .security import configure_security
+from ..plugins.tool_adapter import plugin_tool_registry
 from .tool_cache import ToolCache
 from ..config.models import AgentSystemConfig, RemoteMCPConfig
 
 logger = logging.getLogger(__name__)
 
 
-class MCPIntegration:
-    """Main integration class for MCP functionality"""
+class ToolServerIntegration:
+    """Boots the plugins and finds whoever federates external tools."""
 
     def __init__(self, app: Optional[FastAPI] = None, config: AgentSystemConfig = None):
         if config is None:
-            raise ValueError("AgentSystemConfig is required for MCPIntegration initialization")
+            raise ValueError("AgentSystemConfig is required for ToolServerIntegration initialization")
 
         # Store full config for network settings access
         self.config = config
 
-        # Configure security with provided config
-        configure_security(config)
-
-        self.plugin_registry = plugin_mcp_registry
+        self.plugin_registry = plugin_tool_registry
         self.initialized = False
         self.servers_bootstrapped = False  # Track if bootstrap_servers() was called
 
@@ -59,7 +55,7 @@ class MCPIntegration:
     #
     # Foreign MCP servers are no longer this class's business -- the mcp_client
     # plugin owns the connections and the protocol. What is left here is the
-    # lookup, so the callers that ask an "MCP integration" about external
+    # lookup, so the callers that ask an "tool integration" about external
     # servers keep working while the ownership sits where it belongs.
 
     @property
@@ -76,7 +72,7 @@ class MCPIntegration:
         return getattr(getattr(provider, "pool", None), "configured_servers", {}) or {}
 
     async def initialize(self, config: AgentSystemConfig) -> None:
-        """Initialize MCP integration from configuration."""
+        """Initialize tool integration from configuration."""
         if self.initialized:
             return
 
@@ -88,10 +84,10 @@ class MCPIntegration:
         await self.plugin_registry.start_all()
 
         self.initialized = True
-        logger.info("MCP integration initialized successfully")
+        logger.info("tool integration initialized successfully")
 
     async def _bootstrap_servers(self, config: AgentSystemConfig) -> None:
-        """Bootstrap MCP servers and agents using bootstrap_servers().
+        """Bootstrap tool servers and agents using bootstrap_servers().
         
         This is called once during initialization. If bootstrap_servers()
         was already called externally (e.g., by InitializationService), skip it.
@@ -109,11 +105,11 @@ class MCPIntegration:
             self.servers_bootstrapped = True
             return
         
-        from ..mcp.base import MCPRegistry
+        from ..tools.base import ToolServerRegistry
         from ..servers.bootstrap import bootstrap_servers
         
         # Create temporary registry for bootstrap (agents will be auto-registered in plugin_registry)
-        temp_registry = MCPRegistry()
+        temp_registry = ToolServerRegistry()
         bootstrap_servers(config, temp_registry)
         self.servers_bootstrapped = True
         
@@ -144,9 +140,9 @@ class MCPIntegration:
             if server_cfg.enabled
         ]
         
-        logger.debug(f"MCP integration - enabled servers: {enabled_servers}")
+        logger.debug(f"tool integration - enabled servers: {enabled_servers}")
         logger.debug(
-            f"MCP integration - already registered servers: "
+            f"tool integration - already registered servers: "
             f"{list(self.plugin_registry.plugin_servers.keys())}"
         )
 
@@ -170,7 +166,7 @@ class MCPIntegration:
         """Register hooks from plugins."""
         from ..plugins.discovery import register_plugin_hooks, warn_unknown_hook_overrides
         from ..hooks import load_hooks_config
-        from ..config.settings import get_mcp_config_by_name
+        from ..config.settings import get_tool_server_config
         
         # From the config this integration runs on, not from a file path
         hooks_config = load_hooks_config(config)
@@ -185,7 +181,7 @@ class MCPIntegration:
             if 'hooks' not in plugin_schema:
                 continue
             
-            # Get the actual plugin instance (unwrap PluginMCPAdapter)
+            # Get the actual plugin instance (unwrap PluginToolAdapter)
             plugin_instance = server.plugin_server if hasattr(server, 'plugin_server') else server
             
             # For hybrid plugins, get the hooks_plugin attribute
@@ -197,8 +193,8 @@ class MCPIntegration:
             # Guarded: one server whose merge does not validate must not
             # take down startup -- it just registers on schema defaults.
             try:
-                mcp_cfg = get_mcp_config_by_name(server_name, config)
-                instance_hook_config = getattr(mcp_cfg, 'hook_config', None) if mcp_cfg else None
+                server_cfg = get_tool_server_config(server_name, config)
+                instance_hook_config = getattr(server_cfg, 'hook_config', None) if server_cfg else None
             except Exception:
                 logger.debug("No merged config for '%s'", server_name, exc_info=True)
                 instance_hook_config = None
@@ -225,19 +221,19 @@ class MCPIntegration:
         warn_unknown_hook_overrides(config)
 
     async def shutdown(self) -> None:
-        """Shutdown MCP integration.
+        """Shutdown tool integration.
 
         Stops every registered plugin, which is what closes the external
         connections now that the client plugin owns them.
         """
-        logging.getLogger(__name__).debug("MCPIntegration.shutdown() called")
+        logging.getLogger(__name__).debug("ToolServerIntegration.shutdown() called")
         await self.plugin_registry.shutdown_all()
         # A shut-down integration must not claim to be initialized -- the
         # agent-side setup uses this flag to decide whether a (re-)initialize
         # is needed.
         self.initialized = False
-        logging.getLogger(__name__).debug("MCPIntegration.shutdown() completed")
-        logger.info("MCP integration shut down")
+        logging.getLogger(__name__).debug("ToolServerIntegration.shutdown() completed")
+        logger.info("tool integration shut down")
 
     def list_external_clients(self) -> List[str]:
         """Names of the currently connected external servers."""
@@ -321,7 +317,7 @@ class MCPIntegration:
             try:
                 result["external_servers"] = await provider.list_external_tools()
             except Exception as e:
-                logger.warning(f"Could not list external MCP tools: {e}")
+                logger.warning(f"Could not list external tools: {e}")
 
         # Store in cache
         await self._tool_cache.set("all_tools", result, config_hash)
@@ -397,51 +393,51 @@ class MCPIntegration:
         await self.invalidate_tools_cache()
 
 
-# Global MCP integration instance
-mcp_integration: Optional[MCPIntegration] = None
+# Global tool integration instance
+tool_integration: Optional[ToolServerIntegration] = None
 
 
-def get_mcp_integration(app: Optional[FastAPI] = None, config: Optional[AgentSystemConfig] = None) -> MCPIntegration:
-    """Get or create the global MCP integration instance"""
-    global mcp_integration
+def get_tool_integration(app: Optional[FastAPI] = None, config: Optional[AgentSystemConfig] = None) -> ToolServerIntegration:
+    """Get or create the global tool integration instance"""
+    global tool_integration
     # First check if the API has an initialized instance and prefer it
     try:
-        from agent_system.app import _mcp_integration as api_integration
+        from agent_system.app import _tool_integration as api_integration
         if api_integration is not None and api_integration.initialized:
             return api_integration
     except (ImportError, AttributeError):
         pass  # API module not available or not initialized
 
     # Return existing global instance if available
-    if mcp_integration is not None:
-        return mcp_integration
+    if tool_integration is not None:
+        return tool_integration
 
     # If no config provided and no existing instance, we need config to create one
     if config is None:
-        raise ValueError("AgentSystemConfig is required when creating new MCPIntegration instance")
+        raise ValueError("AgentSystemConfig is required when creating new ToolServerIntegration instance")
 
     # If an app is provided, create a fresh app-bound integration so tests
     # that build an ASGI app get a dedicated integration instance and do not
     # accidentally reuse a previously initialized global instance.
     if app is not None:
-        fresh_integration = MCPIntegration(app, config)
+        fresh_integration = ToolServerIntegration(app, config)
         return fresh_integration
 
     # Fall back to module-level global instance (create if needed)
-    mcp_integration = MCPIntegration(app, config)
-    return mcp_integration
+    tool_integration = ToolServerIntegration(app, config)
+    return tool_integration
 
 
-async def initialize_mcp(config: AgentSystemConfig, app: Optional[FastAPI] = None) -> MCPIntegration:
-    """Initialize MCP integration with configuration"""
-    integration = get_mcp_integration(app, config)
+async def initialize_tools(config: AgentSystemConfig, app: Optional[FastAPI] = None) -> ToolServerIntegration:
+    """Initialize tool integration with configuration"""
+    integration = get_tool_integration(app, config)
     await integration.initialize(config)
     return integration
 
 
-async def shutdown_mcp() -> None:
-    """Shutdown MCP integration"""
-    global mcp_integration
-    if mcp_integration:
-        await mcp_integration.shutdown()
-        mcp_integration = None
+async def shutdown_tools() -> None:
+    """Shutdown tool integration"""
+    global tool_integration
+    if tool_integration:
+        await tool_integration.shutdown()
+        tool_integration = None

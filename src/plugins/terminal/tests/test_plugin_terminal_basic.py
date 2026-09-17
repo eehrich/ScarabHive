@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 from plugins.terminal.server import TerminalServer
 
 
@@ -26,9 +26,9 @@ def mock_system_config():
 
 
 @pytest.fixture
-def mock_mcp_config():
-    """Create a mock MCP configuration."""
-    config = MagicMock(spec=MCPConfig)
+def mock_server_config():
+    """Create a mock tool server configuration."""
+    config = MagicMock(spec=ToolServerConfig)
     config.security = {
         'whitelist': None,
         'blacklist': [],
@@ -51,9 +51,9 @@ class TestTerminalServerBasic:
     """Test suite for basic TerminalServer functionality."""
 
     @pytest.mark.asyncio
-    async def test_server_initialization(self, mock_system_config, mock_mcp_config):
+    async def test_server_initialization(self, mock_system_config, mock_server_config):
         """Test that server initializes correctly."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         assert server.name == "test"
         assert server.bash_path is not None
@@ -68,9 +68,9 @@ class TestTerminalServerBasic:
         await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_execute_simple_command(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_execute_simple_command(self, mock_system_config, mock_server_config, mock_status):
         """Test simple command execution."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             result = await server.execute_command({
@@ -88,9 +88,9 @@ class TestTerminalServerBasic:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_dangerous_command_blocked(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_dangerous_command_blocked(self, mock_system_config, mock_server_config, mock_status):
         """Test that dangerous commands are blocked."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             result = await server.execute_command({
@@ -106,9 +106,9 @@ class TestTerminalServerBasic:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_command_timeout(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_command_timeout(self, mock_system_config, mock_server_config, mock_status):
         """Test command timeout enforcement."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             result = await server.execute_command({
@@ -125,9 +125,9 @@ class TestTerminalServerBasic:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_timeout_exceeds_maximum(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_timeout_exceeds_maximum(self, mock_system_config, mock_server_config, mock_status):
         """Test that timeouts exceeding maximum are rejected."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             result = await server.execute_command({
@@ -143,10 +143,10 @@ class TestTerminalServerBasic:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_command_with_cwd(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_command_with_cwd(self, mock_system_config, mock_server_config, mock_status):
         """Test command execution with custom working directory."""
         import tempfile
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             # Use system temp directory (works on Windows and Linux)
@@ -167,9 +167,9 @@ class TestTerminalServerBasic:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_command_with_env_vars(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_command_with_env_vars(self, mock_system_config, mock_server_config, mock_status):
         """Test command execution with environment variables."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             result = await server.execute_command({
@@ -185,9 +185,9 @@ class TestTerminalServerBasic:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_command_cancellation(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_command_cancellation(self, mock_system_config, mock_server_config, mock_status):
         """Test command cancellation support."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             # Create mock cancellation token
@@ -207,9 +207,9 @@ class TestTerminalServerBasic:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_multiple_commands_session_state(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_multiple_commands_session_state(self, mock_system_config, mock_server_config, mock_status):
         """Test that session state does NOT persist between commands (each command runs in separate subprocess)."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             # Set a variable
@@ -232,9 +232,9 @@ class TestTerminalServerBasic:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_output_truncation(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_output_truncation(self, mock_system_config, mock_server_config, mock_status):
         """Test that large output is truncated."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         # Set low limit and update executor
         server.max_output_kb = 1
@@ -255,9 +255,9 @@ class TestTerminalServerBasic:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_get_template_vars(self, mock_system_config, mock_mcp_config):
+    async def test_get_template_vars(self, mock_system_config, mock_server_config):
         """Test template variable generation."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             vars = server.get_template_vars()

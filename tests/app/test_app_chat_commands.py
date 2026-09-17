@@ -49,7 +49,7 @@ def tooled_agent(client, auth_headers):
     """
     from agent_system.servers.agent.server import Agent
 
-    registry = client.app.state.mcp_registry
+    registry = client.app.state.tool_registry
     registered = list(registry.list())
     names = [name for name in registered if isinstance(registry.get(name), Agent)]
     assert names, "fixture: no agent registered at all"
@@ -191,7 +191,7 @@ def commanded_agent(client, auth_headers) -> str:
     """
     from agent_system.servers.agent.server import Agent
 
-    registry = client.app.state.mcp_registry
+    registry = client.app.state.tool_registry
     for name in registry.list():
         if not isinstance(registry.get(name), Agent):
             continue
@@ -303,7 +303,7 @@ class TestPluginCommands:
         the plugin-command design exists to avoid."""
         listed = client.get(f"/chat/commands?surface=web&agent={commanded_agent}",
                             headers=auth_headers).json()["plugin_commands"][0]
-        registry = client.app.state.mcp_registry
+        registry = client.app.state.tool_registry
         from agent_system.plugin_commands import collect_plugin_commands
         tool = next(c.tool for c in collect_plugin_commands(registry.get(commanded_agent))
                     if c.qualified == listed["qualified"])
@@ -336,7 +336,7 @@ class TestPluginCommands:
         agent would answer, which is exactly the mistake this pins. ``file_ops``
         is registered but no Agent: without the type check it reaches
         run_plugin_command, whose first move is dispatch_tool_call -- an
-        attribute a plain MCP server does not have.
+        attribute a plain tool server does not have.
         """
         response = client.post("/chat/command",
                                json={"name": "compact", "agent_name": named},
@@ -394,7 +394,7 @@ class TestAgentTools:
         from agent_system.chat_commands import UNKNOWN_SERVER
 
         _agent, data = tooled_agent
-        registered = list(client.app.state.mcp_registry.list())
+        registered = list(client.app.state.tool_registry.list())
         listed = [tool for group in data["groups"] for tool in group["tools"]]
         assert any(sum(1 for server in registered
                        if tool["name"] == server or tool["name"].startswith(server + "_")) > 1
@@ -438,11 +438,11 @@ class TestAgentTools:
                           headers=auth_headers).status_code == 404
 
     def test_a_tool_server_is_not_an_agent(self, client, auth_headers):
-        """Naming a plain MCP server has to say so, not answer with an empty
+        """Naming a plain tool server has to say so, not answer with an empty
         tool list that reads like a broken agent."""
         from agent_system.servers.agent.server import Agent
 
-        registry = client.app.state.mcp_registry
+        registry = client.app.state.tool_registry
         plain = next((name for name in registry.list()
                       if not isinstance(registry.get(name), Agent)), None)
         assert plain, "fixture: no non-agent server registered to ask about"
@@ -459,7 +459,7 @@ class TestAgentTools:
             self, client, auth_headers, tooled_agent, monkeypatch):
         """The browser answers total 0 with \"tools.allowed is empty\"."""
         name, _data = tooled_agent
-        agent = client.app.state.mcp_registry.get(name)
+        agent = client.app.state.tool_registry.get(name)
 
         async def broken(params):
             raise RuntimeError("discovery broke")
@@ -604,7 +604,7 @@ class TestVarsEndpoint:
         """
         from agent_system.servers.agent.server import Agent
 
-        registry = client.app.state.mcp_registry
+        registry = client.app.state.tool_registry
         default = client.app.state.agent
         for name in registry.list():
             try:

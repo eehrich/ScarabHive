@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime
-from agent_system.mcp.status import StatusBus, StatusEvent, publish_status, StatusPhase
+from agent_system.tools.status import StatusBus, StatusEvent, publish_status, StatusPhase
 
 pytestmark = pytest.mark.anyio
 
@@ -29,7 +29,7 @@ async def test_error_phase_level_escalation(monkeypatch):
     async def fake_publish(ev):
         captured['level'] = ev.level
         captured['phase'] = ev.phase
-    from agent_system.mcp import status as status_mod
+    from agent_system.tools import status as status_mod
     orig = status_mod.status_bus.publish
     status_mod.status_bus.publish = fake_publish  # type: ignore
     try:

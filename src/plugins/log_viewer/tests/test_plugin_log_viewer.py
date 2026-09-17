@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agent_system.config.models import AgentConfig, AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentConfig, AgentSystemConfig, ToolServerConfig
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from plugins.log_viewer import endpoints
 from plugins.log_viewer.plugin import PLUGIN_FACTORY, LogViewerHybridPlugin
@@ -24,7 +24,7 @@ ValueError: Bad Budget
 
 
 def make_plugin(names):
-    config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
+    config = ToolServerConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
     if names is not None:
         config.log_files = names
     return LogViewerHybridPlugin("log_viewer", AgentSystemConfig(), config)
@@ -108,11 +108,11 @@ def test_the_panels_own_requests_are_left_out_only_as_routine(client, tmp_path):
 
 
 def test_without_configured_files_tools_and_panel_share_one_allowlist():
-    from plugins.log_viewer.mcp_server import DEFAULT_LOG_FILES
+    from plugins.log_viewer.tool_server import DEFAULT_LOG_FILES
 
     plugin = make_plugin(None)
-    assert plugin.mcp_server.log_files == DEFAULT_LOG_FILES == ["logs/api.log", "logs/cli.log", "logs/profiling.log", "logs/security.log"]
-    assert plugin.web_endpoints.log_files is plugin.mcp_server.log_files and plugin.log_files is plugin.mcp_server.log_files
+    assert plugin.tool_server.log_files == DEFAULT_LOG_FILES == ["logs/api.log", "logs/cli.log", "logs/profiling.log", "logs/security.log"]
+    assert plugin.web_endpoints.log_files is plugin.tool_server.log_files and plugin.log_files is plugin.tool_server.log_files
 
 
 def test_levels_search_and_count_filter_the_newest_entries(client):

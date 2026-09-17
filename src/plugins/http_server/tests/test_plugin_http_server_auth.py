@@ -28,8 +28,8 @@ def _wrapped_server(server: HTTPServer) -> HTTPServer:
 
 
 @pytest.fixture
-def server(mock_system_config, mock_mcp_config) -> HTTPServer:
-    return _wrapped_server(HTTPServer("http_server", mock_system_config, mock_mcp_config))
+def server(mock_system_config, mock_server_config) -> HTTPServer:
+    return _wrapped_server(HTTPServer("http_server", mock_system_config, mock_server_config))
 
 
 class TestIsLoopbackHost:

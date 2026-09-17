@@ -28,9 +28,9 @@ def mock_status():
 
 
 @pytest.fixture
-def datetime_server(mock_system_config, mock_mcp_config):
+def datetime_server(mock_system_config, mock_server_config):
     """Create datetime server for testing."""
-    return DateTimeServer("datetime", mock_system_config, mock_mcp_config)
+    return DateTimeServer("datetime", mock_system_config, mock_server_config)
 
 
 # Basic datetime operations tests
@@ -205,17 +205,17 @@ async def test_format_still_handles_iso_datetime(datetime_server, mock_status):
 
 # Plugin factory tests  
 @pytest.mark.asyncio
-async def test_datetime_plugin_factory(mock_system_config, mock_mcp_config):
+async def test_datetime_plugin_factory(mock_system_config, mock_server_config):
     """Test datetime plugin factory creates server."""
-    plugin = datetime_factory("test_datetime", mock_system_config, mock_mcp_config)
+    plugin = datetime_factory("test_datetime", mock_system_config, mock_server_config)
     assert plugin is not None
     assert hasattr(plugin, 'call')
 
 
 @pytest.mark.asyncio
-async def test_datetime_server_get_tools(mock_system_config, mock_mcp_config):
+async def test_datetime_server_get_tools(mock_system_config, mock_server_config):
     """Test datetime server exposes correct tools."""
-    server = DateTimeServer("datetime", mock_system_config, mock_mcp_config)
+    server = DateTimeServer("datetime", mock_system_config, mock_server_config)
     tools = server.get_tools()
     
     assert len(tools) > 0
@@ -289,10 +289,10 @@ def test_answer_fields_covers_every_operation():
     ("calendar_info", {}),
 ])
 async def test_every_operation_reports_an_answer_not_its_own_name(
-    mock_system_config, mock_mcp_config, operation, params
+    mock_system_config, mock_server_config, operation, params
 ):
     """The end line must carry a value, not repeat the operation argument."""
-    server = DateTimeServer("datetime", mock_system_config, mock_mcp_config)
+    server = DateTimeServer("datetime", mock_system_config, mock_server_config)
     status = MockStatus()
 
     result = await server.operations({"operation": operation, "_status": status, **params})

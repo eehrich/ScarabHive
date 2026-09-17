@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-def resolve_registry_server(registry: Any, mcp_integration_manager: Any,
+def resolve_registry_server(registry: Any, tool_integration_manager: Any,
                             server_name: str) -> Optional[Any]:
     """Resolve a server by EXACT name: local registry first (contains all
     servers: plugins + config agents), then the plugin registry's adapter
@@ -41,10 +41,10 @@ def resolve_registry_server(registry: Any, mcp_integration_manager: Any,
         except Exception as e:
             logger.debug(f"Failed to get server '{server_name}' from local registry: {e}")
 
-    mcp_integration = getattr(mcp_integration_manager, "mcp_integration", None)
-    if mcp_integration is not None and mcp_integration.initialized:
+    tool_integration = getattr(tool_integration_manager, "tool_integration", None)
+    if tool_integration is not None and tool_integration.initialized:
         try:
-            plugin_adapter = mcp_integration.plugin_registry.get_server(server_name)
+            plugin_adapter = tool_integration.plugin_registry.get_server(server_name)
             if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
                 return plugin_adapter.plugin_server
         except Exception as e:

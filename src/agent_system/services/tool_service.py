@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from agent_system.mcp.integration import MCPIntegration
+from agent_system.tools.integration import ToolServerIntegration
 from agent_system.config.models import AgentSystemConfig
 
 
@@ -24,14 +24,14 @@ class ToolService:
     - Tool listing and filtering
     """
 
-    def __init__(self, mcp_integration: MCPIntegration, config: AgentSystemConfig):
+    def __init__(self, tool_integration: ToolServerIntegration, config: AgentSystemConfig):
         """Initialize the ToolService.
         
         Args:
-            mcp_integration: MCPIntegration instance.
+            tool_integration: ToolServerIntegration instance.
             config: AgentSystemConfig instance.
         """
-        self._mcp = mcp_integration
+        self._mcp = tool_integration
         self._config = config
         logger.info("ToolService initialized")
 
@@ -43,7 +43,7 @@ class ToolService:
         """List all available tools for a server with filtering information.
         
         Args:
-            server_name: Name of the MCP server.
+            server_name: Name of the tool server.
             include_filtering: If True, include filtering configuration.
         
         Returns:

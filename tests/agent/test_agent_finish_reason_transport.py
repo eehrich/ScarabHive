@@ -20,9 +20,9 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
 )
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.agent.server import Agent
 
 
@@ -39,8 +39,8 @@ def _llm_system():
 def _agent(max_steps=1, llm_profile="normal"):
     agent_config = AgentConfig(max_steps=max_steps, llm_profile=llm_profile)
     system_config = AgentSystemConfig(llm_system=_llm_system())
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    return Agent("test_agent", system_config, mcp_config, MCPRegistry())
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    return Agent("test_agent", system_config, server_config, ToolServerRegistry())
 
 
 def _streaming_llm(final_chunk):

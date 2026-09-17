@@ -1,6 +1,6 @@
-"""Test example plugin with modernized MCPServer pattern.
+"""Test example plugin with modernized ToolServer pattern.
 
-Tests the example plugin using the new SchemaBasedMCPServer pattern
+Tests the example plugin using the new SchemaBasedToolServer pattern
 with automatic tool dispatching.
 """
 
@@ -11,7 +11,7 @@ import pytest
 from unittest.mock import Mock
 
 from plugins.example.server import ExampleServer
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 
 @pytest.fixture
@@ -24,34 +24,34 @@ def system_config():
 
 
 @pytest.fixture
-def mcp_config():
-    """Create a mock MCP config with example settings."""
-    config = Mock(spec=MCPConfig)
+def server_config():
+    """Create a mock tool server config with example settings."""
+    config = Mock(spec=ToolServerConfig)
     config.precision = 2
     config.max_text_length = 1000
     return config
 
 
 @pytest.fixture
-def example_server(system_config, mcp_config):
+def example_server(system_config, server_config):
     """Create example server for testing."""
-    return ExampleServer("example", system_config, mcp_config)
+    return ExampleServer("example", system_config, server_config)
 
 
 class TestExampleServerConstructor:
     """Test ExampleServer constructor and initialization."""
 
-    def test_constructor_signature(self, system_config, mcp_config):
+    def test_constructor_signature(self, system_config, server_config):
         """Test that constructor has modern signature."""
-        server = ExampleServer("example", system_config, mcp_config)
+        server = ExampleServer("example", system_config, server_config)
         
         assert server.name == "example"
         assert server.system_config is system_config
-        assert server.mcp_config is mcp_config
+        assert server.server_config is server_config
 
     def test_config_extraction(self, system_config):
-        """Test configuration extraction from mcp_config."""
-        config = Mock(spec=MCPConfig)
+        """Test configuration extraction from server_config."""
+        config = Mock(spec=ToolServerConfig)
         config.precision = 4
         config.max_text_length = 500
         
@@ -62,7 +62,7 @@ class TestExampleServerConstructor:
 
     def test_config_defaults(self, system_config):
         """Test that default values are used when config attrs missing."""
-        config = Mock(spec=MCPConfig)
+        config = Mock(spec=ToolServerConfig)
         # Don't set precision or max_text_length attributes
         
         server = ExampleServer("example", system_config, config)
@@ -210,7 +210,7 @@ class TestCalculatorTool:
     @pytest.mark.asyncio
     async def test_custom_precision(self, system_config):
         """Test calculator with custom precision."""
-        config = Mock(spec=MCPConfig)
+        config = Mock(spec=ToolServerConfig)
         config.precision = 4
         config.max_text_length = 1000
         
@@ -227,9 +227,9 @@ class TestCalculatorTool:
         assert result["result"] == 0.3333
 
     @pytest.mark.asyncio
-    async def test_large_numbers(self, system_config, mcp_config):
+    async def test_large_numbers(self, system_config, server_config):
         """Test calculator with very large numbers."""
-        server = ExampleServer("example", system_config, mcp_config)
+        server = ExampleServer("example", system_config, server_config)
         
         result = await server.call("example_calculator", {
             "operation": "multiply",
@@ -243,7 +243,7 @@ class TestCalculatorTool:
     @pytest.mark.asyncio
     async def test_precision_zero(self, system_config):
         """Test calculator with zero precision."""
-        config = Mock(spec=MCPConfig)
+        config = Mock(spec=ToolServerConfig)
         config.precision = 0
         config.max_text_length = 1000
         
@@ -341,7 +341,7 @@ class TestFormatterTool:
     @pytest.mark.asyncio
     async def test_text_length_limit(self, system_config):
         """Test formatter text length validation."""
-        config = Mock(spec=MCPConfig)
+        config = Mock(spec=ToolServerConfig)
         config.precision = 2
         config.max_text_length = 5
         
@@ -462,7 +462,7 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_complete_workflow(self, system_config):
         """Test complete plugin workflow with all tools."""
-        config = Mock(spec=MCPConfig)
+        config = Mock(spec=ToolServerConfig)
         config.precision = 3
         config.max_text_length = 100
         
@@ -491,11 +491,11 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_config_isolation(self, system_config):
         """Test that different instances have isolated configs."""
-        config1 = Mock(spec=MCPConfig)
+        config1 = Mock(spec=ToolServerConfig)
         config1.precision = 2
         config1.max_text_length = 100
         
-        config2 = Mock(spec=MCPConfig)
+        config2 = Mock(spec=ToolServerConfig)
         config2.precision = 5
         config2.max_text_length = 500
         
@@ -509,22 +509,22 @@ class TestIntegration:
 
 
 class TestModernPattern:
-    """Test modern MCPServer pattern compliance."""
+    """Test modern ToolServer pattern compliance."""
 
     def test_inherits_from_schema_based_mcp_server(self):
-        """Test that ExampleServer inherits from SchemaBasedMCPServer."""
-        from agent_system.mcp.schema_based import SchemaBasedMCPServer
-        from agent_system.mcp.base import MCPServer
+        """Test that ExampleServer inherits from SchemaBasedToolServer."""
+        from agent_system.tools.schema_based import SchemaBasedToolServer
+        from agent_system.tools.base import ToolServer
         
-        assert issubclass(ExampleServer, SchemaBasedMCPServer)
-        assert issubclass(ExampleServer, MCPServer)
+        assert issubclass(ExampleServer, SchemaBasedToolServer)
+        assert issubclass(ExampleServer, ToolServer)
 
-    def test_uses_modern_constructor(self, system_config, mcp_config):
+    def test_uses_modern_constructor(self, system_config, server_config):
         """Test modern constructor signature."""
         sig = inspect.signature(ExampleServer.__init__)
         params = list(sig.parameters.keys())
         
-        assert params == ['self', 'name', 'system_config', 'mcp_config']
+        assert params == ['self', 'name', 'system_config', 'server_config']
 
     def test_no_backwards_compatibility(self, example_server):
         """Test that backwards compatibility is completely removed."""

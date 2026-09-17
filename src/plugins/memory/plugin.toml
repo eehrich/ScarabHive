@@ -8,6 +8,6 @@ version = "1.0.0"
 description = "Persistent memory storage with semantic search for agent conversations"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server", "web"]
+type = ["tool-server", "web"]
 category = "productivity"
 requires = { agent_system = ">=0.7.0" }

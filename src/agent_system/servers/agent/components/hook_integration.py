@@ -145,7 +145,7 @@ class HookIntegrationManager:
             """Callback invoked by LLM client before API request."""
             try:
                 # Get current request_id from context var
-                from ....mcp.status import current_request_id
+                from ....tools.status import current_request_id
                 req_id = current_request_id.get('') or ''
                 context = HookContext(
                     hook_type=HookType.PRE_LLM_REQUEST,
@@ -169,7 +169,7 @@ class HookIntegrationManager:
         async def _on_post_response(info: Dict[str, Any]) -> None:
             """Callback invoked by LLM client after API response."""
             try:
-                from ....mcp.status import current_request_id
+                from ....tools.status import current_request_id
                 req_id = current_request_id.get('') or ''
                 context = HookContext(
                     hook_type=HookType.POST_LLM_RESPONSE,

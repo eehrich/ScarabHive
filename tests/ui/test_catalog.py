@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from agent_system.auth.middleware import SecurityHeadersMiddleware
 from agent_system.config.models import AuthConfig, EndpointSecurityConfig, EndpointSecurityRule, PluginSecurityConfig
-from agent_system.plugins import mcp_adapter, web_adapter
+from agent_system.plugins import tool_adapter, web_adapter
 from agent_system.ui.catalog import (
     PanelSpecError,
     build_catalog,
@@ -238,7 +238,7 @@ def registered(monkeypatch):
     """Put plugins into the registries the route reads, as plugin loading leaves them."""
     def register(instance, web_ui):
         monkeypatch.setitem(web_adapter.plugin_web_registry.web_plugins, instance, object())
-        monkeypatch.setitem(mcp_adapter.plugin_mcp_registry.plugin_servers, instance,
+        monkeypatch.setitem(tool_adapter.plugin_tool_registry.plugin_servers, instance,
                             SimpleNamespace(plugin_schema={"web_ui": web_ui}))
     return register
 
@@ -282,8 +282,8 @@ def test_a_plugin_loaded_like_production_reaches_the_catalogue(app, tmp_path, mo
     monkeypatch.delitem(sys.modules, "probe_web_plugin.plugin", raising=False)
     from probe_web_plugin.plugin import ProbeWebPlugin
 
-    plugin = ProbeWebPlugin("probe_instance", system_config=None, mcp_config=None)
-    mcp_adapter.plugin_mcp_registry.register_existing_plugin_instance("probe_instance", plugin, None, None)
+    plugin = ProbeWebPlugin("probe_instance", system_config=None, server_config=None)
+    tool_adapter.plugin_tool_registry.register_existing_plugin_instance("probe_instance", plugin, None, None)
 
     panels = {p["id"]: p for p in TestClient(app).get("/api/ui/catalog").json()["panels"]}
 

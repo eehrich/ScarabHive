@@ -1,5 +1,5 @@
 # User Management Plugin Schema
-# This plugin provides no MCP tools - it's a web-only admin interface
+# This plugin provides no tools - it's a web-only admin interface
 
 tools: []
 

@@ -91,7 +91,7 @@ plugins:
       enabled: true
       description: "coder harness: shell for builds, tests and git"
       # Top level, not under `config:` — the terminal server reads `security`,
-      # `limits`, `platform` and `sandbox` straight off its MCPConfig.
+      # `limits`, `platform` and `sandbox` straight off its ToolServerConfig.
       security:
         blacklist:
           - 'rm -rf /'

@@ -22,7 +22,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from .config.settings import load_settings
-from .mcp.status import status_bus
+from .tools.status import status_bus
 from .servers.agent.server import Agent
 from .services.session_manager import SessionPermissionError
 from .cli_utils.session_defaults import (
@@ -64,7 +64,7 @@ def setup_basic_logging(verbose: bool = False) -> None:
 
 
 async def initialize_system(config):
-    """Initialize the MCP registry and load plugins using InitializationService."""
+    """Initialize the tool registry and load plugins using InitializationService."""
     # Use centralized initialization service
     from .services.initialization_service import InitializationService
     from .llm.factory import set_batch_config
@@ -85,8 +85,8 @@ async def initialize_system(config):
     except Exception as e:
         logger.warning(f"Initialization failed: {e}", exc_info=True)
         # Continue with minimal registry - agent can still work
-        from .mcp.base import MCPRegistry
-        return MCPRegistry(), None
+        from .tools.base import ToolServerRegistry
+        return ToolServerRegistry(), None
 
 
 async def create_agent(config, registry, agent_name: str, session_service=None):
@@ -97,7 +97,7 @@ async def create_agent(config, registry, agent_name: str, session_service=None):
 
     Args:
         config: System configuration
-        registry: MCP registry
+        registry: tool registry
         agent_name: Name of agent to create
         session_service: Optional SessionService to inject into agent
     """

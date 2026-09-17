@@ -57,27 +57,27 @@ import json
 import logging
 import re
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class TaskSwitchServer(SchemaBasedMCPServer):
+class TaskSwitchServer(SchemaBasedToolServer):
     """Task state management server with optional precondition gates."""
     
     def __init__(self, name: str, system_config: "AgentSystemConfig",
-                 mcp_config: "MCPConfig") -> None:
-        super().__init__(name, system_config, mcp_config)
+                 server_config: "ToolServerConfig") -> None:
+        super().__init__(name, system_config, server_config)
         
         # Config for variable name and allowed tasks
         self._task_var_name = "current_task"
         self._allowed_tasks: Optional[List[str]] = None
         self._task_preconditions: Dict[str, Dict[str, Any]] = {}
         
-        config_dict = mcp_config.config if hasattr(mcp_config, "config") else {}
+        config_dict = server_config.config if hasattr(server_config, "config") else {}
         if config_dict:
             self._task_var_name = config_dict.get("task_var_name", "current_task")
             allowed = config_dict.get("allowed_tasks")

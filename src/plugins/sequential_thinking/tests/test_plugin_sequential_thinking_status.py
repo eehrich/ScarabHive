@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
-from agent_system.mcp.status import StatusPhase, get_status_bus
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.tools.status import StatusPhase, get_status_bus
 from plugins.sequential_thinking.server import SequentialThinkingServer
 
 # Small enough that the 80 % mark is reached in a handful of calls, and the
@@ -24,7 +24,7 @@ HISTORY_SIZE = 5
 
 @pytest.fixture
 def server():
-    config = MCPConfig(type="sequential_thinking", enabled=True)
+    config = ToolServerConfig(type="sequential_thinking", enabled=True)
     config.max_history_size = HISTORY_SIZE
     config.session_ttl_seconds = 3600
     config.enable_branching = True

@@ -16,10 +16,10 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
 )
 from agent_system.llm.models import LLMServerError
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.agent.reasoning_loop import ReasoningLoopError
 from agent_system.servers.agent.server import Agent
 
@@ -142,9 +142,9 @@ def _real_agent(with_fallback_chain: bool = False) -> Agent:
         max_steps=3,
         llm_profile=["normal", "backup"] if with_fallback_chain else "normal",
     )
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     return Agent("test_agent", AgentSystemConfig(llm_system=llm_system),
-                 mcp_config, MCPRegistry())
+                 server_config, ToolServerRegistry())
 
 
 class _CountingLLM:

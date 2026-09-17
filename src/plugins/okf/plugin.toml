@@ -10,7 +10,7 @@ version = "1.0.0"
 description = "Open Knowledge Format (OKF) — read/write/validate/graph/search curated markdown knowledge bundles, plus opt-in context injection"
 author = "AgentSystem"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server", "hooks"]
+type = ["tool-server", "hooks"]
 category = "data"
 tags = ["okf", "knowledge", "wiki", "markdown", "context"]
 requires = { agent_system = ">=0.6.0" }

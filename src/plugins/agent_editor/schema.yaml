@@ -1,5 +1,5 @@
 # Agent Editor Plugin Schema
-# No MCP tools - a web-only admin panel that edits agent entries in the config files.
+# No tools - a web-only admin panel that edits agent entries in the config files.
 
 tools: []
 

@@ -4,7 +4,7 @@ Plugin Config Analyzer
 
 Analyzes plugin source code to automatically extract config parameters.
 Searches for patterns like:
-- getattr(mcp_config, 'param', default)
+- getattr(server_config, 'param', default)
 - config.get('param', default)
 - config['param']
 - Reads from config/plugins.yaml for production values
@@ -27,7 +27,7 @@ class ConfigExtractor:
     def extract(self) -> Dict[str, Any]:
         """Extract all config parameters from plugin code."""
         # 1. Analyze Python files first - prioritize core files, skip web UI
-        priority_files = ['server.py', 'mcp_server.py', 'plugin.py', '__init__.py', 'connection_manager.py']
+        priority_files = ['server.py', 'tool_server.py', 'plugin.py', '__init__.py', 'connection_manager.py']
         other_files = []
 
         for py_file in self.plugin_path.rglob("*.py"):
@@ -80,11 +80,11 @@ class ConfigExtractor:
     def _extract_from_ast(self, tree: ast.AST):
         """Extract config params using AST."""
         for node in ast.walk(tree):
-            # Pattern: getattr(mcp_config, 'key', default)
+            # Pattern: getattr(server_config, 'key', default)
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Name) and node.func.id == 'getattr':
                     if len(node.args) >= 2:
-                        # Check if first arg is mcp_config or similar
+                        # Check if first arg is server_config or similar
                         if isinstance(node.args[0], ast.Name):
                             obj_name = node.args[0].id
                             if 'config' in obj_name.lower():
@@ -106,12 +106,12 @@ class ConfigExtractor:
     def _extract_from_regex(self, content: str):
         """Extract config params using regex patterns."""
         patterns = [
-            # getattr(mcp_config, 'key', default)
-            r'getattr\(\s*(?:mcp_config|config|self\.config)\s*,\s*["\'](\w+)["\']\s*,\s*(.+?)\)',
+            # getattr(server_config, 'key', default)
+            r'getattr\(\s*(?:server_config|config|self\.config)\s*,\s*["\'](\w+)["\']\s*,\s*(.+?)\)',
             # config.get('key', default) - also matches security_config, defaults, etc.
             r'(?:\w+_config|config|defaults|self\.config)\.get\(\s*["\'](\w+)["\']\s*,\s*(.+?)\)',
             # config['key'] (no default)
-            r'(?:mcp_config|config|self\.config)\[["\'](\w+)["\']\]',
+            r'(?:server_config|config|self\.config)\[["\'](\w+)["\']\]',
         ]
 
         for pattern in patterns:

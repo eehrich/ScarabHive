@@ -123,7 +123,7 @@ def spawn_wake(session_id: str, user_id: str, depth: int) -> tuple[int, float]:
 
     CREATE_NO_WINDOW, not DETACHED_PROCESS: a detached process has no console,
     and Windows gives every console program it starts a window of its own --
-    a woken run would open one per stdio MCP server, in the user's face.
+    a woken run would open one per stdio tool server, in the user's face.
     """
     detach = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
               if os.name == "nt" else {"start_new_session": True})

@@ -1,11 +1,11 @@
-"""Tests for enhanced MCPServer supporting multiple tools per plugin."""
+"""Tests for enhanced ToolServer supporting multiple tools per plugin."""
 from __future__ import annotations
 
 import pytest
 from typing import Any
 
-from agent_system.mcp.base import MCPServer
-from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+from agent_system.tools.base import ToolServer
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
 from plugins.example.server import ExampleServer
 
 
@@ -13,17 +13,17 @@ from plugins.example.server import ExampleServer
 def test_configs():
     """Fixture providing test config objects."""
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(type="test", enabled=True, agent_config=AgentConfig())
-    return system_config, mcp_config
+    server_config = ToolServerConfig(type="test", enabled=True, agent_config=AgentConfig())
+    return system_config, server_config
 
 
-class SingleToolMockServer(MCPServer):
+class SingleToolMockServer(ToolServer):
     """Mock server implementing single-tool interface using new list_tools() method."""
     
     def __init__(self, name: str):
         system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type=name, enabled=True, agent_config=AgentConfig())
-        super().__init__(name, system_config, mcp_config)
+        server_config = ToolServerConfig(type=name, enabled=True, agent_config=AgentConfig())
+        super().__init__(name, system_config, server_config)
     
     async def list_tools(self) -> list[dict[str, Any]]:
         return [{
@@ -48,13 +48,13 @@ class SingleToolMockServer(MCPServer):
         return {"tool": tool, "message": params["message"], "server": self.name}
 
 
-class OldStyleServer(MCPServer):
+class OldStyleServer(ToolServer):
     """Mock server implementing the new interface with single tool."""
     
     def __init__(self, name: str):
         system_config = AgentSystemConfig()
-        mcp_config = MCPConfig(type=name, enabled=True, agent_config=AgentConfig())
-        super().__init__(name, system_config, mcp_config)
+        server_config = ToolServerConfig(type=name, enabled=True, agent_config=AgentConfig())
+        super().__init__(name, system_config, server_config)
     
     async def list_tools(self) -> list[dict[str, Any]]:
         return [{
@@ -78,7 +78,7 @@ class OldStyleServer(MCPServer):
 
 
 def _get_tool_name(tool):
-    """Extract the function.name from either a dict or an MCPTool-like object."""
+    """Extract the function.name from either a dict or a ToolDef-like object."""
     # dict form: tool["function"]["name"]
     if isinstance(tool, dict):
         func = tool.get("function") or {}
@@ -93,7 +93,7 @@ def _get_tool_name(tool):
 
 
 def _get_tool_description(tool):
-    """Extract the function.description from either a dict or an MCPTool-like object."""
+    """Extract the function.description from either a dict or a ToolDef-like object."""
     if isinstance(tool, dict):
         func = tool.get("function") or {}
         return func.get("description")
@@ -103,13 +103,13 @@ def _get_tool_description(tool):
     if isinstance(func, dict):
         return func.get("description")
     return getattr(func, "description", None)
-class TestEnhancedMCPServer:
-    """Test the enhanced MCPServer interface."""
+class TestEnhancedToolServer:
+    """Test the enhanced ToolServer interface."""
 
     async def test_multi_tool_server_get_tools(self, test_configs):
         """Test that multi-tool server returns multiple tools."""
-        system_config, mcp_config = test_configs
-        server = ExampleServer("example", system_config, mcp_config)
+        system_config, server_config = test_configs
+        server = ExampleServer("example", system_config, server_config)
         tools = await server.list_tools()
 
         assert len(tools) == 3
@@ -119,9 +119,9 @@ class TestEnhancedMCPServer:
         assert "example_status" in tool_names
 
     async def test_multi_tool_server_get_schema_backward_compat(self, test_configs):
-        system_config, mcp_config = test_configs
+        system_config, server_config = test_configs
         """Test that get_schema() works for multi-tool servers (returns first tool)."""
-        server = ExampleServer("example", system_config, mcp_config)
+        server = ExampleServer("example", system_config, server_config)
         tools = await server.list_tools()
         schema = tools[0]  # Get first tool as schema
 
@@ -134,8 +134,8 @@ class TestEnhancedMCPServer:
 
     def test_multi_tool_server_has_name(self, test_configs):
         """Test that server has a name attribute."""
-        system_config, mcp_config = test_configs
-        server = ExampleServer("example", system_config, mcp_config)
+        system_config, server_config = test_configs
+        server = ExampleServer("example", system_config, server_config)
         
         # Server should have name attribute
         assert server.name == "example"
@@ -143,8 +143,8 @@ class TestEnhancedMCPServer:
 
     async def test_multi_tool_server_calculator_call(self, test_configs):
         """Test calling the calculator tool."""
-        system_config, mcp_config = test_configs
-        server = ExampleServer("example", system_config, mcp_config)
+        system_config, server_config = test_configs
+        server = ExampleServer("example", system_config, server_config)
 
         # Tool is named using the server name prefix: test_calculator
         result = await server.call("example_calculator", {
@@ -158,9 +158,9 @@ class TestEnhancedMCPServer:
         assert result["result"] == 8.0
 
     async def test_multi_tool_server_formatter_call(self, test_configs):
-        system_config, mcp_config = test_configs
+        system_config, server_config = test_configs
         """Test calling the formatter tool."""
-        server = ExampleServer("example", system_config, mcp_config)
+        server = ExampleServer("example", system_config, server_config)
 
         result = await server.call("example_formatter", {
             "text": "hello world",
@@ -172,9 +172,9 @@ class TestEnhancedMCPServer:
         assert result["formatted"] == "HELLO WORLD"
 
     async def test_multi_tool_server_status_call(self, test_configs):
-        system_config, mcp_config = test_configs
+        system_config, server_config = test_configs
         """Test calling the status tool."""
-        server = ExampleServer("example", system_config, mcp_config)
+        server = ExampleServer("example", system_config, server_config)
 
         result = await server.call("example_status", {"verbose": True})
 
@@ -185,17 +185,17 @@ class TestEnhancedMCPServer:
         assert len(result["available_tools"]) == 3
 
     async def test_multi_tool_server_invalid_tool(self, test_configs):
-        system_config, mcp_config = test_configs
+        system_config, server_config = test_configs
         """Test calling an invalid tool raises error."""
-        server = ExampleServer("example", system_config, mcp_config)
+        server = ExampleServer("example", system_config, server_config)
 
         with pytest.raises(ValueError, match="Tool .* not found"):
             await server.call("example_invalid", {})
 
     async def test_calculator_division_by_zero(self, test_configs):
-        system_config, mcp_config = test_configs
+        system_config, server_config = test_configs
         """Test division by zero error handling."""
-        server = ExampleServer("example", system_config, mcp_config)
+        server = ExampleServer("example", system_config, server_config)
 
         with pytest.raises(ValueError, match="Division by zero"):
             await server.call("example_calculator", {
@@ -253,11 +253,11 @@ class TestErrorConditions:
     
     async def test_empty_tools_error(self, test_configs):
         """Test server with empty tools list."""
-        system_config, mcp_config = test_configs
+        system_config, server_config = test_configs
         
-        class EmptyToolsServer(MCPServer):
-            def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
-                super().__init__(name, system_config, mcp_config)
+        class EmptyToolsServer(ToolServer):
+            def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
+                super().__init__(name, system_config, server_config)
             
             async def list_tools(self) -> list[dict[str, Any]]:
                 return []
@@ -265,7 +265,7 @@ class TestErrorConditions:
             async def call(self, tool: str, params: dict[str, Any]) -> Any:
                 return {}
         
-        server = EmptyToolsServer("empty", system_config, mcp_config)
+        server = EmptyToolsServer("empty", system_config, server_config)
         
         # Should return empty list, not raise error
         tools = await server.list_tools()
@@ -273,16 +273,16 @@ class TestErrorConditions:
     
     async def test_missing_implementation_fallback(self, test_configs):
         """Test server missing list_tools implementation raises NotImplementedError."""
-        system_config, mcp_config = test_configs
+        system_config, server_config = test_configs
         
-        class IncompleteServer(MCPServer):
-            def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
-                super().__init__(name, system_config, mcp_config)
+        class IncompleteServer(ToolServer):
+            def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
+                super().__init__(name, system_config, server_config)
             
             async def call(self, tool: str, params: dict[str, Any]) -> Any:
                 return {}
         
-        server = IncompleteServer("incomplete", system_config, mcp_config)
+        server = IncompleteServer("incomplete", system_config, server_config)
         
         # Should raise NotImplementedError if list_tools() or get_tools() not implemented
         with pytest.raises(NotImplementedError, match="must implement list_tools"):

@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from agent_system.auth.models import User
 from agent_system.auth.dependencies import get_current_active_user, get_optional_user
-from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_mcp_registry
+from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_tool_registry
 from agent_system.services.background_job_manager import get_background_job_manager
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ session_router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 async def _build_descendants_context_vars(
     session_manager,
-    mcp_registry,
+    tool_registry,
     user_id: str,
     root_session_id: str,
 ) -> List[Dict[str, Any]]:
@@ -71,17 +71,17 @@ async def _build_descendants_context_vars(
         except Exception:
             return {}
 
-    # Cache mcp_registry agent lookups so we don't re-resolve per node
+    # Cache tool_registry agent lookups so we don't re-resolve per node
     agent_cache: Dict[str, Any] = {}
 
     def _resolve_agent(name: Optional[str]):
-        if not name or not mcp_registry:
+        if not name or not tool_registry:
             return None
         if name in agent_cache:
             return agent_cache[name]
         try:
             from agent_system.servers.agent.server import Agent as _Agent
-            resolved = mcp_registry.get(name)
+            resolved = tool_registry.get(name)
             if isinstance(resolved, _Agent):
                 agent_cache[name] = resolved
                 return resolved
@@ -295,7 +295,7 @@ async def get_session(
     current_user: Optional[User] = Depends(get_optional_user),
     session_manager=Depends(get_session_manager),
     default_agent=Depends(get_agent_optional),
-    mcp_registry=Depends(get_mcp_registry),
+    tool_registry=Depends(get_tool_registry),
 ):
     """Get session with messages (authenticated or anonymous)."""
     # Determine user_id: use username if authenticated, otherwise "anonymous"
@@ -309,10 +309,10 @@ async def get_session(
         # Resolve the session's agent (for both formatting and live-var injection)
         session_agent_name = session.get("agent_name")
         session_agent = None
-        if session_agent_name and mcp_registry:
+        if session_agent_name and tool_registry:
             try:
                 from agent_system.servers.agent.server import Agent as _Agent
-                resolved = mcp_registry.get(session_agent_name)
+                resolved = tool_registry.get(session_agent_name)
                 if isinstance(resolved, _Agent):
                     session_agent = resolved
                 else:
@@ -348,7 +348,7 @@ async def get_session(
         try:
             session["descendants_context_vars"] = await _build_descendants_context_vars(
                 session_manager=session_manager,
-                mcp_registry=mcp_registry,
+                tool_registry=tool_registry,
                 user_id=user_id,
                 root_session_id=session_id,
             )
@@ -410,10 +410,10 @@ async def get_session_messages(
     current_user: User = Depends(get_current_active_user),
     session_manager=Depends(get_session_manager),
     default_agent=Depends(get_agent_optional),
-    mcp_registry=Depends(get_mcp_registry),
+    tool_registry=Depends(get_tool_registry),
 ):
     """Get messages from a session (authenticated only)."""
-    # session_manager, default_agent, mcp_registry injected via dependency
+    # session_manager, default_agent, tool_registry injected via dependency
 
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
@@ -430,10 +430,10 @@ async def get_session_messages(
             # IMPORTANT: Do NOT fallback to default_agent if session agent not found!
             # Different agents have different hook configurations (e.g., markdown_formatter enabled/disabled).
             # Using a different agent's hooks would apply wrong formatting settings.
-            if session_agent_name and mcp_registry:
+            if session_agent_name and tool_registry:
                 try:
                     from agent_system.servers.agent.server import Agent as _Agent
-                    session_agent = mcp_registry.get(session_agent_name)
+                    session_agent = tool_registry.get(session_agent_name)
                     if isinstance(session_agent, _Agent):
                         formatting_agent = session_agent
                     else:

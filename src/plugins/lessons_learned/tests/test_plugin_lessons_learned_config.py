@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 from plugins.lessons_learned.server import LessonsLearnedServer
 
 PLUGINS_YAML = Path("config/plugins.yaml")
@@ -37,7 +37,7 @@ def _server(overrides: dict | None = None) -> LessonsLearnedServer:
     cfg.update(overrides or {})
     return LessonsLearnedServer(
         "lessons_learned", types.SimpleNamespace(),
-        MCPConfig(type="lessons_learned", enabled=True, **cfg))
+        ToolServerConfig(type="lessons_learned", enabled=True, **cfg))
 
 
 @pytest.mark.skipif(not PLUGINS_YAML.exists(), reason="no config/plugins.yaml")

@@ -2,7 +2,7 @@
 the live state against a running app, effective tools, the prompt reader and the writes over HTTP.
 
 The app state is a stand-in for the real app: a Runtime whose declarations are built from the tree as it was at
-"start" (the runtime's own ServerDecl/view code), an MCPRegistry with small tool servers, and Agent instances made
+"start" (the runtime's own ServerDecl/view code), a ToolServerRegistry with small tool servers, and Agent instances made
 without their constructor (only `agent_config` is read from them).
 """
 from __future__ import annotations
@@ -19,12 +19,12 @@ from fastapi.testclient import TestClient
 from agent_system.auth import database
 from agent_system.auth.models import UserCreate, UserRole, UserUpdate
 from agent_system.auth.security import create_access_token
-from agent_system.config.models import AgentSystemConfig, AuthConfig, MCPConfig
-from agent_system.config.settings import get_mcp_config_by_name, load_settings
+from agent_system.config.models import AgentSystemConfig, AuthConfig, ToolServerConfig
+from agent_system.config.settings import get_tool_server_config, load_settings
 from agent_system.hooks.plugin_hook import HookType
 from agent_system.hooks.registry import HookRegistry
-from agent_system.mcp.base import MCPRegistry
-from agent_system.mcp.core import MCPTool
+from agent_system.tools.base import ToolServerRegistry
+from agent_system.tools.base import ToolDef
 from agent_system.runtime import Runtime, ServerDecl
 from agent_system.servers.agent.server import Agent
 from plugins.agent_editor import sources
@@ -45,7 +45,7 @@ class ToolServer:
         self.tools_description = None
 
     async def list_tools(self):
-        return [MCPTool(name=name, description=self.tools_description or f"does {name}", input_schema={"type": "object"})
+        return [ToolDef(name=name, description=self.tools_description or f"does {name}", input_schema={"type": "object"})
                 for name in self.tools]
 
 
@@ -62,8 +62,8 @@ class SimpleState:
 def built_agent(config: AgentSystemConfig, name: str) -> Agent:
     """An Agent as the registry holds it, without running its constructor (no LLM client)."""
     agent = Agent.__new__(Agent)
-    agent.agent_config = get_mcp_config_by_name(name, config).agent_config
-    agent._mcp_tool_visible = False
+    agent.agent_config = get_tool_server_config(name, config).agent_config
+    agent._tool_visible = False
     return agent
 
 
@@ -71,20 +71,20 @@ def started_app(config_path: Path) -> SimpleState:
     """A runtime as if the app had started on the tree as it is now: every enabled server declared."""
     config = load_settings(str(config_path))
     catalog = sources.catalog_for(config)
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     runtime = Runtime.__new__(Runtime)
     runtime.config, runtime.registry = config, registry
     runtime._decls = {}
     for name, server in config.plugins.servers.items():
         if server.enabled:
-            merged = get_mcp_config_by_name(name, config)
-            runtime._decls[name] = ServerDecl(name=name, type=merged.type, mcp_config=merged, factory=object,
+            merged = get_tool_server_config(name, config)
+            runtime._decls[name] = ServerDecl(name=name, type=merged.type, server_config=merged, factory=object,
                                               plugin_metadata=catalog.manifest(merged.type))
     registry.bind(runtime)
     registry.register("files", ToolServer("files_read_file", "files_delete_file"))
     registry.register("search", LegacyToolServer())
     registry.register("web", ToolServer("web_search", "web_fetch"))
-    return SimpleState(config=config, runtime=runtime, mcp_registry=registry, config_path=str(config_path))
+    return SimpleState(config=config, runtime=runtime, tool_registry=registry, config_path=str(config_path))
 
 
 SECRET = "sekrit-value-123"
@@ -100,9 +100,9 @@ def secret_env(monkeypatch):
 def plugin_registry(monkeypatch):
     """An empty process-wide plugin registry per test; the returned function registers a server in it, as the
     runtime does for every plugin it builds (tool discovery and the config reload both walk it)."""
-    from agent_system.plugins.mcp_adapter import plugin_mcp_registry
+    from agent_system.plugins.tool_adapter import plugin_tool_registry
     servers = {}
-    monkeypatch.setattr(plugin_mcp_registry, "plugin_servers", servers)
+    monkeypatch.setattr(plugin_tool_registry, "plugin_servers", servers)
     return lambda name, instance: servers.__setitem__(name, SimpleState(plugin_server=instance))
 
 
@@ -127,7 +127,7 @@ def tree(tmp_path):
 
 def make_client(tree: Path, state: SimpleState | None = None, auth_enabled: bool = True) -> TestClient:
     plugin = PLUGIN_FACTORY("agent_editor", AgentSystemConfig(auth=AuthConfig(enabled=auth_enabled)),
-                            MCPConfig(config_path=str(tree), root=str(tree.parent.parent)))
+                            ToolServerConfig(config_path=str(tree), root=str(tree.parent.parent)))
     app = FastAPI()
     app.include_router(plugin.get_web_router())
     for key, value in (state.__dict__ if state else {}).items():
@@ -286,7 +286,7 @@ def test_agent_ness_is_decided_per_entry_and_a_class_needs_only_agents(db, tree)
     state = started_app(tree)
     web = make_client(tree, state)
     # a type the app built a tool server and an agent from: only that entry is an agent, the type is no class
-    state.mcp_registry.register("files_agent", built_agent(state.config, "writer"))
+    state.tool_registry.register("files_agent", built_agent(state.config, "writer"))
     listed = rows(web)
     assert "files_agent" in listed and listed["files_agent"]["base"] == "file_ops"
     assert "files" not in listed and "files_off" not in listed
@@ -294,7 +294,7 @@ def test_agent_ness_is_decided_per_entry_and_a_class_needs_only_agents(db, tree)
     assert web.get(f"{BASE}/agents/files", headers=as_user("root")).status_code == 404
     assert detail(web, "files_agent")["own"] == {"type": "file_ops", "enabled": True}
     # every built instance of the type is an agent: the type is a class, its undeclared entries are agents too
-    state.mcp_registry.register("files", built_agent(state.config, "writer"))
+    state.tool_registry.register("files", built_agent(state.config, "writer"))
     listed = rows(web)
     assert {"files", "files_agent", "files_off"} <= set(listed)
     assert "file_ops" in [row["name"] for row in web.get(f"{BASE}/meta", headers=as_user("root")).json()["classes"]]
@@ -527,7 +527,7 @@ def test_a_reloadable_change_needs_no_restart_only_where_the_reload_reaches(db, 
     state = started_app(tree)
     web = make_client(tree, state)
     running = built_agent(state.config, "writer")
-    state.mcp_registry.register("writer", running)
+    state.tool_registry.register("writer", running)
     reload_reaches("writer", running)
     entry = detail(web, "writer")["own"]
     entry["agent_config"]["max_steps"] = 31
@@ -551,7 +551,7 @@ def test_a_reloadable_change_needs_no_restart_only_where_the_reload_reaches(db, 
 def test_a_built_agent_the_reload_does_not_reach_needs_a_restart(db, tree, tmp_path, reload_reaches):
     state = started_app(tree)
     web = make_client(tree, state)
-    state.mcp_registry.register("writer", built_agent(state.config, "writer"))  # built, but not in the plugin registry
+    state.tool_registry.register("writer", built_agent(state.config, "writer"))  # built, but not in the plugin registry
     entry = detail(web, "writer")["own"]
     entry["agent_config"]["max_steps"] = 31
     assert put(web, "writer", entry, version_of(team(tmp_path).read_bytes())).status_code == 200
@@ -596,7 +596,7 @@ def test_a_built_agent_is_compared_by_its_own_config(db, tree, reload_reaches):
     state = started_app(tree)
     running = built_agent(load_settings(str(tree)), "writer")
     running.agent_config.max_steps = 99  # what a reload applied to the instance only
-    state.mcp_registry.register("writer", running)
+    state.tool_registry.register("writer", running)
     reload_reaches("writer", running)
     writer = detail(make_client(tree, state), "writer")
     assert (writer["state"], writer["changed"], writer["restart"]) == ("changed", ["max_steps"], False)
@@ -615,12 +615,12 @@ def test_tools_lists_what_tool_discovery_finds(db, tree, plugin_registry):
     state = started_app(tree)
     # a hidden server of the app's registry is left out ...
     hidden = ToolServer("helper")
-    hidden._mcp_tool_visible = False
-    state.mcp_registry.register("helper", hidden)
+    hidden._tool_visible = False
+    state.tool_registry.register("helper", hidden)
     # ... unless the plugin registry has it: discovery takes those without looking at the flag
     plugged = ToolServer("writer")
-    plugged._mcp_tool_visible = False
-    state.mcp_registry.register("writer", plugged)
+    plugged._tool_visible = False
+    state.tool_registry.register("writer", plugged)
     plugin_registry("writer", plugged)
     # a server only the plugin registry holds is found there
     only_plugin = ToolServer("remote_ping")
@@ -888,7 +888,7 @@ async def test_meta_names_classes_profiles_hooks_and_prompt_files(web, monkeypat
                                  timeout=5.0, description="Guards the files")
     monkeypatch.setattr(sources, "get_hook_registry", lambda: registry)
     meta = web.get(f"{BASE}/meta", headers=as_user("root")).json()
-    assert {"name": "basic_agent", "description": "Basic agent plugin providing agent execution capabilities as MCP tools"} in meta["classes"]
+    assert {"name": "basic_agent", "description": "Basic agent plugin providing agent execution capabilities as tools"} in meta["classes"]
     assert "agent" in [row["name"] for row in meta["classes"]]
     assert meta["profiles"] == [
         {"name": "fast", "model_ref": "m-fast", "provider": "ollama", "model": "fast-model", "description": "Fast one"},

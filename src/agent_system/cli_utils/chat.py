@@ -475,7 +475,7 @@ async def run_chat_turn(
     as the start event arrives, so a Ctrl-C handler outside this coroutine can
     cancel the in-flight request even though this coroutine never returned.
     """
-    from ..mcp.status import status_bus
+    from ..tools.status import status_bus
 
     result: dict[str, Any] = {"summary": None, "cancelled": False, "errors": [],
                               "usage": {}}
@@ -1738,7 +1738,7 @@ def _show_last(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
     """Full tool calls and results of the most recent turn.
 
     Chat collapses every tool call to one status line, so what a tool actually
-    RETURNED is invisible -- this is the chat equivalent of run's --show-mcp.
+    RETURNED is invisible -- this is the chat equivalent of run's --show-tools.
     """
     messages = _session_messages(ctx)
     last_user = None
@@ -2988,8 +2988,8 @@ def _close_own_loop(loop: asyncio.AbstractEventLoop) -> None:
         # printed a "ValueError: I/O operation on closed pipe" cascade
         # after the goodbye message.
         try:
-            from ..mcp.integration import shutdown_mcp
-            loop.run_until_complete(shutdown_mcp())
+            from ..tools.integration import shutdown_tools
+            loop.run_until_complete(shutdown_tools())
         except Exception:
             logger.debug("MCP shutdown on the chat loop failed", exc_info=True)
 
@@ -3392,7 +3392,7 @@ def run_chat_loop(
             print(f"Resume with: {_resume_hint(ctx, ctx.last_saved, ctx.last_saved_agent)}",
                   file=sys.stderr)
         # A BORROWED loop is not ours to tear down: the CLI's finally still
-        # runs shutdown_mcp/shutdown_batch_system on it after we return, and
+        # runs shutdown_tools/shutdown_batch_system on it after we return, and
         # close_cli_loop() at exit does the cancel/asyncgens/executor/close
         # dance exactly once. Cancelling all tasks here would kill the MCP
         # connections and the batch manager out from under those shutdowns.

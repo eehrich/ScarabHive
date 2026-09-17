@@ -8,17 +8,17 @@ from plugins.memory.server import MemoryServer
 @pytest.fixture
 def server(tmp_path):
     """Create MemoryServer instance for testing."""
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
     config = AgentSystemConfig(data_dir=tmp_path)
-    mcp_config = MCPConfig(
+    server_config = ToolServerConfig(
         name="memory",
         plugin_config={
             "storage_path": str(tmp_path / "memories")
         }
     )
 
-    return MemoryServer("memory", config, mcp_config)
+    return MemoryServer("memory", config, server_config)
 
 
 @pytest.mark.asyncio

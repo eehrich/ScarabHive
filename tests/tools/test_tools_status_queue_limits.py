@@ -1,7 +1,7 @@
 """Tests for status queue limits and backpressure handling."""
 import asyncio
 import pytest
-from agent_system.mcp.status import StatusBus, StatusEvent, StatusPhase
+from agent_system.tools.status import StatusBus, StatusEvent, StatusPhase
 
 
 @pytest.mark.asyncio

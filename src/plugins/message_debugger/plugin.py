@@ -16,7 +16,7 @@ from .hooks import MessageDebuggerPlugin
 from .web_endpoints import MessageDebuggerWebFactory
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -29,17 +29,17 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
     - Raw LLM API requests and responses
     """
     
-    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
+    def __init__(self, name: str, system_config: "AgentSystemConfig", server_config: "ToolServerConfig"):
         """Initialize with standard hybrid plugin signature."""
         # Initialize base class (loads schema automatically)
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
         plugin_dir = Path(__file__).parent
         
         # Determine DB path from config
         config = {}
-        if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
-            config = mcp_config.config
+        if server_config and hasattr(server_config, 'config') and server_config.config:
+            config = server_config.config
         
         db_path = config.get('db_path', None)
         if not db_path:
@@ -63,7 +63,7 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
         )
         
         # Create hooks plugin with DB and config
-        self.hooks_plugin = MessageDebuggerPlugin(plugin_dir, db=self._db, mcp_config=mcp_config)
+        self.hooks_plugin = MessageDebuggerPlugin(plugin_dir, db=self._db, server_config=server_config)
         
         # Create web UI factory with DB for queries
         self.web_factory = MessageDebuggerWebFactory(

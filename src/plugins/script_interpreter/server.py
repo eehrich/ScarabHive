@@ -1,4 +1,4 @@
-"""MCP Server for Script Interpreter Plugin."""
+"""Tool server for Script Interpreter Plugin."""
 
 import asyncio
 import logging
@@ -8,13 +8,13 @@ from typing import Any, TYPE_CHECKING
 import sys
 from pathlib import Path
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from .executor import ScriptExecutor
 from .safe_executor import SEEDED_TYPE_NAMES
 from .config import ScriptInterpreterConfig
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 # Add the project src directory to the path so we can import our modules when running
 # as a script (this is a no-op when package imports are already configured).
@@ -24,22 +24,22 @@ sys.path.insert(0, str(src_path))
 logger = logging.getLogger(__name__)
 
 
-class ScriptInterpreterServer(SchemaBasedMCPServer):
-    """MCP Server for executing scripts in a secure sandbox."""
+class ScriptInterpreterServer(SchemaBasedToolServer):
+    """Tool server for executing scripts in a secure sandbox."""
 
-    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig") -> None:
+    def __init__(self, name: str, system_config: "AgentSystemConfig", server_config: "ToolServerConfig") -> None:
         """
         Modern constructor signature.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration (script_interpreter settings)
+            server_config: Plugin-specific configuration (script_interpreter settings)
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
-        # Extract script-specific config from mcp_config
-        script_config_dict = getattr(mcp_config, 'script_interpreter', {})
+        # Extract script-specific config from server_config
+        script_config_dict = getattr(server_config, 'script_interpreter', {})
         if script_config_dict:
             script_config = ScriptInterpreterConfig.from_dict(script_config_dict)
         else:

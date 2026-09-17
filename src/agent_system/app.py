@@ -24,18 +24,18 @@ from fastapi.staticfiles import StaticFiles
 from .api.endpoints import router as api_router
 from .ui.resources import STATIC_DIR, revalidated, ui_templates
 from .ui.routes import router as ui_router
-from .mcp.base import MCPRegistry
+from .tools.base import ToolServerRegistry
 # Module level: inside list_agents it would sit in a try/except that
 # skips the server -- an import cycle would then empty the UI dropdown
 # in silence instead of failing loud at start.
 from .runtime import ServerView
 from .utils.logging import setup_logging
-from .mcp.status import get_status_metrics
-from .mcp.integration import initialize_mcp, shutdown_mcp
+from .tools.status import get_status_metrics
+from .tools.integration import initialize_tools, shutdown_tools
 from .llm.batch.initialization import init_batch_system, shutdown_batch_system, start_batch_queue_manager
 
 # Import services
-from .services import ConfigService, MCPService, ToolService, AgentService
+from .services import ConfigService, ToolServerService, ToolService, AgentService
 from .services.session_manager import SessionManager, SessionPermissionError
 from .core.session_presence import SessionBusy, presence_for
 from .services.background_job_manager import (
@@ -47,16 +47,16 @@ from .services.background_job_manager import (
 )
 
 
-# Global registry for MCP endpoints access
+# Global registry for the tool endpoints
 # (No _app_config next to it: a module global belongs to whichever build_app
 # ran last, and a reload writes app.state.config -- _live_config() is the one
 # source. The global had exactly one reader left, answering from process start.)
-_app_registry: Optional[MCPRegistry] = None
-_mcp_integration = None
+_app_registry: Optional[ToolServerRegistry] = None
+_tool_integration = None
 
 # Global services (initialized in build_app)
 _config_service: Optional[ConfigService] = None
-_mcp_service: Optional[MCPService] = None
+_tool_server_service: Optional[ToolServerService] = None
 _tool_service: Optional[ToolService] = None
 _agent_service: Optional[AgentService] = None
 _initialization_service: Optional[Any] = None  # InitializationService
@@ -123,7 +123,7 @@ _shutdown_event: Optional[asyncio.Event] = None
 async def resolve_agent_for_request(
     request_id: str,
     job_manager: BackgroundJobManager,
-    registry: Optional[MCPRegistry],
+    registry: Optional[ToolServerRegistry],
     default_agent: Any,
 ) -> Any:
     """Resolve the agent instance that owns an active/recent request.
@@ -160,8 +160,8 @@ async def lifespan(app: FastAPI):
     logger = logging.getLogger(__name__)
     logger.info("FastAPI application starting up")
 
-    # Startup: Initialize MCP integration
-    global _mcp_integration, _mcp_service, _tool_service, _session_manager, _session_service
+    # Startup: Initialize tool integration
+    global _tool_integration, _tool_server_service, _tool_service, _session_manager, _session_service
     
     # Initialize background job manager and start cleanup loop
     job_manager = get_background_job_manager()
@@ -174,20 +174,20 @@ async def lifespan(app: FastAPI):
     else:
         config = _config_service.get_config()
 
-        # Initialize MCP integration
-        logger.info("Starting MCP integration initialization...")
+        # Initialize tool integration
+        logger.info("Starting tool integration initialization...")
         try:
-            from .mcp.integration import initialize_mcp
-            from .services.mcp_service import MCPService
+            from .tools.integration import initialize_tools
+            from .services.tool_server_service import ToolServerService
             from .services.tool_service import ToolService
             from .services.session_manager import SessionManager
 
-            mcp_integration = await initialize_mcp(config, app)
-            _mcp_integration = mcp_integration
+            tool_integration = await initialize_tools(config, app)
+            _tool_integration = tool_integration
 
             # Initialize services
-            _mcp_service = MCPService(mcp_integration, config)
-            _tool_service = ToolService(mcp_integration, config)
+            _tool_server_service = ToolServerService(tool_integration, config)
+            _tool_service = ToolService(tool_integration, config)
 
             # Initialize SessionManager
             from pathlib import Path
@@ -210,12 +210,12 @@ async def lifespan(app: FastAPI):
             logger.info("SessionManager stored in app.state for dependency injection")
 
             # Make integration accessible to mcp module
-            from .mcp import integration as _mcp_mod
-            _mcp_mod.mcp_integration = mcp_integration
+            from .tools import integration as _tools_mod
+            _tools_mod.tool_integration = tool_integration
 
-            logger.info("MCP integration startup complete")
+            logger.info("tool integration startup complete")
         except Exception as e:
-            logger.error(f"Failed to initialize MCP integration: {e}", exc_info=True)
+            logger.error(f"Failed to initialize tool integration: {e}", exc_info=True)
             raise
 
     yield
@@ -223,11 +223,11 @@ async def lifespan(app: FastAPI):
     # Shutdown logic
     logger.info("FastAPI application shutting down gracefully")
     try:
-        # Shutdown MCP integration
-        if _mcp_integration:
-            from .mcp.integration import shutdown_mcp
-            await shutdown_mcp()
-            logger.info("MCP integration shut down")
+        # Shutdown tool integration
+        if _tool_integration:
+            from .tools.integration import shutdown_tools
+            await shutdown_tools()
+            logger.info("tool integration shut down")
     except Exception as e:
         logger.error("Error during shutdown cleanup: %s", e)
     finally:
@@ -309,28 +309,28 @@ def _build_entry_agent(entry_name: str, config, registry, session_service):
     AgentSystemConfig has no ``agents`` field, so it raises on every call.
     """
     from .servers.agent.server import Agent as CoreAgent
-    from .config.settings import get_mcp_config_by_name
+    from .config.settings import get_tool_server_config
 
-    mcp_cfg = get_mcp_config_by_name(entry_name, config)
+    server_cfg = get_tool_server_config(entry_name, config)
 
-    if not mcp_cfg:
+    if not server_cfg:
         logging.getLogger(__name__).warning(
             "No server configuration found for agent '%s', falling back to plugins.default_config",
             entry_name
         )
         # Read from the config that was passed in, not from the module-global
         # ConfigService: that global belongs to whichever build_app ran last.
-        mcp_cfg = config.plugins.default_config if config.plugins else None
+        server_cfg = config.plugins.default_config if config.plugins else None
 
-    if not mcp_cfg:
-        from .config.models import MCPConfig, AgentConfig, ToolConfig
+    if not server_cfg:
+        from .config.models import ToolServerConfig, AgentConfig, ToolConfig
         logging.getLogger(__name__).warning(
-            "No default_config found in plugins configuration, creating default MCPConfig with llm_profile='normal'"
+            "No default_config found in plugins configuration, creating default ToolServerConfig with llm_profile='normal'"
         )
-        mcp_cfg = MCPConfig(type="agent", enabled=True,
+        server_cfg = ToolServerConfig(type="agent", enabled=True,
                             agent_config=AgentConfig(llm_profile="normal", tools=ToolConfig()))
 
-    agent = CoreAgent(entry_name, config, mcp_cfg, registry, session_service=session_service)
+    agent = CoreAgent(entry_name, config, server_cfg, registry, session_service=session_service)
     if entry_name in registry.list():
         # Only reachable when the name is taken by something that is not an
         # Agent -- registering here would drop that server out of the registry
@@ -395,7 +395,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     set_batch_config(config)
 
     # Configure status bus with config values
-    from .mcp.status import status_bus
+    from .tools.status import status_bus
     if hasattr(config, 'status') and config.status:
         status_bus.default_queue_maxsize = config.status.queue_maxsize
         logger.debug(f"Status bus configured: queue_maxsize={config.status.queue_maxsize}")
@@ -411,7 +411,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     plugin_count = len(config.plugins.servers) if config.plugins else 0
     mcp_remote_count = len(config.external_servers.remote_servers) if config.external_servers else 0
     if plugin_count or mcp_remote_count:
-        logger.debug(f"MCP system loaded with {plugin_count} plugins and {mcp_remote_count} remote servers")
+        logger.debug(f"tool system loaded with {plugin_count} plugins and {mcp_remote_count} remote servers")
     else:
         logger.warning("No plugins or mcp_servers configuration loaded")
 
@@ -424,31 +424,31 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     _session_service = _initialization_service.session_service
     logger.info("InitializationService created (SessionManager and SessionService ready)")
 
-    # Initialize MCP integration
+    # Initialize tool integration
     async def _init_mcp_for_app(app: FastAPI):
-        global _mcp_integration, _mcp_service, _tool_service, _agent_service
+        global _tool_integration, _tool_server_service, _tool_service, _agent_service
         logger = logging.getLogger(__name__)
-        logger.info("Starting MCP integration initialization...")
+        logger.info("Starting tool integration initialization...")
         try:
             # Start the Batch Queue Manager (async operations: register providers, start background tasks)
             # The manager was already created and registered in build_app() sync section
             await start_batch_queue_manager(config, custom_logger=logger)
             
-            mcp_integration = await initialize_mcp(config, app)
-            _mcp_integration = mcp_integration
+            tool_integration = await initialize_tools(config, app)
+            _tool_integration = tool_integration
 
-            # Mark that bootstrap_servers() was already called by initialize_mcp
-            mcp_integration.servers_bootstrapped = True
+            # Mark that bootstrap_servers() was already called by initialize_tools
+            tool_integration.servers_bootstrapped = True
 
             # Initialize services
-            _mcp_service = MCPService(mcp_integration, config)
-            _tool_service = ToolService(mcp_integration, config)
+            _tool_server_service = ToolServerService(tool_integration, config)
+            _tool_service = ToolService(tool_integration, config)
 
             # CRITICAL: Inject session_service into ALL agents in plugin_registry
             # This ensures hooks and tools can access session management
-            # Must be done AFTER bootstrap_servers() in initialize_mcp() created agents
+            # Must be done AFTER bootstrap_servers() in initialize_tools() created agents
             _initialization_service.initialize_for_api(
-                plugin_registry=mcp_integration.plugin_registry,
+                plugin_registry=tool_integration.plugin_registry,
             )
 
             # Store session manager in app state for dependency injection (after initialization)
@@ -459,10 +459,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # (requires agent instance from bootstrap_servers)
 
             # Make integration accessible to mcp module
-            from .mcp import integration as _mcp_mod
-            _mcp_mod.mcp_integration = mcp_integration
+            from .tools import integration as _tools_mod
+            _tools_mod.tool_integration = tool_integration
 
-            logger.info("MCP integration and services initialized for API")
+            logger.info("tool integration and services initialized for API")
 
             # Apply plugin web capabilities with security
             from .plugins.web_adapter import plugin_web_registry
@@ -470,7 +470,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.info("Plugin web capabilities applied to app with security enforcement")
 
         except Exception as e:
-            logger.exception("Failed to initialize MCP integration for API: %s", e)
+            logger.exception("Failed to initialize tool integration for API: %s", e)
 
     # FastAPI lifespan management
     @asynccontextmanager
@@ -498,9 +498,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Create shutdown event for graceful SSE stream termination
         _shutdown_event = _asyncio.Event()
 
-        logger.info("Lifespan startup: Initializing MCP integration...")
+        logger.info("Lifespan startup: Initializing tool integration...")
         await _init_mcp_for_app(app)
-        logger.info("MCP integration initialized during lifespan startup")
+        logger.info("tool integration initialized during lifespan startup")
         
         # Log startup complete marker
         logger.info("═" * 80)
@@ -552,17 +552,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Shutdown batch queue manager first
             await _shutdown_batch_queue_manager(logger)
             
-            await shutdown_mcp()
-            logger.info("MCP integration shut down during lifespan")
+            await shutdown_tools()
+            logger.info("tool integration shut down during lifespan")
             
             logger.info("═" * 80)
             logger.info("║  AgentSystem API Server STOPPED")
             logger.info("═" * 80)
         except Exception as e:
-            logger.exception("Error shutting down MCP integration during lifespan: %s", e)
+            logger.exception("Error shutting down tool integration during lifespan: %s", e)
 
     # Create FastAPI app
-    app = FastAPI(title="Agent System (MCP)", lifespan=custom_lifespan)
+    app = FastAPI(title="Agent System", lifespan=custom_lifespan)
 
     def _live_config():
         """The config THIS app currently runs on.
@@ -822,26 +822,26 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
         logging.getLogger(__name__).info("SSL verification disabled - set environment variables for global SSL bypass")
 
-    # Bootstrap MCP servers and plugin registry using InitializationService
+    # Bootstrap tool servers and plugin registry using InitializationService
     # This handles bootstrap_servers() and session_service injection
     # Note: Batch queue manager is created lazily by LLMFactory when first needed
-    registry = MCPRegistry()
-    if not _mcp_integration or not _mcp_integration.servers_bootstrapped:
+    registry = ToolServerRegistry()
+    if not _tool_integration or not _tool_integration.servers_bootstrapped:
         # Use InitializationService for consistent bootstrap + injection
         registry = _initialization_service.bootstrap_and_inject(
             registry=registry,
             inject_sessions=True
         )
         # Mark as bootstrapped to prevent duplicate calls
-        if _mcp_integration:
-            _mcp_integration.servers_bootstrapped = True
+        if _tool_integration:
+            _tool_integration.servers_bootstrapped = True
         logging.getLogger(__name__).info("Bootstrapped servers using InitializationService")
     else:
-        # Servers already bootstrapped by initialize_mcp, just populate local registry
+        # Servers already bootstrapped by initialize_tools, just populate local registry
         # by copying from plugin_registry and inject sessions
         from .servers.agent.server import Agent as _Agent
-        for server_name in _mcp_integration.plugin_registry.list_servers():
-            server_adapter = _mcp_integration.plugin_registry.get_server(server_name)
+        for server_name in _tool_integration.plugin_registry.list_servers():
+            server_adapter = _tool_integration.plugin_registry.get_server(server_name)
             if server_adapter and hasattr(server_adapter, 'plugin_server'):
                 registry.register(server_name, server_adapter.plugin_server)
         logging.getLogger(__name__).debug(f"Populated local registry with {len(registry.list())} servers from plugin_registry")
@@ -914,7 +914,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Store agent and registry in app state for dependency injection
     app.state.agent = agent
-    app.state.mcp_registry = registry
+    app.state.tool_registry = registry
     app.state.config = config
     # The Runtime that built the registry: it knows every DECLARED server, not
     # just the built ones, and is the only place that builds one.
@@ -1222,7 +1222,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     status_code=404,
                     detail=(
                         f"agent_not_found:{agent_name}. "
-                        "Check the plugin name (registered MCP server name, not "
+                        "Check the plugin name (registered tool server name, not "
                         "the agent yaml filename) and that the plugin is loaded."
                     ),
                 )
@@ -1281,8 +1281,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     def list_agents(response: Response):
         """List registered agent-like servers that are publicly visible (UI dropdown).
 
-        Returns agents with _mcp_public=True OR agents without _mcp_public attribute (backward compat).
-        Agents with visibility='tool' or 'private' (_mcp_public=False) are excluded.
+        Returns agents with _tool_public=True OR agents without _tool_public attribute (backward compat).
+        Agents with visibility='tool' or 'private' (_tool_public=False) are excluded.
         """
         # Without this the browser may serve the list from its HTTP cache on a
         # normal reload — newly registered agents then only appear after a
@@ -1301,10 +1301,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # truthy, which would list every server as a public agent.
                     view = _app_registry.describe(name)  # type: ignore[attr-defined]
                     if isinstance(view, ServerView):
-                        if view.is_agent and view.mcp_public:
+                        if view.is_agent and view.tool_public:
                             agents.append(name)
                         elif view.is_agent:
-                            logger.debug(f"Skipping agent '{name}' in UI list (_mcp_public=False)")
+                            logger.debug(f"Skipping agent '{name}' in UI list (_tool_public=False)")
                         continue
 
                     # Unbound registry, or a declaration that cannot answer for
@@ -1312,13 +1312,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     srv = _app_registry.get(name)  # type: ignore[attr-defined]
                     from .servers.agent.server import Agent as _Agent
                     if isinstance(srv, _Agent):
-                        # Filter by _mcp_public flag (visibility control)
+                        # Filter by _tool_public flag (visibility control)
                         # Default to True if attribute doesn't exist (backward compatibility with plugin agents)
-                        if hasattr(srv, '_mcp_public'):
-                            if not srv._mcp_public:
-                                logger.debug(f"Skipping agent '{name}' in UI list (_mcp_public=False)")
+                        if hasattr(srv, '_tool_public'):
+                            if not srv._tool_public:
+                                logger.debug(f"Skipping agent '{name}' in UI list (_tool_public=False)")
                                 continue
-                        # else: No _mcp_public attribute → show in UI (backward compat)
+                        # else: No _tool_public attribute → show in UI (backward compat)
                         agents.append(name)
                 except Exception as e:
                     logger.debug(f"Failed to check agent {name}: {e}")
@@ -1339,12 +1339,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     def _agent_details(names: list[str]) -> list[dict[str, Any]]:
         """What the agent picker filters and groups by: description, category and tags from the merged config."""
-        from .config.settings import get_mcp_config_by_name
+        from .config.settings import get_tool_server_config
         live = _live_config()
         details = []
         for name in names:
             try:
-                cfg = get_mcp_config_by_name(name, live)
+                cfg = get_tool_server_config(name, live)
             except Exception as e:
                 logger.debug(f"No config details for agent {name}: {e}")
                 cfg = None
@@ -1437,7 +1437,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         from .chat_commands import group_tools_by_server
         from .servers.agent.server import Agent as _Agent
 
-        registry = getattr(request.app.state, "mcp_registry", None) or _app_registry
+        registry = getattr(request.app.state, "tool_registry", None) or _app_registry
         try:
             srv = registry.get(agent_name) if registry is not None else None
         except Exception as e:
@@ -1514,7 +1514,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # Create tool schema builder (same as used during chat)
                 tool_builder = ToolSchemaBuilder(
                     agent_name=agent_name,
-                    mcp_integration_manager=srv._mcp_integration_manager,
+                    tool_integration_manager=srv._tool_integration_manager,
                     server_getter_func=srv._get_server_from_any_registry
                 )
                 
@@ -2890,9 +2890,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 raise HTTPException(status_code=401, detail="Unauthorized")
         return get_status_metrics()
 
-    @app.get("/mcp/status")
-    async def mcp_status(force_refresh: bool = False):
-        """Get MCP server status including plugins and external servers.
+    @app.get("/tools/status")
+    async def tools_status(force_refresh: bool = False):
+        """Get tool server status including plugins and external servers.
 
         Args:
             force_refresh: If True, invalidates cache before fetching status
@@ -2900,25 +2900,25 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         try:
             logger = logging.getLogger(__name__)
 
-            # Use MCPService for comprehensive status
-            global _mcp_service, _app_registry, _mcp_integration
+            # Use ToolServerService for comprehensive status
+            global _tool_server_service, _app_registry, _tool_integration
 
-            if not _mcp_service:
-                return {"error": "MCP service not initialized"}
+            if not _tool_server_service:
+                return {"error": "tool server service not initialized"}
 
             if not _app_registry:
                 return {"error": "Registry not initialized"}
 
             # If force_refresh requested, invalidate cache first
-            if force_refresh and _mcp_integration:
+            if force_refresh and _tool_integration:
                 try:
-                    await _mcp_integration.invalidate_tools_cache()
+                    await _tool_integration.invalidate_tools_cache()
                     logger.debug("Cache invalidated due to force_refresh=True")
                 except Exception as e:
                     logger.warning(f"Failed to invalidate cache: {e}")
 
-            # Delegate to MCPService
-            status = await _mcp_service.get_comprehensive_status(
+            # Delegate to ToolServerService
+            status = await _tool_server_service.get_comprehensive_status(
                 registry=_app_registry,
                 check_connectivity=True  # Always check connectivity for accurate status
             )
@@ -2928,21 +2928,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             import traceback
             logger = logging.getLogger(__name__)
-            logger.error(f"MCP status error: {str(e)}")
+            logger.error(f"Tool status error: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
-            return {"error": f"Failed to get MCP status: {str(e)}"}
+            return {"error": f"Failed to get tool status: {str(e)}"}
 
-    @app.get("/mcp/cache/statistics")
-    async def mcp_cache_statistics():
-        """Get MCP tool cache statistics for monitoring."""
+    @app.get("/tools/cache/statistics")
+    async def tools_cache_statistics():
+        """Get tool cache statistics for monitoring."""
         try:
-            global _mcp_integration
+            global _tool_integration
 
-            if not _mcp_integration:
-                return {"error": "MCP integration not initialized"}
+            if not _tool_integration:
+                return {"error": "tool integration not initialized"}
 
-            # Get cache statistics from MCP integration
-            stats = await _mcp_integration.get_cache_statistics()
+            # Get cache statistics from tool integration
+            stats = await _tool_integration.get_cache_statistics()
             return {
                 "success": True,
                 "cache": stats
@@ -2951,21 +2951,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             import traceback
             logger = logging.getLogger(__name__)
-            logger.error(f"MCP cache statistics error: {str(e)}")
+            logger.error(f"Tool cache statistics error: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             return {"error": f"Failed to get cache statistics: {str(e)}"}
 
-    @app.post("/mcp/cache/invalidate")
-    async def mcp_cache_invalidate():
-        """Manually invalidate the MCP tool cache."""
+    @app.post("/tools/cache/invalidate")
+    async def tools_cache_invalidate():
+        """Manually invalidate the tool cache."""
         try:
-            global _mcp_integration
+            global _tool_integration
 
-            if not _mcp_integration:
-                return {"error": "MCP integration not initialized"}
+            if not _tool_integration:
+                return {"error": "tool integration not initialized"}
 
             # Invalidate the cache
-            await _mcp_integration.invalidate_tools_cache()
+            await _tool_integration.invalidate_tools_cache()
 
             return {
                 "success": True,
@@ -2975,7 +2975,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             import traceback
             logger = logging.getLogger(__name__)
-            logger.error(f"MCP cache invalidation error: {str(e)}")
+            logger.error(f"Tool cache invalidation error: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             return {"error": f"Failed to invalidate cache: {str(e)}"}
 
@@ -3014,7 +3014,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not agent_name:
             entry = getattr(request.app.state, "agent", None)
             return entry if isinstance(entry, _Agent) else None
-        registry = getattr(request.app.state, "mcp_registry", None) or _app_registry
+        registry = getattr(request.app.state, "tool_registry", None) or _app_registry
         try:
             candidate = registry.get(agent_name) if registry is not None else None
         except Exception as e:

@@ -2,26 +2,26 @@ from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from . import sources
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 
-class WeatherServer(SchemaBasedMCPServer):
-    """Weather plugin using modern MCPServer pattern."""
+class WeatherServer(SchemaBasedToolServer):
+    """Weather plugin using modern ToolServer pattern."""
     
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """
         Modern constructor signature.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
         # Extract SSL verification setting from system config if available
         self.ssl_verify = getattr(system_config, 'ssl_verify', True)

@@ -268,12 +268,12 @@ class TestThePluginsThemselvesBuildTheRightModel:
     def router(self, real_clients):
         """llm_router builds one client per profile."""
 
-        from agent_system.config.models import MCPConfig
+        from agent_system.config.models import ToolServerConfig
         from plugins.llm_router.server import LLMRouterServer
 
         def build(profile: str, config):
             server = LLMRouterServer(
-                "llm_router", config, MCPConfig(type="llm_router", enabled=True))
+                "llm_router", config, ToolServerConfig(type="llm_router", enabled=True))
             return server._make_client(profile)
 
         return build

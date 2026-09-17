@@ -6,7 +6,7 @@ Tests the manage_sub_agent tool with all 5 operations.
 import pytest
 from unittest.mock import Mock, AsyncMock
 from plugins.sub_agent_manager.server import SubAgentManagerServer
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 
 @pytest.fixture
@@ -21,9 +21,9 @@ def mock_config():
 
 
 @pytest.fixture
-def mock_mcp_config():
-    """Mock MCP config with default settings."""
-    config = Mock(spec=MCPConfig)
+def mock_server_config():
+    """Mock tool server config with default settings."""
+    config = Mock(spec=ToolServerConfig)
     config.max_sub_agents_per_session = 10
     config.max_nesting_depth = 5
     config.max_sub_agents_per_type = 3
@@ -33,9 +33,9 @@ def mock_mcp_config():
 
 
 @pytest.fixture
-def restricted_mcp_config():
-    """Mock MCP config with restricted agent access."""
-    config = Mock(spec=MCPConfig)
+def restricted_server_config():
+    """Mock tool server config with restricted agent access."""
+    config = Mock(spec=ToolServerConfig)
     config.max_sub_agents_per_session = 5
     config.max_nesting_depth = 3
     config.max_sub_agents_per_type = 2
@@ -45,24 +45,24 @@ def restricted_mcp_config():
 
 
 @pytest.fixture
-def server(mock_config, mock_mcp_config):
+def server(mock_config, mock_server_config):
     """Create server instance with mocked dependencies."""
     server = SubAgentManagerServer(
         name="sub_agent_manager",
         system_config=mock_config,
-        mcp_config=mock_mcp_config
+        server_config=mock_server_config
     )
     # Don't set _manager here - tests that need it will mock it themselves
     return server
 
 
 @pytest.fixture
-def restricted_server(mock_config, restricted_mcp_config):
+def restricted_server(mock_config, restricted_server_config):
     """Create server instance with restricted agent access."""
     server = SubAgentManagerServer(
         name="coding_sub_agent_manager",
         system_config=mock_config,
-        mcp_config=restricted_mcp_config
+        server_config=restricted_server_config
     )
     # Don't set _manager here - tests that need it will mock it themselves
     return server
@@ -89,7 +89,7 @@ class TestAgentFiltering:
 
     def test_is_agent_allowed_glob_pattern(self, mock_config):
         """Glob patterns work for matching."""
-        config = Mock(spec=MCPConfig)
+        config = Mock(spec=ToolServerConfig)
         config.max_sub_agents_per_session = 10
         config.max_nesting_depth = 5
         config.allowed_agents = ["coding_*", "test_*"]
@@ -98,7 +98,7 @@ class TestAgentFiltering:
         server = SubAgentManagerServer(
             name="pattern_manager",
             system_config=mock_config,
-            mcp_config=config
+            server_config=config
         )
 
         assert server._is_agent_allowed("coding_agent") is True
@@ -965,14 +965,14 @@ class TestSystemPromptIntegration:
         assert result["instance_id"] == system_prompt_id
 
 
-def test_server_loads_max_sub_agents_per_type_config(mock_config, mock_mcp_config):
+def test_server_loads_max_sub_agents_per_type_config(mock_config, mock_server_config):
     """Test that SubAgentManagerServer loads max_sub_agents_per_type from config."""
-    mock_mcp_config.max_sub_agents_per_type = 5
+    mock_server_config.max_sub_agents_per_type = 5
     
     server = SubAgentManagerServer(
         name="sub_agent_manager",
         system_config=mock_config,
-        mcp_config=mock_mcp_config
+        server_config=mock_server_config
     )
     
     assert server.max_sub_agents_per_type == 5
@@ -981,12 +981,12 @@ def test_server_loads_max_sub_agents_per_type_config(mock_config, mock_mcp_confi
 def test_server_defaults_max_sub_agents_per_type(mock_config):
     """Test that SubAgentManagerServer defaults max_sub_agents_per_type to 3."""
     # Config without max_sub_agents_per_type attribute
-    minimal_config = Mock(spec=MCPConfig)
+    minimal_config = Mock(spec=ToolServerConfig)
     
     server = SubAgentManagerServer(
         name="sub_agent_manager",
         system_config=mock_config,
-        mcp_config=minimal_config
+        server_config=minimal_config
     )
     
     assert server.max_sub_agents_per_type == 3
@@ -1268,7 +1268,7 @@ class TestMinResultLengthGuard:
     @pytest.fixture
     def min_len_server(self, mock_config):
         """Server with min_result_length_by_agent configured."""
-        config = Mock(spec=MCPConfig)
+        config = Mock(spec=ToolServerConfig)
         config.max_sub_agents_per_session = 10
         config.max_nesting_depth = 5
         config.max_sub_agents_per_type = 3
@@ -1279,7 +1279,7 @@ class TestMinResultLengthGuard:
         return SubAgentManagerServer(
             name="test_sam",
             system_config=mock_config,
-            mcp_config=config,
+            server_config=config,
         )
 
     def _make_blocking_mocks(self, server, run_events_fn):
@@ -1580,14 +1580,14 @@ class TestAdvancedCreateOnlyAgents:
     def test_server_reads_config_and_defaults_to_empty(self, server, mock_config):
         # Instances without the key behave as before.
         assert server.advanced_create_only_agents == set()
-        cfg = Mock(spec=MCPConfig)
+        cfg = Mock(spec=ToolServerConfig)
         cfg.max_sub_agents_per_session = 10
         cfg.max_nesting_depth = 5
         cfg.max_sub_agents_per_type = 3
         cfg.allowed_agents = ["*"]
         cfg.blocked_agents = []
         cfg.advanced_create_only_agents = ["gated_agent", "other_gated"]
-        gated = SubAgentManagerServer(name="sam", system_config=mock_config, mcp_config=cfg)
+        gated = SubAgentManagerServer(name="sam", system_config=mock_config, server_config=cfg)
         assert gated.advanced_create_only_agents == {"gated_agent", "other_gated"}
 
     async def _run_continue(self, server, agent_type, requested):
@@ -1661,7 +1661,7 @@ class TestAdvancedCreateOnlyAgents:
         gate, and the reload has to report it as a change."""
         assert await self._run_continue(server, "gated_agent", True) is True
 
-        cfg = Mock(spec=MCPConfig)
+        cfg = Mock(spec=ToolServerConfig)
         cfg.max_sub_agents_per_session = 10
         cfg.max_nesting_depth = 5
         cfg.max_sub_agents_per_type = 3

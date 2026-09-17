@@ -35,8 +35,8 @@ from ruamel.yaml.representer import RoundTripRepresenter
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString, SingleQuotedScalarString
 from ruamel.yaml.tokens import CommentToken
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
-from agent_system.config.settings import _known_plugin_types, config_files, get_mcp_config_by_name, load_settings
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.config.settings import _known_plugin_types, config_files, get_tool_server_config, load_settings
 from agent_system.plugins.catalog import PluginCatalog
 from agent_system.utils import yaml_io
 from plugins.sub_agent_manager.server import agent_allowed
@@ -168,11 +168,11 @@ def catalog_for(config: AgentSystemConfig) -> PluginCatalog:
     return plugin_catalog(tuple(config.plugins.plugin_dirs))
 
 
-def resolve_with(config: AgentSystemConfig, name: str, entry: dict) -> Optional[MCPConfig]:
+def resolve_with(config: AgentSystemConfig, name: str, entry: dict) -> Optional[ToolServerConfig]:
     """`name` resolved as if its own entry were `entry`: default_config and the parent chain as in `config`."""
-    servers = {**config.plugins.servers, name: MCPConfig.model_validate(entry)}
+    servers = {**config.plugins.servers, name: ToolServerConfig.model_validate(entry)}
     patched = config.model_copy(update={"plugins": config.plugins.model_copy(update={"servers": servers})})
-    return get_mcp_config_by_name(name, patched)
+    return get_tool_server_config(name, patched)
 
 
 def parent_of(config: AgentSystemConfig, name: str) -> Optional[str]:
@@ -184,7 +184,7 @@ def parent_of(config: AgentSystemConfig, name: str) -> Optional[str]:
     return parent
 
 
-def base_of(config: AgentSystemConfig, resolved: Optional[MCPConfig], name: str) -> str:
+def base_of(config: AgentSystemConfig, resolved: Optional[ToolServerConfig], name: str) -> str:
     """The final plugin type; for an entry that does not resolve, the type at the end of its parent chain."""
     if resolved is not None:
         return resolved.type
@@ -209,7 +209,7 @@ def spawn_rule(name: str, allowed: list[str], blocked: list[str]) -> str:
     return "not in allowed_agents"
 
 
-def manager_lists(resolved: Optional[MCPConfig]) -> tuple[list[str], list[str]]:
+def manager_lists(resolved: Optional[ToolServerConfig]) -> tuple[list[str], list[str]]:
     """`allowed_agents` and `blocked_agents` with the manager's own defaults."""
     return list(getattr(resolved, "allowed_agents", ["*"])), list(getattr(resolved, "blocked_agents", []))
 
@@ -237,7 +237,7 @@ class Snapshot:
     versions: dict[Path, str]
     defined: dict[str, list[Path]]
     errors: list[str]
-    resolved: dict[str, Optional[MCPConfig]]
+    resolved: dict[str, Optional[ToolServerConfig]]
     resolve_errors: dict[str, str]
     #: Expanded variable value -> its `${NAME}` placeholder.
     secrets: dict[str, str]
@@ -311,7 +311,7 @@ class Store:
             files = list(reversed(dict.fromkeys(reversed(loaded))))
             key = tuple((path, *_stamp(path)) for path in files)
             if key != self._key or self._snapshot is None:
-                with quiet_loader():  # get_mcp_config_by_name reports as well (cycles, dropped llm_params)
+                with quiet_loader():  # get_tool_server_config reports as well (cycles, dropped llm_params)
                     self._snapshot, self._key = self._scan(files), key
             self._checked = time.monotonic()
             return self._snapshot
@@ -344,11 +344,11 @@ class Store:
             data[path], versions[path] = parsed, version_of(raw)
             for name in servers_of(parsed):
                 defined.setdefault(name, []).append(path)
-        resolved: dict[str, Optional[MCPConfig]] = {}
+        resolved: dict[str, Optional[ToolServerConfig]] = {}
         resolve_errors: dict[str, str] = {}
         for name in config.plugins.servers:
             try:
-                resolved[name] = get_mcp_config_by_name(name, config)
+                resolved[name] = get_tool_server_config(name, config)
             except Exception as error:
                 resolve_errors[name] = error_text(error)
         secrets = {os.environ[name]: f"${{{name}}}" for name in names if os.environ.get(name)}
@@ -698,7 +698,7 @@ class Store:
             server = config.plugins.servers.get(name)
             if server is None:
                 continue
-            # The resolver's own parent rule; get_mcp_config_by_name only logs a cycle and carries on without parents.
+            # The resolver's own parent rule; get_tool_server_config only logs a cycle and carries on without parents.
             chain, current = [name], name
             while (parent := parent_of(config, current)) is not None and parent not in chain:
                 chain.append(parent)
@@ -708,7 +708,7 @@ class Store:
             elif config.plugins.servers[current].type not in types:
                 found.add(f"{name}: the type chain ends in unknown type '{config.plugins.servers[current].type}'")
             try:
-                resolved = get_mcp_config_by_name(name, config)
+                resolved = get_tool_server_config(name, config)
             except Exception as error:
                 found.add(f"{name}: {error_text(error)}")
                 agent, own_fields = server.agent_config, True

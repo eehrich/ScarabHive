@@ -1,6 +1,6 @@
-"""Context Engineer MCP Server - Advanced context management tools.
+"""Context Engineer Tool Server - Advanced context management tools.
 
-Provides MCP tools for:
+Provides tools for:
 - list: Browse or filter what was moved out of the conversation
 - read: Read one stored item by reference, bounded (also restores media)
 - store_fact: Add important facts to core memory
@@ -16,21 +16,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agent_system.hooks.plugin_hook import HookContext, HookResult, PluginHook
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from .atomic_json import write_json_atomically
 from .compaction import RETRIEVAL_MARKER
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
-    """Unified MCP server and hook for context engineering.
+class ContextEngineerServer(SchemaBasedToolServer, PluginHook):
+    """Unified tool server and hook for context engineering.
 
-    Provides MCP tools for manual context management:
+    Provides tools for manual context management:
     - list: What is stored — refs and summaries, never bodies
     - read: One item by ref, bounded; a media path restores that file
     - store_fact: Add facts to persistent core memory
@@ -43,20 +43,20 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         self,
         name: str,
         system_config: AgentSystemConfig,
-        mcp_config: MCPConfig
+        server_config: ToolServerConfig
     ) -> None:
         """Initialize ContextEngineerServer.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        # Initialize MCP server
-        SchemaBasedMCPServer.__init__(self, name, system_config, mcp_config)
+        # Initialize tool server
+        SchemaBasedToolServer.__init__(self, name, system_config, server_config)
         
         # Initialize hook
-        hook_config = getattr(mcp_config, "hook_config", {})
+        hook_config = getattr(server_config, "hook_config", {})
         PluginHook.__init__(self, name, config=hook_config)
         
         # Load configuration. ONE mapping, handed over whole — the plugin maps
@@ -70,7 +70,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         # arrived — including a request-size guard deliberately lowered to
         # 29 MB for a provider cap, running at 90 MB, and `semantic_search`,
         # whose name was simply wrong with nothing to say so.
-        config_dict = dict(mcp_config.config) if getattr(mcp_config, "config", None) else {}
+        config_dict = dict(server_config.config) if getattr(server_config, "config", None) else {}
 
         # Web UI history tracking - load from persistent storage
         self.stats_history: list[dict[str, Any]] = []
@@ -137,11 +137,11 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
             logger.warning(f"Failed to save history to {self._history_file}: {e}")
     
     # =========================================================================
-    # MCP Tools Interface
+    # Tools Interface
     # =========================================================================
     
     async def list_tools(self) -> list:
-        """List available MCP tools from schema."""
+        """List available tools from schema."""
         return await super().list_tools()
     
     # =========================================================================
@@ -231,7 +231,7 @@ class ContextEngineerServer(SchemaBasedMCPServer, PluginHook):
         
         Tool name: {{ name }}_compact → e.g., 'context_engineer_compact'
         
-        When called via MCP tool, compaction ALWAYS runs (bypasses thresholds).
+        When called via tool, compaction ALWAYS runs (bypasses thresholds).
         Layers are applied progressively based on current token count.
         
         Returns:

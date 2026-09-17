@@ -24,7 +24,7 @@ def mock_session_service():
 
 @pytest.fixture
 def mock_registry():
-    """Mock MCPRegistry."""
+    """Mock ToolServerRegistry."""
     return MagicMock()
 
 

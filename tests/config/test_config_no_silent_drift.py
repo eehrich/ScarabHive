@@ -7,7 +7,7 @@ ansieht: die Anwendung startet, die Tabelle ist da, nur der Schalter fehlt.
 **Doppelte YAML-Schlüssel.** ``yaml.safe_load`` behält wortlos den letzten.
 So verschwand ``mode: pipeline`` aus ``repair_pipeline.yaml`` (der Agent kam
 als reiner Tool-Server hoch statt als Orchestrator), ein kompletter
-MCP-Server aus ``mcp_servers.yaml`` (sein Block landete in ``localhost`` und
+Tool-Server aus ``mcp_servers.yaml`` (sein Block landete in ``localhost`` und
 überschrieb dessen URL), und eine Parameterbeschreibung aus
 ``json_store/schema.yaml``.
 
@@ -258,11 +258,11 @@ class TestStaleLlmParamKeysAreDroppedLoudly:
     def test_inheritance_does_not_move_the_abort_to_agent_creation(self, tmp_path, caplog):
         """The second validation. A child that overrides the chains inherits
         the parent's keyed params, so the key only turns stale AFTER the merge
-        — in get_mcp_config_by_name, not at load time. Tolerating it only at
+        — in get_tool_server_config, not at load time. Tolerating it only at
         load would move the abort from startup to the first spawn."""
         from agent_system.config.settings import (
             _reported_stale_llm_params,
-            get_mcp_config_by_name,
+            get_tool_server_config,
             load_settings,
         )
 
@@ -287,7 +287,7 @@ class TestStaleLlmParamKeysAreDroppedLoudly:
         cfg = load_settings(str(tmp_path / "config.yaml"))
         _reported_stale_llm_params.clear()   # the load pass may have reported already
         with caplog.at_level(logging.ERROR):
-            merged = get_mcp_config_by_name("child_agent", cfg)
+            merged = get_tool_server_config("child_agent", cfg)
 
         assert merged is not None, "agent creation died on an inherited stale key"
         assert merged.agent_config.llm_params == {}

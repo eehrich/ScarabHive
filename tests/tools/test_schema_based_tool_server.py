@@ -1,6 +1,6 @@
-"""Comprehensive tests for SchemaBasedMCPServer.
+"""Comprehensive tests for SchemaBasedToolServer.
 
-Tests the schema-based MCP server implementation that automatically
+Tests the schema-based tool server implementation that automatically
 loads tool definitions from schema.yaml files.
 """
 
@@ -10,8 +10,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 
 @pytest.fixture
@@ -24,65 +24,65 @@ def system_config():
 
 
 @pytest.fixture
-def mcp_config():
-    """Create a mock MCP config."""
-    config = Mock(spec=MCPConfig)
+def server_config():
+    """Create a mock tool server config."""
+    config = Mock(spec=ToolServerConfig)
     config.timeout = 30
     config.custom_setting = "test_value"
     return config
 
 
-class TestSchemaBasedMCPServerConstructor:
-    """Test SchemaBasedMCPServer constructor."""
+class TestSchemaBasedToolServerConstructor:
+    """Test SchemaBasedToolServer constructor."""
 
-    def test_constructor_signature(self, system_config, mcp_config):
+    def test_constructor_signature(self, system_config, server_config):
         """Test that constructor has modern signature."""
         # Create a concrete implementation for testing
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return []
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         assert server.name == "test"
         assert server.system_config is system_config
-        assert server.mcp_config is mcp_config
+        assert server.server_config is server_config
 
-    def test_cache_initialization(self, system_config, mcp_config):
+    def test_cache_initialization(self, system_config, server_config):
         """Test that caches are initialized to None."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return []
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         assert server._tools_cache is None
         assert server._schema_cache is None
 
-    def test_inherits_from_mcpserver(self, system_config, mcp_config):
-        """Test that SchemaBasedMCPServer inherits from MCPServer."""
-        from agent_system.mcp.base import MCPServer
+    def test_inherits_from_mcpserver(self, system_config, server_config):
+        """Test that SchemaBasedToolServer inherits from ToolServer."""
+        from agent_system.tools.base import ToolServer
         
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return []
         
-        server = TestServer("test", system_config, mcp_config)
-        assert isinstance(server, MCPServer)
-        assert isinstance(server, SchemaBasedMCPServer)
+        server = TestServer("test", system_config, server_config)
+        assert isinstance(server, ToolServer)
+        assert isinstance(server, SchemaBasedToolServer)
 
 
 class TestPluginDirectoryDiscovery:
     """Test plugin directory discovery logic."""
 
-    def test_get_plugin_directory_from_module_spec(self, system_config, mcp_config):
+    def test_get_plugin_directory_from_module_spec(self, system_config, server_config):
         """Test directory discovery using module spec."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return []
         
         # Create a server and patch importlib to return a known path
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         with patch('importlib.util.find_spec') as mock_spec:
             mock_spec.return_value = Mock(origin='/path/to/plugin/server.py')
@@ -90,15 +90,15 @@ class TestPluginDirectoryDiscovery:
             plugin_dir = server._get_plugin_directory()
             assert plugin_dir == Path('/path/to/plugin')
 
-    def test_get_plugin_directory_fallback_pattern(self, system_config, mcp_config):
+    def test_get_plugin_directory_fallback_pattern(self, system_config, server_config):
         """Test fallback directory discovery from module name pattern."""
-        class TestPluginServer(SchemaBasedMCPServer):
+        class TestPluginServer(SchemaBasedToolServer):
             __module__ = 'plugins.test_plugin.server'
             
             def get_tools(self):
                 return []
         
-        server = TestPluginServer("test", system_config, mcp_config)
+        server = TestPluginServer("test", system_config, server_config)
         
         with patch('importlib.util.find_spec') as mock_spec:
             mock_spec.return_value = None
@@ -113,15 +113,15 @@ class TestPluginDirectoryDiscovery:
                 with pytest.raises(RuntimeError, match="Cannot determine plugin directory"):
                     server._get_plugin_directory()
 
-    def test_get_plugin_directory_error_message(self, system_config, mcp_config):
+    def test_get_plugin_directory_error_message(self, system_config, server_config):
         """Test helpful error message when directory cannot be determined."""
-        class UnknownPluginServer(SchemaBasedMCPServer):
+        class UnknownPluginServer(SchemaBasedToolServer):
             __module__ = 'unknown.module.path'
             
             def get_tools(self):
                 return []
         
-        server = UnknownPluginServer("test", system_config, mcp_config)
+        server = UnknownPluginServer("test", system_config, server_config)
         
         with patch('importlib.util.find_spec') as mock_spec:
             mock_spec.return_value = None
@@ -136,21 +136,21 @@ class TestPluginDirectoryDiscovery:
 class TestTemplateVariables:
     """Test template variable handling for schema rendering."""
 
-    def test_get_template_vars_default(self, system_config, mcp_config):
+    def test_get_template_vars_default(self, system_config, server_config):
         """Test default template variables include plugin name."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return []
         
-        server = TestServer("example", system_config, mcp_config)
+        server = TestServer("example", system_config, server_config)
         template_vars = server.get_template_vars()
         
         assert "name" in template_vars
         assert template_vars["name"] == "example"
 
-    def test_get_template_vars_override(self, system_config, mcp_config):
+    def test_get_template_vars_override(self, system_config, server_config):
         """Test overriding get_template_vars in subclass."""
-        class CustomServer(SchemaBasedMCPServer):
+        class CustomServer(SchemaBasedToolServer):
             def get_template_vars(self):
                 return {
                     "name": self.name,
@@ -161,7 +161,7 @@ class TestTemplateVariables:
             def get_tools(self):
                 return []
         
-        server = CustomServer("test", system_config, mcp_config)
+        server = CustomServer("test", system_config, server_config)
         template_vars = server.get_template_vars()
         
         assert template_vars["name"] == "test"
@@ -172,13 +172,13 @@ class TestTemplateVariables:
 class TestSchemaLoading:
     """Test schema.yaml loading and caching."""
 
-    def test_load_schema_success(self, system_config, mcp_config):
+    def test_load_schema_success(self, system_config, server_config):
         """Test successful schema loading."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return []
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         mock_schema = {
             "tools": [
@@ -203,13 +203,13 @@ class TestSchemaLoading:
                 assert schema == mock_schema
                 mock_loader.assert_called_once()
 
-    def test_load_schema_caching(self, system_config, mcp_config):
+    def test_load_schema_caching(self, system_config, server_config):
         """Test that schema is cached after first load."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return []
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         mock_schema = {"tools": []}
         
@@ -228,13 +228,13 @@ class TestSchemaLoading:
                 # Should only be called once due to caching
                 assert mock_loader.call_count == 1
 
-    def test_load_schema_missing(self, system_config, mcp_config):
+    def test_load_schema_missing(self, system_config, server_config):
         """Test error when schema.yaml is missing."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return []
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         with patch.object(server, '_get_plugin_directory') as mock_dir:
             mock_dir.return_value = Path("/fake/path")
@@ -245,13 +245,13 @@ class TestSchemaLoading:
                 with pytest.raises(RuntimeError, match="Missing or invalid schema.yaml"):
                     server._load_schema()
 
-    def test_load_schema_error_handling(self, system_config, mcp_config):
+    def test_load_schema_error_handling(self, system_config, server_config):
         """Test error handling during schema loading."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return []
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         with patch.object(server, '_get_plugin_directory') as mock_dir:
             mock_dir.side_effect = Exception("Directory error")
@@ -263,12 +263,12 @@ class TestSchemaLoading:
 class TestGetTools:
     """Test get_tools() method for loading tools from schema."""
 
-    def test_get_tools_multi_tool_format(self, system_config, mcp_config):
+    def test_get_tools_multi_tool_format(self, system_config, server_config):
         """Test loading tools in multi-tool format."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             pass
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         mock_schema = {
             "tools": [
@@ -298,12 +298,12 @@ class TestGetTools:
             assert tools[0]["function"]["name"] == "tool1"
             assert tools[1]["function"]["name"] == "tool2"
 
-    def test_get_tools_caching(self, system_config, mcp_config):
+    def test_get_tools_caching(self, system_config, server_config):
         """Test that tools are cached after first load."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             pass
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         mock_schema = {"tools": [{"type": "function", "function": {"name": "tool1"}}]}
         
@@ -316,12 +316,12 @@ class TestGetTools:
             assert tools1 is tools2
             assert mock_load.call_count == 1
 
-    def test_get_tools_invalid_format(self, system_config, mcp_config):
+    def test_get_tools_invalid_format(self, system_config, server_config):
         """Test error when schema has invalid format."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             pass
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         mock_schema = {
             "invalid_key": "no tools"
@@ -333,12 +333,12 @@ class TestGetTools:
             with pytest.raises(RuntimeError, match="must contain 'tools' array"):
                 server.get_tools()
 
-    def test_get_tools_not_a_list(self, system_config, mcp_config):
+    def test_get_tools_not_a_list(self, system_config, server_config):
         """Test error when tools is not a list."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             pass
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         mock_schema = {
             "tools": "not a list"
@@ -354,13 +354,13 @@ class TestGetTools:
 class TestSchemaDataAccess:
     """Test get_schema_data() method."""
 
-    def test_get_schema_data(self, system_config, mcp_config):
+    def test_get_schema_data(self, system_config, server_config):
         """Test getting full schema data."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return []
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         mock_schema = {
             "tools": [],
@@ -382,12 +382,12 @@ class TestSchemaDataAccess:
 class TestCacheClear:
     """Test cache clearing functionality."""
 
-    def test_clear_schema_cache(self, system_config, mcp_config):
+    def test_clear_schema_cache(self, system_config, server_config):
         """Test clearing cached schema and tools."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             pass
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         mock_schema = {"tools": [{"type": "function", "function": {"name": "tool1"}}]}
         
@@ -408,12 +408,12 @@ class TestCacheClear:
                     assert server._schema_cache is None
 
 
-class TestIntegrationWithMCPServer:
-    """Test integration with MCPServer generic dispatcher."""
+class TestIntegrationWithToolServer:
+    """Test integration with ToolServer generic dispatcher."""
 
-    def test_inherits_call_dispatcher(self, system_config, mcp_config):
-        """Test that SchemaBasedMCPServer inherits call() from MCPServer."""
-        class TestServer(SchemaBasedMCPServer):
+    def test_inherits_call_dispatcher(self, system_config, server_config):
+        """Test that SchemaBasedToolServer inherits call() from ToolServer."""
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return [{
                     "type": "function",
@@ -426,16 +426,16 @@ class TestIntegrationWithMCPServer:
             async def test_tool(self, params):
                 return {"result": "success"}
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
-        # Should have call method from MCPServer
+        # Should have call method from ToolServer
         assert hasattr(server, 'call')
         assert callable(server.call)
 
     @pytest.mark.asyncio
-    async def test_automatic_tool_routing(self, system_config, mcp_config):
+    async def test_automatic_tool_routing(self, system_config, server_config):
         """Test that tools are automatically routed to methods."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             def get_tools(self):
                 return [{
                     "type": "function",
@@ -450,18 +450,18 @@ class TestIntegrationWithMCPServer:
                 name = params.get("name", "World")
                 return {"message": f"Hello, {name}!"}
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         result = await server.call("test_greet", {"name": "Alice"})
         assert result == {"message": "Hello, Alice!"}
 
     @pytest.mark.asyncio
-    async def test_list_tools_integration(self, system_config, mcp_config):
+    async def test_list_tools_integration(self, system_config, server_config):
         """Test list_tools() integration with get_tools()."""
-        class TestServer(SchemaBasedMCPServer):
+        class TestServer(SchemaBasedToolServer):
             pass
         
-        server = TestServer("test", system_config, mcp_config)
+        server = TestServer("test", system_config, server_config)
         
         mock_schema = {
             "tools": [
@@ -490,9 +490,9 @@ class TestRealWorldScenarios:
     """Test real-world usage scenarios."""
 
     @pytest.mark.asyncio
-    async def test_calculator_plugin_pattern(self, system_config, mcp_config):
+    async def test_calculator_plugin_pattern(self, system_config, server_config):
         """Test a calculator plugin following the modern pattern."""
-        class CalculatorServer(SchemaBasedMCPServer):
+        class CalculatorServer(SchemaBasedToolServer):
             def get_tools(self):
                 return [{
                     "type": "function",
@@ -520,7 +520,7 @@ class TestRealWorldScenarios:
                 elif op == "multiply":
                     return {"result": a * b}
         
-        server = CalculatorServer("calculator", system_config, mcp_config)
+        server = CalculatorServer("calculator", system_config, server_config)
         
         # Test addition
         result = await server.call("calculator_calculate", {
@@ -530,13 +530,13 @@ class TestRealWorldScenarios:
         })
         assert result["result"] == 8
 
-    def test_no_manual_call_override(self, system_config, mcp_config):
+    def test_no_manual_call_override(self, system_config, server_config):
         """Test that plugins don't need to override call()."""
-        class SimpleServer(SchemaBasedMCPServer):
+        class SimpleServer(SchemaBasedToolServer):
             def get_tools(self):
                 return []
         
-        _ = SimpleServer("simple", system_config, mcp_config)
+        _ = SimpleServer("simple", system_config, server_config)
         
         # Should not have call() in its own __dict__ (inherits from SchemaBasedToolMixin)
         assert 'call' not in SimpleServer.__dict__

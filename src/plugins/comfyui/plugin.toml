@@ -8,6 +8,6 @@ version = "1.0.0"
 description = "Execute ComfyUI workflows for image, audio, and video generation"
 author = "Enrico Ehrich"
 entrypoint = "server:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "media"
 requires = { agent_system = ">=0.7.0" }

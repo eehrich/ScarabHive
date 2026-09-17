@@ -6,7 +6,7 @@ import gc
 import pytest
 from unittest.mock import Mock
 
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 from plugins.file_ops.server import FileOpsServer
 
 
@@ -24,14 +24,14 @@ async def readonly_file_ops_server(tmp_allowed_dir):
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(tmp_allowed_dir.parent)
 
-    mcp_config = MCPConfig(type="file_ops", enabled=True)
-    mcp_config.allowed_directories = [str(tmp_allowed_dir)]
-    mcp_config.read_only = True  # Enable read_only mode
-    mcp_config.search = {
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
+    server_config.allowed_directories = [str(tmp_allowed_dir)]
+    server_config.read_only = True  # Enable read_only mode
+    server_config.search = {
         "enable_indexing": False
     }
 
-    server = FileOpsServer("file_ops", system_config, mcp_config)
+    server = FileOpsServer("file_ops", system_config, server_config)
     yield server
 
     await server.search_engine.stop()
@@ -44,14 +44,14 @@ async def normal_file_ops_server(tmp_allowed_dir):
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(tmp_allowed_dir.parent)
 
-    mcp_config = MCPConfig(type="file_ops", enabled=True)
-    mcp_config.allowed_directories = [str(tmp_allowed_dir)]
-    mcp_config.read_only = False  # Explicitly set to False
-    mcp_config.search = {
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
+    server_config.allowed_directories = [str(tmp_allowed_dir)]
+    server_config.read_only = False  # Explicitly set to False
+    server_config.search = {
         "enable_indexing": False
     }
 
-    server = FileOpsServer("file_ops", system_config, mcp_config)
+    server = FileOpsServer("file_ops", system_config, server_config)
     yield server
 
     await server.search_engine.stop()
@@ -80,12 +80,12 @@ async def test_readonly_attribute_default(tmp_allowed_dir):
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(tmp_allowed_dir.parent)
 
-    mcp_config = MCPConfig(type="file_ops", enabled=True)
-    mcp_config.allowed_directories = [str(tmp_allowed_dir)]
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
+    server_config.allowed_directories = [str(tmp_allowed_dir)]
     # Note: read_only is NOT set
-    mcp_config.search = {"enable_indexing": False}
+    server_config.search = {"enable_indexing": False}
 
-    server = FileOpsServer("file_ops", system_config, mcp_config)
+    server = FileOpsServer("file_ops", system_config, server_config)
     try:
         assert server.read_only is False
     finally:

@@ -12,7 +12,7 @@
       "type": "string"
     },
     "description": {
-      "default": "Scarab Flexible AI Agent System using MCP",
+      "default": "Scarab Flexible AI Agent System",
       "title": "Description",
       "type": "string"
     },
@@ -1646,7 +1646,7 @@
       "additionalProperties": false
     },
     "MCPAuthConfig": {
-      "description": "Authentication configuration for MCP servers",
+      "description": "Authentication configuration for tool servers",
       "properties": {
         "type": {
           "default": "none",
@@ -1720,75 +1720,6 @@
       "title": "MCPAuthConfig",
       "type": "object",
       "additionalProperties": false
-    },
-    "MCPConfig": {
-      "additionalProperties": true,
-      "description": "MCP configuration (matches type comment in mcp.yaml for default_config)",
-      "properties": {
-        "type": {
-          "default": "basic_agent",
-          "title": "Type",
-          "type": "string"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "description": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Description"
-        },
-        "self_tool_descriptions": {
-          "anyOf": [
-            {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Self Tool Descriptions"
-        },
-        "agent_config": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AgentConfig"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "metadata": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AgentMetadata"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        }
-      },
-      "title": "MCPConfig",
-      "type": "object",
-      "required": [
-        "type"
-      ]
     },
     "MCPServersConfig": {
       "description": "Configuration for external MCP servers (matches config/mcp_servers.yaml)",
@@ -2098,11 +2029,11 @@
           "type": "array"
         },
         "default_config": {
-          "$ref": "#/$defs/MCPConfig"
+          "$ref": "#/$defs/ToolServerConfig"
         },
         "servers": {
           "additionalProperties": {
-            "$ref": "#/$defs/MCPConfig"
+            "$ref": "#/$defs/ToolServerConfig"
           },
           "title": "Servers",
           "type": "object"
@@ -2509,6 +2440,75 @@
       "title": "ToolConfig",
       "type": "object",
       "additionalProperties": false
+    },
+    "ToolServerConfig": {
+      "additionalProperties": true,
+      "description": "tool server configuration (matches type comment in mcp.yaml for default_config)",
+      "properties": {
+        "type": {
+          "default": "basic_agent",
+          "title": "Type",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "self_tool_descriptions": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Self Tool Descriptions"
+        },
+        "agent_config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "ToolServerConfig",
+      "type": "object",
+      "required": [
+        "type"
+      ]
     },
     "VisionConfig": {
       "description": "Vision/image processing configuration",

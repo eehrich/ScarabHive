@@ -2,7 +2,7 @@ import pytest
 
 from agent_system.servers.agent.server import Agent
 from agent_system.config.models import AgentConfig
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 
 
 def create_test_config():
@@ -50,17 +50,17 @@ async def test_agent_prevents_infinite_loop_empty_responses():
     - After 2 empty: starts injecting "Continue with your task." messages
     - After 3 more empty responses (5 total): gives up
     """
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
     agent_config = create_test_config()
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    registry = ToolServerRegistry()
 
     # Mock LLM that returns empty responses
     mock_llm = MockLLMClient("empty")
 
-    agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
+    agent = Agent("test_agent", system_config, server_config, registry, llm=mock_llm)
 
     # Run agent and collect events
     events = []
@@ -81,17 +81,17 @@ async def test_agent_prevents_infinite_loop_empty_responses():
 @pytest.mark.asyncio
 async def test_agent_prevents_infinite_loop_no_tool_calls():
     """Test that agent breaks out of loop when getting consecutive responses without tool calls."""
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
     agent_config = create_test_config()
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    registry = ToolServerRegistry()
 
     # Mock LLM that returns content but no tool calls
     mock_llm = MockLLMClient("content_only")
 
-    agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
+    agent = Agent("test_agent", system_config, server_config, registry, llm=mock_llm)
 
     # Run agent and collect events
     events = []
@@ -120,7 +120,7 @@ async def test_agent_normal_execution_not_affected():
     This test verifies that an LLM providing normal responses (content without tool calls)
     doesn't trigger the infinite loop safeguards when it terminates naturally.
     """
-    from agent_system.config.models import AgentSystemConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig, LLMSystemConfig, LLMModelConfig
 
     agent_config = create_test_config()
     system_config = AgentSystemConfig(
@@ -130,8 +130,8 @@ async def test_agent_normal_execution_not_affected():
             profiles={"normal": {"model_ref": "test-model"}}
         )
     )
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    registry = ToolServerRegistry()
 
     # Mock LLM that provides a normal response (content, no tool calls)
     class NormalMockLLM:
@@ -154,7 +154,7 @@ async def test_agent_normal_execution_not_affected():
             }
 
     mock_llm = NormalMockLLM()
-    agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
+    agent = Agent("test_agent", system_config, server_config, registry, llm=mock_llm)
 
     # Run agent and collect events
     events = []

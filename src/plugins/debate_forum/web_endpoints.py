@@ -41,7 +41,7 @@ def rendered(markdown: str) -> str:
 
 
 class DebateForumWebFactory:
-    """The panel works on the forum database the MCP tools write."""
+    """The panel works on the forum database the tools write."""
 
     def __init__(self, db: "DebateForumDB", name: str, server):
         self.db = db

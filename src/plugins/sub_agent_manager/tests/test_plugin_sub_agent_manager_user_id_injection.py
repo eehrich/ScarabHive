@@ -97,10 +97,10 @@ async def test_extract_user_id_fallback_for_missing_session(temp_session_storage
 async def test_user_id_injection_in_tool_execution():
     """Test that user_id is injected into tool parameters during execution."""
     from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
-    from agent_system.mcp.base import MCPRegistry
+    from agent_system.tools.base import ToolServerRegistry
     
     # Create mock registry
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     
     # Create tool execution manager
     manager = ToolExecutionManager(registry)

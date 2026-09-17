@@ -19,20 +19,20 @@ try:
 except Exception:
     tabulate = None
 
-from .config.settings import get_mcp_config_by_name, load_settings
+from .config.settings import get_tool_server_config, load_settings
 from .config.models import AgentSystemConfig
 from .core.session_presence import SessionBusy, presence_for
 from .llm.models import ChatMessage
 from .plugins import discover_all_plugins
-from .mcp.base import MCPRegistry
-from .mcp.status import status_bus
-from .mcp.integration import MCPIntegration, initialize_mcp, shutdown_mcp
+from .tools.base import ToolServerRegistry
+from .tools.status import status_bus
+from .tools.integration import ToolServerIntegration, initialize_tools, shutdown_tools
 from .llm.batch.initialization import init_batch_system, shutdown_batch_system
 from .utils.logging import setup_logging
 from .servers.agent.server import Agent
 
 # Import services
-from .services import MCPService, ToolService
+from .services import ToolServerService, ToolService
 from .services.session_manager import SessionPermissionError
 from .cli_utils.common import (
     supports_color as _supports_color,
@@ -161,7 +161,7 @@ def agent_entry_names(config: Any) -> list[str]:
                   if getattr(entry, "agent_config", None))
 
 
-def entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCPRegistry,
+def entry_agent(entry_name: str, config: AgentSystemConfig, registry: ToolServerRegistry,
                 session_service) -> Agent:
     """The agent for *entry_name*: the registered one, or a fresh build.
 
@@ -193,7 +193,7 @@ def entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCPRegistr
     return _build_entry_agent(entry_name, config, registry, session_service)
 
 
-def _build_entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCPRegistry,
+def _build_entry_agent(entry_name: str, config: AgentSystemConfig, registry: ToolServerRegistry,
                        session_service) -> Agent:
     """Build the entry agent when bootstrap did not register it, from its
     MERGED server config, and register it.
@@ -210,7 +210,7 @@ def _build_entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCP
     """
     logger.info("Creating new Agent instance '%s'", entry_name)
     if entry_name not in agent_entry_names(config):
-        logger.error(f"Cannot create agent '{entry_name}': no agent_config found in MCP config")
+        logger.error(f"Cannot create agent '{entry_name}': no agent_config found in tool server config")
         print(f"Error: Agent '{entry_name}' not found and cannot be created (no agent_config in plugins.yaml).", file=sys.stderr)
         print("\nAvailable agents:", file=sys.stderr)
         for name in registry.list():
@@ -219,8 +219,8 @@ def _build_entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCP
                 print(f"  - {name}", file=sys.stderr)
         sys.exit(1)
 
-    mcp_config = get_mcp_config_by_name(entry_name, config)
-    agent = Agent(entry_name, config, mcp_config, registry, session_service=session_service)
+    server_config = get_tool_server_config(entry_name, config)
+    agent = Agent(entry_name, config, server_config, registry, session_service=session_service)
     registry.register(entry_name, agent)
     return agent
 
@@ -228,10 +228,10 @@ def _build_entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCP
 logger = logging.getLogger(__name__)
 
 
-async def _mcp_list_servers(mcp_service: MCPService, args: Any) -> bool:
-    """List configured external MCP servers using MCPService."""
+async def _mcp_list_servers(tool_server_service: ToolServerService, args: Any) -> bool:
+    """List configured external MCP servers using ToolServerService."""
     try:
-        servers = await mcp_service.list_servers()
+        servers = await tool_server_service.list_servers()
 
         if args.out_format == "json":
             print(json.dumps(servers, indent=2, ensure_ascii=False))
@@ -279,7 +279,7 @@ async def _mcp_list_servers(mcp_service: MCPService, args: Any) -> bool:
                     print(f"{str(n).ljust(name_w)}  {str(a).ljust(addr_w)}  {str(s).ljust(status_w)}  {str(d).ljust(desc_w)}")
 
     except Exception as e:
-        logger.exception("Failed to list MCP servers: %s", e)
+        logger.exception("Failed to list tool servers: %s", e)
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return False
     return True
@@ -288,28 +288,28 @@ async def _mcp_list_servers(mcp_service: MCPService, args: Any) -> bool:
 # The _mcp_* helpers answer whether the action succeeded; the caller turns a
 # failure into exit code 1. They printed their error and exited 0, so a
 # script could not tell `mcp test` of a dead server from a live one.
-async def _mcp_status_servers(mcp_service: MCPService, server_name: str | None, args: Any) -> bool:
-    """Show status of external MCP servers using MCPService."""
+async def _mcp_status_servers(tool_server_service: ToolServerService, server_name: str | None, args: Any) -> bool:
+    """Show status of external MCP servers using ToolServerService."""
     try:
         if server_name:
-            status_info = await mcp_service.get_server_status(server_name)
+            status_info = await tool_server_service.get_server_status(server_name)
             if status_info is None:
                 # The service answers None for an unknown name; this printed `null`
                 status_info = {"error": f"Server '{server_name}' not found in configuration"}
             print(json.dumps(status_info, indent=2, ensure_ascii=False))
             return "error" not in status_info
         # Status for all servers - just list them
-        return await _mcp_list_servers(mcp_service, args)
+        return await _mcp_list_servers(tool_server_service, args)
     except Exception as e:
         logger.exception("Failed to get server status: server=%s, error=%s", server_name, e)
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return False
 
 
-async def _mcp_test_server(mcp_service: MCPService, server_name: str, args: Any) -> bool:
-    """Test connectivity and basic functionality of an external MCP server using MCPService."""
+async def _mcp_test_server(tool_server_service: ToolServerService, server_name: str, args: Any) -> bool:
+    """Test connectivity and basic functionality of an external MCP server using ToolServerService."""
     try:
-        result = await mcp_service.test_server(server_name)
+        result = await tool_server_service.test_server(server_name)
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return bool(result.get("success"))
     except Exception as e:
@@ -448,7 +448,7 @@ def close_cli_loop() -> None:
             loop.run_until_complete(
                 asyncio.gather(*pending, return_exceptions=True))
         loop.run_until_complete(loop.shutdown_asyncgens())
-        # Subprocess transports (the stdio MCP servers!) are torn down by the
+        # Subprocess transports (the stdio tool servers!) are torn down by the
         # executor thread pool; without waiting for it the interpreter can
         # outrun those threads and their __del__ lands on a closed loop.
         # Chat's own teardown learned this the hard way -- same reason here.
@@ -530,7 +530,7 @@ def main() -> None:
     # redirected output and into consoles that render them literally.
     prelim.add_argument("--color", dest="color", choices=["auto", "always", "never", "ansi", "html", "text"], default="auto")
     prelim.add_argument("--no-color", dest="no_color", action="store_true")
-    prelim.add_argument("--show-mcp", dest="show_mcp", action="store_true")
+    prelim.add_argument("--show-tools", "--show-mcp", dest="show_tools", action="store_true")
     prelim.add_argument("--no-status", dest="no_status", action="store_true")
     prelim.add_argument("--raw", dest="raw", action="store_true")
     orig_args = sys.argv[1:]
@@ -591,8 +591,8 @@ def main() -> None:
     # Forward streaming/raw flags parsed in the preliminary stage so the
     # final parser receives the same intent (these flags may have been
     # placed anywhere on the command line by the user).
-    if getattr(ns, "show_mcp", False):
-        final_args.append("--show-mcp")
+    if getattr(ns, "show_tools", False):
+        final_args.append("--show-tools")
     if getattr(ns, "no_status", False):
         final_args.append("--no-status")
     if getattr(ns, "raw", False):
@@ -606,7 +606,8 @@ def main() -> None:
     parser.add_argument("--color", dest="color", choices=["auto", "always", "never", "ansi", "html", "text"], default="auto",
                         help="Output format: auto=ANSI where it renders, always/ansi=force ANSI, html=HTML, never/text=plain text")
     parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output (alias for --color never)")
-    parser.add_argument("--show-mcp", dest="show_mcp", action="store_true", help="Show MCP call/result details (for debugging)")
+    parser.add_argument("--show-tools", "--show-mcp", dest="show_tools", action="store_true",
+                        help="Show tool call/result details (for debugging)")
     parser.add_argument("--no-status", dest="no_status", action="store_true", help="Hide status messages during execution")
     parser.add_argument("--raw", dest="raw", action="store_true", help="Output raw JSON result instead of pretty printing (plugins info: add factory details)")
     subparsers = parser.add_subparsers(dest="subcommand")
@@ -878,14 +879,14 @@ def main() -> None:
             type_to_instances = {}
 
             if plugins_cfg:
-                for instance_name, mcp_config in plugins_cfg.servers.items():
+                for instance_name, server_config in plugins_cfg.servers.items():
                     plugin_type = plugin_type_of(instance_name)
                     if plugin_type not in type_to_instances:
                         type_to_instances[plugin_type] = []
                     type_to_instances[plugin_type].append({
                         "instance_name": instance_name,
-                        "enabled": mcp_config.enabled,
-                        "description": mcp_config.description or "",
+                        "enabled": server_config.enabled,
+                        "description": server_config.description or "",
                     })
 
             # Now build the output list with plugin types and their instances
@@ -1056,10 +1057,10 @@ def main() -> None:
         # Enabled external MCP servers get connected on the way, which adds
         # their connect time.
         async def handle_hooks_with_plugins() -> bool:
-            mcp_integration = MCPIntegration(config=config)
+            tool_integration = ToolServerIntegration(config=config)
             try:
                 try:
-                    await mcp_integration.initialize(config)
+                    await tool_integration.initialize(config)
                 except Exception as e:
                     # Not "continue anyway" as in `mcp`: nothing of what
                     # registers would be trustworthy. A SINGLE plugin that
@@ -1069,7 +1070,7 @@ def main() -> None:
                     return False
                 return handle_hooks_command(args)
             finally:
-                await mcp_integration.shutdown()
+                await tool_integration.shutdown()
 
         if not run_async(handle_hooks_with_plugins()):
             sys.exit(1)
@@ -1082,30 +1083,30 @@ def main() -> None:
             return
 
         async def handle_mcp_command() -> bool:
-            mcp_integration = MCPIntegration(config=config)
+            tool_integration = ToolServerIntegration(config=config)
             try:
                 try:
-                    await mcp_integration.initialize(config)
+                    await tool_integration.initialize(config)
                 except Exception as e:
                     # Non-fatal: list/status still report the configuration
-                    logger.warning(f"MCP integration initialization failed, continuing without live clients: {e}", exc_info=True)
+                    logger.warning(f"tool integration initialization failed, continuing without live clients: {e}", exc_info=True)
 
-                mcp_service = MCPService(mcp_integration, config)
+                tool_server_service = ToolServerService(tool_integration, config)
                 if args.action == "list":
-                    return await _mcp_list_servers(mcp_service, args)
+                    return await _mcp_list_servers(tool_server_service, args)
                 if args.action == "status":
-                    return await _mcp_status_servers(mcp_service, args.server, args)
+                    return await _mcp_status_servers(tool_server_service, args.server, args)
                 if args.action == "test":
-                    return await _mcp_test_server(mcp_service, args.server, args)
+                    return await _mcp_test_server(tool_server_service, args.server, args)
                 return await _list_server_tools_via_service(
-                    ToolService(mcp_integration, config), args.server, args)
+                    ToolService(tool_integration, config), args.server, args)
             finally:
                 # Close the aiohttp sessions and stdio children the
                 # initialization opened, however the action ended.
                 try:
-                    await mcp_integration.shutdown()
+                    await tool_integration.shutdown()
                 except Exception as e:
-                    logger.debug(f"Error shutting down MCPIntegration: {e}")
+                    logger.debug(f"Error shutting down ToolServerIntegration: {e}")
 
         try:
             ok = run_async(handle_mcp_command())
@@ -1158,7 +1159,7 @@ def main() -> None:
         os.environ.setdefault("SSL_CERT_FILE", "")
         os.environ.setdefault("CURL_CA_BUNDLE", "")
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     vprint("[cli] bootstrapping servers...")
     logger.info("Bootstrapping servers")
 
@@ -1178,16 +1179,16 @@ def main() -> None:
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     logger.info("Servers registered: %s", ", ".join(registry.list()))
 
-    # Initialize global MCP integration to enable tool sharing across agents
-    vprint("[cli] initializing MCP integration...")
-    logger.info("Initializing MCP integration")
+    # Initialize global tool integration to enable tool sharing across agents
+    vprint("[cli] initializing tool integration...")
+    logger.info("Initializing tool integration")
     try:
-        run_async(initialize_mcp(config))
-        vprint("[cli] MCP integration initialized")
-        logger.info("MCP integration initialized successfully")
+        run_async(initialize_tools(config))
+        vprint("[cli] tool integration initialized")
+        logger.info("tool integration initialized successfully")
     except Exception as e:
-        logger.warning("Failed to initialize MCP integration: %s", e)
-        vprint(f"[cli] Warning: MCP integration failed: {e}")
+        logger.warning("Failed to initialize tool integration: %s", e)
+        vprint(f"[cli] Warning: tool integration failed: {e}")
 
     # Initialize batch queue manager if any LLM models have batch enabled
     vprint("[cli] initializing batch queue manager...")
@@ -1488,7 +1489,7 @@ def main() -> None:
         return True, was_new_session  # Continue with task execution
 
     def shut_down_runtime() -> None:
-        """Batch system and MCP, however this run ends. MCP is up from the
+        """Batch system and tool integration, however this run ends. It is up from the
         bootstrap on: returning without this leaks stdio child processes and
         aiohttp sessions until the interpreter exits."""
         try:
@@ -1498,11 +1499,11 @@ def main() -> None:
         except Exception as e:
             logger.warning("Failed to shutdown batch queue manager: %s", e)
         try:
-            run_async(shutdown_mcp())
-            vprint("[cli] MCP integration shut down")
-            logger.info("MCP integration shut down successfully")
+            run_async(shutdown_tools())
+            vprint("[cli] tool integration shut down")
+            logger.info("tool integration shut down successfully")
         except Exception as e:
-            logger.warning("Failed to shutdown MCP integration: %s", e)
+            logger.warning("Failed to shutdown tool integration: %s", e)
 
     # Session presence (core/session_presence.py): the session is held BEFORE
     # it is loaded. A run that reads the file first can be overtaken by the
@@ -1547,7 +1548,7 @@ def main() -> None:
         agent: Agent,
         task: Union[str, ChatMessage],
         session_id: str,  # Add session_id parameter
-        show_mcp: bool = False,
+        show_tools: bool = False,
         show_status: bool = True,
         llm_override=None,
         llm_profile_info: Optional[str] = None
@@ -1557,7 +1558,7 @@ def main() -> None:
         Args:
             agent: The agent to run
             task: Either a string task or ChatMessage with multimodal content
-            show_mcp: Whether to show MCP call details
+            show_tools: Whether to show tool call details
             show_status: Whether to show status events
             llm_override: Optional LLM client to override agent's default
             llm_profile_info: Optional profile info string for logging
@@ -1636,31 +1637,31 @@ def main() -> None:
         try:
             async for ev in agent.run_events(task, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                 t = ev.get("type")
-                if t == "mcp_call" and show_mcp:
+                if t in ("tool_call", "mcp_call") and show_tools:  # the old name until every deployed side is new (rename 17.09.2026)
                     srv = ev.get("server")
                     action = ev.get("action")
                     params = ev.get("params") or {}
                     # Human readable print
-                    header = f"MCP CALL -> server={srv} action={action}"
+                    header = f"TOOL CALL -> server={srv} action={action}"
                     if _supports_color():
                         header = _colorize(header, "36")
                     print(header)
                     print(json.dumps(params, indent=2, ensure_ascii=False))
-                elif t == "mcp_result":
+                elif t in ("tool_result", "mcp_result"):  # the old name until every deployed side is new (rename 17.09.2026)
                     srv = ev.get("server")
                     action = ev.get("action")
                     res = ev.get("result")
                     # Append to final_result calls for JSON output
                     final_result.setdefault("calls", []).append({"server": srv, "action": action, "result": res})
-                    if show_mcp:
-                        header = f"MCP RESULT <- server={srv} action={action}"
+                    if show_tools:
+                        header = f"TOOL RESULT <- server={srv} action={action}"
                         if _supports_color():
                             header = _colorize(header, "32")
                         print(header)
                         try:
                             print(json.dumps(res, indent=2, ensure_ascii=False))
                         except Exception as e:
-                            logger.debug(f"Failed to JSON dump MCP result: {e}")
+                            logger.debug(f"Failed to JSON dump tool result: {e}")
                             print(str(res))
                 elif t == "thinking_delta":
                     # Show thinking/reasoning content as it streams (like WebUI).
@@ -1807,7 +1808,7 @@ def main() -> None:
                     logger.debug(f"Failed to cancel status task: {e}")
 
     # Execute with new status-aware streaming
-    show_mcp = getattr(args, "show_mcp", False)
+    show_tools = getattr(args, "show_tools", False)
     show_status = not getattr(args, "no_status", False)
 
     # Set session metadata for tool execution context (enables _user_id, _agent injection)
@@ -1824,7 +1825,7 @@ def main() -> None:
 
     # Chat mode: hand over to the REPL instead of the one-shot execution.
     # Everything above (bootstrap, agent, session ops, LLM override) is shared.
-    # Inside the same try/finally as the one-shot path so MCP and the batch
+    # Inside the same try/finally as the one-shot path so the tools and the batch
     # system get shut down the same way -- returning early leaked stdio child
     # processes and aiohttp sessions until interpreter exit.
     try:
@@ -1861,7 +1862,7 @@ def main() -> None:
 
             result = run_async(collect_final_result(agent, task_input, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
         else:
-            result = run_async(_stream_and_run_with_status(agent, task_input, actual_session_id, show_mcp=show_mcp, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
+            result = run_async(_stream_and_run_with_status(agent, task_input, actual_session_id, show_tools=show_tools, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
 
         # Chat saved its own sessions per turn and prints its own output.
         if is_chat:
@@ -1933,12 +1934,12 @@ def main() -> None:
         shut_down_runtime()
 
     # Human-readable final output
-    def _pretty_print_result(res: dict, show_mcp: bool = False) -> None:
+    def _pretty_print_result(res: dict, show_tools: bool = False) -> None:
         """Tool calls and errors after the run. The summary is not repeated:
         the stream printed it when the final event arrived."""
-        # Calls (print first so summary appears at the end, only when show_mcp is True)
+        # Calls (print first so summary appears at the end, only when show_tools is True)
         calls = res.get("calls", []) or []
-        if calls and show_mcp:
+        if calls and show_tools:
             print("")
             print("Tool calls:")
             for c in calls:
@@ -1985,7 +1986,7 @@ def main() -> None:
         # not turn a finished run into exit 1 at the very last print.
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str), flush=True)
     else:
-        _pretty_print_result(result, show_mcp=show_mcp)
+        _pretty_print_result(result, show_tools=show_tools)
         try:
             sys.stdout.flush()
         except Exception:

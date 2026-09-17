@@ -24,7 +24,7 @@ import pytest
 import yaml
 from PIL import Image
 
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 from agent_system.llm.models import (
     ChatMessage,
     ImageContent,
@@ -86,7 +86,7 @@ def outside_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def server(media_root: Path) -> MediaOpsServer:
-    cfg = MCPConfig(type="media_ops", enabled=True, config={
+    cfg = ToolServerConfig(type="media_ops", enabled=True, config={
         "allowed_directories": [str(media_root)],
         "max_file_size_mb": MAX_MB,
     })
@@ -440,7 +440,7 @@ class TestConfigArrives:
         assert shipped["type"] == "media_ops"
 
         srv = MediaOpsServer("media_ops", SimpleNamespace(),
-                                MCPConfig(**shipped))
+                                ToolServerConfig(**shipped))
         effective = {
             "allowed_directories": [str(p) for p in srv.allowed_roots],
             "max_file_size_mb": srv.max_file_size_mb,
@@ -479,7 +479,7 @@ class TestReadOnly:
 
     @staticmethod
     def _server(media_root: Path) -> MediaOpsServer:
-        cfg = MCPConfig(type="media_ops", enabled=True, config={
+        cfg = ToolServerConfig(type="media_ops", enabled=True, config={
             "allowed_directories": [str(media_root)],
             "read_only": True,
         })
@@ -512,7 +512,7 @@ class TestStatusEvents:
     """
 
     async def _run(self, server, action, params, scope):
-        from agent_system.mcp.status import get_status_bus
+        from agent_system.tools.status import get_status_bus
         bus = get_status_bus()
         queue = await bus.subscribe(server=scope)
         try:
@@ -527,7 +527,7 @@ class TestStatusEvents:
 
     @staticmethod
     def _only(events, phase):
-        from agent_system.mcp.status import StatusPhase
+        from agent_system.tools.status import StatusPhase
         matching = [e for e in events if e.phase is getattr(StatusPhase, phase)]
         assert len(matching) == 1, [(e.phase, e.message) for e in events]
         return matching[0]
@@ -548,7 +548,7 @@ class TestStatusEvents:
         assert res["status"] == "error", res
         error = self._only(events, "ERROR")
         assert error.message == res["error"]
-        from agent_system.mcp.status import StatusPhase
+        from agent_system.tools.status import StatusPhase
         assert not any(e.phase is StatusPhase.END for e in events), \
             "a refusal must not also read as 'completed'"
 

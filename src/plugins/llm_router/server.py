@@ -4,16 +4,16 @@ from datetime import datetime, timezone
 from typing import Any, Dict, TYPE_CHECKING
 
 from agent_system.llm.models import ChatMessage
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.llm.text_sanitizer import sanitize_for_llm
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 
-class LLMRouterServer(SchemaBasedMCPServer):
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
-        super().__init__(name, system_config, mcp_config)
+class LLMRouterServer(SchemaBasedToolServer):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
+        super().__init__(name, system_config, server_config)
         
         # Store the full system config for LLM routing
         self.llm_config = system_config.llm_system

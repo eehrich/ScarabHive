@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Compose images from layered primitives (backgrounds, text, shapes, gradients, SVG)"
 author = "Enrico Ehrich"
 entrypoint = "server:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "media"
 requires = { agent_system = ">=0.6.0" }
 # svglib/reportlab: the SVG layer renderer (compositor.py, lazy import) —

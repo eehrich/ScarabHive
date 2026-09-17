@@ -5,9 +5,9 @@
 [plugin]
 name = "cognitive_stack"
 version = "1.0.0"
-description = "Cognitive Stack Plugin - working memory for LLMs: a nested problem-solving stack exposed via MCP tools plus a pre_llm_call hook"
+description = "Cognitive Stack Plugin - working memory for LLMs: a nested problem-solving stack exposed via tools plus a pre_llm_call hook"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server", "hooks"]
+type = ["tool-server", "hooks"]
 category = "tools"
 requires = { python = ">=3.11", agent_system = ">=0.6.0" }

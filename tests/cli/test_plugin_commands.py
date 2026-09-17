@@ -183,7 +183,7 @@ class TestCollection:
     def test_a_reserved_argument_is_rejected(self, argument):
         """Typed text must never become a runtime param. The `_` ones are
         stripped by dispatch, but `request_id` is read AFTER that strip
-        (mcp/base.py) and becomes _request_id plus the status routing key."""
+        (tools/base.py) and becomes _request_id plus the status routing key."""
         agent = _agent(commands=({**COMPACT, "argument": argument},), allowed=("*",))
         assert collect_plugin_commands(agent) == []
 
@@ -492,7 +492,7 @@ class TestChatBorrowedLoop:
                 "the turn ran on a different loop than the one handed in")
             assert not loop.is_closed(), (
                 "chat tore down a loop it does not own -- the CLI still needs "
-                "it for shutdown_mcp/shutdown_batch_system")
+                "it for shutdown_tools/shutdown_batch_system")
         finally:
             if not loop.is_closed():
                 loop.close()

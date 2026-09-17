@@ -113,10 +113,13 @@ class PluginCatalog:
             return None
 
     @staticmethod
-    def _entry_point_plugins_exist(group: str = "agent_system.mcp_plugins") -> bool:
+    def _entry_point_plugins_exist(group: str | None = None) -> bool:
         try:
             from importlib.metadata import entry_points
-            return bool(list(entry_points(group=group)))
+
+            from .discovery import ENTRYPOINT_GROUP, LEGACY_ENTRYPOINT_GROUP
+            groups = (group,) if group else (ENTRYPOINT_GROUP, LEGACY_ENTRYPOINT_GROUP)
+            return any(list(entry_points(group=g)) for g in groups)
         except Exception as e:
             logger.debug("Entry point scan failed: %s", e)
             return False

@@ -12,7 +12,7 @@ report success on the empty list it found.
 
 Deliberately dependency-light (stdlib ``tomllib`` only, Python >=3.11) so the
 build aggregator (``scripts/aggregate_plugin_deps.py``) can import this module
-without pulling in the MCP runtime.
+without pulling in the tool runtime.
 """
 from __future__ import annotations
 

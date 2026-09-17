@@ -446,12 +446,12 @@ class TestRetrievalResultsSurviveCompaction:
         seam where the two halves meet."""
         from unittest.mock import MagicMock
 
-        from agent_system.config.models import MCPConfig
+        from agent_system.config.models import ToolServerConfig
         from plugins.context_engineer.compaction import RETRIEVAL_MARKER
         from plugins.context_engineer.server import ContextEngineerServer
 
         srv = ContextEngineerServer("context_engineer", MagicMock(),
-                                    MCPConfig(type="context_engineer", enabled=True))
+                                    ToolServerConfig(type="context_engineer", enabled=True))
         srv._hooks_impl = hooks
 
         listed = await srv.list({"_session_id": session})

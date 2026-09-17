@@ -5,10 +5,10 @@
 [plugin]
 name = "http_server"
 version = "1.0.0"
-description = "HTTP adapter for MCP servers - exposes MCP servers via REST API endpoints"
+description = "HTTP adapter for tool servers - exposes tool servers via REST API endpoints"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "utilities"
 license = "MIT"
 requires = { agent_system = ">=0.6.0" }

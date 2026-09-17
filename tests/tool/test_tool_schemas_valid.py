@@ -1,6 +1,6 @@
 import pytest
 from agent_system.servers.agent.server import Agent
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.config.settings import load_settings as load_config
 
 class DummyLLMNoop:
@@ -11,26 +11,26 @@ class DummyLLMNoop:
 
 @pytest.mark.asyncio
 async def test_all_tool_schemas_have_type(tmp_path):
-    from agent_system.config.models import MCPConfig, AgentConfig
+    from agent_system.config.models import ToolServerConfig, AgentConfig
     
     cfg = load_config("config/config.yaml")
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     
-    # Create MCPConfig for agent
-    mcp_config = MCPConfig(
+    # Create ToolServerConfig for agent
+    server_config = ToolServerConfig(
         type="test_agent",
         enabled=True,
         agent_config=AgentConfig()
     )
     
-    agent = Agent("test_agent", cfg, mcp_config, registry)
+    agent = Agent("test_agent", cfg, server_config, registry)
     agent.llm = DummyLLMNoop()
 
     # Collect available tools the same way Agent.run_events would
     plugin_tools = registry.list()
-    available_tools = await agent._mcp_integration_manager.get_available_tools(plugin_tools)
+    available_tools = await agent._tool_integration_manager.get_available_tools(plugin_tools)
 
-    external_schemas, _ = await agent._mcp_integration_manager.build_tool_schemas(available_tools)
+    external_schemas, _ = await agent._tool_integration_manager.build_tool_schemas(available_tools)
     tools_schema = list(external_schemas)
 
     # Add internal plugin schemas (if any registered for test environment)

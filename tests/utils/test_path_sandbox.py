@@ -229,10 +229,10 @@ class TestBothPluginsShareOneResolution:
     def _media_server(roots, tmp_path):
         from types import SimpleNamespace
 
-        from agent_system.config.models import MCPConfig
+        from agent_system.config.models import ToolServerConfig
         from plugins.media_ops.server import MediaOpsServer
 
-        cfg = MCPConfig(type="media_ops", enabled=True,
+        cfg = ToolServerConfig(type="media_ops", enabled=True,
                         config={"allowed_directories": [str(r) for r in roots]})
         return MediaOpsServer("media_ops", SimpleNamespace(), cfg)
 

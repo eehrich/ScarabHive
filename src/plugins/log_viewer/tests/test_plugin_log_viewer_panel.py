@@ -21,7 +21,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from agent_system.config.models import AgentConfig, AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentConfig, AgentSystemConfig, ToolServerConfig
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.ui.resources import STATIC_DIR
 from tests.ui.browser import find_browser, run_app_test_page
@@ -64,7 +64,7 @@ def panel_app(root: Path):
     from plugins.log_viewer.plugin import PLUGIN_FACTORY
 
     seed(root)
-    config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
+    config = ToolServerConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
     config.log_files = ["logs/app.log", "logs/other.log", "logs/empty.log", "logs/missing.log"]
     plugin = PLUGIN_FACTORY("log_viewer", AgentSystemConfig(), config)
     app = FastAPI()

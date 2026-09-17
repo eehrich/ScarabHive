@@ -1,6 +1,6 @@
 import httpx
 import pytest
-from agent_system.mcp.status import StatusPhase, publish_status
+from agent_system.tools.status import StatusPhase, publish_status
 
 pytestmark = pytest.mark.anyio
 

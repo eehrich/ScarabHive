@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_system import runtime as runtime_module
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 from agent_system.llm.model_health import ModelHealth
 from agent_system.runtime import Runtime
 from agent_system.services import system_status
@@ -90,8 +90,8 @@ def test_the_runtime_records_what_did_not_start(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_module, "_in_test_cwd", lambda: False)
     monkeypatch.setattr(Runtime, "last_started", Runtime.last_started)  # restored after the test
 
-    runtime = Runtime(_config({"probe_unknown": MCPConfig(type="no_such_type", enabled=True),
-                               "probe_broken": MCPConfig(type="broken_probe", enabled=True)},
+    runtime = Runtime(_config({"probe_unknown": ToolServerConfig(type="no_such_type", enabled=True),
+                               "probe_broken": ToolServerConfig(type="broken_probe", enabled=True)},
                               plugin_dirs=[str(root)])).start()
 
     assert any("probe_unknown" in p and "no_such_type" in p for p in runtime.problems), runtime.problems
@@ -102,7 +102,7 @@ def test_the_runtime_records_what_did_not_start(tmp_path, monkeypatch):
 async def test_the_collected_status_reports_the_last_started_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_module, "_in_test_cwd", lambda: False)
     monkeypatch.setattr(Runtime, "last_started", Runtime.last_started)  # restored after the test
-    runtime = Runtime(_config({"probe_unknown": MCPConfig(type="no_such_type", enabled=True)},
+    runtime = Runtime(_config({"probe_unknown": ToolServerConfig(type="no_such_type", enabled=True)},
                               plugin_dirs=[str(tmp_path)])).start()
     monkeypatch.setattr(system_status, "_started", {"at": 1.0, "commit": COMMIT_A})
     monkeypatch.setattr(system_status, "git_commit", lambda cwd=None: COMMIT_B)

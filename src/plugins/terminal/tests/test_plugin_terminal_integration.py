@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 from plugins.terminal.server import TerminalServer
 
 # Use sys.executable to get the correct Python interpreter path
@@ -39,9 +39,9 @@ def mock_system_config():
 
 
 @pytest.fixture
-def mock_mcp_config():
-    """Create a mock MCP configuration."""
-    config = MagicMock(spec=MCPConfig)
+def mock_server_config():
+    """Create a mock tool server configuration."""
+    config = MagicMock(spec=ToolServerConfig)
     config.security = {
         'whitelist': None,
         'blacklist': [],
@@ -64,9 +64,9 @@ class TestTerminalServerIntegration:
     """Integration tests for TerminalServer."""
 
     @pytest.mark.asyncio
-    async def test_background_process_lifecycle(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_background_process_lifecycle(self, mock_system_config, mock_server_config, mock_status):
         """Test complete background process lifecycle."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             # Start background process - use double quotes for Windows and longer sleep
@@ -113,14 +113,14 @@ class TestTerminalServerIntegration:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_background_process_cross_session_isolation(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_background_process_cross_session_isolation(self, mock_system_config, mock_server_config, mock_status):
         """A process started by session A must be invisible/unkillable to session B.
 
         Regression test for the shared background-process registry: the server
         is a singleton, so without owner tagging session B could read the
         output of or kill session A's process by guessing its process_id.
         """
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         try:
             start = await server.execute_background({
                 "command": f'{PYTHON} -u -c "import time; print(\'A-OUTPUT\', flush=True); time.sleep(3)"',
@@ -155,9 +155,9 @@ class TestTerminalServerIntegration:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_background_process_kill(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_background_process_kill(self, mock_system_config, mock_server_config, mock_status):
         """Test killing a background process."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             # Start long-running process
@@ -187,9 +187,9 @@ class TestTerminalServerIntegration:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_background_process_force_kill(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_background_process_force_kill(self, mock_system_config, mock_server_config, mock_status):
         """Test force killing a background process."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             # Start process
@@ -218,9 +218,9 @@ class TestTerminalServerIntegration:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_kill_nonexistent_process(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_kill_nonexistent_process(self, mock_system_config, mock_server_config, mock_status):
         """Test killing a nonexistent process."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             result = await server.kill_process({
@@ -235,9 +235,9 @@ class TestTerminalServerIntegration:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_get_output_nonexistent_process(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_get_output_nonexistent_process(self, mock_system_config, mock_server_config, mock_status):
         """Test getting output from nonexistent process."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             result = await server.get_output({
@@ -252,9 +252,9 @@ class TestTerminalServerIntegration:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_background_process_custom_id(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_background_process_custom_id(self, mock_system_config, mock_server_config, mock_status):
         """Test background process with custom process ID."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             custom_id = "my_custom_process_123"
@@ -282,9 +282,9 @@ class TestTerminalServerIntegration:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_get_output_streams(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_get_output_streams(self, mock_system_config, mock_server_config, mock_status):
         """Test getting specific output streams."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             # Start process that outputs to both stdout and stderr
@@ -333,9 +333,9 @@ class TestTerminalServerIntegration:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_get_output_clear_buffer(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_get_output_clear_buffer(self, mock_system_config, mock_server_config, mock_status):
         """Test clearing buffer after reading output."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             start_result = await server.execute_background({
@@ -373,9 +373,9 @@ class TestTerminalServerIntegration:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_persistent_session_environment(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_persistent_session_environment(self, mock_system_config, mock_server_config, mock_status):
         """Test that environment does NOT persist (each command runs in separate subprocess)."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             # Set environment variable
@@ -398,10 +398,10 @@ class TestTerminalServerIntegration:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_persistent_session_directory(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_persistent_session_directory(self, mock_system_config, mock_server_config, mock_status):
         """Test that directory changes do NOT persist (each command runs in separate subprocess)."""
         import tempfile
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             temp_dir = tempfile.gettempdir()

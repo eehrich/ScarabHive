@@ -14,11 +14,11 @@ import logging
 import random
 from typing import Any, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins.cache import PluginCache
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +29,14 @@ MAX_ATTEMPTS = 3
 NO_RESULTS = "No results found"
 
 
-class DuckDuckGoSearchServer(SchemaBasedMCPServer):
+class DuckDuckGoSearchServer(SchemaBasedToolServer):
     """One tool: ``web_search``. Cached per (query, max_results)."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
+        super().__init__(name, system_config, server_config)
         self.cache = PluginCache(plugin_name="duckduckgo_search",
-                                 default_ttl=getattr(mcp_config, "cache_ttl", 900))
-        self.cache_enabled = getattr(mcp_config, "cache_enabled", True)
+                                 default_ttl=getattr(server_config, "cache_ttl", 900))
+        self.cache_enabled = getattr(server_config, "cache_enabled", True)
 
     @staticmethod
     def _cache_key(query: str, max_results: int) -> str:

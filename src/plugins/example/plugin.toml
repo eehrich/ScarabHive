@@ -5,10 +5,10 @@
 [plugin]
 name = "example"
 version = "1.0.0"
-description = "Reference implementation demonstrating MCP plugin best practices with calculator, formatter, and status tools"
+description = "Reference implementation demonstrating plugin best practices with calculator, formatter, and status tools"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "tools"
 tags = ["example", "reference", "calculator", "formatter", "demo"]
 requires = { python = ">=3.8", agent_system = ">=0.6.0" }

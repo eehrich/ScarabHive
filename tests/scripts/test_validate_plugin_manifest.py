@@ -402,7 +402,7 @@ class TestToolMethodRouting:
 
     def test_a_plugin_that_dispatches_itself_is_skipped(self, tmp_path):
         plugin = self._plugin(tmp_path, ["{{ name }}_list"], {
-            "mcp_server.py": ("class S:\n"
+            "tool_server.py": ("class S:\n"
                               "    async def call(self, tool, params):\n"
                               "        if tool.endswith('list'):\n"
                               "            return await self._list_log_files(params)\n")})
@@ -513,7 +513,7 @@ class TestTheWebUiSection:
         return _validate(plugin_dir).errors
 
     def test_a_catalogue_panel_passes(self, plugin_copy):
-        """basic_agent is typed mcp-server only: the section is checked all the same."""
+        """basic_agent is typed tool-server only: the section is checked all the same."""
         assert self._errors_with(plugin_copy, self.PANEL) == []
 
     def test_the_retired_button_and_menu_blocks_are_refused(self, plugin_copy):

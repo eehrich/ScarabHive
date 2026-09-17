@@ -1660,7 +1660,7 @@ class TestPluginIntegration:
     @pytest.fixture
     def plugin_instance(self, tmp_path, monkeypatch):
         """Create plugin instance for testing."""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
         
         # Patch storage path
         monkeypatch.setattr(
@@ -1670,10 +1670,10 @@ class TestPluginIntegration:
         )
         
         system_config = AgentSystemConfig()
-        mcp_config = MCPConfig()
+        server_config = ToolServerConfig()
         
         from plugins.context_engineer.plugin import PLUGIN_FACTORY
-        return PLUGIN_FACTORY("context_engineer", system_config, mcp_config)
+        return PLUGIN_FACTORY("context_engineer", system_config, server_config)
     
     def test_plugin_factory_creates_instance(self, plugin_instance):
         """Test that PLUGIN_FACTORY creates valid instance."""
@@ -1685,7 +1685,7 @@ class TestPluginIntegration:
         """Test that plugin exposes tools."""
         tools = await plugin_instance.list_tools()
         
-        # MCPTool objects have .name attribute
+        # ToolDef objects have .name attribute
         tool_names = [t.name for t in tools]
         
         # Core tools: list, read, store_fact, compact

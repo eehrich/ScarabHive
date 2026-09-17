@@ -1,5 +1,5 @@
 """
-Tests for MCP configuration management
+Tests for tool server configuration management
 """
 
 import pytest
@@ -7,23 +7,23 @@ import tempfile
 from pathlib import Path
 import yaml
 
-from agent_system.config.models import PluginsConfig, MCPConfig, RemoteMCPConfig
+from agent_system.config.models import PluginsConfig, ToolServerConfig, RemoteMCPConfig
 
 
-class TestMCPConfigModern:
-    def test_mcp_config_defaults(self):
-        cfg = MCPConfig(type="basic_agent", enabled=True)
+class TestToolServerConfigModern:
+    def test_server_config_defaults(self):
+        cfg = ToolServerConfig(type="basic_agent", enabled=True)
         assert cfg.type == "basic_agent"
         assert cfg.enabled is True
 
-    def test_remote_mcp_config(self):
+    def test_remote_server_config(self):
         r = RemoteMCPConfig(url="http://example.com", enabled=True)
         assert r.url == "http://example.com"
         assert r.enabled is True
 
     def test_mcp_system_config_serialization(self):
         syscfg = PluginsConfig(plugin_dirs=["plugins"], servers={
-            "test": MCPConfig(type="test", enabled=True)
+            "test": ToolServerConfig(type="test", enabled=True)
         })
         # Serialize to yaml and reload to ensure structure is preserved
         p = Path(tempfile.gettempdir()) / "test_mcp_system_config.yaml"
@@ -56,7 +56,7 @@ class TestExampleConfig:
         """Test creating example configuration"""
         # Create a small example MCPSystemConfig and ensure expected structure
         example = PluginsConfig(plugin_dirs=["plugins"], servers={
-            "example_server": MCPConfig(type="example", enabled=True)
+            "example_server": ToolServerConfig(type="example", enabled=True)
         })
 
         assert example.plugin_dirs == ["plugins"]
@@ -88,7 +88,7 @@ async def test_config_integration():
     mcp = config_data.get("mcp", {})
     servers = {}
     for name, val in mcp.get("external_servers", {}).items():
-        servers[name] = MCPConfig(type=val.get("type", "remote"), enabled=val.get("enabled", False))
+        servers[name] = ToolServerConfig(type=val.get("type", "remote"), enabled=val.get("enabled", False))
 
     config = PluginsConfig(plugin_dirs=["plugins"], servers=servers)
     assert any(s.enabled for s in config.servers.values())

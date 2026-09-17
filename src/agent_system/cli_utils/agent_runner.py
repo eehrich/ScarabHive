@@ -12,9 +12,9 @@ from __future__ import annotations
 import logging
 from typing import Optional, Any, Tuple
 
-from ..config.settings import AgentSystemConfig, get_mcp_config_by_name
+from ..config.settings import AgentSystemConfig, get_tool_server_config
 from ..config.models import AgentConfig
-from ..mcp.base import MCPRegistry
+from ..tools.base import ToolServerRegistry
 from ..servers.agent.server import Agent
 
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 def get_agent_with_llm_override(
     config: AgentSystemConfig,
-    registry: MCPRegistry,
+    registry: ToolServerRegistry,
     agent_name: str,
     llm_profile: Optional[str] = None
 ) -> Tuple[Agent, Optional[Any], Optional[str]]:
@@ -34,7 +34,7 @@ def get_agent_with_llm_override(
     
     Args:
         config: System configuration
-        registry: MCP registry containing all servers
+        registry: tool registry containing all servers
         agent_name: Name of the agent to get
         llm_profile: Optional LLM profile to override agent's default
         
@@ -114,7 +114,7 @@ def get_agent_with_llm_override(
 
 async def create_and_register_agent(
     config: AgentSystemConfig,
-    registry: MCPRegistry,
+    registry: ToolServerRegistry,
     agent_name: str,
     session_service=None
 ) -> Agent:
@@ -125,7 +125,7 @@ async def create_and_register_agent(
     
     Args:
         config: System configuration
-        registry: MCP registry to register agent in
+        registry: tool registry to register agent in
         agent_name: Name of the agent to create
         session_service: Optional SessionService to inject into agent
         
@@ -175,23 +175,23 @@ async def create_and_register_agent(
     if raw_config is not None and not raw_config.agent_config:
         raise ValueError(_with_agent_listing(f"'{agent_name}' is a tool server, not an agent."))
 
-    # Try to get MCP config from plugins.servers
-    mcp_config = get_mcp_config_by_name(agent_name, config)
+    # Try to get tool server config from plugins.servers
+    server_config = get_tool_server_config(agent_name, config)
 
-    if not mcp_config:
+    if not server_config:
         raise ValueError(_with_agent_listing(f"Agent '{agent_name}' not found in configuration."))
 
-    if not mcp_config.agent_config:
+    if not server_config.agent_config:
         raise ValueError(f"Agent '{agent_name}' has no agent_config section")
 
-    # Create the agent using the signature: Agent(name, system_config, mcp_config, registry, session_service)
-    agent = Agent(agent_name, config, mcp_config, registry, session_service=session_service)
+    # Create the agent using the signature: Agent(name, system_config, server_config, registry, session_service)
+    agent = Agent(agent_name, config, server_config, registry, session_service=session_service)
     
     # Make agent public so it shows up in tool lists if needed
-    agent._mcp_public = True
+    agent._tool_public = True
     
     # Register the agent in the registry
     registry.register(agent_name, agent)
     
-    logger.info(f"Created agent '{agent_name}' with LLM profile '{mcp_config.agent_config.llm_profile}'")
+    logger.info(f"Created agent '{agent_name}' with LLM profile '{server_config.agent_config.llm_profile}'")
     return agent

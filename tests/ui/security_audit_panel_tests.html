@@ -65,10 +65,10 @@
     const init = { method, headers: {}, credentials: as === 'nobody' ? 'omit' : 'same-origin' };
     if (as === 'bob') init.headers.Authorization = `Bearer ${await get('/__stub/token?user=bob')}`;
     if (as === 'forged') init.headers.Authorization = `Bearer ${await get('/__stub/forged')}`;
-    await fetch(`/mcp/probe/${path}?status=${code}`, init);
+    await fetch(`/tools/probe/${path}?status=${code}`, init);
   }
   const XSS = '<img src=x onerror=parent.__xss=1>';
-  const SEEDED = ['/mcp/probe/broken', `/mcp/probe/${XSS}`, '/mcp/probe/refused', '/mcp/probe/moved', '/mcp/probe/created', '/mcp/probe/ok'];
+  const SEEDED = ['/tools/probe/broken', `/tools/probe/${XSS}`, '/tools/probe/refused', '/tools/probe/moved', '/tools/probe/created', '/tools/probe/ok'];
 
   await signIn('root');
   await probe('ok', 200);
@@ -86,7 +86,7 @@
     auto.click();  // the checks below count loads: no tick in between
     // paused for these checks only -- the kit would remember it for the panel
     Object.keys(localStorage).filter((key) => key.startsWith('pk.refresh:')).forEach((key) => localStorage.removeItem(key));
-    choose('#category', 'mcp');
+    choose('#category', 'tools');
     await until('the probes', () => rows().length === 6);
     const [broken, xss, refused, moved, created, ok] = rows().map(cells);
     const badges = (index, cell) => rows()[index].children[cell].querySelector('.pk-badge').className;
@@ -97,14 +97,14 @@
       users: [broken[4], xss[4], refused[4], moved[4], created[4], ok[4]].join() === 'root,anonymous,bob,anonymous,root,root',
       codes: [broken[5], xss[5], refused[5], moved[5], created[5], ok[5]].join() === '503,404,403,302,201,200',
       kinds: [0, 1, 3, 5].map((index) => badges(index, 5)).join('|') === 'pk-badge pk-badge--danger|pk-badge pk-badge--warn|pk-badge pk-badge--info|pk-badge pk-badge--ok',
-      category: rows().every((row) => cells(row)[1] === 'mcp'),
+      category: rows().every((row) => cells(row)[1] === 'tools'),
       stats: stats() === 'shown=6,refused=1,errors=1,users=3',
-      asked: (await asked()).last === 'limit=100&category=mcp',
+      asked: (await asked()).last === 'limit=100&category=tools',
     });
   });
 
   await check('server strings are drawn as text, never as markup', async () => {
-    return paths()[1] === `/mcp/probe/${XSS}` && !$('#entries img') && frame.contentWindow.__xss === undefined
+    return paths()[1] === `/tools/probe/${XSS}` && !$('#entries img') && frame.contentWindow.__xss === undefined
       && window.__xss === undefined;
   });
 
@@ -114,21 +114,21 @@
       await toggle('3xx');
       await toggle('5xx');
       await until('the client errors', () => rows().length === 2);
-      const errors = paths().join('|') === SEEDED.slice(1, 3).join('|') && (await asked()).last === 'limit=100&category=mcp&status=4xx'
+      const errors = paths().join('|') === SEEDED.slice(1, 3).join('|') && (await asked()).last === 'limit=100&category=tools&status=4xx'
         && stats() === 'shown=2,refused=1,errors=0,users=2';
       await toggle('5xx');
       await until('with the server errors', () => rows().length === 3);
-      const two = (await asked()).last === 'limit=100&category=mcp&status=4xx&status=5xx';
+      const two = (await asked()).last === 'limit=100&category=tools&status=4xx&status=5xx';
       choose('#limit', '250');
-      await until('the count asked', async () => (await asked()).last === 'limit=250&category=mcp&status=4xx&status=5xx');
+      await until('the count asked', async () => (await asked()).last === 'limit=250&category=tools&status=4xx&status=5xx');
       choose('#category', 'debug');
       await until('no debug request', () => entriesText().includes('No requests'));
       return all({ errors, two, debug: stats() === 'shown=0,refused=0,errors=0,users=0' && entriesText().includes('Nothing kept matches the filters.') });
     } finally {
       for (const name of ['2xx', '3xx']) if (!pressed(status(name))) await toggle(name);
       choose('#limit', '100');
-      choose('#category', 'mcp');
-      await until('the probes again', async () => rows().length === 6 && (await asked()).last === 'limit=100&category=mcp');
+      choose('#category', 'tools');
+      await until('the probes again', async () => rows().length === 6 && (await asked()).last === 'limit=100&category=tools');
     }
   });
 
@@ -189,7 +189,7 @@
     const kept = $('#entries table') === table && $('#stats .pk-stat') === statBox;
     await probe('later', 200);
     now();
-    await until('the new request', () => paths()[0] === '/mcp/probe/later');
+    await until('the new request', () => paths()[0] === '/tools/probe/later');
     return all({ kept, redrawn: $('#entries table') !== table && stats() === 'shown=7,refused=1,errors=1,users=3' });
   });
 
@@ -209,8 +209,8 @@
       return all({ page: paths().includes(PAGE), noReads: !paths().some((path) => path.startsWith('/admin/security/audit')) });
     } finally {
       choose('#limit', '100');
-      choose('#category', 'mcp');
-      await until('the probes again', async () => rows().length === 7 && (await asked()).last === 'limit=100&category=mcp');
+      choose('#category', 'tools');
+      await until('the probes again', async () => rows().length === 7 && (await asked()).last === 'limit=100&category=tools');
     }
   });
 
@@ -220,10 +220,10 @@
       choose('#category', 'other');  // held 1.5 s
       await sleep(300);
       setCookie('sa', null);
-      choose('#category', 'mcp');  // answered at once
+      choose('#category', 'tools');  // answered at once
       await until('the later answer', () => rows().length === 7);
       await sleep(2000);
-      const mcpKept = rows().length === 7 && rows().every((row) => cells(row)[1] === 'mcp');
+      const toolsKept = rows().length === 7 && rows().every((row) => cells(row)[1] === 'tools');
       setCookie('sa', 'slow');
       choose('#category', 'agent');  // held, and nothing in it
       await sleep(300);
@@ -236,13 +236,13 @@
       now();  // fails after 1.5 s
       await sleep(300);
       setCookie('sa', null);
-      choose('#category', 'mcp');  // answered at once
+      choose('#category', 'tools');  // answered at once
       await until('the requests again', () => rows().length === 7);
       await sleep(2000);
-      return all({ mcpKept, errorKept, requestsKept: rows().length === 7 && !entriesText().includes('could not be loaded') });
+      return all({ toolsKept, errorKept, requestsKept: rows().length === 7 && !entriesText().includes('could not be loaded') });
     } finally {
       setCookie('sa', null);
-      choose('#category', 'mcp');
+      choose('#category', 'tools');
       await until('the probes again', () => rows().length === 7);
     }
   });
@@ -311,11 +311,11 @@
     await go(PAGE);
     await until('the requests', () => rows().length);
     const on = pressed($('pk-refresh [data-act="auto"]'));
-    choose('#category', 'mcp');
+    choose('#category', 'tools');
     await until('the probes', () => rows().length === 7);
     await probe('ticked', 200);
     // 5 s interval, and a tick can be held back while the browser runs other pages: the same wait the other panels take
-    await until('the new request, brought by a tick', () => paths()[0] === '/mcp/probe/ticked', 15000);
+    await until('the new request, brought by a tick', () => paths()[0] === '/tools/probe/ticked', 15000);
     return on;
   });
 

@@ -42,7 +42,7 @@ from agent_system.cli_utils.chat import (
     suggest_command,
 )
 from agent_system.chat_commands import parse_chat_command
-from agent_system.mcp.status import StatusEvent, StatusPhase, status_bus
+from agent_system.tools.status import StatusEvent, StatusPhase, status_bus
 
 
 def _bus_queue_count() -> int:
@@ -1847,7 +1847,7 @@ class TestHistoryCommand:
 class TestLastCommand:
     def test_shows_the_last_turns_tool_traffic_in_full(self):
         """The live region collapses a tool call to one line, so what it
-        RETURNED is invisible -- this is chat's --show-mcp."""
+        RETURNED is invisible -- this is chat's --show-tools."""
         r, out = _renderer()
         _show_last(_ctx_with(_TURN), r)
         text = out.getvalue()
@@ -2865,11 +2865,11 @@ class _AsyncOnlyServer:
         return self._tools
 
 
-class _MCPToolLike:
+class _ToolDefLike:
     def __init__(self, name, description="", input_schema=None):
         self.name = name
         self.description = description
-        # The real MCPTool always carries one; the schema builder reads it
+        # The real ToolDef always carries one; the schema builder reads it
         # unconditionally, so a fake without it vanishes from the result.
         self.input_schema = input_schema or {"type": "object", "properties": {}}
 

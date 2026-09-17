@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Persistent lessons learned across sessions with semantic search, deduplication, and cross-agent teaching"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server", "web"]
+type = ["tool-server", "web"]
 category = "productivity"
 requires = { agent_system = ">=0.7.0" }
 # starlette is imported directly (web endpoints); it arrives transitively

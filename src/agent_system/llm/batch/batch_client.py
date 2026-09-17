@@ -16,7 +16,7 @@ from ..models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhauste
 if TYPE_CHECKING:
     from .queue_manager import BatchQueueManager
     from agent_system.config.models import BatchProviderConfig
-    from agent_system.mcp.status import StatusScope
+    from agent_system.tools.status import StatusScope
 
 logger = logging.getLogger(__name__)
 

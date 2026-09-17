@@ -15,7 +15,7 @@ import time
 import pytest
 from unittest.mock import Mock
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.script_interpreter.server import ScriptInterpreterServer
 from plugins.script_interpreter.executor import ScriptExecutor
 
@@ -30,7 +30,7 @@ class _Status:
 def server():
     return ScriptInterpreterServer(
         "script_interpreter", Mock(spec=AgentSystemConfig),
-        MCPConfig(type="script_interpreter", enabled=True),
+        ToolServerConfig(type="script_interpreter", enabled=True),
     )
 
 

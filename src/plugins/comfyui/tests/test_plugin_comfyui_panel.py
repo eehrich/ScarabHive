@@ -31,7 +31,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.ui.resources import STATIC_DIR
 from tests.ui.browser import find_browser, run_app_test_page
@@ -155,7 +155,7 @@ def panel_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     monkeypatch.setattr(comfyui_client, "aiohttp", SimpleNamespace(
         ClientSession=comfy.session(), ClientTimeout=aiohttp.ClientTimeout,
         ClientConnectorError=aiohttp.ClientConnectorError))
-    config = MCPConfig()
+    config = ToolServerConfig()
     config.host, config.port = "gpu1.test", 8188
     config.servers = [{"host": "gpu1.test", "port": 8188}, {"host": "gpu2.test", "port": 8189}]
     config.output_dir = str(tmp_path / "outputs")

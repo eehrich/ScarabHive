@@ -1,4 +1,4 @@
-"""Terminal MCP Server implementation.
+"""Terminal Tool Server implementation.
 
 This module provides secure bash command execution with persistent sessions,
 background process management, and output capture.
@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from .executor import CommandExecutor
 from .platform_detect import PlatformDetector
@@ -19,7 +19,7 @@ from agent_system.utils.process_sandbox import ProcessSandbox
 from .security import CommandSecurityValidator
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,8 @@ def _output_size(result: dict[str, Any]) -> str:
     return f"{lines} line{plural}"
 
 
-class TerminalServer(SchemaBasedMCPServer):
-    """Terminal MCP server for executing shell commands with persistent sessions.
+class TerminalServer(SchemaBasedToolServer):
+    """Terminal tool server for executing shell commands with persistent sessions.
 
     This server provides:
     - execute_command: Execute commands and wait for completion
@@ -69,22 +69,22 @@ class TerminalServer(SchemaBasedMCPServer):
     - get_output: Retrieve output from background processes
     - kill_process: Terminate background processes
 
-    All tools are automatically loaded from schema.yaml by SchemaBasedMCPServer.
+    All tools are automatically loaded from schema.yaml by SchemaBasedToolServer.
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """
         Initialize terminal server.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         # Extract security configuration
-        security_config = getattr(mcp_config, 'security', {})
+        security_config = getattr(server_config, 'security', {})
         if isinstance(security_config, dict):
             whitelist = security_config.get('whitelist')
             blacklist = security_config.get('blacklist')
@@ -97,7 +97,7 @@ class TerminalServer(SchemaBasedMCPServer):
             extra_dangerous_patterns = None
 
         # Extract limits configuration
-        limits_config = getattr(mcp_config, 'limits', {})
+        limits_config = getattr(server_config, 'limits', {})
         if isinstance(limits_config, dict):
             self.max_output_kb = limits_config.get('max_output_size_kb', 60)
             self.default_timeout = limits_config.get('default_timeout_seconds', 300)
@@ -109,7 +109,7 @@ class TerminalServer(SchemaBasedMCPServer):
             self.max_timeout = 3600
 
         # Extract platform configuration
-        platform_config = getattr(mcp_config, 'platform', {})
+        platform_config = getattr(server_config, 'platform', {})
         if isinstance(platform_config, dict):
             bash_path_config = platform_config.get('bash_path', 'auto')
             initial_cwd = platform_config.get('initial_cwd')
@@ -120,7 +120,7 @@ class TerminalServer(SchemaBasedMCPServer):
         # Process confinement. Absent or unset, the mode is
         # danger-full-access and nothing about spawning changes; an
         # unknown mode raises here rather than silently not confining.
-        sandbox_config = getattr(mcp_config, 'sandbox', None)
+        sandbox_config = getattr(server_config, 'sandbox', None)
         if not isinstance(sandbox_config, dict):
             sandbox_config = {}
         self.sandbox = ProcessSandbox.from_config(

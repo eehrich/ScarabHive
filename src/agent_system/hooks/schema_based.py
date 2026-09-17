@@ -2,7 +2,7 @@
 Schema-based hook plugin base class.
 
 Provides a base class for hook plugins that define their hooks declaratively
-in a schema.yaml file, analogous to SchemaBasedMCPServer for MCP tools.
+in a schema.yaml file, analogous to SchemaBasedToolServer for tools.
 
 Example schema.yaml:
 ```yaml

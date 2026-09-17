@@ -12,12 +12,12 @@ from plugins.context_summarizer.plugin import PLUGIN_FACTORY
 @pytest.fixture
 def summarizer_plugin():
     """Create context summarizer plugin instance."""
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
     
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig()
+    server_config = ToolServerConfig()
     
-    plugin = PLUGIN_FACTORY("context_summarizer", system_config, mcp_config)
+    plugin = PLUGIN_FACTORY("context_summarizer", system_config, server_config)
     return plugin.server._hooks_impl  # Return hooks implementation from server
 
 

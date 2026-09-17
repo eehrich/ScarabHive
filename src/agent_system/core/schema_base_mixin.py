@@ -2,7 +2,7 @@
 
 This base mixin provides ONLY schema loading functionality without any
 assumptions about tools, hooks, or web UI. It's the foundation for:
-- SchemaBasedToolMixin (MCP servers & agents with tools)
+- SchemaBasedToolMixin (tool servers & agents with tools)
 - SchemaBasedHookMixin (hook plugins)
 - SchemaBasedWebMixin (web UI plugins)
 """

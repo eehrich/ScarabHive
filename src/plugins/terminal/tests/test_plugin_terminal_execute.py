@@ -27,8 +27,8 @@ class TestTerminalExecuteUnified:
         return {}
 
     @pytest.fixture
-    def mock_mcp_config(self):
-        """Mock MCP config."""
+    def mock_server_config(self):
+        """Mock tool server config."""
         return {}
 
     @pytest.fixture
@@ -42,9 +42,9 @@ class TestTerminalExecuteUnified:
         return MockStatus()
 
     @pytest.mark.asyncio
-    async def test_execute_foreground(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_execute_foreground(self, mock_system_config, mock_server_config, mock_status):
         """Test execute with background=false (default)."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             # Execute foreground (background=false is default)
@@ -61,9 +61,9 @@ class TestTerminalExecuteUnified:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_execute_foreground_explicit(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_execute_foreground_explicit(self, mock_system_config, mock_server_config, mock_status):
         """Test execute with background=false explicitly set."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             result = await server.execute({
@@ -78,9 +78,9 @@ class TestTerminalExecuteUnified:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_execute_background(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_execute_background(self, mock_system_config, mock_server_config, mock_status):
         """Test execute with background=true."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             # Start background process - use double quotes for Windows compatibility and longer sleep
@@ -118,9 +118,9 @@ class TestTerminalExecuteUnified:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_execute_background_with_custom_id(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_execute_background_with_custom_id(self, mock_system_config, mock_server_config, mock_status):
         """Test execute background with custom process_id."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             result = await server.execute({
@@ -136,9 +136,9 @@ class TestTerminalExecuteUnified:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_execute_with_timeout(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_execute_with_timeout(self, mock_system_config, mock_server_config, mock_status):
         """Test execute foreground with timeout."""
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             result = await server.execute({
@@ -153,10 +153,10 @@ class TestTerminalExecuteUnified:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_execute_with_cwd_and_env(self, mock_system_config, mock_mcp_config, mock_status):
+    async def test_execute_with_cwd_and_env(self, mock_system_config, mock_server_config, mock_status):
         """Test execute with working directory and environment variables."""
         import tempfile
-        server = TerminalServer("test", mock_system_config, mock_mcp_config)
+        server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
             temp_dir = tempfile.gettempdir()

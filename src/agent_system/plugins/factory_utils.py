@@ -7,9 +7,9 @@ from __future__ import annotations
 from typing import Callable, Type
 import logging
 
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.agent.server import Agent
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[..., Agent]:
     """Return a standard PLUGIN_FACTORY callable for an Agent subclass.
 
-    MODERN: Clean interface expecting system-wide config and plugin-specific MCP config.
+    MODERN: Clean interface expecting system-wide config and plugin-specific tool server config.
 
-    Signature produced: (name, system_config, mcp_config, registry=None) -> Agent.
+    Signature produced: (name, system_config, server_config, registry=None) -> Agent.
     The factory carries ``_accepts_registry = True``; callers that do not know
-    about it (mcp_adapter) keep calling it with three arguments.
+    about it (tool_adapter) keep calling it with three arguments.
 
     Args:
         agent_cls: The Agent subclass to instantiate
@@ -30,18 +30,18 @@ def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[..., Agent]:
         Factory function that creates agent instances with proper configuration
         
     Note:
-        The factory signature uses AgentSystemConfig and MCPConfig as the modern standard.
-        The Agent constructor expects: (name, system_config, mcp_config, registry)
+        The factory signature uses AgentSystemConfig and ToolServerConfig as the modern standard.
+        The Agent constructor expects: (name, system_config, server_config, registry)
     """
-    def _factory(name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig,
-                 registry: MCPRegistry | None = None) -> Agent:
+    def _factory(name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig,
+                 registry: ToolServerRegistry | None = None) -> Agent:
         """Create an agent plugin instance.
 
         Args:
             name: Plugin instance name
             system_config: Complete system configuration (LLM, network, context, etc.)
-            mcp_config: Plugin-specific MCP configuration (enabled, type, agent_config)
-            registry: The shared MCPRegistry. bootstrap passes it; a caller
+            server_config: Plugin-specific tool server configuration (enabled, type, agent_config)
+            registry: The shared ToolServerRegistry. bootstrap passes it; a caller
                 that has none gets a private, empty one.
 
         The registry has to reach the constructor: Agent.__init__ hands it to
@@ -54,11 +54,11 @@ def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[..., Agent]:
         where the agent object itself got the private registry and had no
         shared one to fall back to.
         """
-        inst = agent_cls(name, system_config, mcp_config, registry if registry is not None else MCPRegistry())
+        inst = agent_cls(name, system_config, server_config, registry if registry is not None else ToolServerRegistry())
 
         logger.debug(
             "Instantiated agent plugin %s (type=%s) via generic factory",
-            name, mcp_config.type
+            name, server_config.type
         )
         return inst
 

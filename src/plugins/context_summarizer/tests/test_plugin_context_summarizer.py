@@ -11,14 +11,14 @@ from plugins.context_summarizer.plugin import PLUGIN_FACTORY
 @pytest.fixture
 def summarizer_plugin():
     """Create context summarizer plugin instance."""
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
     
     # Create minimal configs
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig()
+    server_config = ToolServerConfig()
     
     # PLUGIN_FACTORY returns ContextSummarizerHybridPlugin
-    plugin = PLUGIN_FACTORY("context_summarizer", system_config, mcp_config)
+    plugin = PLUGIN_FACTORY("context_summarizer", system_config, server_config)
     return plugin.server._hooks_impl  # Return the hooks implementation from server
 
 
@@ -169,7 +169,7 @@ async def test_chunked_summarization(summarizer_plugin, mock_agent, mock_llm):
 @pytest.mark.asyncio
 async def test_status_messages_published(summarizer_plugin, mock_agent, mock_llm, monkeypatch):
     """Test that status messages are published during summarization."""
-    from agent_system.mcp.status import get_status_bus
+    from agent_system.tools.status import get_status_bus
     
     published_statuses = []
     
@@ -238,7 +238,7 @@ async def test_rejected_summarization_status_says_not_applied(
     That was the shipped behaviour: the scope's static end message fired for
     the rejected branch too, so a no-op looked like a success in the UI.
     """
-    from agent_system.mcp.status import get_status_bus
+    from agent_system.tools.status import get_status_bus
 
     published = []
 

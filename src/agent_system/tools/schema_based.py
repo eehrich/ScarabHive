@@ -1,6 +1,6 @@
-"""Schema-based MCP Server Base Class
+"""Schema-based Tool Server Base Class
 
-Provides a base class for MCP servers that load their tool definitions
+Provides a base class for tool servers that load their tool definitions
 from schema.yaml files, eliminating code duplication across plugins.
 
 This class uses SchemaBasedToolMixin for shared functionality with SchemaBasedAgent.
@@ -11,17 +11,17 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from .base import MCPServer
+from .base import ToolServer
 from .schema_mixin import SchemaBasedToolMixin
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPServerConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class SchemaBasedMCPServer(SchemaBasedToolMixin, MCPServer):
-    """Base class for MCP servers that load tools from schema.yaml files.
+class SchemaBasedToolServer(SchemaBasedToolMixin, ToolServer):
+    """Base class for tool servers that load tools from schema.yaml files.
     
     This class eliminates the need for every plugin to implement identical
     get_tools() methods that load and parse schema.yaml files.
@@ -36,15 +36,15 @@ class SchemaBasedMCPServer(SchemaBasedToolMixin, MCPServer):
     - Tool: "search" → Method: search(params)
     
     Example:
-        class MyServer(SchemaBasedMCPServer):
+        class MyServer(SchemaBasedToolServer):
             async def my_tool(self, params: dict) -> Any:
                 return {"result": params["input"]}
     
     Note: This class uses SchemaBasedToolMixin's call() dispatcher for automatic
-    tool routing, which overrides MCPServer's basic call() implementation.
+    tool routing, which overrides ToolServer's basic call() implementation.
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPServerConfig):
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
+        super().__init__(name, system_config, server_config)
         # Initialize schema mixin
         self._init_schema_mixin()

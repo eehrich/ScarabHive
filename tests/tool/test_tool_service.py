@@ -23,8 +23,8 @@ def mock_config():
 
 
 @pytest.fixture
-def mock_mcp_integration():
-    """Fixture providing a mock MCPIntegration."""
+def mock_tool_integration():
+    """Fixture providing a mock ToolServerIntegration."""
     mcp = MagicMock()
     mcp.initialized = True
     mcp.configured_external_servers = {
@@ -51,19 +51,19 @@ def mock_mcp_integration():
 
 
 @pytest.fixture
-def tool_service(mock_mcp_integration, mock_config):
+def tool_service(mock_tool_integration, mock_config):
     """Fixture providing a ToolService instance."""
-    return ToolService(mock_mcp_integration, mock_config)
+    return ToolService(mock_tool_integration, mock_config)
 
 
 class TestToolServiceInit:
     """Test ToolService initialization."""
 
-    def test_init(self, mock_mcp_integration, mock_config):
+    def test_init(self, mock_tool_integration, mock_config):
         """Test ToolService initialization."""
-        service = ToolService(mock_mcp_integration, mock_config)
+        service = ToolService(mock_tool_integration, mock_config)
         
-        assert service._mcp == mock_mcp_integration
+        assert service._mcp == mock_tool_integration
         assert service._config == mock_config
 
 

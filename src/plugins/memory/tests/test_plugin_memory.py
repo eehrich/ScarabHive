@@ -49,8 +49,8 @@ def mock_system_config() -> MagicMock:
 
 
 @pytest.fixture
-def mock_mcp_config(temp_storage: Path) -> MagicMock:
-    """Mock MCPConfig with Memory plugin settings"""
+def mock_server_config(temp_storage: Path) -> MagicMock:
+    """Mock ToolServerConfig with Memory plugin settings"""
     config = MagicMock()
     config.storage_path = str(temp_storage)
     config.max_memories = 10
@@ -62,15 +62,15 @@ def mock_mcp_config(temp_storage: Path) -> MagicMock:
 
 
 @pytest.fixture
-def server(mock_system_config: MagicMock, mock_mcp_config: MagicMock, temp_storage: Path) -> MemoryServer:
+def server(mock_system_config: MagicMock, mock_server_config: MagicMock, temp_storage: Path) -> MemoryServer:
     """MemoryServer instance with clean state for each test"""
     # Update mock config to use temp storage
-    mock_mcp_config.storage_path = str(temp_storage)
+    mock_server_config.storage_path = str(temp_storage)
     
     srv = MemoryServer(
         name="memory",
         system_config=mock_system_config,
-        mcp_config=mock_mcp_config,
+        server_config=mock_server_config,
     )
     
     return srv
@@ -78,7 +78,7 @@ def server(mock_system_config: MagicMock, mock_mcp_config: MagicMock, temp_stora
 
 @pytest.fixture
 def mock_context(request) -> Dict[str, Any]:
-    """Mock MCP tool call context with unique session ID per test"""
+    """Mock tool call context with unique session ID per test"""
     # Use test function name to generate unique session ID
     test_name = request.node.name
     session_id = f"test_session_{hash(test_name) % 10000:04d}"
@@ -634,7 +634,7 @@ async def test_persistence_save_load(server: MemoryServer, mock_context: Dict[st
 async def test_persistence_reload(
     temp_storage: Path,
     mock_system_config: MagicMock,
-    mock_mcp_config: MagicMock,
+    mock_server_config: MagicMock,
     mock_context: Dict[str, Any],
 ):
     """Test session reloads from disk"""
@@ -642,7 +642,7 @@ async def test_persistence_reload(
     server1 = MemoryServer(
         name="memory",
         system_config=mock_system_config,
-        mcp_config=mock_mcp_config,
+        server_config=mock_server_config,
     )
     await server1._operation_store(
         session_id=mock_context["session_id"],
@@ -659,7 +659,7 @@ async def test_persistence_reload(
     server2 = MemoryServer(
         name="memory",
         system_config=mock_system_config,
-        mcp_config=mock_mcp_config,
+        server_config=mock_server_config,
     )
     
     # Load memories

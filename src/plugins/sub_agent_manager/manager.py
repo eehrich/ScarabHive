@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from agent_system.mcp.base import MCPRegistry
+    from agent_system.tools.base import ToolServerRegistry
     from agent_system.services.session_service import SessionService
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class SubAgentManager:
     def __init__(
         self, 
         session_service: SessionService, 
-        registry: MCPRegistry, 
+        registry: ToolServerRegistry, 
         max_nesting_depth: int = 5,
         max_sub_agents_per_type: int = 3,
         max_sub_agents_per_session: int = 10,
@@ -57,7 +57,7 @@ class SubAgentManager:
 
         Args:
             session_service: Session service for persistence
-            registry: MCP registry for agent lookup
+            registry: tool registry for agent lookup
             max_nesting_depth: Levels of sub-agents this manager grants below the
                 calling session. Sub-sessions inherit the remaining budget, and a
                 manager further down can only lower it, never raise it.

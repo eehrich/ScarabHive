@@ -8,10 +8,10 @@ from plugins.todo.server import TodoServer
 @pytest.fixture
 def server(tmp_path):
     """Create TodoServer instance for testing."""
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
     
     config = AgentSystemConfig(data_dir=tmp_path)
-    mcp_config = MCPConfig(
+    server_config = ToolServerConfig(
         name="todo",
         plugin_config={
             "storage_path": str(tmp_path / "todos"),
@@ -19,7 +19,7 @@ def server(tmp_path):
         }
     )
     
-    return TodoServer("todo", config, mcp_config)
+    return TodoServer("todo", config, server_config)
 
 
 @pytest.mark.asyncio

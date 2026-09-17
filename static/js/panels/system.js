@@ -1,4 +1,4 @@
-// System panel: status with its reasons (admin; others see liveness), running requests (admin), MCP servers (admin).
+// System panel: status with its reasons (admin; others see liveness), running requests (admin), tool servers (admin).
 // Only the visible tab loads; a tab the viewer may not see is asked once.
 import { api, html, render, icon, confirm, toast, trusted, ApiError } from '/static/kit/panel-kit.js';
 

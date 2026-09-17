@@ -9,7 +9,7 @@ This test suite focuses on:
 """
 import asyncio
 import pytest
-from agent_system.mcp.status import StatusBus, StatusPhase, status_scope
+from agent_system.tools.status import StatusBus, StatusPhase, status_scope
 from agent_system.servers.agent.components.status_forwarding import StatusEventForwarder
 
 

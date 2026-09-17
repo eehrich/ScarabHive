@@ -10,7 +10,7 @@ hooks:
     order:
       after: ["context_engineering"]
 
-# MCP Tools - Manual summarization controls
+# Tools - Manual summarization controls
 tools:
   - type: function
     function:

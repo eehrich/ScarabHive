@@ -2,7 +2,7 @@
 
 The app here is the real one in miniature: the UI and admin routers behind configure_security_middleware,
 a users database and logs/security.log under tmp_path, a test signing secret. Accounts: ``root`` (admin),
-``bob`` (user), ``ada`` (deactivated admin). ``GET /mcp/probe/<anything>?status=<code>`` answers that status,
+``bob`` (user), ``ada`` (deactivated admin). ``GET /tools/probe/<anything>?status=<code>`` answers that status,
 ``GET /run/boom`` crashes.
 """
 from __future__ import annotations
@@ -61,7 +61,7 @@ def make_app(auth: AuthConfig, **middleware) -> FastAPI:
     app = FastAPI()
     app.state.config = SimpleNamespace(auth=auth)
 
-    @app.get("/mcp/probe/{rest:path}")
+    @app.get("/tools/probe/{rest:path}")
     async def probe(rest: str, status: int = 200):
         return Response(status_code=status)
 
@@ -98,19 +98,19 @@ def security_log(tmp_path) -> str:
 
 def test_an_admin_reads_the_newest_requests_first_filtered_by_category_status_and_limit(users):
     client = TestClient(make_app(auth_config()))
-    for path, status in [("/mcp/probe/a", 200), ("/mcp/probe/b", 302), ("/mcp/probe/c", 404), ("/mcp/probe/d", 503)]:
+    for path, status in [("/tools/probe/a", 200), ("/tools/probe/b", 302), ("/tools/probe/c", 404), ("/tools/probe/d", 503)]:
         client.get(path, params={"status": status})
     client.get("/health")
 
-    newest = kept(client, users, category="mcp")
-    errors = kept(client, users, category="mcp", status=["4xx", "5xx"])
-    two = kept(client, users, category="mcp", limit=2)
+    newest = kept(client, users, category="tools")
+    errors = kept(client, users, category="tools", status=["4xx", "5xx"])
+    two = kept(client, users, category="tools", limit=2)
     everything = kept(client, users)
 
     assert [(e["path"], e["status_code"], e["category"]) for e in newest] == [
-        ("/mcp/probe/d", 503, "mcp"), ("/mcp/probe/c", 404, "mcp"), ("/mcp/probe/b", 302, "mcp"), ("/mcp/probe/a", 200, "mcp")]
-    assert [e["path"] for e in errors] == ["/mcp/probe/d", "/mcp/probe/c"]
-    assert [e["path"] for e in two] == ["/mcp/probe/d", "/mcp/probe/c"]
+        ("/tools/probe/d", 503, "tools"), ("/tools/probe/c", 404, "tools"), ("/tools/probe/b", 302, "tools"), ("/tools/probe/a", 200, "tools")]
+    assert [e["path"] for e in errors] == ["/tools/probe/d", "/tools/probe/c"]
+    assert [e["path"] for e in two] == ["/tools/probe/d", "/tools/probe/c"]
     assert everything[0]["path"] == "/health" and everything[0]["category"] == "health"
 
 
@@ -162,7 +162,7 @@ def test_the_page_is_the_kit_panel_with_the_categories_the_log_knows(users):
     page = TestClient(make_app(auth_config())).get(PAGE, headers=token(users, "root"))
 
     assert "/static/js/panels/security_audit.js" in page.text and "/static/kit/kit.css" in page.text
-    for category in ("plugin", "api", "agent", "auth", "mcp", "debug", "health", "other"):
+    for category in ("plugin", "api", "agent", "auth", "tools", "debug", "health", "other"):
         assert f'<option value="{category}">' in page.text
     assert page.text.count('data-status="') == 4 and 'value="static"' not in page.text
 
@@ -189,13 +189,13 @@ def test_the_shipped_route_rules_refuse_the_page_to_non_admins_before_the_route(
 
 def test_the_log_names_the_verified_account_never_a_claim_anyone_can_write(users):
     client = TestClient(make_app(auth_config()))
-    client.get("/mcp/probe/real", headers=token(users, "bob"))
-    client.get("/mcp/probe/forged", headers=token(users, "root", secret="not-the-secret-" * 4))
-    client.get("/mcp/probe/deactivated", headers=token(users, "ada"))
+    client.get("/tools/probe/real", headers=token(users, "bob"))
+    client.get("/tools/probe/forged", headers=token(users, "root", secret="not-the-secret-" * 4))
+    client.get("/tools/probe/deactivated", headers=token(users, "ada"))
     client.cookies.set("access_token", token(users, "root")["Authorization"][7:])
-    client.get("/mcp/probe/cookie")
+    client.get("/tools/probe/cookie")
 
-    names = {e["path"].rsplit("/", 1)[1]: e["user_id"] for e in kept(client, users, category="mcp")}
+    names = {e["path"].rsplit("/", 1)[1]: e["user_id"] for e in kept(client, users, category="tools")}
 
     assert names == {"real": "bob", "forged": "anonymous", "cookie": "root", "deactivated": "anonymous"}
 
@@ -235,10 +235,10 @@ def test_the_plugin_security_status_is_for_administrators_only(users):
 def test_a_flood_the_rate_limiter_refuses_does_not_reach_the_audit(users):
     """The limiter shields the audit: a flood would push the real entries out of memory and the file."""
     client = TestClient(make_app(auth_config(), rate_limit_enabled=True, requests_per_minute=2))
-    answers = [client.get("/mcp/probe/flood").status_code for _ in range(4)]
+    answers = [client.get("/tools/probe/flood").status_code for _ in range(4)]
 
     # read past the limiter: a read through it would be refused as well
-    logged = SecurityAuditMiddleware.get_instance().get_audit_log(category="mcp")
+    logged = SecurityAuditMiddleware.get_instance().get_audit_log(category="tools")
     assert answers == [200, 200, 429, 429]
     assert [e["status_code"] for e in logged] == [200, 200]
 
@@ -250,16 +250,16 @@ def test_the_account_is_looked_up_once_per_request_and_never_for_static_files(us
     lookups = []
     monkeypatch.setattr(EndpointSecurityMiddleware, "_extract_user_info",
                         lambda self, scope: lookups.append(scope["path"]) or real(self, scope))
-    rules = [EndpointSecurityRule(pattern="/mcp/probe/*", policy="require_auth", min_role="user")]
+    rules = [EndpointSecurityRule(pattern="/tools/probe/*", policy="require_auth", min_role="user")]
     client = TestClient(make_app(auth_config(rules=rules)))
 
-    client.get("/mcp/probe/protected", headers=token(users, "bob"))
+    client.get("/tools/probe/protected", headers=token(users, "bob"))
     client.get("/health", headers=token(users, "bob"))
     client.get("/static/kit/kit.css", headers=token(users, "bob"))
 
-    assert lookups == ["/mcp/probe/protected", "/health"]
+    assert lookups == ["/tools/probe/protected", "/health"]
     assert {e["path"]: e["user_id"] for e in SecurityAuditMiddleware.get_instance().get_audit_log()} == {
-        "/mcp/probe/protected": "bob", "/health": "bob"}
+        "/tools/probe/protected": "bob", "/health": "bob"}
 
 
 def test_a_request_left_without_an_answer_is_filtered_with_the_server_errors(users):
@@ -295,8 +295,8 @@ def test_every_audited_request_is_one_line_in_the_security_log(users, tmp_path):
     PluginEndpointSecurityEnforcer(auth_config())  # the plugin route audit writes to the same file
     PluginEndpointSecurityEnforcer(auth_config()).audit_denied("probe", "/plugins/probe/x\nFORGED | y", "GET", None, "role")
     PluginEndpointSecurityEnforcer(auth_config()).audit_denied("pro | be", "/plugins/x", "GET", "bob | user=root", "role")
-    client.get("/mcp/probe/line%0AFORGED | GET /admin")
-    client.get("/mcp/probe/x%20|%20user=root%20|%20ip=1.2.3.4%20|%20status=200%20")
+    client.get("/tools/probe/line%0AFORGED | GET /admin")
+    client.get("/tools/probe/x%20|%20user=root%20|%20ip=1.2.3.4%20|%20status=200%20")
 
     log = security_log(tmp_path)
     lines = log.splitlines()
@@ -306,5 +306,5 @@ def test_every_audited_request_is_one_line_in_the_security_log(users, tmp_path):
     # asctime | level | verdict | request | user | ip | status | duration | category -- the plugin line: ... | plugin | user | reason
     assert [len(line.split(" | ")) for line in lines] == [7, 7, 9, 9], log
     assert [line.count(" | user=") for line in lines] == [1, 1, 1, 1], log
-    assert log.count("GET /mcp/probe/line%0AFORGED%20%7C%20GET%20/admin | user=anonymous") == 1
+    assert log.count("GET /tools/probe/line%0AFORGED%20%7C%20GET%20/admin | user=anonymous") == 1
     assert "plugin=pro%20%7C%20be | user=bob%20%7C%20user=root" in log

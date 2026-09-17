@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.image_compose.server import PLUGIN_FACTORY
 
 SPEC = {"size": [8, 8], "background": "#ffffff",
@@ -35,10 +35,10 @@ def server(tmp_path):
     """
     out = tmp_path / WORKSPACE
     out.mkdir(parents=True)
-    config = MCPConfig(type="image_compose", enabled=True,
+    config = ToolServerConfig(type="image_compose", enabled=True,
                        fonts_dir=str(tmp_path / "fonts"),
                        output_directories=[str(out)])
-    srv = PLUGIN_FACTORY(name="images", system_config=AgentSystemConfig(), mcp_config=config)
+    srv = PLUGIN_FACTORY(name="images", system_config=AgentSystemConfig(), server_config=config)
     srv.project_root = tmp_path
     return srv
 
@@ -120,8 +120,8 @@ async def test_an_absolute_path_inside_the_sandbox_is_taken_as_given(server, wor
 async def test_an_unconfined_instance_still_writes_where_it_is_told(tmp_path):
     """The writer's cover pipeline: no sandbox, project-relative paths --
     exactly what it passed before, landing exactly where it did."""
-    config = MCPConfig(type="image_compose", enabled=True, fonts_dir=str(tmp_path / "fonts"))
-    srv = PLUGIN_FACTORY(name="images", system_config=AgentSystemConfig(), mcp_config=config)
+    config = ToolServerConfig(type="image_compose", enabled=True, fonts_dir=str(tmp_path / "fonts"))
+    srv = PLUGIN_FACTORY(name="images", system_config=AgentSystemConfig(), server_config=config)
     srv.project_root = tmp_path
     result = await render(srv, output_path="data/writer/covers/book.png")
     assert result["status"] == "success", result

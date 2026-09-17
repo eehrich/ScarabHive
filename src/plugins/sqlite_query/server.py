@@ -1,4 +1,4 @@
-"""SQLite Query MCP Server implementation.
+"""SQLite Query Tool Server implementation.
 
 This module provides simple SQL execution for debugging database content.
 No safety checks, no restrictions - direct SQL execution.
@@ -13,11 +13,11 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.suggest import suggest_path
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -89,27 +89,27 @@ def _schema_recovery(db_path: Path, error: str, sql: str) -> dict[str, Any] | No
         return None
 
 
-class SqliteQueryServer(SchemaBasedMCPServer):
-    """SQLite Query MCP server for debugging.
+class SqliteQueryServer(SchemaBasedToolServer):
+    """SQLite Query tool server for debugging.
 
     This server provides simple SQL execution without restrictions.
-    Tool is automatically loaded from schema.yaml by SchemaBasedMCPServer.
+    Tool is automatically loaded from schema.yaml by SchemaBasedToolServer.
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """
         Modern constructor signature.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
-        # Extract configuration from mcp_config
-        self.database = str(getattr(mcp_config, 'database', 'default.db'))
-        self.query_timeout = int(getattr(mcp_config, 'query_timeout', 30))
+        # Extract configuration from server_config
+        self.database = str(getattr(server_config, 'database', 'default.db'))
+        self.query_timeout = int(getattr(server_config, 'query_timeout', 30))
         
         logger.info(
             f"SqliteQuery server '{name}' initialized - database={self.database}, "

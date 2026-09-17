@@ -1,4 +1,4 @@
-"""Audio Operations MCP Server implementation."""
+"""Audio Operations Tool Server implementation."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
     import numpy as np
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +45,8 @@ def _int32_to_int24_bytes(samples: "np.ndarray") -> bytes:
     return arr[:, :3].tobytes()
 
 
-class AudioOpsServer(SchemaBasedMCPServer):
-    """MCP server for audio file manipulation.
+class AudioOpsServer(SchemaBasedToolServer):
+    """tool server for audio file manipulation.
     
     Provides tools for:
     - Cutting audio segments
@@ -58,19 +58,19 @@ class AudioOpsServer(SchemaBasedMCPServer):
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPConfig"
+        server_config: "ToolServerConfig"
     ) -> None:
         """Initialize audio operations server.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
         # Storage path configuration - supports {session_id} template for session isolation
-        self._storage_path_template = getattr(mcp_config, 'storage_path', "data/audio_ops")
+        self._storage_path_template = getattr(server_config, 'storage_path', "data/audio_ops")
         # Base storage path (without session_id substitution) for cleanup and fallback
         self._storage_path_base = Path(self._storage_path_template.replace("{session_id}", "").rstrip("/\\"))
         # Don't create directory on init - only when needed for write operations

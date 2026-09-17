@@ -19,7 +19,7 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
     PluginsConfig,
 )
 from agent_system.services.session_manager import SessionManager
@@ -55,11 +55,11 @@ def run_env(tmp_path, monkeypatch):
             },
         ))
     config.plugins = PluginsConfig(servers={
-        STORED_AGENT: MCPConfig(type="agent", enabled=True,
+        STORED_AGENT: ToolServerConfig(type="agent", enabled=True,
                                 agent_config=AgentConfig(
                                     system_prompt="x",
                                     llm_profile=AGENT_DEFAULT_PROFILE)),
-        "config_default_agent": MCPConfig(type="agent", enabled=True,
+        "config_default_agent": ToolServerConfig(type="agent", enabled=True,
                                           agent_config=AgentConfig(system_prompt="y")),
     })
     config.default_agent = "config_default_agent"
@@ -180,10 +180,10 @@ class TestDegradedBootstrap:
 
     def test_a_run_without_a_session_service_still_answers(self, run_env,
                                                            monkeypatch):
-        from agent_system.mcp.base import MCPRegistry
+        from agent_system.tools.base import ToolServerRegistry
 
         async def degraded(cfg):
-            return MCPRegistry(), None
+            return ToolServerRegistry(), None
 
         monkeypatch.setattr(agent_run, "initialize_system", degraded)
 

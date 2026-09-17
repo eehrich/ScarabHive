@@ -242,16 +242,11 @@ auth:
         min_role: "admin"
         description: "Hook listing requires admin role"
       
-      # MCP endpoints - admin only (system internals)
-      - pattern: "* /mcp/*"
+      # Tool endpoints - admin only (system internals)
+      - pattern: "* /tools/*"
         policy: "require_auth"
         min_role: "admin"
-        description: "MCP endpoints expose plugin internals"
-      
-      - pattern: "POST /mcp"
-        policy: "require_auth"
-        min_role: "admin"
-        description: "MCP protocol endpoint requires admin"
+        description: "Tool endpoints expose plugin internals"
       
       # Status pages - user role (system status is useful for all users)
       - pattern: "GET /status"

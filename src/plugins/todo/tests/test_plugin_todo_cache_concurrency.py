@@ -29,7 +29,7 @@ def server(tmp_path: Path) -> TodoServer:
     cfg.enable_dependencies = True
     cfg.auto_save = True
     cfg.max_cache_size = 4  # small -> forces eviction
-    return TodoServer(name="todo", system_config=MagicMock(), mcp_config=cfg)
+    return TodoServer(name="todo", system_config=MagicMock(), server_config=cfg)
 
 
 def _fill(server: TodoServer, n: int) -> None:

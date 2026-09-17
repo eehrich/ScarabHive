@@ -4,7 +4,7 @@ Measured 2026-09-01 on the live system: `agent-cli reload` reported
 ``status: ok`` and refreshed **0 of 286** servers. Two independent holes:
 
 1. The registry holds hybrid plugins (tools + hooks + web UI in one class)
-   that keep the real MCP server behind ``self.server``. Looking for
+   that keep the real tool server behind ``self.server``. Looking for
    ``reload_config`` only on the registered object missed the only
    implementation there was — ``sub_agent_manager`` itself was reported as
    unsupported.
@@ -23,10 +23,10 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
-    MCPConfig,
+    ToolServerConfig,
     PluginsConfig,
 )
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.agent.server import Agent
 from agent_system.services.config_reload import _reload_target, reload_plugin_configs
 
@@ -49,7 +49,7 @@ class _HybridWithServer:
 
 class _HybridWithMcpServer:
     def __init__(self):
-        self.mcp_server = _Reloadable()
+        self.tool_server = _Reloadable()
 
 
 class _Plain:
@@ -69,7 +69,7 @@ class TestReloadTargetResolution:
 
     def test_hybrid_mcp_server_attribute_is_found(self):
         plugin = _HybridWithMcpServer()
-        assert _reload_target(plugin) == plugin.mcp_server.reload_config
+        assert _reload_target(plugin) == plugin.tool_server.reload_config
 
     def test_plugin_without_implementation_stays_unsupported(self):
         assert _reload_target(_Plain()) is None
@@ -103,7 +103,7 @@ def _registry_of(**plugins_by_name):
 
 def _fresh_config(servers, default_agent_cfg=None):
     """A REAL config object, so the reload runs the real merge path."""
-    default_cfg = MCPConfig(type="basic_agent", enabled=True,
+    default_cfg = ToolServerConfig(type="basic_agent", enabled=True,
                             agent_config=default_agent_cfg)
     return AgentSystemConfig(
         plugins=PluginsConfig(default_config=default_cfg, servers=servers),
@@ -116,12 +116,12 @@ class TestReloadReport:
         reported as unsupported and nothing happened."""
         plugin = _HybridWithServer()
         monkeypatch.setattr(
-            "agent_system.plugins.mcp_adapter.plugin_mcp_registry",
+            "agent_system.plugins.tool_adapter.plugin_tool_registry",
             _registry_of(hybrid=plugin),
         )
 
         report = reload_plugin_configs(_fresh_config(
-            {"hybrid": MCPConfig(type="basic_agent", enabled=True)}))
+            {"hybrid": ToolServerConfig(type="basic_agent", enabled=True)}))
 
         assert [r["server"] for r in report["refreshed"]] == ["hybrid"]
         assert report["unsupported"] == []
@@ -139,13 +139,13 @@ class TestReloadReport:
         """
         agent = _agent(max_steps=100)
         monkeypatch.setattr(
-            "agent_system.plugins.mcp_adapter.plugin_mcp_registry",
+            "agent_system.plugins.tool_adapter.plugin_tool_registry",
             _registry_of(worker=agent),
         )
         # max_steps lives on the BASE only; the server entry overrides
         # something else entirely — exactly the live shape.
         report = reload_plugin_configs(_fresh_config(
-            servers={"worker": MCPConfig(
+            servers={"worker": ToolServerConfig(
                 type="basic_agent", enabled=True,
                 agent_config=AgentConfig(escalate_rounds=3))},
             default_agent_cfg=AgentConfig(max_steps=100),
@@ -160,22 +160,22 @@ class TestReloadReport:
         """One unresolvable config must not take the whole reload down."""
         good = _Reloadable()
         monkeypatch.setattr(
-            "agent_system.plugins.mcp_adapter.plugin_mcp_registry",
+            "agent_system.plugins.tool_adapter.plugin_tool_registry",
             _registry_of(broken=_Reloadable(), good=good),
         )
 
         def _boom(name, cfg):
             if name == "broken":
                 raise ValueError("kaputt")
-            return MCPConfig(type="basic_agent", enabled=True)
+            return ToolServerConfig(type="basic_agent", enabled=True)
 
         # config_reload imports the resolver at call time, so patching it at
         # its source is what the production path actually picks up.
         monkeypatch.setattr(
-            "agent_system.config.settings.get_mcp_config_by_name", _boom)
+            "agent_system.config.settings.get_tool_server_config", _boom)
 
         report = reload_plugin_configs(_fresh_config(
-            {"broken": MCPConfig(enabled=True), "good": MCPConfig(enabled=True)}))
+            {"broken": ToolServerConfig(enabled=True), "good": ToolServerConfig(enabled=True)}))
 
         assert [e["server"] for e in report["errors"]] == ["broken"]
         assert [r["server"] for r in report["refreshed"]] == ["good"]
@@ -191,12 +191,12 @@ def _agent(max_steps=20, **kw):
     )
     agent_config = AgentConfig(max_steps=max_steps, **kw)
     system_config = AgentSystemConfig(llm_system=llm_system)
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    return Agent("test_agent", system_config, mcp_config, MCPRegistry())
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+    return Agent("test_agent", system_config, server_config, ToolServerRegistry())
 
 
 def _mcp(**kw):
-    return MCPConfig(type="agent", enabled=True, agent_config=AgentConfig(**kw))
+    return ToolServerConfig(type="agent", enabled=True, agent_config=AgentConfig(**kw))
 
 
 class TestAgentReloadConfig:
@@ -229,7 +229,7 @@ class TestAgentReloadConfig:
 
     def test_config_without_agent_section_changes_nothing(self):
         agent = _agent(max_steps=20)
-        assert agent.reload_config(MCPConfig(type="agent", enabled=True)) == {}
+        assert agent.reload_config(ToolServerConfig(type="agent", enabled=True)) == {}
         assert agent.agent_config.max_steps == 20
 
     def test_agent_without_own_config_does_not_blow_up(self):

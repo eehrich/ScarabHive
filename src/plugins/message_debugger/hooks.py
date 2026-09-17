@@ -56,14 +56,14 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
         self,
         plugin_dir: Path | str,
         db: Optional[MessageDebuggerDB] = None,
-        mcp_config: Any = None,
+        server_config: Any = None,
     ):
         """Initialize the message debugger plugin.
 
         Args:
             plugin_dir: Directory containing schema.yaml
             db: SQLite database instance for persistent storage
-            mcp_config: MCP configuration
+            server_config: tool server configuration
         """
         super().__init__(plugin_dir)
 
@@ -71,8 +71,8 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
 
         # Load config
         config = self.get_config()
-        if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
-            config.update(mcp_config.config)
+        if server_config and hasattr(server_config, 'config') and server_config.config:
+            config.update(server_config.config)
         
         self.capture_enabled = bool(config.get('capture_enabled', True))
         self.capture_pre_llm = bool(config.get('capture_pre_llm', True))

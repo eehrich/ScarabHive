@@ -3,7 +3,7 @@ Configuration models for AgentSystem.
 
 This module provides Pydantic models that match the new YAML configuration
 structure with config.yaml as the master configuration and included files
-for LLM and MCP configurations.
+for LLM and tool server configurations.
 """
 from __future__ import annotations
 
@@ -367,7 +367,7 @@ class LLMSystemConfig(BaseModel):
 
 
 # ===========================
-# MCP Configuration Models
+# Tool server configuration Models
 # ===========================
 
 class ExternalServerConfig(BaseModel):
@@ -820,12 +820,12 @@ class AgentMetadata(BaseModel):
     # - "private": Neither UI nor tool (for testing/experimental agents)
 
 
-class MCPConfig(BaseModel):
-    """MCP configuration (matches type comment in mcp.yaml for default_config)"""
+class ToolServerConfig(BaseModel):
+    """tool server configuration (matches type comment in mcp.yaml for default_config)"""
     model_config = {"extra": "allow"}  # Allow extra fields for plugin-specific config
 
-    type: str = "basic_agent"   # type of mcp-server/agent to use
-    enabled: bool = False       # enable or disable this mcp-server/agent
+    type: str = "basic_agent"   # type of tool-server/agent to use
+    enabled: bool = False       # enable or disable this tool-server/agent
     description: Optional[str] = None  # Human-readable description of this instance
     self_tool_descriptions: Optional[Dict[str, str]] = Field(default_factory=dict)  # Custom descriptions for this server's own tools
     agent_config: Optional[AgentConfig] = None
@@ -846,7 +846,7 @@ class ExternalServerCacheConfig(BaseModel):
 
 
 class MCPAuthConfig(BaseModel):
-    """Authentication configuration for MCP servers"""
+    """Authentication configuration for tool servers"""
     type: str = "none"  # none, bearer, api_key, basic
     api_key: Optional[str] = None
     api_key_header: str = "Authorization"
@@ -914,8 +914,8 @@ class SkillsSystemConfig(BaseModel):
 class PluginsConfig(BaseModel):
     """Configuration for local plugins (matches config/plugins.yaml)"""
     plugin_dirs: List[str] = Field(default_factory=list)
-    default_config: MCPConfig = Field(default_factory=MCPConfig)
-    servers: Dict[str, MCPConfig] = Field(default_factory=dict)  # Named MCP server configurations
+    default_config: ToolServerConfig = Field(default_factory=ToolServerConfig)
+    servers: Dict[str, ToolServerConfig] = Field(default_factory=dict)  # Named tool server configurations
 
 
 class MCPServersConfig(BaseModel):
@@ -923,19 +923,6 @@ class MCPServersConfig(BaseModel):
     connection: ExternalServerConnectionConfig = Field(default_factory=ExternalServerConnectionConfig)
     cache: ExternalServerCacheConfig = Field(default_factory=ExternalServerCacheConfig)
     remote_servers: Dict[str, RemoteMCPConfig] = Field(default_factory=dict)
-
-
-# Backward compatibility: Keep MCPSystemConfig for transition period
-class MCPSystemConfig(BaseModel):
-    """
-    DEPRECATED: Old monolithic MCP system configuration.
-    Use separate configs instead: PluginsConfig, MCPServersConfig.
-    This model is kept for backward compatibility during migration.
-    """
-    plugin_dirs: List[str] = Field(default_factory=list)
-    default_config: MCPConfig = Field(default_factory=MCPConfig)
-    external_servers: ExternalServersConfig = Field(default_factory=ExternalServersConfig)
-    servers: Dict[str, MCPConfig] = Field(default_factory=dict)  # Named MCP server configurations
 
 
 # ===========================
@@ -1291,7 +1278,7 @@ class AgentSystemConfig(BaseModel):
     # Basic metadata
     name: str = "AgentSystem"
     version: str = "0.0.0"
-    description: str = "Scarab Flexible AI Agent System using MCP"
+    description: str = "Scarab Flexible AI Agent System"
 
     # Include references (for documentation purposes)
     includes: Optional[List[str]] = None

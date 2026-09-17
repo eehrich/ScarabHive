@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "SSH-based control for multiple remote Linux machines with command execution, file transfers, and system monitoring"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "infrastructure"
 tags = ["ssh", "remote", "linux", "automation", "devops"]
 requires = { python = ">=3.11", agent_system = ">=0.7.0" }

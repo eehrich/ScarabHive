@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import pytest
 
-from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPConfig, AgentConfig
+from agent_system.config.models import AgentSystemConfig, PluginsConfig, ToolServerConfig, AgentConfig
 from agent_system.config.settings import (
-    get_mcp_config_by_name,
+    get_tool_server_config,
     _resolve_server_inheritance,
     _deep_merge_dict,
 )
@@ -30,7 +30,7 @@ def config_with_inheritance():
     return AgentSystemConfig(
         plugins=PluginsConfig(
             plugin_dirs=["src/plugins"],
-            default_config=MCPConfig(
+            default_config=ToolServerConfig(
                 type="basic_agent",
                 enabled=False,
                 agent_config=AgentConfig(
@@ -40,7 +40,7 @@ def config_with_inheritance():
             ),
             servers={
                 # Base server that others inherit from
-                "writer_agent": MCPConfig(
+                "writer_agent": ToolServerConfig(
                     type="basic_agent",
                     enabled=True,
                     description="Base writer agent",
@@ -51,7 +51,7 @@ def config_with_inheritance():
                     )
                 ),
                 # Server that inherits from writer_agent
-                "character_designer": MCPConfig(
+                "character_designer": ToolServerConfig(
                     type="writer_agent",  # Inherits from writer_agent
                     enabled=True,
                     description="Character designer agent",
@@ -60,7 +60,7 @@ def config_with_inheritance():
                     )
                 ),
                 # Another server inheriting from writer_agent
-                "story_designer": MCPConfig(
+                "story_designer": ToolServerConfig(
                     type="writer_agent",
                     enabled=True,
                     agent_config=AgentConfig(
@@ -68,7 +68,7 @@ def config_with_inheritance():
                     )
                 ),
                 # Direct plugin type (no inheritance)
-                "simple_agent": MCPConfig(
+                "simple_agent": ToolServerConfig(
                     type="basic_agent",
                     enabled=True,
                     agent_config=AgentConfig(
@@ -86,14 +86,14 @@ def config_with_chain_inheritance():
     return AgentSystemConfig(
         plugins=PluginsConfig(
             plugin_dirs=["src/plugins"],
-            default_config=MCPConfig(type="basic_agent", enabled=False),
+            default_config=ToolServerConfig(type="basic_agent", enabled=False),
             servers={
-                "base_agent": MCPConfig(
+                "base_agent": ToolServerConfig(
                     type="basic_agent",
                     enabled=True,
                     agent_config=AgentConfig(max_steps=100)
                 ),
-                "writer_agent": MCPConfig(
+                "writer_agent": ToolServerConfig(
                     type="base_agent",  # Inherits from base_agent
                     enabled=True,
                     agent_config=AgentConfig(
@@ -101,7 +101,7 @@ def config_with_chain_inheritance():
                         hooks={"enabled": True},
                     )
                 ),
-                "character_designer": MCPConfig(
+                "character_designer": ToolServerConfig(
                     type="writer_agent",  # Inherits from writer_agent -> base_agent
                     enabled=True,
                     agent_config=AgentConfig(max_steps=50)
@@ -117,11 +117,11 @@ def config_with_circular_inheritance():
     return AgentSystemConfig(
         plugins=PluginsConfig(
             plugin_dirs=["src/plugins"],
-            default_config=MCPConfig(type="basic_agent", enabled=False),
+            default_config=ToolServerConfig(type="basic_agent", enabled=False),
             servers={
-                "agent_a": MCPConfig(type="agent_b", enabled=True),
-                "agent_b": MCPConfig(type="agent_c", enabled=True),
-                "agent_c": MCPConfig(type="agent_a", enabled=True),  # Circular!
+                "agent_a": ToolServerConfig(type="agent_b", enabled=True),
+                "agent_b": ToolServerConfig(type="agent_c", enabled=True),
+                "agent_c": ToolServerConfig(type="agent_a", enabled=True),  # Circular!
             }
         )
     )
@@ -209,11 +209,11 @@ class TestResolveServerInheritance:
 
 
 class TestGetMcpConfigByName:
-    """Tests for get_mcp_config_by_name with inheritance."""
+    """Tests for get_tool_server_config with inheritance."""
 
     def test_inherited_config(self, config_with_inheritance):
-        """Test that get_mcp_config_by_name resolves inheritance."""
-        result = get_mcp_config_by_name("character_designer", config_with_inheritance)
+        """Test that get_tool_server_config resolves inheritance."""
+        result = get_tool_server_config("character_designer", config_with_inheritance)
         
         assert result is not None
         # Type should be resolved to basic_agent
@@ -228,7 +228,7 @@ class TestGetMcpConfigByName:
 
     def test_direct_config(self, config_with_inheritance):
         """Test direct plugin type without inheritance."""
-        result = get_mcp_config_by_name("simple_agent", config_with_inheritance)
+        result = get_tool_server_config("simple_agent", config_with_inheritance)
         
         assert result is not None
         assert result.type == "basic_agent"
@@ -236,7 +236,7 @@ class TestGetMcpConfigByName:
 
     def test_base_server_itself(self, config_with_inheritance):
         """Test getting the base server config directly."""
-        result = get_mcp_config_by_name("writer_agent", config_with_inheritance)
+        result = get_tool_server_config("writer_agent", config_with_inheritance)
         
         assert result is not None
         assert result.type == "basic_agent"
@@ -245,7 +245,7 @@ class TestGetMcpConfigByName:
 
     def test_nonexistent_server(self, config_with_inheritance):
         """Test handling of nonexistent server."""
-        result = get_mcp_config_by_name("nonexistent", config_with_inheritance)
+        result = get_tool_server_config("nonexistent", config_with_inheritance)
         assert result is None
 
     def test_each_config_object_resolves_its_own_entries(self, config_with_inheritance):
@@ -254,11 +254,11 @@ class TestGetMcpConfigByName:
         edited.plugins.servers["writer_agent"].agent_config.max_steps = 7
         edited.plugins.servers["character_designer"].agent_config.max_steps = 8
 
-        assert get_mcp_config_by_name("character_designer", config_with_inheritance).agent_config.max_steps == 50
-        assert get_mcp_config_by_name("story_designer", config_with_inheritance).agent_config.max_steps == 100
-        assert get_mcp_config_by_name("character_designer", edited).agent_config.max_steps == 8
-        assert get_mcp_config_by_name("story_designer", edited).agent_config.max_steps == 7
-        assert get_mcp_config_by_name("story_designer", config_with_inheritance).agent_config.max_steps == 100
+        assert get_tool_server_config("character_designer", config_with_inheritance).agent_config.max_steps == 50
+        assert get_tool_server_config("story_designer", config_with_inheritance).agent_config.max_steps == 100
+        assert get_tool_server_config("character_designer", edited).agent_config.max_steps == 8
+        assert get_tool_server_config("story_designer", edited).agent_config.max_steps == 7
+        assert get_tool_server_config("story_designer", config_with_inheritance).agent_config.max_steps == 100
 
 
 class TestInheritanceIntegration:
@@ -269,7 +269,7 @@ class TestInheritanceIntegration:
         config = AgentSystemConfig(
             plugins=PluginsConfig(
                 plugin_dirs=["src/plugins"],
-                default_config=MCPConfig(
+                default_config=ToolServerConfig(
                     type="basic_agent",
                     enabled=False,
                     agent_config=AgentConfig(
@@ -279,7 +279,7 @@ class TestInheritanceIntegration:
                     )
                 ),
                 servers={
-                    "writer_agent": MCPConfig(
+                    "writer_agent": ToolServerConfig(
                         type="basic_agent",
                         enabled=True,
                         agent_config=AgentConfig(
@@ -294,7 +294,7 @@ class TestInheritanceIntegration:
                             }
                         )
                     ),
-                    "character_designer": MCPConfig(
+                    "character_designer": ToolServerConfig(
                         type="writer_agent",
                         enabled=True,
                         description="Character specialist",
@@ -303,7 +303,7 @@ class TestInheritanceIntegration:
                             system_template="config/agents_writer/prompts/character_designer.md",
                         )
                     ),
-                    "scene_writer": MCPConfig(
+                    "scene_writer": ToolServerConfig(
                         type="writer_agent",
                         enabled=True,
                         description="Scene writer",
@@ -317,7 +317,7 @@ class TestInheritanceIntegration:
         )
         
         # Test character_designer
-        char_config = get_mcp_config_by_name("character_designer", config)
+        char_config = get_tool_server_config("character_designer", config)
         assert char_config.type == "basic_agent"
         assert char_config.description == "Character specialist"
         assert char_config.agent_config.max_steps == 50
@@ -327,7 +327,7 @@ class TestInheritanceIntegration:
         assert "writer_context_summarizer.summarize_context" in char_config.agent_config.hooks.overrides
         
         # Test scene_writer
-        scene_config = get_mcp_config_by_name("scene_writer", config)
+        scene_config = get_tool_server_config("scene_writer", config)
         assert scene_config.type == "basic_agent"
         assert scene_config.agent_config.llm_profile == "think"
         assert scene_config.agent_config.max_steps == 200
@@ -601,13 +601,13 @@ class TestToolListInheritance:
         })
 
     def test_child_setting_only_allowed_keeps_parent_blocked(self):
-        result = get_mcp_config_by_name("child_x", self._config())
+        result = get_tool_server_config("child_x", self._config())
         tools = result.agent_config.tools
         assert tools.allowed == ["tool_a/*", "tool_b/*"]
         assert tools.blocked == ["danger/*"], "parent blocked list was wiped"
 
     def test_child_setting_only_blocked_keeps_parent_allowed(self):
-        result = get_mcp_config_by_name("child_y", self._config())
+        result = get_tool_server_config("child_y", self._config())
         tools = result.agent_config.tools
         assert tools.allowed == ["tool_a/*"], "parent allowed list was wiped"
         assert tools.blocked == ["danger/*", "more/*"]

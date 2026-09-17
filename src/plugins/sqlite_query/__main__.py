@@ -11,7 +11,7 @@ import json
 import sys
 from typing import Any
 
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 from .server import SqliteQueryServer
 
@@ -33,7 +33,7 @@ Examples:
 
 async def execute_query(database: str, sql: str) -> dict[str, Any]:
     server = SqliteQueryServer("sqlite_query", AgentSystemConfig(),
-                               MCPConfig(type="sqlite_query", enabled=True,
+                               ToolServerConfig(type="sqlite_query", enabled=True,
                                          database=database))
     # call_with_status opens the status scope the tool expects in ``_status``.
     return await server.call_with_status("sqlite_query_execute_sql", {"sql": sql})

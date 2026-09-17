@@ -12,7 +12,7 @@ class TestToolSchemaBuilderBlockedPatterns:
         """Test exact match blocking."""
         builder = ToolSchemaBuilder(
             agent_name="test_agent",
-            mcp_integration_manager=Mock(),
+            tool_integration_manager=Mock(),
             server_getter_func=Mock()
         )
         
@@ -34,7 +34,7 @@ class TestToolSchemaBuilderBlockedPatterns:
         """Test server/* wildcard blocking."""
         builder = ToolSchemaBuilder(
             agent_name="test_agent",
-            mcp_integration_manager=Mock(),
+            tool_integration_manager=Mock(),
             server_getter_func=Mock()
         )
         
@@ -56,7 +56,7 @@ class TestToolSchemaBuilderBlockedPatterns:
         """Test server-level blocking (no slash)."""
         builder = ToolSchemaBuilder(
             agent_name="test_agent",
-            mcp_integration_manager=Mock(),
+            tool_integration_manager=Mock(),
             server_getter_func=Mock()
         )
         
@@ -78,7 +78,7 @@ class TestToolSchemaBuilderBlockedPatterns:
         """Test fnmatch wildcard blocking."""
         builder = ToolSchemaBuilder(
             agent_name="test_agent",
-            mcp_integration_manager=Mock(),
+            tool_integration_manager=Mock(),
             server_getter_func=Mock()
         )
         
@@ -100,7 +100,7 @@ class TestToolSchemaBuilderBlockedPatterns:
         """Test _apply_blocked_patterns filters correctly."""
         builder = ToolSchemaBuilder(
             agent_name="test_agent",
-            mcp_integration_manager=Mock(),
+            tool_integration_manager=Mock(),
             server_getter_func=Mock()
         )
         
@@ -139,7 +139,7 @@ class TestToolSchemaBuilderBlockedPatterns:
         """Test blocking all tools from a server with server/* pattern."""
         builder = ToolSchemaBuilder(
             agent_name="test_agent",
-            mcp_integration_manager=Mock(),
+            tool_integration_manager=Mock(),
             server_getter_func=Mock()
         )
         
@@ -184,11 +184,11 @@ async def test_build_schemas_with_blocked_patterns():
     class MockTool:
         name: str
         description: str
-        input_schema: dict  # snake_case to match MCPTool class definition
+        input_schema: dict  # snake_case to match ToolDef class definition
     
-    # Create mock MCP integration manager
-    mock_mcp_integration = Mock()
-    mock_mcp_integration.build_tool_schemas = AsyncMock(return_value=([], {}))
+    # Create mock tool integration manager
+    mock_tool_integration = Mock()
+    mock_tool_integration.build_tool_schemas = AsyncMock(return_value=([], {}))
     
     # Create mock server that returns tool objects with proper attributes
     mock_server = Mock()
@@ -205,7 +205,7 @@ async def test_build_schemas_with_blocked_patterns():
     
     builder = ToolSchemaBuilder(
         agent_name="test_agent",
-        mcp_integration_manager=mock_mcp_integration,
+        tool_integration_manager=mock_tool_integration,
         server_getter_func=mock_get_server
     )
     

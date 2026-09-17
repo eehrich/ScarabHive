@@ -8,6 +8,6 @@ version = "0.1.0"
 description = "Date/time utilities optimized for MCP usage"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "utilities"
 requires = { agent_system = ">=0.6.0" }

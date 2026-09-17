@@ -8,5 +8,5 @@ version = "1.0.0"
 description = "Manages persistent sub-agent instances for coordinator agents"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server", "web"]
+type = ["tool-server", "web"]
 requires = { agent_system = ">=0.7.0" }

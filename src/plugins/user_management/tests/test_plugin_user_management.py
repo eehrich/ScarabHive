@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from agent_system.auth import database
 from agent_system.auth.models import UserCreate, UserRole
 from agent_system.auth.security import create_access_token, verify_password
-from agent_system.config.models import AgentSystemConfig, AuthConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, AuthConfig, ToolServerConfig
 from plugins.user_management.plugin import PLUGIN_FACTORY
 
 PUBLIC = {"id", "username", "email", "full_name", "role", "is_active", "created_at", "last_login", "has_api_key"}
@@ -33,7 +33,7 @@ def db(tmp_path, monkeypatch):
 
 
 def client(auth_enabled: bool = True) -> TestClient:
-    plugin = PLUGIN_FACTORY("user_management", AgentSystemConfig(auth=AuthConfig(enabled=auth_enabled)), MCPConfig())
+    plugin = PLUGIN_FACTORY("user_management", AgentSystemConfig(auth=AuthConfig(enabled=auth_enabled)), ToolServerConfig())
     app = FastAPI()
     app.include_router(plugin.get_web_router())
     return TestClient(app)

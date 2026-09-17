@@ -51,8 +51,8 @@ def mock_system_config() -> MagicMock:
 
 
 @pytest.fixture
-def mock_mcp_config(temp_storage: Path) -> MagicMock:
-    """Mock MCPConfig with TODO plugin settings"""
+def mock_server_config(temp_storage: Path) -> MagicMock:
+    """Mock ToolServerConfig with TODO plugin settings"""
     config = MagicMock()
     config.storage_path = str(temp_storage)
     config.max_tasks_per_session = 100
@@ -62,18 +62,18 @@ def mock_mcp_config(temp_storage: Path) -> MagicMock:
 
 
 @pytest.fixture
-def server(mock_system_config: MagicMock, mock_mcp_config: MagicMock) -> TodoServer:
+def server(mock_system_config: MagicMock, mock_server_config: MagicMock) -> TodoServer:
     """TodoServer instance"""
     return TodoServer(
         name="todo",
         system_config=mock_system_config,
-        mcp_config=mock_mcp_config,
+        server_config=mock_server_config,
     )
 
 
 @pytest.fixture
 def mock_context() -> Dict[str, Any]:
-    """Mock MCP tool call context"""
+    """Mock tool call context"""
     return {
         "session_id": "test_session_001",
         "agent_name": "test_agent",
@@ -804,7 +804,7 @@ async def test_session_persistence(server: TodoServer, mock_context: Dict[str, A
 async def test_session_reload(
     temp_storage: Path,
     mock_system_config: MagicMock,
-    mock_mcp_config: MagicMock,
+    mock_server_config: MagicMock,
     mock_context: Dict[str, Any],
 ):
     """Test session reloads from disk"""
@@ -812,7 +812,7 @@ async def test_session_reload(
     server1 = TodoServer(
         name="todo",
         system_config=mock_system_config,
-        mcp_config=mock_mcp_config,
+        server_config=mock_server_config,
     )
     await server1.create_todo(title="Task 1", context=mock_context)
     await server1.create_todo(title="Task 2", context=mock_context)
@@ -821,7 +821,7 @@ async def test_session_reload(
     server2 = TodoServer(
         name="todo",
         system_config=mock_system_config,
-        mcp_config=mock_mcp_config,
+        server_config=mock_server_config,
     )
     
     # Load tasks

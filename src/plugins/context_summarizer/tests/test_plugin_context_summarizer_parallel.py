@@ -17,15 +17,15 @@ from agent_system.llm.models import ChatMessage
 @pytest.fixture
 def summarizer_plugin():
     """Create context summarizer plugin instance."""
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
     from plugins.context_summarizer.plugin import PLUGIN_FACTORY
     
     # Create minimal configs
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig()
+    server_config = ToolServerConfig()
     
     # PLUGIN_FACTORY returns ContextSummarizerHybridPlugin
-    plugin = PLUGIN_FACTORY("context_summarizer", system_config, mcp_config)
+    plugin = PLUGIN_FACTORY("context_summarizer", system_config, server_config)
     return plugin.server._hooks_impl  # Return the hooks implementation from server
 
 

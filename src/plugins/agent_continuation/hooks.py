@@ -43,14 +43,14 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
     def __init__(
         self,
         plugin_dir: Path | str,
-        mcp_config: Any = None,
+        server_config: Any = None,
     ) -> None:
         super().__init__(plugin_dir)
 
         # Merge schema defaults with runtime config from plugins.yaml
         config = self.get_config()
-        if mcp_config and hasattr(mcp_config, "config") and mcp_config.config:
-            config.update(mcp_config.config)
+        if server_config and hasattr(server_config, "config") and server_config.config:
+            config.update(server_config.config)
 
         self._max_continuations: int = int(config.get("max_continuations", 10))
         self._default_continue_message: str = str(

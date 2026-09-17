@@ -10,7 +10,7 @@ version = "1.0.0"
 description = "Control a locally running Blender: inspect the scene, run bpy, capture the viewport, export 3D files into the workspace"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "creative"
 tags = ["blender", "3d", "modelling", "export"]
 requires = { python = ">=3.10", agent_system = ">=0.6.0" }

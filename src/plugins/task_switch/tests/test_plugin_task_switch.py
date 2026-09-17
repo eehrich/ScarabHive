@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from plugins.task_switch.server import TaskSwitchServer
-from agent_system.config.models import MCPConfig, AgentConfig
+from agent_system.config.models import ToolServerConfig, AgentConfig
 
 
 @pytest.fixture
@@ -15,13 +15,13 @@ def mock_system_config():
 
 
 @pytest.fixture
-def mock_mcp_config():
-    return MCPConfig(type="task_switch", enabled=True)
+def mock_server_config():
+    return ToolServerConfig(type="task_switch", enabled=True)
 
 
 @pytest.fixture
-def mock_mcp_config_with_allowed_tasks():
-    return MCPConfig(
+def mock_server_config_with_allowed_tasks():
+    return ToolServerConfig(
         type="task_switch", 
         enabled=True, 
         config={"allowed_tasks": ["init", "analyze", "execute", "review"]}
@@ -29,9 +29,9 @@ def mock_mcp_config_with_allowed_tasks():
 
 
 @pytest.fixture
-def mock_mcp_config_with_preconditions():
+def mock_server_config_with_preconditions():
     """Config with task preconditions (gate checks)."""
-    return MCPConfig(
+    return ToolServerConfig(
         type="task_switch",
         enabled=True,
         config={
@@ -55,18 +55,18 @@ def mock_mcp_config_with_preconditions():
 
 
 @pytest.fixture
-def server(mock_system_config, mock_mcp_config):
-    return TaskSwitchServer("task_switch", mock_system_config, mock_mcp_config)
+def server(mock_system_config, mock_server_config):
+    return TaskSwitchServer("task_switch", mock_system_config, mock_server_config)
 
 
 @pytest.fixture
-def server_with_restrictions(mock_system_config, mock_mcp_config_with_allowed_tasks):
-    return TaskSwitchServer("task_switch", mock_system_config, mock_mcp_config_with_allowed_tasks)
+def server_with_restrictions(mock_system_config, mock_server_config_with_allowed_tasks):
+    return TaskSwitchServer("task_switch", mock_system_config, mock_server_config_with_allowed_tasks)
 
 
 @pytest.fixture
-def server_with_preconditions(mock_system_config, mock_mcp_config_with_preconditions):
-    return TaskSwitchServer("task_switch", mock_system_config, mock_mcp_config_with_preconditions)
+def server_with_preconditions(mock_system_config, mock_server_config_with_preconditions):
+    return TaskSwitchServer("task_switch", mock_system_config, mock_server_config_with_preconditions)
 
 
 @pytest.fixture
@@ -93,7 +93,7 @@ class TestTaskSwitchServer:
         assert server._allowed_tasks is None
 
     def test_init_custom_var(self, mock_system_config):
-        config = MCPConfig(type="task_switch", enabled=True, config={"task_var_name": "state"})
+        config = ToolServerConfig(type="task_switch", enabled=True, config={"task_var_name": "state"})
         server = TaskSwitchServer("task_switch", mock_system_config, config)
         assert server._task_var_name == "state"
 

@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.models import ChatMessage
-from agent_system.mcp.status import StatusScope, status_bus
+from agent_system.tools.status import StatusScope, status_bus
 
 from .window import build_excerpt, parse_verdict
 
@@ -83,13 +83,13 @@ def _model_of(llm: Any) -> Optional[str]:
 class AgentWatchdogPlugin(SchemaBasedPluginHook):
     """Hook plugin: judge a running agent every n steps, log the verdict."""
 
-    def __init__(self, plugin_dir: Path | str, mcp_config: Any = None,
+    def __init__(self, plugin_dir: Path | str, server_config: Any = None,
                  project_root: Optional[Path] = None) -> None:
         super().__init__(plugin_dir)
         config = {key: spec.get("default") if isinstance(spec, dict) else spec
                   for key, spec in (self.get_config() or {}).items()}
-        if mcp_config is not None and getattr(mcp_config, "config", None):
-            config.update(mcp_config.config)
+        if server_config is not None and getattr(server_config, "config", None):
+            config.update(server_config.config)
         self._config = config
         self._llm_profile = str(config.get("llm_profile") or "turbo")
 

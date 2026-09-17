@@ -269,9 +269,9 @@ def _rule_calls(rule: Dict[str, Any]) -> List[Dict[str, Any]]:
 class ToolPreloadPlugin(SchemaBasedPluginHook):
     """Hook implementation: rules → dispatch → append the call/result pairs."""
 
-    def __init__(self, plugin_dir: Path, mcp_config: Any = None):
+    def __init__(self, plugin_dir: Path, server_config: Any = None):
         super().__init__(plugin_dir)
-        self.mcp_config = mcp_config
+        self.server_config = server_config
         logger.info("ToolPreloadPlugin initialized")
 
     async def preload(self, context: HookContext) -> HookResult:

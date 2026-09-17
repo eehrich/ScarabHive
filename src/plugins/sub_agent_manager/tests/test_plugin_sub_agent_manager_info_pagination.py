@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent_system.config.models import AgentConfig, AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentConfig, AgentSystemConfig, ToolServerConfig
 from agent_system.services.session_manager import SessionManager
 from agent_system.services.session_service import SessionService
 from plugins.sub_agent_manager.manager import SubAgentManager
@@ -42,9 +42,9 @@ async def session_service(session_manager):
 
 @pytest.fixture
 def sub_agent_manager(session_service):
-    from agent_system.mcp.base import MCPRegistry
+    from agent_system.tools.base import ToolServerRegistry
 
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     mock_agent = Mock()
     mock_agent.name = "web_research_agent"
     mock_agent.agent_config = AgentConfig(llm_profile="normal")
@@ -54,15 +54,15 @@ def sub_agent_manager(session_service):
 
 def _make_server(**pagination_overrides) -> SubAgentManagerServer:
     system_config = Mock(spec=AgentSystemConfig)
-    mcp_config = Mock(spec=MCPConfig)
-    mcp_config.max_sub_agents_per_session = 10
-    mcp_config.max_nesting_depth = 5
-    mcp_config.max_sub_agents_per_type = 3
-    mcp_config.allowed_agents = ["*"]
-    mcp_config.blocked_agents = []
+    server_config = Mock(spec=ToolServerConfig)
+    server_config.max_sub_agents_per_session = 10
+    server_config.max_nesting_depth = 5
+    server_config.max_sub_agents_per_type = 3
+    server_config.allowed_agents = ["*"]
+    server_config.blocked_agents = []
     for key, value in pagination_overrides.items():
-        setattr(mcp_config, key, value)
-    return SubAgentManagerServer(name="sub_agent_manager", system_config=system_config, mcp_config=mcp_config)
+        setattr(server_config, key, value)
+    return SubAgentManagerServer(name="sub_agent_manager", system_config=system_config, server_config=server_config)
 
 
 @pytest.fixture
