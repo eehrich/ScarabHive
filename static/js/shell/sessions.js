@@ -197,13 +197,27 @@ export class SessionManager {
     const session = this.byId.get(id);
     const title = await prompt('New title for the session', { title: 'Rename session', value: session?.title || '', confirmLabel: 'Rename' });
     if (!title || !title.trim() || title === session?.title) return;
+    await this.renameTo(id, title.trim());
+  }
+
+  /**
+   * Rename without asking — the chat's `/rename <title>` already has one.
+   *
+   * The write and the two refreshes live here rather than at each caller:
+   * the pencil and the command have to leave the list in the same state,
+   * and the current session's header with it.
+   *
+   * @returns {Promise<boolean>} false when the write failed (api() said so).
+   */
+  async renameTo(id, title) {
     try {
-      await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', json: { title: title.trim() } });
+      await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', json: { title } });
     } catch {
-      return;  // api() has shown the failure
+      return false;  // api() has shown the failure
     }
-    if (id === this.currentSessionId) this.setCurrent(id, title.trim());
+    if (id === this.currentSessionId) this.setCurrent(id, title);
     await this.loadSessions();
+    return true;
   }
 
   async remove(id) {

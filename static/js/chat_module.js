@@ -395,6 +395,195 @@
       '\nUse /resume <id> to continue one.');
   }
 
+  /**
+   * `/rename <title>` -- the title the session list shows.
+   *
+   * Through the session pane, not with a PATCH of its own: the pencil in
+   * that list does the same write, and the list and the header have to end
+   * up in the same state whichever one did it.
+   */
+  async function cmdRename(container, payload) {
+    const title = (payload || '').trim();
+    if (!title) {
+      addNote(container, 'Usage: /rename <title>');
+      return;
+    }
+    if (!currentSessionId) {
+      addNote(container, 'No session yet -- it is created with your first message, ' +
+        'and can be named after that.');
+      return;
+    }
+    if (!window.sessionManager || typeof window.sessionManager.renameTo !== 'function') {
+      addNote(container, 'Renaming is not available in this window.');
+      return;
+    }
+    const done = await window.sessionManager.renameTo(currentSessionId, title);
+    addNote(container, done ? 'Title: ' + title : 'The session was not renamed.');
+  }
+
+  /**
+   * `/agent [name]` -- what this chat talks to.
+   *
+   * The selector is the source: it holds the list the whole window agrees
+   * on, and a command that set something else would disagree with the
+   * dropdown next to it. The switch starts a new session, exactly as in the
+   * terminal -- a session carries the agent that ran it, and continuing one
+   * under another agent would run it with foreign tools and a foreign
+   * prompt, with the next save writing that agent into its record.
+   */
+  async function cmdAgent(container, payload) {
+    const selector = window.selectorModule;
+    if (!selector || typeof selector.setAgent !== 'function') {
+      addNote(container, 'The agent selector is not available in this window.');
+      return;
+    }
+    const wanted = (payload || '').trim();
+    const names = (selector.agents() || []).map(function (a) {
+      return typeof a === 'string' ? a : (a && (a.name || a.id)) || '';
+    }).filter(Boolean);
+    const current = selector.getCurrentAgent();
+
+    if (!wanted) {
+      addNote(container, 'Agent: ' + (current || '?') + '\n' + (names.length
+        ? names.map(function (n) {
+            return ' ' + (n === current ? '*' : ' ') + ' ' + n;
+          }).join('\n') + '\n  /agent <name> switches; the chat starts a new session for it.'
+        : '  (no agents listed -- the selector could not read them)'));
+      return;
+    }
+    if (wanted === current) {
+      addNote(container, 'Already on ' + current + '.');
+      return;
+    }
+    if (names.length && names.indexOf(wanted) === -1) {
+      addNote(container, 'Unknown agent: ' + wanted + '\n  /agent lists them.');
+      return;
+    }
+    if (!selector.setAgent(wanted)) {
+      addNote(container, 'The selector did not take "' + wanted + '".');
+      return;
+    }
+    // The new session AFTER the switch -- and it has to be CONFIRMED.
+    // newConversation() returns nothing whether it started one or the viewer
+    // kept a running request, and the session id is how it shows: a fresh one
+    // has none until the first message. Claiming a new session that never
+    // happened would leave the next message running the OLD session under the
+    // NEW agent, and the save after it writes that agent into its record --
+    // exactly the foreign tools and foreign prompt this switch avoids.
+    const before = currentSessionId;
+    await window.sessionManager.newConversation();
+    if (currentSessionId === before && before !== null) {
+      addNote(container, 'Agent: ' + wanted +
+        '   -- but the session stayed: the next message would run ' + before +
+        ' under ' + wanted + '. /new once the running request is done.');
+      return;
+    }
+    addNote(container, 'Agent: ' + wanted + '   (new session)');
+  }
+
+  /**
+   * `/undo` and `/retry` -- the last question and everything that answered it.
+   *
+   * The server cuts, because the conversation the browser shows is the
+   * RECORD: the agent's copy in memory is shortened with it, or the next
+   * save puts the dropped turn straight back. Reloading afterwards is not
+   * cosmetic -- the messages on screen are what the viewer would otherwise
+   * keep reading as still being there.
+   */
+  async function cmdUndo(container, payload, retry) {
+    if (!currentSessionId) {
+      addNote(container, 'Nothing to take back -- this chat has no session yet.');
+      return;
+    }
+    // "force" the way agent-cli's --force means it: for a lock a crashed
+    // process left behind. The server refuses a session that is running, and
+    // without this there would be no way past a leftover.
+    const forced = (payload || '').trim().toLowerCase() === 'force';
+    let answer;
+    try {
+      answer = await postJSON('/chat/undo' + (forced ? '?force=true' : ''), {
+        session_id: currentSessionId,
+        // The session's own agent wins on the server; this is the fallback
+        // for one that has no record yet.
+        agent_name: currentAgentName() || null,
+      });
+    } catch (e) {
+      if (e && e.status === 409 && !forced) {
+        addNote(container, e.message +
+          '\n  /undo force takes it anyway -- for a lock a crashed process left behind.');
+        return;
+      }
+      throw e;
+    }
+    if (!answer.dropped) {
+      addNote(container, 'Nothing to take back in this session yet.');
+      return;
+    }
+    await window.sessionManager.loadSession(currentSessionId);
+    const asked = answer.dropped.text || '';
+    addNote(container, 'Dropped: ' + oneLine(asked, 70));
+    if (!retry) return;
+    // The text goes back into the input rather than being sent: a file that
+    // came with it lives on the viewer's disk, and only they can attach it
+    // again. Sending silently without it would ask a different question.
+    if (taskInputEl) {
+      taskInputEl.value = asked;
+      // The input event is what the textarea grows on and what turns the
+      // action button back into Send -- setting .value alone leaves a box
+      // that looks empty and a button that still says Stop.
+      taskInputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      taskInputEl.focus();
+    }
+    addNote(container, answer.dropped.had_attachments
+      ? 'Ask it again with Enter -- the file it carried has to be attached again.'
+      : 'Ask it again with Enter.');
+  }
+
+  /**
+   * `/export [ignored]` -- the conversation as markdown, saved by the browser.
+   *
+   * No path argument: the terminal writes on the machine it runs on, and a
+   * browser cannot. What it gets is the same markdown the terminal writes,
+   * rendered by the server from the record.
+   */
+  async function cmdExport(container, payload) {
+    if (!currentSessionId) {
+      addNote(container, 'Nothing to export -- this chat has no session yet.');
+      return;
+    }
+    if ((payload || '').trim()) {
+      addNote(container, 'A path only means something in the terminal -- ' +
+        'the browser saves it where downloads go.');
+    }
+    const url = '/chat/transcript?session_id=' + encodeURIComponent(currentSessionId);
+    const resp = await fetch(url, { credentials: 'include' });
+    if (!resp.ok) {
+      let detail = resp.status + ' ' + resp.statusText;
+      try {
+        const body = await resp.json();
+        if (body && body.detail) detail = body.detail;
+      } catch (e) { /* not JSON -- keep the status line */ }
+      addNote(container, 'Could not export: ' + detail);
+      return;
+    }
+    const blob = await resp.blob();
+    // Tracked like a preview: this one is revoked a tick from now, but an
+    // object URL that nobody can reach holds its whole blob until the tab
+    // closes -- and a download cancelled mid-flight is exactly the path that
+    // skips the revoke below.
+    const href = trackedObjectUrl(blob);
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = 'chat-' + currentSessionId + '.md';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // Freed on the next tick: revoking it while the click is still being
+    // handled cancels the download in Firefox.
+    setTimeout(function () { URL.revokeObjectURL(href); }, 0);
+    addNote(container, 'Written: chat-' + currentSessionId + '.md');
+  }
+
   async function cmdResume(container, payload) {
     const id = (payload || '').trim();
     if (!id) {
@@ -698,11 +887,16 @@
     const handlers = {
       sessions: function () { return cmdSessions(container, payload); },
       resume: function () { return cmdResume(container, payload); },
+      rename: function () { return cmdRename(container, payload); },
+      agent: function () { return cmdAgent(container, payload); },
       vars: function () { return cmdVars(container, payload); },
       tools: function () { return cmdTools(container, payload); },
       costs: function () { return cmdCosts(container); },
       history: function () { return cmdHistory(container, payload); },
       last: function () { return cmdLast(container); },
+      undo: function () { return cmdUndo(container, payload, false); },
+      retry: function () { return cmdUndo(container, payload, true); },
+      export: function () { return cmdExport(container, payload); },
     };
     const handler = handlers[name];
     if (!handler) {
@@ -1344,6 +1538,10 @@
   let runBtn = null;
   let stopBtn = null;
   let chatContainer = null;
+  // The message box, kept like the three above: /retry writes the question
+  // back into it, and looking it up by id a second time is how one of the two
+  // spellings goes stale without anything saying so.
+  let taskInputEl = null;
 
   // One action-button slot, driven by (run active? typed anything?):
   //   idle                      -> Run
@@ -1765,7 +1963,7 @@
   // Public init function that wires the chat form behavior
   chatModule.init = function () {
     const chatForm = document.getElementById('f');
-    const taskInput = document.getElementById('task');
+    const taskInput = taskInputEl = document.getElementById('task');
     runBtn = document.getElementById('runBtn');
     stopBtn = document.getElementById('stopBtn');
     chatContainer = document.getElementById('chat');

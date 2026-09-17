@@ -193,22 +193,41 @@ the conversation on the spot. Two plugins claiming the same name are both
 reachable as `/<plugin>:<command>`. See `docs/plugin_commands_design.md`.
 
 **In the browser** the same commands run, from the same catalogue and the same
-parser — `/sessions`, `/resume`, `/tools`, `/costs`, `/history`, `/last` and
-`/vars` answer from the API (`/agents/<name>/tools`, `/api/sessions`,
-`/chat/vars`, the usage tracker) instead of from the local agent. `/vars`
+parser — `/sessions`, `/resume`, `/tools`, `/costs`, `/history`, `/last`,
+`/vars`, `/rename`, `/agent`, `/undo`, `/retry` und `/export` answer from the
+API (`/agents/<name>/tools`, `/api/sessions`, `/chat/vars`, `/chat/undo`,
+`/chat/transcript`, the usage tracker) instead of from the local agent. `/vars`
 sends the line as typed, so the grammar is read by the same parser the
 terminal uses; it needs a session, which in the browser exists from the first
 message on. It reads the persisted variables merged with the live ones — the
 browser can open a session the running process has never loaded, and listing
 only the live half would report "none" for a session whose file is full, then
-overwrite it. Acht sind terminal-eigen: `/exit` (kein Terminal zum Verlassen),
-`/attach` (der Browser hat seinen Upload-Knopf), `/model` und `/agent` (beides
-wählt der Browser in seinen eigenen Selektoren, und ein Kommando, das dem
-Selektor widerspricht, ist schlimmer als keines), `/rename` (gehört dort an die
-Session-Liste, nicht ins Nachrichtenfeld) sowie `/undo`, `/retry` und `/export`
-— die ersten beiden schreiben um, was der Agent im Speicher hält, und der
-Browser lädt die Session bei jeder Nachricht neu von der Platte; `/export`
-schriebe auf die Platte des Servers, nicht auf die des Betrachters.
+overwrite it.
+
+Drei sind terminal-eigen: `/exit` (kein Terminal zum Verlassen), `/attach`
+(der Browser hat seinen Upload-Knopf) und `/model` (der Browser wählt das
+Profil in seinem eigenen Selektor). Alles andere gibt es in **beiden**
+Oberflächen — ein Kommando, das der Nutzer im Terminal findet und im Browser
+nicht, liest sich wie ein Defekt.
+
+Wo beide dasselbe tun, tun sie es auch durch dieselbe Stelle: der Schnitt von
+`/undo` und `/retry` ist `chat_actions.split_off_last_exchange`, das Markdown
+von `/export` ist `chat_actions.transcript_markdown`. Was sich unterscheidet,
+ist nur, worauf sie angewandt werden: das Terminal kürzt die Nachrichtenliste
+des Agenten und lässt das nächste Speichern folgen, der Browser lässt den
+Server den **Datensatz** kürzen (`POST /chat/undo`) und lädt ihn neu — er zeigt
+ja den Datensatz. Eine Session, in der gerade ein Lauf arbeitet, wird dabei
+abgelehnt (409), nicht unter ihm weggeschnitten — im Browser `/undo force`,
+für den Fall, dass das Schloss die Leiche eines abgestürzten Prozesses ist.
+
+`/rename` und `/agent` gehen im Browser durch die Widgets, die es schon hat —
+die Session-Liste und den Agenten-Selektor —, damit das Kommando und der
+Knopf daneben nicht auseinanderlaufen. `/export` lädt dort herunter statt zu
+schreiben: einen Pfad auf der Platte des Servers kann der Browser nicht
+meinen, und er sagt das, statt ihn still zu ignorieren. `/retry` legt die
+Frage zurück ins Eingabefeld, statt sie sofort zu senden — eine Datei, die
+mitging, liegt auf der Platte des Betrachters, und nur der kann sie erneut
+anhängen.
 
 Plugin commands work there as well, and stay per-agent: the browser asks
 `/chat/commands?agent=<name>` for the list and `POST /chat/command` runs one.

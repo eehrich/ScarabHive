@@ -623,6 +623,14 @@ async def run_chat_turn(
 # agent_system.chat_commands so the web UI resolves a line exactly the way the
 # terminal does. Imported into this namespace because the REPL below (and its
 # tests) call them by these names.
+from agent_system.chat_actions import (  # noqa: E402
+    message_text,
+    one_line,
+    split_off_last_exchange,
+    starts_a_turn,
+    tool_call_summary,
+    transcript_markdown,
+)
 from agent_system.chat_commands import (  # noqa: E402
     CLI as _CLI_SURFACE,
     PluginCommand,
@@ -1585,21 +1593,10 @@ def _decode(text: Any) -> Any:
         return None
 
 
-def _one_line(value: Any, limit: int = 60) -> str:
-    """Compact single-line form of a tool argument or result value."""
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+_one_line = one_line
 
 
-def _tool_call_summary(call: Any) -> tuple[str, Any]:
-    """(name, arguments) of a tool call in either dict shape."""
-    if not isinstance(call, dict):
-        return "?", None
-    fn = call.get("function") or {}
-    # `or` rather than a get-default: an explicit null would slip through.
-    name = fn.get("name") or call.get("name") or "?"
-    return str(name), fn.get("arguments") or call.get("arguments")
+_tool_call_summary = tool_call_summary
 
 
 def _render_tool_call(renderer: ChatRenderer, call: Any, full: bool) -> None:
@@ -1663,20 +1660,8 @@ def _render_tool_result(renderer: ChatRenderer, message: Any, full: bool) -> Non
             renderer.println(f"    {line}", color="32")
 
 
-def _message_text(message: Any) -> str:
-    """Readable text of a ChatMessage whose content may be multimodal."""
-    content = getattr(message, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict):
-                parts.append(item.get("text") or f"[{item.get('type', 'part')}]")
-            else:
-                parts.append(getattr(item, "text", None) or f"[{getattr(item, 'type', 'part')}]")
-        return " ".join(p for p in parts if p)
-    return "" if content is None else str(content)
+#: One reader for both shapes of a message, shared with the web surface.
+_message_text = message_text
 
 
 def _session_messages(ctx: "_ChatContext") -> list:
@@ -1690,16 +1675,8 @@ def _session_messages(ctx: "_ChatContext") -> list:
         return []
 
 
-def _is_real_turn(message: Any) -> bool:
-    """A user message with something in it.
-
-    Every stored user message went to the agent: one that opens with a
-    command word was sent escaped ("//help me ..."), so hiding it left the
-    answer in /history without its question and made /last start a turn early.
-    """
-    if getattr(message, "role", None) != "user":
-        return False
-    return bool(_message_text(message).strip())
+#: /history and /last cut at the same place /undo does.
+_is_real_turn = starts_a_turn
 
 
 def _show_history(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> None:
@@ -1795,20 +1772,19 @@ def _drop_last_exchange(ctx: "_ChatContext") -> Optional[Any]:
     the next save. A retry that left the first attempt in the history would
     ask the model to improve on an answer it can still see.
     """
-    messages = _session_messages(ctx)
     tracker = getattr(ctx.agent, "_session_tracker", None)
     if tracker is None:
         return None
-    for i in range(len(messages) - 1, -1, -1):
-        if _is_real_turn(messages[i]):
-            try:
-                tracker.set_session_messages(ctx.session_id, messages[:i])
-            except Exception as e:
-                logger.error("Could not drop the last exchange: %s", e, exc_info=True)
-                print(f"Could not drop the last exchange: {e}")
-                return None
-            return messages[i]
-    return None
+    kept, dropped = split_off_last_exchange(_session_messages(ctx))
+    if dropped is None:
+        return None
+    try:
+        tracker.set_session_messages(ctx.session_id, kept)
+    except Exception as e:
+        logger.error("Could not drop the last exchange: %s", e, exc_info=True)
+        print(f"Could not drop the last exchange: {e}")
+        return None
+    return dropped
 
 
 def _export_transcript(ctx: "_ChatContext", payload: str) -> None:
@@ -1834,23 +1810,11 @@ def _export_transcript(ctx: "_ChatContext", payload: str) -> None:
         print(f"{path} exists already -- /export <path> writes somewhere else.")
         return
 
-    lines = [f"# Chat with {ctx.entry_name}", "",
-             f"Session `{ctx.session_id}` -- LLM: {ctx.llm_label()}", ""]
-    for message in messages:
-        role = getattr(message, "role", "?")
-        text = _message_text(message).strip()
-        if role == "user":
-            lines += ["## You", "", text, ""]
-        elif role == "assistant":
-            if text:
-                lines += ["## Agent", "", text, ""]
-            for call in getattr(message, "tool_calls", None) or []:
-                name, arguments = _tool_call_summary(call)
-                lines.append(f"- tool `{name}` {_one_line(arguments, 120)}")
-        elif role == "tool":
-            lines.append(f"  -> {_one_line(text, 120)}")
     try:
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        path.write_text(
+            transcript_markdown(messages, agent_name=ctx.entry_name,
+                                session_id=ctx.session_id, llm=ctx.llm_label()),
+            encoding="utf-8")
     except OSError as e:
         print(f"Could not write {path}: {e}")
         return

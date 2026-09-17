@@ -2693,6 +2693,83 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         finally:
             _let_go(owner_agent, held, user_id)
 
+    async def _session_agent_name(sid: str, user_id: str) -> Optional[str]:
+        """The agent a stored session ran with, or None while it has none.
+
+        Read off the record, which is where a session's agent lives
+        (cli_utils/session_defaults.py says the same for the terminal).
+        """
+        if not _session_service or not _session_service.session_manager:
+            return None
+        try:
+            record = await _session_service.session_manager.load_session(user_id, sid)
+        except Exception as e:
+            logging.getLogger(__name__).debug("No agent name for %s: %s", sid, e)
+            return None
+        return (record or {}).get("agent_name") or None
+
+    async def _drop_last_exchange_and_persist(owner_agent: Any, sid: str, user_id: str,
+                                              force: bool = False) -> Any:
+        """Take the last exchange out of a session, and save what is left.
+
+        The mirror of _append_and_persist, claim and save included -- and the
+        cut itself is chat_actions.split_off_last_exchange, the one the
+        terminal chat uses, so both surfaces end a turn in the same place.
+
+        A session that is RUNNING is refused before anything is touched.
+        _claim_session alone does not do it: holds nest inside a process, so a
+        run of THIS process lets the claim through -- and then writes its whole
+        message list back when it finishes, putting the dropped exchange
+        straight back while the browser shows it gone.
+        """
+        from .chat_actions import split_off_last_exchange
+
+        presence = presence_for(getattr(owner_agent, "system_config", None))
+        state = presence.get(sid, user_id) if presence is not None else None
+        if state and state["status"] != "idle" and not force:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Session {sid} is {state['status']} -- what it is writing "
+                       f"would put the exchange back. Try again once it is done.")
+
+        refusal, held = await _claim_session(owner_agent, sid, user_id, force)
+        if refusal:
+            raise HTTPException(status_code=409, detail=refusal)
+        try:
+            tracker = owner_agent._session_tracker
+            messages = tracker.get_session_messages(sid) or []
+            if not messages and _session_service:
+                # The copy in memory can be empty although the record is not:
+                # _claim_session re-reads only when the FILE moved, and a
+                # session this process wrote and no longer holds looks
+                # unchanged to it. Cutting that would answer "nothing to take
+                # back" about a conversation that is plainly on screen.
+                await _session_service.load_and_restore_session(owner_agent, user_id, sid)
+                messages = tracker.get_session_messages(sid) or []
+            kept, dropped = split_off_last_exchange(messages)
+            if dropped is None:
+                return None
+            tracker.set_session_messages(sid, kept)
+            if _session_service:
+                metadata = tracker.get_session_metadata(sid) or {}
+                # The agent's own default only where the record has none, and
+                # read defensively: Agent.agent_config may be None (the agent
+                # guards it itself), and reaching through it eagerly turns a
+                # /undo into a 500.
+                await _session_service.save_session(
+                    owner_agent,
+                    user_id,
+                    sid,
+                    metadata.get("agent_name") or owner_agent.name,
+                    metadata.get("llm_profile") or getattr(
+                        getattr(owner_agent, "agent_config", None),
+                        "default_llm_profile", None) or "default",
+                    was_new_session=False,
+                )
+            return dropped
+        finally:
+            _let_go(owner_agent, held, user_id)
+
     @app.post("/sessions")
     async def create_session():
         """Create a new session id for multi-turn conversations."""
@@ -3239,6 +3316,116 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             session_id=session_id,
             user_id=getattr(current_user, "username", None))
         return {"name": match.qualified, "text": text}
+
+    @app.post("/chat/undo")
+    async def chat_undo(request: Request, force: bool = Query(default=False)):
+        """Drop the last question and everything that answered it.
+
+        `/undo` and the cut half of `/retry`. The browser reloads a session
+        from disk on every message, so the record is what has to shrink --
+        and the agent's copy in memory with it, or the next save would put
+        the dropped turn straight back.
+
+        The text comes back so the caller can offer it again (`/retry` puts
+        it in the input). Whether it carried a file is said, not sent: the
+        browser attaches from the viewer's disk, and a data URL handed back
+        would be a second, silent upload.
+        """
+        from .chat_actions import message_text, message_role
+
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        body = await _parse_json_body(request)
+        if body is not None and not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        body = body or {}
+
+        session_id = body.get("session_id")
+        if not session_id or not isinstance(session_id, str):
+            raise HTTPException(status_code=400, detail="'session_id' is required")
+
+        # The agent the SESSION ran with, before the one the caller names:
+        # every agent carries its own SessionTracker, so cutting the wrong
+        # one leaves the exchange standing in the right one -- and its next
+        # save writes it back. The caller's name is the fallback for a session
+        # that has no record yet.
+        ran_with = await _session_agent_name(session_id, user_id)
+        target_agent = _chat_agent(request, ran_with or body.get("agent_name"))
+        if target_agent is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        # Against the tracker this endpoint is about to write, not the entry
+        # agent's: a session that is not persisted yet has no owner on disk,
+        # and the default tracker does not know it either -- so that check
+        # passes for anybody (the IDOR _verify_session_owner documents).
+        await _verify_session_owner(session_id, current_user,
+                                    getattr(target_agent, "_session_tracker", None))
+
+        dropped = await _drop_last_exchange_and_persist(
+            target_agent, session_id, user_id, force)
+        if dropped is None:
+            return {"session_id": session_id, "dropped": None}
+        content = getattr(dropped, "content", None)
+        return {
+            "session_id": session_id,
+            "dropped": {
+                "role": message_role(dropped),
+                "text": message_text(dropped),
+                "had_attachments": isinstance(content, list) and len(content) > 1,
+            },
+        }
+
+    @app.get("/chat/transcript")
+    async def chat_transcript(request: Request, session_id: str = Query(...)):
+        """The conversation as markdown -- `/export`, for whoever asks.
+
+        With the other /chat endpoints rather than under /sessions, because
+        this is what a chat command produces, and the rendering is the one
+        the terminal writes to a file (chat_actions.transcript_markdown).
+
+        Rendered from the RECORD, not from a running agent's memory: the
+        browser shows the record, and a transcript that disagrees with what
+        is on screen is worse than none. text/markdown with a filename, so a
+        browser saves it instead of painting it.
+        """
+        from .chat_actions import transcript_markdown
+
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        await _verify_session_owner(session_id, current_user)
+        if not _session_service or not _session_service.session_manager:
+            raise HTTPException(status_code=503, detail="No session storage")
+
+        # By the kind of failure, not by "anything went wrong": a corrupt
+        # record read as "no such session" would send someone looking for a
+        # session id that is right there in their list.
+        from .services.session_manager import SessionNotFoundError, SessionPermissionError
+
+        try:
+            record = await _session_service.session_manager.load_session(user_id, session_id)
+        except SessionNotFoundError:
+            raise HTTPException(status_code=404, detail=f"No session '{session_id}'")
+        except SessionPermissionError:
+            raise HTTPException(status_code=403, detail=f"Not your session '{session_id}'")
+
+        if not (record.get("messages") or []):
+            # A file holding nothing but a heading, reported as written, is
+            # what the terminal refuses too ("Nothing to export"). Reachable
+            # right after /undo takes the only exchange out.
+            raise HTTPException(
+                status_code=409,
+                detail=f"Session '{session_id}' has no messages yet")
+        markdown = transcript_markdown(
+            record.get("messages") or [],
+            agent_name=record.get("agent_name") or "agent",
+            session_id=session_id,
+            llm=record.get("llm_profile") or "",
+        )
+        return Response(
+            content=markdown,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition":
+                     f'attachment; filename="chat-{session_id}.md"'},
+        )
 
     # ===========================
     # Hook Introspection Endpoints

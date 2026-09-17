@@ -63,14 +63,14 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("resume", ("/resume",),
                 "continue an earlier session; bare takes the last one you left",
                 usage="/resume [id]"),
-    # Terminal-only, both of them: the browser picks its agent in a selector,
-    # and a command that disagrees with the selector is worse than none. A
-    # rename there belongs on the session list, not in the message box.
+    # Both surfaces, and both through what that surface already has: the
+    # browser renames through its session list and switches through its agent
+    # selector, so the command and the widget next to it cannot disagree.
     ChatCommand("rename", ("/rename",), "name this session (shown in /sessions)",
-                usage="/rename <title>", surfaces=(CLI,)),
+                usage="/rename <title>"),
     ChatCommand("agent", ("/agent",),
                 "agent of this chat: bare lists, a name switches (starts a new session)",
-                usage="/agent [name]", surfaces=(CLI,)),
+                usage="/agent [name]"),
     # No "/var" alias, though /cost and /hist set that precedent: "/var" is
     # also the head of a path a sysadmin agent gets typed at, and the short
     # form buys nothing the long one does not already give.
@@ -92,14 +92,15 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("history", ("/history", "/hist"), "show the last n exchanges (default 6)",
                 usage="/history [n]"),
     ChatCommand("last", ("/last",), "tool calls and results of the last turn, in full"),
-    # Terminal-only, like /attach: both rewrite what the agent holds in
-    # memory, and the browser reloads the session from disk on every message.
-    ChatCommand("undo", ("/undo",), "drop the last exchange from this session",
-                surfaces=(CLI,)),
-    ChatCommand("retry", ("/retry",), "drop the last exchange and ask it again",
-                surfaces=(CLI,)),
+    # The cut is the same on both surfaces (chat_actions), what it is applied
+    # to is not: the terminal shortens the agent's own message list and lets
+    # the next save follow, the browser asks the server to shorten the record
+    # and reloads it. /export writes a file there and downloads one here, so
+    # its [path] is a terminal thing -- the browser says so and saves anyway.
+    ChatCommand("undo", ("/undo",), "drop the last exchange from this session"),
+    ChatCommand("retry", ("/retry",), "drop the last exchange and ask it again"),
     ChatCommand("export", ("/export",), "write this conversation to a markdown file",
-                usage="/export [path]", surfaces=(CLI,)),
+                usage="/export [path]"),
     ChatCommand("attach", ("/attach",),
                 "attach a file to the NEXT message (repeat for more; "
                 "'/attach' lists, '/attach clear' empties)",

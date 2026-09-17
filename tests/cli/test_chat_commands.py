@@ -51,15 +51,12 @@ class TestCatalogue:
         web = {c.name for c in commands_for(WEB)}
         assert web < cli
         # attach takes paths on the server's own disk -- meaningless in a
-        # browser tab, which has the multipart upload instead. model and agent
-        # switch what the running chat talks to, which the browser does in its
-        # own selectors; rename belongs on its session list, not in the
-        # message box.
-        # undo/retry/export rewrite or read what the AGENT holds in memory;
-        # the browser reloads the session from disk on every message, and
-        # export would write on the server's disk, not the viewer's.
-        assert cli - web == {"exit", "attach", "model", "agent", "rename",
-                             "undo", "retry", "export"}
+        # browser tab, which has the multipart upload instead. model switches
+        # the LLM of the running chat, which the browser does in its own
+        # selector. Everything else IS offered in both places: a command the
+        # person finds in the terminal and not in the browser reads as broken,
+        # so a new one is built for both or it does not ship.
+        assert cli - web == {"exit", "attach", "model"}
 
 
 class TestParsing:
