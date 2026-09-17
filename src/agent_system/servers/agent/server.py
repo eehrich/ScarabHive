@@ -84,6 +84,44 @@ def _is_local_resource_exhaustion(exc: BaseException) -> bool:
     return False
 
 
+def _content_filter_as_error(assistant: Any, finish_reason: Optional[str], llm: Any) -> None:
+    """Mark a provider content-filter stop as an upstream error, in place.
+
+    The one rule for both paths of _call_llm_with_streaming. The filter is
+    deterministic per content: nudging the same model with "Continue" asks
+    the same question again, and a partial answer it cut is not a complete
+    one -- moving on is exactly what the fallback chain is for, and the
+    "error" key is what engages it.
+
+    Left alone: an answer that already carries an error, and one that carries
+    tool calls. Gemini reports a non-standard finish_reason while STILL
+    returning usable tool calls; httpx _format_response keeps those, and
+    erroring here would throw away a perfectly good turn.
+    """
+    if (finish_reason != "content_filter" or not isinstance(assistant, dict)
+            or "error" in assistant or assistant.get("tool_calls")):
+        return
+    assistant["error"] = {
+        "message": (f"Provider content filter blocked the response "
+                    f"(model={getattr(llm, 'model', '?')})"),
+        "type": "content_filter",
+    }
+
+
+def _name_the_model(event: dict, llm: Any) -> dict:
+    """Name on a thinking_complete the model that ran the call, in place.
+
+    A fallback or a walk around a blocked LLM runs on a client the caller never
+    handed in, and a surface pricing the call needs its model.
+    """
+    model = getattr(llm, "model", None)
+    if isinstance(model, str) and model:
+        event["model"] = model
+        batch = getattr(llm, "batch_provider", None)
+        event["batch"] = isinstance(batch, str) and bool(batch)
+    return event
+
+
 @dataclass
 class ConversationContext:
     """Context for agent conversation execution."""
@@ -1936,28 +1974,13 @@ class Agent(MCPServer):
                 yield status_event
 
             # The streaming assembler builds its assistant dict itself and
-            # never produces the "error" key that _format_response sets in the
-            # non-streaming path -- so the fallback-profile switch below was
-            # unreachable while streaming. Two finish reasons mean the same
-            # thing there as they do in _format_response: this model will not
-            # deliver, move on instead of nudging it with "Continue".
+            # never produces the "error" key that httpx _format_response sets
+            # for a content filter -- so the fallback-profile switch was
+            # unreachable while streaming.
+            _content_filter_as_error(final_assistant, final_finish_reason, llm)
             if final_assistant is not None and "error" not in final_assistant:
                 _model = getattr(llm, "model", "?")
-                if final_finish_reason == "content_filter" and not final_assistant.get(
-                    "tool_calls"
-                ):
-                    # Deterministic per content -- retrying the same model is
-                    # pointless, which is exactly what the fallback chain is for.
-                    # The tool_calls guard mirrors _format_response exactly:
-                    # Gemini reports a non-standard finish_reason while STILL
-                    # returning usable tool calls, and erroring there would
-                    # throw away a perfectly good turn.
-                    final_assistant["error"] = {
-                        "message": (f"Provider content filter blocked the streamed "
-                                    f"response (model={_model})"),
-                        "type": "content_filter",
-                    }
-                elif final_finish_reason == "incomplete_stream":
+                if final_finish_reason == "incomplete_stream":
                     # Deliberately NOT an error, not even when empty. An error
                     # here moves the rest of the run onto the fallback profile
                     # -- and for an agent with no fallback chain it ends the run
@@ -2051,6 +2074,9 @@ class Agent(MCPServer):
                 result["usage"] = llm_out["usage"]
             if llm_out.get("finish_reason"):
                 result["finish_reason"] = llm_out["finish_reason"]
+            # Not every blocking client turns the filter into an error itself
+            # (openai_responses only reports the reason).
+            _content_filter_as_error(result["assistant"], llm_out.get("finish_reason"), llm)
             yield result
 
     async def _execute_llm_loop(
@@ -2549,6 +2575,15 @@ class Agent(MCPServer):
                         error_msg = error_info.get("message", "Unknown LLM error")
                         error_type = error_info.get("type", "unknown")
                         logger.warning(f"LLM returned upstream error: {error_type} - {error_msg}")
+                        # Billed all the same: the failed call's usage still
+                        # reaches the caller's sum of the turn -- its content does not.
+                        if pending_thinking_complete and pending_thinking_complete.get("usage"):
+                            yield _name_the_model({
+                                "type": "thinking_complete",
+                                "step": pending_thinking_complete.get("step"),
+                                "assistant": {},
+                                "usage": pending_thinking_complete["usage"],
+                            }, current_llm)
 
                         taken = _take_fallback()
                         if taken:
@@ -2585,15 +2620,7 @@ class Agent(MCPServer):
                     # before this call went out.
                     model_health.release(current_llm, asked_at=health_asked_at)
                     if pending_thinking_complete:
-                        # Who answered: a fallback or a walk around a blocked
-                        # LLM runs on a client the caller never handed in, and
-                        # a surface pricing the call needs its model.
-                        answered_by = getattr(current_llm, "model", None)
-                        if isinstance(answered_by, str) and answered_by:
-                            pending_thinking_complete["model"] = answered_by
-                            batch = getattr(current_llm, "batch_provider", None)
-                            pending_thinking_complete["batch"] = isinstance(batch, str) and bool(batch)
-                        yield pending_thinking_complete
+                        yield _name_the_model(pending_thinking_complete, current_llm)
                     break
                     
                 except ReasoningLoopError as e:

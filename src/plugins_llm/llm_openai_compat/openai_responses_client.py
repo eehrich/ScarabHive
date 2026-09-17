@@ -867,8 +867,8 @@ class OpenAIResponsesClient(LLMClient):
             # it — so for every Responses model both guards were dead.
             #
             # No reason given -> "length", the conservative reading: it warns
-            # and fails fast on an empty answer, but does NOT switch the
-            # fallback profile for an hour the way "content_filter" does.
+            # and fails fast on an empty answer, but does NOT move the
+            # run onto the fallback profile the way "content_filter" does.
             # Guessing the heavier reason would punish the wrong model.
             result["finish_reason"] = _INCOMPLETE_REASON_TO_FINISH.get(
                 reason, reason or "length",

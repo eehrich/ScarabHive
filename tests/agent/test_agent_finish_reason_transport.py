@@ -10,6 +10,8 @@ openai_responses report finish_reason (anthropic and ollama still do not),
 so the guard is live for those providers. The transport is provider-agnostic
 regardless.
 """
+import copy
+
 import pytest
 from unittest.mock import AsyncMock
 
@@ -29,13 +31,14 @@ def _llm_system():
     return LLMSystemConfig(
         models={"gpt-4": LLMModelConfig(provider="openai", model="gpt-4",
                                         api_key="fake-key")},
-        profiles={"normal": LLMProfile(model_ref="gpt-4")},
+        profiles={"normal": LLMProfile(model_ref="gpt-4"),
+                  "backup": LLMProfile(model_ref="gpt-4")},
         default_profile="normal",
     )
 
 
-def _agent(max_steps=1):
-    agent_config = AgentConfig(max_steps=max_steps)
+def _agent(max_steps=1, llm_profile="normal"):
+    agent_config = AgentConfig(max_steps=max_steps, llm_profile=llm_profile)
     system_config = AgentSystemConfig(llm_system=_llm_system())
     mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
     return Agent("test_agent", system_config, mcp_config, MCPRegistry())
@@ -225,8 +228,8 @@ class TestStreamingErrorSurfacing:
     @pytest.mark.asyncio
     async def test_incomplete_stream_does_not_switch_the_profile(self):
         """A missing [DONE] marker is usually a transient hiccup. Turning it
-        into an upstream error would switch the fallback profile PERSISTENTLY
-        (an hour) and, for an agent without a fallback chain, end the run --
+        into an upstream error would move the run onto the fallback profile
+        and, for an agent without a fallback chain, end the run --
         where the existing empty-response guard simply retries. It is logged,
         not escalated."""
         agent = _agent()
@@ -311,3 +314,143 @@ class TestStreamingErrorSurfacing:
         events = await _collect(agent)
         completes = [e for e in events if e.get("type") == "thinking_complete"]
         assert "error" not in completes[0]["assistant"]
+
+
+_FILTERED_USAGE = {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290}
+
+
+class _FilteredLLM:
+    """Answers every call with finish_reason=content_filter -- streamed or
+    blocking, the same answer either way, so the two paths are comparable."""
+
+    model = "stub/filtered"
+
+    def __init__(self, streaming: bool, assistant: dict):
+        self.streaming = streaming
+        self.assistant = assistant
+        self.calls = 0
+
+    def supports_streaming(self) -> bool:
+        return self.streaming
+
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
+        if self.streaming:
+            raise AssertionError("chat_tools() must not be reached on the streaming path")
+        self.calls += 1
+        return {"assistant": copy.deepcopy(self.assistant), "finish_reason": "content_filter",
+                "usage": dict(_FILTERED_USAGE)}
+
+    async def chat_tools_streaming(self, messages, tools, cancellation_token=None,
+                                   status_scope=None):
+        if not self.streaming:
+            raise AssertionError("chat_tools_streaming() must not be reached on the blocking path")
+        self.calls += 1
+        yield {"type": "final", "assistant": copy.deepcopy(self.assistant),
+               "finish_reason": "content_filter", "usage": dict(_FILTERED_USAGE)}
+
+
+class _BackupLLM:
+    model = "stub/backup"
+
+    def __init__(self):
+        self.calls = 0
+
+    def supports_streaming(self) -> bool:
+        return False
+
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
+        self.calls += 1
+        return {"assistant": {"role": "assistant", "content": "backup answer"},
+                "finish_reason": "stop"}
+
+
+_EMPTY = {"role": "assistant", "content": ""}
+_PARTIAL = {"role": "assistant", "content": "half of a sentence the filter"}
+_WITH_TOOL_CALLS = {"role": "assistant", "content": "",
+                    "tool_calls": [{"id": "t1", "type": "function",
+                                    "function": {"name": "f", "arguments": "{}"}}]}
+_PATHS = pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "blocking"])
+_FILTERED = pytest.mark.parametrize("assistant", [_EMPTY, _PARTIAL], ids=["empty", "partial"])
+
+
+class TestContentFilterIsOneRuleForBothPaths:
+    """The blocking path only copied finish_reason=content_filter along. An
+    empty answer was then nudged with "Continue" until the empty-response guard
+    gave up -- the fallback chain never saw it -- and a partial one was
+    delivered as complete. Reachable through openai_responses with
+    ``streaming: false``, whose _format_response reports the reason without an
+    error key."""
+
+    @_FILTERED
+    @pytest.mark.asyncio
+    async def test_without_a_chain_both_paths_end_on_the_same_error(self, assistant):
+        outcome = {}
+        for streaming in (True, False):
+            llm = _FilteredLLM(streaming, assistant)
+            agent = _agent(max_steps=3)
+            agent.llm = llm
+            events = await _collect(agent)
+            assert llm.calls == 1, (
+                f"streaming={streaming}: the filtered model was asked {llm.calls} times")
+            outcome[streaming] = [e for e in events if e.get("type") in ("error", "final")]
+        assert [e.get("error_type") for e in outcome[True]] == ["content_filter"], outcome[True]
+        assert outcome[False] == outcome[True]
+
+    @_PATHS
+    @_FILTERED
+    @pytest.mark.asyncio
+    async def test_the_fallback_answers_instead(self, streaming, assistant):
+        llm = _FilteredLLM(streaming, assistant)
+        agent = _agent(max_steps=3, llm_profile=["normal", "backup"])
+        agent.llm = llm
+        backup = _BackupLLM()
+        built = []
+        agent._create_fallback_llm = lambda profile: built.append(profile) or backup
+
+        events = await _collect(agent)
+
+        assert llm.calls == 1
+        assert built == ["backup"]
+        assert backup.calls == 1
+        assert not [e for e in events if e.get("type") == "error"]
+        assert [e["summary"] for e in events if e.get("type") == "final"] == ["backup answer"]
+
+    @_PATHS
+    @_FILTERED
+    @pytest.mark.asyncio
+    async def test_the_blocked_call_is_still_counted(self, streaming, assistant):
+        """The provider bills the blocked call: its usage reaches the caller's
+        sum of the turn under its own model, its content never does -- with a
+        chain and without one."""
+        for chain in (["normal", "backup"], "normal"):
+            agent = _agent(max_steps=3, llm_profile=chain)
+            agent.llm = _FilteredLLM(streaming, assistant)
+            agent._create_fallback_llm = lambda profile: _BackupLLM()
+
+            events = await _collect(agent)
+
+            counted = [e for e in events if e.get("type") == "thinking_complete"
+                       and e.get("usage") == _FILTERED_USAGE]
+            assert len(counted) == 1, (chain, events)
+            assert counted[0]["model"] == "stub/filtered"
+            assert counted[0]["assistant"] == {}
+
+    @_PATHS
+    @pytest.mark.asyncio
+    async def test_tool_calls_keep_the_turn(self, streaming):
+        """Gemini reports a non-standard finish_reason while still returning
+        usable tool calls; httpx _format_response keeps them, so neither path
+        may throw the turn away."""
+        llm = _FilteredLLM(streaming, _WITH_TOOL_CALLS)
+        agent = _agent(max_steps=1, llm_profile=["normal", "backup"])
+        agent.llm = llm
+        built = []
+        agent._create_fallback_llm = lambda profile: built.append(profile) or _BackupLLM()
+
+        events = await _collect(agent)
+
+        completes = [e for e in events if e.get("type") == "thinking_complete"]
+        assert completes, "the turn never completed"
+        assert completes[0]["assistant"]["tool_calls"] == _WITH_TOOL_CALLS["tool_calls"]
+        assert "error" not in completes[0]["assistant"]
+        assert built == [], f"a turn with tool calls switched profiles: {built}"
