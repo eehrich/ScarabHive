@@ -34,7 +34,7 @@ from plugins.agent_editor.tests.test_plugin_agent_editor_store import build_tree
 
 BASE = "/plugins/agent_editor"
 ROW_KEYS = {"name", "type", "base", "enabled", "description", "visibility", "category", "tags", "group", "file",
-            "files", "editable", "readonly_reason", "state", "changed", "restart"}
+            "files", "editable", "readonly_reason", "state", "changed", "restart", "problems"}
 DETAIL_KEYS = {"name", "file", "files", "version", "editable", "readonly_reason", "form_reason", "own", "parent", "inherited",
                "effective", "state", "changed", "reload_fields", "restart", "children", "spawnable", "prompt"}
 
@@ -273,6 +273,7 @@ def test_rows_list_the_agents_with_file_group_and_editability(web):
         "description": "Writes things", "visibility": "ui", "category": None, "tags": ["prose", "draft"],
         "group": "config", "file": "config/agents/team.yaml", "files": ["config/agents/team.yaml"],
         "editable": True, "readonly_reason": None, "state": "in_sync", "changed": [], "restart": False,
+        "problems": ["Matches no tool: notes"],  # no server of that name runs
     }
     assert (by_name["critic"]["type"], by_name["critic"]["base"], by_name["critic"]["visibility"]) == ("writer", "basic_agent", "ui")
     assert (by_name["demo_agent"]["group"], by_name["demo_agent"]["state"]) == ("demo", "off")
@@ -317,6 +318,97 @@ def test_a_delete_between_two_rows_does_not_break_the_list(db, tree, tmp_path, m
     monkeypatch.setattr(Store, "snapshot", snapshot_then_delete)
     assert "helper" in rows(web)
     assert "helper" not in rows(web)
+
+
+SHAKY = """\
+external_servers:
+  remote_servers:
+    ext_on: {enabled: true, transport: stdio, command: x}
+    ext_off: {enabled: false}
+plugins:
+  servers:
+    shaky:
+      type: basic_agent
+      enabled: true
+      agent_config:
+        llm_profile: [fast, nope, "${AGENT_EDITOR_TEST_KEY}"]
+        llm_profile_advanced: [slow, gone]
+        system_template: config/prompts/missing.md
+        skills: {always: [known, ghost], on_demand: [spook, ghost]}
+        tools: {allowed: ["files/*", "web/nothing", "ext_on.*", "ext_off.*", "ext_on", "ext_o*", "ext_off*", "ext_on.ech?", "zzz*", "ext_on.", "[a]*"],
+                blocked: ["files/none", "web/web_fetch", "ext_off.x"]}
+    steady:
+      type: basic_agent
+      agent_config:
+        tools: {allowed: ["files/*", "web/nothing", "ext_on.*", "ext_off.*", "ext_on", "ext_o*", "ext_off*", "ext_on.ech?", "zzz*", "ext_on.", "[a]*"]}
+    broken:
+      type: basic_agent
+      agent_config:
+        tools: {allowed: ["+a", "b"]}
+"""
+
+
+def test_problems_name_what_the_editor_warns_about(db, tree, tmp_path, monkeypatch):
+    (tmp_path / "config/agents/shaky.yaml").write_text(SHAKY, encoding="utf-8")
+    monkeypatch.setattr(sources, "skills", lambda config: [{"name": "known", "description": ""}])
+    answer = make_client(tree, started_app_or_none(tree)).get(f"{BASE}/agents", headers=as_user("root"))
+    listed = {row["name"]: row for row in answer.json()["agents"]}
+    assert listed["shaky"]["problems"] == [
+        "Unknown model profile: nope", "Unknown model profile: ${AGENT_EDITOR_TEST_KEY}", "Unknown model profile: gone",
+        "Prompt template not found: config/prompts/missing.md", "Unknown skill: ghost", "Unknown skill: spook",
+        "Matches no tool: web/nothing", "Matches no tool: ext_on", "Matches no tool: ext_on.ech?", "Matches no tool: zzz*",
+        "Matches no tool: ext_on.", "Matches no tool: [a]*", "Matches no tool: files/none",
+        "External server is off: ext_off.*", "External server is off: ext_off*",  # an external server's tools are not listed: ext_on.* is not judged
+    ]
+    assert listed["steady"]["problems"] == [  # the same allowed list, other blocked
+        "Matches no tool: web/nothing", "Matches no tool: ext_on", "Matches no tool: ext_on.ech?", "Matches no tool: zzz*",
+        "Matches no tool: ext_on.", "Matches no tool: [a]*",
+        "External server is off: ext_off.*", "External server is off: ext_off*",
+    ]
+    assert listed["broken"]["problems"] == [f"Does not resolve: {listed_error(answer, 'broken')}"]
+    assert "mixes list merge syntax" in listed["broken"]["problems"][0]
+    assert listed["helper"]["problems"] == [] and SECRET not in answer.text
+
+
+def listed_error(answer, name: str) -> str:
+    return next(error for error in answer.json()["errors"] if error.startswith(f"{name}: "))[len(name) + 2:]
+
+
+@pytest.mark.parametrize("llm", ["llm_system:\n  default_profile: fast\n", None], ids=["no profiles", "no llm_system"])
+def test_without_any_profile_every_chain_member_is_a_problem(db, tree, tmp_path, llm):
+    path = tmp_path / "config/llm.yaml"
+    if llm is None:
+        path.unlink()  # no llm_system at all (an empty file would count as an empty one)
+    else:
+        path.write_text(llm, encoding="utf-8")
+    assert (load_settings(str(tree)).llm_system is None) is (llm is None)
+    web = make_client(tree, started_app_or_none(tree))
+    assert [text for text in rows(web)["helper"]["problems"] if "profile" in text] == ["Unknown model profile: fast"]
+    assert web.get(f"{BASE}/meta", headers=as_user("root")).json()["profiles"] == []
+
+
+def test_patterns_for_external_servers_are_not_judged_against_the_catalogue(db, tree, tmp_path):
+    (tmp_path / "config/agents/shaky.yaml").write_text(SHAKY, encoding="utf-8")
+    allowed = ["files/*", "web/nothing", "ext_on.*", "ext_off.*", "ext_on", "ext_on/*", "ext_on.echo", "ext_o*", "ext_off*",
+               "ext_on.ech?", "*.x", "zzz*", "ext*/*", "ext_on.", "[a]*", "ext_o*.echo*", "ext_on.x/*"]
+    answer = effective(make_client(tree, started_app_or_none(tree)), name="shaky", allowed=allowed, blocked=["files/none"])
+    # external tools are reached only by the exact dotted name or a * glob
+    assert answer["unmatched"] == ["web/nothing", "ext_on", "ext_on/*", "ext_on.ech?", "*.x", "zzz*", "ext*/*",
+                                   "ext_on.", "[a]*", "ext_on.x/*", "files/none"]
+    assert answer["external"] == {"ext_on.*": True, "ext_off.*": False, "ext_on.echo": True, "ext_o*": True,
+                                  "ext_off*": False, "ext_o*.echo*": True}
+    assert answer["counts"]["ext_on.*"] == 0
+
+
+def test_a_failing_tool_catalogue_leaves_the_list_and_says_the_patterns_went_unchecked(web, monkeypatch):
+    async def failing(state):
+        raise RuntimeError("registry gone")
+
+    monkeypatch.setattr(sources, "tool_catalog", failing)
+    answer = web.get(f"{BASE}/agents", headers=as_user("root")).json()
+    by_name = {row["name"]: row for row in answer["agents"]}
+    assert by_name["writer"]["problems"] == []
+    assert answer["errors"] == ["Tool patterns were not checked, the tool catalogue failed: registry gone"]
 
 
 def test_the_detail_separates_own_inherited_and_effective(web, tmp_path):
@@ -555,7 +647,7 @@ def effective(web, **body) -> dict:
 
 def test_effective_tools_merge_with_what_the_entry_inherits(web):
     inherited = effective(web, name="critic", allowed=None, blocked=None)
-    assert set(inherited) == {"allowed", "blocked", "tools", "per_tool", "counts", "unmatched"}
+    assert set(inherited) == {"allowed", "blocked", "tools", "per_tool", "counts", "unmatched", "external"}
     assert inherited["allowed"] == ["files/*", "notes"]
     assert inherited["tools"] == ["files/files_delete_file", "files/files_read_file"]
     assert (inherited["counts"], inherited["unmatched"]) == ({"files/*": 2, "notes": 0}, ["notes"])
@@ -733,7 +825,9 @@ def test_the_loader_report_stays_quiet_in_requests(db, tree, tmp_path, caplog):
     assert web.get(f"{BASE}/inherited", headers=as_user("root"), params={"type": "loop_a"}).status_code in (200, 422)
     assert web.post(f"{BASE}/tools/effective", headers=as_user("root"),
                     json={"name": "loop_a", "allowed": ["files/*"]}).status_code in (200, 422)
-    assert "loop_a" not in caplog.text
+    # the loader's own records only: an earlier test may have httpx log request URLs, which name loop_a too
+    loader = load_settings.__module__
+    assert not [record for record in caplog.records if record.name.startswith(loader) and "loop_a" in record.getMessage()]
 
 
 def test_a_write_error_hides_a_value_only_the_files_name(db, tree, tmp_path):

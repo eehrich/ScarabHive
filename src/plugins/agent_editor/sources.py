@@ -2,6 +2,7 @@
 state of the running app. Everything is read from the registries the app itself uses."""
 from __future__ import annotations
 
+import fnmatch
 from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
@@ -142,7 +143,7 @@ def profiles(config: AgentSystemConfig) -> list[dict]:
     """The shape of GET /llm/profiles, from the given config."""
     llm = config.llm_system
     rows = []
-    for name, profile in (llm.profiles or {}).items():
+    for name, profile in ((llm.profiles if llm is not None else None) or {}).items():
         model = (llm.models or {}).get(profile.model_ref)
         rows.append({"name": name, "model_ref": profile.model_ref, "provider": model.provider if model else None,
                      "model": model.model if model else None, "description": profile.description or name})
@@ -236,10 +237,76 @@ async def tool_catalog(state: Any) -> list[dict]:
     return rows
 
 
-def effective_tools(catalog: list[dict], allowed: list[str], blocked: list[str]) -> dict:
+def external_servers(config: AgentSystemConfig) -> dict[str, bool]:
+    """The external MCP servers of the loaded config (`external_servers.remote_servers`, whichever file declares
+    them), each with whether it is enabled."""
+    remote = getattr(config.external_servers, "remote_servers", None) or {}
+    return {name: server.enabled for name, server in remote.items()}
+
+
+def problems(store: Store, snap: Snapshot, name: str, skill_names: set[str],
+             tools: Optional[Callable[[list[str], list[str]], dict]]) -> list[str]:
+    """What the editor warns about for this agent, for the list's filter: an entry that does not resolve, profiles
+    that do not exist, a missing prompt template, unknown skills, and (with `tools`, effective_tools for a pair of
+    lists) tool patterns that match nothing or name an external server that is off."""
+    if name in snap.resolve_errors:
+        return [f"Does not resolve: {snap.resolve_errors[name]}"]
+    resolved = snap.resolved.get(name)
+    agent = resolved.agent_config if resolved is not None else None
+    if agent is None:
+        return []
+    # no profiles at all is no exception here, unlike the core's log check: every chain fails, as the model tab says
+    profile_names = set(getattr(snap.config.llm_system, "profiles", None) or {})
+    chain = [agent.llm_profile] if isinstance(agent.llm_profile, str) else list(agent.llm_profile)
+    found = [f"Unknown model profile: {profile}" for profile in dict.fromkeys(chain + (agent.llm_profile_advanced or []))
+             if profile not in profile_names]
+    if agent.system_template and not agent.system_prompt and not (store.root / agent.system_template).is_file():
+        found.append(f"Prompt template not found: {store.rel(store.root / agent.system_template)}")
+    if agent.skills is not None:
+        found += [f"Unknown skill: {skill}" for skill in dict.fromkeys(agent.skills.always + agent.skills.on_demand)
+                  if skill not in skill_names]
+    if tools is not None:
+        result = tools(list(agent.tools.allowed or []), list(agent.tools.blocked or []))
+        found += [f"Matches no tool: {pattern}" for pattern in result["unmatched"]]
+        # a blocked pattern for a server that is off blocks nothing yet: no problem
+        found += [f"External server is off: {pattern}" for pattern, on in result["external"].items()
+                  if not on and pattern in result["allowed"]]
+    return found
+
+
+def external_reach(pattern: str, servers: dict[str, bool]) -> Optional[bool]:
+    """Whether a pattern can grant a tool of a server in `servers` ({name: enabled}): None when it cannot, else
+    whether one of the servers it can reach is enabled.
+
+    An external tool is `server.tool` to discovery and `server.tool` + `server_tool` to the tool filter
+    (tool_schema_builder). Measured against both: only the exact dotted name and a pattern ending in `*` pass both --
+    `*.echo` and `everything.ech?` pass discovery and die in the filter, a `/` never matches at all. Which tools a
+    server has is unknown here, so a pattern that ends in `*` counts as reaching every server its head can match
+    (fnmatch, as the runtime matches, case included).
+    """
+    if "/" in pattern:
+        return None
+    if not any(character in pattern for character in "*?["):
+        head, dot, tool = pattern.partition(".")
+        return servers.get(head) if dot and tool else None
+    if not pattern.endswith("*"):
+        return None
+    head, dot, _ = pattern.partition(".")
+    # with a dot the head faces the server name, without one the whole pattern faces `server.` and the `*` takes the rest
+    reached = [on for name, on in servers.items()
+               if (fnmatch.fnmatch(name, head) if dot else fnmatch.fnmatch(f"{name}.", pattern))]
+    return any(reached) if reached else None
+
+
+def effective_tools(catalog: list[dict], allowed: list[str], blocked: list[str],
+                    external: Optional[dict[str, bool]] = None) -> dict:
     """Which catalog tools an agent with these lists gets, in the agent's order: discovery lets a server through
     when the whole allowed list matches it, the schema build keeps its tools the whole list matches, then drops the
     blocked ones (a tool rule, no server pass).
+
+    A pattern that names no catalogue tool but can reach a server of `external` (`everything.*`, `ever*`; see
+    external_reach) is not judged: the catalogue holds no external tools. `external` maps such patterns to whether a
+    server they reach is enabled.
 
     `per_tool` names, for every tool a pattern matches, the allowed patterns that grant it (within the server pass)
     and the blocked patterns that match it (granted or not); `counts` is how many tools each pattern names there.
@@ -260,11 +327,14 @@ def effective_tools(catalog: list[dict], allowed: list[str], blocked: list[str])
                 per_tool[f"{server}/{name}"] = {"allowed_by": allowed_by, "blocked_by": blocked_by}
             if allowed_by and not blocked_by:
                 tools.append(f"{server}/{name}")
+    reach = {pattern: external_reach(pattern, external or {}) for pattern in counts if not counts[pattern]}
+    outside = {pattern: on for pattern, on in reach.items() if on is not None}
     return {
         "allowed": allowed,
         "blocked": blocked,
         "tools": tools,
         "per_tool": per_tool,
         "counts": counts,
-        "unmatched": [pattern for pattern in dict.fromkeys(allowed + blocked) if not counts[pattern]],
+        "unmatched": [pattern for pattern in dict.fromkeys(allowed + blocked) if not counts[pattern] and pattern not in outside],
+        "external": outside,
     }

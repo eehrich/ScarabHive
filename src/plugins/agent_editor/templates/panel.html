@@ -3,13 +3,13 @@
 {% block title %}Agent Editor{% endblock %}
 {% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
 {% block toolbar %}{% if auth_enabled %}
-<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="reloadConfig" title="Apply what needs no restart to the running agents">{{ icon('rotate-ccw', size='sm') }} Reload config</button>
+<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="reloadConfig" title="Apply what needs no restart to the active agents">{{ icon('rotate-ccw', size='sm') }} Reload config</button>
 <pk-refresh interval="30"></pk-refresh>
 {% endif %}{% endblock %}
 {% block content %}
 {% if auth_enabled %}
-<div class="ae-layout">
-  <nav class="ae-side" aria-label="Agents">
+<div class="ae-layout pk-sidebar-layout">
+  <nav class="ae-side pk-sidebar" aria-label="Agents">
     <div class="pk-row ae-side-top">
       <label class="pk-search pk-grow">{{ icon('search') }}<input id="search" class="pk-input pk-input--sm" type="search" placeholder="Search agents" aria-label="Search agents"></label>
       <button type="button" class="pk-btn pk-btn--sm pk-btn--primary" id="create" title="New agent">{{ icon('plus', size='sm') }} New</button>
@@ -17,6 +17,8 @@
     <select id="filter" class="pk-select pk-select--sm" aria-label="Show">
       <option value="all">All agents</option>
       <option value="enabled">Enabled</option>
+      <option value="disabled">Disabled</option>
+      <option value="problems">Has problems</option>
       <option value="restart">Needs restart</option>
       <option value="readonly">Read-only</option>
     </select>
@@ -34,6 +36,7 @@
           <div id="tabs" class="pk-tabs" role="tablist" data-pk-tabs aria-label="Agent settings">
             <button type="button" class="pk-tab" role="tab" id="tabButton-general" aria-selected="true" aria-controls="tab-general" data-tab="general">General</button>
             <button type="button" class="pk-tab" role="tab" id="tabButton-model" aria-selected="false" aria-controls="tab-model" data-tab="model">Model</button>
+            <button type="button" class="pk-tab" role="tab" id="tabButton-run" aria-selected="false" aria-controls="tab-run" data-tab="run">Run</button>
             <button type="button" class="pk-tab" role="tab" id="tabButton-tools" aria-selected="false" aria-controls="tab-tools" data-tab="tools">Tools <span class="pk-tab-count" id="toolTabCount"></span></button>
             <button type="button" class="pk-tab" id="tabButton-subagents" aria-selected="false" aria-controls="tab-subagents" data-tab="subagents" hidden>Sub-agents</button>
             <button type="button" class="pk-tab" role="tab" id="tabButton-prompt" aria-selected="false" aria-controls="tab-prompt" data-tab="prompt">Prompt</button>
@@ -42,6 +45,7 @@
           </div>
           <section id="tab-general" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-general"></section>
           <section id="tab-model" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-model" hidden></section>
+          <section id="tab-run" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-run" hidden></section>
           <section id="tab-tools" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-tools" hidden></section>
           <section id="tab-subagents" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-subagents" hidden></section>
           <section id="tab-prompt" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-prompt" hidden></section>

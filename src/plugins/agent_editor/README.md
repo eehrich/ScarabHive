@@ -21,19 +21,39 @@ Opened from the panel launcher (category *Agents & tools*) or at `/plugins/agent
 declaration). For every other entry its final type decides: `agent`, the lazy plugin types, and the types all of
 whose built instances are agents. A type that built agents and plain servers (`writer_issues`) is no agent class.
 
-**Left:** search, **New** (blank, a copy, or a child that inherits from another agent), a filter (all / enabled /
-needs restart / read-only) and the agents grouped by where they live — `config` for everything under the config
+**Left** (the kit's side pane: its corner sets the width, which is kept for the next visit): search, **New** (blank,
+a copy, or a child that inherits from another agent), a filter (all / enabled / disabled / has problems / needs
+restart / read-only) and the agents grouped by where they live — `config` for everything under the config
 directory, the plugin name for `src/plugins*/<plugin>/agents/`. Each row shows the description and badges for *off*,
-*new*, *restart* and *read-only*. **Reload config** in the toolbar calls the core `POST /admin/reload-config`.
+*new*, *restart*, *read-only* and *N problems* (the problems in its tooltip). A problem is what the editor warns
+about, read from the files as saved: an entry that does not resolve, a profile of a chain that does not exist (any
+profile, when the config defines none), a
+missing prompt template, an unknown skill, an allowed or blocked pattern that matches no tool of the running app,
+a pattern for an external MCP server that is off. A pattern for an external server is not judged otherwise: the
+editor lists no external tools (they come from a live connection), and the Tools tab marks it *external, not
+checked*. The servers come from `external_servers.remote_servers` of the loaded config, whichever file declares
+them; a pattern reaches them the way the runtime lets it — the exact dotted name (`everything.echo`) or a pattern
+ending in `*` (`everything.*`, `ever*`), never a bare `everything`, `everything/*`, `*.echo` or `everything.ech?`
+(those pass discovery and die in the tool filter).
+**Reload config** in the toolbar calls the core `POST /admin/reload-config`.
 
 **Right:** the selected agent. The head stays in place while a tab scrolls: the name, its base (the parent agent or
-the plugin class), its file, how it relates to the running app (*Running*, *Running with older settings*, *Not
-running yet*, *Disabled*, *Still running, gone from disk*), and Revert / Save. A banner says what a restart or a
+the plugin class), its file, how it relates to the running app (*Active*, *Active with older settings*, *Not
+active yet*, *Disabled*, *Still active, gone from disk* — active: started and ready, not necessarily busy), and
+Revert / Save. A banner says what a restart or a
 config reload would apply, with a **Reload config** button when a reload applies something. Tabs:
 
 - **General** — enabled, base, description; visibility, category, tags.
-- **Model** — the model chain (primary and fallbacks) and the advanced chain; `max_steps`,
-  `fallback_recovery_seconds`, `llm_params`.
+- **Model** — the model chain (primary and fallbacks) and the advanced chain; `fallback_recovery_seconds`,
+  `llm_params`.
+- **Run** — the core's run settings, key by key: `max_steps`; auto-escalation (`auto_escalate_on_stuck`,
+  `escalate_error_streak`, `escalate_rounds`, `escalate_max_calls`, with a note when it cannot run: no advanced chain,
+  one that starts with the model chain's profile, steps or calls at 0, or chains of a parent that does not resolve);
+  `loop_detection`; `reasoning_loop`; the `timeouts` the agent reads (`status_queue_put_timeout` is read nowhere and
+  has no field). The models take any number; the fields keep to what the runtime can use (a negative history size
+  fails every request, a threshold of 0 turns a detector off unseen), mark anything else and hold Save back; such a
+  typed number counts as an unsaved change. Known gap: switching loop detection off still leaves the sequence check
+  running (core, `Agent.__init__`; reported).
 - **Tools** (the tab shows how many tools reach the agent) — allowed and blocked lists, each with a source:
   inherited, extended (`+`/`!` entries on top of the inherited list) or an own list. The tree can be searched (server
   names, plugin types, tool names and descriptions) and narrowed to the servers in the list or not in it. It offers
@@ -62,8 +82,8 @@ config reload would apply, with a **Reload config** button when a reload applies
   search and a filter for the selected ones).
 - **Hooks** — hooks on or off for the agent, and per hook an override: on/off, and its own settings as YAML. The
   table can be searched and narrowed by hook type and by state for this agent (set here, on, off).
-- **YAML** — the agent's own entry as YAML, for every key without a form control (timeouts, loop detection,
-  escalation, plugin-specific keys).
+- **YAML** — the agent's own entry as YAML, for every key without a form control (`self_tool_descriptions`,
+  plugin-specific keys).
 
 The YAML fields are coloured with the kit's `yamlCode` (a block scalar keeps its colour over blank lines). An error
 under a YAML field is about the text it was shown for: typing on hides it, leaving or saving parses again. An
@@ -152,9 +172,9 @@ is one (a config reload changes that one).
 |---|---|
 | `in_sync` | disk and app agree |
 | `changed` | they differ; the changed keys are listed — `agent_config` keys by name (`max_steps`, with `tools.allowed`, `hooks.overrides`, `skills.always` one level down), other keys by name, mappings one level down (`metadata.visibility`, `config.depth`) |
-| `new` | enabled on disk, not running — needs a restart |
-| `removed` | running, but disabled or gone on disk — needs a restart |
-| `off` | disabled and not running |
+| `new` | enabled on disk, not started — needs a restart |
+| `removed` | started, but disabled or gone on disk — needs a restart |
+| `off` | disabled and not started |
 
 **Reload config** (`POST /admin/reload-config`) applies only `max_steps`, `fallback_recovery_seconds`,
 `auto_escalate_on_stuck`, `escalate_rounds`, `escalate_max_calls`, `escalate_error_streak`, and only to agents that
@@ -180,7 +200,7 @@ All under `/plugins/agent_editor/`, JSON in and out. Error `detail` is always a 
 | Method | Path | Does |
 |---|---|---|
 | `GET` | `/` | the panel |
-| `GET` | `/agents` | `{agents: [row], errors}` — name, type, base, enabled, description, visibility, category, tags, group, file(s), editable, readonly_reason, state, changed, restart |
+| `GET` | `/agents` | `{agents: [row], errors}` — name, type, base, enabled, description, visibility, category, tags, group, file(s), editable, readonly_reason, state, changed, restart, problems; a failed tool catalogue leaves the patterns unchecked and says so in `errors` |
 | `GET` | `/agents/{name}` | `own`, `inherited` (default_config ⊕ parent chain, `enabled` false), `effective`, parent, children, version, live state with `reload_fields`, sub-agent access, prompt file, `form_reason` (why the form cannot save the entry, or null); `404` for an entry that is no agent |
 | `GET` | `/inherited?type=` | `{inherited}` — what an entry of that type gets without keys of its own: a server's resolved entry, or default_config with a plugin type; without `type`, `basic_agent` (the loader's default); `enabled` false |
 | `POST` | `/agents` | create: `{name, entry, source?, dry_run}` → `{name, file, diff, version?}` |
@@ -192,7 +212,7 @@ All under `/plugins/agent_editor/`, JSON in and out. Error `detail` is always a 
 | `PUT` | `/agents/{name}/spawnable` | `{sam, allowed, version, dry_run}` → `{diff, version?}`; `version` is the manager file's |
 | `GET` | `/meta` | agent classes, LLM profiles, skills, hooks (one row per name, with its `types`), prompt files, visibility values, reloadable fields, `sub_agents` (the manager plugin is installed) |
 | `GET` | `/tools` | `{servers: [{server, type, tools: [{name, description}]}]}` — the servers tool discovery finds |
-| `POST` | `/tools/effective` | `{name?, type?, allowed, blocked}` → `{allowed, blocked, tools, per_tool, counts, unmatched}`: the merged lists, the granted `server/<tool>` paths, per named tool the patterns that grant (`allowed_by`) and block (`blocked_by`) it, tools per pattern, and the patterns (allowed or blocked) that name nothing. Sent lists are read as the loader reads a file (`${VAR}` expanded), so a masked list copied into the entry still matches. A list sent as null is the inherited one; a missing `type` is the entry's type on disk, `"type": null` means no own type (`basic_agent`) |
+| `POST` | `/tools/effective` | `{name?, type?, allowed, blocked}` → `{allowed, blocked, tools, per_tool, counts, unmatched, external}`: the merged lists, the granted `server/<tool>` paths, per named tool the patterns that grant (`allowed_by`) and block (`blocked_by`) it, tools per pattern, the patterns (allowed or blocked) that name nothing, and the patterns for external MCP servers with whether their server is enabled (not judged against the catalogue). Sent lists are read as the loader reads a file (`${VAR}` expanded), so a masked list copied into the entry still matches. A list sent as null is the inherited one; a missing `type` is the entry's type on disk, `"type": null` means no own type (`basic_agent`) |
 | `GET` | `/prompt?path=&agent=` | a template file; `./` paths relative to the agent's file |
 | `POST` | `/yaml` | `{entry}` → `{yaml}` |
 | `POST` | `/yaml/parse` | `{yaml}` → `{entry}` |

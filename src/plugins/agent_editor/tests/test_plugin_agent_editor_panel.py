@@ -323,11 +323,14 @@ def results(tmp_path_factory):
 
 EXPECTED = [
     'the list groups the agents by where they are defined, and search and filter narrow it',
+    'the list marks the agents with problems and names them, and the filter shows only those',
+    'the agent list keeps the width it was dragged to across a reload, and a narrow panel stacks it full width',
     'descriptions from the files are drawn as text, never as markup',
     'a selected agent shows its own values apart from the inherited ones',
     'an edited field marks the form dirty, and Save writes the diff it showed into the file',
     'resetting a field to the inherited value removes its key from the file',
     'the model chain adds, reorders and removes profiles',
+    'the run tab sets the core run settings key by key, and says when auto-escalation cannot run',
     'a small YAML field keeps text that does not parse, and the head counts it as a change',
     'the tool tree grants whole servers and single tools as production does, blocks, and the count follows',
     'the prompt tab previews the template file and flags a missing one',

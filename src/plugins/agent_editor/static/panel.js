@@ -5,24 +5,26 @@ const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const RELOAD_CONFIG = new URL('../../../admin/reload-config', import.meta.url).pathname;  // the core endpoint
 const $ = (id) => document.getElementById(id);
 
-const TABS = ['general', 'model', 'tools', 'subagents', 'prompt', 'hooks', 'yaml'];
+const TABS = ['general', 'model', 'run', 'tools', 'subagents', 'prompt', 'hooks', 'yaml'];
 const VISIBILITY = {
   ui: 'Shown in the UI agent list',
   tool: 'Offered to other agents as a tool',
   both: 'Shown in the UI and offered to other agents as a tool',
   private: 'Neither shown in the UI nor offered as a tool',
 };
-/** How the entry on disk relates to what the app runs: dot colour and words. */
+/** How the entry on disk relates to what the app runs: dot colour and words. Active, not running: ready, not busy. */
 const STATES = {
-  in_sync: ['ok', 'Running'],
-  changed: ['warn', 'Running with older settings'],
-  new: ['info', 'Not running yet'],
+  in_sync: ['ok', 'Active'],
+  changed: ['warn', 'Active with older settings'],
+  new: ['info', 'Not active yet'],
   off: ['', 'Disabled'],
-  removed: ['danger', 'Still running, gone from disk'],
+  removed: ['danger', 'Still active, gone from disk'],
 };
 const FILTERS = {
   all: () => true,
   enabled: (row) => row.enabled,
+  disabled: (row) => !row.enabled,
+  problems: (row) => row.problems?.length > 0,
   restart: (row) => row.restart,
   readonly: (row) => !row.editable,
 };
@@ -205,8 +207,10 @@ const shown = (path) => (hasPath(own, path) ? getPath(own, path) : inherited(pat
 const currentName = () => (draft ? draft.name : detail?.name);
 const readOnly = () => !draft && (!detail?.editable || Boolean(detail?.form_reason));
 const changedFromStart = () => own !== null && canonical(own) !== loaded;
+/** A number typed outside its limits: not in the entry, but typed, so the form counts as unsaved (onBound). */
+const invalidNumber = () => Boolean(document.querySelector('#editor [data-bind="number"][aria-invalid="true"]'));
 const dirty = () => own !== null && (Boolean(draft) || changedFromStart() || yamlDraft !== null
-  || yamlFieldDrafts.size > 0);
+  || yamlFieldDrafts.size > 0 || invalidNumber());
 const fieldElement = (path) => document.querySelector(`#editor [data-field="${CSS.escape(JSON.stringify(path))}"]`);
 
 /** Redraws, and puts the focus back on the control that had it (by data-key, else data-path). */
@@ -456,6 +460,8 @@ function listItem(row) {
       ${row.state === 'new' ? badge('info', 'new') : ''}
       ${row.restart ? html`<span class="pk-badge pk-badge--warn" title="The running app uses older settings">restart</span>` : ''}
       ${row.editable ? '' : html`<span class="pk-badge" title="${row.readonly_reason || 'Cannot be edited here'}">read-only</span>`}
+      ${row.problems?.length ? html`<span class="pk-badge pk-badge--danger" data-problems
+        title="${row.problems.join('\n')}">${plural(row.problems.length, 'problem')}</span>` : ''}
     </span>
     <span class="ae-item-desc pk-muted pk-truncate">${row.description || ''}</span>
   </button></li>`;
@@ -520,7 +526,7 @@ function topOfTab(panel) {
 
 function drawTab(name) {
   ({
-    general: drawGeneral, model: drawModel, tools: drawTools, subagents: drawSubagents, prompt: drawPrompt, hooks: drawHooks,
+    general: drawGeneral, model: drawModel, run: drawRun, tools: drawTools, subagents: drawSubagents, prompt: drawPrompt, hooks: drawHooks,
     yaml: drawYaml,
   })[name]();
 }
@@ -577,7 +583,8 @@ function updateHead() {
   setDirty(dirty() || managerDirty());
   if (!$('save')) return;
   const changedNow = changedFromStart() || yamlDraft !== null || yamlFieldDrafts.size > 0;
-  $('save').disabled = busy || own === null || readOnly() || !dirty();
+  $('save').disabled = busy || own === null || readOnly() || !dirty() || invalidNumber();
+  $('save').title = invalidNumber() ? 'A number is outside what the agent can use: see the field marked red' : '';
   $('revert').disabled = busy || !changedNow;
   $('more').disabled = busy;
   $('dirtyMark').hidden = !changedNow;
@@ -600,16 +607,16 @@ function drawBanners() {
 
 function stateBanner() {
   const operator = 'Restarting is up to the operator.';
-  if (detail.state === 'new') return banner('info', 'info', 'Not running yet', ['It starts with the next restart.', operator]);
+  if (detail.state === 'new') return banner('info', 'info', 'Not active yet', ['It starts with the next restart.', operator]);
   if (detail.state === 'removed') {
-    return banner('warn', 'triangle-alert', 'Still running', ['It is no longer defined (or disabled) on disk and goes away with the next restart.', operator]);
+    return banner('warn', 'triangle-alert', 'Still active', ['It is no longer defined (or disabled) on disk and goes away with the next restart.', operator]);
   }
   const changed = detail.changed ?? [];
   const reload = detail.reload_fields ?? [];
   const restart = changed.filter((key) => !reload.includes(key));
   const action = reload.length ? html`<button type="button" class="pk-btn pk-btn--sm" data-reload data-key="banner-reload"
     ${disabledIf(reloading)}>${icon('rotate-ccw', { size: 'sm' })} Reload config</button>` : '';
-  return banner('warn', 'triangle-alert', 'The running agent uses older settings', [
+  return banner('warn', 'triangle-alert', 'The active agent uses older settings', [
     reload.length ? `Reload config applies: ${reload.join(', ')}.` : '',
     restart.length || detail.restart ? `Needs a restart: ${restart.join(', ') || 'the definition'}. ${operator}` : '',
   ], action);
@@ -639,9 +646,14 @@ function syncField(wrapper) {
   if (wrapper?.dataset.field) wrapper.dataset.set = String(hasPath(own, JSON.parse(wrapper.dataset.field)));
 }
 
-function input(path, { type = 'text', mono = false, list = '' } = {}) {
+/**
+ * `step: 'any'` for a number that takes fractions (the default step of 1 marks them invalid); `min`/`max` where the
+ * model takes any number but the runtime does not.
+ */
+function input(path, { type = 'text', mono = false, list = '', step = '', min = '', max = '' } = {}) {
   const id = nextId();
-  return { id, markup: html`<input id="${id}" class="pk-input${mono ? ' pk-input--mono' : ''}" type="${type}"
+  const limits = html`${step ? html`step="${step}"` : ''} ${min === '' ? '' : html`min="${min}"`} ${max === '' ? '' : html`max="${max}"`}`;
+  return { id, markup: html`<input id="${id}" class="pk-input${mono ? ' pk-input--mono' : ''}" type="${type}" ${limits}
     data-bind="${type === 'number' ? 'number' : 'text'}" data-path="${JSON.stringify(path)}"
     value="${display(ownValue(path))}" placeholder="${display(inherited(path))}" ${list ? html`list="${list}"` : ''} autocomplete="off">` };
 }
@@ -1079,7 +1091,7 @@ function managerLine(row) {
       ${disabledIf(readOnly() || use.locked)}></label></td>
     <td><div class="pk-mono">${row.name}</div>
       <div class="pk-row pk-muted ae-meta">${row.file ? html`<span class="pk-mono">${row.file}</span>` : ''}
-        ${running ? '' : badge('info', 'not running yet')}
+        ${running ? '' : badge('info', 'not active yet')}
         ${row.editable ? '' : html`<span class="pk-badge" title="${row.readonly_reason || ''}">read-only</span>`}</div></td>
     <td><span data-spawn-count="${row.name}">${every ? 'every agent' : plural(names.length, 'agent')}</span>
       ${every ? '' : html`<span class="pk-muted pk-truncate ae-spawn-names" title="${names.join(', ')}">${names.join(', ')}</span>`}</td>
@@ -1298,10 +1310,9 @@ function drawModel() {
       ${chainField(['agent_config', 'llm_profile_advanced'], 'Advanced chain', 'Used while the agent escalates.',
     'No advanced chain: use_advanced_model runs on the model chain above, and auto-escalation stays off.')}
     </section>
-    <section class="ae-section" aria-labelledby="runTitle">
-      <h3 class="ae-section-title" id="runTitle">Run settings</h3>
+    <section class="ae-section" aria-labelledby="modelSettingsTitle">
+      <h3 class="ae-section-title" id="modelSettingsTitle">Model settings</h3>
       <div class="ae-grid">
-        ${field(['agent_config', 'max_steps'], 'Max steps', input(['agent_config', 'max_steps'], { type: 'number' }))}
         ${field(['agent_config', 'fallback_recovery_seconds'], 'Fallback recovery (seconds)',
           input(['agent_config', 'fallback_recovery_seconds'], { type: 'number' }), { help: 'How long a failed profile rests before it is tried again.' })}
       </div>
@@ -1309,6 +1320,89 @@ function drawModel() {
     </section>
   </fieldset>`);
   fillYaml($('tab-model'));
+}
+
+// ------------------------------------------------------------------------- run
+
+const RUN = (...keys) => ['agent_config', ...keys];
+
+/** The core's run settings (AgentConfig): steps, escalation, loop detection, timeouts. */
+function drawRun() {
+  const number = (path, label, help, limits = {}) => field(path, label, input(path, { type: 'number', ...limits }), { help });
+  render($('tab-run'), html`<fieldset class="ae-form" ${disabledIf(readOnly())}>
+    <section class="ae-section" aria-labelledby="stepsTitle">
+      <h3 class="ae-section-title" id="stepsTitle">Steps</h3>
+      <div class="ae-grid">${number(RUN('max_steps'), 'Max steps', 'Steps one run may take; one last call to answer comes on top.', { min: 1 })}</div>
+    </section>
+    <section class="ae-section" aria-labelledby="escalationTitle">
+      <h3 class="ae-section-title" id="escalationTitle">Escalation</h3>
+      <p class="pk-help" id="escalationNote"></p>
+      <div class="ae-grid">
+        ${field(RUN('auto_escalate_on_stuck'), 'Auto-escalate', toggle(RUN('auto_escalate_on_stuck'), 'Switch to the advanced chain when stuck', false),
+          { help: 'Stuck: the tool loop detector fires, or tool steps keep failing.' })}
+        ${number(RUN('escalate_error_streak'), 'Failed tool steps', 'Steps in a row in which every tool call failed, before it escalates.', { min: 1 })}
+        ${number(RUN('escalate_rounds'), 'Advanced steps', 'Steps it stays on the advanced chain each time.', { min: 0 })}
+        ${number(RUN('escalate_max_calls'), 'Advanced calls per run', 'The budget: advanced calls one run may make.', { min: 0 })}
+      </div>
+    </section>
+    <section class="ae-section" aria-labelledby="toolLoopsTitle">
+      <h3 class="ae-section-title" id="toolLoopsTitle">Tool loops</h3>
+      <div class="ae-grid">
+        ${field(RUN('loop_detection', 'enabled'), 'Loop detection', toggle(RUN('loop_detection', 'enabled'), 'Watch for repeated tool calls', true))}
+        ${number(RUN('loop_detection', 'history_size'), 'Calls remembered',
+          'Recent tool calls it compares: fewer than a threshold below, and that one never fires; sequences need 4.', { min: 2 })}
+        ${number(RUN('loop_detection', 'exact_match_threshold'), 'Warn after identical calls',
+          'The same tool with the same arguments, in a row: the agent is told it repeats itself.', { min: 2 })}
+        ${number(RUN('loop_detection', 'sequence_threshold'), 'Warn after repeated sequences', 'The same series of calls, over and over.', { min: 2 })}
+        ${number(RUN('loop_detection', 'block_after_threshold'), 'Drop after identical calls',
+          'Identical calls in a row, never fewer than for the warning, after which that step’s calls to the tool are dropped instead of run.', { min: 2 })}
+        ${number(RUN('loop_detection', 'auto_unblock_after_steps'), 'Keep on the drop list (steps)',
+          'How long a tool stays on the drop list; a step drops its calls only while the same call keeps repeating.', { min: 1 })}
+      </div>
+    </section>
+    <section class="ae-section" aria-labelledby="reasoningLoopsTitle">
+      <h3 class="ae-section-title" id="reasoningLoopsTitle">Reasoning loops</h3>
+      <div class="ae-grid">
+        ${field(RUN('reasoning_loop', 'enabled'), 'Reasoning loop detection',
+          toggle(RUN('reasoning_loop', 'enabled'), 'Watch the model’s thinking for repetition', true),
+          { help: 'Streaming calls only: a call stuck in its thinking is stopped and tried once more.' })}
+        ${number(RUN('reasoning_loop', 'repetition_threshold'), 'Repetition threshold',
+          'Share of repeated thinking, from 0.01 up to 1, that counts as stuck. Healthy runs measured up to 0.19, stuck ones from 0.90.',
+          { step: 'any', min: 0.01, max: 1 })}
+      </div>
+    </section>
+    <section class="ae-section" aria-labelledby="timeoutsTitle">
+      <h3 class="ae-section-title" id="timeoutsTitle">Timeouts</h3>
+      <div class="ae-grid">
+        ${number(RUN('timeouts', 'session_lock_timeout'), 'Session lock (seconds)',
+          'How long a request waits for its session’s lock; a session another request holds refuses it at once.', { step: 'any', min: 0.1 })}
+        ${number(RUN('timeouts', 'tool_cleanup_timeout'), 'Tool cleanup (seconds)', 'How long a cancelled run waits for its tools to stop.',
+          { step: 'any', min: 0.1 })}
+        ${number(RUN('timeouts', 'llm_task_max_iterations'), 'Model call polls',
+          'A safety net for a stuck model call that does not stream: checks every 0.1 s (864000 = 24 hours).', { min: 1 })}
+      </div>
+    </section>
+  </fieldset>`);
+  drawEscalationNote();
+}
+
+/**
+ * Auto-escalation needs an advanced chain that starts elsewhere than the model chain, and steps and calls above 0
+ * (Agent._create_stuck_escalator, StuckEscalator). A chain inherited from a parent that does not resolve is unknown.
+ */
+function drawEscalationNote() {
+  const note = $('escalationNote');
+  if (!note) return;
+  const advanced = chainOf(shown(RUN('llm_profile_advanced')));
+  const primary = chainOf(shown(RUN('llm_profile')))[0] ?? 'normal';
+  const unknown = detail?.inherited == null
+    && (!hasPath(own, RUN('llm_profile_advanced')) || (advanced.length > 0 && !hasPath(own, RUN('llm_profile'))));
+  const zero = [RUN('escalate_rounds'), RUN('escalate_max_calls')].some((path) => typeof shown(path) === 'number' && shown(path) <= 0);
+  note.textContent = unknown ? 'The chains are inherited from a parent that does not resolve: whether auto-escalation can run is unknown.'
+    : !advanced.length ? 'No advanced chain (Model tab): auto-escalation stays off whatever is set here.'
+      : advanced[0] === primary ? 'The advanced chain starts with the same profile as the model chain: auto-escalation stays off.'
+        : zero ? 'Advanced steps or advanced calls at 0: auto-escalation stays off.' : '';
+  note.hidden = !note.textContent;
 }
 
 /**
@@ -1718,14 +1812,18 @@ function summary() {
   if (!effective) return html`<span class="pk-spinner" role="status" aria-label="Counting tools"></span>`;
   const counts = Object.entries(effective.counts ?? {});
   const unmatched = effective.unmatched ?? [];
+  const external = effective.external ?? {};
   const extra = unmatched.filter((pattern) => !Object.hasOwn(effective.counts ?? {}, pattern));
+  // an external server's tools are not listed here: its pattern is not judged, only a server that is off is named
+  const outside = (pattern) => (!Object.hasOwn(external, pattern) ? ''
+    : external[pattern] ? badge('info', 'external, not checked') : badge('warn', 'external server off'));
   const count = effective.tools?.length ?? 0;
   return html`<span><strong data-tool-count="${count}">${plural(count, 'tool')}</strong>
       <span class="pk-muted">${count === 1 ? 'reaches' : 'reach'} this agent</span></span>
     ${effective.allowed?.length ? '' : html`<span class="pk-badge pk-badge--warn">${icon('triangle-alert', { size: 'sm' })} No tools at all: the allowed list is empty</span>`}
     ${counts.length || extra.length ? html`<ul class="ae-counts" aria-label="Tools per allowed pattern">
       ${counts.map(([pattern, n]) => html`<li data-pattern="${pattern}" title="${plural(n, 'tool')}"><span class="pk-mono">${pattern}</span> <span class="pk-muted">${n}</span>
-        ${unmatched.includes(pattern) ? badge('warn', 'matches nothing') : ''}</li>`)}
+        ${unmatched.includes(pattern) ? badge('warn', 'matches nothing') : outside(pattern)}</li>`)}
       ${extra.map((pattern) => html`<li data-pattern="${pattern}"><span class="pk-mono">${pattern}</span> ${badge('warn', 'matches nothing')}</li>`)}
     </ul>` : ''}`;
 }
@@ -2044,8 +2142,8 @@ function drawYaml() {
         <button type="button" class="pk-btn pk-btn--sm" id="yamlReload">${icon('refresh-cw', { size: 'sm' })} Show the form’s entry</button>
         <button type="button" class="pk-btn pk-btn--primary pk-btn--sm" id="yamlApply">${icon('check', { size: 'sm' })} Apply to form</button>
       </div>
-      <span class="pk-help">Leaving this tab applies what was typed. Settings without a form control (timeouts, loop detection,
-        escalation, self_tool_descriptions, plugin settings) are edited here.</span>
+      <span class="pk-help">Leaving this tab applies what was typed. Settings without a form control (self_tool_descriptions,
+        plugin settings) are edited here.</span>
       ${codeBox(html`<textarea id="yamlText" class="pk-textarea pk-input--mono ae-yaml-full" rows="24" spellcheck="false" wrap="off"
         data-key="yaml-text"></textarea>`)}
       <p class="pk-error" id="yamlError" hidden></p>
@@ -2322,7 +2420,7 @@ function startDraft(name, source, entry, values) {
   selected = null;
   detail = {
     name, file: null, files: [], version: null, editable: true, readonly_reason: null, form_reason: null, own: null, parent: null,
-    inherited: values ?? {}, effective: {}, state: 'new', changed: [], reload_fields: [], restart: true,
+    inherited: values, effective: {}, state: 'new', changed: [], reload_fields: [], restart: true,
     children: [], spawnable: [], prompt: null,
   };
   own = entry;
@@ -2339,7 +2437,7 @@ async function reloadConfig() {
   const buttons = () => [$('reloadConfig'), ...document.querySelectorAll('[data-reload]')];
   buttons().forEach((button) => { button.disabled = true; });
   try {
-    if (!(await confirm(`Re-read the config files and apply to the running agents what needs no restart${fields ? ` (${fields})` : ''}? Everything else still needs a restart.`,
+    if (!(await confirm(`Re-read the config files and apply to the active agents what needs no restart${fields ? ` (${fields})` : ''}? Everything else still needs a restart.`,
       { title: 'Reload config', confirmLabel: 'Reload' }))) return;
     const answer = await api(RELOAD_CONFIG, { method: 'POST' });
     const errors = answer.report?.errors ?? [];
@@ -2397,6 +2495,7 @@ async function copyPath(button) {
 
 function changed() {
   updateHead();
+  drawEscalationNote();
   scheduleEffective();
 }
 
@@ -2408,9 +2507,16 @@ function onBound(control) {
   if (kind === 'bool') {
     setPath(own, path, control.checked);
   } else if (kind === 'number') {
+    // outside its limits, a fraction where a whole number belongs, a lone "-": marked, not taken, and Save waits
+    const valid = control.validity.valid;
+    control.setAttribute('aria-invalid', String(!valid));
+    control.title = control.validationMessage;
+    if (!valid) {
+      updateHead();
+      return;
+    }
     if (control.value === '') unsetPath(own, path);
-    else if (Number.isFinite(control.valueAsNumber)) setPath(own, path, control.valueAsNumber);
-    else return;
+    else setPath(own, path, control.valueAsNumber);
   } else if (control.value === '' && kind === 'text' && control.dataset.keepEmpty === undefined) {
     unsetPath(own, path);
   } else {

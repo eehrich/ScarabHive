@@ -164,22 +164,43 @@ class AgentEditorWebEndpoints:
 
     async def list_agents(self, request: Request):
         await self._admin(request)
-        return await self._run(self._rows, self._store(request), request.app.state)
+        try:
+            tools: Optional[list[dict]] = await sources.tool_catalog(request.app.state)
+            tools_error = None
+        except Exception as error:  # the list stands without the tool check, and says so
+            logger.warning("agent list: the tool catalogue failed: %s", error_text(error))
+            tools, tools_error = None, error_text(error)
+        return await self._run(self._rows, self._store(request), request.app.state, tools, tools_error)
 
-    def _rows(self, store: Store, state: Any) -> dict:
+    def _rows(self, store: Store, state: Any, tools: Optional[list[dict]], tools_error: Optional[str]) -> dict:
         snap = store.snapshot()  # one snapshot for every row: a write in between must not mix two states
         catalog = catalog_for(snap.config)
         is_agent = sources.is_agent_rule(state, catalog)
+        skill_names = {skill["name"] for skill in sources.skills(snap.config)}
+        external = sources.external_servers(snap.config)
+        checked: dict[tuple, dict] = {}
+
+        def check(allowed: list[str], blocked: list[str]) -> dict:
+            key = (tuple(allowed), tuple(blocked))  # most agents share their parent's lists
+            if key not in checked:
+                checked[key] = sources.effective_tools(tools or [], allowed, blocked, external)
+            return checked[key]
+
         rows = []
         for name in snap.config.plugins.servers:
             base = base_of(snap.config, snap.resolved.get(name), name)
             if is_agent(name, base):
-                rows.append(self._row(store, snap, state, catalog, name, base))
+                row = self._row(store, snap, state, catalog, name, base)
+                row["problems"] = snap.mask(
+                    sources.problems(store, snap, name, skill_names, None if tools is None else check))
+                rows.append(row)
         runtime = getattr(state, "runtime", None)
         for name, decl in (runtime.declarations().items() if runtime is not None else ()):
             if name not in snap.config.plugins.servers and is_agent(name, decl.type):
                 rows.append(self._removed_row(snap, name, decl))
         errors = snap.errors + [f"{name}: {error}" for name, error in snap.resolve_errors.items()]
+        if tools_error:
+            errors.append(f"Tool patterns were not checked, the tool catalogue failed: {tools_error}")
         return {"agents": sorted(rows, key=lambda row: row["name"]), "errors": snap.mask(errors)}
 
     @staticmethod
@@ -212,7 +233,7 @@ class AgentEditorWebEndpoints:
             "category": metadata.category if metadata else None, "tags": (metadata.tags or []) if metadata else [],
             "group": "config", "file": None, "files": [],
             "editable": False, "readonly_reason": "no longer in the config files",
-            "state": "removed", "changed": [], "restart": True,
+            "state": "removed", "changed": [], "restart": True, "problems": [],
         }
 
     async def get_agent(self, request: Request, name: str):
@@ -420,9 +441,10 @@ class AgentEditorWebEndpoints:
             raise StoreError(422, error_text(error))
         lists = resolved.agent_config.tools if resolved is not None and resolved.agent_config else None
         result = sources.effective_tools(catalog, list(lists.allowed or []) if lists else [],
-                                         list(lists.blocked or []) if lists else [])
+                                         list(lists.blocked or []) if lists else [], sources.external_servers(config))
         # Matched unmasked, shown masked: the patterns are resolved values.
         return {**snap.mask({key: result[key] for key in ("allowed", "blocked", "unmatched", "per_tool")}),
+                "external": {snap.mask(key): on for key, on in result["external"].items()},
                 "tools": result["tools"], "counts": {snap.mask(key): n for key, n in result["counts"].items()}}
 
     async def read_prompt(self, request: Request, path: str, agent: Optional[str] = None):

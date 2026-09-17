@@ -129,8 +129,8 @@
     const searched = search('look') === 'scout' && search('WRITES') === 'writer' && search('zzz') === ''
       && text('#list').includes('No agent matches');
     search('');
-    const filtered = filter('enabled') === 'editor,twin,writer,demo' && filter('restart') === 'writer,demo'
-      && filter('readonly') === 'twin';
+    const filtered = filter('enabled') === 'editor,twin,writer,demo' && filter('disabled') === 'scout'
+      && filter('restart') === 'writer,demo' && filter('readonly') === 'twin' && filter('problems') === '';
     filter('all');
     const demo = () => $('#list details[data-group="demo"]');
     demo().querySelector('summary').click();
@@ -146,6 +146,72 @@
       && searched && filtered && kept && quiet && $('#editor').hidden;
   });
 
+  await check('the list marks the agents with problems and names them, and the filter shows only those', async () => {
+    const filter = (value) => { $('#filter').value = value; $('#filter').dispatchEvent(new Event('change')); return listed(); };
+    const path = 'config/agents/extra.yaml';
+    const old = '        system_prompt: You scout.\n';
+    const broken = `${old}        llm_profile: [fast, nope]\n        skills: [gamma, alpha]\n`
+      + '        tools:\n          allowed: [files/*, web/nothing, ext_on.*, ext_off.*]\n';
+    // external MCP servers, declared in an agents file
+    const plain = 'plugins:\n  servers:\n    scout:';
+    const servers = `external_servers:\n  remote_servers:\n    ext_on: {enabled: true, transport: stdio, command: x}\n`
+      + `    ext_off: {enabled: false}\n${plain}`;
+    const pattern = (name) => text(`#toolSummary [data-pattern="${name}"]`);
+    const badge = () => row('scout')?.querySelector('[data-problems]');
+    const refreshUntil = (what, predicate) => until(what, async () => {
+      doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+      await sleep(200);
+      return predicate();
+    });
+    await replace(path, old, broken);
+    await replace(path, plain, servers);
+    let marked = false;
+    let judged = false;
+    try {
+      await refreshUntil('the problems marked', () => badge());
+      marked = badge().textContent.trim() === '4 problems'
+        && badge().title === 'Unknown model profile: nope\nUnknown skill: gamma\nMatches no tool: web/nothing\nExternal server is off: ext_off.*'
+        && badges('scout') === 'off,4 problems' && filter('problems') === 'scout';
+      // the tools tab: an external server's pattern is not judged, one that is off is named
+      await choose('scout');
+      openTab('tools');
+      await until('the counts', () => pattern('ext_on.*'));
+      judged = pattern('ext_on.*').includes('external, not checked') && pattern('ext_off.*').includes('external server off')
+        && pattern('web/nothing').includes('matches nothing') && !pattern('ext_on.*').includes('matches nothing');
+    } finally {
+      filter('all');
+      await replace(path, servers, plain);
+      await replace(path, broken, old);
+    }
+    await refreshUntil('the problems gone', () => row('scout') && !badge());
+    return marked && judged && filter('problems') === '' && filter('all') === 'editor,scout,twin,writer,demo';
+  });
+
+  await check('the agent list keeps the width it was dragged to across a reload, and a narrow panel stacks it full width', async () => {
+    const side = () => $('.ae-side');
+    const width = () => Math.round(side().getBoundingClientRect().width);
+    const before = width();
+    // at its narrowest a name keeps its room, and the badges beside it wrap below
+    side().style.width = '11rem';
+    await sleep(50);
+    const named = row('demo').querySelector('.ae-item-name').getBoundingClientRect().width >= 90;
+    side().style.width = '360px';  // what the browser writes when the corner is dragged
+    await sleep(50);
+    const resized = width() === 360 && before !== 360 && getComputedStyle(side()).resize === 'horizontal';
+    await go('/plugins/agent_editor/');
+    watchNative();
+    await until('the list again', () => row('writer') && row('demo'));
+    const kept = width() === 360;
+    frame.style.width = '600px';
+    try {
+      const stacked = await until('the stacked layout', () => width() === Math.round($('.ae-layout').getBoundingClientRect().width));
+      return named && resized && kept && stacked;
+    } finally {
+      frame.style.width = '';
+      frame.contentWindow.localStorage.removeItem('pk.sidebar:/plugins/agent_editor/');  // later checks see the default
+    }
+  });
+
   await check('descriptions from the files are drawn as text, never as markup', async () => {
     return row('editor').querySelector('.ae-item-desc').textContent === MARKUP
       && !doc().querySelector('img') && frame.contentWindow.__xss === undefined && window.__xss === undefined;
@@ -154,7 +220,7 @@
   await check('a selected agent shows its own values apart from the inherited ones', async () => {
     await choose('editor');
     const head = Boolean($('#head [data-goto="writer"]')) && text('#head .ae-file') === 'config/agents/team.yaml'
-      && Boolean($('#head [data-state="in_sync"]')) && text('#head').includes('Running') && row('editor').getAttribute('aria-current') === 'true';
+      && Boolean($('#head [data-state="in_sync"]')) && text('#head').includes('Active') && !text('#head').includes('Running') && row('editor').getAttribute('aria-current') === 'true';
     const description = control(DESCRIPTION).value === MARKUP && isSet(DESCRIPTION) && !doc().querySelector('img');
     const steps = !isSet(MAX_STEPS) && control(MAX_STEPS).value === '' && control(MAX_STEPS).placeholder === '30';
     const metadata = !isSet(['metadata', 'category']) && control(['metadata', 'category']).placeholder === 'writing'
@@ -196,7 +262,7 @@
 
   await check('resetting a field to the inherited value removes its key from the file', async () => {
     await choose('writer');
-    openTab('model');
+    openTab('run');
     fieldOf(MAX_STEPS).querySelector('[data-reset]').click();
     const reset = !isSet(MAX_STEPS) && control(MAX_STEPS).value === '' && control(MAX_STEPS).placeholder === '20'
       && !$('#save').disabled && doc().activeElement === control(MAX_STEPS);
@@ -212,6 +278,7 @@
   });
 
   await check('the model chain adds, reorders and removes profiles', async () => {
+    openTab('model');
     const picker = () => fieldOf(CHAIN).querySelector('[data-picker]');
     const offered = () => [...fieldOf(CHAIN).querySelectorAll('[data-add-profile]')].map((one) => one.dataset.addProfile).join();
     const button = (name, act) => fieldOf(CHAIN).querySelector(`[data-profile="${name}"] [data-chain="${act}"]`);
@@ -258,6 +325,90 @@
     const written = (await file('config/agents/team.yaml')).text;
     return noAdvanced && unknownSaid && byProvider && notTwice && added && moved && removed && written.includes('llm_profile: [deep, fast]')
       && chainOf(CHAIN) === 'deep,fast';
+  });
+
+  await check('the run tab sets the core run settings key by key, and says when auto-escalation cannot run', async () => {
+    const LOOPS_ON = ['agent_config', 'loop_detection', 'enabled'];
+    const HISTORY = ['agent_config', 'loop_detection', 'history_size'];
+    const THRESHOLD = ['agent_config', 'reasoning_loop', 'repetition_threshold'];
+    const ESCALATE = ['agent_config', 'auto_escalate_on_stuck'];
+    const ADVANCED = ['agent_config', 'llm_profile_advanced'];
+    const REASONING_ON = ['agent_config', 'reasoning_loop', 'enabled'];
+    const ROUNDS = ['agent_config', 'escalate_rounds'];
+    const note = () => ($('#escalationNote').hidden ? '' : text('#escalationNote'));
+    const picker = () => fieldOf(ADVANCED).querySelector('[data-picker]');
+    const path = 'config/agents/team.yaml';
+    const before = (await file(path)).text;
+    // chains from a parent that does not resolve: nothing is claimed
+    const panelWindow = frame.contentWindow;
+    const realFetch = panelWindow.fetch;
+    let unknownSaid = false;
+    try {
+      panelWindow.fetch = async (url, options) => {
+        const answer = await realFetch(url, options);
+        if (!String(url).endsWith('/plugins/agent_editor/agents/editor')) return answer;
+        const body = await answer.json();
+        body.inherited = null;
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+      await choose('editor');
+      unknownSaid = note().includes('is unknown');
+    } finally {
+      panelWindow.fetch = realFetch;
+    }
+    await choose('writer');
+    openTab('run');
+    // a number the runtime cannot use, typed into a clean form, counts as unsaved: a refresh leaves it
+    type(control(HISTORY), '-1');
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await sleep(300);
+    const keptTyped = control(HISTORY).value === '-1' && $('#save').disabled && $('#save').title.includes('marked red');
+    type(control(HISTORY), '');
+    // every number field names a real key: the model's default shows through
+    const numbers = all('#tab-run input[type="number"]');
+    const real = numbers.length === 13 && numbers.every((one) => one.placeholder !== '')
+      && numbers.map((one) => one.min).join() === '1,1,0,0,2,2,2,2,1,0.01,0.1,0.1,1';  // what the runtime can use
+    const inherited = !isSet(HISTORY) && control(HISTORY).placeholder === '20' && control(LOOPS_ON).checked
+      && control(THRESHOLD).placeholder === '0.5' && !control(ESCALATE).checked && !isSet(ESCALATE);
+    const noChain = note().startsWith('No advanced chain');
+    control(LOOPS_ON).click();
+    control(REASONING_ON).click();
+    type(control(THRESHOLD), '0.35');
+    control(ESCALATE).click();
+    const set = isSet(LOOPS_ON) && isSet(THRESHOLD) && isSet(ESCALATE) && !isSet(HISTORY) && control(THRESHOLD).validity.valid;
+    // a number the runtime cannot use is marked, not taken, and holds Save back
+    type(control(HISTORY), '-1');
+    const refused = control(HISTORY).getAttribute('aria-invalid') === 'true' && !isSet(HISTORY) && $('#save').disabled;
+    type(control(HISTORY), '');
+    const allowed = control(HISTORY).getAttribute('aria-invalid') === 'false' && !$('#save').disabled;
+    // the advanced chain is added in the model tab; the note follows it
+    openTab('model');
+    type(picker(), 'anthropic');
+    enter(picker());
+    const same = chainOf(ADVANCED) === 'deep' && note().includes('same profile');
+    fieldOf(ADVANCED).querySelector('[data-profile="deep"] [data-chain="remove"]').click();
+    type(picker(), 'openai');
+    enter(picker());
+    const other = chainOf(ADVANCED) === 'smart' && note() === '';
+    type(control(ROUNDS), '0');
+    const noSteps = note().includes('at 0');
+    type(control(ROUNDS), '');
+    const stepsBack = note() === '' && !isSet(ROUNDS);
+    await saveAll('writer saved');
+    const written = (await file(path)).text;
+    const wrote = written.includes('auto_escalate_on_stuck: true') && /llm_profile_advanced:\s+- smart\n/.test(written)
+      && /loop_detection:\s+enabled: false/.test(written)
+      && /reasoning_loop:\s+enabled: false\s+repetition_threshold: 0.35/.test(written)
+      && !written.includes('history_size') && !written.includes('escalate_rounds');
+    // reset again, key by key: the file is what it was
+    openTab('run');
+    for (const one of [LOOPS_ON, REASONING_ON, THRESHOLD, ESCALATE, ADVANCED]) fieldOf(one).querySelector('[data-reset]').click();
+    const cleared = note().startsWith('No advanced chain') && control(LOOPS_ON).checked && control(THRESHOLD).value === '';
+    await saveAll('writer saved');
+    const back = (await file(path)).text;
+    openTab('model');
+    return unknownSaid && keptTyped && real && inherited && noChain && set && refused && allowed && same && other && noSteps && stepsBack
+      && wrote && cleared && back === before;
   });
 
   await check('a small YAML field keeps text that does not parse, and the head counts it as a change', async () => {
@@ -853,7 +1004,7 @@
       return listedAgents();
     };
     const rows = text('#managerRows');
-    const before = use('manager') && !use('manager').checked && rows.includes('not running yet')
+    const before = use('manager') && !use('manager').checked && rows.includes('not active yet')
       && text('#tab-subagents [data-spawn-count="manager"]') === '2 agents';
     // the grant is part of the agent: extend the inherited tools, saved with the agent
     use('manager').click();
@@ -998,7 +1149,7 @@
       await until('writer_sam running', async () => {
         doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
         await sleep(150);
-        return !text('#managerRows [data-manager="writer_sam"]').includes('not running yet');
+        return !text('#managerRows [data-manager="writer_sam"]').includes('not active yet');
       });
       waiting = use('writer_sam').matches(':disabled') && use('writer_sam').closest('label').title.startsWith('Waiting')
         && text('#toolTabCount') === '';
@@ -1112,10 +1263,26 @@
     const childFile = child.exists && child.text.includes('type: writer');
 
     $('#create').click();
-    await create({ start: 'copy', source: 'scout', name: 'scout_copy' });
-    await until('the copy draft', () => heading() === 'scout_copy');
+    // a copy of an agent whose inheritance is unknown keeps it unknown
+    const panelWindow = frame.contentWindow;
+    const realFetch = panelWindow.fetch;
+    let copyUnknown = false;
+    try {
+      panelWindow.fetch = async (url, options) => {
+        const answer = await realFetch(url, options);
+        if (!String(url).endsWith('/plugins/agent_editor/agents/scout')) return answer;
+        const body = await answer.json();
+        body.inherited = null;
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+      await create({ start: 'copy', source: 'scout', name: 'scout_copy' });
+      await until('the copy draft', () => heading() === 'scout_copy');
+      copyUnknown = !$('#escalationNote').hidden && text('#escalationNote').includes('is unknown');
+    } finally {
+      panelWindow.fetch = realFetch;
+    }
     const copied = control(DESCRIPTION).value === 'Changed elsewhere' && control(INLINE).value === 'You scout.'
-      && control(ENABLED).checked === false;
+      && control(ENABLED).checked === false && copyUnknown;
     await saveAll('scout_copy created');
     await until('the copy listed', () => row('scout_copy'));
     const copy = await file('config/agents/scout_copy.yaml');
