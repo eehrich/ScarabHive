@@ -1975,7 +1975,9 @@ class Agent(MCPServer):
             # The streaming assembler builds its assistant dict itself and
             # never produces the "error" key that httpx _format_response sets
             # for a content filter -- so the fallback-profile switch was
-            # unreachable while streaming.
+            # unreachable while streaming. A filter is deterministic per
+            # content: asking the same model again repeats the refusal, so it is
+            # an error. A missing [DONE] (below) is a hiccup, so it is not.
             _content_filter_as_error(final_assistant, final_finish_reason, llm)
             if final_assistant is not None and "error" not in final_assistant:
                 _model = getattr(llm, "model", "?")
