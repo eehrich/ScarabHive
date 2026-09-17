@@ -16,7 +16,8 @@ OPEN SOURCE COMPONENTS (Apache License 2.0)
    - Configuration:      config/
    - Documentation:      docs/
    - Tests:              tests/
-   - Templates/Static:   templates/, static/
+   - Templates/Static:   templates/, static/ (except the bundled third-party
+                         files listed below)
 
 See LICENSE for the full Apache 2.0 license text.
 
@@ -45,6 +46,19 @@ their own respective licenses:
   - Pillow (HPND License)
   - asyncssh (EPL 2.0)
   - SQLite-vec (MIT License)
+
+Bundled in static/ and served to the browser, each with its license text
+next to it:
+
+  - Chart.js 4.4.0, static/vendor/chartjs/ (MIT License)
+  - Prism 1.29.0, static/vendor/prism/ (MIT License)
+  - vis-network 10.0.2, static/vendor/vis-network/ (Apache 2.0 or MIT
+    License, at your choice)
+  - Mermaid 10.9.8, static/vendor/mermaid/ (MIT License)
+  - Lucide icons, static/kit/icons.svg (ISC License; portions from
+    Feather, MIT License)
+  - Inter and JetBrains Mono fonts, static/kit/fonts/ (SIL Open Font
+    License 1.1)
 
 For complete licensing details of each dependency, refer to their
 respective repositories and documentation.
