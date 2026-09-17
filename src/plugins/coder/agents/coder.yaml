@@ -30,9 +30,9 @@ plugins:
         # through OpenRouter, so an OpenRouter outage takes both. Swap either
         # link to its direct-API twin (claude-sonnet / gpt-full) if that
         # matters more than billing through one account.
-        llm_profile: [or-claude-sonnet, or-gpt-full]
+        llm_profile: [code, or-gpt-full]
         # Reached via use_advanced_model=true when a caller escalates.
-        llm_profile_advanced: [claude-opus, or-claude-sonnet]
+        llm_profile_advanced: [or-claude-opus-unlimited, or-gpt-pro-unlimited]
 
         llm_params:
           "*":
