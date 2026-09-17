@@ -103,9 +103,8 @@ _COMMAND_WORD = re.compile(r"^/[A-Za-z?][A-Za-z0-9_-]*$")
 _COMMAND_NAME = re.compile(rf"^{_NAME}$")
 
 # The qualified plugin spelling, "/context_engineer:compact". Deliberately NOT
-# part of _COMMAND_WORD: that regex also filters stored messages
-# (looks_like_command), and widening it turned "/todo:milch kaufen" into an
-# "unknown command" -- on the web surface too, where plugin commands do not
+# part of _COMMAND_WORD: widening that regex turned "/todo:milch kaufen" into
+# an "unknown command" -- on the web surface too, where plugin commands do not
 # even exist. A colon word is claimed only when it really names a declared
 # command; anything else stays the message it always was.
 _QUALIFIED_WORD = re.compile(rf"^/{_NAME}:{_NAME}$")
@@ -205,6 +204,22 @@ def is_typeable_command_name(name: str) -> bool:
     return bool(_COMMAND_NAME.match(name))
 
 
+def runnable_skill_names(names: Iterable[str]) -> list[str]:
+    """The skill names a person can really invoke as ``/name``.
+
+    The registry accepts what a folder is called, and that is wider than what
+    this parser reads as a command word: ``3d-print`` starts with a digit and
+    resolves as a message, and a skill called ``tools`` loses to the built-in.
+    Listing those offered two lines that do nothing -- one billed as a message
+    to the model, the other silently running something else.
+
+    Both surfaces filter through this one function; the terminal's copy was
+    the only one for a while, and the browser kept offering both.
+    """
+    return [name for name in names
+            if is_typeable_command_name(name) and not is_builtin_command(name)]
+
+
 def match_plugin_command(
     word: str, plugin_commands: Sequence[PluginCommand]
 ) -> Optional[PluginCommand]:
@@ -239,8 +254,9 @@ def resolve(line: str, skill_names: Sequence[str] = (),
     if command is None:
         # "/plugin:name" is not a command WORD (see _QUALIFIED_WORD): it is
         # claimed only when it really names a declared command, so an ordinary
-        # "/todo:milch kaufen" remains the message it looks like.
-        if _QUALIFIED_WORD.match(word):
+        # "/todo:milch kaufen" remains the message it looks like. Never on
+        # multi-line input: that is a message, whichever spelling opens it.
+        if _QUALIFIED_WORD.match(word) and "\n" not in line.strip():
             qualified = match_plugin_command(word[1:], plugin_commands)
             if qualified is not None:
                 return Resolution("plugin", qualified.qualified, rest.strip())
@@ -294,27 +310,6 @@ def needs_escape(text: str) -> bool:
     head = stripped.split()
     return bool(head and (_COMMAND_WORD.match(head[0])
                           or _QUALIFIED_WORD.match(head[0])))
-
-
-def looks_like_command(text: str) -> bool:
-    """Whether a stored user message is really a slash command.
-
-    Commands never reach the agent -- but before "/h" became an alias, unknown
-    ones were passed through as messages and are now sitting in old sessions.
-    They are not part of the conversation and would only add noise.
-
-    Only a word that IS a command counts, not everything shaped like one: a
-    message escaped with "//" is stored with a SINGLE slash, exactly as the
-    person meant it, and hiding those left the agent's answer standing in
-    /history with no question above it.
-    """
-    stripped = text.strip()
-    if "\n" in stripped:
-        # parse_chat_command treats anything multiline as a MESSAGE, never a
-        # command. Mirror that rule -- otherwise a multiline turn whose first
-        # line looks like "/word ..." is hidden by /history and /last.
-        return False
-    return stripped.split(" ")[0].lower() in _COMMAND_ALIASES
 
 
 # A template variable, as Jinja can actually address it. Hyphens are rejected

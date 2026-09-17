@@ -27,7 +27,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from agent_system.cli_utils.chat import (  # noqa: E402
-    _looks_like_command,
+    _is_real_turn,
     _message_text,
     _render_tool_call,
     _render_tool_result,
@@ -71,6 +71,9 @@ MESSAGES = {
                               {"type": "image_url", "image_url": {"url": "x"}}],
     "image_only": [{"type": "image_url", "image_url": {"url": "x"}}],
     "text_parts": [{"type": "text", "text": "eins"}, {"type": "text", "text": "zwei"}],
+    # Sent as "//help me read this": stored with one slash, and a turn.
+    "escaped_command_word": "/help me read this",
+    "blank": "   ",
 }
 
 #: The harness. It slices the helpers out of the shipped file and applies them
@@ -85,10 +88,7 @@ if (start < 0 || end < 0 || end <= start) {
   process.exit(2);
 }
 const block = source.slice(start, end);
-const window = { slashCommands: { catalogue: { commands: [
-  { name: 'sessions', aliases: ['/sessions'] },
-  { name: 'history', aliases: ['/history', '/hist'] },
-] } } };
+const window = {};
 const h = new Function('window', block +
   '\nreturn {messageText, isRealTurn, toolCallLines, toolResultLines};')(window);
 
@@ -145,14 +145,11 @@ def _python_side() -> dict:
         _render_tool_call(recorder, payload, full=full)
         return recorder.lines
 
-    def is_real_turn(content) -> bool:
-        text = _message_text(_Message(content, role="user")).strip()
-        return bool(text) and not _looks_like_command(text)
-
     return {
         "messages": {name: _message_text(_Message(content, role="user"))
                      for name, content in MESSAGES.items()},
-        "turns": {name: is_real_turn(content) for name, content in MESSAGES.items()},
+        "turns": {name: _is_real_turn(_Message(content, role="user"))
+                  for name, content in MESSAGES.items()},
         "results": {name: {"full": result(content, True), "compact": result(content, False)}
                     for name, content in TOOL_RESULTS.items()},
         "calls": {name: {"full": call(payload, True), "compact": call(payload, False)}
@@ -197,6 +194,9 @@ class TestBothSurfacesRenderTheSame:
         expected = _python_side()["turns"]
         assert expected["image_with_empty_text"] is True, \
             "fixture: this case must be a real turn, or it proves nothing"
+        assert expected["escaped_command_word"] is True, \
+            "an escaped message is a turn -- hiding it orphaned its answer"
+        assert expected["blank"] is False, "fixture: one case must not be a turn"
         assert javascript_side["turns"] == expected
 
     def test_a_tool_result(self, javascript_side):

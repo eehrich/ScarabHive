@@ -259,14 +259,16 @@ class TestSessionPresence:
         assert "another process" in capsys.readouterr().err
         assert cli_env.saved == {}, "it ran the session anyway"
 
+    @pytest.mark.parametrize("subcommand", ["run", "chat"])
     @pytest.mark.parametrize("failure, said", [
         (SessionPermissionError("owned by u2"), "belongs to a different user"),
         (OSError("disk gone"), "Error loading session"),
     ])
     def test_a_session_that_cannot_be_loaded_exits_1_and_lets_go(
-            self, cli_env, monkeypatch, tmp_path, capsys, failure, said):
+            self, cli_env, monkeypatch, tmp_path, capsys, failure, said, subcommand):
         # It used to return with 0: a caller checking the exit code read a
-        # run that never started as a successful one with empty output.
+        # run that never started as a successful one with empty output. And
+        # chat kept the hold: it is handed over only once the REPL runs.
         from agent_system.core.session_presence import presence_for
 
         self._presence_on(cli_env, monkeypatch, tmp_path)
@@ -278,7 +280,7 @@ class TestSessionPresence:
         monkeypatch.setattr(cli_env.service, "load_and_restore_session", failing_load)
 
         with pytest.raises(SystemExit) as failed:
-            _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1"])
+            _run(monkeypatch, ["agent-cli", "--raw", subcommand, "weiter", "--session", "s1"])
 
         assert failed.value.code == 1
         assert said in capsys.readouterr().err
@@ -371,6 +373,75 @@ class TestSessionPresence:
         self._wake(monkeypatch)
 
         assert cli_env.saved.get("session_id") == "s1"
+
+
+class TestChatStart:
+    """What `agent-cli chat` hands to the REPL."""
+
+    def test_attachments_title_and_params_reach_the_chat(
+            self, cli_env, monkeypatch, tmp_path):
+        """`chat --attach` was rejected by the parser, and --session-title and
+        --llm-params were accepted and then dropped."""
+        import agent_system.cli_utils.chat as chat
+
+        note = tmp_path / "notes.txt"
+        note.write_text("inhalt", encoding="utf-8")
+        seen = {}
+        monkeypatch.setattr(chat, "run_chat_loop", lambda **kwargs: seen.update(kwargs))
+        monkeypatch.setattr(
+            "agent_system.llm.factory.create_llm_from_profile",
+            lambda config, llm_profile, llm_params=None: object())
+
+        _run(monkeypatch, ["agent-cli", "chat", "schau mal", "--attach", str(note),
+                           "--session-title", "Mein Titel",
+                           "--llm-params", "thinking_level=max"])
+
+        assert seen["attachments"] == [str(note)]
+        assert seen["session_title"] == "Mein Titel"
+        assert seen["llm_params"] == {"thinking_level": "max"}
+        assert seen["initial_task"] == "schau mal"
+
+    def test_attachments_without_a_first_message_wait_for_it(
+            self, cli_env, monkeypatch, tmp_path):
+        """No message to put them on yet: they are the chat's to send."""
+        import agent_system.cli_utils.chat as chat
+
+        picture = tmp_path / "bild.png"
+        picture.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        seen = {}
+        monkeypatch.setattr(chat, "run_chat_loop", lambda **kwargs: seen.update(kwargs))
+
+        _run(monkeypatch, ["agent-cli", "chat", "--attach", str(picture)])
+
+        assert seen["attachments"] == [str(picture)]
+        assert seen["initial_task"] is None
+
+
+    def test_a_turn_still_holding_the_session_keeps_it_past_the_chat(
+            self, cli_env, monkeypatch, tmp_path):
+        """A turn takes its own hold for its request; abandoned by a third
+        Ctrl-C it never gives it back. The chat lets go of ITS hold, and a
+        second release by the CLI dropped the turn's -- waking a session
+        whose run is still unwinding."""
+        import agent_system.cli_utils.chat as chat
+        from agent_system.config.models import SessionPresenceConfig
+        from agent_system.core.session_presence import presence_for
+
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path / "sessions"))
+        cli_env.config.session_presence = SessionPresenceConfig(enabled=True)
+        presence = presence_for(cli_env.config)
+
+        def chat_with_an_abandoned_turn(**kwargs):
+            session_id, user = kwargs["session_id"], kwargs["session_user"]
+            presence.hold(session_id, user, "x")   # the turn's own hold
+            presence.release(session_id, user)     # the REPL lets go of its own
+
+        monkeypatch.setattr(chat, "run_chat_loop", chat_with_an_abandoned_turn)
+        _run(monkeypatch, ["agent-cli", "chat", "--session", "s1"])
+
+        assert presence.get("s1", "cli_user")["status"] == "running", \
+            "the CLI released the hold the abandoned turn still has"
+        presence.release("s1", "cli_user")
 
 
 class TestListSessions:

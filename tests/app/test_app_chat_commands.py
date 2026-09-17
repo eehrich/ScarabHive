@@ -7,6 +7,7 @@ surfaces stay in step, and that the endpoint behaves when the input is junk.
 from __future__ import annotations
 
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -100,6 +101,24 @@ class TestCatalogue:
         for skill in data["skills"]:
             assert skill["name"] and skill["display"] == f"/{skill['name']}"
             assert "summary" in skill
+
+    def test_a_skill_nobody_could_type_is_not_offered(
+            self, client, auth_headers, monkeypatch):
+        """The registry takes what a folder is called, the parser takes a
+        command word. "3d-print" was offered here and went to the model as a
+        message; "tools" was offered and ran the built-in. The terminal has
+        filtered both for a while -- through the same function this uses."""
+        import agent_system.skills as skills_module
+
+        registry = SimpleNamespace(
+            ensure_discovered=lambda dirs: None,
+            list_skills=lambda: [
+                SimpleNamespace(name=name, description="d", version="1")
+                for name in ("writer", "3d-print", "tools")])
+        monkeypatch.setattr(skills_module, "get_skill_registry", lambda: registry)
+
+        data = client.get("/chat/commands", headers=auth_headers).json()
+        assert [s["name"] for s in data["skills"]] == ["writer"]
 
 
 class TestResolve:
@@ -435,6 +454,21 @@ class TestAgentTools:
 
     def test_it_requires_authentication(self, client):
         assert client.get("/agents/whoever/tools").status_code == 401
+
+    def test_a_listing_that_fails_is_an_error_not_zero_tools(
+            self, client, auth_headers, tooled_agent, monkeypatch):
+        """The browser answers total 0 with \"tools.allowed is empty\"."""
+        name, _data = tooled_agent
+        agent = client.app.state.mcp_registry.get(name)
+
+        async def broken(params):
+            raise RuntimeError("discovery broke")
+
+        monkeypatch.setattr(agent, "_list_usable_tools_with_details", broken)
+        response = client.get(f"/agents/{name}/tools", headers=auth_headers)
+
+        assert response.status_code == 500
+        assert "discovery broke" in response.json()["detail"]
 
 
 @pytest.fixture

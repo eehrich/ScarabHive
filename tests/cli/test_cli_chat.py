@@ -9,7 +9,6 @@ import builtins
 import io
 import json
 import logging
-import pathlib
 import sys
 import threading
 import time
@@ -39,10 +38,10 @@ from agent_system.cli_utils.chat import (
     _restore_logging,
     _silence_stdout_logging,
     display_width,
-    parse_chat_command,
     run_chat_turn,
     suggest_command,
 )
+from agent_system.chat_commands import parse_chat_command
 from agent_system.mcp.status import StatusEvent, StatusPhase, status_bus
 
 
@@ -998,6 +997,26 @@ class TestPromptHistory:
         assert self._recall(pt_prompt, editor, "\x1b[A\x1b[A\n") == "aus session B", \
             "session A's entry was still reachable"
 
+    def test_reseeding_keeps_the_commands_typed_in_this_process(self, pt_prompt):
+        # Commands never enter a session, so a reseed built from session
+        # messages alone wiped them -- the /resume just typed included.
+        editor = _build_prompt_editor(["aus session A"])
+        # Shaped like a plugin command, sent as a message: it is session A's.
+        pt_prompt.send_text("/todo:milch kaufen\n")
+        assert editor.read("> ") == "/todo:milch kaufen"
+        pt_prompt.send_text("/resume s2\n")
+        assert editor.read("> ") == "/resume s2"
+        # What the REPL does for a line it ran as a command.
+        editor.remember_command("/resume s2")
+
+        editor.reseed(["aus session B"])
+
+        assert self._recall(pt_prompt, editor) == "/resume s2"
+        # Two presses: one past the command lands on B only if nothing of
+        # session A sits in between.
+        assert self._recall(pt_prompt, editor, "\x1b[A\x1b[A\n") == "aus session B", \
+            "a message of session A survived the reseed"
+
     def test_a_turn_that_bypassed_the_prompt_is_still_recallable(self, pt_prompt):
         # An initial_task or a line typed ahead during a turn never passes
         # session.prompt(), so nothing would add it on its own.
@@ -1027,6 +1046,7 @@ class _RecordingEditor:
         self._lines = iter(lines)
         self.seeds = []
         self.remembered = []
+        self.commands = []
 
     def read(self, prompt):
         try:
@@ -1043,9 +1063,13 @@ class _RecordingEditor:
     def remember(self, text):
         self.remembered.append(text)
 
+    def remember_command(self, text):
+        self.commands.append(text)
+
 
 def drive_chat_repl(monkeypatch, lines, initial_task=None, turn_probe=None,
-                    editor=None):
+                    editor=None, resume=None, skills=(), plugin_commands=(),
+                    was_new_session=False, **run_kwargs):
     """Run the real run_chat_loop over *lines* against fakes, return the editor.
 
     Module level so that anything touching the REPL's own dispatch can use it,
@@ -1071,8 +1095,9 @@ def drive_chat_repl(monkeypatch, lines, initial_task=None, turn_probe=None,
                             llm=SimpleNamespace(model="m"))
 
     monkeypatch.setattr(chat, "_build_prompt_editor", lambda seed: editor)
-    monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
-    monkeypatch.setattr(chat, "_available_skills", lambda ctx: [])
+    monkeypatch.setattr(chat, "collect_plugin_commands",
+                        lambda agent_: list(plugin_commands))
+    monkeypatch.setattr(chat, "_available_skills", lambda ctx: list(skills))
     monkeypatch.setattr(
         chat, "_execute_turn",
         turn_probe or (lambda loop, ctx, task, renderer, editor=None: {}))
@@ -1087,15 +1112,15 @@ def drive_chat_repl(monkeypatch, lines, initial_task=None, turn_probe=None,
         ctx.session_id = session_id
         return True
 
-    monkeypatch.setattr(chat, "_resume_session", _resumed)
+    monkeypatch.setattr(chat, "_resume_session", resume or _resumed)
 
     loop = asyncio.new_event_loop()
     try:
         chat.run_chat_loop(
             agent=agent, entry_name="a", session_service=None,
-            session_user="u", session_id="s1", was_new_session=False,
+            session_user="u", session_id="s1", was_new_session=was_new_session,
             llm_profile="p", show_status=False, loop=loop,
-            initial_task=initial_task)
+            initial_task=initial_task, **run_kwargs)
     finally:
         loop.close()
     return editor
@@ -1185,6 +1210,12 @@ class TestReplKeepsTheHistoryOnTheLiveSession:
         assert built == [], "built a full-screen editor into a redirected stdout"
 
 
+def _pipe(data, encoding):
+    """stdin as a pipe delivers it: buffered bytes under a text layer."""
+    return io.TextIOWrapper(io.BufferedReader(io.BytesIO(data)),
+                            encoding=encoding, errors="replace")
+
+
 class TestPipedInputFromPowerShell:
     """Windows PowerShell 5.1 prefixes piped input with a UTF-8 BOM.
 
@@ -1196,7 +1227,7 @@ class TestPipedInputFromPowerShell:
     def test_a_piped_bom_does_not_turn_a_command_into_a_message(self, monkeypatch):
         import agent_system.cli_utils.chat as chat
 
-        piped = io.TextIOWrapper(io.BytesIO("\ufeff/exit\n".encode("utf-8")), encoding="utf-8")
+        piped = _pipe("\ufeff/exit\n".encode("utf-8"), "utf-8")
         monkeypatch.setattr(chat.sys, "stdin", piped)
         monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: False, raising=False)
         monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
@@ -1220,10 +1251,39 @@ class TestPipedInputFromPowerShell:
     def test_only_the_leading_mark_goes(self, monkeypatch):
         import agent_system.cli_utils.chat as chat
 
-        piped = io.TextIOWrapper(io.BytesIO("\ufeffa\ufeffb\n".encode("utf-8")), encoding="utf-8")
+        piped = _pipe("\ufeffa\ufeffb\n".encode("utf-8"), "utf-8")
         monkeypatch.setattr(chat.sys, "stdin", piped)
         chat._skip_piped_bom()
         assert chat.sys.stdin.readline() == "a\ufeffb\n"
+
+    def test_the_mark_goes_without_utf8_mode_too(self, monkeypatch):
+        """Without PYTHONUTF8 Windows decodes a pipe as cp1252: the mark read
+        as "\u00ef\u00bb\u00bf/compact" and the command went to the model as a message."""
+        import agent_system.cli_utils.chat as chat
+
+        piped = _pipe("\ufeff/compact\n".encode("utf-8"), "cp1252")
+        monkeypatch.setattr(chat.sys, "stdin", piped)
+        chat._skip_piped_bom()
+        assert chat.sys.stdin.readline() == "/compact\n"
+
+    def test_a_pipe_without_the_mark_keeps_its_encoding(self, monkeypatch):
+        """An ANSI file piped in without UTF-8 mode stays readable."""
+        import agent_system.cli_utils.chat as chat
+
+        piped = _pipe("K\xe4se\n".encode("cp1252"), "cp1252")
+        monkeypatch.setattr(chat.sys, "stdin", piped)
+        chat._skip_piped_bom()
+        assert chat.sys.stdin.readline() == "K\xe4se\n"
+
+    def test_a_stray_byte_does_not_end_the_chat(self, monkeypatch):
+        """agent_cli sets errors="replace" on stdin; switching the encoding
+        reset that to strict, and input() raised UnicodeDecodeError."""
+        import agent_system.cli_utils.chat as chat
+
+        piped = _pipe(b"\xef\xbb\xbfK\xe4se\n", "utf-8")
+        monkeypatch.setattr(chat.sys, "stdin", piped)
+        chat._skip_piped_bom()
+        assert chat.sys.stdin.readline() == "K\ufffdse\n"
 
 
 class TestCallPricingKey:
@@ -1312,7 +1372,15 @@ class TestSwitchModel:
     continued later.
     """
 
-    def _ctx(self, current="profile_a"):
+    def _ctx(self, current="profile_a", llm_params=None):
+        """The REAL context object, built the way run_chat_loop builds it.
+
+        A hand-made double had to grow every attribute production grew --
+        which is how `--llm-params` reached this test while the constructor
+        that has to carry them was never run once.
+        """
+        from agent_system.cli_utils.chat import _ChatContext
+
         profiles = {
             "profile_a": SimpleNamespace(description="the cheap one"),
             "profile_b": SimpleNamespace(description="the good one"),
@@ -1325,10 +1393,11 @@ class TestSwitchModel:
                 llm_system=SimpleNamespace(profiles=profiles)),
             _session_tracker=tracker,
             llm=SimpleNamespace(model="m"))
-        ctx = SimpleNamespace(
-            agent=agent, entry_name="a", session_id="s1", session_user="u",
-            llm_profile=current, llm_override=None, llm_profile_info=None,
-            llm_label=lambda: current)
+        ctx = _ChatContext(
+            agent=agent, entry_name="a", session_service=None, session_user="u",
+            session_id="s1", was_new_session=False, llm_profile=current,
+            llm_override=None, llm_profile_info=None, show_status=False,
+            llm_params=llm_params)
         return ctx, tracker
 
     def _patch_factory(self, monkeypatch, raises=None):
@@ -1337,7 +1406,8 @@ class TestSwitchModel:
         def _create(config, llm_profile, llm_params=None):
             if raises:
                 raise raises
-            return SimpleNamespace(model="model-of-" + llm_profile)
+            return SimpleNamespace(model="model-of-" + llm_profile,
+                                   params=llm_params)
 
         monkeypatch.setattr(factory, "create_llm_from_profile", _create)
         monkeypatch.setattr(
@@ -1347,7 +1417,8 @@ class TestSwitchModel:
 
     def test_a_bare_call_lists_the_profiles_and_marks_the_current_one(self, capsys):
         ctx, _ = self._ctx()
-        _switch_model(ctx, ChatRenderer(ansi=False), "")
+        # False: a listing changed nothing, so nothing is written.
+        assert _switch_model(ctx, "") is False
         out = capsys.readouterr().out
         assert "profile_a" in out and "profile_b" in out
         assert "the good one" in out, "descriptions were dropped"
@@ -1359,7 +1430,7 @@ class TestSwitchModel:
         self._patch_factory(monkeypatch)
         ctx, tracker = self._ctx()
 
-        _switch_model(ctx, ChatRenderer(ansi=False), "profile_b")
+        _switch_model(ctx, "profile_b")
 
         assert ctx.llm_profile == "profile_b"
         assert getattr(ctx.llm_override, "model", None) == "model-of-profile_b"
@@ -1367,11 +1438,64 @@ class TestSwitchModel:
         assert tracker.metadata["s1"]["llm_profile"] == "profile_b"
         assert "profile_b" in capsys.readouterr().out
 
+    def test_the_llm_params_of_the_chat_go_with_the_switch(self, monkeypatch, capsys):
+        """`--llm-params thinking_level=max` was dropped on /model: the new
+        client was built from the bare profile."""
+        self._patch_factory(monkeypatch)
+        # Through the constructor, the way the CLI hands them over.
+        ctx, _ = self._ctx(llm_params={"thinking_level": "max"})
+
+        assert _switch_model(ctx, "profile_b") is True
+
+        assert ctx.llm_override.params == {"thinking_level": "max"}
+        # The params are NAMED in the banner; how they are spelled is a
+        # rendering choice and not worth a red test.
+        assert "thinking_level=max" in ctx.llm_profile_info
+
+    def test_the_switch_is_written_to_the_session_at_once(self, monkeypatch):
+        """Only the next turn's save wrote it: /model, then /exit, and
+        `--session <id>` started on the old profile."""
+        import agent_system.cli_utils.chat as chat
+
+        saved = []
+        monkeypatch.setattr(chat, "_switch_model", lambda ctx, payload: True)
+        monkeypatch.setattr(chat, "_save_now",
+                            lambda loop, ctx: saved.append(ctx.session_id))
+        drive_chat_repl(monkeypatch, ["/model profile_b"])
+
+        assert saved == ["s1"]
+
+    def test_a_session_that_has_no_record_yet_waits_for_its_first_save(
+            self, monkeypatch):
+        """was_new_session: nothing has been written for this session. Saving
+        HERE would file an empty chat as a session of its own, and the choice
+        reaches disk with the first turn anyway."""
+        import agent_system.cli_utils.chat as chat
+
+        saved = []
+        monkeypatch.setattr(chat, "_switch_model", lambda ctx, payload: True)
+        monkeypatch.setattr(chat, "_save_now",
+                            lambda loop, ctx: saved.append(ctx.session_id))
+        drive_chat_repl(monkeypatch, ["/model profile_b"], was_new_session=True)
+
+        assert saved == []
+
+    def test_a_listing_writes_nothing(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        saved = []
+        monkeypatch.setattr(chat, "_switch_model", lambda ctx, payload: False)
+        monkeypatch.setattr(chat, "_save_now",
+                            lambda loop, ctx: saved.append(ctx.session_id))
+        drive_chat_repl(monkeypatch, ["/model"])
+
+        assert saved == []
+
     def test_an_unknown_profile_changes_nothing(self, monkeypatch, capsys):
         self._patch_factory(monkeypatch)
         ctx, tracker = self._ctx()
 
-        _switch_model(ctx, ChatRenderer(ansi=False), "profile_x")
+        _switch_model(ctx, "profile_x")
 
         assert ctx.llm_profile == "profile_a"
         assert ctx.llm_override is None
@@ -1384,7 +1508,7 @@ class TestSwitchModel:
         # NOT a prefix of a real profile: "profile_bb" would echo back inside
         # the "Unknown LLM profile: ..." line and the assertion would hold
         # with the suggestion deleted.
-        _switch_model(ctx, ChatRenderer(ansi=False), "profle_b")
+        _switch_model(ctx, "profle_b")
         assert "Did you mean profile_b?" in capsys.readouterr().out
 
     def test_the_repl_dispatches_the_command(self, monkeypatch):
@@ -1397,7 +1521,7 @@ class TestSwitchModel:
 
         seen = []
         monkeypatch.setattr(chat, "_switch_model",
-                            lambda ctx, renderer, payload: seen.append(payload))
+                            lambda ctx, payload: seen.append(payload))
         drive_chat_repl(monkeypatch, ["/model profile_b", "/llm"])
 
         assert seen == ["profile_b", ""], "the alias or the branch is missing"
@@ -1410,7 +1534,7 @@ class TestSwitchModel:
         ctx, tracker = self._ctx()
         ctx.llm_override = SimpleNamespace(model="the-old-one")
 
-        _switch_model(ctx, ChatRenderer(ansi=False), "profile_b")
+        _switch_model(ctx, "profile_b")
 
         assert ctx.llm_profile == "profile_a"
         assert ctx.llm_override.model == "the-old-one"
@@ -1728,45 +1852,53 @@ _TOOL_TURN = [
 ]
 
 
-class TestHistoryExcludesCommands:
-    """Commands never reach the agent -- but before "/h" became an alias,
-    unknown ones were passed through as messages and sit in old sessions."""
+class TestHistoryShowsWhatTheAgentWasSent:
+    """Every stored user message went to the agent. One that opens with a
+    command word was sent escaped -- "//help me read this" is stored as
+    "/help me read this" -- and hiding it left its answer in /history with no
+    question above it, and made /last start a turn early. Measured before the
+    filter went: 2 command-shaped leftovers in 38,251 local sessions."""
 
-    def test_command_leftovers_are_not_shown(self):
+    def test_an_escaped_message_is_shown_with_its_answer(self):
+        # The count is what binds: a limit wide enough for the whole list
+        # starts at 0 whatever the filter says, so the "one exchange" is the
+        # escaped one only while it COUNTS as one.
         messages = [
             _Msg("user", "echte frage"),
             _Msg("assistant", "echte antwort"),
-            _Msg("user", "/h"),
-            _Msg("user", "/session"),
+            _Msg("user", "/help me read this"),
+            _Msg("assistant", "antwort auf die escapte frage"),
         ]
         r, out = _renderer()
-        _show_history(_ctx_with(messages), r, "5")
+        _show_history(_ctx_with(messages), r, "1")
         text = out.getvalue()
-        assert "echte frage" in text
-        assert "/h" not in text and "/session" not in text
+        assert "/help me read this" in text
+        assert "antwort auf die escapte frage" in text
+        assert "echte frage" not in text, "the escaped turn was not counted"
 
-    def test_command_leftovers_do_not_consume_the_count(self):
-        """Counting them would push the real exchanges out of view."""
+    def test_last_starts_at_it(self):
+        call = {"id": "c1", "function": {"name": "tool_before", "arguments": "{}"}}
         messages = [
-            _Msg("user", "frage eins"), _Msg("assistant", "antwort eins"),
-            _Msg("user", "/h"),
-            _Msg("user", "frage zwei"), _Msg("assistant", "antwort zwei"),
+            _Msg("user", "frage eins"),
+            _Msg("assistant", "", tool_calls=[call]),
+            _Msg("user", "/help me read this"),
+            _Msg("assistant", "antwort"),
         ]
-        r, out = _renderer()
-        _show_history(_ctx_with(messages), r, "2")
-        text = out.getvalue()
-        assert "frage eins" in text and "frage zwei" in text
+        r, out = _renderer(width=200)
+        _show_last(_ctx_with(messages), r)
+        assert "tool_before" not in out.getvalue(), \
+            "/last mixed the previous turn's tool calls into this one"
 
-    def test_paths_are_not_mistaken_for_commands(self):
+    def test_paths_are_shown_too(self):
         messages = [_Msg("user", "/etc/nginx/nginx.conf pruefen"),
                     _Msg("assistant", "ok")]
         r, out = _renderer()
         _show_history(_ctx_with(messages), r, "1")
         assert "/etc/nginx/nginx.conf" in out.getvalue()
 
-    def test_session_with_only_commands_says_so(self, capsys):
+    def test_an_empty_message_is_no_exchange(self, capsys):
         r, _t = _renderer()
-        _show_history(_ctx_with([_Msg("user", "/h")]), r, "5")
+        _show_history(_ctx_with([_Msg("user", "   ")]), r, "5")
         assert "No agent exchanges" in capsys.readouterr().out
 
 
@@ -2011,11 +2143,54 @@ class TestKeyReaderBuffer:
         assert r.poll() == ["hallo"]
         assert r.buffer == ""
 
-    def test_every_line_of_a_paste_survives(self):
-        """_read_chars drains the whole batch at once; a single result slot
-        silently dropped all but the last line of a multi-line paste."""
+    def test_a_paste_is_one_message_with_every_line(self):
+        """_read_chars drains the whole batch at once. A single result slot
+        dropped all but the last line; one message per line sent a pasted
+        stack trace as a burst of paid fragments."""
         r = self._reader("erste\rzweite\rdritte\r")
-        assert r.poll() == ["erste", "zweite", "dritte"]
+        assert r.poll() == ["erste\nzweite\ndritte"]
+
+    def test_a_pasted_block_keeps_its_shape(self):
+        """Indentation, tabs and blank lines inside a paste are content; a
+        Windows CRLF ends one line, not two."""
+        r = self._reader("def f():\r\n    return 1\r\n\r\n\tx = 2\r\n")
+        assert r.poll() == ["def f():\n    return 1\n\n\tx = 2"]
+
+    def test_a_split_multibyte_character_survives_two_reads(self, monkeypatch):
+        """os.read() hands out bytes; a paste over 1 KB splits a character
+        between two reads, and decoding each read alone made it U+FFFD."""
+        import agent_system.cli_utils.chat as chat
+        import select as _select
+
+        text = "Grüße aus Köln\n".encode("utf-8")
+        cut = text.index("ü".encode("utf-8")) + 1       # inside the ü
+        chunks = [text[:cut], text[cut:]]
+        monkeypatch.setattr(chat.sys, "stdin",
+                            SimpleNamespace(encoding="utf-8", fileno=lambda: 99))
+        monkeypatch.setattr(chat.os, "name", "posix")
+        monkeypatch.setattr(_select, "select",
+                            lambda r, w, x, t: (r if chunks else [], [], []))
+        monkeypatch.setattr(chat.os, "read", lambda fd, n: chunks.pop(0))
+
+        r = _KeyReader(active=False)
+        r.enabled = True
+        assert r.poll() == ["Grüße aus Köln"]
+
+    def test_an_emoji_from_the_windows_console_is_one_character(self, monkeypatch):
+        """getwch() returns UTF-16 code units: an emoji comes as two lone
+        surrogates, which the message sanitizer drops."""
+        import agent_system.cli_utils.chat as chat
+        msvcrt = pytest.importorskip("msvcrt")
+
+        # Built from the code units: a literal would be one code point.
+        keys = list("ok ") + [chr(0xD83D), chr(0xDE00), "\r"]
+        monkeypatch.setattr(chat.os, "name", "nt")
+        monkeypatch.setattr(msvcrt, "kbhit", lambda: bool(keys))
+        monkeypatch.setattr(msvcrt, "getwch", lambda: keys.pop(0))
+
+        r = _KeyReader(active=False)
+        r.enabled = True
+        assert r.poll() == ["ok \U0001F600"]
 
     def test_arrow_keys_do_not_leak_their_escape_body(self):
         """Only the ESC byte was skipped before, so "[A" landed in the text."""
@@ -2709,3 +2884,926 @@ class TestChatHoldsTheOpenSession:
         # The load is what the hold comes before: a refused resume must leave
         # the chat where it is, with the session it has open still in hand.
         assert turns == [("s1", "running")]
+
+
+# --------------------------------------------------------------------------
+# Review round 16.09.2026: interrupts, the session a chat holds, what a turn
+# costs, and what /resume brings along.
+# --------------------------------------------------------------------------
+
+
+def _interrupt_soon(loop):
+    """A Ctrl-C the way it reaches run_until_complete: raised by the loop
+    itself, while the work is still pending."""
+    def _raise():
+        raise KeyboardInterrupt
+    loop.call_soon(_raise)
+
+
+class TestCtrlCOutsideATurn:
+    """One Ctrl-C during /sessions, /resume, /vars, /tools or the answer's
+    formatting ended the chat with a traceback; the save left behind finished
+    unseen during the next command."""
+
+    def test_a_command_is_cancelled_and_the_chat_goes_on(self, monkeypatch, capsys):
+        import agent_system.cli_utils.chat as chat
+
+        finished = []
+        cancelled = []
+
+        async def slow_listing(ctx, payload=""):
+            _interrupt_soon(asyncio.get_running_loop())
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                # What the listing itself felt. "finished == []" alone would
+                # also hold for a task merely left PENDING -- which is the bug:
+                # nothing else in this run drives the loop long enough for the
+                # sleep to fire, so the absence proves nothing by itself.
+                cancelled.append(True)
+                raise
+            finished.append(True)
+
+        turns = []
+        monkeypatch.setattr(chat, "_list_sessions", slow_listing)
+        drive_chat_repl(monkeypatch, ["/sessions", "danach"],
+                        turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                        turns.append(task) or {})
+
+        assert turns == ["danach"], "the chat ended with the Ctrl-C"
+        assert cancelled == [True], "the listing was left pending, not cancelled"
+        assert finished == [], "the cancelled listing still ran to its end"
+        assert "(/sessions cancelled)" in capsys.readouterr().err
+
+    def test_an_interrupted_resume_lets_go_of_the_session_it_took(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        async def slow_resume(ctx, session_id):
+            _interrupt_soon(asyncio.get_running_loop())
+            await asyncio.sleep(0.05)
+            return True
+
+        held, released = [], []
+        monkeypatch.setattr(chat, "_hold_session",
+                            lambda ctx, sid: held.append(sid) or True)
+        monkeypatch.setattr(chat, "_release_session",
+                            lambda ctx, sid: released.append(sid))
+        drive_chat_repl(monkeypatch, ["/resume s2"], resume=slow_resume)
+
+        assert held == ["s2"]
+        assert released == ["s2", "s1"], "the hold taken for the load leaked"
+
+    def test_a_ctrl_c_during_the_save_lets_it_finish(self, monkeypatch, capsys):
+        import agent_system.cli_utils.chat as chat
+
+        written = []
+
+        async def slow_save(ctx):
+            _interrupt_soon(asyncio.get_running_loop())
+            await asyncio.sleep(0.05)
+            written.append(ctx.session_id)
+            return True
+
+        monkeypatch.setattr(chat, "_save_session", slow_save)
+        ctx = _inject_ctx(None)
+        ctx.was_new_session = True
+        loop = asyncio.new_event_loop()
+        try:
+            assert chat._save_now(loop, ctx) is True
+        finally:
+            loop.close()
+
+        assert written == ["s"]
+        assert ctx.last_saved == "s" and ctx.was_new_session is False
+        assert "finishing the save" in capsys.readouterr().err
+
+    def test_the_answer_is_shown_when_its_formatting_is_interrupted(
+            self, monkeypatch, capsys, caplog):
+        import agent_system.cli_utils.chat as chat
+
+        async def slow_format(**kwargs):
+            _interrupt_soon(asyncio.get_running_loop())
+            await asyncio.sleep(0.05)
+            return "formatted", "text"
+
+        monkeypatch.setattr(chat, "format_output_with_hooks", slow_format)
+        loop = asyncio.new_event_loop()
+        try:
+            with caplog.at_level(logging.DEBUG, logger="agent_system.cli_utils.chat"):
+                chat._render_answer(loop, _inject_ctx(None), ChatRenderer(ansi=False),
+                                    "die antwort")
+        finally:
+            loop.close()
+
+        printed = capsys.readouterr()
+        assert "die antwort" in printed.out
+        assert "(formatting cancelled)" in printed.err
+        # WHICH branch printed it: the cancelled run returns (False, None),
+        # and unpacking that raises into the generic rescue below, which
+        # prints the answer as well. Only the log tells the two apart.
+        assert "Answer formatting failed" not in caplog.text
+
+
+class TestWhatACtrlCStops:
+    def test_a_ctrl_c_that_lost_the_race_still_drops_the_queue(self, monkeypatch):
+        """The agent was already finishing (its token gone), so no
+        "cancelled" came back -- and the lines typed ahead ran as new turns."""
+        turns = []
+
+        def probe(loop, ctx, task, renderer, editor=None):
+            turns.append(task)
+            if task == "erste":
+                return {"summary": "fertig", "interrupted": True,
+                        "typed_queue": ["nachgeschoben"]}
+            return {}
+
+        drive_chat_repl(monkeypatch, [], initial_task="erste", turn_probe=probe)
+
+        assert turns == ["erste"], "a Ctrl-C was followed by another paid turn"
+
+    def test_a_cancelled_turn_still_counts_in_the_session_total(
+            self, monkeypatch, capsys):
+        def probe(loop, ctx, task, renderer, editor=None):
+            return {"cancelled": True,
+                    "usage": {"prompt_tokens": 1200, "completion_tokens": 30}}
+
+        drive_chat_repl(monkeypatch, [], initial_task="teuer", turn_probe=probe)
+
+        # The numbers, not the headline: a total that lost its prompt tokens
+        # still prints "Session total" (1.2k -> _format_usage's short form).
+        total = capsys.readouterr().out
+        assert "Session total" in total
+        assert "1.2k" in total and "30" in total
+
+    def test_an_answer_that_won_the_race_is_marked_interrupted(self):
+        loop = asyncio.new_event_loop()
+        try:
+            async def finished_turn():
+                return {"summary": "fertig", "cancelled": False, "errors": []}
+
+            turn = loop.create_task(finished_turn())
+            result = chat_module()._cancel_turn(
+                loop, _inject_ctx(None), turn, {}, ChatRenderer(ansi=False))
+        finally:
+            loop.close()
+
+        assert result["summary"] == "fertig"
+        assert result["cancelled"] is False
+        assert result["interrupted"] is True
+
+    def test_a_hard_cancel_leaves_no_turn_on_the_loop(self):
+        """The turn's unwinding drains the status queue, unsubscribes and
+        closes the renderer. Left pending, all of that happened inside the
+        NEXT run_until_complete -- the save, or the following turn."""
+        import agent_system.cli_utils.chat as chat
+
+        loop = asyncio.new_event_loop()
+        try:
+            turn = loop.create_task(asyncio.sleep(10))
+            # The forcing Ctrl-C, while the grace period is still running:
+            # that is the path that leaves the task behind. A timeout would
+            # not -- wait_for cancels and AWAITS the task itself.
+            loop.call_soon(_raise_interrupt)
+            chat._cancel_turn(loop, _inject_ctx(None), turn, {},
+                              ChatRenderer(ansi=False))
+
+            assert turn.done(), "the cancelled turn is still pending on the loop"
+        finally:
+            loop.close()
+
+    def test_a_hard_cancel_keeps_what_the_turn_spent(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.setattr(chat, "_CANCEL_GRACE_S", 0.01)
+        loop = asyncio.new_event_loop()
+        try:
+            turn = loop.create_task(asyncio.sleep(10))
+            state = {"usage": {"prompt_tokens": 500}}
+            result = chat._cancel_turn(loop, _inject_ctx(None), turn, state,
+                                       ChatRenderer(ansi=False))
+        finally:
+            loop.close()
+
+        assert result["cancelled"] is True
+        assert result["usage"] == {"prompt_tokens": 500}
+
+    async def test_the_turn_hands_its_usage_to_the_state_as_it_goes(self):
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": [{"id": "t"}]},
+             "usage": {"prompt_tokens": 700, "completion_tokens": 7}},
+            {"type": "end"},
+        ])
+        agent.llm = SimpleNamespace(model="m")
+        state = {}
+        r, _ = _renderer()
+        result = await run_chat_turn(agent, "q", "s", r, state=state)
+
+        assert state["usage"] is result["usage"]
+        assert state["usage"]["prompt_tokens"] == 700
+
+
+class TestTheChatLetsGoOfItsSession:
+    def test_even_when_it_fails_before_the_first_prompt(self, monkeypatch):
+        """run_chat_loop takes the hold over from the CLI, which no longer
+        releases it -- a failure before the loop's try leaked it."""
+        import agent_system.cli_utils.chat as chat
+
+        released = []
+        monkeypatch.setattr(chat, "_release_session",
+                            lambda ctx, sid: released.append(sid))
+
+        def broken(agent):
+            raise RuntimeError("plugin commands broke")
+
+        monkeypatch.setattr(chat, "collect_plugin_commands", broken)
+        monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: False, raising=False)
+        loop = asyncio.new_event_loop()
+        try:
+            with pytest.raises(RuntimeError, match="plugin commands broke"):
+                chat.run_chat_loop(
+                    agent=SimpleNamespace(
+                        _session_tracker=SimpleNamespace(get_session_messages=lambda sid: []),
+                        agent_config=None, llm=SimpleNamespace(model="m")),
+                    entry_name="a", session_service=None, session_user="u",
+                    session_id="s1", was_new_session=False, llm_profile="p",
+                    show_status=False, loop=loop)
+        finally:
+            loop.close()
+
+        assert released == ["s1"]
+
+
+class TestSessionTitle:
+    def test_the_title_names_the_first_session_once(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        titles = []
+
+        class _Service:
+            async def save_session(self, **kwargs):
+                titles.append(kwargs["title"])
+                return True
+
+        ctx = _inject_ctx(None)
+        ctx.session_service = _Service()
+        ctx.session_title = "Mein Titel"
+        loop = asyncio.new_event_loop()
+        try:
+            chat._save_now(loop, ctx)
+            chat._save_now(loop, ctx)
+        finally:
+            loop.close()
+
+        assert titles == ["Mein Titel", None]
+
+    def test_a_new_session_does_not_inherit_it(self, monkeypatch):
+        def _run(lines):
+            seen = []
+            drive_chat_repl(
+                monkeypatch, lines, session_title="Mein Titel",
+                turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                seen.append(ctx.session_title) or {})
+            return seen
+
+        # Both runs, because "None" alone is also what a title that never
+        # arrived looks like -- the difference is the measurement.
+        assert _run(["frage"]) == ["Mein Titel"], "the title never arrived"
+        assert _run(["/new", "frage"]) == [None], "/new kept the old title"
+
+
+class TestWhatTheCommandLineHandsTheRepl:
+    """--attach, --llm-params and --session-title end in the chat's context,
+    and nothing drove that constructor: every test for the three set the
+    attribute by hand afterwards, so dropping the assignment kept them green."""
+
+    def test_all_three_reach_the_first_turn(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        seen = {}
+        monkeypatch.setattr(
+            chat, "_task_with_attachments",
+            lambda ctx, task, renderer: seen.update(
+                attachments=list(ctx.attachments)) or task)
+        drive_chat_repl(
+            monkeypatch, ["frage"], attachments=["bild.png"],
+            llm_params={"thinking_level": "max"}, session_title="Mein Titel",
+            turn_probe=lambda loop, ctx, task, renderer, editor=None: seen.update(
+                params=dict(ctx.llm_params), title=ctx.session_title) or {})
+
+        assert seen == {"attachments": ["bild.png"],
+                        "params": {"thinking_level": "max"},
+                        "title": "Mein Titel"}
+
+
+class TestResumeBringsTheSessionAlong:
+    """A session brings its agent and its LLM -- `--session <id>` honoured
+    that, /resume loaded any session into the running agent and wrote this
+    agent's name over its record on the next save."""
+
+    def _ctx(self, monkeypatch, stored_agent, stored_llm, current="profile_a"):
+        import agent_system.llm.factory as factory
+        from agent_system.cli_utils.chat import _ChatContext
+
+        monkeypatch.setattr(
+            factory, "create_llm_from_profile",
+            lambda config, llm_profile, llm_params=None:
+            SimpleNamespace(model="model-of-" + llm_profile))
+        monkeypatch.setattr(
+            factory, "resolve_llm_config_for_agent",
+            lambda config, agent_config: SimpleNamespace(
+                spec=SimpleNamespace(provider="prov", model=agent_config.llm_profile)))
+
+        config = SimpleNamespace(
+            plugins=SimpleNamespace(servers={
+                "coder": SimpleNamespace(agent_config=object()),
+                "writer": SimpleNamespace(agent_config=object())}),
+            llm_system=SimpleNamespace(profiles={"profile_a": None, "profile_b": None}))
+
+        class _Manager:
+            async def load_session(self, user_id, session_id):
+                return {"agent_name": stored_agent, "llm_profile": stored_llm}
+
+        loads = []
+
+        class _Service:
+            async def load_and_restore_session(self, agent, user_id, session_id):
+                loads.append(session_id)
+                return True, 4
+
+        tracker = SimpleNamespace(set_session_metadata=lambda sid, meta: None)
+        ctx = _ChatContext(
+            agent=SimpleNamespace(system_config=config, _session_tracker=tracker,
+                                  llm=SimpleNamespace(model="m")),
+            entry_name="coder", session_service=_Service(), session_user="u",
+            session_id="s1", was_new_session=False, llm_profile=current,
+            llm_override=None, llm_profile_info=None, show_status=False,
+            session_manager=_Manager())
+        return ctx, loads
+
+    async def test_a_session_of_another_agent_is_refused(self, monkeypatch, capsys):
+        from agent_system.cli_utils.chat import _resume_session
+
+        ctx, loads = self._ctx(monkeypatch, "writer", "profile_a")
+
+        assert await _resume_session(ctx, "s2") is False
+
+        assert loads == [], "it was loaded into the wrong agent"
+        assert ctx.session_id == "s1"
+        out = capsys.readouterr().out
+        assert "belongs to writer" in out
+        assert "--session s2 --agent writer" in out
+
+    async def test_it_continues_on_its_own_llm(self, monkeypatch):
+        from agent_system.cli_utils.chat import _resume_session
+
+        ctx, loads = self._ctx(monkeypatch, "coder", "profile_b")
+
+        assert await _resume_session(ctx, "s2") is True
+
+        assert loads == ["s2"]
+        assert ctx.llm_profile == "profile_b"
+        assert ctx.llm_override.model == "model-of-profile_b"
+
+    async def test_the_title_of_the_session_left_behind_does_not_follow(
+            self, monkeypatch):
+        from agent_system.cli_utils.chat import _resume_session
+
+        ctx, _ = self._ctx(monkeypatch, "coder", None)
+        ctx.session_title = "Titel der ersten Session"
+
+        assert await _resume_session(ctx, "s2") is True
+        assert ctx.session_title is None
+
+    async def test_an_agent_the_config_forgot_does_not_block_it(self, monkeypatch):
+        from agent_system.cli_utils.chat import _resume_session
+
+        ctx, loads = self._ctx(monkeypatch, "retired_agent", None)
+
+        assert await _resume_session(ctx, "s2") is True
+        assert loads == ["s2"]
+        assert ctx.llm_profile == "profile_a"
+
+    async def test_a_session_whose_llm_cannot_be_started_is_refused(
+            self, monkeypatch, capsys):
+        """Not "staying on the current profile": the session would then RUN on
+        this chat's, and the first save writes that over its record -- the
+        failed switch destroying the very choice it was honouring."""
+        import agent_system.llm.factory as factory
+        from agent_system.cli_utils.chat import _resume_session
+
+        ctx, loads = self._ctx(monkeypatch, "coder", "profile_b")
+
+        def no_key(config, llm_profile, llm_params=None):
+            raise RuntimeError("OPENAI_API_KEY missing")
+
+        monkeypatch.setattr(factory, "create_llm_from_profile", no_key)
+
+        assert await _resume_session(ctx, "s2") is False
+
+        assert loads == [], "the session was loaded onto the wrong LLM"
+        assert ctx.session_id == "s1" and ctx.llm_profile == "profile_a"
+        out = capsys.readouterr().out
+        assert "OPENAI_API_KEY missing" in out
+        assert "--session s2" in out and "--llm" in out
+
+
+class TestSkillsThatCannotRun:
+    def test_only_typeable_skills_that_no_builtin_shadows_are_offered(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        registry = SimpleNamespace(list_skills=lambda: [
+            SimpleNamespace(name=name) for name in ("writer", "3d-print", "tools")])
+        monkeypatch.setattr(chat, "_skill_registry", lambda ctx: registry)
+
+        assert chat._available_skills(None) == ["writer"]
+
+    def test_a_skill_file_in_another_encoding_does_not_end_the_chat(
+            self, monkeypatch, capsys):
+        import agent_system.cli_utils.chat as chat
+        import agent_system.skills as skills
+
+        registry = SimpleNamespace(get=lambda name: SimpleNamespace(name=name))
+        monkeypatch.setattr(chat, "_skill_registry", lambda ctx: registry)
+
+        def unreadable(skill, arguments):
+            raise UnicodeDecodeError("utf-8", b"\xe4", 0, 1, "invalid start byte")
+
+        monkeypatch.setattr(skills, "invoke", unreadable)
+
+        assert chat._expand_skill(None, "writer", "") is None
+        assert "Could not read skill 'writer'" in capsys.readouterr().out
+
+
+class TestTypedAheadPaste:
+    async def test_a_pasted_block_opening_with_a_path_is_delivered(self):
+        """Mid-turn, every line starting with "/" was refused as a command --
+        a pasted stack trace that opens with a path included."""
+        agent = _InjectAgent()
+        reader = _ScriptedReader([("/usr/lib/x.py line 3\nValueError", "")])
+        r, _ = _renderer(width=200)
+        state = {"request_id": "req-1"}
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), state))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert agent.injected == [("req-1", "/usr/lib/x.py line 3\nValueError")]
+
+    async def test_a_typed_command_is_still_refused(self):
+        agent = _InjectAgent()
+        reader = _ScriptedReader([("/exit", "")])
+        r, out = _renderer(width=200)
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), {"request_id": "q"}))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert agent.injected == []
+        assert "commands only work at the prompt" in out.getvalue()
+
+
+class TestTheFooterFollowsTheModelThatRan:
+    class _Client:
+        def __init__(self, model, window):
+            self.model = model
+            self.context_window = window
+
+    async def test_the_window_is_the_override_s(self):
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": None},
+             "usage": {"prompt_tokens": 9000, "completion_tokens": 300}},
+            {"type": "final", "summary": "done",
+             "usage": {"prompt_tokens": 9000, "completion_tokens": 300}},
+            {"type": "end"},
+        ])
+        agent.llm = self._Client("agent-model", 1_000_000)
+        r, _ = _renderer()
+        result = await run_chat_turn(agent, "q", "s", r,
+                                     llm_override=self._Client("switched", 64_000))
+
+        assert result["context_window"] == 64_000
+
+    async def test_each_call_is_priced_with_the_model_that_answered(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        priced = []
+        monkeypatch.setattr(chat, "_accumulate_usage",
+                            lambda total, usage, model=None, is_batch=False:
+                            priced.append((model, is_batch)))
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": None},
+             "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+             "model": "fallback-model", "batch": False},
+            # An extra final call: it names no model, the last call did.
+            {"type": "final", "summary": "done",
+             "usage": {"prompt_tokens": 20, "completion_tokens": 2}},
+            {"type": "end"},
+        ])
+        agent.llm = self._Client("agent-model", 1_000_000)
+        r, _ = _renderer()
+        await run_chat_turn(agent, "q", "s", r)
+
+        assert priced == [("fallback-model", False), ("fallback-model", False)]
+
+    async def test_a_fallback_gets_no_fill_percentage(self):
+        """The tokens are the fallback's, the window is this client's: the
+        percentage would be against a size the answering model never had.
+        _format_usage then prints the tokens alone, which is what we know."""
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": None},
+             "usage": {"prompt_tokens": 9000, "completion_tokens": 300},
+             "model": "fallback-model"},
+            {"type": "end"},
+        ])
+        agent.llm = self._Client("agent-model", 1_000_000)
+        r, _ = _renderer()
+        result = await run_chat_turn(agent, "q", "s", r)
+
+        assert result["context_tokens"] == 9300, "fixture: the usage never arrived"
+        assert "context_window" not in result
+
+    async def test_a_later_call_without_usage_does_not_relabel_the_one_before(self):
+        """The server emits thinking_complete WITHOUT usage as well, with its
+        own model on it (an empty assistant, a step back on the base model
+        after an escalation). Letting that set the key priced the escalated
+        call as the base one -- and measured its tokens against the base
+        model's window."""
+        import agent_system.cli_utils.chat as chat
+
+        priced = []
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": [{"id": "t"}]},
+             "usage": {"prompt_tokens": 9000, "completion_tokens": 300},
+             "model": "escalated-model"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": None},
+             "model": "agent-model"},
+            {"type": "end"},
+        ])
+        agent.llm = self._Client("agent-model", 1_000_000)
+        r, _ = _renderer()
+        original = chat._accumulate_usage
+
+        def record(total, usage, model=None, is_batch=False):
+            priced.append(model)
+            return original(total, usage, model, is_batch)
+
+        chat._accumulate_usage = record
+        try:
+            result = await run_chat_turn(agent, "q", "s", r)
+        finally:
+            chat._accumulate_usage = original
+
+        assert priced == ["escalated-model"], "a call without usage was priced"
+        assert "context_window" not in result
+
+    async def test_the_window_stands_when_that_client_answered(self):
+        agent = _FakeAgent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": None},
+             "usage": {"prompt_tokens": 9000, "completion_tokens": 300},
+             "model": "agent-model"},
+            {"type": "end"},
+        ])
+        agent.llm = self._Client("agent-model", 1_000_000)
+        r, _ = _renderer()
+        result = await run_chat_turn(agent, "q", "s", r)
+
+        assert result["context_window"] == 1_000_000
+
+    def test_the_event_model_wins_over_the_clients(self):
+        agent = SimpleNamespace(llm=SimpleNamespace(model="agent-model"))
+        override = SimpleNamespace(model="switched-model")
+        event = {"model": "fallback-model", "batch": True}
+        assert _call_pricing_key(agent, override, event) == ("fallback-model", True)
+
+
+def chat_module():
+    import agent_system.cli_utils.chat as chat
+    return chat
+
+
+class TestInterruptsInsideTheWork:
+    """Review round 2: the Ctrl-C that lands inside the work itself."""
+
+    def test_an_interrupt_inside_the_save_does_not_hang_the_chat(self, capsys):
+        """The task ends with the KeyboardInterrupt; waiting on it again hung,
+        because asyncio does not stop the loop for such a task."""
+        import agent_system.cli_utils.chat as chat
+
+        async def save_that_is_hit(ctx):
+            raise KeyboardInterrupt
+
+        ctx = _inject_ctx(None)
+        loop = asyncio.new_event_loop()
+        original = chat._save_session
+        chat._save_session = save_that_is_hit
+        try:
+            assert chat._save_now(loop, ctx) is False
+        finally:
+            chat._save_session = original
+            loop.close()
+        assert ctx.last_saved is None
+        assert "(save interrupted)" in capsys.readouterr().err
+
+    def test_a_synchronous_interrupt_is_not_the_end_of_the_chat(self, monkeypatch, capsys):
+        """Building a /model client, the skill lookup, a long /history: plain
+        Python, no task to cancel. The interrupt left the REPL with a
+        traceback -- and what was queued still ran."""
+        import agent_system.cli_utils.chat as chat
+
+        real_resolve = chat.resolve_chat_input
+        calls = []
+
+        def resolve_hit_once(task, *args):
+            calls.append(task)
+            if len(calls) == 1:
+                raise KeyboardInterrupt
+            return real_resolve(task, *args)
+
+        monkeypatch.setattr(chat, "resolve_chat_input", resolve_hit_once)
+        turns = []
+
+        def probe(loop, ctx, task, renderer, editor=None):
+            turns.append(task)
+            return {"typed_queue": ["vorgemerkt"]} if task == "erste" else {}
+
+        drive_chat_repl(monkeypatch, ["zweite"], initial_task="erste", turn_probe=probe)
+
+        assert turns == ["zweite"], "the chat ended, or ran what was hit"
+        assert "(interrupted)" in capsys.readouterr().err
+
+    def test_queued_lines_do_not_run_after_it(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        real_render = chat._render_answer
+        turns = []
+
+        def render_hit(loop, ctx, renderer, summary):
+            if summary == "antwort eins":
+                raise KeyboardInterrupt
+            return real_render(loop, ctx, renderer, summary)
+
+        monkeypatch.setattr(chat, "_render_answer", render_hit)
+
+        def probe(loop, ctx, task, renderer, editor=None):
+            turns.append(task)
+            if task == "erste":
+                return {"summary": "antwort eins", "typed_queue": ["vorgemerkt"]}
+            return {}
+
+        drive_chat_repl(monkeypatch, [], initial_task="erste", turn_probe=probe)
+
+        assert turns == ["erste"], "a line queued before the Ctrl-C still ran"
+
+    async def test_an_interrupted_resume_leaves_the_chat_where_it_was(self, monkeypatch):
+        """The session's client is built before anything HAPPENS: an interrupt
+        there left ctx on the new session, whose hold the loop then released --
+        and a build that fails must not even load the session, or the next
+        save writes this chat's profile over the record it just read."""
+        import agent_system.llm.factory as factory
+        from agent_system.cli_utils.chat import _resume_session
+
+        ctx, loads = TestResumeBringsTheSessionAlong()._ctx(
+            monkeypatch, "coder", "profile_b")
+
+        def interrupted(config, llm_profile, llm_params=None):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(factory, "create_llm_from_profile", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            await _resume_session(ctx, "s2")
+
+        assert loads == [], "the session was loaded before its LLM stood"
+        assert ctx.session_id == "s1"
+        assert ctx.llm_profile == "profile_a"
+
+
+class TestWhatSurvivesAReseed:
+    def test_the_repl_marks_every_line_it_did_not_send(self, monkeypatch):
+        """Which lines were commands is the REPL's answer: a qualified plugin
+        command is one, "/todo:milch kaufen" is a message. Reading their shape
+        afterwards got one of the two wrong whichever rule it used."""
+        import agent_system.cli_utils.chat as chat
+
+        command = chat.PluginCommand(plugin="context_engineer", name="compact",
+                                     summary="", tool="context_engineer_compact",
+                                     argument="keep")
+        monkeypatch.setattr(chat, "_run_plugin_command",
+                            lambda loop, ctx, commands, qualified, payload: None)
+        monkeypatch.setattr(chat, "_expand_skill", lambda ctx, name, payload: "skill text")
+        editor = _RecordingEditor(["/context_engineer:compact", "/todo:milch kaufen",
+                                   "/writer los", "/sessions", "/nonsense"])
+
+        drive_chat_repl(monkeypatch, [], editor=editor, skills=["writer"],
+                        plugin_commands=[command])
+
+        assert editor.commands == ["/context_engineer:compact", "/writer los",
+                                   "/sessions", "/nonsense"]
+
+
+class TestTypedAheadCarryingACommand:
+    async def test_a_block_that_contains_a_command_line_is_a_message(self):
+        """The prompt's own rule, by the same function: several lines are a
+        message. Refusing the block because one line reads like a command
+        threw away pasted output -- `ls /` alone carries "/tmp" and "/opt" --
+        and the same paste at the prompt went through."""
+        agent = _InjectAgent()
+        reader = _ScriptedReader([("/help\nbitte lesen", "")])
+        r, out = _renderer(width=200)
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), {"request_id": "q"}))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert agent.injected == [("q", "/help\nbitte lesen")]
+        assert "commands only work at the prompt" not in out.getvalue()
+
+    def test_the_repl_hands_its_plugin_commands_to_the_context(self, monkeypatch):
+        """Collected once in the loop; the poller needs them to tell a plugin
+        command from a message. Never passed on, it read every one of them as
+        a message -- and billed it."""
+        import agent_system.cli_utils.chat as chat
+
+        command = chat.PluginCommand(plugin="context_engineer", name="compact",
+                                     summary="", tool="context_engineer_compact",
+                                     argument="keep")
+        seen = []
+        drive_chat_repl(monkeypatch, ["frage"], plugin_commands=[command],
+                        turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                        seen.append([c.qualified for c in ctx.plugin_commands]) or {})
+
+        assert seen == [["context_engineer:compact"]]
+
+    async def test_a_qualified_plugin_command_is_refused_too(self):
+        """Only `resolve` ever claims "/plugin:command" -- parse_chat_command
+        deliberately does not. Reading the line with the smaller function
+        sent the spelling that help prints to the model, as a billed
+        message."""
+        import agent_system.cli_utils.chat as chat
+
+        agent = _InjectAgent()
+        ctx = _inject_ctx(agent)
+        ctx.plugin_commands = [chat.PluginCommand(
+            plugin="context_engineer", name="compact", summary="",
+            tool="context_engineer_compact", argument="keep")]
+        reader = _ScriptedReader([("/context_engineer:compact", "")])
+        r, out = _renderer(width=200)
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, ctx, {"request_id": "q"}))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert agent.injected == []
+        assert "commands only work at the prompt" in out.getvalue()
+
+    async def test_an_escaped_message_arrives_unescaped(self):
+        """At the prompt "//compact" reaches the agent as "/compact" -- that
+        is what the escape is for. Mid-turn the raw line went through."""
+        agent = _InjectAgent()
+        reader = _ScriptedReader([("//compact", "")])
+        r, _ = _renderer(width=200)
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), {"request_id": "q"}))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert agent.injected == [("q", "/compact")]
+
+    async def test_what_is_kept_for_the_next_turn_stays_raw(self):
+        """The queued line passes the PROMPT again, which unescapes it there.
+        Queuing the unescaped one would hand that prompt a command."""
+        agent = _InjectAgent()
+        agent.accept = False
+        reader = _ScriptedReader([("//compact", "")])
+        r, _ = _renderer(width=200)
+        state = {"request_id": "q"}
+        task = asyncio.create_task(_poll_typed_input(reader, r, _inject_ctx(agent), state))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert state["typed_queue"] == ["//compact"]
+
+    async def test_one_line_that_is_a_command_is_still_refused(self):
+        agent = _InjectAgent()
+        reader = _ScriptedReader([("/sessions 5", "")])
+        r, out = _renderer(width=200)
+        task = asyncio.create_task(
+            _poll_typed_input(reader, r, _inject_ctx(agent), {"request_id": "q"}))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert agent.injected == []
+        assert "commands only work at the prompt" in out.getvalue()
+
+    # The counter-case -- a pasted block that opens with a path goes through
+    # untouched -- is TestTypedAheadPaste's first test, same reader script and
+    # same production path. Not written twice.
+
+
+class TestWorkThatGotThroughAsTheInterruptLanded:
+    """asyncio does not stop the loop for a task that finished with a
+    KeyboardInterrupt: the result is sitting in the task and waiting again
+    hangs. Reading it as "cancelled" threw away work that had already
+    happened -- and for /resume that meant letting go of the hold on the
+    session the chat had just switched to."""
+
+    def test_a_finished_command_reports_its_result(self):
+        import agent_system.cli_utils.chat as chat
+
+        async def work():
+            _interrupt_soon(asyncio.get_running_loop())
+            return "ergebnis"
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert chat._run_interruptible(loop, work(), "/sessions") == (True, "ergebnis")
+        finally:
+            loop.close()
+
+    def test_a_resume_that_finished_keeps_the_session_it_switched_to(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        released = []
+        monkeypatch.setattr(chat, "_release_session",
+                            lambda ctx, sid: released.append(sid))
+
+        async def resume_that_finished(ctx, session_id):
+            _interrupt_soon(asyncio.get_running_loop())
+            ctx.session_id = session_id
+            return True
+
+        seen = []
+        drive_chat_repl(monkeypatch, ["/resume s2", "frage"],
+                        resume=resume_that_finished,
+                        turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                        seen.append(ctx.session_id) or {})
+
+        assert seen == ["s2"], "the chat was told its resume had been cancelled"
+        assert released[:1] == ["s1"], "it let go of the session it switched TO"
+
+    def test_an_abandoned_task_is_never_left_pending(self):
+        """Every further Ctrl-C interrupts the wait, and a cancelled task left
+        pending on the shared loop runs on inside the NEXT command."""
+        import agent_system.cli_utils.chat as chat
+
+        loop = asyncio.new_event_loop()
+
+        async def unwinds_through_a_ctrl_c():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                loop.call_soon(_raise_interrupt)  # Ctrl-C while it unwinds
+                await asyncio.sleep(0.05)
+                raise
+
+        try:
+            task = loop.create_task(unwinds_through_a_ctrl_c())
+            loop.run_until_complete(asyncio.sleep(0))  # let it reach the sleep
+            chat._drain(loop, task, "the save")
+
+            assert task.done(), "it is still pending on the loop"
+        finally:
+            loop.close()
+
+
+class TestASaveThatWonTheRace:
+    def test_a_save_that_got_through_counts(self, capsys):
+        """The interrupt arrived after the save finished: the task is done
+        WITHOUT an exception. Treating that as interrupted left was_new_session
+        True, so the next /model skipped its own save as well."""
+        import agent_system.cli_utils.chat as chat
+
+        async def save_that_finished(ctx):
+            asyncio.get_running_loop().call_soon(_raise_interrupt)
+            return True
+
+        ctx = _inject_ctx(None)
+        ctx.was_new_session = True
+        loop = asyncio.new_event_loop()
+        original = chat._save_session
+        chat._save_session = save_that_finished
+        try:
+            assert chat._save_now(loop, ctx) is True
+        finally:
+            chat._save_session = original
+            loop.close()
+
+        assert ctx.last_saved == "s"
+        assert ctx.was_new_session is False
+        assert "(save interrupted)" not in capsys.readouterr().err
+
+
+def _raise_interrupt():
+    raise KeyboardInterrupt

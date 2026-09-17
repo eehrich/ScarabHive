@@ -268,33 +268,13 @@
   }
 
   /**
-   * Whether a stored user message is really a slash command.
-   *
-   * Commands never reached the agent, so they are not part of the
-   * conversation -- but unknown ones used to be passed through and sit in old
-   * sessions. Mirrors chat_commands.looks_like_command, including its rule
-   * that anything multiline is a message, never a command.
-   *
-   * Narrower than the Python side by one step: the catalogue is fetched for
-   * the WEB surface, so the terminal-only spellings (/exit, /attach) are not
-   * in it, and neither is anything before the catalogue has loaded. Both cases
-   * only ever show a line that would have been hidden -- never the reverse.
+   * A user message with something in it. Every stored user message went to
+   * the agent -- one that opens with a command word was sent escaped ("//"),
+   * so it is shown like any other. Mirrors chat._is_real_turn.
    */
-  function looksLikeCommand(text) {
-    const stripped = String(text || '').trim();
-    if (!stripped || stripped.indexOf('\n') >= 0) return false;
-    const first = stripped.split(' ')[0].toLowerCase();
-    const commands = ((window.slashCommands || {}).catalogue || {}).commands || [];
-    return commands.some(function (command) {
-      return (command.aliases || []).indexOf(first) >= 0;
-    });
-  }
-
-  /** A user message that actually went to the agent. */
   function isRealTurn(msg) {
     if (!msg || msg.role !== 'user') return false;
-    const text = messageText(msg).trim();
-    return !!text && !looksLikeCommand(text);
+    return !!messageText(msg).trim();
   }
 
   async function sessionMessages() {
@@ -609,7 +589,7 @@
     messages.slice(start).forEach(function (msg) {
       const text = messageText(msg).trim();
       if (msg.role === 'user') {
-        if (!text || looksLikeCommand(text)) return;
+        if (!text) return;
         parts.push(plain('\n› ' + text));
       } else if (msg.role === 'assistant') {
         if (text) {

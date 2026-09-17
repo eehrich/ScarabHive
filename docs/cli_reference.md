@@ -146,9 +146,19 @@ agent-cli chat --session a1b2c3d4 --agent amiga_coder
 agent-cli chat --list-sessions
 ```
 
-Accepts the same `--agent`, `--llm`, `--llm-params`, `--session`,
-`--session-user`, `--list-sessions` and `--vars` options as `run`, plus the
-global `--color` and `--no-status`.
+Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
+`--attach`, `--max-steps`, `--session`, `--session-user`, `--session-title`,
+`--force`, `--list-sessions` und `--vars`, dazu die globalen `--color` und
+`--no-status`. Im Chat heißt das:
+
+- `--attach` hängt die Dateien an die erste Nachricht, wie `/attach` es tut,
+  samt Prüfung, ob das Modell sie lesen kann. Ohne mitgegebene erste
+  Nachricht warten sie auf die erste getippte.
+- `--llm-params` gelten auch für jedes Profil, auf das `/model` wechselt.
+- `--session-title` benennt nur die Session, mit der der Chat startet —
+  nicht die nach `/new` oder `/resume`.
+- `--raw` und `--show-mcp` wirken im Chat nicht; den Tool-Verkehr zeigt
+  `/last`.
 
 **In-chat commands:**
 
@@ -158,9 +168,9 @@ global `--color` and `--no-status`.
 | `/new` | Start a fresh session (the current one stays saved) |
 | `/session` | Show the current session and the command that resumes it |
 | `/sessions [count]` | List this user's sessions, one line each (default 20, `0` = all). Sub-agent sessions are left out — they outnumber the real ones ten to one |
-| `/resume <id>` | Continue an earlier session without leaving the chat |
+| `/resume <id>` | Continue an earlier session without leaving the chat. Wie `--session <id>`: die Session läuft auf ihrem eigenen LLM weiter. Eine Session eines anderen Agenten wird abgelehnt, mit dem Befehl, der sie fortsetzt — in diesem Chat liefe sie mit fremden Tools und fremdem Prompt, und das nächste Speichern schriebe diesen Agenten in ihren Datensatz. Dasselbe, wenn sich ihr LLM hier nicht starten lässt (fehlender Schlüssel): sonst liefe sie auf dem Profil dieses Chats, und das Speichern überschriebe ihre eigene Wahl |
 | `/vars [KEY=VALUE ...]` | Template variables of this session — bare lists them, `unset KEY` removes one, `clear` empties. The same variables `--vars` fills. A change reaches the agent on its next step and is written to the session file at once, so a removal survives `/resume` |
-| `/model [profile]`, `/llm` | LLM dieser Session — ohne Argument listet es die Profile und markiert das laufende, mit Argument wird gewechselt. Gilt ab der nächsten Nachricht und wird in die Session geschrieben, ein späteres `--session <id>` startet also darauf |
+| `/model [profile]`, `/llm` | LLM dieser Session — ohne Argument listet es die Profile und markiert das laufende, mit Argument wird gewechselt. Gilt ab der nächsten Nachricht und wird sofort in die Session geschrieben, ein späteres `--session <id>` startet also darauf — auch wenn der Chat gleich danach endet. Eine Session ohne erste Nachricht hat noch keinen Datensatz; dort landet die Wahl mit dem ersten Speichern. `--llm-params` gehen mit |
 | `/tools [filter]` | Tools the agent really has, grouped by server (optionally filtered) |
 | `/skills` | Skill bundles it loads, `always` vs `on_demand` |
 | `/costs` | Session cost so far **including sub-agents** (needs `context_usage_tracker`) |
@@ -168,7 +178,7 @@ global `--color` and `--no-status`.
 | `/last` | The last turn's tool calls and results in full, formatted |
 | `/help`, `/h`, `/?` | List the commands |
 | ↑ / ↓ | Walk the input history; Ctrl-R searches it |
-| Ctrl-C | Cancel the **running turn**; twice at the prompt exits |
+| Ctrl-C | Cancel the **running turn**; twice at the prompt exits. Bricht auch ein laufendes Kommando ab (`/sessions`, `/resume`, `/vars`, `/tools`, ein Plugin-Kommando), ohne den Chat zu beenden; ein laufendes Speichern wird erst zu Ende gebracht, ein zweites Ctrl-C lässt es fallen. Nach Ctrl-C laufen vorgemerkte Zeilen nie als neue Turns — auch dann nicht, wenn die Antwort schneller war |
 
 Plugins add their own, listed under *Plugin commands* in `/help` — but only
 those whose tool this agent may call, so the list differs per agent. They run
@@ -217,7 +227,8 @@ Protokoll, ihre User-Nachrichten sind die History. `/resume` und `/new`
 tauschen sie deshalb mit aus, und beide Oberflächen zeigen dieselbe.
 
 Zwei Dinge stehen bewusst nicht drin. **Slash-Kommandos** laufen im REPL und
-erreichen die Session nie — sie sind bis zum Prozessende abrufbar, danach
+erreichen die Session nie — sie sind bis zum Prozessende abrufbar, auch über
+`/new` und `/resume` hinweg, danach
 weg. Und **sehr lange Nachrichten** (über 2000 Zeichen) werden übersprungen:
 ein `/skill`-Aufruf landet als vollständig *ausgepackter* Skill-Text in der
 Session, und niemand will 30 kB SKILL.md über seinem Prompt haben. Eine
@@ -250,6 +261,15 @@ reaches the agent as `/new ...`; anything else beginning with `/` that is not
 a known command — a path like `/etc/nginx/nginx.conf`, for instance — is sent
 as an ordinary message. The escape only fires where it is needed: a pasted
 `// TODO: fix` or `//192.168.1.1/share` keeps both slashes.
+
+Während ein Turn läuft, geht eine getippte Zeile beim nächsten Schritt an den
+Agenten. Es gilt dieselbe Regel wie am Prompt, aus derselben Funktion: eine
+**einzelne** Zeile, die ein bekanntes Kommandowort ist, wird abgewiesen
+(Kommandos gibt es nur am Prompt), alles andere ist eine Nachricht — ein
+eingefügter Block also **eine** Nachricht, mit Einrückung und Leerzeilen, und
+ein Pfad wie `/etc/nginx/nginx.conf` geht durch. In `/history` und `/last`
+steht jede Nachricht, die der Agent bekommen hat, auch eine mit `//`
+abgeschickte.
 
 **Display:** tool activity is rendered like the WebUI front panel -- one line
 per operation that updates in place and collapses into its `✓`/`✗` end state,

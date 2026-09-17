@@ -18,7 +18,6 @@ from agent_system.chat_commands import (
     commands_for,
     parse_vars,
     group_tools_by_server,
-    looks_like_command,
     needs_escape,
     parse_chat_command,
     resolve,
@@ -131,22 +130,6 @@ class TestSuggestions:
 
     def test_nonsense_gets_none(self):
         assert suggest_command("/zzzzqqqq") is None
-
-
-class TestLooksLikeCommand:
-    def test_command_word(self):
-        assert looks_like_command("/sessions")
-
-    def test_message(self):
-        assert not looks_like_command("bitte /sessions zeigen")
-
-    def test_path_is_not_a_command(self):
-        assert not looks_like_command("/etc/hosts")
-
-    def test_multiline_message_is_not_a_command(self):
-        """parse_chat_command treats multiline input as a message; the filter
-        must mirror that, or /history and /last hide real turns."""
-        assert not looks_like_command("/new plan fuer die woche\nzweite zeile")
 
 
 class TestArgumentSplitting:
@@ -295,12 +278,10 @@ class TestColonWordsStayMessages:
     """The qualified spelling `/plugin:name` must not make ordinary prose look
     like a command.
 
-    The first attempt widened the command-word regex to allow a colon. That
-    regex ALSO filters stored messages (`looks_like_command`), so
-    "/todo:milch kaufen" became an "unknown command" at the prompt, was
-    rejected on the web surface where plugin commands do not even exist, and
-    vanished retroactively from /history and /last. Now a colon word is claimed
-    only when it really names a declared command.
+    The first attempt widened the command-word regex to allow a colon, so
+    "/todo:milch kaufen" became an "unknown command" at the prompt and was
+    rejected on the web surface where plugin commands do not even exist. Now a
+    colon word is claimed only when it really names a declared command.
     """
 
     @pytest.mark.parametrize("line", [
@@ -315,11 +296,16 @@ class TestColonWordsStayMessages:
         assert parse_chat_command(line)[0] is None
         assert resolve(line).kind == "message"
 
-    @pytest.mark.parametrize("line", ["/todo:kaufen milch", "/note:morgen"])
-    def test_and_stays_visible_in_history(self, line):
-        """looks_like_command filters stored messages out of /history and
-        /last. Whatever it calls a command disappears from the transcript."""
-        assert looks_like_command(line) is False
+    def test_a_multiline_message_never_runs_the_qualified_command(self):
+        """Multi-line input is a message whichever spelling opens it -- the
+        bare name already was, the qualified one ran the plugin with the
+        whole paragraph as its argument."""
+        command = PluginCommand(plugin="context_engineer", name="compact",
+                                summary="", tool="context_engineer_compact",
+                                argument="keep")
+        for line in ("/context_engineer:compact keep\nmore",
+                     "/compact keep\nmore"):
+            assert resolve(line, (), [command]).kind == "message", line
 
     def test_an_undeclared_qualified_word_is_a_message(self):
         """Nothing declares it, so it is prose -- not "unknown command"."""
@@ -375,16 +361,6 @@ class TestTheDoubleSlashEscape:
         """No escape was needed, so none is applied -- eating a slash here
         corrupts the message the person actually sent."""
         assert parse_chat_command(line) == (None, line)
-
-    def test_an_escaped_message_stays_visible_in_history(self):
-        """It is a message, not a command. Hiding it left the agent's answer
-        in /history with no question above it."""
-        assert looks_like_command("/unbekannt bitte") is False
-
-    def test_a_real_command_is_still_filtered_out_of_history(self):
-        """Counter-check: the leftovers this filter exists for must still go."""
-        assert looks_like_command("/sessions") is True
-        assert looks_like_command("/hist") is True
 
 
 class TestTheEscapeIsTheInverseOfTheUnescape:

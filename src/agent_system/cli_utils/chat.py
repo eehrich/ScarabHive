@@ -15,6 +15,7 @@ Two pieces live here:
 from __future__ import annotations
 
 import asyncio
+import codecs
 import difflib
 import json
 import logging
@@ -36,6 +37,7 @@ from .common import (
 )
 from .attachments import sort_attachments
 from .session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
+from .session_defaults import session_defaults
 from ..core.session_presence import SessionBusy, presence_for
 
 logger = logging.getLogger(__name__)
@@ -477,8 +479,12 @@ async def run_chat_turn(
     result: dict[str, Any] = {"summary": None, "cancelled": False, "errors": [],
                               "usage": {}}
     last_call_usage: Any = None  # to spot the final event repeating it
+    call_key: Optional[tuple[Optional[str], bool]] = None  # who answered it
     if state is None:
         state = {}
+    # The same dict: a turn cancelled from outside never returns, and what
+    # its calls cost has to reach the session total anyway.
+    state["usage"] = result["usage"]
 
     queue = await status_bus.subscribe() if show_status else None
     consumer: Optional[asyncio.Task] = None
@@ -521,8 +527,14 @@ async def run_chat_turn(
                 # Usage rides on thinking_complete per LLM call; sum them so a
                 # multi-step turn reports the whole turn, not just the last call.
                 call_usage = ev.get("usage")
-                _accumulate_usage(result["usage"], call_usage,
-                                  *_call_pricing_key(agent, llm_override))
+                if call_usage is not None:
+                    # Only a call that REPORTED usage may set the key: the
+                    # server also emits thinking_complete without usage (and
+                    # with its own model on it), and a later step back on the
+                    # base model would then re-label the escalated call's
+                    # tokens -- and size the context bar with the wrong window.
+                    call_key = _call_pricing_key(agent, llm_override, ev)
+                    _accumulate_usage(result["usage"], call_usage, *call_key)
                 # Only a call that REPORTED usage becomes the reference. The
                 # server emits thinking_complete without it (server.py: the
                 # empty-assistant branch, and both `if usage` guards), and
@@ -547,8 +559,9 @@ async def run_chat_turn(
                 # else => a real extra call.
                 final_usage = ev.get("usage")
                 if final_usage is not None and final_usage != last_call_usage:
-                    _accumulate_usage(result["usage"], final_usage,
-                                      *_call_pricing_key(agent, llm_override))
+                    # The final event names no model; the last call's does.
+                    _accumulate_usage(result["usage"], final_usage, *(
+                        call_key or _call_pricing_key(agent, llm_override, ev)))
                     last_call_usage = final_usage
             elif t == "error":
                 message = str(ev.get("message") or "unknown error")
@@ -586,9 +599,17 @@ async def run_chat_turn(
     if last_call_usage is not None:
         call = normalize_usage(last_call_usage)
         result["context_tokens"] = call.prompt_tokens + call.completion_tokens
-    client = getattr(agent, "llm", None)
+    # The window of the client the turn ran on: after --llm or /model that is
+    # the override, and the fill was computed against the old model's size.
+    # Only when that client is also the one that ANSWERED: a fallback runs on
+    # a third client whose window nobody here knows, and dividing its tokens
+    # by this one states a fill that is not true. Without a window the footer
+    # shows the tokens alone, which is what we actually know.
+    client = llm_override or getattr(agent, "llm", None)
     window = getattr(client, "context_window", None)
-    if isinstance(window, int) and window > 0:
+    answered_by = call_key[0] if call_key else None
+    if (isinstance(window, int) and window > 0
+            and (answered_by is None or answered_by == getattr(client, "model", None))):
         result["context_window"] = window
 
     return result
@@ -607,11 +628,10 @@ from agent_system.chat_commands import (  # noqa: E402
     apply_vars,
     commands_for,
     group_tools_by_server,
-    looks_like_command as _looks_like_command,
     needs_escape as _needs_escape,
-    parse_chat_command,
     parse_vars,
     resolve as resolve_chat_input,
+    runnable_skill_names,
     store_vars,
     suggest_command,
 )
@@ -677,6 +697,11 @@ class _KeyReader:
         self.enabled = False
         self._saved_attrs = None
         self._fd = None
+        # One decoder across reads: a paste over 1 KB splits a multi-byte
+        # character between two os.read() calls, and decoding each read on its
+        # own turned both halves into U+FFFD in the text sent to the agent.
+        self._decoder = codecs.getincrementaldecoder(
+            getattr(sys.stdin, "encoding", None) or "utf-8")(errors="replace")
         if not active:
             return
         try:
@@ -739,21 +764,25 @@ class _KeyReader:
                     data = os.read(fd, 1024)
                     if not data:
                         break
-                    chars.append(data.decode(sys.stdin.encoding or "utf-8",
-                                             errors="replace"))
+                    chars.append(self._decoder.decode(data))
         except Exception as e:
             logger.debug("Key read failed, disabling type-ahead: %s", e)
             self.enabled = False
-        return "".join(chars)
+        # getwch() hands out UTF-16 code units: an emoji arrives as two lone
+        # surrogates, which the message sanitizer drops. Pair them up.
+        return "".join(chars).encode("utf-16", "surrogatepass").decode(
+            "utf-16", "replace")
 
     def poll(self) -> list[str]:
-        """Consume pending keys. Returns every line finished in this batch.
+        """Consume pending keys. Returns the message finished in this batch.
 
-        A list, not one line: _read_chars drains everything available at once,
-        so a paste of several lines arrives in a single call. Keeping one slot
-        silently dropped all but the last.
+        _read_chars drains everything available at once, so a paste of several
+        lines arrives in one call -- and becomes ONE message, the way a paste
+        at the prompt does. Sending each line on its own gave a pasted stack
+        trace as twenty messages. Nobody types a line and its Enter within one
+        poll interval, so lines finished together were pasted together.
         """
-        submitted: list[str] = []
+        lines: list[str] = []
         chars = self._read_chars()
         index = 0
         while index < len(chars):
@@ -770,10 +799,10 @@ class _KeyReader:
                     index += 1  # the final byte terminates the sequence
                 continue
             if ch in ("\r", "\n"):
-                text = self.buffer.strip()
+                if ch == "\r" and index < len(chars) and chars[index] == "\n":
+                    index += 1  # a pasted CRLF ends one line, not two
+                lines.append(self.buffer)
                 self.buffer = ""
-                if text:  # a bare Enter is not a message
-                    submitted.append(text)
             elif ch in ("\b", "\x7f"):
                 self.buffer = self.buffer[:-1]
             elif ch == "\x15":            # Ctrl-U: clear the line
@@ -783,10 +812,13 @@ class _KeyReader:
                 # shell left the console without ENABLE_PROCESSED_INPUT. Treat
                 # it as "discard what I typed", never as text.
                 self.buffer = ""
-                submitted.clear()
-            elif ch >= " ":
+                lines.clear()
+            elif ch >= " " or ch == "\t":
                 self.buffer += ch
-        return submitted
+        # A bare Enter is not a message; the blank lines and the indentation
+        # INSIDE a pasted block are part of it.
+        message = "\n".join(lines).strip()
+        return [message] if message else []
 
 
 def _silence_stdout_logging() -> list[tuple[Any, int]]:
@@ -894,6 +926,8 @@ class _PromptEditor:
         # to get out of a fence they opened by accident.
         self._continuation = prompt_session_cls(
             history=history_cls(), key_bindings=key_bindings)
+        #: Commands typed in this process; they never enter a session.
+        self._commands: list[str] = []
         self.reseed(seed)
 
     def reseed(self, seed: Sequence[str]) -> None:
@@ -903,9 +937,14 @@ class _PromptEditor:
         buffer builds its working lines from the history it was constructed
         with, so replacing the entries alone would leave the old ones
         reachable.
+
+        Slash commands stay: they are typed at this prompt, never stored in a
+        session, so they belong to the process -- the /resume just typed
+        included. Which lines those were is the REPL's answer, not a guess
+        from their shape: only it knows whether /x:y named a plugin command.
         """
         self._history = self._history_cls()
-        for entry in seed:
+        for entry in [*seed, *self._commands]:
             self._history.append_string(entry)
         self._session = self._prompt_session_cls(
             history=self._history, key_bindings=self._key_bindings)
@@ -915,6 +954,12 @@ class _PromptEditor:
         stripped = (text or "").strip()
         if stripped:
             self._history.append_string(stripped)
+
+    def remember_command(self, text: str) -> None:
+        """Record that this line ran as a command, so a reseed keeps it."""
+        stripped = (text or "").strip()
+        if stripped and (not self._commands or self._commands[-1] != stripped):
+            self._commands.append(stripped)
 
     def read(self, prompt: str) -> str:
         return self._session.prompt(prompt)
@@ -964,13 +1009,22 @@ def _skip_piped_bom() -> None:
 
     Must run before the first read: a TextIOWrapper refuses a new encoding
     once it has decoded data.
+
+    Only a stream that starts with the mark is switched -- the mark says it
+    is UTF-8, whatever the stream decoded as before (without Python's UTF-8
+    mode that is cp1252 on Windows, where it read as "ï»¿/compact"). A pipe
+    without one keeps its encoding: an ANSI file piped in stays readable.
+    ``errors`` is named again because a new encoding resets it to strict,
+    and one stray byte would then end the chat with a UnicodeDecodeError.
     """
-    stream = sys.stdin
-    encoding = (getattr(stream, "encoding", None) or "").lower().replace("_", "-")
-    if encoding not in ("utf-8", "utf8"):
-        return
+    stream: Any = sys.stdin
     try:
-        stream.reconfigure(encoding="utf-8-sig")
+        # peek() waits for the first bytes, which input() is about to do anyway.
+        # ponytail: one peek. A producer that delivers the mark in pieces keeps
+        # its encoding; read the first bytes properly if that ever shows up.
+        if stream.buffer.peek(len(codecs.BOM_UTF8))[:len(codecs.BOM_UTF8)] != codecs.BOM_UTF8:
+            return
+        stream.reconfigure(encoding="utf-8-sig", errors="replace")
     except Exception:
         logger.debug("Could not switch piped stdin to utf-8-sig", exc_info=True)
 
@@ -1069,7 +1123,10 @@ class _ChatContext:
                  llm_profile: str, llm_override: Any,
                  llm_profile_info: Optional[str], show_status: bool,
                  session_manager: Any = None,
-                 template_vars: Optional[dict] = None) -> None:
+                 template_vars: Optional[dict] = None,
+                 llm_params: Optional[dict] = None,
+                 session_title: Optional[str] = None,
+                 attachments: Sequence[str] = ()) -> None:
         self.agent = agent
         self.entry_name = entry_name
         self.session_service = session_service
@@ -1089,19 +1146,18 @@ class _ChatContext:
         self.last_saved: Optional[str] = None
         # Cumulative usage across the chat, for the exit line.
         self.total_usage: dict[str, float] = {}
-        # Files queued by /attach for the NEXT message (absolute or relative
-        # paths, already validated to exist when queued).
-        self.attachments: list[str] = []
-
-    def pricing_key(self) -> tuple[Optional[str], bool]:
-        """(model id, is_batch) for the central cost estimator."""
-        client = self.llm_override or getattr(self.agent, "llm", None)
-        model = getattr(client, "model", None)
-        # isinstance-str guard mirrors the usage tracker: a plain mock must not
-        # look batchy and halve the estimate.
-        provider = getattr(client, "batch_provider", None)
-        return (str(model) if model else None,
-                isinstance(provider, str) and bool(provider))
+        # Files queued by /attach (or --attach) for the NEXT message (absolute
+        # or relative paths, already validated to exist when queued).
+        self.attachments: list[str] = list(attachments)
+        # --llm-params: they go with every profile /model switches to.
+        self.llm_params = dict(llm_params or {})
+        # --session-title names the session the chat started on, and only it:
+        # dropped once written, and when /new or /resume leaves that session.
+        self.session_title = session_title
+        # The agent's slash commands, collected once by the REPL. Here so that
+        # a line typed MID-TURN is classified by the same rule as one typed at
+        # the prompt -- "/plugin:command" is claimed by nothing else.
+        self.plugin_commands: list[PluginCommand] = []
 
     def llm_label(self) -> str:
         """Profile plus the model behind it.
@@ -1171,25 +1227,36 @@ def _release_session(ctx: "_ChatContext", session_id: Optional[str]) -> None:
         presence.release(session_id, ctx.session_user)
 
 
-def _resume_hint(ctx: "_ChatContext", session_id: str) -> str:
+def _resume_hint(ctx: "_ChatContext", session_id: str,
+                 agent_name: Optional[str] = None) -> str:
     """The exact command that brings this session back."""
-    parts = ["agent-cli chat", f"--session {session_id}", f"--agent {ctx.entry_name}"]
+    parts = ["agent-cli chat", f"--session {session_id}",
+             f"--agent {agent_name or ctx.entry_name}"]
     if ctx.session_user != "cli_user":
         parts.append(f"--session-user {ctx.session_user}")
     return " ".join(parts)
 
 
-def _call_pricing_key(agent: Any, override: Any = None) -> tuple[Optional[str], bool]:
+def _call_pricing_key(agent: Any, override: Any = None,
+                      event: Any = None) -> tuple[Optional[str], bool]:
     """(model, is_batch) of the client that just ran -- read per call.
 
     Pricing the whole session with one model was wrong as soon as a fallback
     switched profiles or a step used a different client.
 
-    The override comes first, and that is not cosmetic: --llm and /model hand
-    the turn a different client while ``agent.llm`` stays the agent's own, so
-    reading the agent alone quoted the price of the model that did NOT run.
-    Same rule as _ChatContext.pricing_key.
+    The event names the model that answered the call (a fallback, or a step
+    walking around a blocked LLM, runs on neither the override nor the
+    agent's own client). Without that, the override comes first, and that is
+    not cosmetic: --llm and /model hand the turn a different client while
+    ``agent.llm`` stays the agent's own, so reading the agent alone quoted the
+    price of the model that did NOT run.
+
+    The isinstance-str guard on the provider mirrors the usage tracker: a
+    plain mock must not look batchy and halve the estimate.
     """
+    model = event.get("model") if isinstance(event, dict) else None
+    if isinstance(model, str) and model:
+        return model, event.get("batch") is True
     client = override or getattr(agent, "llm", None)
     model = getattr(client, "model", None)
     provider = getattr(client, "batch_provider", None)
@@ -1421,6 +1488,18 @@ def _session_messages(ctx: "_ChatContext") -> list:
         return []
 
 
+def _is_real_turn(message: Any) -> bool:
+    """A user message with something in it.
+
+    Every stored user message went to the agent: one that opens with a
+    command word was sent escaped ("//help me ..."), so hiding it left the
+    answer in /history without its question and made /last start a turn early.
+    """
+    if getattr(message, "role", None) != "user":
+        return False
+    return bool(_message_text(message).strip())
+
+
 def _show_history(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> None:
     """Print the recent exchange: what was asked, what came back.
 
@@ -1437,13 +1516,6 @@ def _show_history(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> 
     if not messages:
         print("No messages in this session yet.")
         return
-
-    def _is_real_turn(message: Any) -> bool:
-        """A user message that actually went to the agent."""
-        if getattr(message, "role", None) != "user":
-            return False
-        text = _message_text(message).strip()
-        return bool(text) and not _looks_like_command(text)
 
     # Count backwards in USER turns, so "6" means six exchanges rather than
     # six raw messages (a single turn can hold a dozen tool messages).
@@ -1465,9 +1537,7 @@ def _show_history(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> 
         text = _message_text(message).strip()
 
         if role == "user":
-            # Leftovers from when unknown commands were passed through as
-            # messages; they are not part of the conversation.
-            if not text or _looks_like_command(text):
+            if not text:
                 continue
             renderer.println("")
             renderer.println(f"› {text}")
@@ -1491,11 +1561,7 @@ def _show_last(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
     messages = _session_messages(ctx)
     last_user = None
     for i in range(len(messages) - 1, -1, -1):
-        message = messages[i]
-        if getattr(message, "role", None) != "user":
-            continue
-        text = _message_text(message).strip()
-        if text and not _looks_like_command(text):
+        if _is_real_turn(messages[i]):
             last_user = i
             break
     if last_user is None:
@@ -1585,13 +1651,53 @@ def _show_costs(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
         print("  ~ = estimated from config/llm_pricing.yaml, not provider billing")
 
 
-def _switch_model(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> None:
-    """Show or change the LLM profile this chat runs on.
+def _build_profile(ctx: "_ChatContext", wanted: str) -> tuple[Any, str]:
+    """(client, label) for LLM profile *wanted*; raises if it cannot be built.
 
-    The switch is the same one ``--llm`` performs, applied to the live
-    context: the next turn reads ctx.llm_override, and the choice goes into
-    the session metadata so continuing the session later starts on it again
-    (agent_cli.stored_session_settings reads it back).
+    The switch ``--llm`` performs, with the ``--llm-params`` of this chat
+    applied to the new profile the way the command line applies them: a
+    ``thinking_level=max`` typed at the start must not vanish on /model.
+    Changes nothing, so an interrupt while it builds leaves the chat as it was.
+    """
+    from ..llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
+    from ..config.models import AgentConfig
+
+    system_config: Any = getattr(ctx.agent, "system_config", None)
+    params = ctx.llm_params or None
+    client = create_llm_from_profile(
+        config=system_config, llm_profile=wanted, llm_params=params)
+    resolved = resolve_llm_config_for_agent(system_config, AgentConfig(llm_profile=wanted))
+    label = f"{wanted}:{resolved.spec.provider}/{resolved.spec.model}"
+    if params:
+        label += " +params(" + ",".join(f"{k}={v}" for k, v in params.items()) + ")"
+    return client, label
+
+
+def _use_profile(ctx: "_ChatContext", wanted: str,
+                 built: Optional[tuple[Any, str]] = None) -> None:
+    """Point the chat at LLM profile *wanted* (built here unless *built*)."""
+    client, label = built or _build_profile(ctx, wanted)
+    ctx.llm_override = client
+    ctx.llm_profile = wanted
+    ctx.llm_profile_info = label
+    tracker = getattr(ctx.agent, "_session_tracker", None)
+    if tracker is not None:
+        # Same three keys the bootstrap writes; the turn loop reads them for
+        # tool context, and the session record is what a later resume reads.
+        tracker.set_session_metadata(ctx.session_id, {
+            "user_id": ctx.session_user,
+            "agent_name": ctx.entry_name,
+            "llm_profile": wanted,
+        })
+
+
+def _switch_model(ctx: "_ChatContext", payload: str) -> bool:
+    """Show or change the LLM profile this chat runs on; True if it changed.
+
+    The next turn reads ctx.llm_override, and the choice goes into the
+    session metadata so continuing the session later starts on it again
+    (agent_cli.stored_session_settings reads it back) -- the caller writes
+    the record at once.
     """
     system_config = getattr(ctx.agent, "system_config", None)
     llm_system = getattr(system_config, "llm_system", None)
@@ -1602,48 +1708,33 @@ def _switch_model(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> 
         print(f"LLM: {ctx.llm_label()}")
         if not profiles:
             print("  (no profiles configured)")
-            return
+            return False
         current = ctx.llm_profile
         for name in sorted(profiles):
             marker = "*" if name == current else " "
             description = getattr(profiles[name], "description", "") or ""
             print(f" {marker} {name:32} {_one_line(description, 60)}")
         print("  /model <profile> switches; it applies to the next message.")
-        return
+        return False
 
     if wanted not in profiles:
         close = difflib.get_close_matches(wanted, sorted(profiles), n=1, cutoff=0.6)
         print(f"Unknown LLM profile: {wanted}"
               + (f"   Did you mean {close[0]}?" if close else ""))
         print("  /model lists them.")
-        return
+        return False
 
     try:
-        from ..llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
-        from ..config.models import AgentConfig
-
-        client = create_llm_from_profile(config=system_config, llm_profile=wanted)
-        resolved = resolve_llm_config_for_agent(system_config, AgentConfig(llm_profile=wanted))
+        _use_profile(ctx, wanted)
     except Exception as e:
         # The old client is still good; a failed switch must not end the chat.
         logger.error("Could not switch LLM profile to %s: %s", wanted, e, exc_info=True)
         print(f"Could not switch to '{wanted}': {e}")
         print(f"Staying on {ctx.llm_label()}.")
-        return
+        return False
 
-    ctx.llm_override = client
-    ctx.llm_profile = wanted
-    ctx.llm_profile_info = f"{wanted}:{resolved.spec.provider}/{resolved.spec.model}"
-    tracker = getattr(ctx.agent, "_session_tracker", None)
-    if tracker is not None:
-        # Same three keys the bootstrap writes; the turn loop reads them for
-        # tool context, and the session record is what a later resume reads.
-        tracker.set_session_metadata(ctx.session_id, {
-            "user_id": ctx.session_user,
-            "agent_name": ctx.entry_name,
-            "llm_profile": wanted,
-        })
     print(f"LLM: {ctx.llm_profile_info}   (from the next message on)")
+    return True
 
 
 async def _show_tools(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> None:
@@ -1722,12 +1813,18 @@ def _skill_registry(ctx: "_ChatContext"):
 
 
 def _available_skills(ctx: "_ChatContext") -> list[str]:
-    """Names that can be invoked as /name. Never raises -- it runs per prompt."""
+    """Names that can be invoked as /name. Never raises -- it runs per prompt.
+
+    Only those: the registry also accepts a name like "3d-print", which the
+    parser never reads as a command word, and a skill called "tools" loses to
+    the built-in. /help and the typo hints offered both, and neither ran.
+    """
     try:
-        return [skill.name for skill in _skill_registry(ctx).list_skills()]
+        names = [skill.name for skill in _skill_registry(ctx).list_skills()]
     except Exception as e:  # noqa: BLE001 - a broken skill dir must not kill the REPL
         logger.debug("Could not list skills: %s", e)
         return []
+    return runnable_skill_names(names)
 
 
 def _expand_skill(ctx: "_ChatContext", name: str, arguments: str) -> Optional[str]:
@@ -1740,7 +1837,8 @@ def _expand_skill(ctx: "_ChatContext", name: str, arguments: str) -> Optional[st
             print(f"Skill '{name}' is no longer available.")
             return None
         return invoke(skill, arguments)
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
+        # A SKILL.md re-saved in another encoding mid-chat is still listed.
         print(f"Could not read skill '{name}': {e}")
         return None
 
@@ -1782,28 +1880,119 @@ def _show_skills(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
     renderer.commit()
 
 
+def _through_before_the_interrupt(task: "asyncio.Task") -> bool:
+    """Whether *task* finished with a result before the Ctrl-C landed.
+
+    asyncio does not stop the loop for a task that finished with a
+    KeyboardInterrupt, so waiting again HANGS -- the caller has to read the
+    task instead. And the work is done: calling it cancelled throws away a
+    result that already changed the world.
+    """
+    return task.done() and not task.cancelled() and task.exception() is None
+
+
+def _drain(loop: asyncio.AbstractEventLoop, task: "asyncio.Task", what: str) -> None:
+    """Cancel *task* and wait it out -- it must not finish LATER.
+
+    Three attempts, because every further Ctrl-C interrupts the wait: a task
+    left pending on the shared loop runs on inside the next
+    ``run_until_complete``. That is the bug this whole path exists for -- a
+    compaction rewriting the message list of the turn after it, a save
+    writing while a woken process has taken the session up.
+    """
+    task.cancel()
+    for _ in range(3):
+        if task.done():
+            break
+        try:
+            loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        except KeyboardInterrupt:
+            logger.debug("another Ctrl-C while %s unwound", what)
+    else:
+        logger.warning("%s did not unwind and is still pending", what)
+        return
+    if not task.cancelled() and task.exception() is not None:
+        # Read once: an exception nobody retrieves is reported by asyncio at
+        # garbage collection, long after the command it belonged to.
+        logger.debug("%s ended with %r", what, task.exception())
+
+
+def _run_interruptible(loop: asyncio.AbstractEventLoop, coro: Any,
+                       what: str) -> tuple[bool, Any]:
+    """Run *coro* on the REPL's loop; Ctrl-C cancels it, not the chat.
+
+    (finished, result). Driven as a TASK, not as a bare coroutine:
+    ``run_until_complete`` leaves the future PENDING on KeyboardInterrupt, so
+    the work would quietly finish inside the NEXT turn -- a compaction
+    resuming there rewrites the very message list that turn is reading, after
+    the person was told it had been interrupted. And the interrupt itself
+    used to end the whole chat with a traceback.
+    """
+    task = loop.create_task(coro)
+    try:
+        return True, loop.run_until_complete(task)
+    except KeyboardInterrupt:
+        if _through_before_the_interrupt(task):
+            # A /resume that got through has already switched the session.
+            # Reporting it as cancelled made the caller let go of the hold on
+            # the session the chat was now writing to -- and keep the one on
+            # the session it had left.
+            return True, task.result()
+        _drain(loop, task, what)
+        print(f"\n({what} cancelled)", file=sys.stderr)
+        return False, None
+
+
+def _finish_save(loop: asyncio.AbstractEventLoop, task: "asyncio.Task") -> Any:
+    """Wait out a save a Ctrl-C interrupted; a second one abandons it."""
+    print("\n(finishing the save -- Ctrl-C again to abandon it)", file=sys.stderr)
+    try:
+        return loop.run_until_complete(task)
+    except KeyboardInterrupt:
+        if _through_before_the_interrupt(task):
+            return task.result()
+        _drain(loop, task, "the save")
+        print("(save abandoned)", file=sys.stderr)
+        return False
+
+
+def _save_now(loop: asyncio.AbstractEventLoop, ctx: "_ChatContext") -> bool:
+    """Save the session; a Ctrl-C lets the save finish, a second one stops it.
+
+    A save left pending finished unseen during the next command, after the
+    chat had said it was interrupted -- and after /new it could still be
+    writing while a woken process took the session up.
+    """
+    task = loop.create_task(_save_session(ctx))
+    try:
+        saved = loop.run_until_complete(task)
+    except KeyboardInterrupt:
+        if task.done():
+            # A save that got through counts -- the interrupt was a moment
+            # too late. One that died inside its own code did not.
+            if not _through_before_the_interrupt(task):
+                print("\n(save interrupted)", file=sys.stderr)
+                return False
+            saved = task.result()
+        else:
+            saved = _finish_save(loop, task)
+    if saved:
+        ctx.last_saved = ctx.session_id
+        ctx.was_new_session = False
+        ctx.session_title = None  # written; a later save keeps it
+    return bool(saved)
+
+
 def _run_plugin_command(loop: asyncio.AbstractEventLoop, ctx: "_ChatContext",
                         commands: Sequence[PluginCommand], qualified: str,
                         payload: str) -> None:
-    """Run one plugin command on the REPL's loop and print what it says.
-
-    The command is driven as a TASK, not as a bare coroutine:
-    ``run_until_complete`` leaves the future PENDING on KeyboardInterrupt, so
-    the command would quietly finish inside the NEXT turn -- and a compaction
-    resuming there rewrites the very message list that turn is reading, after
-    the person was told it had been interrupted. Cancelled the way
-    ``_cancel_turn`` cancels a turn.
-    """
+    """Run one plugin command on the REPL's loop and print what it says."""
     match = next(c for c in commands if c.qualified == qualified)
-    task = loop.create_task(run_plugin_command(
+    finished, output = _run_interruptible(loop, run_plugin_command(
         ctx.agent, match, payload,
-        session_id=ctx.session_id, user_id=ctx.session_user))
-    try:
-        print(loop.run_until_complete(task))
-    except KeyboardInterrupt:
-        task.cancel()
-        loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
-        print(f"\n(/{match.name} cancelled)", file=sys.stderr)
+        session_id=ctx.session_id, user_id=ctx.session_user), f"/{match.name}")
+    if finished:
+        print(output)
 
 
 async def _list_sessions(ctx: _ChatContext, payload: str = "") -> None:
@@ -1824,7 +2013,38 @@ async def _list_sessions(ctx: _ChatContext, payload: str = "") -> None:
 
 
 async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
-    """Load an earlier session into the running agent."""
+    """Load an earlier session into the running agent, on the session's LLM.
+
+    A session brings its agent and its LLM (cli_utils/session_defaults.py).
+    One of another agent is refused: loaded here it ran with this agent's
+    tools and prompt, and the next save wrote this agent's name over its
+    record. Its own profile is switched to, as ``--session <id>`` would.
+    """
+    system_config = getattr(ctx.agent, "system_config", None)
+    stored_agent, stored_llm = await session_defaults(
+        ctx.session_manager, ctx.session_user, session_id, system_config)
+    if stored_agent and stored_agent != ctx.entry_name:
+        print(f"Session '{session_id}' belongs to {stored_agent}; this chat runs "
+              f"{ctx.entry_name}.")
+        print(f"Continue it with: {_resume_hint(ctx, session_id, stored_agent)}")
+        return False
+    # Built before ANYTHING happens: nothing is loaded and nothing switches
+    # until the session's own LLM stands. Running it on this chat's profile
+    # instead would look harmless and then write that profile over the
+    # session's record on the next save -- a failed switch destroying the
+    # very choice it was trying to honour.
+    built = None
+    if stored_llm and stored_llm != ctx.llm_profile:
+        try:
+            built = _build_profile(ctx, stored_llm)
+        except Exception as e:
+            logger.error("Could not switch to the session's profile %s: %s",
+                         stored_llm, e, exc_info=True)
+            print(f"Session '{session_id}' runs on LLM '{stored_llm}', which "
+                  f"cannot be started here: {e}")
+            print(f"Continue it with: {_resume_hint(ctx, session_id)} "
+                  f"--llm <profile>")
+            return False
     try:
         exists, count = await ctx.session_service.load_and_restore_session(
             ctx.agent, ctx.session_user, session_id
@@ -1838,6 +2058,7 @@ async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
         return False
     ctx.session_id = session_id
     ctx.was_new_session = False
+    ctx.session_title = None  # --session-title named the session left behind
     tracker = getattr(ctx.agent, "_session_tracker", None)
     if tracker is not None:
         # The turn loop reads metadata for tool context; without this the
@@ -1848,6 +2069,9 @@ async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
             "llm_profile": ctx.llm_profile,
         })
     print(f"({count} messages restored)")
+    if built is not None and stored_llm:
+        _use_profile(ctx, stored_llm, built)
+        print(f"LLM: {ctx.llm_profile_info}   (the session's own)")
     return True
 
 
@@ -1860,6 +2084,7 @@ async def _save_session(ctx: _ChatContext) -> bool:
             agent_name=ctx.entry_name,
             llm_profile=ctx.llm_profile,
             was_new_session=ctx.was_new_session,
+            title=ctx.session_title,
         ))
     except Exception as e:
         logger.error("Failed to save chat session: %s", e, exc_info=True)
@@ -1880,21 +2105,36 @@ async def _poll_typed_input(reader: _KeyReader, renderer: ChatRenderer,
     try:
         while reader.enabled:
             for submitted in reader.poll():
-                command, _payload = parse_chat_command(submitted)
-                if command is not None or submitted.startswith("/"):
-                    # Slash commands are REPL-level, not messages. Sending
-                    # "/exit" to the LLM because it was typed a second earlier
-                    # would give identical keystrokes two different meanings.
+                # Slash commands are REPL-level, not messages. Sending "/exit"
+                # to the LLM because it was typed a second earlier would give
+                # identical keystrokes two different meanings.
+                #
+                # The prompt's own rule, through the prompt's own function,
+                # with the prompt's own plugin commands: a command is ONE line
+                # and a known word -- "/context_engineer:compact" included,
+                # which only `resolve` ever claims. Several lines are a
+                # message, and so is "/etc/nginx/nginx.conf". Refusing a block
+                # because some line in it reads like a command threw away
+                # pasted output (`ls /` alone carries "/tmp" and "/opt") while
+                # the same paste at the prompt went through. Skills are not
+                # offered here: there is no turn to expand one into.
+                resolution = resolve_chat_input(submitted, (), ctx.plugin_commands)
+                if resolution.kind != "message":
                     renderer.println(
                         f"» {submitted}  (commands only work at the prompt)",
                         color="33")
                     continue
+                # "//compact" reaches the agent as "/compact", exactly as it
+                # would from the prompt. The RAW line is what gets queued
+                # below: that one passes the prompt again and is unescaped
+                # there -- unescaping twice would hand it a command.
+                message = resolution.payload
                 request_id = state.get("request_id")
                 delivered = False
                 if request_id:
                     try:
                         delivered = bool(
-                            await ctx.agent.append_user_message(request_id, submitted)
+                            await ctx.agent.append_user_message(request_id, message)
                         )
                     except Exception:
                         logger.debug("append_user_message failed", exc_info=True)
@@ -2095,7 +2335,8 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
         logger.error("Chat turn failed: %s", e, exc_info=True)
         renderer.close()
         print(f"Turn failed: {e}", file=sys.stderr)
-        result = {"summary": None, "cancelled": False, "errors": [str(e)]}
+        result = {"summary": None, "cancelled": False, "errors": [str(e)],
+                  "usage": state.get("usage") or {}}
     finally:
         # The reader owns terminal state on POSIX -- it has to be restored on
         # every exit, including Ctrl-C, or the shell stays in cbreak.
@@ -2156,18 +2397,26 @@ def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     try:
         # wait_for cancels the task itself if the grace period runs out.
         result = loop.run_until_complete(asyncio.wait_for(turn, _CANCEL_GRACE_S))
-        # Race: the turn may have COMPLETED between Ctrl-C and here. A
-        # finished answer is shown, not discarded as "cancelled".
+        # Race: the turn may have COMPLETED between Ctrl-C and here -- the
+        # agent was already finishing, its token gone, so no "cancelled"
+        # came. A finished answer is shown, not discarded; the Ctrl-C still
+        # counts for what was queued behind it.
         if result.get("summary") is None:
             result["cancelled"] = True
+        result["interrupted"] = True
         return result
     except (KeyboardInterrupt, asyncio.TimeoutError, asyncio.CancelledError):
-        turn.cancel()
-        loop.run_until_complete(asyncio.gather(turn, return_exceptions=True))
+        # The biggest task in the file, and the one that must not be left
+        # pending: its unwinding drains the status queue, unsubscribes and
+        # closes the renderer -- inside whatever run_until_complete comes
+        # next, drawing into the region the next prompt owns by then.
+        _drain(loop, turn, "the turn")
     except Exception:
         logger.debug("Turn unwind failed", exc_info=True)
     renderer.close()
-    return {"summary": None, "cancelled": True, "errors": []}
+    # The turn's own result is gone with it; its usage lives on in the state.
+    return {"summary": None, "cancelled": True, "errors": [],
+            "usage": state.get("usage") or {}}
 
 
 def _render_answer(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
@@ -2178,20 +2427,60 @@ def _render_answer(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     try:
         # output_format=None lets the central helper honour --color; the
         # one-shot path hardcodes 'ansi' here, which chat deliberately doesn't.
-        formatted, content_format = loop.run_until_complete(format_output_with_hooks(
+        # A Ctrl-C here skips the formatting, not the answer or the save.
+        finished, formatted_output = _run_interruptible(loop, format_output_with_hooks(
             output=summary,
             agent_instance=ctx.agent,
             session_id=ctx.session_id,
             request_id="cli_display",
-        ))
+        ), "formatting")
+        formatted, content_format = formatted_output if finished else (summary, "text")
         if content_format == "ansi":
             render_with_rich(formatted)
         else:
             print(formatted)
+    except KeyboardInterrupt:
+        print("\n(display interrupted)", file=sys.stderr)
     except Exception:
         logger.debug("Answer formatting failed, printing raw", exc_info=True)
         print(summary)
     print()  # region is already committed; plain spacing line
+
+
+def _close_own_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Tear down a loop the REPL created itself (standalone use, tests)."""
+    try:
+        # Shut MCP down ON THIS loop, before closing it. The standalone
+        # caller has no later shutdown on this loop, while every
+        # subprocess transport (the terminal plugin's shells) belongs to
+        # it. Skipping this fired their __del__ against a closed loop and
+        # printed a "ValueError: I/O operation on closed pipe" cascade
+        # after the goodbye message.
+        try:
+            from ..mcp.integration import shutdown_mcp
+            loop.run_until_complete(shutdown_mcp())
+        except Exception:
+            logger.debug("MCP shutdown on the chat loop failed", exc_info=True)
+
+        # Mirror asyncio.run's teardown: background tasks spawned during
+        # the turns (e.g. the cancellation manager's timeout monitor) must
+        # be cancelled, or close() logs "Task was destroyed but it is
+        # pending" through a half-torn-down logging stack.
+        pending_tasks = asyncio.all_tasks(loop)
+        for task_obj in pending_tasks:
+            task_obj.cancel()
+        if pending_tasks:
+            loop.run_until_complete(
+                asyncio.gather(*pending_tasks, return_exceptions=True)
+            )
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        # Subprocess transports are torn down by the executor thread pool;
+        # without this the interpreter can outrun it and __del__ still
+        # lands on a closed loop.
+        loop.run_until_complete(loop.shutdown_default_executor())
+    except Exception:
+        logger.debug("Event loop teardown failed", exc_info=True)
+    loop.close()
 
 
 def run_chat_loop(
@@ -2210,6 +2499,9 @@ def run_chat_loop(
     session_manager: Any = None,
     template_vars: Optional[dict] = None,
     loop: Optional[asyncio.AbstractEventLoop] = None,
+    llm_params: Optional[dict] = None,
+    session_title: Optional[str] = None,
+    attachments: Sequence[str] = (),
 ) -> None:
     """The chat REPL. Drives one event loop for its whole lifetime.
 
@@ -2221,14 +2513,18 @@ def run_chat_loop(
 
     ``session_id`` comes in held by the caller (session presence,
     core/session_presence.py) and the REPL takes that over: it holds what /new
-    and /resume switch to, and lets go of the open session at the end."""
+    and /resume switch to, and lets go of the open session however it ends,
+    from its first line on.
+
+    ``attachments`` go with the first message, as ``/attach`` would send them."""
     ctx = _ChatContext(
         agent=agent, entry_name=entry_name, session_service=session_service,
         session_user=session_user, session_id=session_id,
         was_new_session=was_new_session, llm_profile=llm_profile,
         llm_override=llm_override, llm_profile_info=llm_profile_info,
         show_status=show_status, session_manager=session_manager,
-        template_vars=template_vars,
+        template_vars=template_vars, llm_params=llm_params,
+        session_title=session_title, attachments=attachments,
     )
     ansi = supports_color()
     renderer = ChatRenderer(ansi=ansi)
@@ -2236,55 +2532,61 @@ def run_chat_loop(
     prompt = "❯ " if unicode_ok else "> "
     cont_prompt = "… " if unicode_ok else "... "
 
-    # Line editing and the session's own arrow-up history (see
-    # _build_prompt_editor). BOTH ends must be a terminal, not just stdin:
-    # with stdout redirected the editor still puts the tty in raw mode with
-    # echo off and then draws into the file, so `agent-cli chat > log.txt`
-    # would go silent on a terminal that no longer echoes. Redirected either
-    # way, plain input() is the right reader and the echo path below is what
-    # rebuilds the transcript.
-    try:
-        interactive = sys.stdin.isatty() and sys.stdout.isatty()
-    except Exception:
-        interactive = False
-    try:
-        piped = not sys.stdin.isatty()
-    except Exception:
-        piped = False
-    if piped:
-        _skip_piped_bom()
-    editor = _build_prompt_editor(_history_seed(ctx)) if interactive else None
-    read_line = editor.read if editor else None
-    read_cont = editor.read_continuation if editor else None
-
-    # Known-good input mode, restored before every prompt: child shells
-    # (terminal.execute -> MSYS bash) switch the console's INPUT mode too,
-    # which kills Enter/Backspace and turns Ctrl-C into a plain character.
-    input_mode = snapshot_console_input_mode()
-
     owns_loop = loop is None
-    if owns_loop:
+    if loop is None:
         loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Console logging would write into the live region behind its back.
-    silenced = _silence_stdout_logging()
     chat_started = time.monotonic()
-
-    dash = "─" if unicode_ok else "-"
-    rule = dash * min(shutil.get_terminal_size((80, 20)).columns, 72)
-    print(rule)
-    print(f"Chat with {ctx.entry_name}   LLM: {ctx.llm_label()}   Session: {ctx.session_id}")
-    print("Type /help for commands, /exit to quit. Ctrl-C cancels the running turn.")
-    print(rule)
-
-    # Collected once: the set of plugins cannot change while the REPL runs
-    # (unlike the skill folders, which a person can edit mid-chat).
-    plugin_commands = collect_plugin_commands(ctx.agent)
-
-    pending: list[str] = [initial_task.strip()] if initial_task and initial_task.strip() else []
-    interrupts = 0  # consecutive Ctrl-C at the prompt; two in a row exit
+    silenced: list[tuple[Any, int]] = []
+    # The session came in held: from here on, every way out lets go of it.
     try:
+        # Line editing and the session's own arrow-up history (see
+        # _build_prompt_editor). BOTH ends must be a terminal, not just stdin:
+        # with stdout redirected the editor still puts the tty in raw mode with
+        # echo off and then draws into the file, so `agent-cli chat > log.txt`
+        # would go silent on a terminal that no longer echoes. Redirected either
+        # way, plain input() is the right reader and the echo path below is what
+        # rebuilds the transcript.
+        try:
+            interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        except Exception:
+            interactive = False
+        try:
+            piped = not sys.stdin.isatty()
+        except Exception:
+            piped = False
+        if piped:
+            _skip_piped_bom()
+        editor = _build_prompt_editor(_history_seed(ctx)) if interactive else None
+        read_line = editor.read if editor else None
+        read_cont = editor.read_continuation if editor else None
+
+        # Known-good input mode, restored before every prompt: child shells
+        # (terminal.execute -> MSYS bash) switch the console's INPUT mode too,
+        # which kills Enter/Backspace and turns Ctrl-C into a plain character.
+        input_mode = snapshot_console_input_mode()
+
+        # Console logging would write into the live region behind its back.
+        silenced = _silence_stdout_logging()
+
+        dash = "─" if unicode_ok else "-"
+        rule = dash * min(shutil.get_terminal_size((80, 20)).columns, 72)
+        print(rule)
+        print(f"Chat with {ctx.entry_name}   LLM: {ctx.llm_label()}   Session: {ctx.session_id}")
+        print("Type /help for commands, /exit to quit. Ctrl-C cancels the running turn.")
+        if ctx.attachments:
+            print(f"{len(ctx.attachments)} attachment(s) go with the first message "
+                  "(/attach lists them).")
+        print(rule)
+
+        # Collected once: the set of plugins cannot change while the REPL runs
+        # (unlike the skill folders, which a person can edit mid-chat).
+        plugin_commands = collect_plugin_commands(ctx.agent)
+        ctx.plugin_commands = list(plugin_commands)
+
+        pending: list[str] = [initial_task.strip()] if initial_task and initial_task.strip() else []
+        interrupts = 0  # consecutive Ctrl-C at the prompt; two in a row exit
         while True:
             if pending:
                 task = pending.pop(0)
@@ -2322,169 +2624,189 @@ def run_chat_loop(
             if not task:
                 continue
 
-            # Skills share the command namespace: anything that is not a
-            # built-in is looked up as a skill, so "/writer analysiere X" runs
-            # the writer skill with "analysiere X" as its arguments.
-            skill_names = _available_skills(ctx)
-            resolution = resolve_chat_input(task, skill_names, plugin_commands)
-            command = resolution.name if resolution.kind == "command" else (
-                "unknown" if resolution.kind == "unknown" else None)
-            payload = resolution.payload
+            # Ctrl-C outside a turn: whatever runs synchronously here -- the
+            # skill lookup, building a /model client, reading attachments, a
+            # long /history -- is abandoned, not the chat.
+            try:
+                # Skills share the command namespace: anything that is not a
+                # built-in is looked up as a skill, so "/writer analysiere X" runs
+                # the writer skill with "analysiere X" as its arguments.
+                skill_names = _available_skills(ctx)
+                resolution = resolve_chat_input(task, skill_names, plugin_commands)
+                command = resolution.name if resolution.kind == "command" else (
+                    "unknown" if resolution.kind == "unknown" else None)
+                payload = resolution.payload
+                if editor and resolution.kind != "message":
+                    # Not a message, so no session will hold it: the history
+                    # keeps it for as long as this process runs.
+                    editor.remember_command(task)
 
-            if resolution.kind == "plugin":
-                # The plugin does the work and prints; no LLM turn, no tokens.
-                _run_plugin_command(loop, ctx, plugin_commands,
-                                    resolution.name, payload)
-                continue
-
-            if resolution.kind == "skill":
-                expanded = _expand_skill(ctx, resolution.name, payload)
-                if expanded is None:
+                if resolution.kind == "plugin":
+                    # The plugin does the work and prints; no LLM turn, no tokens.
+                    _run_plugin_command(loop, ctx, plugin_commands,
+                                        resolution.name, payload)
                     continue
-                # The skill BECOMES the turn: same text an `always` skill would
-                # put in the prompt, just triggered by a person.
-                print(f"[skill: {resolution.name}]")
-                task = expanded
-                command = None
 
-            if resolution.kind == "message":
-                # The "//" escape is resolved HERE, not left to the agent. The
-                # person typed "//compact" precisely so the model would see
-                # "/compact"; the terminal used to forward the raw line while
-                # the web surface stripped it, so the same keystrokes meant two
-                # different things depending on where they were typed.
-                task = resolution.payload
+                if resolution.kind == "skill":
+                    expanded = _expand_skill(ctx, resolution.name, payload)
+                    if expanded is None:
+                        continue
+                    # The skill BECOMES the turn: same text an `always` skill would
+                    # put in the prompt, just triggered by a person.
+                    print(f"[skill: {resolution.name}]")
+                    task = expanded
+                    command = None
 
-            if command == "exit":
-                break
-            if command == "new":
-                previous = ctx.session_id
-                ctx.session_id = _init_fresh_session(ctx)
-                ctx.was_new_session = True
-                _hold_session(ctx, ctx.session_id)
-                _release_session(ctx, previous)
-                # The history belongs to the session, so it changes with it --
-                # otherwise the fresh prompt keeps offering the abandoned
-                # conversation while the transcript shows the new one.
-                if editor:
-                    editor.reseed(_history_seed(ctx))
-                print(f"New session: {ctx.session_id}")
-                continue
-            if command == "session":
-                print(f"Session: {ctx.session_id}  (user: {ctx.session_user})")
-                print(f"Resume with: {_resume_hint(ctx, ctx.session_id)}")
-                continue
-            if command == "sessions":
-                loop.run_until_complete(_list_sessions(ctx, payload))
-                continue
-            if command == "resume":
-                previous = ctx.session_id
-                if not payload:
-                    print("Usage: /resume <session-id>   (/sessions lists them)")
-                elif not _hold_session(ctx, payload):
-                    pass  # another process runs it: the chat stays where it is
-                elif loop.run_until_complete(_resume_session(ctx, payload)):
+                if resolution.kind == "message":
+                    # The "//" escape is resolved HERE, not left to the agent. The
+                    # person typed "//compact" precisely so the model would see
+                    # "/compact"; the terminal used to forward the raw line while
+                    # the web surface stripped it, so the same keystrokes meant two
+                    # different things depending on where they were typed.
+                    task = resolution.payload
+
+                if command == "exit":
+                    break
+                if command == "new":
+                    previous = ctx.session_id
+                    ctx.session_id = _init_fresh_session(ctx)
+                    ctx.was_new_session = True
+                    ctx.session_title = None
+                    _hold_session(ctx, ctx.session_id)
                     _release_session(ctx, previous)
+                    # The history belongs to the session, so it changes with it --
+                    # otherwise the fresh prompt keeps offering the abandoned
+                    # conversation while the transcript shows the new one.
                     if editor:
                         editor.reseed(_history_seed(ctx))
-                    print(f"Resumed session: {ctx.session_id}")
-                else:
-                    _release_session(ctx, payload)  # it was taken for the load
-                continue
-            if command == "vars":
-                loop.run_until_complete(_handle_vars(ctx, renderer, payload))
-                continue
-            if command == "model":
-                _switch_model(ctx, renderer, payload)
-                continue
-            if command == "tools":
-                loop.run_until_complete(_show_tools(ctx, renderer, payload))
-                continue
-            if command == "skills":
-                _show_skills(ctx, renderer)
-                continue
-            if command == "costs":
-                _show_costs(ctx, renderer)
-                continue
-            if command == "history":
-                _show_history(ctx, renderer, payload)
-                continue
-            if command == "last":
-                _show_last(ctx, renderer)
-                continue
-            if command == "attach":
-                _handle_attach(ctx, payload)
-                continue
-            if command == "help":
-                print(_help_text(skill_names, plugin_commands))
-                continue
-            if command == "unknown":
-                hint = suggest_command(
-                    payload,
-                    list(skill_names) + _plugin_spellings(plugin_commands))
-                did_you_mean = f"  Did you mean {hint}?" if hint else ""
-                print(f"Unknown command: {payload}{did_you_mean}")
-                print(f"/help lists the commands; //{payload[1:]} sends it as a message.")
-                continue
-
-            if ctx.attachments:
-                task = _task_with_attachments(ctx, task, renderer)
-                if task is None:
+                    print(f"New session: {ctx.session_id}")
+                    continue
+                if command == "session":
+                    print(f"Session: {ctx.session_id}  (user: {ctx.session_user})")
+                    print(f"Resume with: {_resume_hint(ctx, ctx.session_id)}")
+                    continue
+                if command == "sessions":
+                    _run_interruptible(loop, _list_sessions(ctx, payload), "/sessions")
+                    continue
+                if command == "resume":
+                    previous = ctx.session_id
+                    if not payload:
+                        print("Usage: /resume <session-id>   (/sessions lists them)")
+                        continue
+                    if not _hold_session(ctx, payload):
+                        continue  # another process runs it: the chat stays where it is
+                    finished, resumed = _run_interruptible(
+                        loop, _resume_session(ctx, payload), "/resume")
+                    if finished and resumed:
+                        _release_session(ctx, previous)
+                        if editor:
+                            editor.reseed(_history_seed(ctx))
+                        print(f"Resumed session: {ctx.session_id}")
+                    else:
+                        _release_session(ctx, payload)  # it was taken for the load
+                    continue
+                if command == "vars":
+                    _run_interruptible(loop, _handle_vars(ctx, renderer, payload), "/vars")
+                    continue
+                if command == "model":
+                    if _switch_model(ctx, payload) and not ctx.was_new_session:
+                        # The record is what `--session <id>` starts on; waiting
+                        # for the next turn's save lost the switch on /exit.
+                        _save_now(loop, ctx)
+                    continue
+                if command == "tools":
+                    _run_interruptible(loop, _show_tools(ctx, renderer, payload), "/tools")
+                    continue
+                if command == "skills":
+                    _show_skills(ctx, renderer)
+                    continue
+                if command == "costs":
+                    _show_costs(ctx, renderer)
+                    continue
+                if command == "history":
+                    _show_history(ctx, renderer, payload)
+                    continue
+                if command == "last":
+                    _show_last(ctx, renderer)
+                    continue
+                if command == "attach":
+                    _handle_attach(ctx, payload)
+                    continue
+                if command == "help":
+                    print(_help_text(skill_names, plugin_commands))
+                    continue
+                if command == "unknown":
+                    hint = suggest_command(
+                        payload,
+                        list(skill_names) + _plugin_spellings(plugin_commands))
+                    did_you_mean = f"  Did you mean {hint}?" if hint else ""
+                    print(f"Unknown command: {payload}{did_you_mean}")
+                    print(f"/help lists the commands; //{payload[1:]} sends it as a message.")
                     continue
 
-            started = time.monotonic()
-            result = _execute_turn(loop, ctx, task, renderer, editor)
+                if ctx.attachments:
+                    task = _task_with_attachments(ctx, task, renderer)
+                    if task is None:
+                        continue
 
-            # Lines the user SUBMITTED during the turn but that never reached
-            # the agent become the next tasks, in order -- they pressed Enter
-            # on each of them. (typed_ahead used to carry only the first line;
-            # the rest of the queue was silently lost.)
-            queued = result.get("typed_queue") or []
-            # A half-typed fragment is only shown; auto-running it would spend
-            # money on something the user never sent.
-            if result.get("typed_partial"):
-                print(renderer._colored(
-                    f"(unsent: {result['typed_partial']})", "90"))
+                started = time.monotonic()
+                result = _execute_turn(loop, ctx, task, renderer, editor)
 
-            if result.get("cancelled"):
-                # Cancel means STOP. Everything queued is dropped -- the lines
-                # from this turn AND leftovers from earlier turns still sitting
-                # in `pending`: firing a new billed turn right after Ctrl-C is
-                # the opposite of what was asked for.
-                for line in (*pending, *queued):
+                # Lines the user SUBMITTED during the turn but that never reached
+                # the agent become the next tasks, in order -- they pressed Enter
+                # on each of them. (typed_ahead used to carry only the first line;
+                # the rest of the queue was silently lost.)
+                queued = result.get("typed_queue") or []
+                # A half-typed fragment is only shown; auto-running it would spend
+                # money on something the user never sent.
+                if result.get("typed_partial"):
+                    print(renderer._colored(
+                        f"(unsent: {result['typed_partial']})", "90"))
+
+                # What the turn spent counts, cancelled or not: the calls before
+                # the Ctrl-C were billed all the same.
+                usage = result.get("usage") or {}
+                _merge_totals(ctx.total_usage, usage)
+
+                if result.get("cancelled") or result.get("interrupted"):
+                    # Ctrl-C means STOP. Everything queued is dropped -- the lines
+                    # from this turn AND leftovers from earlier turns still sitting
+                    # in `pending`: firing a new billed turn right after Ctrl-C is
+                    # the opposite of what was asked for. That holds when the
+                    # answer won the race too (interrupted, not cancelled).
+                    for line in (*pending, *queued):
+                        print(renderer._colored(f"(dropped: {line})", "90"))
+                    pending.clear()
+                    queued = []
+                if result.get("cancelled"):
+                    print("Turn cancelled.", file=sys.stderr)
+                    continue  # nothing new worth saving; next turn saves anyway
+
+                pending.extend(queued)
+
+                summary = result.get("summary")
+                if summary:
+                    _render_answer(loop, ctx, renderer, summary)
+                elif not result.get("errors"):
+                    print(renderer._colored("(no answer returned)", "90"))
+
+                if ctx.show_status:
+                    context_fill = result.get("context_tokens")
+                    print(renderer._colored(
+                        _format_usage(usage, time.monotonic() - started,
+                                      renderer.sym,
+                                      context=(context_fill,
+                                               result.get("context_window"))
+                                      if context_fill else None), "90"))
+
+                _save_now(loop, ctx)
+            except KeyboardInterrupt:
+                renderer.close()
+                print("\n(interrupted)", file=sys.stderr)
+                # Stop means stop here too: nothing queued runs after it.
+                for line in pending:
                     print(renderer._colored(f"(dropped: {line})", "90"))
                 pending.clear()
-                print("Turn cancelled.", file=sys.stderr)
-                continue  # nothing new worth saving; next turn saves anyway
-
-            pending.extend(queued)
-
-            summary = result.get("summary")
-            if summary:
-                _render_answer(loop, ctx, renderer, summary)
-            elif not result.get("errors"):
-                print(renderer._colored("(no answer returned)", "90"))
-
-            usage = result.get("usage") or {}
-            _merge_totals(ctx.total_usage, usage)
-            if ctx.show_status:
-                context_fill = result.get("context_tokens")
-                print(renderer._colored(
-                    _format_usage(usage, time.monotonic() - started,
-                                  renderer.sym,
-                                  context=(context_fill,
-                                           result.get("context_window"))
-                                  if context_fill else None), "90"))
-
-            try:
-                saved = loop.run_until_complete(_save_session(ctx))
-            except KeyboardInterrupt:
-                # Ctrl-C during the save must not take the chat down with it.
-                print("\n(save interrupted)", file=sys.stderr)
-                saved = False
-            if saved:
-                ctx.last_saved = ctx.session_id
-                ctx.was_new_session = False
     finally:
         _release_session(ctx, ctx.session_id)
         _restore_logging(silenced)
@@ -2502,37 +2824,7 @@ def run_chat_loop(
         # close_cli_loop() at exit does the cancel/asyncgens/executor/close
         # dance exactly once. Cancelling all tasks here would kill the MCP
         # connections and the batch manager out from under those shutdowns.
-        if not owns_loop:
-            return
-        try:
-            # Shut MCP down ON THIS loop, before closing it. The standalone
-            # caller has no later shutdown on this loop, while every
-            # subprocess transport (the terminal plugin's shells) belongs to
-            # it. Skipping this fired their __del__ against a closed loop and
-            # printed a "ValueError: I/O operation on closed pipe" cascade
-            # after the goodbye message.
-            try:
-                from ..mcp.integration import shutdown_mcp
-                loop.run_until_complete(shutdown_mcp())
-            except Exception:
-                logger.debug("MCP shutdown on the chat loop failed", exc_info=True)
-
-            # Mirror asyncio.run's teardown: background tasks spawned during
-            # the turns (e.g. the cancellation manager's timeout monitor) must
-            # be cancelled, or close() logs "Task was destroyed but it is
-            # pending" through a half-torn-down logging stack.
-            pending_tasks = asyncio.all_tasks(loop)
-            for task_obj in pending_tasks:
-                task_obj.cancel()
-            if pending_tasks:
-                loop.run_until_complete(
-                    asyncio.gather(*pending_tasks, return_exceptions=True)
-                )
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            # Subprocess transports are torn down by the executor thread pool;
-            # without this the interpreter can outrun it and __del__ still
-            # lands on a closed loop.
-            loop.run_until_complete(loop.shutdown_default_executor())
-        except Exception:
-            logger.debug("Event loop teardown failed", exc_info=True)
-        loop.close()
+        # No `return` in here: it swallowed whatever the chat raised on a
+        # borrowed loop -- which is every chat the CLI starts.
+        if owns_loop:
+            _close_own_loop(loop)

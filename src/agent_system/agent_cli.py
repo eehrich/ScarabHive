@@ -623,6 +623,7 @@ def main() -> None:
     # chat subcommand: interactive REPL that keeps the session across turns
     chat_parser = subparsers.add_parser("chat", help="Interactive chat with an agent (stays in the session)")
     chat_parser.add_argument("task", nargs="?", default=None, help="Optional first message to send immediately")
+    _add_attachment_args(chat_parser)
     _add_agent_session_args(chat_parser)
 
 
@@ -1300,7 +1301,9 @@ def main() -> None:
     has_audio = sorted_attachments["audio"]
     has_text_files = sorted_attachments["text"]
 
-    if has_images or has_audio or has_text_files:
+    # Chat sends them with its first message, through the same path /attach
+    # takes (capability check included) -- there may be no message yet.
+    if (has_images or has_audio or has_text_files) and args.subcommand != "chat":
         attachment_counts = []
         if has_images:
             attachment_counts.append(f"{len(has_images)} image(s)")
@@ -1509,7 +1512,8 @@ def main() -> None:
     # Run session operations
     should_continue, was_new_session = run_async(handle_session_operations())
     if not should_continue:
-        if presence and not is_chat:
+        # Chat as well: it takes the hold over only once its REPL runs.
+        if presence:
             presence.release(actual_session_id, session_user)
         shut_down_runtime()
         sys.exit(1)
@@ -1820,6 +1824,10 @@ def main() -> None:
                 show_status=show_status,
                 initial_task=getattr(args, "task", None),
                 template_vars=parsed_cli_vars,
+                llm_params=llm_params_override,
+                session_title=getattr(args, "session_title", None),
+                attachments=[path for group in sorted_attachments.values()
+                             for path in group],
             )
             result = {}
         elif getattr(args, "raw", False):
@@ -1889,7 +1897,12 @@ def main() -> None:
 
     finally:
         # Chat lets go of the session it has open itself: after /new or
-        # /resume that is no longer the one this run started with.
+        # /resume that is no longer the one this run started with. Not a
+        # second time here: a turn takes its OWN hold for its request
+        # (server.py _presence_hold), and a turn abandoned by a third
+        # Ctrl-C never gave it back. The chat released only its own, so
+        # releasing again would drop the abandoned turn's -- waking a
+        # session whose run is still unwinding.
         if presence and not is_chat:
             presence.release(actual_session_id, session_user)
         shut_down_runtime()

@@ -1475,7 +1475,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=400,
                                 detail=f"'{agent_name}' is a tool server, not an agent")
 
-        tools = await srv._list_usable_tools_with_details({})
+        try:
+            tools = await srv._list_usable_tools_with_details({})
+        except Exception as e:
+            # Not total: 0 -- the browser reads that as an empty allowlist.
+            logger.error("Listing the tools of %s failed: %s", agent_name, e, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Could not list tools: {e}")
         try:
             servers = list(registry.list())
         except Exception:
@@ -2987,14 +2992,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         the selector changes. A caller that names none gets the entry agent's
         list, the same agent /run would have used.
         """
-        from agent_system.chat_commands import commands_for
+        from agent_system.chat_commands import commands_for, runnable_skill_names
         from agent_system.plugin_commands import spellings
 
         try:
+            # Only what this parser can actually reach: the same filter the
+            # terminal uses. A skill named "3d-print" was offered here and
+            # then went to the model as a message; one named "tools" was
+            # offered and ran the built-in.
+            listed = {s.name: s for s in _skill_registry_for_app().list_skills()}
             skills = [
                 {"name": s.name, "summary": s.description, "version": s.version,
                  "kind": "skill", "display": f"/{s.name}"}
-                for s in _skill_registry_for_app().list_skills()
+                for s in (listed[name] for name in runnable_skill_names(listed))
             ]
         except Exception as e:
             logging.getLogger(__name__).warning("Could not list skills: %s", e)
@@ -3027,7 +3037,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         Returns ``kind`` (command | skill | message | unknown) plus what the
         caller needs: the command name, or the message to send to the agent.
         """
-        from agent_system.chat_commands import resolve as resolve_line, suggest_command
+        from agent_system.chat_commands import (
+            resolve as resolve_line,
+            runnable_skill_names,
+            suggest_command,
+        )
         from agent_system.plugin_commands import spellings
         from agent_system.skills import invoke
 
@@ -3047,7 +3061,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         try:
             registry = _skill_registry_for_app()
-            skill_names = [s.name for s in registry.list_skills()]
+            # The same names the listing offers -- a typo hint pointing at a
+            # skill nobody can invoke is worse than none.
+            skill_names = runnable_skill_names(s.name for s in registry.list_skills())
         except Exception as e:
             logging.getLogger(__name__).warning("Could not list skills: %s", e)
             registry, skill_names = None, []
