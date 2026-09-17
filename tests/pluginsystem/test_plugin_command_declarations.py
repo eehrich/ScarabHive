@@ -6,6 +6,11 @@ so the command does not even reach `/help` and the author sees nothing at all.
 The same goes for an `argument:` that is not a parameter of that tool, and for
 a `name:` that can never be typed as a slash command.
 
+A `params:` typo is quieter still: the tool ignores the unknown key and runs
+its DEFAULT path, so the command answers -- with the wrong operation. That is
+what makes a unified tool (`operation: list|cancel|...`) reachable from a chat
+at all, and what makes checking it here worth the three lines.
+
 The checks run twice: directly against synthetic schemas, so every branch is
 exercised, and over the shipped plugins, so a real declaration cannot rot. The
 first half matters because the shipped plugins do not currently exercise every
@@ -61,13 +66,27 @@ def command_problems(schema: dict) -> list[str]:
                 f"{where}: tool {tool!r} is not one of this plugin's tools "
                 f"({sorted(functions)})")
             continue
+        properties = functions[tool].get("parameters", {}).get("properties", {})
         argument = command.get("argument")
-        if argument:
-            properties = functions[tool].get("parameters", {}).get("properties", {})
-            if argument not in properties:
+        if argument and argument not in properties:
+            problems.append(
+                f"{where}: argument {argument!r} is not a parameter of "
+                f"{tool} ({sorted(properties)})")
+        # The same rule for the parameters the command FIXES. A typo there is
+        # even quieter than one in `argument`: the tool ignores the unknown
+        # key and runs its default path, so the command answers -- with the
+        # wrong operation.
+        for key, value in (command.get("params") or {}).items():
+            if key not in properties:
                 problems.append(
-                    f"{where}: argument {argument!r} is not a parameter of "
+                    f"{where}: params {key!r} is not a parameter of "
                     f"{tool} ({sorted(properties)})")
+                continue
+            allowed = properties[key].get("enum")
+            if allowed and value not in allowed:
+                problems.append(
+                    f"{where}: params {key}={value!r} is outside the values "
+                    f"{tool} accepts ({allowed})")
     return problems
 
 
@@ -78,10 +97,13 @@ def command_problems(schema: dict) -> list[str]:
 GOOD = {
     "tools": [{"type": "function", "function": {
         "name": "p_search",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"},
+            "mode": {"type": "string", "enum": ["fast", "deep"]},
+        }},
     }}],
     "commands": [{"name": "find", "description": "search", "tool": "p_search",
-                  "argument": "query"}],
+                  "argument": "query", "params": {"mode": "fast"}}],
 }
 
 
@@ -97,6 +119,8 @@ def test_a_schema_without_commands_has_no_problems():
     ({"tool": "p_serch"}, "not one of this plugin's tools"),
     ({"argument": "quries"}, "is not a parameter of"),
     ({"name": "find things"}, "cannot be typed"),
+    ({"params": {"mdoe": "fast"}}, "params 'mdoe' is not a parameter of"),
+    ({"params": {"mode": "thorough"}}, "outside the values"),
     ({"name": None}, "needs a name"),
     ({"description": ""}, "needs a description"),
 ])

@@ -8,6 +8,7 @@ A plugin declares them in its ``schema.yaml``, next to its tools::
         tool: "{{ name }}_compact"
         argument: query          # optional: rest of the line -> this parameter
         argument_hint: "<text>"  # optional: shown in /help
+        params: {operation: list}  # optional: fixed for every call
 
 Every command RUNS ONE OF THE PLUGIN'S OWN TOOLS. That is the whole design
 decision: a plugin gets a shorter way to something the agent can already do,
@@ -137,6 +138,10 @@ def _build_command(server_name: str, raw: dict) -> Optional[PluginCommand]:
         logger.warning("Plugin '%s': command %r may not bind its argument to "
                        "the reserved parameter %r", server_name, name, argument)
         return None
+    params = _fixed_params(server_name, name, raw.get("params"),
+                           str(argument).strip() if argument else None)
+    if params is None:
+        return None
     return PluginCommand(
         plugin=server_name,
         name=name,
@@ -144,7 +149,45 @@ def _build_command(server_name: str, raw: dict) -> Optional[PluginCommand]:
         tool=tool,
         argument=str(argument).strip() if argument else None,
         argument_hint=str(raw.get("argument_hint") or "").strip(),
+        params=params,
     )
+
+
+def _fixed_params(server_name: str, command: str, raw: Any,
+                  argument: Optional[str]) -> Optional[dict[str, Any]]:
+    """The parameters a command fixes for every call, or None if unusable.
+
+    They are what makes a UNIFIED tool reachable: sub_agent_manager offers one
+    tool with an ``operation`` of nine values, and without a fixed one a
+    command could only ever bind the rest of the line -- there is nowhere to
+    say WHICH operation. None means the whole command is dropped: a command
+    that silently ran with half its parameters would call the wrong operation.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning("Plugin '%s': command %r: 'params' must be a mapping, got %s",
+                       server_name, command, type(raw).__name__)
+        return None
+    params: dict[str, Any] = {}
+    for key, value in raw.items():
+        key = str(key).strip()
+        if not key:
+            logger.warning("Plugin '%s': command %r has a parameter without a name",
+                           server_name, command)
+            return None
+        if _is_reserved_argument(key):
+            logger.warning("Plugin '%s': command %r may not set the reserved "
+                           "parameter %r", server_name, command, key)
+            return None
+        if argument and key == argument:
+            # One of the two would win silently, and which one is an
+            # implementation detail nobody should have to know.
+            logger.warning("Plugin '%s': command %r fixes %r and also binds its "
+                           "argument to it", server_name, command, key)
+            return None
+        params[key] = value
+    return params
 
 
 def _denial(agent: Any, tool: str) -> Optional[str]:
@@ -202,7 +245,51 @@ def format_command_result(result: Any) -> str:
     # plugin chose to report is kept.
     fields = {k: v for k, v in result.items()
               if not k.startswith("_") and not (k == "status" and v == "success")}
-    return "\n".join(f"{k}: {v}" for k, v in fields.items()) if fields else "done"
+    if not fields:
+        return "done"
+    lines: list[str] = []
+    for key, value in fields.items():
+        if isinstance(value, list) and not value:
+            # "instances: []" is a repr of nothing, in answer to a question
+            # somebody asked in words.
+            lines.append(f"{key}: (none)")
+            continue
+        rows = _record_rows(value)
+        if rows:
+            lines.append(f"{key} ({len(value)}):")
+            lines.extend(rows)
+        else:
+            lines.append(f"{key}: {value}")
+    return "\n".join(lines)
+
+
+#: Rows a command prints before it starts summarising. Twenty sub-agents or
+#: twenty MCP servers is already more than anyone reads at a prompt.
+_MAX_ROWS = 20
+
+
+def _record_rows(value: Any) -> list[str]:
+    """A list of records as one line each, or [] when it is not one.
+
+    Plugin tools answer for the MODEL, and a list of dicts printed with str()
+    is one long Python repr -- `/subagents` and `/mcp` both return exactly
+    that. Generic on purpose: a per-command formatting rule would have to be
+    kept in step with every plugin that ever adds a command.
+    """
+    from agent_system.chat_actions import one_line
+
+    if not isinstance(value, list) or not value:
+        return []
+    if not all(isinstance(row, dict) for row in value):
+        return []
+    lines = []
+    for row in value[:_MAX_ROWS]:
+        fields = [f"{key}={one_line(item, 40)}" for key, item in row.items()
+                  if item not in (None, "", [], {}) and not str(key).startswith("_")]
+        lines.append("  " + "  ".join(fields) if fields else "  (empty)")
+    if len(value) > _MAX_ROWS:
+        lines.append(f"  ... {len(value) - _MAX_ROWS} more")
+    return lines
 
 
 async def run_plugin_command(
@@ -223,16 +310,22 @@ async def run_plugin_command(
     if payload and not command.argument:
         return (f"/{command.name} takes no arguments "
                 f"(got {payload!r}).")
-    params: dict[str, Any] = {command.argument: payload} if (
-        command.argument and payload) else {}
+    # The fixed ones first, the typed one on top -- they cannot collide,
+    # _fixed_params drops a command that declares both for one parameter.
+    params: dict[str, Any] = dict(command.params)
+    if command.argument and payload:
+        params[command.argument] = payload
     try:
         result = await agent.dispatch_tool_call(
             command.tool, params, session_id=session_id, user_id=user_id)
+        # Inside the try as well: rendering is where a value the plugin chose
+        # meets json.dumps, and a REPL that dies because one plugin put a
+        # datetime in a record would take the whole session with it.
+        return format_command_result(result)
     except Exception as e:  # noqa: BLE001 - see docstring
         logger.warning("Plugin command /%s failed: %s", command.qualified, e,
                        exc_info=True)
         return f"/{command.name} failed: {e}"
-    return format_command_result(result)
 
 
 def spellings(commands: Sequence[PluginCommand]) -> list[str]:

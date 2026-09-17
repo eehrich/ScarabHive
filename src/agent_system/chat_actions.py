@@ -88,7 +88,11 @@ def tool_call_summary(call: Any) -> tuple[str, Any]:
 
 def one_line(value: Any, limit: int = 60) -> str:
     """Compact single-line form of a tool argument or result value."""
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    # default=str: a datetime or a Path in a tool result would otherwise
+    # raise here, in a formatter whose whole job is to never be the reason
+    # something failed.
+    text = (value if isinstance(value, str)
+            else json.dumps(value, ensure_ascii=False, default=str))
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
 

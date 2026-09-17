@@ -267,6 +267,50 @@ class TestResultFormatting:
     def test_a_plain_string_passes_through(self):
         assert format_command_result("compacted") == "compacted"
 
+    def test_a_list_of_records_gets_one_line_each(self):
+        """Plugin tools answer for the MODEL. /subagents and /mcp both return
+        a list of dicts, and printed with str() that is one long Python repr
+        -- the person asked to SEE their sub-agents."""
+        out = format_command_result({"status": "success", "count": 2, "instances": [
+            {"instance_id": "sub-7", "agent_type": "coder", "status": "running"},
+            {"instance_id": "sub-8", "agent_type": "writer", "status": "done"}]})
+
+        lines = out.splitlines()
+        # Not by index: the order follows the plugin's own dict, which is its
+        # business. What matters is that the rows follow their header.
+        head = lines.index("instances (2):")
+        assert "instance_id=sub-7" in lines[head + 1]
+        assert "agent_type=coder" in lines[head + 1]
+        assert "instance_id=sub-8" in lines[head + 2]
+        assert "count: 2" in out
+        assert "[{" not in out, out
+
+    def test_empty_fields_of_a_record_are_left_out(self):
+        """A row of twelve fields, eight of them None, is not a listing."""
+        out = format_command_result({"rows": [
+            {"name": "figma", "connected": False, "error": None, "note": ""}]})
+
+        assert "error" not in out and "note" not in out
+        assert "name=figma" in out
+
+    def test_a_long_value_is_cut_not_wrapped(self):
+        out = format_command_result({"rows": [{"task": "x" * 400}]})
+
+        assert len(out.splitlines()) == 2
+        assert "…" in out
+
+    def test_a_long_listing_says_how_much_it_left_out(self):
+        out = format_command_result({"rows": [{"n": i} for i in range(25)]})
+
+        assert "... 5 more" in out
+        assert len(out.splitlines()) == 22   # header + 20 rows + the note
+
+    def test_a_list_that_is_not_records_is_left_alone(self):
+        """Only a list of dicts is a listing; a list of ids is a value."""
+        out = format_command_result({"ids": ["a", "b"]})
+
+        assert out == "ids: ['a', 'b']"
+
 
 class TestSpellingsAndHelp:
     def test_a_unique_name_is_spelled_bare(self):
@@ -632,3 +676,96 @@ class TestAttachCommand:
         out = capsys.readouterr().out
         assert out.count("Not sent:") == 2, "queue was dropped after first refusal"
 
+
+
+class TestFixedParameters:
+    """A tool with an `operation` of nine values is reachable as a command
+    only if the command can say WHICH one. sub_agent_manager is exactly that
+    shape, and without fixed params no chat could ever list its sub-agents.
+    """
+
+    LIST = {"name": "subagents", "description": "what runs",
+            "tool": "context_engineer_compact", "params": {"operation": "list"}}
+
+    @pytest.mark.asyncio
+    async def test_they_reach_the_tool(self):
+        agent = _agent(commands=(self.LIST,))
+        (command,) = collect_plugin_commands(agent)
+
+        await run_plugin_command(agent, command, "")
+
+        assert agent.calls[0][1] == {"operation": "list"}
+
+    @pytest.mark.asyncio
+    async def test_the_typed_argument_joins_them(self):
+        raw = dict(self.LIST, name="cancel", params={"operation": "cancel"},
+                   argument="instance_id")
+        agent = _agent(commands=(raw,))
+        (command,) = collect_plugin_commands(agent)
+
+        await run_plugin_command(agent, command, "sub-7")
+
+        assert agent.calls[0][1] == {"operation": "cancel", "instance_id": "sub-7"}
+
+    def test_params_that_are_not_a_mapping_drop_the_command(self):
+        """Half a call would run the wrong operation -- worse than no command."""
+        assert collect_plugin_commands(
+            _agent(commands=(dict(self.LIST, params=["operation=list"]),))) == []
+
+    def test_a_reserved_parameter_drops_the_command(self):
+        assert collect_plugin_commands(
+            _agent(commands=(dict(self.LIST, params={"session_id": "x"}),))) == []
+
+    def test_fixing_the_parameter_the_argument_binds_drops_the_command(self):
+        """One of the two would win silently, and which is a detail nobody
+        should have to know."""
+        assert collect_plugin_commands(_agent(commands=(
+            dict(self.LIST, argument="operation", params={"operation": "list"}),))) == []
+
+    def test_a_command_without_params_still_calls_with_none(self):
+        """The whole catalogue predates this field."""
+        agent = _agent()
+        (command,) = collect_plugin_commands(agent)
+        assert dict(command.params) == {}
+
+
+class TestTheSubAgentManagerReally:
+    """The schema on disk, not a fixture: the three lines that make sub-agents
+    visible from a chat are worth an assertion of their own."""
+
+    def _schema(self):
+        import yaml
+
+        from pathlib import Path
+
+        path = (Path(__file__).parents[2] / "src" / "plugins" /
+                "sub_agent_manager" / "schema.yaml")
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    def test_it_declares_listing_and_cancelling(self):
+        declared = {c["name"]: c for c in self._schema().get("commands") or []}
+
+        assert set(declared) == {"subagents", "cancel"}
+        assert declared["subagents"]["params"] == {"operation": "list"}
+        assert declared["cancel"]["params"] == {"operation": "cancel"}
+        assert declared["cancel"]["argument"] == "instance_id"
+
+    def test_both_run_a_tool_the_plugin_really_has(self):
+        """A command naming a tool nobody provides is dropped by
+        authorization without a word -- it would simply never appear."""
+        schema = self._schema()
+        tools = {t["function"]["name"] for t in schema["tools"]}
+
+        for command in schema["commands"]:
+            assert command["tool"] in tools, command["name"]
+
+    def test_the_operations_exist(self):
+        """`operation` is an enum in the tool's own schema; a value outside it
+        is a runtime error the person would only see as a failed command."""
+        schema = self._schema()
+        (tool,) = [t for t in schema["tools"]
+                   if t["function"]["name"].endswith("_manage_sub_agent")]
+        allowed = tool["function"]["parameters"]["properties"]["operation"]["enum"]
+
+        for command in schema["commands"]:
+            assert command["params"]["operation"] in allowed, command["name"]

@@ -27,7 +27,7 @@ from __future__ import annotations
 import difflib
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Literal, Mapping, Optional, Sequence
 
 #: Surfaces a command can appear on. The web UI has no terminal to leave, so
@@ -163,6 +163,17 @@ class PluginCommand:
     #: Tool parameter that receives the rest of the line. None = no arguments.
     argument: Optional[str] = None
     argument_hint: str = ""
+    #: Parameters the schema fixes for every call ("operation: list"). They
+    #: pick ONE behaviour out of a tool that offers several, which is how a
+    #: unified tool becomes reachable as a command at all -- without them only
+    #: a tool whose single interesting parameter is the argument could be one.
+    #: Author-declared, in the plugin's own schema, and the call still goes
+    #: through dispatch_tool_call: no reach past the agent's allowlist.
+    #: hash=False keeps the dataclass hashable: a frozen one generates
+    #: __hash__ from its fields, and a dict field would make hash() raise.
+    #: Two commands differing only here hash alike and compare unequal, which
+    #: is exactly what a hash is allowed to do.
+    params: Mapping[str, Any] = field(default_factory=dict, hash=False)
 
     @property
     def qualified(self) -> str:

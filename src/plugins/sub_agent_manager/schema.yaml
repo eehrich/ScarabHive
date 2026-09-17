@@ -102,6 +102,21 @@ tools:
 
         required: [operation]
 
+# Slash commands. Both run the tool above with a fixed operation -- the same
+# call the agent makes, through the same authorization, so a chat can only
+# reach what this agent is already allowed to do.
+commands:
+  - name: subagents
+    description: "sub-agents of this session: what runs, what is done"
+    tool: "{{ name }}_manage_sub_agent"
+    params: {operation: list}
+  - name: cancel
+    description: "stop a sub-agent that is running in the background"
+    tool: "{{ name }}_manage_sub_agent"
+    params: {operation: cancel}
+    argument: instance_id
+    argument_hint: "<instance-id>"
+
 # Web UI configuration
 web_ui:
   # The panel's catalogue entry: launcher, command palette and chat links read it
