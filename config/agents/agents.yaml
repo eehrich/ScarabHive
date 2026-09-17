@@ -118,7 +118,7 @@ plugins:
       description: "Simple chat agent"
       
       agent_config:
-        llm_profile: [or-deepseek-flash, chat]
+        llm_profile: [chat, or-gemini-flash-lite]
         llm_profile_advanced: []
         max_steps: 30
                 
