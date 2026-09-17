@@ -369,7 +369,7 @@ terminal/
 ├── __init__.py          # Package initialization
 ├── plugin.yaml          # Plugin metadata
 ├── schema.yaml          # Tool definitions
-├── server.py            # TerminalServer (MCP interface)
+├── server.py            # TerminalServer (tool interface)
 ├── executor.py          # CommandExecutor (subprocess management)
 ├── process_manager.py   # ProcessManager (background processes)
 ├── security.py          # CommandSecurityValidator
@@ -379,7 +379,7 @@ terminal/
 
 **Key Components:**
 
-- **TerminalServer**: MCP server implementing tool handlers
+- **TerminalServer**: tool server implementing tool handlers
 - **CommandExecutor**: Executes commands via subprocess, handles timeouts/truncation
 - **ProcessManager**: Manages background processes, captures output
 - **CommandSecurityValidator**: Validates commands against security rules

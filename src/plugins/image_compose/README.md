@@ -7,7 +7,7 @@ has to land on an exact pixel.
 
 ## What it provides
 
-`type = ["mcp-server"]`, entrypoint `server:PLUGIN_FACTORY` (this plugin has no
+`type = ["tool-server"]`, entrypoint `server:PLUGIN_FACTORY` (this plugin has no
 `plugin.py`; the factory sits next to the server).
 
 | Tool | Purpose |

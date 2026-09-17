@@ -22,7 +22,7 @@ Options:
   -v, --verbose             Enable verbose logging
   --color {auto,always,never}  Color output mode (default: auto)
   --no-color                Disable colored output
-  --show-mcp                Show MCP communication details
+  --show-tools                Show tool calls and their results
   --no-status               Disable status event output
   --raw                     Output raw JSON (machine-readable)
   -h, --help                Show help message
@@ -157,7 +157,7 @@ Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
 - `--llm-params` gelten auch für jedes Profil, auf das `/model` wechselt.
 - `--session-title` benennt nur die Session, mit der der Chat startet —
   nicht die nach `/new` oder `/resume`.
-- `--raw` und `--show-mcp` wirken im Chat nicht; den Tool-Verkehr zeigt
+- `--raw` und `--show-tools` wirken im Chat nicht; den Tool-Verkehr zeigt
   `/last`.
 
 **In-chat commands:**
@@ -469,7 +469,7 @@ den Exit-Code nicht.
   Agenten unter `plugins.servers`; ein Agent ist ein Server-Eintrag mit
   `agent_config`. Siehe [Configuration-Based Agents](config_based_agents.md).
 - `config/mcp_servers.yaml` — externe MCP-Server unter
-  `external_servers.remote_servers`. Siehe [MCP Configuration](mcp_configuration.md).
+  `external_servers.remote_servers`. Siehe [Tool server configuration](server_configuration.md).
 
 ---
 
@@ -490,7 +490,7 @@ Name gehört hinter `--agent`, nicht als erstes Wort des Tasks.
 ## Further Reading
 
 - [Configuration-Based Agents](config_based_agents.md) - Deep dive into agent definitions
-- [MCP Configuration](mcp_configuration.md) - External server setup
+- [Tool server configuration](server_configuration.md) - External server setup
 - [Plugin Authoring](plugin_authoring.md) - Create custom plugins
 - [Authentication Guide](multi_user_authentication.md) - Security and user management
 - [Context Management](context_management.md) - Token budget strategies
@@ -512,6 +512,6 @@ agent-cli users list | info | create | update | delete | generate-api-key | revo
 agent-cli reload
 
 agent-cli --verbose run "Aufgabe"               # Fortschritt
-agent-cli --show-mcp run "Aufgabe"              # Tool-Aufrufe im Detail
+agent-cli --show-tools run "Aufgabe"              # Tool-Aufrufe im Detail
 agent-cli --raw run "Aufgabe"                   # Ergebnis als JSON
 ```

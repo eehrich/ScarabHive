@@ -98,7 +98,7 @@ author = "Enrico Ehrich"
 version = "0.1.0"
 description = "Specialized web research agent"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "tools"
 visibility = "both"  # "ui", "tool", "both" oder "private"
 ```
@@ -124,15 +124,15 @@ sich auf einen großzügigen Default verlässt, verlässt sich auf nichts.
 Each agent has two internal flags set based on `metadata.visibility`:
 
 ```python
-agent._mcp_public: bool         # Show in UI dropdown (GET /agents)
-agent._mcp_tool_visible: bool   # Available in tool discovery
+agent._tool_public: bool         # Show in UI dropdown (GET /agents)
+agent._tool_visible: bool   # Available in tool discovery
 ```
 
 **Flag Mapping:**
-- `visibility: "ui"` → `_mcp_public=True, _mcp_tool_visible=False`
-- `visibility: "tool"` → `_mcp_public=False, _mcp_tool_visible=True`
-- `visibility: "both"` → `_mcp_public=True, _mcp_tool_visible=True`
-- `visibility: "private"` → `_mcp_public=False, _mcp_tool_visible=False`
+- `visibility: "ui"` → `_tool_public=True, _tool_visible=False`
+- `visibility: "tool"` → `_tool_public=False, _tool_visible=True`
+- `visibility: "both"` → `_tool_public=True, _tool_visible=True`
+- `visibility: "private"` → `_tool_public=False, _tool_visible=False`
 
 ### Tool Discovery Filtering
 
@@ -142,8 +142,8 @@ When an agent queries `list_usable_tools()`, the registry is filtered:
 # In Agent.list_usable_tools()
 for tool_name in self.registry.list():
     server = self.registry.get(tool_name)
-    if hasattr(server, '_mcp_tool_visible'):
-        if not server._mcp_tool_visible:
+    if hasattr(server, '_tool_visible'):
+        if not server._tool_visible:
             continue  # Skip agents with tool_visible=False
     available_tools.append(tool_name)
 ```
@@ -341,10 +341,10 @@ Invalid values will be rejected during config validation.
 ## API Endpoints
 
 ### GET /agents
-Returns list of agents with `_mcp_public=True` (visibility: "ui" or "both")
+Returns list of agents with `_tool_public=True` (visibility: "ui" or "both")
 
 ### Tool Discovery (Internal)
-`list_usable_tools()` returns agents with `_mcp_tool_visible=True` (visibility: "tool" or "both")
+`list_usable_tools()` returns agents with `_tool_visible=True` (visibility: "tool" or "both")
 
 ## Future Enhancements
 

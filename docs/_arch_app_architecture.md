@@ -110,14 +110,14 @@ This document covers:
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
 │  │AgentService  │  │SessionManager│  │ToolService   │          │
 │  ├──────────────┤  ├──────────────┤  ├──────────────┤          │
-│  │ConfigService │  │ MCPService   │  │SessionService│          │
+│  │ConfigService │  │ ToolServerService   │  │SessionService│          │
 │  └──────────────┘  └──────────────┘  └──────────────┘          │
 └─────────────────────────────────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Domain Layer                                │
-│  Agent │ MCPRegistry │ Plugin System │ LLM Clients              │
+│  Agent │ ToolServerRegistry │ Plugin System │ LLM Clients              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -152,8 +152,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     config = config_service.load_config(config_path)
     
     # Initialize services
-    mcp_service = MCPService(config)
-    agent_service = AgentService(mcp_service)
+    tool_server_service = ToolServerService(config)
+    agent_service = AgentService(tool_server_service)
     session_manager = SessionManager(config)
     
     # Create FastAPI app
@@ -171,10 +171,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
 **Global State:**
 - `_config_service` - Configuration management
-- `_mcp_service` - MCP integration
+- `_tool_server_service` - tool integration
 - `_agent_service` - Agent orchestration
 - `_session_manager` - Session lifecycle
-- `_app_registry` - MCP server registry
+- `_app_registry` - tool server registry
 
 #### 3.2.2 Initialization Service (`services/initialization_service.py`)
 
@@ -182,11 +182,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 - Provide centralized bootstrap for FastAPI entry point
 - Lazily create and cache `SessionManager`/`SessionService`
 - Invoke `bootstrap_servers()` once and inject shared dependencies into every agent via `agent_injection`
-- Coordinate with `MCPIntegration` through the `servers_bootstrapped` flag so CLI and API do not double-bootstrap
+- Coordinate with `ToolServerIntegration` through the `servers_bootstrapped` flag so CLI and API do not double-bootstrap
 
 **How the API Uses It:**
 - `build_app()` instantiates `InitializationService` immediately after loading config
-- Startup hook (`_init_mcp_for_app`) delegates to `initialize_for_api(skip_bootstrap=True)` because `initialize_mcp()` already handled registry bootstrap
+- Startup hook (`_init_mcp_for_app`) delegates to `initialize_for_api(skip_bootstrap=True)` because `initialize_tools()` already handled registry bootstrap
 - `app.state.session_manager` is populated from the service for dependency injection into routes
 - Ensures sub-agent manager, hooks, and web endpoints all observe the same `SessionService`
 
@@ -550,7 +550,7 @@ Services encapsulate business logic and coordinate domain components.
 **Responsibilities:**
 - Single source of truth for bootstrap across API, CLI, and `agent_run`
 - Lazily instantiate `SessionManager` and `SessionService`
-- Bridge between `initialize_mcp()` and dependency injection utility functions
+- Bridge between `initialize_tools()` and dependency injection utility functions
 - Track initialization state (`servers_bootstrapped`, `initialized`) to avoid redundant work during hot reloads
 
 **Key Methods:**
@@ -558,9 +558,9 @@ Services encapsulate business logic and coordinate domain components.
 class InitializationService:
     def bootstrap_and_inject(
         self,
-        registry: Optional[MCPRegistry] = None,
+        registry: Optional[ToolServerRegistry] = None,
         inject_sessions: bool = True
-    ) -> MCPRegistry:
+    ) -> ToolServerRegistry:
         """Create registry, bootstrap plugins, inject session service."""
 
     def initialize_for_api(
@@ -570,7 +570,7 @@ class InitializationService:
     ) -> SessionService:
         """Inject dependencies into the global plugin registry used by FastAPI."""
 
-    def initialize_for_cli(self) -> tuple[MCPRegistry, SessionService]:
+    def initialize_for_cli(self) -> tuple[ToolServerRegistry, SessionService]:
         """Convenience helper for CLI tools (used by `agent_cli` and `agent_run`)."""
 ```
 
@@ -647,9 +647,9 @@ class SessionManager:
         """List all sessions for user"""
 ```
 
-#### 5.1.5 MCPService
+#### 5.1.5 ToolServerService
 
-**File:** `src/agent_system/services/mcp_service.py`
+**File:** `src/agent_system/services/tool_server_service.py`
 
 **Responsibilities:**
 - MCP client/server lifecycle
@@ -659,12 +659,12 @@ class SessionManager:
 
 **Key Methods:**
 ```python
-class MCPService:
+class ToolServerService:
     async def initialize(self):
         """Connect to external MCP servers"""
     
     async def shutdown(self):
-        """Disconnect from MCP servers"""
+        """Disconnect from tool servers"""
     
     def get_all_tools(self) -> List[ToolInfo]:
         """Get aggregated tool list"""
@@ -801,7 +801,7 @@ data: {"type": "complete"}
 
 **Architecture:**
 ```python
-from agent_system.mcp.status import status_bus, publish_status, StatusPhase, StatusScope
+from agent_system.tools.status import status_bus, publish_status, StatusPhase, StatusScope
 
 # Method 1: Using publish_status helper (recommended)
 await publish_status(
@@ -819,7 +819,7 @@ async with StatusScope(status_bus, "my_tool", request_id="req_abc",
     pass
 
 # Method 3: Direct publish (low-level, rarely needed)
-from agent_system.mcp.status import StatusEvent
+from agent_system.tools.status import StatusEvent
 await status_bus.publish(StatusEvent(
     server="my_tool",
     request_id="req_abc",
@@ -1059,7 +1059,7 @@ async def agent_not_found_handler(request, exc):
 ### 10.3 Graceful Degradation
 
 - LLM unavailable → Return cached response or error
-- MCP server down → Continue without external tools
+- tool server down → Continue without external tools
 - Session load error → Create new session
 - Tool execution error → Continue agent loop, report error
 

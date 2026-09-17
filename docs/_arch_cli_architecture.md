@@ -18,7 +18,7 @@ Doppel-Implementierungen entfernt).
 
 Beide sind in `pyproject.toml` unter `[project.scripts]` eingetragen.
 
-**Grundsatz: Die CLI schreibt keine Konfiguration.** Ein Plugin oder MCP-Server
+**Grundsatz: Die CLI schreibt keine Konfiguration.** Ein Plugin oder Tool-Server
 wird eingeschaltet, indem man die YAML bearbeitet — `enabled` allein reicht
 auch nicht, der Agent braucht die Tools in seiner Allowlist. Die früheren
 Schreib-Befehle (`plugins enable`, `mcp enable`, `mcp tool allow/block`,
@@ -32,7 +32,7 @@ Schreib-Befehle (`plugins enable`, `mcp enable`, `mcp tool allow/block`,
 Drei Stufen, jede aus einem gemessenen Grund:
 
 1. **Vorparser** (`parse_known_args`): holt die globalen Optionen (`--config`,
-   `-v`, `--color`, `--no-color`, `--show-mcp`, `--no-status`, `--raw`) von
+   `-v`, `--color`, `--no-color`, `--show-tools`, `--no-status`, `--raw`) von
    *überall* aus der Zeile und setzt sie vor das Subcommand. Ist das erste
    übrige Wort kein Subcommand, wird `run` eingefügt — `agent-cli "Frage"`
    funktioniert deshalb ohne `run`.
@@ -62,14 +62,14 @@ Subcommands verdeckt.
 
 | Subcommand | Bootstrap | Hinweis |
 |------------|-----------|---------|
-| `plugins` | nur `discover_all_plugins` über `plugins.plugin_dirs` | `enabled` roh aus `plugins.servers` — wie `MCPIntegration` beim Registrieren; der Typ folgt der `type:`-Kette bis zum Plugin. Ein Plugin gilt als eingeschaltet, wenn eine seiner Instanzen es ist |
-| `mcp` | `MCPIntegration.initialize` → Aktion → `shutdown` | nur lesend; eine Verbindung überlebt den Prozess nicht, darum kein `connect`/`disconnect` |
-| `hooks` | `MCPIntegration.initialize` → Registry lesen → `shutdown` (~2 s plus Verbindungsaufbau externer Server) | Hooks registrieren sich beim Laden der Plugins; ohne das war die Registry immer leer. Scheitert `initialize` als Ganzes → Exit 1; ein einzelnes kaputtes Plugin fehlt (Fehler auf stderr), wie im Server. Keine Statistik: die liegt im Speicher des ausführenden Prozesses |
+| `plugins` | nur `discover_all_plugins` über `plugins.plugin_dirs` | `enabled` roh aus `plugins.servers` — wie `ToolServerIntegration` beim Registrieren; der Typ folgt der `type:`-Kette bis zum Plugin. Ein Plugin gilt als eingeschaltet, wenn eine seiner Instanzen es ist |
+| `mcp` | `ToolServerIntegration.initialize` → Aktion → `shutdown` | nur lesend; eine Verbindung überlebt den Prozess nicht, darum kein `connect`/`disconnect` |
+| `hooks` | `ToolServerIntegration.initialize` → Registry lesen → `shutdown` (~2 s plus Verbindungsaufbau externer Server) | Hooks registrieren sich beim Laden der Plugins; ohne das war die Registry immer leer. Scheitert `initialize` als Ganzes → Exit 1; ein einzelnes kaputtes Plugin fehlt (Fehler auf stderr), wie im Server. Keine Statistik: die liegt im Speicher des ausführenden Prozesses |
 | `users` | nur die Benutzer-Datenbank (`auth.database_path`) | kein Login nötig, direkter DB-Zugriff |
 | `reload` | nichts; `POST /admin/reload-config` am laufenden Server | Admin-Schlüssel nötig |
-| `run`, `chat` | voll: Logging, `InitializationService.initialize_for_cli`, `initialize_mcp`, `init_batch_system` | siehe 4 |
+| `run`, `chat` | voll: Logging, `InitializationService.initialize_for_cli`, `initialize_tools`, `init_batch_system` | siehe 4 |
 
-`mcp` nutzt `MCPService` (`list_servers`, `get_server_status`, `test_server`)
+`mcp` nutzt `ToolServerService` (`list_servers`, `get_server_status`, `test_server`)
 und `ToolService.list_tools`; beide Services bedient auch die API.
 
 ---
@@ -86,7 +86,7 @@ In dieser Reihenfolge, alles in `main`:
    LLM-Profil, mit denen sie begonnen wurde — `--agent`/`--llm` schlagen sie
    (`cli_utils/session_defaults.py`).
 4. **Einstiegs-Agent**: aus der Registry oder über `_build_entry_agent` aus der
-   *aufgelösten* Config (`get_mcp_config_by_name`); der rohe Eintrag trüge
+   *aufgelösten* Config (`get_tool_server_config`); der rohe Eintrag trüge
    Pydantic-Defaults statt geerbter Werte.
 5. `--max-steps` (Kopie der `agent_config`, nur dieser Prozess),
    `--list-sessions` (listet und endet, noch vor dem LLM-Override).
@@ -170,4 +170,4 @@ Einstiege: `test_cli_subcommands.py` (hooks, users, entfernte Befehle),
 - [App Architecture](_arch_app_architecture.md) — die API, die `reload` anspricht
 - [Plugin Architecture](_arch_plugin_architecture.md), [Plugin Hooks](plugin_hooks.md)
 - [Session Management](session_management.md)
-- [MCP Configuration](mcp_configuration.md)
+- [Tool server configuration](server_configuration.md)

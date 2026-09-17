@@ -12,7 +12,7 @@ by reading these ~200 lines.
 | `basic_agent_execute_task` | Run one task through the LLM loop |
 | `basic_agent_list_available_tools` | Names + descriptions of the tools this agent may call |
 
-`type = ["mcp-server"]`, no pip dependencies. The factory is one line —
+`type = ["tool-server"]`, no pip dependencies. The factory is one line —
 `make_agent_plugin_factory(BasicAgent)` — because the boilerplate lives in
 `agent_system.plugins.factory_utils`.
 
@@ -70,7 +70,7 @@ downgrade.
 ## Result shape
 
 The answer comes from the `final` event's `summary` (falling back to
-`message`). `tool_calls` collects every `mcp_call` with the framework's
+`message`). `tool_calls` collects every `tool_call` with the framework's
 underscore-prefixed params filtered out, and `steps` counts loop iterations.
 Errors are returned as `{"status": "error", ...}` — the tool does not raise.
 

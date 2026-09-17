@@ -1014,7 +1014,7 @@ Keep plugin if your agent:
 ## See Also
 
 - [Plugin Authoring Guide](plugin_authoring.md) - For custom agents needing code
-- [MCP Configuration](mcp_configuration.md) - MCP server configuration
+- [Tool server configuration](server_configuration.md) - tool server configuration
 - [Architecture Review](architecture_review_refactoring.md) - System architecture
 - [Service Layer](service_layer_implementation.md) - Service layer details
 

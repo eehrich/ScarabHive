@@ -31,7 +31,7 @@ The verified quick reference is the Claude skill `.claude/skills/plugin-authorin
 ### 1.1 Purpose
 
 The Plugin System provides extensibility through:
-- **Tool plugins** - Callable functions for agents (MCP protocol)
+- **Tool plugins** - Callable functions for agents (tool servers)
 - **Hook plugins** - Lifecycle interception and modification
 - **Web plugins** - FastAPI routers / panels
 - **Hybrid plugins** - Any combination of tools, hooks and web
@@ -79,7 +79,7 @@ This document covers:
 ### 2.3 Non-Goals
 
 - Plugin versioning and dependency management
-- Runtime plugin loading/unloading. Discovery and instantiation happen at startup; a partial config reload exists (`POST /admin/reload-config`, `agent-cli reload`) that calls `reload_config(new_mcp_config)` on servers implementing it (`services/config_reload.py`). New servers still need a restart.
+- Runtime plugin loading/unloading. Discovery and instantiation happen at startup; a partial config reload exists (`POST /admin/reload-config`, `agent-cli reload`) that calls `reload_config(new_server_config)` on servers implementing it (`services/config_reload.py`). New servers still need a restart.
 - Cross-plugin explicit dependencies (implicit tool deps allowed)
 - Plugin marketplace or distribution system
 
@@ -87,27 +87,27 @@ This document covers:
 
 ## 3. Plugin Types
 
-The `type` list in `plugin.toml` declares what a plugin is: `mcp-server`, `hooks`, `web`, `library`, `llm-provider` (`custom` exists but is unused). A plugin may list several.
+The `type` list in `plugin.toml` declares what a plugin is: `tool-server`, `hooks`, `web`, `library`, `llm-provider` (`custom` exists but is unused). A plugin may list several.
 
 At runtime, capabilities are detected from the instance and its `schema.yaml`, not from the manifest type:
-- **Tools:** the `tools:` section of `schema.yaml`, served by `SchemaBasedMCPServer` (`mcp/schema_based.py`)
-- **Hooks:** the `hooks:` section of `schema.yaml` (`mcp/integration.py`)
-- **Web:** the instance has `get_web_router` (`plugins/mcp_adapter.py`)
+- **Tools:** the `tools:` section of `schema.yaml`, served by `SchemaBasedToolServer` (`tools/schema_based.py`)
+- **Hooks:** the `hooks:` section of `schema.yaml` (`tools/integration.py`)
+- **Web:** the instance has `get_web_router` (`plugins/tool_adapter.py`)
 
 Special cases:
 - **library** (config-only): only `agents/*.yaml`, prompts, skills; no entrypoint module, not a discoverable type.
 - **llm-provider:** `src/plugins_llm/<dir>/provider.py` exporting `PROVIDERS`, loaded by `llm/registry.py`, which requires `type` to contain `llm-provider` and the provider name to be declared in `provides`.
 - **Agent plugins:** an `Agent` / `SchemaBasedAgent` subclass exported via `PLUGIN_FACTORY = make_agent_plugin_factory(MyAgent)` (`plugins/factory_utils.py`).
 
-### 3.1 Tool Plugins (SchemaBasedMCPServer)
+### 3.1 Tool Plugins (SchemaBasedToolServer)
 
 **Purpose:** Provide callable tools for agents
 
-**Base Class:** `SchemaBasedMCPServer` (`agent_system.mcp.schema_based`)
+**Base Class:** `SchemaBasedToolServer` (`agent_system.tools.schema_based`)
 
 **Capabilities:**
 - Tool definitions live in `schema.yaml` under `tools:` (`{{ name }}` is replaced by the instance name)
-- Routing (`mcp/schema_mixin.py`): tool `{name}_x` calls method `x`; a tool named exactly `{name}` calls `execute`
+- Routing (`tools/schema_mixin.py`): tool `{name}_x` calls method `x`; a tool named exactly `{name}` calls `execute`
 
 **Example:**
 ```yaml
@@ -126,11 +126,11 @@ tools:
 
 ```python
 # server.py
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
-class WebSearchServer(SchemaBasedMCPServer):
-    def __init__(self, name, system_config, mcp_config):
-        super().__init__(name, system_config, mcp_config)
+class WebSearchServer(SchemaBasedToolServer):
+    def __init__(self, name, system_config, server_config):
+        super().__init__(name, system_config, server_config)
 
     async def search(self, params: dict) -> dict:
         return {"results": await self._perform_search(params["query"])}
@@ -179,7 +179,7 @@ from pathlib import Path
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 
 class RequestLoggerPlugin(SchemaBasedPluginHook):
-    def __init__(self, plugin_dir: Path, mcp_config=None):
+    def __init__(self, plugin_dir: Path, server_config=None):
         super().__init__(plugin_dir)
         self.request_count = 0
 
@@ -193,8 +193,8 @@ class RequestLoggerPlugin(SchemaBasedPluginHook):
         return HookResult(success=True, modified=True, context=context)
 
 # plugin.py
-def PLUGIN_FACTORY(name=None, system_config=None, mcp_config=None):
-    return RequestLoggerPlugin(Path(__file__).parent, mcp_config)
+def PLUGIN_FACTORY(name=None, system_config=None, server_config=None):
+    return RequestLoggerPlugin(Path(__file__).parent, server_config)
 ```
 
 **Use Cases:**
@@ -210,14 +210,14 @@ def PLUGIN_FACTORY(name=None, system_config=None, mcp_config=None):
 
 **Purpose:** Provide both tools AND lifecycle hooks
 
-**Pattern:** one instance whose `schema.yaml` has both `tools:` and `hooks:`, e.g. `ContextEngineerServer(SchemaBasedMCPServer, PluginHook)` in `src/plugins/context_engineer/`. A wrapper object may instead expose the hook implementation as `hooks_plugin` (see `mcp/integration.py`).
+**Pattern:** one instance whose `schema.yaml` has both `tools:` and `hooks:`, e.g. `ContextEngineerServer(SchemaBasedToolServer, PluginHook)` in `src/plugins/context_engineer/`. A wrapper object may instead expose the hook implementation as `hooks_plugin` (see `tools/integration.py`).
 
 **Example:**
 ```python
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks import PluginHook, HookContext, HookResult
 
-class EnhancedSearchServer(SchemaBasedMCPServer, PluginHook):
+class EnhancedSearchServer(SchemaBasedToolServer, PluginHook):
     async def search(self, params: dict) -> dict:          # tool {name}_search
         return {"results": await self._search(params["query"])}
 
@@ -238,15 +238,15 @@ class EnhancedSearchServer(SchemaBasedMCPServer, PluginHook):
 
 | Scenario | Manifest `type` | Base Class(es) |
 |----------|-----------------|----------------|
-| Provide callable tools | `mcp-server` | `SchemaBasedMCPServer` |
+| Provide callable tools | `tool-server` | `SchemaBasedToolServer` |
 | Log/monitor agent, optimize context, format output | `hooks` | `SchemaBasedPluginHook` |
-| Tools + hooks | `mcp-server`, `hooks` | `SchemaBasedMCPServer, PluginHook` |
+| Tools + hooks | `tool-server`, `hooks` | `SchemaBasedToolServer, PluginHook` |
 | HTTP routes / panel | `web` | object with `get_web_router` |
-| Agent with custom logic | `mcp-server` | `Agent` / `SchemaBasedAgent` + `make_agent_plugin_factory` |
+| Agent with custom logic | `tool-server` | `Agent` / `SchemaBasedAgent` + `make_agent_plugin_factory` |
 | Agents/prompts/skills only | `library` | none (no entrypoint) |
 | LLM client | `llm-provider` | `provider.py` exporting `PROVIDERS` |
 
-**Rule:** Choose the simplest base class that meets your needs. Don't inherit from `MCPServer` if you don't provide tools.
+**Rule:** Choose the simplest base class that meets your needs. Don't inherit from `ToolServer` if you don't provide tools.
 
 ---
 
@@ -276,8 +276,8 @@ class EnhancedSearchServer(SchemaBasedMCPServer, PluginHook):
              │                    │
              ▼                    ▼
 ┌────────────────────┐   ┌────────────────────┐
-│   MCPRegistry /    │   │   HookRegistry     │
-│ PluginMCPRegistry  │   │ (lifecycle events) │
+│   ToolServerRegistry /    │   │   HookRegistry     │
+│ PluginToolRegistry  │   │ (lifecycle events) │
 └────────────────────┘   └────────────────────┘
 ```
 
@@ -292,15 +292,15 @@ There is no separate plugin registry class. Discovery returns a plain dict `type
 **Responsibilities:**
 - Call `discover_all_plugins(dirs=config.plugins.plugin_dirs)`
 - Build one declaration per configured server (`type` selects the factory)
-- Construct instances: `factory(name, system_config, mcp_config)`, plus `registry=` when the factory has `_accepts_registry` (agent factories from `make_agent_plugin_factory`)
-- Register instances in `MCPRegistry` and `PluginMCPRegistry` (`plugins/mcp_adapter.py`, which also registers web routers)
+- Construct instances: `factory(name, system_config, server_config)`, plus `registry=` when the factory has `_accepts_registry` (agent factories from `make_agent_plugin_factory`)
+- Register instances in `ToolServerRegistry` and `PluginToolRegistry` (`plugins/tool_adapter.py`, which also registers web routers)
 
 #### 4.2.2 Plugin Discovery
 
 **File:** `src/agent_system/plugins/discovery.py`
 
 **Responsibilities:**
-- Scan every immediate subdirectory of each plugin dir (`plugins.plugin_dirs`: `src/plugins`, `src/plugins_writer`, `src/plugins_trading`) plus the `agent_system.mcp_plugins` entry point group
+- Scan every immediate subdirectory of each plugin dir (`plugins.plugin_dirs`: `src/plugins`, `src/plugins_writer`, `src/plugins_trading`) plus the `agent_system.tool_plugins` entry point group
 - Read `plugin.toml` (`plugins/plugin_manifest.py`)
 - Import the entrypoint module and fetch the factory
 - Register hooks declared in plugin schemas (`register_plugin_hooks`)
@@ -385,7 +385,7 @@ name = "request_logger"
 version = "1.0.0"
 description = "Example hook plugin that logs agent requests and responses"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["hooks"]            # mcp-server, hooks, web, library, llm-provider
+type = ["hooks"]            # tool-server, hooks, web, library, llm-provider
 category = "monitoring"
 tags = ["hooks", "logging"]
 requires = { agent_system = ">=0.6.0" }
@@ -422,7 +422,7 @@ plugins:
 **How It Works:**
 1. The config loader merges all included files into one `plugins.servers` map
 2. Each entry's `type` names a discovered plugin type (or another configured server to inherit from)
-3. `Runtime` constructs the instance through that type's factory with the entry as `mcp_config`
+3. `Runtime` constructs the instance through that type's factory with the entry as `server_config`
 4. A sub-agent must additionally be registered in the sub-agent manager (SAM) to be spawnable
 
 **Benefits:**
@@ -533,7 +533,7 @@ Topological sort (`HookRegistry._topological_sort`). On a cycle the error is log
 
 ### 7.1 Architecture
 
-Config-based agents are ordinary `plugins.servers` entries whose `type` is an agent plugin (usually `basic_agent`) or another configured server they inherit from. No special factory exists: `Runtime` calls the agent plugin's factory (from `make_agent_plugin_factory`) with the entry as `mcp_config`.
+Config-based agents are ordinary `plugins.servers` entries whose `type` is an agent plugin (usually `basic_agent`) or another configured server they inherit from. No special factory exists: `Runtime` calls the agent plugin's factory (from `make_agent_plugin_factory`) with the entry as `server_config`.
 
 ```yaml
 # config/agents/translator.yaml (or src/plugins/<plugin>/agents/translator.yaml)
@@ -551,7 +551,7 @@ plugins:
           allowed: []
 ```
 
-`MCPConfig` is a pydantic model with `extra=allow`; it has no `.get()`. Plugin code reads fields via attributes / `getattr(mcp_config, "field", default)`.
+`ToolServerConfig` is a pydantic model with `extra=allow`; it has no `.get()`. Plugin code reads fields via attributes / `getattr(server_config, "field", default)`.
 
 ### 7.2 Benefits
 
@@ -578,9 +578,9 @@ plugins:
 ### ADR-001: Composition Over Inheritance
 
 **Context:** Need flexible plugin types
-**Decision:** Independent `MCPServer` and `PluginHook` base classes
+**Decision:** Independent `ToolServer` and `PluginHook` base classes
 **Rationale:**
-- Hook-only plugins don't need MCP methods
+- Hook-only plugins don't need tool methods
 - Tool-only plugins don't need hook methods
 - Hybrid plugins use multiple inheritance
 - Clear separation of concerns
@@ -670,8 +670,8 @@ One declaration per plugins.servers entry (type → factory)
     ▼
 Instantiate servers
     │
-    ├─► factory(name, system_config, mcp_config[, registry])
-    ├─► Register in MCPRegistry / PluginMCPRegistry (tools, web)
+    ├─► factory(name, system_config, server_config[, registry])
+    ├─► Register in ToolServerRegistry / PluginToolRegistry (tools, web)
     ├─► Register schema hooks in HookRegistry
     │
     ▼
@@ -724,7 +724,7 @@ Continue Agent Loop
 ### 10.1 Plugin Development
 
 **DO:**
-- ✅ Use minimal base class (don't inherit `MCPServer` if you don't provide tools)
+- ✅ Use minimal base class (don't inherit `ToolServer` if you don't provide tools)
 - ✅ Validate inputs with Pydantic models
 - ✅ Handle errors gracefully (return error results, don't raise)
 - ✅ Define tools in `schema.yaml`, metadata in `plugin.toml`
@@ -760,7 +760,7 @@ Continue Agent Loop
 - ✅ Provide good defaults in plugin config
 - ✅ Validate config with Pydantic models
 - ✅ Document config options in the `config:` section of `schema.yaml`
-- ✅ Read `MCPConfig` fields with `getattr` (pydantic model, no `.get()`)
+- ✅ Read `ToolServerConfig` fields with `getattr` (pydantic model, no `.get()`)
 
 **DON'T:**
 - ❌ Hardcode values (use config)
@@ -788,7 +788,7 @@ Continue Agent Loop
 
 - [Hook System Design](plugin_hooks.md) - Lifecycle hooks
 - [Tool Execution](tool_execution.md) - Tool discovery and execution
-- [MCP Configuration](mcp_configuration.md) - Server configuration
+- [Tool server configuration](server_configuration.md) - Server configuration
 
 ---
 

@@ -165,7 +165,7 @@ result = strategy.compact(messages, current_tokens=95000)
 # result.tokens_saved shows reduction
 ```
 
-## MCP Tools
+## Tools
 
 The plugin exposes these tools to the agent:
 

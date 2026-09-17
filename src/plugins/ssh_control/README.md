@@ -4,7 +4,7 @@ The SSH Control plugin provides comprehensive SSH-based control and management o
 
 ## Overview
 
-This plugin enables secure remote machine control through SSH with support for multiple authentication methods, connection pooling, and a modern web UI. It combines MCP tools for programmatic access with an interactive terminal interface for manual operations.
+This plugin enables secure remote machine control through SSH with support for multiple authentication methods, connection pooling, and a modern web UI. It combines tools for programmatic access with an interactive terminal interface for manual operations.
 
 ## Features
 
@@ -13,7 +13,7 @@ This plugin enables secure remote machine control through SSH with support for m
 - **File Operations**: Upload/download files via SCP/SFTP
 - **Connection Management**: Pooled connections with automatic reconnection
 - **Multi-machine Support**: Manage multiple SSH servers simultaneously
-- **Dynamic Provisioning**: Add/remove machines at runtime via MCP tools
+- **Dynamic Provisioning**: Add/remove machines at runtime via tools
 
 ### Security
 - **Multiple Auth Methods**: SSH keys, passwords, SSH agent
@@ -36,7 +36,7 @@ servers:
     enabled: true
     type: plugin
     plugin: ssh_control
-    description: "SSH Control MCP Server"
+    description: "SSH Control Tool Server"
     machines:
       - name: production-web
         host: ssh.example.com
@@ -229,7 +229,7 @@ What the panel calls, under `/plugins/<instance>/`:
 src/plugins/ssh_control/
 ├── __init__.py
 ├── plugin.yaml           # Plugin metadata
-├── server.py             # MCP server implementation
+├── server.py             # tool server implementation
 ├── web_endpoints.py      # FastAPI endpoints
 ├── connection_manager.py # Connection pooling
 ├── auth.py               # Authentication helpers
@@ -267,7 +267,7 @@ pytest tests/test_ssh_control_integration.py
 
 ### Example 1: Basic Command Execution
 ```bash
-# Via MCP tool
+# Via tool
 agent-cli "Execute 'uptime' on production-web using ssh_control"
 
 # Expected output:

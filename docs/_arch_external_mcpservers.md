@@ -206,9 +206,9 @@ Response:
 
 ### 4.2 Core Components
 
-#### 4.2.1 MCPIntegration
+#### 4.2.1 ToolServerIntegration
 
-**File:** `src/agent_system/mcp/integration.py`
+**File:** `src/agent_system/tools/integration.py`
 
 **Responsibilities:**
 - Initialize MCP subsystem
@@ -218,7 +218,7 @@ Response:
 
 **Key Methods:**
 ```python
-class MCPIntegration:
+class ToolServerIntegration:
     async def initialize(self, config: AgentSystemConfig):
         """Initialize MCP integration"""
     
@@ -281,7 +281,7 @@ by the task that entered them. See the plugin's README for that reasoning.
 
 #### 4.2.3 ToolCache
 
-**File:** `src/agent_system/mcp/tool_cache.py`
+**File:** `src/agent_system/tools/tool_cache.py`
 
 **Responsibilities:**
 - Cache tool lists from external servers
@@ -617,7 +617,7 @@ remains under `/mcp/*` serves the internal plugin registry, not the protocol.
 Agent Requests Tools
     │
     ▼
-MCPIntegration.get_all_tools()
+ToolServerIntegration.get_all_tools()
     │
     ├─► Internal Plugins
     │   │
@@ -657,7 +657,7 @@ Return to Agent
 Agent Calls Tool
     │
     ▼
-MCPIntegration.call_tool(tool_name, args)
+ToolServerIntegration.call_tool(tool_name, args)
     │
     ├─► Determine Tool Source
     │   │
@@ -782,7 +782,7 @@ remote_servers:
 
 ### 11.2 Design Documents
 
-- [MCP Configuration](mcp_configuration.md) - Configuration guide
+- [MCP Configuration](server_configuration.md) - Configuration guide
 - [Tool Execution](tool_execution.md) - Tool system
 - [Caching Systems](caching_systems.md) - Cache design
 

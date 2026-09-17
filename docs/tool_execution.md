@@ -1,6 +1,6 @@
 # Tool Execution System
 
-Die Tool-Ausführung ist ein zentraler Bestandteil des AgentSystem. Sie ermöglicht es Agenten, sowohl interne Plugin-Tools als auch externe MCP-Server-Tools zu nutzen und deren Ausführung zu verwalten.
+Die Tool-Ausführung ist ein zentraler Bestandteil des AgentSystem. Sie ermöglicht es Agenten, sowohl interne Plugin-Tools als auch Tools externer MCP-Server zu nutzen und deren Ausführung zu verwalten.
 
 ## Überblick
 
@@ -20,7 +20,7 @@ Das Tool-Execution-System umfasst mehrere Komponenten:
 ┌─────────────────────────────────────────────────────────────┐
 │                        Agent Server                          │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │         MCPIntegrationManager                         │  │
+│  │         ToolIntegrationManager                         │  │
 │  │  - Tool Discovery                                     │  │
 │  │  - Schema Building                                    │  │
 │  │  - External Server Integration                        │  │
@@ -35,7 +35,7 @@ Das Tool-Execution-System umfasst mehrere Komponenten:
          │                                    │
          ▼                                    ▼
 ┌──────────────────┐              ┌──────────────────────┐
-│  Plugin Tools    │              │  External MCP Tools  │
+│  Plugin Tools    │              │  External Tools  │
 │  (Internal)      │              │  (Remote Servers)    │
 └──────────────────┘              └──────────────────────┘
 ```
@@ -49,7 +49,7 @@ Das System sammelt Tools aus verschiedenen Quellen:
 #### Plugin-Tools (Intern)
 ```python
 # Aus dem Plugin-Registry
-plugin_tools = await mcp_integration.plugin_registry.get_all_tools()
+plugin_tools = await tool_integration.plugin_registry.get_all_tools()
 ```
 
 Beispiele:
@@ -60,7 +60,7 @@ Beispiele:
 #### Externe MCP-Tools
 ```python
 # Aus externen MCP-Servern (Schlüssel "external_servers")
-all_tools = await mcp_integration.list_all_tools()
+all_tools = await tool_integration.list_all_tools()
 external_tools = all_tools["external_servers"]
 ```
 
@@ -129,12 +129,12 @@ plugins:
 
 ### 4. Custom Tool Descriptions
 
-Server-Instanzen können die Beschreibungen ihrer eigenen Tools überschreiben. `self_tool_descriptions` steht auf dem Server-Eintrag (nicht in `agent_config`) und wird in `MCPServer._apply_custom_tool_descriptions` (`mcp/base.py`) angewendet; Einträge für nicht existierende Tools werden mit Warnung übersprungen.
+Server-Instanzen können die Beschreibungen ihrer eigenen Tools überschreiben. `self_tool_descriptions` steht auf dem Server-Eintrag (nicht in `agent_config`) und wird in `ToolServer._apply_custom_tool_descriptions` (`tools/base.py`) angewendet; Einträge für nicht existierende Tools werden mit Warnung übersprungen.
 
 ```python
 def _apply_custom_tool_descriptions(self, tools_schema: List[dict]) -> None:
-    """Apply custom self tool descriptions from MCP configuration."""
-    self_tool_descriptions = getattr(self.mcp_config, 'self_tool_descriptions', None)
+    """Apply custom self tool descriptions from tool server configuration."""
+    self_tool_descriptions = getattr(self.server_config, 'self_tool_descriptions', None)
     if not self_tool_descriptions:
         return
     for tool_name, new_desc in self_tool_descriptions.items():
@@ -236,7 +236,7 @@ async def _execute_single_tool(
         # Mit Request-ID immer über den Cancellation-Pfad (siehe unten)
         return await self._execute_with_cancellation(...)
     if "." in tool_name:
-        # External MCP tool
+        # External tool
         return await self._execute_external_tool(...)
     else:
         # Internal plugin tool
@@ -283,8 +283,8 @@ async def _execute_plugin_tool(
     
     # 6. Erstelle Events für Streaming
     events = [
-        {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": openai_tool_name, ...},
-        {"type": "mcp_result", "step": step + 1, "server": tool_name, "result": result, ...}
+        {"type": "tool_call", "step": step + 1, "server": tool_name, "action": openai_tool_name, ...},
+        {"type": "tool_result", "step": step + 1, "server": tool_name, "result": result, ...}
     ]
     
     return message, events, [{"server": tool_name, "action": openai_tool_name, "result": result, ...}]
@@ -303,18 +303,18 @@ async def _execute_external_tool(
     step: int,
     request_id: str | None = None
 ) -> tuple[ChatMessage, List[Dict], List[Dict]]:
-    """Execute an external MCP tool."""
+    """Execute an external tool."""
     
     # 1. Parse server name und tool name
     server_name, actual_tool_name = tool_name.split(".", 1)
     # z.B. "context7.resolve-library-id" → "context7", "resolve-library-id"
     
-    # 2. Call external server via MCP integration des Agenten.
+    # 2. Call external server via tool integration des Agenten.
     #    Nur JSON-serialisierbare Parameter ohne "_"-Keys verlassen den
     #    Prozess -- keine Runtime-Parameter, kein Status-Objekt, kein Token.
     serializable_params = self._make_params_serializable(params)
-    mcp_integration = self._agent._mcp_integration_manager.mcp_integration
-    result = await mcp_integration.call_tool(
+    tool_integration = self._agent._tool_integration_manager.tool_integration
+    result = await tool_integration.call_tool(
         server_name,
         actual_tool_name,
         serializable_params,
@@ -324,8 +324,8 @@ async def _execute_external_tool(
     # 3. Erstelle Response (analog zu Plugin-Tools, ohne multimodal_content)
     message = ChatMessage(...)
     events = [
-        {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, ...},
-        {"type": "mcp_result", "step": step + 1, "server": tool_name, "result": result, ...}
+        {"type": "tool_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, ...},
+        {"type": "tool_result", "step": step + 1, "server": tool_name, "result": result, ...}
     ]
     
     return message, events, [{"server": tool_name, "action": actual_tool_name, "result": result, ...}]
@@ -683,8 +683,8 @@ messages, events, results = await execute_tools_collect(tool_execution_manager,
 # Result:
 # messages = [ChatMessage(role="tool", content='{...}')]
 # events = [
-#     {"type": "mcp_call", "server": "datetime_operations", ...},
-#     {"type": "mcp_result", "server": "datetime_operations", ...}
+#     {"type": "tool_call", "server": "datetime_operations", ...},
+#     {"type": "tool_result", "server": "datetime_operations", ...}
 # ]
 ```
 
@@ -732,11 +732,11 @@ tool_name_mapping = {
     "context7_get_library_docs": "context7.get-library-docs"  # Original name
 }
 
-# Ausführung über MCP integration
+# Ausführung über tool integration
 messages, events, results = await execute_tools_collect(tool_execution_manager, ...)
 
 # Intern wird aufgerufen:
-# mcp_integration.call_tool(
+# tool_integration.call_tool(
 #     server_name="context7",
 #     tool_name="get-library-docs",
 #     params={"context7CompatibleLibraryID": "/fastapi/fastapi"},
@@ -931,7 +931,7 @@ tool_request_id = f"{request_id}_{step:03d}_{i:03d}"
 ## Siehe auch
 
 - [Plugin Architecture](_arch_plugin_architecture.md) - Plugin-System
-- [MCP Configuration](mcp_configuration.md) - MCP-Server-Konfiguration
+- [Tool server configuration](server_configuration.md) - Tool-Server-Konfiguration
 - [Status Design](status_design.md) - Status-System
 - [Cancellation Architecture](cancellation_architecture.md) - Cancellation-System
 - [Multimodal Tool Responses](multimodal_tool_responses_design.md) - `_multimodal_content`

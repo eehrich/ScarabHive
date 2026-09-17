@@ -593,4 +593,4 @@ await manager.update_sub_session_metadata(
 - [Agent Architecture](../docs/_arch_agent_architecture.md)
 - [Session Management](../docs/session_management.md)
 - [Plugin Authoring Guide](../docs/plugin_authoring.md)
-- [MCP Configuration](../docs/mcp_configuration.md)
+- [Tool server configuration](../docs/server_configuration.md)

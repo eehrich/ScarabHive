@@ -22,7 +22,7 @@ Ein leerer Schlüssel unter `hooks:` (alle Zeilen darunter auskommentiert)
 bedeutet „nichts gesetzt“; die Modelle verwerfen ihn vor der Validierung, und
 das Schema lässt `null` dort deshalb zu.
 
-**Grenze:** `MCPConfig` ist `extra="allow"` (die plugin-eigenen Keys wie
+**Grenze:** `ToolServerConfig` ist `extra="allow"` (die plugin-eigenen Keys wie
 `max_nesting_depth` oder `allowed_agents` leben dort), deshalb bleibt ein
 Tippfehler direkt unter einem Server-Eintrag unbemerkt. Innerhalb von
 `agent_config:` greift die Strictness.
@@ -44,7 +44,7 @@ Strictness verloren geht.
 (pydantic `extra="ignore"`) — genau deshalb überlebte die Klasse stiller
 toter Config-Keys (`ollama_url`, `include_thinking`) monatelang; der Editor
 ist der Ort, an dem sie auffallen sollen. Modelle mit `extra="allow"`
-(z. B. `MCPConfig`: plugin-spezifische Keys) bleiben durchlässig.
+(z. B. `ToolServerConfig`: plugin-spezifische Keys) bleiben durchlässig.
 
 ## Handgepflegte Schemas (kein Modell dahinter)
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Model Context Protocol (MCP) implementation in AgentSystem provides seamless integration with external MCP servers and exposes local plugins as MCP endpoints. This document covers configuration, authentication, and usage.
+This guide covers the connections to **external** MCP servers: configuration, authentication and usage. They are the `mcp_client` plugin's business; the system's own plugins are tool servers and speak no protocol (see `plugin_authoring.md`).
 
 ## Configuration Schema
 
@@ -46,7 +46,7 @@ cache:
   max_size: 1000
 ```
 
-**Note**: System-wide MCP settings (ports, security, etc.) are configured in `config/config.yaml` under the `mcp` section.
+**Note**: System-wide settings (ports, security, etc.) are configured in `config/config.yaml`.
 
 ## Transport Types
 
@@ -334,10 +334,10 @@ To migrate existing deployments:
 ### Python Code Integration
 
 ```python
-from agent_system.mcp import MCPIntegration
+from agent_system.tools import ToolServerIntegration
 
 # Initialize with configuration
-mcp = MCPIntegration(config=config_dict)
+mcp = ToolServerIntegration(config=config_dict)
 await mcp.initialize()
 
 # List all available tools

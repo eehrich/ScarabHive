@@ -1,12 +1,12 @@
 # Basic Operations Plugin
 
-The Basic Operations plugin provides simple utility tools for testing and orchestration within the MCP ecosystem. It exposes small, deterministic tools that are useful for health checks, simple time-based waits (with periodic status updates), and quick ping-style probes.
+The Basic Operations plugin provides simple utility tools for testing and orchestration within the agent system. It exposes small, deterministic tools that are useful for health checks, simple time-based waits (with periodic status updates), and quick ping-style probes.
 
 ## Overview
 
 This plugin is intentionally minimal and designed for two main purposes:
 
-- Provide a lightweight, schema-driven toolset that demonstrates how to implement tools using the SchemaBasedMCPServer pattern.
+- Provide a lightweight, schema-driven toolset that demonstrates how to implement tools using the SchemaBasedToolServer pattern.
 - Offer dependable utilities useful in integration tests and as primitives for agents (for example, waiting with periodic status updates or returning a timestamped ping response).
 
 ## Features
@@ -65,7 +65,7 @@ Example response:
 
 Notes:
 - The `wait` tool validates that `seconds` is >= 0.1 and <= `max_wait_seconds` (default 3600).
-- The plugin calls `await status.progress(...)` unconditionally to emit progress updates — callers should provide a status context that implements `progress` (the MCP runtime does this).
+- The plugin calls `await status.progress(...)` unconditionally to emit progress updates — callers should provide a status context that implements `progress` (the tool runtime does this).
 
 ### ping
 A fast, idempotent probe returning the current timestamp and echoing provided details.
@@ -108,7 +108,7 @@ Returns: JSON object with fields:
 
 Behavioral notes:
 - Emits `status.progress(...)` at start, periodically during the wait, and on completion.
-- Assumes the MCP runtime provides a valid `status` context. The plugin intentionally does not guard these calls with safety checks.
+- Assumes the tool runtime provides a valid `status` context. The plugin intentionally does not guard these calls with safety checks.
 
 ### ping
 Quick probe that returns a timestamp and echoes supplied data.
@@ -143,7 +143,7 @@ Note: In CI and local test runs, external LLM calls are mocked across the projec
 
 ## Contributing
 
-This plugin follows the repository conventions for MCP plugins. When contributing:
+This plugin follows the repository conventions for plugins. When contributing:
 
 - Add unit tests under `tests/` covering new behavior.
 - Update `schema.yaml` when adding or changing tools.
@@ -152,4 +152,4 @@ This plugin follows the repository conventions for MCP plugins. When contributin
 
 ---
 
-If you want, I can also add a short example `curl`/HTTP invocation using the MCP server API for local testing — tell me and I'll append it.
+If you want, I can also add a short example `curl`/HTTP invocation using the tool server API for local testing — tell me and I'll append it.

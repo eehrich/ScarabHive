@@ -29,7 +29,7 @@
 
 AgentSystem is a modular, extensible AI agent framework that enables:
 - Multi-agent orchestration with specialized capabilities
-- Plugin-based tool ecosystem (MCP protocol)
+- Plugin-based tool ecosystem (tool servers; the MCP protocol only in the mcp_client plugin)
 - Configuration-driven agent definition
 - Real-time status streaming and cancellation
 - Multi-user session management with authentication
@@ -125,7 +125,7 @@ This document describes the core architecture of AgentSystem, including:
 | System | Protocol | Purpose |
 |--------|----------|---------|
 | **LLM Providers** | HTTP/HTTPS | AI model inference (OpenAI, Ollama, etc.) |
-| **External MCP Servers** | HTTP/SSE | External tool integration (Context7, Memory, etc.) |
+| **External MCP servers** | HTTP/SSE | External tool integration (Context7, Memory, etc.) |
 | **File System** | Local I/O | Configuration, sessions, cache storage |
 | **Web Browsers** | HTTP/SSE | Web UI access, real-time updates |
 | **CLI Clients** | HTTP | Command-line interface |
@@ -156,7 +156,7 @@ This document describes the core architecture of AgentSystem, including:
 │                       Domain Layer                               │
 ├─────────────────────────────────────────────────────────────────┤
 │  Agent (Executor)         │  Plugin Registry                     │
-│  MCP Integration          │  Hook System                         │
+│  Tool integration          │  Hook System                         │
 │  LLM Clients              │  Tool Execution Manager              │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -218,7 +218,7 @@ class AgentService:
 
 **Key Interfaces:**
 ```python
-class Agent(MCPServer):
+class Agent(ToolServer):
     async def run_events(
         task: str,
         request_id: str,
@@ -233,10 +233,10 @@ class Agent(MCPServer):
 - Centralized bootstrap for all entry points (API, CLI, lightweight runner)
 - Lazily provision `SessionManager` and `SessionService`
 - Invoke `bootstrap_servers()` once per process and inject dependencies into every agent instance
-- Coordinate with MCP integration to avoid duplicate initialization via `servers_bootstrapped` flag
+- Coordinate with tool integration to avoid duplicate initialization via `servers_bootstrapped` flag
 
 **Key Capabilities:**
-- Works with both `MCPRegistry` (CLI) and `PluginMCPRegistry` (API singleton)
+- Works with both `ToolServerRegistry` (CLI) and `PluginToolRegistry` (API singleton)
 - Injects shared services (currently `session_service`, future dependencies via `agent_injection` helpers)
 - Provides specialized helpers (`initialize_for_api`, `initialize_for_cli`, `bootstrap_and_inject`)
 - Ensures consistent dependency graph for sub-agent management and hooks
@@ -253,7 +253,7 @@ class Agent(MCPServer):
 - Config-based agent registration
 - Lazy initialization support
 
-#### 4.2.6 MCP Integration (`mcp/integration.py`)
+#### 4.2.6 Tool integration (`tools/integration.py`)
 
 **Responsibilities:**
 - External MCP server connections
@@ -345,7 +345,7 @@ All configuration sections can be defined in the main config or in separate file
 #### ADR-003: Plugin Architecture
 
 **Context:** Need extensible tool and hook system  
-**Decision:** Dual plugin types (Tools via MCPServer, Hooks via PluginHook)  
+**Decision:** Dual plugin types (Tools via ToolServer, Hooks via PluginHook)  
 **Rationale:**
 - Clear separation of concerns
 - Minimal inheritance (composition over inheritance)
@@ -477,7 +477,7 @@ Initialize Components
    │
   ├─► InitializationService (SessionManager + SessionService singletons)
   ├─► LLM Clients (from llm.yaml)
-  ├─► MCP Integration (from mcp_servers.yaml)
+  ├─► Tool integration (from mcp_servers.yaml)
   ├─► Plugin Registry (discover + config agents)
   ├─► Hook System (load hooks from plugins)
    │
@@ -510,7 +510,7 @@ Bootstrap Agents
    │
    ├─► Instantiate from factories
    ├─► Apply configuration overrides
-   ├─► Register in MCP registry
+   ├─► Register in tool registry
    │
    ▼
 Ready
@@ -643,7 +643,7 @@ development:
 └─────────────────────────────────────┘
           │
           ▼
-    Internet (LLM APIs, MCP Servers)
+    Internet (LLM APIs, Tool servers)
 ```
 
 ### 9.2 Reverse Proxy Deployment
@@ -690,7 +690,7 @@ AGENT_RELOAD=1
 ### 10.1 Architecture Documents
 
 - [Plugin Architecture](plugin_architecture.md) - Plugin system design
-- [MCP Server Integration](mcp_configuration.md) - External MCP servers
+- [Tool Server Integration](server_configuration.md) - External MCP servers
 - [Hook System](plugin_hooks.md) - Lifecycle hooks
 - [Tool Execution](tool_execution.md) - Tool execution flow
 

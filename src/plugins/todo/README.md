@@ -23,7 +23,7 @@ The plugin is automatically available when AgentSystem starts. Enable it in `con
 
 ```yaml
 todo:
-  type: mcp_server
+  type: tool_server
   server_config:
     storage_path: data/todos
     max_tasks_per_session: 1000
@@ -376,7 +376,7 @@ python -m plugins.todo delete task_001 --cascade
 
 ```yaml
 todo:
-  type: mcp_server
+  type: tool_server
   server_config:
     storage_path: data/todos           # JSON file directory
     max_tasks_per_session: 1000        # Task limit per session

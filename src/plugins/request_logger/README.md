@@ -4,7 +4,7 @@ Example hooks-only plugin demonstrating the Agent System hook system.
 
 ## Overview
 
-This plugin logs agent lifecycle events without providing any MCP tools or web endpoints. It demonstrates:
+This plugin logs agent lifecycle events without providing any tools or web endpoints. It demonstrates:
 
 - **Hooks-only plugin** type (`hooks_only` in `plugin.yaml`)
 - **Multiple hook types**: pre_llm_call, post_llm_call, session_start, session_end
@@ -51,10 +51,10 @@ plugins:
 
 ## Hook Implementation
 
-The plugin class inherits from both `MCPServer` (required for plugin infrastructure) and `PluginHook`:
+The plugin class inherits from both `ToolServer` (required for plugin infrastructure) and `PluginHook`:
 
 ```python
-class RequestLoggerPlugin(MCPServer, PluginHook):
+class RequestLoggerPlugin(ToolServer, PluginHook):
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
         # Log request, store timing data
         context.metadata['start_time'] = time.time()

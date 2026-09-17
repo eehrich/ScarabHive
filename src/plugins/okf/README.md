@@ -21,7 +21,7 @@ any other consumer (verified: this plugin validates & traverses Google's real
 - `core.py` — the format, owned once: round-trip-safe frontmatter (via
   `ruamel.yaml`, YAML 1.2, preserves unknown keys/order/comments), conformance
   validation, bundle-relative link resolution, graph traversal, index/log.
-- `server.py` — sandboxed MCP tools + the `pre_llm_call` consumer hook.
+- `server.py` — sandboxed tools + the `pre_llm_call` consumer hook.
 
 ## Tools
 

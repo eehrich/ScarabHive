@@ -48,11 +48,11 @@ from agent_system.llm.models import ChatMessage
 MARK = "my_hook"
 
 class MyHook(SchemaBasedPluginHook):
-    def __init__(self, plugin_dir, mcp_config=None):
+    def __init__(self, plugin_dir, server_config=None):
         super().__init__(plugin_dir)                  # schema.yaml defaults only
         cfg = dict(self.get_config())
-        if mcp_config is not None and getattr(mcp_config, "config", None):
-            cfg.update(mcp_config.config)             # merging plugins.yaml config is the plugin's job
+        if server_config is not None and getattr(server_config, "config", None):
+            cfg.update(server_config.config)             # merging plugins.yaml config is the plugin's job
         self.note = cfg.get("note", "")
 
     async def inject_note(self, context: HookContext) -> HookResult:
@@ -67,12 +67,12 @@ class MyHook(SchemaBasedPluginHook):
 ```
 
 ```python
-# plugin.py — the factory gets (name, system_config, mcp_config); zero-arg → TypeError
+# plugin.py — the factory gets (name, system_config, server_config); zero-arg → TypeError
 from pathlib import Path
 from .hooks import MyHook
 
-def PLUGIN_FACTORY(name=None, system_config=None, mcp_config=None):
-    return MyHook(Path(__file__).parent, mcp_config)
+def PLUGIN_FACTORY(name=None, system_config=None, server_config=None):
+    return MyHook(Path(__file__).parent, server_config)
 ```
 
 Registered only if `schema.yaml` has a `hooks:` key **and** the instance is

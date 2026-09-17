@@ -66,9 +66,9 @@ from agent_system.servers.agent.schema_based import SchemaBasedAgent
 from agent_system.plugins.factory_utils import make_agent_plugin_factory
 
 class MyAgent(SchemaBasedAgent):
-    def __init__(self, name, system_config, mcp_config, registry=None, **kwargs):
-        super().__init__(name, system_config, mcp_config, registry, **kwargs)
-        # Agent.__init__ is (name, system_config, mcp_config, registry=None, llm=None,
+    def __init__(self, name, system_config, server_config, registry=None, **kwargs):
+        super().__init__(name, system_config, server_config, registry, **kwargs)
+        # Agent.__init__ is (name, system_config, server_config, registry=None, llm=None,
         # llm_factory=None, session_service=None) — pass anything beyond registry by keyword
 
     async def execute_task(self, params: dict) -> dict:    # tool "{name}_execute_task"
@@ -82,7 +82,7 @@ PLUGIN_FACTORY = make_agent_plugin_factory(MyAgent)
   the agent an empty private registry — the ToolExecutionManager holds on to it;
   setting `inst.registry` afterwards is too late.
 - Plain `Agent` only when tools are generated at runtime.
-- `mcp_config` is the **merged** config (default_config + `type:` chain).
+- `server_config` is the **merged** config (default_config + `type:` chain).
 - `lazy = true` in plugin.toml only if `__init__` touches nothing but config and the
   LLM client (no file, thread, socket). The runtime only checks that an `Agent` comes
   out (else TypeError) and that LLM config/template resolve — nobody checks the

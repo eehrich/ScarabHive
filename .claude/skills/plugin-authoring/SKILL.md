@@ -22,12 +22,12 @@ is silently not registered). Set it correctly anyway.
 
 | You want … | Type | Base | Details |
 |---|---|---|---|
-| to give the model functions | `mcp-server` | `SchemaBasedMCPServer` | [tools.md](references/tools.md) |
+| to give the model functions | `tool-server` | `SchemaBasedToolServer` | [tools.md](references/tools.md) |
 | to intercept LLM calls / history | `hooks` | `SchemaBasedPluginHook` | [hooks.md](references/hooks.md) |
-| both | `["mcp-server","hooks"]` | server + `on_<hooktype>` or `hooks_plugin` | both |
+| both | `["tool-server","hooks"]` | server + `on_<hooktype>` or `hooks_plugin` | both |
 | a panel / endpoints | `web` | `get_web_router` | skill `panel-authoring` |
 | an agent without Python | `library` | just `agents/*.yaml` + `prompts/` + `skills/` | [agents.md](references/agents.md) |
-| an agent with its own code | `mcp-server` | `SchemaBasedAgent` + `make_agent_plugin_factory` | [agents.md](references/agents.md) |
+| an agent with its own code | `tool-server` | `SchemaBasedAgent` + `make_agent_plugin_factory` | [agents.md](references/agents.md) |
 | an LLM provider | `llm-provider` (only `src/plugins_llm/`) | `provider.py` exporting `PROVIDERS` | [agents.md](references/agents.md) §LLM |
 
 **Check whether it already exists first** — about fifty plugins live in
@@ -52,7 +52,7 @@ name = "my_plugin"
 version = "0.1.0"
 description = "One line."
 entrypoint = "plugin:PLUGIN_FACTORY"   # default; "server:MyServer" works too
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "tools"
 requires = { agent_system = ">=0.6.0" }  # required by the validator
 dependencies = []                        # pip specs only
@@ -61,7 +61,7 @@ dependencies = []                        # pip specs only
 ```python
 # plugin.py
 from .server import MyServer
-PLUGIN_FACTORY = MyServer   # called as (name, system_config, mcp_config)
+PLUGIN_FACTORY = MyServer   # called as (name, system_config, server_config)
 ```
 
 - **Plugin type = folder name**, not `name` from plugin.toml.
@@ -91,23 +91,23 @@ Every link must hold; almost every one fails **silently**:
 5. Lists: without prefixes they replace the inherited list, `+x`/`!x` merge,
    mixing both → ValueError.
 
-Check inheritance only via `get_mcp_config_by_name` — the raw
+Check inheritance only via `get_tool_server_config` — the raw
 `config.plugins.servers[name]` shows Pydantic defaults, not inheritance.
 
 ## Reading config
 
-`mcp_config` is a Pydantic model with `extra="allow"`, **not a dict**:
+`server_config` is a Pydantic model with `extra="allow"`, **not a dict**:
 
 ```python
-self.timeout = float(getattr(mcp_config, "timeout", 30))   # flat keys
-cfg = getattr(mcp_config, "config", None) or {}              # nested config: block
+self.timeout = float(getattr(server_config, "timeout", 30))   # flat keys
+cfg = getattr(server_config, "config", None) or {}              # nested config: block
 ```
 
 - The framework **does not validate plugin config**. The `config:` block in
   `schema.yaml` is read only for hook plugins; for tool servers it is
   documentation — defaults belong in code.
 - `${VAR}` is expanded from the environment / `config/secrets.env`; unset → `""` + WARNING.
-- Hot reload: no watcher. `agent-cli reload` calls `reload_config(new_mcp_config)`
+- Hot reload: no watcher. `agent-cli reload` calls `reload_config(new_server_config)`
   only on servers that implement it. New servers need a restart — **the user does
   restarts.**
 - If a config **model** changes (`src/agent_system/config/models.py`), update the
@@ -147,7 +147,7 @@ Scripts in `src/scripts/` (run with `.venv/Scripts/python.exe`; all read-only un
 | `validate_plugin.py` | plugin.toml against `schemas/plugin-config.schema.json` (e.g. missing `requires`), schema.yaml sections per `type`, tool definitions, file layout, hooks, template vars | `validate_plugin.py src/plugins/my_plugin` · `--plugin my_plugin` · `--all` |
 | `validate_all_tool_schemas.py` | every tool in every schema.yaml is valid OpenAI/MCP format **and routes to a method the plugin defines**; templated schemas rendered in both states | `validate_all_tool_schemas.py` · `--plugin my_plugin` |
 | `validate_agent_configs.py` | agent YAML: syntax, `plugins.servers` shape, `tools`/`hooks` at the right level, Pydantic models (`agent_config` typos, `self_tool_descriptions` in the wrong place) | `validate_agent_configs.py src/plugins/my_plugin/agents/*.yaml` (also `validate-agents`) |
-| `analyze_plugin_config.py` | lists the config keys the code reads (`getattr(mcp_config, …)`) | `analyze_plugin_config.py src/plugins/my_plugin` |
+| `analyze_plugin_config.py` | lists the config keys the code reads (`getattr(server_config, …)`) | `analyze_plugin_config.py src/plugins/my_plugin` |
 | `generate_config_schemas.py` | **writes** `schemas/*.schema.json` from the config models — run after changing `config/models.py`; drift test `tests/config/test_config_schemas.py` | `generate_config_schemas.py` |
 
 `validate_plugin.py --merge-config` **writes** missing config keys into schema.yaml.
@@ -156,7 +156,7 @@ Scripts in `src/scripts/` (run with `.venv/Scripts/python.exe`; all read-only un
 chain — a dead allowlist pattern (`coder_fs/semantic_search`), a sub-agent missing
 from `allowed_agents`. (A `hooks.overrides` key matching no hook is logged as a
 warning at startup, not by the validators.) Check those with
-`load_settings()` + `get_mcp_config_by_name` in a config test
+`load_settings()` + `get_tool_server_config` in a config test
 (`src/plugins/amiga/tests/test_amiga_config.py`).
 
 ## README: "Model Experience"
@@ -177,7 +177,7 @@ Examples: `src/plugins/terminal/README.md`, `media_ops`, `agent_watchdog`.
 - `pytest.ini`: `filterwarnings=error`, `asyncio_mode=auto`, 120 s timeout. The root
   `conftest.py` replaces `build_client` with a fake — no real LLM calls.
 - Test through the real path: tools via `call_with_status` (otherwise `_status` is
-  `None`), config via `load_settings()` + `get_mcp_config_by_name`.
+  `None`), config via `load_settings()` + `get_tool_server_config`.
   Config-only example: `src/plugins/amiga/tests/test_amiga_config.py`.
 - Caches/storage on `tmp_path` (`PluginCache` writes to `data/cache` otherwise).
 - **Mutation-check every new test:** break the production line, the test must go

@@ -33,7 +33,7 @@ pip install agent-system
 plugins:
   memory:
     enabled: true
-    type: hybrid  # MCP tools + hooks + Web UI
+    type: hybrid  # tools + hooks + Web UI
     config:
       max_memories: 10  # Max memories injected into prompts
       max_memories_per_session: 1000  # Storage limit per session
@@ -362,7 +362,7 @@ Single unified tool with operation-based routing.
 ## Architecture
 
 **Components:**
-- `MemoryServer`: MCP server + hook implementation
+- `MemoryServer`: tool server + hook implementation
 - `MemoryWebFactory`: the panel and its endpoints
 - `MemoryManagementHybridPlugin`: Plugin factory (hybrid: MCP + hooks + web)
 
@@ -389,7 +389,7 @@ pytest src/plugins/memory/tests -q
 ```python
 from plugins.memory.server import MemoryServer
 
-server = MemoryServer("memory", system_config, mcp_config)
+server = MemoryServer("memory", system_config, server_config)
 
 # Store
 await server._operation_store(

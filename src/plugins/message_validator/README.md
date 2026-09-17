@@ -116,7 +116,7 @@ This plugin demonstrates the **hook-only** pattern:
 
 ```python
 class MessageValidatorPlugin(PluginHook):
-    """Hook-only plugin - does NOT inherit from MCPServer"""
+    """Hook-only plugin - does NOT inherit from ToolServer"""
     
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
         # Validation logic
@@ -126,7 +126,7 @@ class MessageValidatorPlugin(PluginHook):
 **Why hook-only?**
 - This plugin observes and modifies the LLM call lifecycle
 - It does NOT provide callable tools
-- Therefore it only inherits from `PluginHook`, not `MCPServer`
+- Therefore it only inherits from `PluginHook`, not `ToolServer`
 
 See `docs/plugin_architecture.md` for more details on plugin types.
 

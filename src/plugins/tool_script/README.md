@@ -89,7 +89,7 @@ widens permissions.
 
 ## Notes
 
-- External MCP tools (dotted names) are not callable from scripts (v1).
+- External tools (dotted names) are not callable from scripts (v1).
 - The overall `timeout` cannot interrupt an in-flight inner call; worst-case
   wall clock is bounded by `max_tool_calls × per_call_timeout`.
 - Cancellation is honored between hops (long-running inner tools that check

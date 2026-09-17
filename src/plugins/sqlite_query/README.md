@@ -10,7 +10,7 @@ is executed.
 |---|---|
 | `sqlite_query_execute_sql` | Execute any valid SQLite statement |
 
-`type = ["mcp-server"]`, `dependencies = ["mcp>=1.14.1"]`.
+`type = ["tool-server"]`, `dependencies = ["mcp>=1.14.1"]`.
 
 ## Safety model: there is none
 

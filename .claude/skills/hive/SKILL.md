@@ -16,7 +16,7 @@ Name of the System is ScarabHive
 | **Core System** | `src/agent_system/` |
 | **Plugins** | `src/plugins/` |
 | **Plugin Tests** | `tests/plugins/` |
-| **Core Tests** | `tests/` (agent/, app/, config/, llm/, mcp/, etc.) |
+| **Core Tests** | `tests/` (agent/, app/, config/, llm/, tools/, etc.) |
 | **Agent Configs** | `config/agents/` |
 | **System Config** | `config/` (config.yaml, llm.yaml, plugins.yaml, mcp_servers.yaml) |
 | **Documentation** | `docs/` |
@@ -33,7 +33,7 @@ Name of the System is ScarabHive
 |-----------|---------|
 | `core/` | Agent runtime, session management, tool execution |
 | `llm/` | LLM provider abstraction (OpenAI, Anthropic, Google, etc.) |
-| `mcp/` | MCP protocol implementation, client/server |
+| `tools/` | Tool servers: the plugin base class, the registry, the status bus |
 | `plugins/` | Plugin registry, discovery, loading |
 | `config/` | Configuration models and merging |
 | `api/` | FastAPI REST endpoints |
@@ -49,7 +49,7 @@ Name of the System is ScarabHive
 
 ### Plugin Categories (`src/plugins/`)
 
-40+ general-purpose MCP plugins. Key plugins:
+40+ general-purpose plugins. Key plugins:
 
 | Plugin | Purpose |
 |--------|---------|
@@ -99,7 +99,7 @@ Name of the System is ScarabHive
 
 ### Key Design Patterns
 
-- **Plugin-based architecture**: MCP protocol for tool exposure
+- **Plugin-based architecture**: every plugin is a tool server (`agent_system/tools/`)
 - **Configuration-driven agents**: YAML-defined agents in `config/agents/`
 - **Hook system**: Lifecycle interception (`docs/plugin_hooks.md`)
 - **Session management**: Multi-user, persistent sessions
@@ -122,7 +122,7 @@ docs below are partly stale.
 | `plugin_hooks.md` | Hook system guide |
 | `config_based_agents.md` | YAML agent definition |
 | `session_management.md` | Session lifecycle |
-| `mcp_configuration.md` | MCP server setup |
+| `server_configuration.md` | External MCP server setup |
 | `tool_execution.md` | Tool invocation flow |
 | `terminal_file_ops_konzept.md` | terminal/file_ops: findings, comparison with other agents, build plan (nothing built yet) |
 
@@ -209,7 +209,7 @@ source .venv/Scripts/activate
 .venv/Scripts/python.exe -m pytest tests/agent/ -v
 .venv/Scripts/python.exe -m pytest tests/config/ -v
 .venv/Scripts/python.exe -m pytest tests/llm/ -v
-.venv/Scripts/python.exe -m pytest tests/mcp/ -v
+.venv/Scripts/python.exe -m pytest tests/tools/ -v
 .venv/Scripts/python.exe -m pytest tests/session/ -v
 
 # Test hooks

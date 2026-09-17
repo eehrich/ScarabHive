@@ -520,14 +520,14 @@ from pathlib import Path
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 
 class MyPlugin(SchemaBasedPluginHook):
-    def __init__(self, plugin_dir: Path | str, mcp_config=None):
+    def __init__(self, plugin_dir: Path | str, server_config=None):
         super().__init__(plugin_dir)
 
         # get_config() holds only the schema.yaml defaults: {key: default}
         config = dict(self.get_config())
         # Merging the instance config from plugins.yaml is the plugin's job
-        if mcp_config is not None and getattr(mcp_config, 'config', None):
-            config.update(mcp_config.config)
+        if server_config is not None and getattr(server_config, 'config', None):
+            config.update(server_config.config)
         self.max_items = config.get('max_items', 100)
 
     # Handler name MUST match hook name in schema.yaml
@@ -546,9 +546,9 @@ class MyPlugin(SchemaBasedPluginHook):
 from pathlib import Path
 from .hooks import MyPlugin
 
-# Called as factory(name, system_config, mcp_config) — a zero-argument factory raises TypeError
-def PLUGIN_FACTORY(name=None, system_config=None, mcp_config=None) -> MyPlugin:
-    return MyPlugin(Path(__file__).parent, mcp_config)
+# Called as factory(name, system_config, server_config) — a zero-argument factory raises TypeError
+def PLUGIN_FACTORY(name=None, system_config=None, server_config=None) -> MyPlugin:
+    return MyPlugin(Path(__file__).parent, server_config)
 ```
 
 ### Convention
@@ -865,7 +865,7 @@ result = HookResult(
 
 3. **Missing or Wrong PLUGIN_FACTORY**
    - Ensure `plugin.py` exports `PLUGIN_FACTORY`
-   - It is called as `PLUGIN_FACTORY(name, system_config, mcp_config)`
+   - It is called as `PLUGIN_FACTORY(name, system_config, server_config)`
 
 **Debug Steps:**
 ```bash

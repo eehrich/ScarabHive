@@ -337,7 +337,7 @@ What a plugin **can** do without core changes:
   attributable.
 
 What v1 explicitly does **not** deliver (review finding — requires a core
-event channel that plugins lack): nested `mcp_call` events in the live event
+event channel that plugins lack): nested `tool_call` events in the live event
 stream / message_debugger timeline entries for the inner hops themselves. The
 main panel shows one `run_script` call with its final result. **Phase 2** adds
 an event-emitter handle to the dispatch helper if the pilot shows the trace +
@@ -429,7 +429,7 @@ The agent gets the tool via the normal allowlist, e.g. `- "pipe/*"`.
 |---|---|
 | Script calls a tool outside the agent's effective toolset | Full-fidelity re-check: allowed **and blocked**, full-path matcher, in the core helper (§6.2) |
 | Doc-v1 re-check bug (wrong matcher → everything rejected) | Fixed by design: the helper reuses the schema-build matcher; a unit test asserts parity between schema-build filtering and dispatch filtering for the same config |
-| External MCP tool name in a script | Explicit "not supported in scripts (v1)" error (§3), not silent failure |
+| External tool name in a script | Explicit "not supported in scripts (v1)" error (§3), not silent failure |
 | Inner tool needs `_status` | Dispatch via `call_with_status` in the helper (§3) |
 | Typo'd tool name / param name | Close-match suggestions; JSON-schema param validation at the call site (§4) |
 | Tool signals failure by return value | `status=="error"` → raised `ToolCallError` (§4) |

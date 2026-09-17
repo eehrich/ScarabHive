@@ -3,7 +3,7 @@
 Connects to external MCP servers and hands their tools to the agents. Speaks
 the current protocol through the official `mcp` SDK.
 
-This used to be part of the core, welded into `MCPIntegration` next to the
+This used to be part of the core, welded into `ToolServerIntegration` next to the
 plugin bootstrap, which has nothing to do with it. It is a plugin now: the core
 asks *whoever* provides external tools, and this is the one that answers.
 

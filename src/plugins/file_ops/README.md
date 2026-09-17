@@ -777,7 +777,7 @@ file_ops/
 ├── plugin.yaml          # Plugin metadata
 ├── schema.yaml          # Tool definitions
 ├── plugin.py            # Factory export
-├── server.py            # Main MCP server (273 lines)
+├── server.py            # Main tool server (273 lines)
 ├── security.py          # PathValidator (100 lines)
 ├── operations.py        # FileOperations (457 lines)
 ├── search.py            # FileSearchEngine: search seam + semantic index
@@ -791,7 +791,7 @@ file_ops/
 - `FileOperations`: CRUD operations, atomic writes
 - `FileSearchEngine`: Search entry points, semantic index
 - `textsearch`: Walking, glob semantics, ignore rules, what was skipped
-- `FileOperationsServer`: MCP tool interface, error handling
+- `FileOperationsServer`: tool interface, error handling
 
 ## Version History
 

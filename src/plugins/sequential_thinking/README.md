@@ -384,7 +384,7 @@ python -m plugins.sequential_thinking --operation summary \
 python -m plugins.sequential_thinking --operation clear \
   --session-id "abc123..."
 
-# Run as MCP server
+# Run as tool server
 python -m plugins.sequential_thinking --server --port 9011
 ```
 

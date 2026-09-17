@@ -1,4 +1,4 @@
-# Example MCP Plugin
+# Example Tool plugin
 
 The Example plugin is a reference implementation showing best practices for building Model Context Protocol (MCP) plugins in this repository. It demonstrates multi-tool routing, schema-driven tool definitions, configuration, testing, and CLI usage.
 
@@ -121,4 +121,4 @@ To add a new tool:
 2. Implement the handler in `server.py` and route calls in `call()`.
 3. Add unit tests and update documentation.
 
-This README provides a concise, up-to-date reference for the example plugin. If you want, I can also add more concrete CLI usage samples or a short integration example showing how to call the plugin via the running MCP server API.
+This README provides a concise, up-to-date reference for the example plugin. If you want, I can also add more concrete CLI usage samples or a short integration example showing how to call the plugin via the running tool server API.

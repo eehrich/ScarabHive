@@ -506,7 +506,7 @@ These are prepared for future model capabilities but not yet functional.
 
 ## See Also
 
-- [LLM Configuration Guide](mcp_configuration.md#llm-configuration)
+- [LLM Configuration Guide](server_configuration.md#llm-configuration)
 - [API Design Documentation](plugin_web_api_design.md)
 - [Vision Research Document](vision_llm_research.md)
 - [Plugin Authoring Guide](plugin_authoring.md)

@@ -1,7 +1,7 @@
 # User Management
 
 The **Users** panel: the accounts of the auth database (`data/users.db`, see
-`src/agent_system/auth/`), administered by an admin. Web-only plugin, no MCP tools.
+`src/agent_system/auth/`), administered by an admin. Web-only plugin, no tools.
 
 ## Requirements
 

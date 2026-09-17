@@ -8,14 +8,14 @@ Plugins that follow the current pattern: `src/plugins/json_store`, `sqlite_query
 ```python
 import asyncio
 import logging
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 logger = logging.getLogger(__name__)   # there is no self.logger
 
-class MyServer(SchemaBasedMCPServer):
-    def __init__(self, name, system_config, mcp_config):
-        super().__init__(name, system_config, mcp_config)   # schema renders lazily on first get_tools()
-        self.max_rows = int(getattr(mcp_config, "max_rows", 200))
+class MyServer(SchemaBasedToolServer):
+    def __init__(self, name, system_config, server_config):
+        super().__init__(name, system_config, server_config)   # schema renders lazily on first get_tools()
+        self.max_rows = int(getattr(server_config, "max_rows", 200))
 
     async def query(self, params: dict) -> dict:            # tool "{name}_query"
         status = params.get("_status")
@@ -58,7 +58,7 @@ web_ui: {}      # optional, see skill panel-authoring
   variable is `{{ name }}` = instance name. Overriding `get_template_vars()` replaces
   the dict, so put `"name": self.name` back in. Forgotten variables render
   **silently as an empty string**.
-- **Routing** (`mcp/schema_mixin.py`): tool `{name}_x` → method `x`; tool exactly
+- **Routing** (`tools/schema_mixin.py`): tool `{name}_x` → method `x`; tool exactly
   `{name}` → `execute`; otherwise the method of the same name. Sync and async both work.
 - **Always prefix `{{ name }}_`** — the model's tool name is the rendered
   `function.name`, and two equal names collide silently. Only `[a-zA-Z0-9_-]`.
@@ -84,7 +84,7 @@ web_ui: {}      # optional, see skill panel-authoring
 | error | `{"status": "error", "error": "<actionable text>"}` |
 | cancelled | `{"error": "Tool 'x' was cancelled.", "cancelled": True, "forced": bool}` |
 
-- The error net in `call_with_status` (`mcp/base.py`) recognises `status == "error"`,
+- The error net in `call_with_status` (`tools/base.py`) recognises `status == "error"`,
   `error` without `status`, and `success: False` with `error`. **Not recognised**
   (shows "completed"): `{"status": "failed"}`, `{"success": False}` without `error`.
 - Raising an exception also works (the model gets `{"error": str(e)}`), but a text

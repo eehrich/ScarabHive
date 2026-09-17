@@ -2,7 +2,7 @@
 
 The verified quick reference is the Claude skill `.claude/skills/plugin-authoring/` (`SKILL.md` + `references/`).
 
-This document explains how to create plugins (MCP servers) for AgentSystem. It walks you through the entire process: from the initial idea to implementation and deployment.
+This document explains how to create plugins (tool servers) for AgentSystem. It walks you through the entire process: from the initial idea to implementation and deployment.
 
 ## Table of Contents
 
@@ -32,11 +32,11 @@ This document explains how to create plugins (MCP servers) for AgentSystem. It w
 
 ## What is a Plugin?
 
-A plugin in AgentSystem is an MCP (Model Context Protocol) server that provides new tools to the agent. Plugins extend the agent's capabilities with specific functions like web scraping, database access, or API integration.
+A plugin in AgentSystem is a **tool server**: a Python object with a `call(tool, params)` method that provides new tools to the agent. Plugins extend the agent's capabilities with specific functions like web scraping, database access, or API integration. It speaks no protocol -- talking to external MCP servers is the job of one particular plugin, `mcp_client`.
 
 ### How Plugins Work
 
-1. **Discovery**: AgentSystem finds plugins in the `plugins.plugin_dirs` of `config/plugins.yaml` (`src/plugins`, `src/plugins_writer`, `src/plugins_trading`) and in installed packages via the `agent_system.mcp_plugins` entry point group. LLM providers under `src/plugins_llm/` are found separately by the LLM registry.
+1. **Discovery**: AgentSystem finds plugins in the `plugins.plugin_dirs` of `config/plugins.yaml` (`src/plugins`, `src/plugins_writer`, `src/plugins_trading`) and in installed packages via the `agent_system.tool_plugins` entry point group. LLM providers under `src/plugins_llm/` are found separately by the LLM registry.
 2. **Schema**: Each plugin describes its tools in `schema.yaml` (what parameters, what they do)
 3. **Activation**: A server entry under `plugins: servers:` with `type: <plugin folder name>` and `enabled: true` (the default is `false`) builds an instance; an agent sees its tools only if its `agent_config.tools.allowed` admits them
 4. **Execution**: The agent calls tools via `call(tool_name, parameters)`
@@ -56,7 +56,7 @@ AgentSystem now supports **configuration-based agents** that can be defined pure
 
 - **Specialized assistants** with unique prompts (e.g., financial analyst, code reviewer, research assistant)
 - **Prompt variations** for different use cases (formal vs casual tone, domain-specific language)
-- **Tool subset configurations** (restrict agent to specific MCP servers/tools)
+- **Tool subset configurations** (restrict agent to specific tool servers/tools)
 - **Quick prototyping** of agent behaviors before building custom plugins
 
 **Use configuration-based agents when:**
@@ -151,7 +151,7 @@ name = "hello_world"
 version = "1.0.0"
 description = "Simple hello world plugin"
 entrypoint = "server:HelloWorldServer"
-type = ["mcp-server"]
+type = ["tool-server"]
 requires = { agent_system = ">=0.6.0" }   # required by the manifest schema
 ```
 
@@ -159,29 +159,29 @@ requires = { agent_system = ">=0.6.0" }   # required by the manifest schema
 ```python
 import logging
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class HelloWorldServer(SchemaBasedMCPServer):
+class HelloWorldServer(SchemaBasedToolServer):
     """Simple hello world plugin demonstrating modern API."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
         """
         Modern constructor signature.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Merged server entry from plugins: servers: (a pydantic
+            server_config: Merged server entry from plugins: servers: (a pydantic
                 model with extra="allow", not a dict)
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         # Flat keys of the server entry arrive as attributes
-        self.greeting_prefix = getattr(mcp_config, "greeting_prefix", "Hello")
+        self.greeting_prefix = getattr(server_config, "greeting_prefix", "Hello")
 
         # Log effective configuration
         logger.info(f"HelloWorld configured: prefix='{self.greeting_prefix}'")
@@ -200,7 +200,7 @@ class HelloWorldServer(SchemaBasedMCPServer):
 
 The `entrypoint` names the module and the factory: `server:HelloWorldServer`
 loads `server.py` from the plugin folder and calls `HelloWorldServer(name,
-system_config, mcp_config)`. Without an `entrypoint`, discovery loads
+system_config, server_config)`. Without an `entrypoint`, discovery loads
 `plugin.py` and looks for `PLUGIN_FACTORY`.
 
 **Step 4: Enable an instance** (any file included by `config/config.yaml`, e.g. `config/plugins.yaml`):
@@ -236,7 +236,7 @@ src/plugins/<plugin_name>/
   ├── plugin.toml       # Plugin metadata + Python requirements (entrypoint omitted or "plugin:PLUGIN_FACTORY")
   ├── schema.yaml       # Tool definitions
   ├── plugin.py         # PLUGIN_FACTORY export
-  ├── server.py         # MCP server (SchemaBasedMCPServer)
+  ├── server.py         # tool server (SchemaBasedToolServer)
   ├── tests/            # Colocated tests (test_*.py)
   └── README.md         # Documentation
 ```
@@ -257,7 +257,7 @@ PLUGIN_FACTORY = MyPluginServer
   log only; an import error logs a WARNING.
 - The plugin type is the **folder name** (unless the module sets `PLUGIN_NAME`),
   not `name` from `plugin.toml`.
-- The runtime calls the factory as `factory(name, system_config, mcp_config)`,
+- The runtime calls the factory as `factory(name, system_config, server_config)`,
   plus `registry=` only if the factory carries `_accepts_registry = True`.
 
 ### Test Structure
@@ -314,7 +314,7 @@ version = "1.0.0"
 description = "Brief description of what the plugin does"
 author = "Your Name"
 entrypoint = "server:PLUGIN_FACTORY"
-type = ["mcp-server"]
+type = ["tool-server"]
 requires = { agent_system = ">=0.6.0" }
 ```
 
@@ -348,26 +348,26 @@ and by the LLM registry, which skips every plugin under `src/plugins_llm/` witho
 `llm-provider`. Set it correctly anyway.
 
 ```toml
-# MCP-only plugin (provides MCP server/tools)
+# Tool-only plugin (provides tool server/tools)
 [plugin]
 name = "web_scraper"
 version = "1.0.0"
 description = "Web scraping tools for content extraction"
 author = "Your Name"
 entrypoint = "server:WebScraperServer"
-type = ["mcp-server"]
+type = ["tool-server"]
 category = "tools"
 ```
 
 ```toml
-# Hybrid plugin (MCP + Web + Hooks) — combine types in the list
+# Hybrid plugin (tools + Web + Hooks) — combine types in the list
 [plugin]
 name = "todo"
 version = "1.0.0"
 description = "Todo management with tools, web UI, and hooks"
 author = "AgentSystem"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["mcp-server", "web", "hooks"]
+type = ["tool-server", "web", "hooks"]
 category = "productivity"
 ```
 
@@ -375,7 +375,7 @@ Other single-capability examples: `type = ["web"]` (web UI/endpoints only),
 `type = ["hooks"]` (lifecycle event handlers only).
 
 **Type Field Options:**
-- `mcp-server`: Plugin provides MCP tools/server
+- `tool-server`: Plugin provides tools/server
 - `web`: Plugin provides web UI/endpoints
 - `hooks`: Plugin provides lifecycle event hooks
 - `library`: Config only — agents, skills, prompts, no code. Such a plugin has
@@ -387,7 +387,7 @@ Other single-capability examples: `type = ["web"]` (web UI/endpoints only),
   — also **without an `entrypoint`**
 - `custom`: allowed by the schema, used by no plugin
 
-Combine multiple types by listing them (e.g., `["mcp-server", "web"]` for hybrid plugins).
+Combine multiple types by listing them (e.g., `["tool-server", "web"]` for hybrid plugins).
 
 `src/scripts/validate_plugin.py <dir>` checks a manifest against
 `schemas/plugin-config.schema.json`, which is strict
@@ -403,7 +403,7 @@ version = "2.1.0"
 description = "Advanced plugin with dependencies and configuration"
 author = "Team Name"
 entrypoint = "server:AdvancedServer"
-type = ["mcp-server", "web"]
+type = ["tool-server", "web"]
 category = "tools"
 
 # Searchable keywords
@@ -440,7 +440,7 @@ dependencies = ["requests>=2.25.0", "beautifulsoup4>=4.9.0"]
   - Default: `plugin:PLUGIN_FACTORY` if field is omitted
 
 **Plugin Classification:**
-- **`type`**: List of plugin capabilities (`mcp-server`, `web`, `hooks`,
+- **`type`**: List of plugin capabilities (`tool-server`, `web`, `hooks`,
   `library`, `llm-provider`, `custom`) — see above; `library` and
   `llm-provider` need no `entrypoint`. Read by the validator and the LLM
   registry, not by the runtime
@@ -556,7 +556,7 @@ tools:
 
 **Custom Template Variables in Server:**
 ```python
-class MyServer(SchemaBasedMCPServer):
+class MyServer(SchemaBasedToolServer):
     def get_template_vars(self) -> dict[str, Any]:
         """Override to provide custom template variables."""
         return {
@@ -818,17 +818,17 @@ The server is the core of your plugin. It handles tool routing, validation, and 
 ### Modern Plugin Pattern (Recommended)
 
 **Key Principles:**
-1. **Modern Constructor**: `(name, system_config, mcp_config)` signature
+1. **Modern Constructor**: `(name, system_config, server_config)` signature
 2. **No Manual Routing**: Remove `call()` override - `SchemaBasedToolMixin` handles it
 3. **Tool Methods**: Tool `{name}_x` → method `x`; tool exactly `{name}` → `execute`; any other tool name → the method of the same name
 4. **Type Hints**: Use modern Python type hints (`| None` instead of `Optional[]`)
-5. **Configuration**: Extract from `mcp_config` (plugin-specific) and `system_config` (system-wide)
+5. **Configuration**: Extract from `server_config` (plugin-specific) and `system_config` (system-wide)
 
 ### Method 1: Schema-Based Server (Recommended)
 
-Use `SchemaBasedMCPServer` for automatic schema loading and generic dispatching.
+Use `SchemaBasedToolServer` for automatic schema loading and generic dispatching.
 
-**Note:** `SchemaBasedMCPServer` inherits from `SchemaBasedToolMixin` (`agent_system/mcp/schema_mixin.py`) which provides:
+**Note:** `SchemaBasedToolServer` inherits from `SchemaBasedToolMixin` (`agent_system/tools/schema_mixin.py`) which provides:
 - Automatic `schema.yaml` loading and caching
 - Generic `call()` dispatcher (routes tool calls to methods automatically)
 - Template variable support (`{{name}}` in schema.yaml)
@@ -837,29 +837,29 @@ Use `SchemaBasedMCPServer` for automatic schema loading and generic dispatching.
 ```python
 import logging
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
-logger = logging.getLogger(__name__)   # MCPServer has no self.logger
+logger = logging.getLogger(__name__)   # ToolServer has no self.logger
 
 
-class WebScrapingServer(SchemaBasedMCPServer):
+class WebScrapingServer(SchemaBasedToolServer):
     """Modern schema-based plugin with automatic tool routing."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
         """
         Modern constructor signature.
 
         Args:
             name: Plugin instance name (used for tool prefixing in schema templates)
             system_config: System-wide configuration (ports, paths, etc.)
-            mcp_config: Plugin-specific configuration from config/plugins.yaml
+            server_config: Plugin-specific configuration from config/plugins.yaml
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
-        # Nested `config:` block of the server entry (mcp_config is a pydantic
+        # Nested `config:` block of the server entry (server_config is a pydantic
         # model with extra="allow" -- no .get(), and the block may be absent)
-        config = getattr(mcp_config, "config", None) or {}
+        config = getattr(server_config, "config", None) or {}
         self.timeout = float(config.get("timeout", 30))
         self.user_agent = config.get("user_agent", "AgentSystem/1.0")
         self.max_retries = int(config.get("max_retries", 3))
@@ -969,7 +969,7 @@ PLUGIN_FACTORY = WebScrapingServer
 - Always prefix tool names with `{{ name }}_`: two instances with equal tool names collide silently
 
 **Architecture Note:**
-Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedToolMixin`, which provides:
+Both `SchemaBasedToolServer` and `SchemaBasedAgent` inherit from `SchemaBasedToolMixin`, which provides:
 - `get_tools()` - loads from schema.yaml with caching
 - `call()` - generic dispatcher with customizable routing
 - `_get_method_name()` - override to customize tool → method mapping
@@ -978,7 +978,7 @@ Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedTool
 
 ### Method 2: Web-Only Plugin (Schema-Based Routing)
 
-For plugins that only provide web endpoints (no MCP tools), you can use **schema-based routing** for cleaner, more maintainable code:
+For plugins that only provide web endpoints (no tools), you can use **schema-based routing** for cleaner, more maintainable code:
 
 ```python
 # src/plugins/my_dashboard/web_endpoints.py
@@ -1044,15 +1044,15 @@ class DashboardWebEndpoints:
 
 # src/plugins/my_dashboard/plugin.py
 from .web_endpoints import DashboardWebEndpoints
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 
 class DashboardPlugin(SchemaBasedPluginWebInterface):
-    """Web-only plugin (no MCP server). The base class loads schema.yaml and
+    """Web-only plugin (no tool server). The base class loads schema.yaml and
     provides get_schema_data(), from which the registry reads web_ui."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
+        super().__init__(name, system_config, server_config)
         self.web_endpoints = DashboardWebEndpoints(name, self.get_schema_data())
 
     def get_web_router(self):
@@ -1147,39 +1147,39 @@ However, **schema-based routing is preferred** because:
 - Provides web endpoints at `/plugins/<name>/`
 - Can serve static assets, templates, APIs
 - Declares its panel as `web_ui.panel`; the launcher and the command palette list it
-- No MCP server or tools required
+- No tool server or tools required
 - Uses `web_ui` schema for interface configuration
 - Can still have CLI support
 
-### Method 3: Hybrid Plugin (MCP + Web Endpoints)
+### Method 3: Hybrid Plugin (tools + Web Endpoints)
 
-For plugins that provide both MCP tools and web interfaces:
+For plugins that provide both tools and web interfaces:
 
 ```python
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins.web_adapter import PluginWebInterface
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 from fastapi import APIRouter
 from pathlib import Path
 
-class MyMCPServer(SchemaBasedMCPServer):
-    """MCP server component with modern signature."""
+class MyToolServer(SchemaBasedToolServer):
+    """tool server component with modern signature."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
+        super().__init__(name, system_config, server_config)
 
     # Tool methods - automatically routed by generic dispatcher
     async def my_tool(self, params: dict) -> dict:
         """Tool method matching 'my_tool' in schema.yaml."""
-        return {"status": "success", "result": "MCP result"}
+        return {"status": "success", "result": "tool result"}
 
 class MyWebEndpoints(PluginWebInterface):
     """Web endpoints component with modern signature."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
         self.name = name
         self.system_config = system_config
-        self.mcp_config = mcp_config
+        self.server_config = server_config
 
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router with custom endpoints"""
@@ -1197,21 +1197,21 @@ class MyWebEndpoints(PluginWebInterface):
         return router
 
 class MyHybridPlugin:
-    """Hybrid plugin combining MCP and web capabilities."""
+    """Hybrid plugin combining tools and web capabilities."""
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
         """Modern constructor signature for hybrid plugins."""
-        self.mcp_server = MyMCPServer(name, system_config, mcp_config)
-        self.web_endpoints = MyWebEndpoints(name, system_config, mcp_config)
+        self.tool_server = MyToolServer(name, system_config, server_config)
+        self.web_endpoints = MyWebEndpoints(name, system_config, server_config)
 
-    # MCP interface delegation
+    # tool interface delegation
     async def call(self, tool: str, params: dict):
-        """Delegate to MCP server - generic dispatcher handles routing."""
-        return await self.mcp_server.call(tool, params)
+        """Delegate to tool server - generic dispatcher handles routing."""
+        return await self.tool_server.call(tool, params)
 
     def get_tools(self):
-        """Delegate to MCP server for tool discovery."""
-        return self.mcp_server.get_tools()
+        """Delegate to tool server for tool discovery."""
+        return self.tool_server.get_tools()
 
     # Web interface delegation
     def get_web_router(self):
@@ -1219,8 +1219,8 @@ class MyHybridPlugin:
         return self.web_endpoints.get_web_router()
 
     def get_schema_data(self):
-        """Delegate to MCP server: the panel catalogue reads web_ui.panel from this schema."""
-        return self.mcp_server.get_schema_data()
+        """Delegate to tool server: the panel catalogue reads web_ui.panel from this schema."""
+        return self.tool_server.get_schema_data()
 
 PLUGIN_FACTORY = MyHybridPlugin
 ```
@@ -1230,7 +1230,7 @@ PLUGIN_FACTORY = MyHybridPlugin
 **Key Changes from Legacy Pattern:**
 
 1. **Constructor Signature**
-   - ✅ Modern: `(name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig)`
+   - ✅ Modern: `(name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig)`
    - ❌ Legacy: `(name: str, config: dict, ssl_verify: bool = True)`
 
 2. **Tool Routing**
@@ -1242,7 +1242,7 @@ PLUGIN_FACTORY = MyHybridPlugin
    - ❌ Legacy: Use `Optional[]` from typing module
 
 4. **Configuration Access**
-   - ✅ Modern: Extract from `mcp_config` (plugin-specific) and `system_config` (system-wide)
+   - ✅ Modern: Extract from `server_config` (plugin-specific) and `system_config` (system-wide)
    - ❌ Legacy: Access `self.config` dictionary
 
 5. **Method Naming**
@@ -1260,7 +1260,7 @@ PLUGIN_FACTORY = MyHybridPlugin
 
 ```python
 # ❌ Legacy Pattern (Don't use)
-class OldPlugin(SchemaBasedMCPServer):
+class OldPlugin(SchemaBasedToolServer):
     def __init__(self, name, config, ssl_verify=True):
         super().__init__(name, config, ssl_verify)
         self.timeout = self.config.get("timeout", 30)
@@ -1278,10 +1278,10 @@ class OldPlugin(SchemaBasedMCPServer):
         pass
 
 # ✅ Modern Pattern (Use this)
-class ModernPlugin(SchemaBasedMCPServer):
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
-        super().__init__(name, system_config, mcp_config)
-        self.timeout = getattr(mcp_config, "timeout", 30)
+class ModernPlugin(SchemaBasedToolServer):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
+        super().__init__(name, system_config, server_config)
+        self.timeout = getattr(server_config, "timeout", 30)
 
     # No call() override needed - generic dispatcher handles routing!
 
@@ -1297,13 +1297,13 @@ class ModernPlugin(SchemaBasedMCPServer):
 ```
 
 **Critical Rules:**
-1. Tool `{{ name }}_x` routes to method `x` — for `SchemaBasedMCPServer` and `SchemaBasedAgent` alike
+1. Tool `{{ name }}_x` routes to method `x` — for `SchemaBasedToolServer` and `SchemaBasedAgent` alike
 2. No manual `call()` override - `SchemaBasedToolMixin` handles routing automatically
-3. Read config with `getattr(mcp_config, "key", default)` (flat keys) or `getattr(mcp_config, "config", None) or {}` (nested block) — `mcp_config` is not a dict
+3. Read config with `getattr(server_config, "key", default)` (flat keys) or `getattr(server_config, "config", None) or {}` (nested block) — `server_config` is not a dict
 4. Use modern type hints (`| None` not `Optional[]`)
 
 **SchemaBasedToolMixin Architecture:**
-Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedToolMixin` for shared functionality:
+Both `SchemaBasedToolServer` and `SchemaBasedAgent` inherit from `SchemaBasedToolMixin` for shared functionality:
 - Schema loading and caching
 - Generic call dispatcher
 - Template variable support
@@ -1313,7 +1313,7 @@ This eliminates code duplication and ensures consistent behavior across simple t
 
 ## Agent-Based Plugins
 
-For plugins that need full agent execution capabilities (conversation, LLM integration, multi-turn interactions), inherit from the `Agent` or `SchemaBasedAgent` class instead of implementing MCP server interfaces manually.
+For plugins that need full agent execution capabilities (conversation, LLM integration, multi-turn interactions), inherit from the `Agent` or `SchemaBasedAgent` class instead of implementing tool server interfaces manually.
 
 > **📖 See Also:** [Agent Architecture Guide](_arch_agent_architecture.md) for detailed explanation of `Agent` vs `SchemaBasedAgent` base classes and when to use each.
 
@@ -1343,7 +1343,7 @@ src/plugins/my_agent/
 name = "my_agent"
 version = "1.0.0"
 description = "Agent-based plugin for complex tasks"
-type = ["mcp-server"]
+type = ["tool-server"]
 entrypoint = "plugin:PLUGIN_FACTORY"
 requires = { agent_system = ">=0.6.0" }
 dependencies = []   # pip specs only, never agent_system or other plugins
@@ -1370,7 +1370,7 @@ tools:
 
   - type: function
     function:
-      # not "{{ name }}_list_tools": it would route to MCPServer.list_tools()
+      # not "{{ name }}_list_tools": it would route to ToolServer.list_tools()
       name: "{{ name }}_list_available_tools"
       description: "List the tools this agent may use"
       parameters:
@@ -1395,10 +1395,10 @@ from agent_system.servers.agent.result_utils import collect_final_result
 class MyAgent(SchemaBasedAgent):
     """Agent with schema.yaml tool definitions (automatically loaded)."""
 
-    def __init__(self, name, system_config, mcp_config, registry=None, **kwargs):
-        # Agent.__init__(name, system_config, mcp_config, registry=None,
+    def __init__(self, name, system_config, server_config, registry=None, **kwargs):
+        # Agent.__init__(name, system_config, server_config, registry=None,
         #                llm=None, llm_factory=None, session_service=None)
-        super().__init__(name, system_config, mcp_config, registry, **kwargs)
+        super().__init__(name, system_config, server_config, registry, **kwargs)
 
     # Tool "{name}_execute_task" -> method execute_task (prefix stripped)
     async def execute_task(self, params: dict) -> dict:
@@ -1441,20 +1441,20 @@ PLUGIN_FACTORY = make_agent_plugin_factory(MyAgent)
 ```
 
 Write it by hand only when the factory has to decide something (e.g. return a
-plain MCP server for one configuration and an agent for another). Then keep
+plain tool server for one configuration and an agent for another). Then keep
 the signature bootstrap calls, and take the SHARED registry:
 
 ```python
-from agent_system.config.models import AgentSystemConfig, MCPConfig
-from agent_system.mcp.base import MCPRegistry
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.tools.base import ToolServerRegistry
 from .server import MyAgent
 
 
 def PLUGIN_FACTORY(name: str, system_config: AgentSystemConfig,
-                   mcp_config: MCPConfig, registry: MCPRegistry | None = None) -> MyAgent:
+                   server_config: ToolServerConfig, registry: ToolServerRegistry | None = None) -> MyAgent:
     """Create the agent plugin instance."""
-    return MyAgent(name, system_config, mcp_config,
-                   registry if registry is not None else MCPRegistry())
+    return MyAgent(name, system_config, server_config,
+                   registry if registry is not None else ToolServerRegistry())
 
 
 # Tells bootstrap to pass registry= at all. Without it the agent gets a private,
@@ -1463,21 +1463,21 @@ def PLUGIN_FACTORY(name: str, system_config: AgentSystemConfig,
 PLUGIN_FACTORY._accepts_registry = True
 ```
 
-`mcp_config` is the MERGED server config (plugins.default_config plus the
+`server_config` is the MERGED server config (plugins.default_config plus the
 `type:` chain), not the raw entry — the same one every other agent gets.
 
 ### Agent vs Schema-Based Plugins
 
 | Aspect | Agent Plugin | Schema-Based Plugin |
 |--------|-------------|-------------------|
-| **Base Class** | `Agent` or `SchemaBasedAgent` | `SchemaBasedMCPServer` |
+| **Base Class** | `Agent` or `SchemaBasedAgent` | `SchemaBasedToolServer` |
 | **Complexity** | High - full agent capabilities | Low - simple tool execution |
 | **LLM Access** | ✅ Built-in conversation | ❌ Manual integration needed |
 | **Multi-turn** | ✅ Conversation history | ❌ Stateless calls |
 | **Tool Access** | ✅ Can use other agent tools | ❌ Limited to own tools |
 | **Use Cases** | Complex reasoning, planning | Simple utilities, API calls |
 
-> **📚 For More Details:** See [Agent Architecture Guide](_arch_agent_architecture.md) for comprehensive comparison of `Agent`, `SchemaBasedAgent`, and `SchemaBasedMCPServer`.
+> **📚 For More Details:** See [Agent Architecture Guide](_arch_agent_architecture.md) for comprehensive comparison of `Agent`, `SchemaBasedAgent`, and `SchemaBasedToolServer`.
 
 ### Agent Plugin Best Practices
 
@@ -1511,22 +1511,22 @@ An agent instance is a server entry (see the example under
 
 ### Plugin Types Summary
 
-| Plugin Type | MCP Server | Web Endpoints | CLI | Use Cases |
+| Plugin Type | Tool server | Web Endpoints | CLI | Use Cases |
 |-------------|------------|---------------|-----|-----------|
 | **Agent** | ✅ Required (Agent class) | Optional | Optional | Complex reasoning, multi-turn tasks |
-| **MCP-only** | ✅ Required | Optional | Optional | Agent tools, API integrations |
+| **Tool-only** | ✅ Required | Optional | Optional | Agent tools, API integrations |
 | **Web-only** | ❌ None | ✅ Required | Optional | Dashboards, monitoring, admin tools |
 | **Hybrid** | ✅ Required | ✅ Required | Optional | Full-featured plugins (like log_viewer) |
 | **Hooks-only** | ❌ None | Optional | Optional | Context management, logging, validation |
 | **Library (config-only)** | ❌ None | ❌ None | ❌ None | Agent YAMLs, prompts, skills — no entrypoint |
 
-### Server Interface Requirements (MCP Plugins Only)
+### Server Interface Requirements (tool plugins only)
 
-For MCP-enabled plugins, your server class must implement:
+For plugins that provide tools, your server class must implement:
 
-1. **Constructor**: `__init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig)`
+1. **Constructor**: `__init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig)`
 2. **Tool Methods**: Tool `{{ name }}_fetch_url` → `async def fetch_url(self, params: dict)`
-3. **Tool Discovery**: Inherit from `SchemaBasedMCPServer` for automatic `list_tools()` or implement manually
+3. **Tool Discovery**: Inherit from `SchemaBasedToolServer` for automatic `list_tools()` or implement manually
 
 **No `call()` override needed** - `SchemaBasedToolMixin.call()` routes tool calls to the matching methods.
 
@@ -1723,7 +1723,7 @@ async def long_running_tool(self, params: dict):
     return {"status": "success", "results": results}
 ```
 
-**Status Methods** (`StatusScope` in `agent_system/mcp/status.py` has exactly these three):
+**Status Methods** (`StatusScope` in `agent_system/tools/status.py` has exactly these three):
 - `await status.progress(message, meta=None)` - Progress updates
 - `await status.end(message, meta=None)` - Close the scope with a result line
 - `await status.error(message, meta=None)` - Close the scope as failed
@@ -1872,7 +1872,7 @@ A plugin's panel appears when:
 1. its `schema.yaml` has a valid `web_ui.panel` block (fields: [Web UI Fields Reference](#web-ui-fields-reference)),
 2. the plugin is registered as a web plugin, i.e. it provides `get_web_router()`,
 3. the registered plugin object returns that schema from `get_schema_data()`.
-   `SchemaBasedPluginWebInterface` and `SchemaBasedMCPServer` provide it; a wrapper
+   `SchemaBasedPluginWebInterface` and `SchemaBasedToolServer` provide it; a wrapper
    delegates to the component that owns the schema. Without it the catalogue sees no
    `web_ui` block, and the panel is missing without an error.
 
@@ -1988,7 +1988,7 @@ import json
 import logging
 from argparse import ArgumentParser, Namespace
 
-from agent_system.config.settings import load_settings, get_mcp_config_by_name
+from agent_system.config.settings import load_settings, get_tool_server_config
 from .server import MyPluginServer
 
 logging.basicConfig(level=logging.INFO)
@@ -1997,8 +1997,8 @@ logger = logging.getLogger(__name__)
 async def run_tool(args: Namespace):
     """Execute plugin tool from command line"""
     system_config = load_settings()
-    mcp_config = get_mcp_config_by_name("my_plugin", system_config)
-    server = MyPluginServer("my_plugin", system_config, mcp_config)
+    server_config = get_tool_server_config("my_plugin", system_config)
+    server = MyPluginServer("my_plugin", system_config, server_config)
 
     params = {
         "input": args.input,
@@ -2051,7 +2051,7 @@ Register your CLI in the project's `pyproject.toml`:
 my-plugin-cli = "plugins.my_plugin.cli:main"
 
 # Or in the existing plugin CLIs section:
-mcp-my-plugin = "plugins.my_plugin.cli:main"
+tool-my-plugin = "plugins.my_plugin.cli:main"
 ```
 
 This creates an executable that users can run:
@@ -2060,7 +2060,7 @@ This creates an executable that users can run:
 my-plugin-cli tool my_tool --input "test data"
 
 # Or with the mcp prefix:
-mcp-my-plugin tool my_tool --input "test data"
+tool-my-plugin tool my_tool --input "test data"
 ```
 
 #### CLI Best Practices
@@ -2127,7 +2127,7 @@ plugins:
       type: my_plugin     # plugin folder name
       enabled: true       # checked on this entry; default false
       config:
-        # Plugin-specific settings (read via getattr(mcp_config, "config", None) or {})
+        # Plugin-specific settings (read via getattr(server_config, "config", None) or {})
         timeout: 30
         max_retries: 3
 ```
@@ -2177,33 +2177,33 @@ plugins:
 1. **Always use `plugins:` wrapper**: Without it, configs won't be merged correctly
 2. **Configs are deep-merged**: Multiple files can contribute to the `plugins:` section
 3. **Server configs must be under `plugins.servers`**: The `servers` key is required
-4. **Don't reference specific files in code**: Use the `mcp_config` passed to the constructor, or `get_mcp_config_by_name(name, config)` — the raw `config.plugins.servers[name]` shows pydantic defaults, not the inherited values
+4. **Don't reference specific files in code**: Use the `server_config` passed to the constructor, or `get_tool_server_config(name, config)` — the raw `config.plugins.servers[name]` shows pydantic defaults, not the inherited values
 
 
 ### Reading Configuration in Your Plugin
 
-`mcp_config` is the merged server entry — a pydantic model with `extra="allow"`,
+`server_config` is the merged server entry — a pydantic model with `extra="allow"`,
 not a dict. Flat keys are attributes; a nested `config:` block is a dict attribute.
 
 ```python
 import logging
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class WebScraperServer(SchemaBasedMCPServer):
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
-        super().__init__(name, system_config, mcp_config)
+class WebScraperServer(SchemaBasedToolServer):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
+        super().__init__(name, system_config, server_config)
 
         # Nested `config:` block of the server entry
-        config = getattr(mcp_config, "config", None) or {}
+        config = getattr(server_config, "config", None) or {}
         self.timeout = float(config.get("timeout", 30))
         self.user_agent = config.get("user_agent", "AgentSystem/1.0")
         # Flat key directly on the server entry
-        self.max_retries = int(getattr(mcp_config, "max_retries", 3))
+        self.max_retries = int(getattr(server_config, "max_retries", 3))
 
         # Validate configuration
         if self.timeout <= 0:
@@ -2222,20 +2222,20 @@ For sensitive configuration, use environment variables:
 
 ```python
 import os
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.config import AgentSystemConfig, ToolServerConfig
 
-class APIClientServer(SchemaBasedMCPServer):
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
-        super().__init__(name, system_config, mcp_config)
+class APIClientServer(SchemaBasedToolServer):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
+        super().__init__(name, system_config, server_config)
 
         # Sensitive config from environment
         self.api_key = os.getenv("API_CLIENT_KEY")
         if not self.api_key:
             raise ValueError("API_CLIENT_KEY environment variable required")
 
-        # Non-sensitive config from mcp_config
-        self.base_url = getattr(mcp_config, "base_url", "https://api.example.com")
+        # Non-sensitive config from server_config
+        self.base_url = getattr(server_config, "base_url", "https://api.example.com")
 ```
 
 ## Testing and Quality Assurance
@@ -2261,7 +2261,7 @@ at `tmp_path` (otherwise they write to the real `data/`).
 # src/plugins/my_scraper/tests/conftest.py — shared by all test files below
 import pytest
 
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 from plugins.my_scraper.server import WebScrapingServer
 
 
@@ -2269,7 +2269,7 @@ from plugins.my_scraper.server import WebScrapingServer
 def server(mock_system_config):          # mock_system_config comes from the root conftest.py
     return WebScrapingServer(
         "my_scraper", mock_system_config,
-        MCPConfig(type="my_scraper", enabled=True, config={"timeout": 10}),
+        ToolServerConfig(type="my_scraper", enabled=True, config={"timeout": 10}),
     )
 ```
 
@@ -2324,7 +2324,7 @@ async def test_status_reporting(server, monkeypatch):
         async def publish(self, event):
             events.append(event)
 
-    monkeypatch.setattr("agent_system.mcp.status.get_status_bus", lambda: Bus())
+    monkeypatch.setattr("agent_system.tools.status.get_status_bus", lambda: Bus())
 
     await server.call_with_status("my_scraper_fetch_url", {"request_id": "r1"})
 
@@ -2387,12 +2387,12 @@ Internal plugins live in one of the `plugin_dirs` (`src/plugins/`, `src/plugins_
 
 Package as a Python package with entry points:
 
-**MCP Plugin pyproject.toml:**
+**Tool plugin pyproject.toml:**
 ```toml
 [project]
 name = "my-agent-plugin"
 version = "1.0.0"
-description = "My awesome MCP plugin for AgentSystem"
+description = "My awesome plugin for AgentSystem"
 dependencies = [
     "agent-system>=1.0.0",
     "fastapi>=0.100.0",  # If using web endpoints
@@ -2400,14 +2400,14 @@ dependencies = [
 ]
 
 [project.entry-points]
-# MCP server registration
-agent_system.mcp_plugins = [
+# tool server registration
+agent_system.tool_plugins = [
     "my_plugin = my_agent_plugin.server:PLUGIN_FACTORY"
 ]
 
 [project.scripts]
 # CLI executable
-mcp-my-plugin = "my_agent_plugin.cli:main"
+tool-my-plugin = "my_agent_plugin.cli:main"
 ```
 
 **Web-Only Plugin pyproject.toml:**
@@ -2440,7 +2440,7 @@ dependencies = [
 ]
 
 [project.scripts]
-# Just the CLI, no MCP server
+# Just the CLI, no tool server
 my-utility = "my_utility_tool.cli:main"
 data-converter = "my_utility_tool.converters:converter_main"
 log-analyzer = "my_utility_tool.analyzers:analyzer_main"
@@ -2487,10 +2487,10 @@ PLUGIN_FACTORY = MyPluginServer
 
 ### Implementation Checklist
 
-**Required for MCP plugins:**
+**Required for plugins:**
 - [ ] `schema.yaml` with proper tool definitions
 - [ ] `plugin.toml` with metadata
-- [ ] Server class extending `SchemaBasedMCPServer`
+- [ ] Server class extending `SchemaBasedToolServer`
 - [ ] Support for `_status` parameter (one closing `end`/`error` naming the result)
 - [ ] Support for `_cancellation_token` parameter (long-running tools)
 - [ ] Input validation and structured error responses
@@ -2500,12 +2500,12 @@ PLUGIN_FACTORY = MyPluginServer
 - [ ] Optional: CLI (`cli.py` / `__main__.py` and a pyproject.toml script)
 
 **Required for hybrid plugins:**
-- [ ] All MCP plugin requirements (above)
+- [ ] All plugin requirements (above)
 - [ ] Web endpoints class extending `PluginWebInterface`
 - [ ] `web_ui` section in `schema.yaml`: `panel` (catalogue entry) and `endpoints`
 - [ ] `get_web_router()` implementation; the plugin object delegates `get_schema_data()`
 - [ ] Static assets handling (CSS, JS, images)
-- [ ] `plugin.toml` with `type = ["mcp-server", "web"]` and `category` metadata
+- [ ] `plugin.toml` with `type = ["tool-server", "web"]` and `category` metadata
 
 **Required for web-only plugins:**
 - [ ] Web endpoints class extending `PluginWebInterface`
@@ -2595,7 +2595,7 @@ print(plugins.keys())  # Is your plugin listed? (keys are folder names)
 **Configuration issues:**
 - Log effective configuration in `__init__()`
 - Check the `plugins: servers:` entry (e.g. in `config/plugins.yaml`) has `enabled: true`; `config/mcp_servers.yaml` is for external MCP servers
-- Inspect the merged config with `get_mcp_config_by_name(name, config)`, not the raw `config.plugins.servers[name]`
+- Inspect the merged config with `get_tool_server_config(name, config)`, not the raw `config.plugins.servers[name]`
 - Validate configuration values and provide good defaults
 
 ### Debugging Tips
@@ -2609,10 +2609,10 @@ logging.basicConfig(level=logging.DEBUG)
 **Test plugins in isolation:**
 ```python
 # Quick test without full agent
-from agent_system.config import load_settings, get_mcp_config_by_name
+from agent_system.config import load_settings, get_tool_server_config
 
 config = load_settings()
-server = MyServer("my_plugin", config, get_mcp_config_by_name("my_plugin", config))
+server = MyServer("my_plugin", config, get_tool_server_config("my_plugin", config))
 result = await server.call("my_plugin_my_tool", {"param": "value"})
 print(result)
 ```
@@ -2634,7 +2634,7 @@ print(schema)
 ### Getting Help
 
 - Check existing plugins in `src/plugins/` for examples
-- Read the MCP specification for protocol details
+- Read the MCP specification if you work on the `mcp_client` plugin
 - Check logs in `logs/` directory for error details
 - Use `python -m agent_system.agent_cli plugins --help` for CLI options
 
@@ -2642,7 +2642,7 @@ print(schema)
 
 ## Hooks-Only Plugins
 
-In addition to MCP tool plugins, AgentSystem supports **hooks-only plugins** that intercept agent lifecycle points without providing tools. This is ideal for cross-cutting concerns like logging, validation, context management, and monitoring.
+In addition to tool plugins, AgentSystem supports **hooks-only plugins** that intercept agent lifecycle points without providing tools. This is ideal for cross-cutting concerns like logging, validation, context management, and monitoring.
 
 ### When to Use Hooks vs Tools
 
@@ -2731,14 +2731,14 @@ from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 class MyHookPlugin(SchemaBasedPluginHook):
     """Example hooks-only plugin."""
 
-    def __init__(self, plugin_dir: Path | str, mcp_config=None):
+    def __init__(self, plugin_dir: Path | str, server_config=None):
         super().__init__(plugin_dir)
 
         # get_config() holds the schema.yaml defaults (plain values);
         # merging the server entry's config: block is the plugin's job
         config = dict(self.get_config())
-        if mcp_config is not None and getattr(mcp_config, "config", None):
-            config.update(mcp_config.config)
+        if server_config is not None and getattr(server_config, "config", None):
+            config.update(server_config.config)
         self.max_items = config.get('max_items', 100)
         self.enabled = config.get('enable_feature', True)
 
@@ -2793,10 +2793,10 @@ class MyHookPlugin(SchemaBasedPluginHook):
 from pathlib import Path
 from .hooks import MyHookPlugin
 
-def PLUGIN_FACTORY(name=None, system_config=None, mcp_config=None) -> MyHookPlugin:
-    """Called by the runtime as (name, system_config, mcp_config)."""
+def PLUGIN_FACTORY(name=None, system_config=None, server_config=None) -> MyHookPlugin:
+    """Called by the runtime as (name, system_config, server_config)."""
     plugin_dir = Path(__file__).parent
-    return MyHookPlugin(plugin_dir, mcp_config)
+    return MyHookPlugin(plugin_dir, server_config)
 ```
 
 ### Hook Ordering
@@ -2989,16 +2989,16 @@ itself as `on_<hook type>` methods (duck typing, see `src/plugins/okf/server.py`
 ```python
 from pathlib import Path
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from .hooks import MyHookPlugin
 
 
-class MyHybridPlugin(SchemaBasedMCPServer):
+class MyHybridPlugin(SchemaBasedToolServer):
     """Plugin with both tools and hooks."""
 
-    def __init__(self, name, system_config, mcp_config):
-        super().__init__(name, system_config, mcp_config)
-        self.hooks_plugin = MyHookPlugin(Path(__file__).parent, mcp_config)
+    def __init__(self, name, system_config, server_config):
+        super().__init__(name, system_config, server_config)
+        self.hooks_plugin = MyHookPlugin(Path(__file__).parent, server_config)
 
     # Tool "{name}_my_tool"
     async def my_tool(self, params: dict) -> dict:

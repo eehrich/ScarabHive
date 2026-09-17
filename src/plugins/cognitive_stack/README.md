@@ -8,7 +8,7 @@ conversation has been compacted.
 
 ## What it provides
 
-`type = ["mcp-server", "hooks"]`, no pip dependencies.
+`type = ["tool-server", "hooks"]`, no pip dependencies.
 
 | Surface | Name | Purpose |
 |---|---|---|

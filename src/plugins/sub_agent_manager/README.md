@@ -8,7 +8,7 @@ and keeping a sub-agent's prompt in sync with the coordinator's state.
 
 ## What it provides
 
-`type = ["mcp-server", "web"]`, no pip dependencies.
+`type = ["tool-server", "web"]`, no pip dependencies.
 
 | Surface | Name |
 |---|---|

@@ -7,14 +7,14 @@ The Agent System provides two base classes for building intelligent agents with 
 1. **`Agent`** - Core agent logic for LLM interaction, tool orchestration, and conversation management
 2. **`SchemaBasedAgent`** - Extends Agent with automatic `schema.yaml` loading for declarative tool definitions
 
-This architecture follows the **Single Responsibility Principle** and maintains consistency with the existing `SchemaBasedMCPServer` pattern used for simpler MCP tools.
+This architecture follows the **Single Responsibility Principle** and maintains consistency with the existing `SchemaBasedToolServer` pattern used for simpler tools.
 
 ## Architecture Diagram
 
 ```
-MCPServer (base protocol implementation)
+ToolServer (base protocol implementation)
 │
-├─ SchemaBasedMCPServer (simple schema-based tools)
+├─ SchemaBasedToolServer (simple schema-based tools)
 │  ├─ DateTimeServer
 │  ├─ WebScraperServer
 │  ├─ LLMRouterServer
@@ -125,14 +125,14 @@ tools:
 
 ## Pattern Consistency
 
-### SchemaBasedMCPServer vs SchemaBasedAgent
+### SchemaBasedToolServer vs SchemaBasedAgent
 
 Both follow the same pattern but serve different purposes:
 
-| Feature | SchemaBasedMCPServer | SchemaBasedAgent |
+| Feature | SchemaBasedToolServer | SchemaBasedAgent |
 |---------|---------------------|------------------|
-| **Purpose** | Simple MCP tools | Intelligent agents with LLM |
-| **Base Class** | `MCPServer` | `Agent` (extends `MCPServer`) |
+| **Purpose** | Simple tools | Intelligent agents with LLM |
+| **Base Class** | `ToolServer` | `Agent` (extends `ToolServer`) |
 | **Schema Loading** | `schema.yaml` | `schema.yaml` |
 | **Tool Execution** | Direct handlers | Via Agent orchestration |
 | **LLM Integration** | No | Yes (core feature) |
@@ -141,8 +141,8 @@ Both follow the same pattern but serve different purposes:
 **Example Comparison:**
 
 ```python
-# SchemaBasedMCPServer - Simple tool
-class DateTimeServer(SchemaBasedMCPServer):
+# SchemaBasedToolServer - Simple tool
+class DateTimeServer(SchemaBasedToolServer):
     async def handle_get_current_time(self, arguments: dict) -> str:
         return datetime.now().isoformat()
 
@@ -186,9 +186,9 @@ class ResearchAgent(SchemaBasedAgent):
 
 ### Schema Loading (SchemaBasedMixin)
 
-Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedMixin`, which provides common schema loading functionality:
+Both `SchemaBasedToolServer` and `SchemaBasedAgent` inherit from `SchemaBasedMixin`, which provides common schema loading functionality:
 
-**Location:** `src/agent_system/mcp/schema_mixin.py`
+**Location:** `src/agent_system/tools/schema_mixin.py`
 
 **Features:**
 1. **Directory Discovery:** Uses `importlib.util.find_spec()` for robust plugin directory resolution
@@ -218,7 +218,7 @@ class SchemaBasedMixin:
     async def call(tool, params)     # Generic dispatcher
 
 # Used by both:
-class SchemaBasedMCPServer(MCPServer, SchemaBasedMixin):
+class SchemaBasedToolServer(ToolServer, SchemaBasedMixin):
     pass  # Direct tool name → method mapping
 
 class SchemaBasedAgent(Agent, SchemaBasedMixin):
@@ -231,7 +231,7 @@ class SchemaBasedAgent(Agent, SchemaBasedMixin):
 
 The `SchemaBasedMixin.call()` dispatcher automatically routes tool calls to methods:
 
-**For SchemaBasedMCPServer:**
+**For SchemaBasedToolServer:**
 - Tool: `"search_tweets"` → Method: `search_tweets(params)`
 - Direct 1:1 mapping
 
@@ -365,12 +365,12 @@ Both agent types should be tested similarly:
 
 ```python
 import pytest
-from agent_system.config.models import AgentSystemConfig, MCPServerConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 @pytest.fixture
 def agent(mock_system_config: AgentSystemConfig):
     """Create agent instance for testing."""
-    mcp_config = MCPServerConfig(
+    server_config = ToolServerConfig(
         plugin_name="my_agent",
         instance_name="test_agent",
         enabled=True,
@@ -378,7 +378,7 @@ def agent(mock_system_config: AgentSystemConfig):
     )
     agent = MyAgent(
         system_config=mock_system_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=None
     )
     return agent
@@ -692,7 +692,7 @@ src/agent_system/servers/agent/
 │   ├── session_tracking.py (session & message management, session locks, compaction marker)
 │   ├── request_manager.py (request lifecycle & cancellation)
 │   ├── hook_integration.py (hook execution at all lifecycle points, LLM transport hooks)
-│   ├── mcp_integration.py (MCP protocol handling, external tool schemas)
+│   ├── tool_integration.py (MCP protocol handling, external tool schemas)
 │   ├── tool_execution.py (tool call execution: parallel, cancellable, streaming)
 │   ├── server_resolution.py (shared server/tool-name resolution building blocks)
 │   └── status_forwarding.py (status event streaming)
