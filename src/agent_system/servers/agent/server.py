@@ -1208,49 +1208,49 @@ class Agent(MCPServer):
 
         Returns:
             List of dicts with 'name' and 'description' keys
+
+        Raises whatever the listing raises. It used to answer every failure
+        with an empty list, which every caller reads as "this agent has no
+        tools" -- the chat even named the cause: an empty allowlist.
         """
-        try:
-            status = params.get("_status")
+        status = params.get("_status")
 
-            # EXACTLY the pipeline that builds the LLM schema -- discovery
-            # (deny-all on empty allowed, _mcp_tool_visible, externals) plus
-            # ToolSchemaBuilder (tool-level allow/block, both tool interfaces,
-            # every schema dialect). This method used to re-implement about
-            # half of that and diverged on every point it skipped: hybrid
-            # plugins (list_tools-only) were missing entirely, an empty
-            # allowlist meant allow-all here but deny-all in the schema, and
-            # blocked patterns were never applied. An agent asking what it can
-            # do got a different answer than the schema it was running with.
-            usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
+        # EXACTLY the pipeline that builds the LLM schema -- discovery
+        # (deny-all on empty allowed, _mcp_tool_visible, externals) plus
+        # ToolSchemaBuilder (tool-level allow/block, both tool interfaces,
+        # every schema dialect). This method used to re-implement about
+        # half of that and diverged on every point it skipped: hybrid
+        # plugins (list_tools-only) were missing entirely, an empty
+        # allowlist meant allow-all here but deny-all in the schema, and
+        # blocked patterns were never applied. An agent asking what it can
+        # do got a different answer than the schema it was running with.
+        usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
 
-            schema_builder = ToolSchemaBuilder(
-                agent_name=self.name,
-                mcp_integration_manager=self._mcp_integration_manager,
-                server_getter_func=self._get_server_from_any_registry,
-            )
-            tools_schema, _mapping, _usable, _display = await schema_builder.build_schemas(
-                usable_tools,
-                allowed_patterns=allowed_patterns,
-                blocked_patterns=blocked_patterns,
-            )
+        schema_builder = ToolSchemaBuilder(
+            agent_name=self.name,
+            mcp_integration_manager=self._mcp_integration_manager,
+            server_getter_func=self._get_server_from_any_registry,
+        )
+        tools_schema, _mapping, _usable, _display = await schema_builder.build_schemas(
+            usable_tools,
+            allowed_patterns=allowed_patterns,
+            blocked_patterns=blocked_patterns,
+        )
 
-            all_tools: list[Dict[str, Any]] = []
-            for entry in tools_schema:
-                function = entry.get("function", {}) if isinstance(entry, dict) else {}
-                if not isinstance(function, dict):
-                    continue
-                all_tools.append({
-                    "name": function.get("name", "unknown"),
-                    "description": function.get("description", "") or "",
-                })
+        all_tools: list[Dict[str, Any]] = []
+        for entry in tools_schema:
+            function = entry.get("function", {}) if isinstance(entry, dict) else {}
+            if not isinstance(function, dict):
+                continue
+            all_tools.append({
+                "name": function.get("name", "unknown"),
+                "description": function.get("description", "") or "",
+            })
 
-            if status:
-                await status.end(f"Listed available tools ({len(all_tools)} tools)")
+        if status:
+            await status.end(f"Listed available tools ({len(all_tools)} tools)")
 
-            return all_tools
-        except Exception as e:
-            logger.error(f"Failed to list tools: {e}")
-            return []
+        return all_tools
 
     async def run_events(
         self,
@@ -2585,6 +2585,14 @@ class Agent(MCPServer):
                     # before this call went out.
                     model_health.release(current_llm, asked_at=health_asked_at)
                     if pending_thinking_complete:
+                        # Who answered: a fallback or a walk around a blocked
+                        # LLM runs on a client the caller never handed in, and
+                        # a surface pricing the call needs its model.
+                        answered_by = getattr(current_llm, "model", None)
+                        if isinstance(answered_by, str) and answered_by:
+                            pending_thinking_complete["model"] = answered_by
+                            batch = getattr(current_llm, "batch_provider", None)
+                            pending_thinking_complete["batch"] = isinstance(batch, str) and bool(batch)
                         yield pending_thinking_complete
                     break
                     

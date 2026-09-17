@@ -678,3 +678,22 @@ async def test_the_hooks_see_the_escalation_model(system_config, monkeypatch):
     assert advanced.call_count >= 1, "fixture: the step was not escalated"
     assert seen["pre"][0][1] is advanced
     assert seen["post"][0][1] is advanced
+
+
+@pytest.mark.asyncio
+async def test_each_answer_names_the_model_that_gave_it(system_config):
+    """A surface pricing the call (the chat footer) only knows the client it
+    handed in; a walk around a blocked LLM answers on another one."""
+    original = _ScriptedLLM("original", 1_000_000, model="m-original")
+    fallback = _ScriptedLLM("fallback", 65_000, model="m-fallback")
+    agent = _agent(system_config, original)
+    _falls_back_to(agent, fallback)
+    _block(original)
+    _record_hooks(agent)
+
+    events = await _run(agent)
+
+    answered = [(e.get("model"), e.get("batch")) for e in events
+                if e.get("type") == "thinking_complete"]
+    assert answered, "fixture: no call answered"
+    assert set(answered) == {("m-fallback", False)}

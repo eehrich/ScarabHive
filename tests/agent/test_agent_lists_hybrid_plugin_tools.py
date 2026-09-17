@@ -153,3 +153,17 @@ async def test_broken_list_tools_falls_back_to_get_tools():
 
     tools = await agent._list_usable_tools_with_details({})
     assert [t["name"] for t in tools] == ["rescued_tool"]
+
+
+@pytest.mark.asyncio
+async def test_a_listing_that_fails_says_so():
+    """Every failure used to come back as [] -- read by the chat and the web
+    as "this agent has no tools (tools.allowed is empty)"."""
+    agent = _agent_with(MCPRegistry(), ["*"])
+
+    async def broken():
+        raise RuntimeError("discovery broke")
+
+    agent.list_usable_tools = broken
+    with pytest.raises(RuntimeError, match="discovery broke"):
+        await agent._list_usable_tools_with_details({})
