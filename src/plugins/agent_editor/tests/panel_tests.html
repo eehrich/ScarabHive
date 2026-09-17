@@ -216,6 +216,31 @@
     const offered = () => [...fieldOf(CHAIN).querySelectorAll('[data-add-profile]')].map((one) => one.dataset.addProfile).join();
     const button = (name, act) => fieldOf(CHAIN).querySelector(`[data-profile="${name}"] [data-chain="${act}"]`);
     const position = (name) => fieldOf(CHAIN).querySelector(`[data-profile="${name}"] .pk-badge`).textContent.trim();
+    // without an advanced chain the model chain runs, never the system default profile
+    const advanced = text(`#editor [data-field='${JSON.stringify(['agent_config', 'llm_profile_advanced'])}']`);
+    const noAdvanced = advanced.includes('runs on the model chain above') && advanced.includes('auto-escalation stays off')
+      && !advanced.includes('fast');
+    // a parent that does not resolve: nothing inherited is known, so nothing is claimed
+    const shownName = heading();
+    const panelWindow = frame.contentWindow;
+    const realFetch = panelWindow.fetch;
+    let unknownSaid = false;
+    try {
+      panelWindow.fetch = async (url, options) => {
+        const answer = await realFetch(url, options);
+        if (!String(url).endsWith('/plugins/agent_editor/agents/editor')) return answer;
+        const body = await answer.json();
+        body.inherited = null;
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+      if (shownName === 'editor') await choose('writer');  // a shown agent is not loaded again
+      await choose('editor');
+      const unknownText = text(`#editor [data-field='${JSON.stringify(['agent_config', 'llm_profile_advanced'])}']`);
+      unknownSaid = unknownText.includes('the inherited chain is unknown') && !unknownText.includes('stays off');
+    } finally {
+      panelWindow.fetch = realFetch;
+    }
+    await choose(shownName);
     type(picker(), 'anthropic');
     const byProvider = offered() === 'deep';
     type(picker(), 'fast');
@@ -231,7 +256,7 @@
       && button('fast', 'down').disabled && isSet(CHAIN) && doc().activeElement === button('deep', 'remove');
     await saveAll('writer saved');
     const written = (await file('config/agents/team.yaml')).text;
-    return byProvider && notTwice && added && moved && removed && written.includes('llm_profile: [deep, fast]')
+    return noAdvanced && unknownSaid && byProvider && notTwice && added && moved && removed && written.includes('llm_profile: [deep, fast]')
       && chainOf(CHAIN) === 'deep,fast';
   });
 

@@ -1293,8 +1293,10 @@ function drawModel() {
   render($('tab-model'), html`<fieldset class="ae-form" ${disabledIf(readOnly())}>
     <section class="ae-section" aria-labelledby="modelsTitle">
       <h3 class="ae-section-title" id="modelsTitle">Models</h3>
-      ${chainField(['agent_config', 'llm_profile'], 'Model chain', 'The first profile answers; the others take over, in order, when it fails.')}
-      ${chainField(['agent_config', 'llm_profile_advanced'], 'Advanced chain', 'Used while the agent escalates.')}
+      ${chainField(['agent_config', 'llm_profile'], 'Model chain', 'The first profile answers; the others take over, in order, when it fails.',
+    'No profile: the model default “normal” applies.')}
+      ${chainField(['agent_config', 'llm_profile_advanced'], 'Advanced chain', 'Used while the agent escalates.',
+    'No advanced chain: use_advanced_model runs on the model chain above, and auto-escalation stays off.')}
     </section>
     <section class="ae-section" aria-labelledby="runTitle">
       <h3 class="ae-section-title" id="runTitle">Run settings</h3>
@@ -1309,15 +1311,19 @@ function drawModel() {
   fillYaml($('tab-model'));
 }
 
-function chainField(path, label, help) {
+/**
+ * `empty` says what runs without a chain: it differs per chain (AgentConfig.advanced_llm_profile, llm_profile). With a
+ * parent that does not resolve, nothing inherited is known, and nothing is claimed.
+ */
+function chainField(path, label, help, empty) {
   const key = JSON.stringify(path);
   const chain = chainOf(shown(path));
   const id = nextId();
-  const fallback = meta?.default_profile ? ` (${meta.default_profile})` : '';
+  const unknown = detail?.inherited == null && !hasPath(own, path);
   return field(path, label, { id, markup: html`
     <ol class="ae-chain" aria-label="${label}">
       ${chain.length ? chain.map((name, i) => chainRow(key, name, i, chain.length))
-    : html`<li class="pk-muted">No profile: the default applies${fallback}.</li>`}
+    : html`<li class="pk-muted">${unknown ? 'Nothing set here, and the inherited chain is unknown: the parent does not resolve.' : empty}</li>`}
     </ol>
     <div class="ae-picker">
       <label class="pk-search">${icon('search')}<input id="${id}" class="pk-input pk-input--sm" type="search" autocomplete="off"

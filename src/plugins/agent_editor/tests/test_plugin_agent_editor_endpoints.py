@@ -800,7 +800,7 @@ async def test_meta_names_classes_profiles_hooks_and_prompt_files(web, monkeypat
         {"name": "fast", "model_ref": "m-fast", "provider": "ollama", "model": "fast-model", "description": "Fast one"},
         {"name": "slow", "model_ref": "m-slow", "provider": "ollama", "model": "slow-model", "description": "slow"},
     ]
-    assert meta["default_profile"] == "fast"
+    assert "default_profile" not in meta  # no chain falls back to it
     assert meta["hooks"] == [{"name": "files.guard", "types": ["post_tool_call", "pre_llm_call"], "description": "Guards the files",
                               "enabled": True, "order": {"after": ["x.y"], "before": []}, "timeout": 5.0}]
     assert meta["prompt_files"] == ["config/agents/prompts/writer.md", "config/prompts/system_prompt.md",

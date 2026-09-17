@@ -190,7 +190,6 @@ def meta(store: Store, state: Any) -> dict:
         "classes": [{"name": name, "description": (catalog.manifest(name) or {}).get("description")}
                     for name in sorted(agent_classes(state, catalog))],
         "profiles": profiles(snap.config),
-        "default_profile": snap.config.llm_system.default_profile,
         "skills": skills(snap.config),
         "hooks": hooks(),
         "prompt_files": prompt_files(store, snap),

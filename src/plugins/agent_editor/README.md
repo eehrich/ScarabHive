@@ -190,7 +190,7 @@ All under `/plugins/agent_editor/`, JSON in and out. Error `detail` is always a 
 | `POST` | `/managers` | `{name, allowed_agents, dry_run}` → `{name, file, diff, version?}`; a new manager in `config/agents/<name>.yaml` |
 | `PUT` | `/managers/{name}` | `{entry, version, dry_run}` → `{diff, version?}`; an enabled manager's own entry, `type` and `enabled` unchanged |
 | `PUT` | `/agents/{name}/spawnable` | `{sam, allowed, version, dry_run}` → `{diff, version?}`; `version` is the manager file's |
-| `GET` | `/meta` | agent classes, LLM profiles, default profile, skills, hooks (one row per name, with its `types`), prompt files, visibility values, reloadable fields, `sub_agents` (the manager plugin is installed) |
+| `GET` | `/meta` | agent classes, LLM profiles, skills, hooks (one row per name, with its `types`), prompt files, visibility values, reloadable fields, `sub_agents` (the manager plugin is installed) |
 | `GET` | `/tools` | `{servers: [{server, type, tools: [{name, description}]}]}` — the servers tool discovery finds |
 | `POST` | `/tools/effective` | `{name?, type?, allowed, blocked}` → `{allowed, blocked, tools, per_tool, counts, unmatched}`: the merged lists, the granted `server/<tool>` paths, per named tool the patterns that grant (`allowed_by`) and block (`blocked_by`) it, tools per pattern, and the patterns (allowed or blocked) that name nothing. Sent lists are read as the loader reads a file (`${VAR}` expanded), so a masked list copied into the entry still matches. A list sent as null is the inherited one; a missing `type` is the entry's type on disk, `"type": null` means no own type (`basic_agent`) |
 | `GET` | `/prompt?path=&agent=` | a template file; `./` paths relative to the agent's file |
