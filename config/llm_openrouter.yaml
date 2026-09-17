@@ -373,6 +373,26 @@ llm_system:
       description: "OpenRouter Claude Sonnet - No output token limit"
       max_steps: 500
 
+    or-claude-opus:
+      model_ref: openrouter-claude-opus
+      description: "OpenRouter Claude Opus"
+      max_steps: 500
+
+    or-claude-opus-unlimited:
+      model_ref: openrouter-claude-opus-unlimited
+      description: "OpenRouter Claude Opus - No output token limit"
+      max_steps: 500      
+
+    or-claude-fable:
+      model_ref: openrouter-claude-fable
+      description: "OpenRouter Claude Fable"
+      max_steps: 500
+
+    or-claude-fable-unlimited:
+      model_ref: openrouter-claude-fable-unlimited
+      description: "OpenRouter Claude Fable - No output token limit"
+      max_steps: 500
+
     or-grok:
       model_ref: openrouter-grok
       description: "OpenRouter Grok"
