@@ -118,21 +118,26 @@ async def print_sessions(
     current_session_id: Optional[str] = None,
     more_hint: str = "",
     footer: str = "",
-) -> None:
-    """Print this user's top-level sessions, newest first, one line each."""
+) -> list[dict]:
+    """Print this user's top-level sessions, newest first, one line each.
+
+    Returns what it read, so a caller that also needs the records does not
+    walk the index a second time -- the listing stats every session for
+    children, and doing that twice per `/sessions` was measurable.
+    """
     if session_manager is None:
         print("Session listing is unavailable.")
-        return
+        return []
     try:
         sessions = await session_manager.list_root_sessions(user_id)
     except Exception as e:  # noqa: BLE001 -- a broken index must not kill the CLI
         logger.error("Failed to list sessions for %s: %s", user_id, e, exc_info=True)
         print(f"Could not list sessions: {e}")
-        return
+        return []
 
     if not sessions:
         print(f"No sessions for user '{user_id}'.")
-        return
+        return []
 
     shown = sessions if limit <= 0 else sessions[:limit]
     print(f"Sessions for '{user_id}' ({len(shown)} of {len(sessions)}):")
@@ -143,3 +148,4 @@ async def print_sessions(
         print(f"   ... {rest} more -- {more_hint}")
     if footer:
         print(footer)
+    return list(sessions)

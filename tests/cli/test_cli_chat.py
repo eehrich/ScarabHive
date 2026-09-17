@@ -1086,7 +1086,9 @@ def drive_chat_repl(monkeypatch, lines, initial_task=None, turn_probe=None,
                 "s2": [_user_message("frage aus s2")]}
     tracker = SimpleNamespace(
         get_session_messages=lambda sid: messages.get(sid, []),
-        set_session_messages=lambda sid, msgs: messages.setdefault(sid, []),
+        # It really WRITES. setdefault kept the old list for a known id, so a
+        # cut driven through the REPL did nothing and passed anyway.
+        set_session_messages=lambda sid, msgs: messages.__setitem__(sid, list(msgs)),
         get_session_template_vars=lambda sid: {},
         set_session_template_vars=lambda sid, values: None,
         set_session_metadata=lambda sid, meta: None,
@@ -1094,7 +1096,13 @@ def drive_chat_repl(monkeypatch, lines, initial_task=None, turn_probe=None,
     agent = SimpleNamespace(_session_tracker=tracker, agent_config=None,
                             llm=SimpleNamespace(model="m"))
 
-    monkeypatch.setattr(chat, "_build_prompt_editor", lambda seed: editor)
+    def _editor(seed, suggest=None):
+        # What the REPL would have handed prompt_toolkit: the tests read
+        # it off the editor instead of driving a console.
+        editor.suggest = suggest
+        return editor
+
+    monkeypatch.setattr(chat, "_build_prompt_editor", _editor)
     monkeypatch.setattr(chat, "collect_plugin_commands",
                         lambda agent_: list(plugin_commands))
     monkeypatch.setattr(chat, "_available_skills", lambda ctx: list(skills))
@@ -1361,6 +1369,28 @@ class TestSessionsCommand:
     def test_a_negative_count_is_not_read_as_all_of_them(self, monkeypatch):
         seen = self._dispatch(monkeypatch, "/sessions -1")
         assert not seen, "-1 listed something instead of asking what was meant"
+
+    def test_the_index_is_walked_once_and_kept(self, monkeypatch):
+        """The listing stats every session for children. /sessions asked for
+        it, then asked again to fill the completion -- two walks for one
+        command. What print_sessions read is what the completion gets."""
+        walks = []
+
+        async def list_root_sessions(user_id):
+            walks.append(user_id)
+            return [{"session_id": "ab12cd34", "title": "die davor",
+                     "agent_name": "a"}]
+
+        seen = []
+        drive_chat_repl(
+            monkeypatch, ["/sessions", "frage"],
+            session_manager=SimpleNamespace(list_root_sessions=list_root_sessions),
+            turn_probe=lambda loop, ctx, task, renderer, editor=None:
+            seen.append(list(ctx.recent_sessions)) or {})
+
+        assert walks == ["u"], f"the index was walked {len(walks)} times"
+        # ...and what it read is what /resume and its Tab get to see.
+        assert seen and [e["session_id"] for e in seen[0]] == ["ab12cd34"]
 
 
 class TestSwitchModel:
@@ -1741,6 +1771,9 @@ class _Tracker:
 
     def get_session_messages(self, session_id):
         return self._messages
+
+    def set_session_messages(self, session_id, messages):
+        self._messages = list(messages)
 
 
 class _AgentWithHistory:
@@ -3807,3 +3840,900 @@ class TestASaveThatWonTheRace:
 
 def _raise_interrupt():
     raise KeyboardInterrupt
+
+
+# --------------------------------------------------------------------------
+# What the chat could not do yet: complete a line, continue the last session,
+# name one, and change the agent without leaving.
+# --------------------------------------------------------------------------
+
+
+def _completion_ctx(monkeypatch, **extra):
+    """A context with a config an agent listing and a profile listing can read."""
+    from agent_system.cli_utils.chat import _ChatContext
+
+    profiles = {"fast": SimpleNamespace(description="the cheap one"),
+                "deep": SimpleNamespace(description="the good one")}
+    servers = {
+        "coder": SimpleNamespace(agent_config=object()),
+        "writer": SimpleNamespace(agent_config=object()),
+        "file_ops": SimpleNamespace(agent_config=None),  # a tool server
+    }
+    tracker = SimpleNamespace(
+        get_session_messages=lambda sid: [],
+        get_session_template_vars=lambda sid: {"projekt": "auritale"},
+        set_session_metadata=lambda sid, meta: None)
+    agent = SimpleNamespace(
+        system_config=SimpleNamespace(
+            plugins=SimpleNamespace(servers=servers),
+            llm_system=SimpleNamespace(profiles=profiles)),
+        _session_tracker=tracker, agent_config=None,
+        llm=SimpleNamespace(model="m"))
+    ctx = _ChatContext(
+        agent=agent, entry_name="coder", session_service=None, session_user="u",
+        session_id="s1", was_new_session=False, llm_profile="fast",
+        llm_override=None, llm_profile_info=None, show_status=False)
+    for key, value in extra.items():
+        setattr(ctx, key, value)
+    return ctx
+
+
+def _document(text: str):
+    """A real prompt_toolkit Document with the cursor at the end.
+
+    Not a stand-in: the completer reads text_before_cursor AND
+    text_after_cursor, and a namespace with only the first one made the
+    end-of-line case indistinguishable from the middle of a line.
+    """
+    from prompt_toolkit.document import Document
+
+    return Document(text=text, cursor_position=len(text))
+
+
+class TestCompletion:
+    """Tab at the prompt. The REPL owns what exists; the editor only asks."""
+
+    def _values(self, ctx, line, skills=()):
+        from agent_system.cli_utils.chat import _completions_for
+
+        return [value for value, _hint in _completions_for(ctx, skills, line)]
+
+    def test_a_command_word_offers_commands_skills_and_plugin_commands(
+            self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.plugin_commands = [chat.PluginCommand(
+            plugin="context_engineer", name="compact", summary="shrink it",
+            tool="context_engineer_compact")]
+
+        values = self._values(ctx, "/re", skills=["writer"])
+
+        assert "/resume" in values and "/rename" in values
+        assert "/compact" in values, "the agent's own commands are missing"
+        assert "/writer" in values, "skills are missing"
+
+    def test_a_plain_message_completes_nothing(self, monkeypatch):
+        """Tab in the middle of a sentence has to stay a tab. The FIRST word
+        is the case that matters: everything after it is read as an argument
+        of a command that does not exist, which answers nothing either way."""
+        ctx = _completion_ctx(monkeypatch)
+        assert self._values(ctx, "wie") == []
+        assert self._values(ctx, "wie komme ich") == []
+
+    def test_model_offers_the_profiles(self, monkeypatch):
+        assert self._values(_completion_ctx(monkeypatch), "/model d") == ["deep", "fast"]
+
+    def test_agent_offers_only_real_agents(self, monkeypatch):
+        """The RAW entry with an agent_config -- a tool server is not an agent."""
+        assert self._values(_completion_ctx(monkeypatch), "/agent ") == ["coder", "writer"]
+
+    def test_resume_offers_what_the_last_listing_knew(self, monkeypatch):
+        ctx = _completion_ctx(monkeypatch, recent_sessions=[
+            {"session_id": "ab12cd34", "title": "Blitter umbauen"},
+            {"session_id": "ff00aa11"}])
+
+        assert self._values(ctx, "/resume ") == ["ab12cd34", "ff00aa11"]
+
+    def test_vars_offers_the_ones_this_session_has(self, monkeypatch):
+        values = self._values(_completion_ctx(monkeypatch), "/vars ")
+
+        assert values == ["unset", "clear", "projekt="]
+
+    def test_attach_offers_paths(self, monkeypatch, tmp_path):
+        (tmp_path / "bild.png").write_bytes(b"x")
+        (tmp_path / "unterordner").mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        values = self._values(_completion_ctx(monkeypatch), "/attach ")
+
+        assert "bild.png" in values
+        assert "unterordner/" in values, "a directory has to stay walkable"
+
+    def test_a_path_typed_with_backslashes_completes_too(self, monkeypatch, tmp_path):
+        """The editor offers what STARTS WITH the typed word, and
+        "unterordner\\bi" never starts with "unterordner/bild.png" -- on this
+        platform that is every second path."""
+        (tmp_path / "unterordner").mkdir()
+        (tmp_path / "unterordner" / "bild.png").write_bytes(b"x")
+        monkeypatch.chdir(tmp_path)
+
+        values = self._values(_completion_ctx(monkeypatch), "/attach unterordner\\bi")
+
+        # "clear" rides along with every /attach; the editor drops it because
+        # it does not start with the word.
+        assert "unterordner\\bild.png" in values
+
+    def test_a_path_with_a_space_is_one_argument(self, monkeypatch, tmp_path):
+        """/attach reads the REST OF THE LINE as one path (Windows paths have
+        spaces). Cutting the line at the last space offered entries of the
+        current directory as the continuation of "Program Fil" and wrote one
+        into the middle of the path."""
+        (tmp_path / "Program Files").mkdir()
+        (tmp_path / "Program Files" / "ziel.png").write_bytes(b"x")
+        monkeypatch.chdir(tmp_path)
+
+        line = "/attach Program Files/zi"
+        values = self._values(_completion_ctx(monkeypatch), line)
+
+        assert "Program Files/ziel.png" in values
+        # ...and the editor replaces exactly that much of the line.
+        from agent_system.cli_utils.chat import _completion_word
+        assert _completion_word(line) == "Program Files/zi"
+
+    def test_export_completes_paths_as_one_argument_too(self, monkeypatch, tmp_path):
+        (tmp_path / "alte transkripte").mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        values = self._values(_completion_ctx(monkeypatch), "/export alte tr")
+
+        assert "alte transkripte/" in values
+
+    def test_a_message_word_is_still_cut_at_the_space(self):
+        """Only the whole-line commands take the rest; everything else
+        completes the last word, or "/model d" would offer nothing."""
+        from agent_system.cli_utils.chat import _completion_word
+
+        # TWO words behind the command: with one, "the last word" and "the
+        # rest of the line" are the same string and the test measures nothing.
+        assert _completion_word("/vars projekt=auritale buch=B8") == "buch=B8"
+        assert _completion_word("/model d") == "d"
+
+    def test_resume_does_not_offer_another_agents_session(self, monkeypatch):
+        """_resume_session refuses one, so offering it means announcing a
+        session and bouncing it in the next line."""
+        ctx = _completion_ctx(monkeypatch, recent_sessions=[
+            {"session_id": "aa11", "title": "meine", "agent_name": "coder"},
+            {"session_id": "bb22", "title": "fremde", "agent_name": "writer"},
+            {"session_id": "cc33", "title": "alte, ohne namen"},
+        ])
+
+        values = self._values(ctx, "/resume ")
+
+        assert "aa11" in values
+        assert "bb22" not in values, "a session of another agent was offered"
+        assert "cc33" in values, "an index without the field must not hide a session"
+
+    def test_the_editor_only_offers_what_starts_with_the_word(self):
+        """The completer filters; the REPL answers for the whole context."""
+        import agent_system.cli_utils.chat as chat
+
+        completer = chat._build_completer(
+            lambda line: [("deep", "the good one"), ("fast", "the cheap one")])
+
+        completions = list(completer.get_completions(_document("/model d"), None))
+
+        assert [c.text for c in completions] == ["deep"]
+        assert completions[0].start_position == -1
+
+    def test_a_pasted_block_completes_nothing(self):
+        import agent_system.cli_utils.chat as chat
+
+        completer = chat._build_completer(lambda line: [("deep", "")])
+
+        assert list(completer.get_completions(
+            _document("zeile eins\n/model d"), None)) == []
+
+    def test_nothing_is_offered_with_the_cursor_inside_the_line(self):
+        """The replaced span is measured from the cursor BACKWARDS, so
+        completing in the middle left the rest of the word standing:
+        "/res|ume abc" became "/resumeume abc"."""
+        import agent_system.cli_utils.chat as chat
+        from prompt_toolkit.document import Document
+
+        completer = chat._build_completer(lambda line: [("/resume", "")])
+        document = Document(text="/resume abc123", cursor_position=len("/res"))
+
+        assert list(completer.get_completions(document, None)) == []
+
+    def test_a_broken_suggestion_does_not_take_the_prompt_down(self):
+        """An exception in a completer kills the editor mid-keystroke."""
+        import agent_system.cli_utils.chat as chat
+
+        def broken(line):
+            raise RuntimeError("registry gone")
+
+        completer = chat._build_completer(broken)
+
+        assert list(completer.get_completions(_document("/mo"), None)) == []
+
+    def test_the_repl_gives_the_editor_its_own_context(self, monkeypatch):
+        """Wired through run_chat_loop: the callback has to see THIS chat's
+        skills and plugin commands, or it completes for an empty one."""
+        editor = _RecordingEditor(["/exit"])
+        drive_chat_repl(monkeypatch, [], editor=editor, skills=["writer"])
+
+        assert editor.suggest is not None, "the editor got no completion at all"
+        assert "/writer" in [value for value, _ in editor.suggest("/wr")]
+
+
+class TestResumeWithoutAnId:
+    def test_it_takes_the_last_session_this_user_left(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        resumed = []
+
+        async def resume(ctx, session_id):
+            resumed.append(session_id)
+            ctx.session_id = session_id
+            return True
+
+        monkeypatch.setattr(chat, "_resume_session", resume)
+        ctx = _completion_ctx(monkeypatch)
+        ctx.session_manager = SimpleNamespace(list_root_sessions=_sessions_of(
+            [{"session_id": "s1", "title": "die offene"},
+             {"session_id": "ab12cd34", "title": "die davor"}]))
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(chat._resume_last_session(ctx, "s1")) is True
+        finally:
+            loop.close()
+
+        assert resumed == ["ab12cd34"], "it resumed the session it was already on"
+
+    def test_nothing_to_continue_says_so(self, monkeypatch, capsys):
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.session_manager = SimpleNamespace(
+            list_root_sessions=_sessions_of([{"session_id": "s1"}]))
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(chat._resume_last_session(ctx, "s1")) is False
+        finally:
+            loop.close()
+
+        assert "No earlier session" in capsys.readouterr().out
+
+    def test_it_skips_a_session_of_another_agent(self, monkeypatch, capsys):
+        """The newest session belongs to writer, this chat runs coder: taking
+        it would be refused one line later. With two agents in the config that
+        is the normal case, not the edge."""
+        import agent_system.cli_utils.chat as chat
+
+        resumed = []
+
+        async def resume(ctx, session_id):
+            resumed.append(session_id)
+            ctx.session_id = session_id
+            return True
+
+        monkeypatch.setattr(chat, "_resume_session", resume)
+        ctx = _completion_ctx(monkeypatch)          # entry_name="coder"
+        ctx.session_manager = SimpleNamespace(list_root_sessions=_sessions_of([
+            {"session_id": "ff00", "title": "des writers", "agent_name": "writer"},
+            {"session_id": "ab12", "title": "meine", "agent_name": "coder"}]))
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(chat._resume_last_session(ctx, "s1")) is True
+        finally:
+            loop.close()
+
+        assert resumed == ["ab12"]
+
+    def test_a_broken_index_is_said_out_loud(self, monkeypatch, capsys):
+        """What comes back is the PREVIOUS listing, and a bare /resume acts on
+        it -- debug logging is off by then, so silence would make a stale
+        answer look like a fresh one."""
+        import agent_system.cli_utils.chat as chat
+
+        async def explode(user_id):
+            raise OSError("index.json is half written")
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.session_manager = SimpleNamespace(list_root_sessions=explode)
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(chat._load_recent_sessions(ctx))
+        finally:
+            loop.close()
+
+        assert "Could not list sessions" in capsys.readouterr().out
+
+    def test_the_listing_is_kept_for_completion(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.session_manager = SimpleNamespace(
+            list_root_sessions=_sessions_of([{"session_id": "ab12cd34"}]))
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(chat._load_recent_sessions(ctx))
+        finally:
+            loop.close()
+
+        assert [e["session_id"] for e in ctx.recent_sessions] == ["ab12cd34"]
+
+    def test_a_hold_taken_for_a_refused_resume_is_given_back(self, monkeypatch):
+        """The hold comes before the load; a refusal (another agent's session,
+        an LLM that cannot start) must not leave it locked."""
+        import agent_system.cli_utils.chat as chat
+
+        released = []
+        monkeypatch.setattr(chat, "_hold_session", lambda ctx, sid: True)
+        monkeypatch.setattr(chat, "_release_session",
+                            lambda ctx, sid: released.append(sid))
+
+        async def refused(ctx, session_id):
+            return False
+
+        monkeypatch.setattr(chat, "_resume_session", refused)
+        ctx = _completion_ctx(monkeypatch)
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(chat._resume_into(ctx, "s2", "s1")) is False
+        finally:
+            loop.close()
+
+        assert released == ["s2"]
+
+    def test_an_interrupted_load_gives_its_hold_back_too(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        released = []
+        monkeypatch.setattr(chat, "_hold_session", lambda ctx, sid: True)
+        monkeypatch.setattr(chat, "_release_session",
+                            lambda ctx, sid: released.append(sid))
+
+        async def slow(ctx, session_id):
+            await asyncio.sleep(10)
+            return True
+
+        monkeypatch.setattr(chat, "_resume_session", slow)
+        ctx = _completion_ctx(monkeypatch)
+
+        loop = asyncio.new_event_loop()
+        try:
+            task = loop.create_task(chat._resume_into(ctx, "s2", "s1"))
+            loop.run_until_complete(asyncio.sleep(0))
+            task.cancel()
+            loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        finally:
+            loop.close()
+
+        assert released == ["s2"], "the hold outlived the cancelled load"
+
+
+class TestRename:
+    def test_a_saved_session_is_renamed_on_disk(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        renamed = []
+
+        async def rename(user_id, session_id, title):
+            renamed.append((user_id, session_id, title))
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.session_manager = SimpleNamespace(rename_session=rename)
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(
+                chat._rename_current_session(ctx, "Blitter umbauen")) is True
+        finally:
+            loop.close()
+
+        assert renamed == [("u", "s1", "Blitter umbauen")]
+        # ...and the next save must not put the old one back: _save_session
+        # passes ctx.session_title, which --session-title may have filled.
+        assert ctx.session_title == "Blitter umbauen"
+
+    def test_a_failed_rename_leaves_the_title_alone(self, monkeypatch, capsys):
+        """Swallowing the error and returning True would look exactly like a
+        rename, and the record would keep the old name."""
+        import agent_system.cli_utils.chat as chat
+
+        async def explode(user_id, session_id, title):
+            raise OSError("index.json is read-only")
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.session_title = "Alt"
+        ctx.session_manager = SimpleNamespace(rename_session=explode)
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(
+                chat._rename_current_session(ctx, "Neu")) is False
+        finally:
+            loop.close()
+
+        assert ctx.session_title == "Alt"
+        assert "Could not rename" in capsys.readouterr().out
+
+    def test_a_session_without_a_record_keeps_it_for_the_first_save(
+            self, monkeypatch, capsys):
+        """There is nothing on disk to rename yet -- the title rides along
+        with the first message, exactly as --session-title does."""
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.was_new_session = True
+        ctx.session_manager = SimpleNamespace(rename_session=None)
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(
+                chat._rename_current_session(ctx, "Neue Sache")) is True
+        finally:
+            loop.close()
+
+        assert ctx.session_title == "Neue Sache"
+        assert "first message" in capsys.readouterr().out
+
+    def test_an_empty_title_is_refused(self, monkeypatch, capsys):
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _completion_ctx(monkeypatch)
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(chat._rename_current_session(ctx, "")) is False
+        finally:
+            loop.close()
+
+        assert "Usage: /rename" in capsys.readouterr().out
+
+
+class TestSwitchAgent:
+    """A session carries the agent it ran with, so a switch starts a new one."""
+
+    def _patch_factory(self, monkeypatch, built=None):
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.setattr(
+            chat, "_agent_for",
+            lambda ctx, name: built or SimpleNamespace(
+                agent_config=SimpleNamespace(default_llm_profile="deep"),
+                llm=SimpleNamespace(model="model-of-" + name),
+                _session_tracker=ctx.agent._session_tracker,
+                system_config=ctx.agent.system_config))
+        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent: [])
+
+    def test_a_bare_call_lists_the_agents(self, monkeypatch, capsys):
+        import agent_system.cli_utils.chat as chat
+
+        assert chat._switch_agent(_completion_ctx(monkeypatch), "") is False
+
+        out = capsys.readouterr().out
+        assert "coder" in out and "writer" in out
+        assert "file_ops" not in out, "a tool server was offered as an agent"
+
+    def test_switching_takes_the_new_agent_and_its_own_llm(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        self._patch_factory(monkeypatch)
+        ctx = _completion_ctx(monkeypatch)
+        ctx.llm_override = SimpleNamespace(model="das alte override")
+
+        assert chat._switch_agent(ctx, "writer") is True
+
+        assert ctx.entry_name == "writer"
+        assert ctx.agent.llm.model == "model-of-writer"
+        assert ctx.llm_override is None, "it kept answering on the old agent's LLM"
+        assert ctx.llm_profile == "deep"
+
+    def test_the_new_agents_own_commands_replace_the_old_ones(self, monkeypatch):
+        """/compact belongs to the agent that has the plugin. Left standing,
+        the chat keeps resolving the PREVIOUS agent's commands and dispatches
+        a tool the new one does not have."""
+        import agent_system.cli_utils.chat as chat
+
+        self._patch_factory(monkeypatch)
+        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent: [
+            chat.PluginCommand(plugin="p", name="only-writer-has-this",
+                               summary="s", tool="p_t")])
+        ctx = _completion_ctx(monkeypatch)
+        ctx.plugin_commands = [chat.PluginCommand(
+            plugin="q", name="only-coder-had-this", summary="s", tool="q_t")]
+
+        assert chat._switch_agent(ctx, "writer") is True
+
+        assert [c.name for c in ctx.plugin_commands] == ["only-writer-has-this"]
+
+    def test_a_command_line_llm_is_named_when_it_stops_applying(
+            self, monkeypatch, capsys):
+        """--llm built the client the chat has been answering on. The new
+        agent runs on its own, and the banner would otherwise name a profile
+        nobody chose here."""
+        import agent_system.cli_utils.chat as chat
+
+        self._patch_factory(monkeypatch)
+        ctx = _completion_ctx(monkeypatch)
+        ctx.llm_override = SimpleNamespace(model="m")
+        ctx.llm_profile_info = "gpt-schnell (from --llm)"
+
+        assert chat._switch_agent(ctx, "writer") is True
+
+        assert "gpt-schnell" in capsys.readouterr().out
+
+    def test_an_unknown_agent_changes_nothing(self, monkeypatch, capsys):
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _completion_ctx(monkeypatch)
+
+        assert chat._switch_agent(ctx, "writr") is False
+
+        assert ctx.entry_name == "coder"
+        out = capsys.readouterr().out
+        assert "Unknown agent" in out and "writer" in out, "no suggestion offered"
+
+    def test_a_factory_that_exits_does_not_end_the_chat(self, monkeypatch, capsys):
+        import agent_system.cli_utils.chat as chat
+
+        def exits(ctx, name):
+            raise SystemExit(1)
+
+        monkeypatch.setattr(chat, "_agent_for", exits)
+        ctx = _completion_ctx(monkeypatch)
+
+        assert chat._switch_agent(ctx, "writer") is False
+        assert ctx.entry_name == "coder"
+        assert "Could not build agent" in capsys.readouterr().out
+
+    def test_the_repl_starts_a_new_session_for_it(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        def switch(ctx, payload):
+            ctx.entry_name = payload
+            ctx.plugin_commands = ["marker"]
+            return True
+
+        monkeypatch.setattr(chat, "_switch_agent", switch)
+        seen = []
+        editor = _RecordingEditor(["/agent writer", "frage"])
+        drive_chat_repl(
+            monkeypatch, [], editor=editor,
+            turn_probe=lambda loop, ctx, task, renderer, editor=None: seen.append(
+                (ctx.entry_name, ctx.session_id, ctx.was_new_session)) or {})
+
+        assert seen and seen[0][0] == "writer"
+        assert seen[0][1] != "s1", "the new agent took over the old session"
+        assert seen[0][2] is True
+        assert editor.seeds, "the history was not swapped with the session"
+
+    def test_the_repl_resolves_against_the_new_agents_commands(
+            self, monkeypatch, capsys):
+        """The loop keeps a local list for parsing and help. Not rebound, the
+        chat answers /help and every typo hint for the agent it just left."""
+        import agent_system.cli_utils.chat as chat
+
+        command = chat.PluginCommand(plugin="p", name="only-writer-has-this",
+                                     summary="s", tool="p_t")
+
+        def switch(ctx, payload):
+            ctx.entry_name = payload
+            ctx.plugin_commands = [command]
+            return True
+
+        monkeypatch.setattr(chat, "_switch_agent", switch)
+        drive_chat_repl(monkeypatch, ["/agent writer", "/help"])
+
+        assert "only-writer-has-this" in capsys.readouterr().out
+
+    def test_an_agent_already_registered_is_reused(self, monkeypatch):
+        """Built twice, the second instance would have its own MCP clients and
+        its own session tracker while the registry still holds the first."""
+        import agent_system.cli_utils.chat as chat
+        from agent_system.servers.agent.server import Agent
+
+        registered = Agent.__new__(Agent)
+        registry = SimpleNamespace(list=lambda: ["writer"],
+                                   get=lambda name: registered)
+        ctx = _completion_ctx(monkeypatch)
+        ctx.agent.registry = registry
+        built = []
+        import agent_system.agent_cli as agent_cli
+        monkeypatch.setattr(agent_cli, "_build_entry_agent",
+                            lambda *a: built.append(a) or "fresh")
+
+        assert chat._agent_for(ctx, "writer") is registered
+        assert built == [], "the registered agent was rebuilt"
+
+    def test_an_agent_that_is_not_registered_yet_is_built(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+        import agent_system.agent_cli as agent_cli
+
+        registry = SimpleNamespace(list=lambda: [], get=lambda name: None)
+        ctx = _completion_ctx(monkeypatch)
+        ctx.agent.registry = registry
+        built = []
+        monkeypatch.setattr(agent_cli, "_build_entry_agent",
+                            lambda name, config, reg, service: built.append(name) or "fresh")
+
+        assert chat._agent_for(ctx, "writer") == "fresh"
+        assert built == ["writer"]
+
+
+def _sessions_of(entries):
+    async def list_root_sessions(user_id):
+        return list(entries)
+
+    return list_root_sessions
+
+
+class TestTakingTheLastExchangeBack:
+    """The model cannot be asked to do better while its first attempt is
+    still in the conversation -- /retry has to CUT it, not add to it."""
+
+    def _messages(self):
+        return [
+            _Msg("user", "erste frage"),
+            _Msg("assistant", "erste antwort"),
+            _Msg("user", "schreib die routine"),
+            _Msg("assistant", "", tool_calls=[
+                {"id": "c1", "function": {"name": "file_ops_write", "arguments": "{}"}}]),
+            _Msg("tool", "geschrieben"),
+            _Msg("assistant", "fertig"),
+        ]
+
+    def test_it_cuts_the_question_and_everything_after_it(self):
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _ctx_with(self._messages())
+
+        assert _message_text_of(chat._drop_last_exchange(ctx)) == "schreib die routine"
+
+        left = ctx.agent._session_tracker.get_session_messages("s1")
+        assert [m.role for m in left] == ["user", "assistant"]
+        assert _message_text_of(left[0]) == "erste frage"
+
+    def test_the_parts_of_an_attached_question_survive(self):
+        """Read back as TEXT, a question sent with an image came out as
+        "was ist das? [image_url]" -- a billed turn about nothing."""
+        import agent_system.cli_utils.chat as chat
+
+        parts = [{"type": "text", "text": "was ist das?"},
+                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}]
+        ctx = _ctx_with([_Msg("user", parts), _Msg("assistant", "ein blitter")])
+
+        dropped = chat._drop_last_exchange(ctx)
+
+        # Read off the result, not compared against the list the test still
+        # holds -- that comparison was `parts == parts` and could not fail.
+        kinds = [part["type"] for part in dropped.content]
+        assert kinds == ["text", "image_url"], "the image became a placeholder"
+        assert dropped.content[1]["image_url"]["url"].startswith("data:image/png")
+
+    def test_an_empty_session_has_nothing_to_take_back(self):
+        import agent_system.cli_utils.chat as chat
+
+        assert chat._drop_last_exchange(_ctx_with([])) is None
+
+    def test_undo_writes_the_shortened_session(self, monkeypatch):
+        """Only the agent's memory was cut, the file kept the dropped turn --
+        and `--session <id>` brought it straight back."""
+        import agent_system.cli_utils.chat as chat
+
+        saved = []
+        monkeypatch.setattr(chat, "_save_now", lambda loop, ctx: saved.append(True))
+        monkeypatch.setattr(chat, "_drop_last_exchange", lambda ctx: "die frage")
+        turns = []
+        drive_chat_repl(monkeypatch, ["/undo"],
+                        turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                        turns.append(task) or {})
+
+        assert saved == [True]
+        assert turns == [], "/undo started a turn"
+
+    def test_retry_asks_the_same_thing_again(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.setattr(chat, "_save_now", lambda loop, ctx: True)
+        monkeypatch.setattr(chat, "_drop_last_exchange",
+                            lambda ctx: _Msg("user", "schreib die routine"))
+        turns = []
+        drive_chat_repl(monkeypatch, ["/retry"],
+                        turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                        turns.append(task) or {})
+
+        assert [_message_text_of(task) for task in turns] == ["schreib die routine"]
+
+    def test_retry_hands_over_something_the_agent_can_read(self, monkeypatch):
+        """Agent.run_events takes a str or a ChatMessage (servers/agent/
+        server.py). The bare content list fell through both: task_text became
+        the list, sanitize_for_llm cannot read one and returns "" -- the retry
+        billed a full turn about an EMPTY message, image and all."""
+        import agent_system.cli_utils.chat as chat
+        from agent_system.llm.models import ChatMessage
+
+        parts = [{"type": "text", "text": "was ist das?"},
+                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}]
+        dropped = ChatMessage(role="user", content=parts)
+        monkeypatch.setattr(chat, "_save_now", lambda loop, ctx: True)
+        monkeypatch.setattr(chat, "_drop_last_exchange", lambda ctx: dropped)
+        turns = []
+        drive_chat_repl(monkeypatch, ["/retry"],
+                        turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                        turns.append(task) or {})
+
+        assert len(turns) == 1
+        assert isinstance(turns[0], (str, ChatMessage)), (
+            f"the agent cannot read a {type(turns[0]).__name__}")
+        # ...and the image is still in it, not only the text.
+        assert any(getattr(part, "type", None) == "image_url"
+                   for part in turns[0].content), "the attachment was dropped"
+
+    def test_a_failed_save_after_undo_is_named(self, monkeypatch, capsys):
+        """A session emptied by /undo IS written (SessionTracker.emptied), so
+        a save that fails here failed for another reason -- and silence would
+        tell the user the turn is gone while `--session <id>` brings it back."""
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.setattr(chat, "_save_now", lambda loop, ctx: False)
+        monkeypatch.setattr(chat, "_drop_last_exchange",
+                            lambda ctx: _Msg("user", "die einzige frage"))
+        drive_chat_repl(monkeypatch, ["/undo"])
+
+        assert "was NOT written" in capsys.readouterr().err
+
+    def test_nothing_to_take_back_starts_no_turn(self, monkeypatch, capsys):
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.setattr(chat, "_drop_last_exchange", lambda ctx: None)
+        turns = []
+        drive_chat_repl(monkeypatch, ["/retry"],
+                        turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                        turns.append(task) or {})
+
+        assert turns == []
+        assert "Nothing to take back" in capsys.readouterr().out
+
+
+class TestWhatALeftSessionTakesWithIt:
+    """Both ways out of a session pass the same note."""
+
+    def test_resume_names_the_title_it_drops(self, monkeypatch, capsys):
+        """A /rename before the first message parks the title on the context;
+        the session it named has no record to write it into. /new says so --
+        /resume dropped it without a word."""
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.session_title = "Blitter umbauen"
+        ctx.session_service = SimpleNamespace(
+            load_and_restore_session=_restores_session())
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(chat._resume_session(ctx, "ab12")) is True
+        finally:
+            loop.close()
+
+        assert "Blitter umbauen" in capsys.readouterr().out
+        assert ctx.session_title is None, "the old title would rename the new session"
+
+    def test_queued_attachments_are_named(self, monkeypatch, capsys):
+        """They survive the change -- and are easy to forget once the chat
+        says "New session", which is how a file reaches an agent it was
+        never meant for."""
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.attachments = ["/tmp/shot.png"]
+        ctx.agent._session_tracker.set_session_messages = lambda sid, msgs: None
+
+        chat._open_fresh_session(ctx, None)
+
+        assert "stay queued" in capsys.readouterr().out
+        assert ctx.attachments == ["/tmp/shot.png"], "the queued file was dropped"
+
+
+def _restores_session():
+    async def load_and_restore_session(agent, user_id, session_id):
+        return True, 2
+
+    return load_and_restore_session
+
+
+class TestExport:
+    def test_it_writes_the_conversation(self, tmp_path):
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _ctx_with([
+            _Msg("user", "was macht der blitter?"),
+            _Msg("assistant", "er kopiert speicher", tool_calls=[
+                {"id": "c1", "function": {"name": "file_ops_read",
+                                          "arguments": '{"path": "blitter.c"}'}}]),
+            _Msg("tool", "int main(void)"),
+        ])
+        target = tmp_path / "transcript.md"
+
+        chat._export_transcript(ctx, str(target))
+
+        written = target.read_text(encoding="utf-8")
+        assert "was macht der blitter?" in written
+        assert "er kopiert speicher" in written
+        assert "file_ops_read" in written, "the tool traffic was dropped"
+        assert "blitter.c" in written
+        assert "int main(void)" in written, "the tool RESULT was dropped"
+        # The header says which chat this was -- a transcript without it is
+        # one of twenty files called chat-<something>.md.
+        assert "s1" in written and "a" in written
+
+    def test_without_a_path_it_writes_next_to_the_session(self, tmp_path, monkeypatch):
+        """The name has to carry the session id: every export of every chat
+        would otherwise be the same file, and the second one refuses."""
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.chdir(tmp_path)
+
+        chat._export_transcript(_ctx_with([_Msg("user", "frage")]), "")
+
+        assert (tmp_path / "chat-s1.md").exists(), sorted(
+            p.name for p in tmp_path.iterdir())
+
+    def test_a_tilde_name_with_no_home_does_not_take_the_chat_down(
+            self, tmp_path, monkeypatch, capsys):
+        """Path.expanduser() RAISES for a "~name" it cannot resolve --
+        `/export ~$notes.md` is the lock file Word leaves next to a document,
+        and nothing catches around the dispatch. /attach learned this once."""
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.chdir(tmp_path)
+
+        chat._export_transcript(_ctx_with([_Msg("user", "frage")]), "~$notes.md")
+
+        assert "Cannot write there" in capsys.readouterr().out
+
+    def test_an_existing_file_is_never_overwritten(self, tmp_path, capsys):
+        """Without a path every export of a session picks the same name."""
+        import agent_system.cli_utils.chat as chat
+
+        target = tmp_path / "transcript.md"
+        target.write_text("von gestern", encoding="utf-8")
+
+        chat._export_transcript(_ctx_with([_Msg("user", "frage")]), str(target))
+
+        assert target.read_text(encoding="utf-8") == "von gestern"
+        assert "exists already" in capsys.readouterr().out
+
+    def test_an_empty_session_writes_nothing(self, tmp_path, capsys):
+        import agent_system.cli_utils.chat as chat
+
+        target = tmp_path / "leer.md"
+
+        chat._export_transcript(_ctx_with([]), str(target))
+
+        assert not target.exists()
+        assert "Nothing to export" in capsys.readouterr().out
+
+    def test_the_repl_dispatches_it(self, monkeypatch, tmp_path):
+        import agent_system.cli_utils.chat as chat
+
+        asked = []
+        monkeypatch.setattr(chat, "_export_transcript",
+                            lambda ctx, payload: asked.append(payload))
+        drive_chat_repl(monkeypatch, ["/export /tmp/x.md"])
+
+        assert asked == ["/tmp/x.md"]
+
+
+def _message_text_of(message):
+    from agent_system.cli_utils.chat import _message_text
+
+    return _message_text(message)

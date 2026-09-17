@@ -24,6 +24,7 @@ import shutil
 import sys
 import time
 import unicodedata
+from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, TextIO
 
 from ..llm.pricing import normalize_usage, resolve_call_cost
@@ -629,6 +630,7 @@ from agent_system.chat_commands import (  # noqa: E402
     commands_for,
     group_tools_by_server,
     needs_escape as _needs_escape,
+    parse_chat_command,
     parse_vars,
     resolve as resolve_chat_input,
     runnable_skill_names,
@@ -913,14 +915,17 @@ class _PromptEditor:
 
     Two prompt sessions on purpose: the continuation lines of a fenced paste
     get the same editor but NOT the history. Otherwise pasting twenty lines
-    of a stack trace buries the last twenty things actually typed.
+    of a stack trace buries the last twenty things actually typed. Only the
+    first one completes: the continuation lines of a paste are content.
     """
 
     def __init__(self, prompt_session_cls: Any, history_cls: Any,
-                 seed: Sequence[str], key_bindings: Any = None) -> None:
+                 seed: Sequence[str], key_bindings: Any = None,
+                 completer: Any = None) -> None:
         self._prompt_session_cls = prompt_session_cls
         self._history_cls = history_cls
         self._key_bindings = key_bindings
+        self._completer = completer
         # Same bindings as the main prompt: Ctrl-Z has to mean end-of-input at
         # the "... " prompt too, which is exactly where a person reaches for it
         # to get out of a fence they opened by accident.
@@ -947,7 +952,8 @@ class _PromptEditor:
         for entry in [*seed, *self._commands]:
             self._history.append_string(entry)
         self._session = self._prompt_session_cls(
-            history=self._history, key_bindings=self._key_bindings)
+            history=self._history, key_bindings=self._key_bindings,
+            completer=self._completer)
 
     def remember(self, text: str) -> None:
         """Record a turn that never passed through the prompt."""
@@ -968,7 +974,150 @@ class _PromptEditor:
         return self._continuation.prompt(prompt)
 
 
-def _build_prompt_editor(seed: Sequence[str]) -> Optional[_PromptEditor]:
+def _path_candidates(word: str) -> list[tuple[str, str]]:
+    """Files and directories under what has been typed of a path so far.
+
+    Written back with the separator the person typed. The editor offers what
+    starts with their word, and ``src\\age`` never starts with
+    ``src/agent_system`` -- on Windows that is every second path.
+
+    Not prompt_toolkit's PathCompleter, though it is installed: it reads the
+    WHOLE line as the path, so it would need the argument cut out for it
+    anyway, it appends no separator behind a directory (its own decision),
+    and going through it would move the knowledge of what exists out of the
+    REPL into the editor, where the other completions cannot follow it.
+    """
+    separator = "\\" if "\\" in word and "/" not in word else "/"
+    directory, slash, prefix = word.replace("\\", "/").rpartition("/")
+    try:
+        entries = sorted(Path(directory or ".").iterdir())
+    except OSError:
+        return []  # no such directory yet: the person is still typing it
+    head = (directory + slash).replace("/", separator)
+    candidates = []
+    for entry in entries:
+        if not entry.name.startswith(prefix):
+            continue
+        is_dir = entry.is_dir()
+        candidates.append((head + entry.name + (separator if is_dir else ""),
+                           "dir" if is_dir else ""))
+    return candidates[:200]
+
+
+# Commands whose argument is the REST OF THE LINE, spaces and all -- see
+# _handle_attach: a quoting grammar would cost more than typing /attach twice.
+_WHOLE_LINE_ARGUMENT = ("attach", "export")
+
+
+def _completion_word(line: str) -> str:
+    """The part of *line* a Tab replaces.
+
+    The last word -- except for the commands that read the whole rest of the
+    line as one value. Splitting THOSE at the last space offered the entries
+    of the current directory as the continuation of ``C:\\Program Fil`` and
+    wrote one into the middle of the path.
+    """
+    head, separator, payload = line.partition(" ")
+    if separator and parse_chat_command(head)[0] in _WHOLE_LINE_ARGUMENT:
+        return payload.lstrip()
+    return line.rsplit(" ", 1)[-1]
+
+
+def _completions_for(ctx: "_ChatContext", skill_names: Sequence[str],
+                     line: str) -> list[tuple[str, str]]:
+    """(value, hint) pairs that could continue the line being typed.
+
+    The REPL knows what exists -- its commands, this agent's plugin commands,
+    the skills on disk, the sessions of this user -- so the knowledge stays
+    here and the editor only asks. A plain message gets NOTHING: an offer in
+    the middle of a sentence is noise, and prompt_toolkit completes while the
+    person types.
+    """
+    head, separator, _ = line.partition(" ")
+    if not separator:
+        if not head.startswith("/"):
+            return []
+        spellings = _plugin_spellings(ctx.plugin_commands)
+        return ([(alias, command.summary)
+                 for command in commands_for(_CLI_SURFACE) for alias in command.aliases]
+                + [(f"/{spelling}", command.summary)
+                   for spelling, command in zip(spellings, ctx.plugin_commands)]
+                + [(f"/{name}", "skill") for name in skill_names])
+
+    command, _payload = parse_chat_command(head)
+    word = _completion_word(line)
+    if command == "model":
+        profiles = _llm_profiles(ctx)
+        return [(name, _one_line(getattr(profiles[name], "description", "") or "", 60))
+                for name in sorted(profiles)]
+    if command == "agent":
+        return [(name, "agent") for name in _agent_names(ctx)]
+    if command == "resume":
+        # Whatever the last listing knows; /sessions and a bare /resume fill
+        # it. Reading the store HERE is not possible -- the completer runs
+        # inside prompt_toolkit's own loop, not the REPL's.
+        return [(entry["session_id"],
+                 _one_line(" ".join((entry.get("title") or "").split()), 60))
+                for entry in _resumable_sessions(ctx)]
+    if command == "attach":
+        return [("clear", "drop what is queued")] + _path_candidates(word)
+    if command == "export":
+        return _path_candidates(word)
+    if command == "vars":
+        tracker: Any = getattr(ctx.agent, "_session_tracker", None)
+        current: dict[str, Any] = {}
+        try:
+            current = dict(tracker.get_session_template_vars(ctx.session_id) or {})
+        except Exception:
+            logger.debug("Could not read template vars for completion", exc_info=True)
+        return ([("unset", "remove one"), ("clear", "empty them")]
+                + [(f"{name}=", str(value)[:60]) for name, value in sorted(current.items())])
+    return []
+
+
+def _build_completer(suggest: Callable[[str], list[tuple[str, str]]]) -> Any:
+    """A prompt_toolkit completer that asks *suggest* what fits the line.
+
+    Never raises into the prompt: an exception thrown while completing takes
+    the editor down mid-keystroke, and losing the prompt is worse than losing
+    a suggestion.
+
+    Threaded, because prompt_toolkit completes WHILE TYPING and runs a plain
+    completer inline in its own loop: listing a directory for /attach is disk
+    I/O on every keystroke, and one unreachable network share would freeze
+    the prompt for the whole SMB timeout -- including the Ctrl-C out of it.
+    """
+    from prompt_toolkit.completion import Completer, Completion, ThreadedCompleter
+
+    class _ChatCompleter(Completer):  # type: ignore[misc]
+        def get_completions(self, document: Any, complete_event: Any) -> Any:
+            line = document.text_before_cursor
+            if "\n" in line:
+                return  # a pasted block is content, not a command
+            if document.text_after_cursor.strip():
+                # Only at the end of the line. The span that gets replaced is
+                # measured from the cursor backwards, so completing in the
+                # middle left the rest of the word standing: "/res|ume abc"
+                # became "/resumeume abc".
+                return
+            word = _completion_word(line)
+            try:
+                candidates = suggest(line)
+            except Exception:
+                logger.debug("Completion failed", exc_info=True)
+                return
+            for value, hint in candidates:
+                if value.startswith(word):
+                    yield Completion(value, start_position=-len(word),
+                                     display_meta=hint)
+
+    return ThreadedCompleter(_ChatCompleter())
+
+
+def _build_prompt_editor(
+    seed: Sequence[str],
+    suggest: Optional[Callable[[str], list[tuple[str, str]]]] = None,
+) -> Optional[_PromptEditor]:
     """Line editing with an arrow-up history, or None to stay on input().
 
     Arrow-up recalling the previous message is what every shell and every
@@ -988,7 +1137,8 @@ def _build_prompt_editor(seed: Sequence[str]) -> Optional[_PromptEditor]:
         return None
     try:
         return _PromptEditor(PromptSession, InMemoryHistory, seed,
-                             key_bindings=_prompt_key_bindings())
+                             key_bindings=_prompt_key_bindings(),
+                             completer=_build_completer(suggest) if suggest else None)
     except Exception:
         # No console to drive (MSYS, a stray pipe) is no reason to lose the
         # prompt -- input() still reads lines, just without the arrow keys.
@@ -1144,6 +1294,12 @@ class _ChatContext:
         # Which session id actually reached disk (None until the first save):
         # the exit message must not claim a save that never happened.
         self.last_saved: Optional[str] = None
+        # ...and under which agent. /agent switches entry_name, and the
+        # exit hint would then offer the session of the agent before it
+        # with the new agent's name -- a command the CLI does NOT refuse:
+        # an explicit --agent outranks the record, loads the foreign
+        # session and writes the wrong agent into it on the first save.
+        self.last_saved_agent: Optional[str] = None
         # Cumulative usage across the chat, for the exit line.
         self.total_usage: dict[str, float] = {}
         # Files queued by /attach (or --attach) for the NEXT message (absolute
@@ -1158,6 +1314,11 @@ class _ChatContext:
         # a line typed MID-TURN is classified by the same rule as one typed at
         # the prompt -- "/plugin:command" is claimed by nothing else.
         self.plugin_commands: list[PluginCommand] = []
+        # Session records for "/resume" without an id and for completing one,
+        # newest first. Filled on demand, never at startup: listing them walks
+        # the index AND stats every session for children, which is a cost the
+        # chat should pay when someone asks for it, not on every start.
+        self.recent_sessions: list[dict] = []
 
     def llm_label(self) -> str:
         """Profile plus the model behind it.
@@ -1176,6 +1337,47 @@ class _ChatContext:
         except Exception:
             logger.debug("Could not resolve model for banner", exc_info=True)
         return self.llm_profile
+
+
+def _report_what_stays_behind(ctx: "_ChatContext", previous: str) -> None:
+    """Say what the session being left takes with it, and what waits here.
+
+    Both ways out of a session pass here (`/new`, `/agent` and `/resume`): a
+    title typed with `/rename` before the first message has no record to go
+    into and dies with the session -- and losing it without a word looks like
+    a bug. Queued attachments do NOT die; they are simply easy to forget
+    once the chat says "New session".
+
+    What it does NOT say is whether that title reached the disk. A /rename of
+    a session that HAS a record writes it and keeps ctx.session_title only so
+    a later save cannot put the old name back -- "nothing written yet" was a
+    plain lie about that session.
+    """
+    if ctx.session_title:
+        print(f"(the title '{ctx.session_title}' stays with {previous} -- "
+              f"the session you are going to starts unnamed)")
+    if ctx.attachments:
+        print(f"({len(ctx.attachments)} attachment(s) stay queued for the "
+              f"next message -- /attach clear drops them)")
+
+
+def _open_fresh_session(ctx: "_ChatContext", editor: Optional["_PromptEditor"]) -> str:
+    """Move the chat onto a brand-new session and let go of the old one.
+
+    The history belongs to the session, so it changes with it -- otherwise
+    the fresh prompt keeps offering the abandoned conversation while the
+    transcript shows the new one.
+    """
+    previous = ctx.session_id
+    _report_what_stays_behind(ctx, previous)
+    ctx.session_id = _init_fresh_session(ctx)
+    ctx.was_new_session = True
+    ctx.session_title = None
+    _hold_session(ctx, ctx.session_id)
+    _release_session(ctx, previous)
+    if editor:
+        editor.reseed(_history_seed(ctx))
+    return ctx.session_id
 
 
 def _init_fresh_session(ctx: _ChatContext) -> str:
@@ -1582,6 +1784,79 @@ def _show_last(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
         print("The last turn used no tools.")
 
 
+def _drop_last_exchange(ctx: "_ChatContext") -> Optional[Any]:
+    """Remove the last question and everything that answered it.
+
+    Returns the MESSAGE, not its text: an attachment makes it multimodal, and
+    ``/retry`` has to send the parts again. Reading it back as text handed the
+    model "what is wrong here? [image_url]" -- a billed turn about nothing.
+
+    The agent's own message list is what gets cut; the session file follows on
+    the next save. A retry that left the first attempt in the history would
+    ask the model to improve on an answer it can still see.
+    """
+    messages = _session_messages(ctx)
+    tracker = getattr(ctx.agent, "_session_tracker", None)
+    if tracker is None:
+        return None
+    for i in range(len(messages) - 1, -1, -1):
+        if _is_real_turn(messages[i]):
+            try:
+                tracker.set_session_messages(ctx.session_id, messages[:i])
+            except Exception as e:
+                logger.error("Could not drop the last exchange: %s", e, exc_info=True)
+                print(f"Could not drop the last exchange: {e}")
+                return None
+            return messages[i]
+    return None
+
+
+def _export_transcript(ctx: "_ChatContext", payload: str) -> None:
+    """Write the conversation to a markdown file.
+
+    An existing file is never overwritten: the obvious name (`/export`
+    without a path) is the same for every export of one session, and losing
+    yesterday's transcript to today's would be silent.
+    """
+    messages = _session_messages(ctx)
+    if not messages:
+        print("Nothing to export -- this session has no messages yet.")
+        return
+    try:
+        path = Path(payload.strip() or f"chat-{ctx.session_id}.md").expanduser()
+    except RuntimeError as e:
+        # A "~name" with no home behind it RAISES -- `/export ~$notes.md`, the
+        # lock file Word leaves next to a document. Nothing catches around the
+        # dispatch, so it took the whole chat down. /attach learned this once.
+        print(f"Cannot write there: {e}")
+        return
+    if path.exists():
+        print(f"{path} exists already -- /export <path> writes somewhere else.")
+        return
+
+    lines = [f"# Chat with {ctx.entry_name}", "",
+             f"Session `{ctx.session_id}` -- LLM: {ctx.llm_label()}", ""]
+    for message in messages:
+        role = getattr(message, "role", "?")
+        text = _message_text(message).strip()
+        if role == "user":
+            lines += ["## You", "", text, ""]
+        elif role == "assistant":
+            if text:
+                lines += ["## Agent", "", text, ""]
+            for call in getattr(message, "tool_calls", None) or []:
+                name, arguments = _tool_call_summary(call)
+                lines.append(f"- tool `{name}` {_one_line(arguments, 120)}")
+        elif role == "tool":
+            lines.append(f"  -> {_one_line(text, 120)}")
+    try:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as e:
+        print(f"Could not write {path}: {e}")
+        return
+    print(f"Written: {path.resolve()}")
+
+
 def _usage_tracker(ctx: "_ChatContext") -> Any:
     """The registered context_usage_tracker's UsageTracker, or None.
 
@@ -1691,6 +1966,12 @@ def _use_profile(ctx: "_ChatContext", wanted: str,
         })
 
 
+def _llm_profiles(ctx: "_ChatContext") -> dict:
+    """The configured LLM profiles -- one reader for the switch and its Tab."""
+    llm_system = getattr(getattr(ctx.agent, "system_config", None), "llm_system", None)
+    return dict(getattr(llm_system, "profiles", None) or {})
+
+
 def _switch_model(ctx: "_ChatContext", payload: str) -> bool:
     """Show or change the LLM profile this chat runs on; True if it changed.
 
@@ -1699,9 +1980,7 @@ def _switch_model(ctx: "_ChatContext", payload: str) -> bool:
     (agent_cli.stored_session_settings reads it back) -- the caller writes
     the record at once.
     """
-    system_config = getattr(ctx.agent, "system_config", None)
-    llm_system = getattr(system_config, "llm_system", None)
-    profiles = dict(getattr(llm_system, "profiles", None) or {})
+    profiles = _llm_profiles(ctx)
     wanted = payload.strip()
 
     if not wanted:
@@ -1734,6 +2013,100 @@ def _switch_model(ctx: "_ChatContext", payload: str) -> bool:
         return False
 
     print(f"LLM: {ctx.llm_profile_info}   (from the next message on)")
+    return True
+
+
+def _agent_names(ctx: "_ChatContext") -> list[str]:
+    """Agents this configuration defines -- the CLI's own gate, not a copy.
+
+    Reading it a second time here is how a listing and its factory drift
+    apart: /agent would offer a name that _build_entry_agent then rejects.
+    """
+    from ..agent_cli import agent_entry_names
+
+    return agent_entry_names(getattr(ctx.agent, "system_config", None))
+
+
+def _agent_for(ctx: "_ChatContext", name: str) -> Any:
+    """The agent object for *name*, through the CLI's own factory.
+
+    Not a second copy of it: that one applies the MERGED server config, and
+    the copy this chat would grow instead is how an agent ends up with a
+    quietly downgraded max_steps.
+    """
+    from ..agent_cli import entry_agent
+
+    config: Any = getattr(ctx.agent, "system_config", None)
+    registry: Any = getattr(ctx.agent, "registry", None)
+    return entry_agent(name, config, registry, ctx.session_service)
+
+
+def _switch_agent(ctx: "_ChatContext", payload: str) -> bool:
+    """Show or change the agent this chat talks to; True if it changed.
+
+    A switch ALWAYS starts a new session, and that is the whole difficulty:
+    a session carries the agent it ran with (cli_utils/session_defaults.py),
+    so continuing this one under another agent would run it with foreign
+    tools and a foreign prompt, and the next save would write the new name
+    over its record. The caller does the session part -- holding the new one
+    before letting the old one go.
+    """
+    wanted = payload.strip()
+    names = _agent_names(ctx)
+
+    if not wanted:
+        print(f"Agent: {ctx.entry_name}")
+        if not names:
+            print("  (this config defines no agents)")
+            return False
+        for name in names:
+            print(f" {'*' if name == ctx.entry_name else ' '} {name}")
+        print("  /agent <name> switches; the chat starts a new session for it.")
+        return False
+
+    if wanted == ctx.entry_name:
+        print(f"Already on {ctx.entry_name}.")
+        return False
+    if wanted not in names:
+        close = difflib.get_close_matches(wanted, names, n=1, cutoff=0.6)
+        print(f"Unknown agent: {wanted}"
+              + (f"   Did you mean {close[0]}?" if close else ""))
+        print("  /agent lists them.")
+        return False
+
+    try:
+        agent = _agent_for(ctx, wanted)
+    except SystemExit:
+        # The factory exits the process when it cannot build one. Not from
+        # inside a REPL: the person is mid-conversation.
+        print(f"Could not build agent '{wanted}'.")
+        return False
+    except Exception as e:
+        logger.error("Could not switch to agent %s: %s", wanted, e, exc_info=True)
+        print(f"Could not switch to '{wanted}': {e}")
+        print(f"Staying on {ctx.entry_name}.")
+        return False
+
+    ctx.agent = agent
+    ctx.entry_name = wanted
+    # The new agent's own LLM, not the one the old one was switched to: a
+    # /model choice belongs to the agent it was made for, and the override
+    # would keep answering for an agent that never asked for it. That also
+    # ends a --llm given on the command line, which is worth saying: the
+    # banner would otherwise name a profile nobody chose here.
+    if ctx.llm_override is not None:
+        print(f"({ctx.llm_profile_info or ctx.llm_profile} no longer applies -- "
+              f"{wanted} answers on its own profile; /model switches it)")
+    ctx.llm_override = None
+    ctx.llm_profile_info = None
+    ctx.llm_profile = (getattr(getattr(agent, "agent_config", None),
+                               "default_llm_profile", None) or ctx.llm_profile)
+    try:
+        ctx.plugin_commands = list(collect_plugin_commands(agent))
+    except Exception as e:  # noqa: BLE001 - a broken schema must not end the chat
+        logger.error("Could not collect the commands of %s: %s", wanted, e, exc_info=True)
+        print(f"({wanted} has no plugin commands here: {e})")
+        ctx.plugin_commands = []
     return True
 
 
@@ -1978,6 +2351,7 @@ def _save_now(loop: asyncio.AbstractEventLoop, ctx: "_ChatContext") -> bool:
             saved = _finish_save(loop, task)
     if saved:
         ctx.last_saved = ctx.session_id
+        ctx.last_saved_agent = ctx.entry_name
         ctx.was_new_session = False
         ctx.session_title = None  # written; a later save keeps it
     return bool(saved)
@@ -1995,6 +2369,101 @@ def _run_plugin_command(loop: asyncio.AbstractEventLoop, ctx: "_ChatContext",
         print(output)
 
 
+async def _load_recent_sessions(ctx: _ChatContext) -> list[dict]:
+    """This user's sessions, newest first, remembered on the context.
+
+    One source for three readers: `/sessions`, `/resume` without an id, and
+    the completion behind `/resume <Tab>`. Never raises -- a broken index
+    must not take a command down with it.
+    """
+    if ctx.session_manager is None:
+        return []
+    try:
+        ctx.recent_sessions = list(
+            await ctx.session_manager.list_root_sessions(ctx.session_user) or [])
+    except Exception as e:  # noqa: BLE001 - a broken index is not fatal here
+        # Said out loud, like the listing next door: what comes back is the
+        # PREVIOUS list, and a bare /resume acts on it. "No earlier session"
+        # would be a lie about the index, and console logging is off by now.
+        logger.error("Could not list sessions: %s", e, exc_info=True)
+        print(f"Could not list sessions: {e}   (using what was listed before)")
+    return ctx.recent_sessions
+
+
+def _resumable_sessions(ctx: _ChatContext) -> list[dict]:
+    """The listed sessions this chat could actually take over.
+
+    Its own agent's, and not the one already open: a session carries the agent
+    that ran it, and _resume_session refuses a foreign one. Offering those
+    anyway meant a bare /resume announced a session and then bounced it --
+    with two agents in the config that is the normal case, not the edge.
+    An entry with no agent name (an index written before that field) is left
+    in: refusing it here would hide a session that resumes fine.
+    """
+    return [entry for entry in ctx.recent_sessions
+            if entry.get("session_id") and entry.get("session_id") != ctx.session_id
+            and (entry.get("agent_name") or ctx.entry_name) == ctx.entry_name]
+
+
+def _last_session(ctx: _ChatContext) -> Optional[dict]:
+    """The newest session this chat can continue."""
+    return next(iter(_resumable_sessions(ctx)), None)
+
+
+async def _resume_into(ctx: _ChatContext, session_id: str, previous: str) -> bool:
+    """Take *session_id* over, and let go of whichever session is left behind.
+
+    The hold comes BEFORE the load -- a session another process is running
+    must not be pulled out from under it -- and the release is in a
+    ``finally``: a Ctrl-C lands inside the load, and a hold taken there and
+    never given back locks the session for the rest of the process.
+    """
+    if not _hold_session(ctx, session_id):
+        return False  # another process runs it: the chat stays where it is
+    switched = False
+    try:
+        switched = await _resume_session(ctx, session_id)
+    finally:
+        _release_session(ctx, previous if switched else session_id)
+    return switched
+
+
+async def _resume_last_session(ctx: _ChatContext, previous: str) -> bool:
+    """`/resume` without an id: continue where this user last left off."""
+    await _load_recent_sessions(ctx)
+    entry = _last_session(ctx)
+    if entry is None:
+        print("No earlier session to continue. /sessions lists them.")
+        return False
+    session_id = entry["session_id"]
+    title = " ".join((entry.get("title") or "Untitled").split())
+    print(f"Resuming {session_id} -- {_one_line(title, 60)}")
+    return await _resume_into(ctx, session_id, previous)
+
+
+async def _rename_current_session(ctx: _ChatContext, title: str) -> bool:
+    """Give the open session a title, the one `/sessions` shows."""
+    if not title:
+        print("Usage: /rename <title>")
+        return False
+    if ctx.was_new_session or ctx.session_manager is None:
+        # Nothing on disk yet: the title rides along with the first save,
+        # exactly as --session-title does.
+        ctx.session_title = title
+        print(f"Title: {title}   (written with the first message)")
+        return True
+    try:
+        await ctx.session_manager.rename_session(ctx.session_user, ctx.session_id, title)
+    except Exception as e:
+        logger.error("Could not rename session %s: %s", ctx.session_id, e, exc_info=True)
+        print(f"Could not rename the session: {e}")
+        return False
+    # The record is written; a later save must not put the old one back.
+    ctx.session_title = title
+    print(f"Title: {title}")
+    return True
+
+
 async def _list_sessions(ctx: _ChatContext, payload: str = "") -> None:
     """Show this user's own sessions -- `/sessions [count]`, 0 for all."""
     limit, complaint = parse_limit(payload, DEFAULT_LIMIT)
@@ -2003,13 +2472,17 @@ async def _list_sessions(ctx: _ChatContext, payload: str = "") -> None:
         # prints a plausible listing is indistinguishable from a honoured one.
         print(f"Usage: /sessions [count]   (got: {complaint})")
         return
-    await print_sessions(
+    # What it printed is what the completion and a bare /resume read -- taken
+    # from the listing it already did, not from a second walk of the index.
+    listed = await print_sessions(
         ctx.session_manager, ctx.session_user,
         limit=limit,
         current_session_id=ctx.session_id,
         more_hint="/sessions <count>, /sessions 0 for all",
         footer="Use /resume <id> to continue one.",
     )
+    if listed:
+        ctx.recent_sessions = listed
 
 
 async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
@@ -2056,9 +2529,12 @@ async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
     if not exists:
         print(f"No session '{session_id}' for user '{ctx.session_user}'.")
         return False
+    # The title belonged to the session being left -- from --session-title or
+    # from a /rename it never got to write. Named, then dropped.
+    _report_what_stays_behind(ctx, ctx.session_id)
     ctx.session_id = session_id
     ctx.was_new_session = False
-    ctx.session_title = None  # --session-title named the session left behind
+    ctx.session_title = None
     tracker = getattr(ctx.agent, "_session_tracker", None)
     if tracker is not None:
         # The turn loop reads metadata for tool context; without this the
@@ -2558,7 +3034,10 @@ def run_chat_loop(
             piped = False
         if piped:
             _skip_piped_bom()
-        editor = _build_prompt_editor(_history_seed(ctx)) if interactive else None
+        editor = _build_prompt_editor(
+            _history_seed(ctx),
+            suggest=lambda line: _completions_for(ctx, _available_skills(ctx), line),
+        ) if interactive else None
         read_line = editor.read if editor else None
         read_cont = editor.read_continuation if editor else None
 
@@ -2668,18 +3147,7 @@ def run_chat_loop(
                 if command == "exit":
                     break
                 if command == "new":
-                    previous = ctx.session_id
-                    ctx.session_id = _init_fresh_session(ctx)
-                    ctx.was_new_session = True
-                    ctx.session_title = None
-                    _hold_session(ctx, ctx.session_id)
-                    _release_session(ctx, previous)
-                    # The history belongs to the session, so it changes with it --
-                    # otherwise the fresh prompt keeps offering the abandoned
-                    # conversation while the transcript shows the new one.
-                    if editor:
-                        editor.reseed(_history_seed(ctx))
-                    print(f"New session: {ctx.session_id}")
+                    print(f"New session: {_open_fresh_session(ctx, editor)}")
                     continue
                 if command == "session":
                     print(f"Session: {ctx.session_id}  (user: {ctx.session_user})")
@@ -2690,20 +3158,30 @@ def run_chat_loop(
                     continue
                 if command == "resume":
                     previous = ctx.session_id
-                    if not payload:
-                        print("Usage: /resume <session-id>   (/sessions lists them)")
-                        continue
-                    if not _hold_session(ctx, payload):
-                        continue  # another process runs it: the chat stays where it is
+                    # Bare: the one this user last left. The id is only known
+                    # after the listing, so the hold lives inside either way.
                     finished, resumed = _run_interruptible(
-                        loop, _resume_session(ctx, payload), "/resume")
+                        loop,
+                        _resume_into(ctx, payload, previous) if payload
+                        else _resume_last_session(ctx, previous),
+                        "/resume")
                     if finished and resumed:
-                        _release_session(ctx, previous)
                         if editor:
                             editor.reseed(_history_seed(ctx))
                         print(f"Resumed session: {ctx.session_id}")
-                    else:
-                        _release_session(ctx, payload)  # it was taken for the load
+                    continue
+                if command == "rename":
+                    _run_interruptible(loop, _rename_current_session(ctx, payload),
+                                       "/rename")
+                    continue
+                if command == "agent":
+                    if not _switch_agent(ctx, payload):
+                        continue
+                    # The agent's commands change with it, and the session
+                    # does too: one belongs to the agent that ran it.
+                    plugin_commands = ctx.plugin_commands
+                    print(f"Agent: {ctx.entry_name}   LLM: {ctx.llm_label()}")
+                    print(f"New session: {_open_fresh_session(ctx, editor)}")
                     continue
                 if command == "vars":
                     _run_interruptible(loop, _handle_vars(ctx, renderer, payload), "/vars")
@@ -2732,6 +3210,38 @@ def run_chat_loop(
                 if command == "attach":
                     _handle_attach(ctx, payload)
                     continue
+                if command == "export":
+                    _export_transcript(ctx, payload)
+                    continue
+                if command in ("undo", "retry"):
+                    dropped = _drop_last_exchange(ctx)
+                    if dropped is None:
+                        print("Nothing to take back in this session yet.")
+                        continue
+                    asked = _message_text(dropped).strip()
+                    print(renderer._colored(f"(dropped: {_one_line(asked, 70)})", "90"))
+                    # The record has to match what the agent now holds, or the
+                    # next `--session <id>` brings the dropped turn back --
+                    # which is also why a session emptied by /undo is written
+                    # empty (services/session_service.py, SessionTracker.emptied).
+                    # A save that fails is named without guessing at the cause.
+                    if not ctx.was_new_session and not _save_now(loop, ctx):
+                        print(f"(the shortened session was NOT written -- "
+                              f"--session {ctx.session_id} still brings the "
+                              f"dropped turn back)", file=sys.stderr)
+                    if command == "undo":
+                        continue
+                    # /retry asks the same thing again, as a turn of its own,
+                    # with the parts it was sent with (an image, an audio file).
+                    # The MESSAGE goes back, not its content: the agent takes a
+                    # str or a ChatMessage, and the bare list of parts fell
+                    # through both -- sanitize_for_llm cannot read a list and
+                    # returns "", so the retry billed a turn about nothing.
+                    task = dropped if getattr(dropped, "content", None) else asked
+                    if not isinstance(task, str) and ctx.attachments:
+                        print("(/attach stays queued: this retry sends the parts "
+                              "the dropped message carried)")
+                    print(f"{prompt}{_one_line(asked, 200)}")
                 if command == "help":
                     print(_help_text(skill_names, plugin_commands))
                     continue
@@ -2744,7 +3254,10 @@ def run_chat_loop(
                     print(f"/help lists the commands; //{payload[1:]} sends it as a message.")
                     continue
 
-                if ctx.attachments:
+                # isinstance: a /retry hands over the parts the dropped message
+                # already carried, and merging those into a second multimodal
+                # message would send the text twice and the file not at all.
+                if ctx.attachments and isinstance(task, str):
                     task = _task_with_attachments(ctx, task, renderer)
                     if task is None:
                         continue
@@ -2818,7 +3331,8 @@ def run_chat_loop(
                 "90"))
         if ctx.last_saved:
             print(f"Session saved: {ctx.last_saved}", file=sys.stderr)
-            print(f"Resume with: {_resume_hint(ctx, ctx.last_saved)}", file=sys.stderr)
+            print(f"Resume with: {_resume_hint(ctx, ctx.last_saved, ctx.last_saved_agent)}",
+                  file=sys.stderr)
         # A BORROWED loop is not ours to tear down: the CLI's finally still
         # runs shutdown_mcp/shutdown_batch_system on it after we return, and
         # close_cli_loop() at exit does the cancel/asyncgens/executor/close

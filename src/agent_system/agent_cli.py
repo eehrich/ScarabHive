@@ -144,6 +144,55 @@ def parse_llm_params_args(raw_items: Optional[List[str]]) -> Optional[Dict[str, 
     return params or None
 
 
+def agent_entry_names(config: Any) -> list[str]:
+    """Names this configuration can build an entry agent for, sorted.
+
+    The RAW ``plugins.servers`` entry with an ``agent_config`` -- the same gate
+    _build_entry_agent applies below, and the reason both read it here: a
+    listing that offers a name the factory then rejects is worse than none.
+
+    Raw on purpose. plugins.default_config carries an agent_config, so every
+    MERGED config has one and a merged gate would wave through any tool server
+    (measured on the real config: 96 of 219 servers have no raw agent_config,
+    all of them tool servers, no agent among them).
+    """
+    servers = getattr(getattr(config, "plugins", None), "servers", None) or {}
+    return sorted(name for name, entry in servers.items()
+                  if getattr(entry, "agent_config", None))
+
+
+def entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCPRegistry,
+                session_service) -> Agent:
+    """The agent for *entry_name*: the registered one, or a fresh build.
+
+    A registered agent is rewired to THIS process's registry and session
+    service -- bootstrap injects both, but an agent picked up later (the
+    chat's /agent) would otherwise save into whatever service built it.
+
+    Exits the process when the name belongs to something that is not an agent,
+    or cannot be built at all. A caller that must survive mid-conversation
+    catches SystemExit.
+    """
+    from .servers.agent.server import Agent as _Agent
+
+    if entry_name in registry.list():
+        existing = registry.get(entry_name)
+        if not isinstance(existing, _Agent):
+            # The name belongs to a plugin or tool server, not an agent.
+            logger.error(f"'{entry_name}' is registered as {type(existing).__name__}, not an Agent")
+            print(f"Error: '{entry_name}' is not an agent. It's a {type(existing).__name__}.",
+                  file=sys.stderr)
+            print("\nAvailable agents:", file=sys.stderr)
+            for name in registry.list():
+                if isinstance(registry.get(name), _Agent):
+                    print(f"  - {name}", file=sys.stderr)
+            sys.exit(1)
+        existing.registry = registry  # type: ignore[attr-defined]
+        existing._session_service = session_service  # type: ignore[attr-defined]
+        return existing
+    return _build_entry_agent(entry_name, config, registry, session_service)
+
+
 def _build_entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCPRegistry,
                        session_service) -> Agent:
     """Build the entry agent when bootstrap did not register it, from its
@@ -156,15 +205,11 @@ def _build_entry_agent(entry_name: str, config: AgentSystemConfig, registry: MCP
     30, so an agent built here ran a quietly downgraded configuration.
 
     Exits with a listing of the available agents when the name has no
-    agent config at all (unchanged behaviour). That gate keeps reading the
-    RAW entry: plugins.default_config carries an agent_config, so every
-    merged config has one and a merged gate would wave through any tool
-    server name (measured on the real config: 96 of 219 servers have no raw
-    agent_config, all of them tool servers, no agent among them).
+    agent config at all (unchanged behaviour) -- the gate is
+    agent_entry_names above, which is also what /agent offers.
     """
     logger.info("Creating new Agent instance '%s'", entry_name)
-    raw_config = config.plugins.servers.get(entry_name) if config.plugins else None
-    if not raw_config or not getattr(raw_config, 'agent_config', None):
+    if entry_name not in agent_entry_names(config):
         logger.error(f"Cannot create agent '{entry_name}': no agent_config found in MCP config")
         print(f"Error: Agent '{entry_name}' not found and cannot be created (no agent_config in plugins.yaml).", file=sys.stderr)
         print("\nAvailable agents:", file=sys.stderr)
@@ -1173,30 +1218,10 @@ def main() -> None:
     if stored_agent and entry_name == stored_agent:
         vprint(f"[cli] continuing session with its own agent: {entry_name}")
 
-    # Get or create the agent
-    from .servers.agent.server import Agent as _Agent
-
-    agent = None
-    if entry_name in registry.list():
-        existing = registry.get(entry_name)
-        if isinstance(existing, _Agent):
-            agent = existing
-            agent.registry = registry  # type: ignore[attr-defined]
-            # Update session_service for existing agent
-            agent._session_service = session_service  # type: ignore[attr-defined]
-        else:
-            # Entry exists but is not an Agent (probably a plugin/tool)
-            logger.error(f"'{entry_name}' is registered as {type(existing).__name__}, not an Agent")
-            print(f"Error: '{entry_name}' is not an agent. It's a {type(existing).__name__}.", file=sys.stderr)
-            print("\nAvailable agents:", file=sys.stderr)
-            for name in registry.list():
-                server = registry.get(name)
-                if isinstance(server, _Agent):
-                    print(f"  - {name}", file=sys.stderr)
-            sys.exit(1)
-
-    if agent is None:
-        agent = _build_entry_agent(entry_name, config, registry, session_service)
+    # Get or create the agent -- the same way /agent does it mid-chat.
+    was_registered = entry_name in registry.list()
+    agent = entry_agent(entry_name, config, registry, session_service)
+    if not was_registered:
         vprint(f"[cli] created agent: {entry_name}")
 
     # --max-steps: the budget for THIS process, not a config change.

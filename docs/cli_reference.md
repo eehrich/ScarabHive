@@ -168,7 +168,9 @@ Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
 | `/new` | Start a fresh session (the current one stays saved) |
 | `/session` | Show the current session and the command that resumes it |
 | `/sessions [count]` | List this user's sessions, one line each (default 20, `0` = all). Sub-agent sessions are left out — they outnumber the real ones ten to one |
-| `/resume <id>` | Continue an earlier session without leaving the chat. Wie `--session <id>`: die Session läuft auf ihrem eigenen LLM weiter. Eine Session eines anderen Agenten wird abgelehnt, mit dem Befehl, der sie fortsetzt — in diesem Chat liefe sie mit fremden Tools und fremdem Prompt, und das nächste Speichern schriebe diesen Agenten in ihren Datensatz. Dasselbe, wenn sich ihr LLM hier nicht starten lässt (fehlender Schlüssel): sonst liefe sie auf dem Profil dieses Chats, und das Speichern überschriebe ihre eigene Wahl |
+| `/resume [id]` | Continue an earlier session without leaving the chat; ohne ID die letzte, die dieser Nutzer verlassen hat. Wie `--session <id>`: die Session läuft auf ihrem eigenen LLM weiter. Eine Session eines anderen Agenten wird abgelehnt, mit dem Befehl, der sie fortsetzt — in diesem Chat liefe sie mit fremden Tools und fremdem Prompt, und das nächste Speichern schriebe diesen Agenten in ihren Datensatz. Dasselbe, wenn sich ihr LLM hier nicht starten lässt (fehlender Schlüssel): sonst liefe sie auf dem Profil dieses Chats, und das Speichern überschriebe ihre eigene Wahl |
+| `/rename <title>` | Der Session einen Namen geben — den, den `/sessions` zeigt. Eine Session ohne ersten Turn hat noch keinen Datensatz; dort geht der Titel mit dem ersten Speichern mit |
+| `/agent [name]` | Agent dieses Chats — ohne Argument listet es die Agenten der Konfiguration, mit Argument wird gewechselt. Der Wechsel startet **immer eine neue Session**: eine Session trägt den Agenten, mit dem sie lief, und unter einem anderen liefe sie mit fremden Tools und fremdem Prompt. Der neue Agent läuft auf seinem eigenen LLM, ein `/model` davor gilt für ihn nicht |
 | `/vars [KEY=VALUE ...]` | Template variables of this session — bare lists them, `unset KEY` removes one, `clear` empties. The same variables `--vars` fills. A change reaches the agent on its next step and is written to the session file at once, so a removal survives `/resume` |
 | `/model [profile]`, `/llm` | LLM dieser Session — ohne Argument listet es die Profile und markiert das laufende, mit Argument wird gewechselt. Gilt ab der nächsten Nachricht und wird sofort in die Session geschrieben, ein späteres `--session <id>` startet also darauf — auch wenn der Chat gleich danach endet. Eine Session ohne erste Nachricht hat noch keinen Datensatz; dort landet die Wahl mit dem ersten Speichern. `--llm-params` gehen mit |
 | `/tools [filter]` | Tools the agent really has, grouped by server (optionally filtered) |
@@ -176,8 +178,12 @@ Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
 | `/costs` | Session cost so far **including sub-agents** (needs `context_usage_tracker`) |
 | `/history [n]` | Last `n` exchanges (default 6); tool traffic condensed to one line each |
 | `/last` | The last turn's tool calls and results in full, formatted |
+| `/undo` | Die letzte Frage und alles, was sie beantwortet hat, aus der Session nehmen. Der Datensatz wird sofort mitgeschnitten, sonst holt `--session <id>` den Turn zurück — auch dann, wenn die Session danach leer ist. Lässt sich der gekürzte Stand nicht schreiben, sagt der Chat es, statt den Turn als weg auszugeben |
+| `/retry` | Dasselbe, und die Frage gleich noch einmal stellen — mit den Anhängen, mit denen sie gestellt wurde. Das Modell sieht seinen ersten Versuch dabei **nicht** mehr, genau darum wird geschnitten statt angehängt |
+| `/export [path]` | Das Gespräch als Markdown schreiben: Fragen, Antworten, die Tool-Aufrufe und ihre Ergebnisse gekürzt (`/last` zeigt sie ganz). Ohne Pfad `chat-<session>.md` im aktuellen Verzeichnis; eine vorhandene Datei wird nie überschrieben |
 | `/help`, `/h`, `/?` | List the commands |
 | ↑ / ↓ | Walk the input history; Ctrl-R searches it |
+| Tab | Vervollständigt, was zur Zeile passt: am `/` die Kommandos, Plugin-Kommandos und Skills, hinter `/model` die Profile, hinter `/agent` die Agenten, hinter `/vars` die Variablen dieser Session, hinter `/attach` Pfade (auch mit Backslash). Hinter `/resume` die Sessions, die der Prozess schon gesehen hat — `/sessions` oder ein leeres `/resume` füllen die Liste. In einer Nachricht wird nichts angeboten |
 | Ctrl-C | Cancel the **running turn**; twice at the prompt exits. Bricht auch ein laufendes Kommando ab (`/sessions`, `/resume`, `/vars`, `/tools`, ein Plugin-Kommando), ohne den Chat zu beenden; ein laufendes Speichern wird erst zu Ende gebracht, ein zweites Ctrl-C lässt es fallen. Nach Ctrl-C laufen vorgemerkte Zeilen nie als neue Turns — auch dann nicht, wenn die Antwort schneller war |
 
 Plugins add their own, listed under *Plugin commands* in `/help` — but only
@@ -195,9 +201,14 @@ terminal uses; it needs a session, which in the browser exists from the first
 message on. It reads the persisted variables merged with the live ones — the
 browser can open a session the running process has never loaded, and listing
 only the live half would report "none" for a session whose file is full, then
-overwrite it. Two are terminal-only by nature:
-`/exit` (no terminal to leave) and `/attach` (the browser has its own upload
-button).
+overwrite it. Acht sind terminal-eigen: `/exit` (kein Terminal zum Verlassen),
+`/attach` (der Browser hat seinen Upload-Knopf), `/model` und `/agent` (beides
+wählt der Browser in seinen eigenen Selektoren, und ein Kommando, das dem
+Selektor widerspricht, ist schlimmer als keines), `/rename` (gehört dort an die
+Session-Liste, nicht ins Nachrichtenfeld) sowie `/undo`, `/retry` und `/export`
+— die ersten beiden schreiben um, was der Agent im Speicher hält, und der
+Browser lädt die Session bei jeder Nachricht neu von der Platte; `/export`
+schriebe auf die Platte des Servers, nicht auf die des Betrachters.
 
 Plugin commands work there as well, and stay per-agent: the browser asks
 `/chat/commands?agent=<name>` for the list and `POST /chat/command` runs one.
