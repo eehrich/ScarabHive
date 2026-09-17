@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from typing import Any, Optional
 from pathlib import Path
 import os
@@ -118,6 +119,64 @@ def _resolve_relative_paths(data: dict, base_dir: Path) -> dict:
     return _walk(data)  # type: ignore[return-value]
 
 
+_ENV_PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
+
+
+def expand_env(value: Any, missing: Optional[set[str]] = None) -> Any:
+    """`value` with every ${VAR} replaced from the environment, as the loader reads the YAML.
+
+    An unset variable becomes "" and its name goes into `missing` -- collected, not silently blanked: an unset key
+    used to surface hours later as an opaque 401 from a provider; the operator needs the VARIABLE NAME.
+    """
+    if isinstance(value, str):
+        def repl(match: re.Match) -> str:
+            name = match.group(1)
+            if name not in os.environ:
+                if missing is not None:
+                    missing.add(name)
+                return ""
+            return os.environ[name]
+        return _ENV_PLACEHOLDER.sub(repl, value)
+    if isinstance(value, dict):
+        return {k: expand_env(v, missing) for k, v in value.items()}
+    if isinstance(value, list):
+        return [expand_env(v, missing) for v in value]
+    return value
+
+
+def _expand_includes(master: dict, cfg_path: Path) -> list[str]:
+    """The master config's `includes` (or `files`), globs expanded, relative to the config directory.
+
+    A pattern that matches nothing stays in the list, for the error report of the loader.
+    """
+    includes = master.get("includes") or master.get("files") or []
+    if isinstance(includes, str):
+        includes = [includes]
+    expanded: list[str] = []
+    for inc in includes:
+        if '*' in inc or '?' in inc or '[' in inc:
+            pattern = inc if Path(inc).is_absolute() else str(cfg_path.parent / inc)
+            matched_files = sorted(glob_module.glob(pattern))
+            if matched_files:
+                expanded.extend(str(Path(matched).relative_to(cfg_path.parent)) for matched in matched_files)
+            else:
+                expanded.append(inc)
+        else:
+            expanded.append(inc)
+    return expanded
+
+
+def config_files(config_path: Optional[str] = None) -> list[Path]:
+    """The files `load_settings` reads, in its order: the master config, then every include that exists."""
+    cfg_path = Path(config_path or os.environ.get("AGENT_CONFIG_PATH") or "config/config.yaml")
+    if not cfg_path.exists():
+        return []
+    master = yaml_io.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    included = (Path(inc) if Path(inc).is_absolute() else cfg_path.parent / inc
+                for inc in _expand_includes(master, cfg_path))
+    return [cfg_path, *(path for path in included if path.exists())]
+
+
 def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
     """Load and return an `AgentSystemConfig` using environment variables and
     optional YAML config file. Environment variables take precedence for
@@ -130,9 +189,8 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                      path from the AGENT_CONFIG_PATH environment variable.
     """
     # Clear caches when reloading settings
-    global _plugins_cache, _inheritance_cache
+    global _plugins_cache
     _plugins_cache = None
-    _inheritance_cache.clear()
     # A reload is a fresh verdict: what the operator just fixed must be able to
     # report again if it is still broken.
     _reported_stale_llm_params.clear()
@@ -159,41 +217,10 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
             logger.error(f"Failed to read config file '{cfg_path}': {e}")
             raise
         
-        # Determine includes: accept either `includes` (list) or `files`
-        includes = master.get("includes") or master.get("files") or []
-        # If includes is a single string, make it a list
-        if isinstance(includes, str):
-            includes = [includes]
-
         # Start with the master config as base
         data = dict(master)
 
-        # Expand wildcards in includes list
-        expanded_includes = []
-        for inc in includes:
-            # Check if pattern contains wildcards
-            if '*' in inc or '?' in inc or '[' in inc:
-                # Resolve relative to config file directory
-                if not Path(inc).is_absolute():
-                    pattern = str(cfg_path.parent / inc)
-                else:
-                    pattern = inc
-                
-                # Expand glob pattern
-                matched_files = sorted(glob_module.glob(pattern))
-                if matched_files:
-                    # Make paths relative to config dir for consistency
-                    for matched in matched_files:
-                        rel_path = Path(matched).relative_to(cfg_path.parent)
-                        expanded_includes.append(str(rel_path))
-                else:
-                    # No matches - keep original pattern for error reporting
-                    expanded_includes.append(inc)
-            else:
-                # No wildcards - keep as is
-                expanded_includes.append(inc)
-        
-        includes = expanded_includes
+        includes = _expand_includes(master, cfg_path)
         logger.debug(f"Config includes {len(includes)} files from glob patterns")
 
         # Load each included file and merge into specific sections
@@ -272,28 +299,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
 
     # Apply simple env-variable expansion for ${VAR} patterns (keep existing loader behavior)
     _missing_vars: set[str] = set()
-
-    def _expand_env(value):
-        if isinstance(value, str):
-            import re
-            pattern = re.compile(r"\$\{([A-Z0-9_]+)\}")
-            def repl(m):
-                name = m.group(1)
-                if name not in os.environ:
-                    # Collected, not silently blanked. An unset key used to
-                    # become "" and surfaced hours later as an opaque 401 from
-                    # a provider; the operator needs the VARIABLE NAME.
-                    _missing_vars.add(name)
-                    return ""
-                return os.environ[name]
-            return pattern.sub(repl, value)
-        if isinstance(value, dict):
-            return {k: _expand_env(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [_expand_env(v) for v in value]
-        return value
-
-    data = _expand_env(data)
+    data = expand_env(data, _missing_vars)
 
     if _missing_vars:
         logger.warning(
@@ -520,11 +526,20 @@ def _report_unknown_llm_profiles(cfg: AgentSystemConfig) -> None:
         agent_cfg = getattr(server, "agent_config", None)
         if agent_cfg is None:
             continue
-        chain = getattr(agent_cfg, "available_llm_profiles", None) or []
+        # Only the chains the entry sets itself: an unset llm_profile is the model default "normal", not a choice;
+        # the inherited chain is checked on the entry that sets it.
+        own = agent_cfg.model_fields_set
+        chain: list[str] = []
+        if "llm_profile" in own:
+            profile = agent_cfg.llm_profile
+            chain += profile if isinstance(profile, list) else [profile]
+        if "llm_profile_advanced" in own:
+            chain += agent_cfg.llm_profile_advanced or []
+        chain = list(dict.fromkeys(chain))
         unknown = [p for p in chain if p not in profiles]
         if not unknown:
             continue
-        primary = getattr(agent_cfg, "default_llm_profile", None)
+        primary = agent_cfg.default_llm_profile if "llm_profile" in own else None
         fmt = ("Agent '%s': LLM profiles %s are in its chain but in no "
                "llm_system.profiles — %s. Chain: %s")
         args = (name, sorted(unknown),
@@ -538,8 +553,9 @@ def _report_unknown_llm_profiles(cfg: AgentSystemConfig) -> None:
 
 # Cache for plugin discovery (avoid repeated calls)
 _plugins_cache: frozenset[str] | None = None
-# Cache for resolved server inheritance
-_inheritance_cache: dict[str, tuple[str, dict]] = {}
+# No cache for the resolved inheritance: it was keyed by server name alone, so a second config object (a fresh load
+# from disk next to the live one) got the first one's result. Resolving all 215 servers takes 8 ms without it
+# (measured 2026-09-16), the same as with it.
 
 
 def _known_plugin_types() -> frozenset[str]:
@@ -568,7 +584,7 @@ def _resolve_server_inheritance(
     config: "AgentSystemConfig",
     visited: set[str] | None = None
 ) -> tuple[str, dict]:
-    """Resolve server config inheritance chain with caching.
+    """Resolve server config inheritance chain.
     
     If a server's type refers to another server (not a plugin), this function
     resolves the inheritance chain and merges configurations.
@@ -584,10 +600,6 @@ def _resolve_server_inheritance(
     Raises:
         ValueError: If circular inheritance detected
     """
-    
-    # Check cache for top-level calls only (not during recursion)
-    if visited is None and server_name in _inheritance_cache:
-        return _inheritance_cache[server_name]
     
     if visited is None:
         visited = set()
@@ -614,9 +626,7 @@ def _resolve_server_inheritance(
         plugins = _known_plugin_types()
         if typ in plugins:
             # Type is a real plugin, return as-is
-            result = (typ, server_dict)
-            _inheritance_cache[server_name] = result
-            return result
+            return (typ, server_dict)
         else:
             # Self-reference but not a plugin - return as-is (will fail later in bootstrap)
             return (typ, server_dict)
@@ -626,9 +636,7 @@ def _resolve_server_inheritance(
     
     if typ in plugins:
         # Type is a real plugin, no further inheritance needed
-        result = (typ, server_dict)
-        _inheritance_cache[server_name] = result
-        return result
+        return (typ, server_dict)
     
     # Type might be another server - check if it exists
     parent_server = config.plugins.servers.get(typ)
@@ -644,13 +652,7 @@ def _resolve_server_inheritance(
     # The final type comes from the resolved parent chain
     merged["type"] = parent_type
     
-    result = (parent_type, merged)
-    
-    # Cache result for this server_name (at any recursion level, since visited contains it)
-    # This way sub_agent_character_designer gets cached even though it goes through writer_agent
-    _inheritance_cache[server_name] = result
-    
-    return result
+    return (parent_type, merged)
 
 
 def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig] = None) -> Optional[MCPConfig]:

@@ -66,6 +66,12 @@ class TestUnknownChainMembersAreReported:
         how the real line gets missed."""
         assert _errors(caplog, _config(["good", "also_good"])) == []
 
+    def test_an_entry_that_sets_no_chain_is_silent(self, caplog):
+        """An unset llm_profile reads as the model default "normal" -- not a choice of the entry, so no alarm."""
+        config = _config(["good"])
+        config.plugins.servers["a_child"] = MCPConfig(agent_config=AgentConfig(max_steps=3))
+        assert _errors(caplog, config) == []
+
     def test_a_config_without_profiles_is_silent(self, caplog):
         """Partial configs (tests, fragments) have nothing to compare
         against — reporting every agent there would be a false alarm."""

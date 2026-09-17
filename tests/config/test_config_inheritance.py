@@ -12,7 +12,6 @@ from agent_system.config.settings import (
     get_mcp_config_by_name,
     _resolve_server_inheritance,
     _deep_merge_dict,
-    _inheritance_cache,
 )
 
 
@@ -20,10 +19,8 @@ from agent_system.config.settings import (
 def clear_caches():
     """Clear caches before each test to avoid pollution between tests."""
     import agent_system.config.settings as settings
-    _inheritance_cache.clear()
     settings._plugins_cache = None
     yield
-    _inheritance_cache.clear()
     settings._plugins_cache = None
 
 
@@ -250,6 +247,18 @@ class TestGetMcpConfigByName:
         """Test handling of nonexistent server."""
         result = get_mcp_config_by_name("nonexistent", config_with_inheritance)
         assert result is None
+
+    def test_each_config_object_resolves_its_own_entries(self, config_with_inheritance):
+        """A second config next to the first (a fresh load from disk beside the live one) gets its own values."""
+        edited = config_with_inheritance.model_copy(deep=True)
+        edited.plugins.servers["writer_agent"].agent_config.max_steps = 7
+        edited.plugins.servers["character_designer"].agent_config.max_steps = 8
+
+        assert get_mcp_config_by_name("character_designer", config_with_inheritance).agent_config.max_steps == 50
+        assert get_mcp_config_by_name("story_designer", config_with_inheritance).agent_config.max_steps == 100
+        assert get_mcp_config_by_name("character_designer", edited).agent_config.max_steps == 8
+        assert get_mcp_config_by_name("story_designer", edited).agent_config.max_steps == 7
+        assert get_mcp_config_by_name("story_designer", config_with_inheritance).agent_config.max_steps == 100
 
 
 class TestInheritanceIntegration:
