@@ -718,3 +718,41 @@ class TestAnthropicMultiTurnCaching:
         client._cap_anthropic_cache(system_prompt, converted, None)
         assert _tail_marked(converted) is False
         assert system_prompt == "You are helpful."
+
+
+class TestAnthropicSaysWhyTheAnswerEnded:
+    """The stream's stop_reason reaches the agent loop in its words: a cut answer
+    (max_tokens) as "length" for the truncation guard, a refusal as
+    "content_filter" for the fallback chain. Without it both guards were dead
+    for Anthropic."""
+
+    @pytest.mark.parametrize("stop_reason, finish_reason", [
+        ("max_tokens", "length"),
+        ("refusal", "content_filter"),
+        ("end_turn", "stop"),
+        ("pause_turn", "pause_turn"),  # no word for it in the loop: passed on as sent
+    ])
+    @pytest.mark.asyncio
+    async def test_the_stop_reason_reaches_the_final_event(self, anthropic_client, stop_reason, finish_reason):
+        from anthropic.types import Usage
+
+        final_message = MagicMock()
+        final_message.usage = Usage(input_tokens=10, output_tokens=5)
+        final_message.stop_reason = stop_reason
+
+        async def events():
+            return
+            yield
+
+        stream = MagicMock()
+        stream.__aenter__ = AsyncMock(return_value=stream)
+        stream.__aexit__ = AsyncMock(return_value=None)
+        stream.__aiter__ = lambda self: events()
+        stream.get_final_message = AsyncMock(return_value=final_message)
+        anthropic_client._client.messages.stream = MagicMock(return_value=stream)
+
+        chunks = [chunk async for chunk in anthropic_client.chat_tools_streaming(
+            [ChatMessage(role="user", content="Hi")], [])]
+
+        final = next(chunk for chunk in chunks if chunk.get("type") == "final")
+        assert final["finish_reason"] == finish_reason

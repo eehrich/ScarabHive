@@ -121,6 +121,25 @@ def _convert_image_content(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+# Anthropic's stop_reason in the words the agent loop reads (OpenAI's finish_reason).
+# "refusal": the safety classifiers stopped the answer -- what other providers call a content filter.
+_FINISH_REASONS = {
+    "end_turn": "stop",
+    "stop_sequence": "stop",
+    "tool_use": "tool_calls",
+    "max_tokens": "length",
+    "model_context_window_exceeded": "length",
+    "refusal": "content_filter",
+}
+
+
+def finish_reason(stop_reason: Any) -> Optional[str]:
+    """The finish_reason for an Anthropic stop_reason; one the loop has no word for passes as it is."""
+    if not isinstance(stop_reason, str) or not stop_reason:
+        return None
+    return _FINISH_REASONS.get(stop_reason, stop_reason)
+
+
 def usage_to_openai(usage: Any) -> Dict[str, Any]:
     """Map Anthropic usage (SDK object or JSON dict) onto OpenAI semantics.
 

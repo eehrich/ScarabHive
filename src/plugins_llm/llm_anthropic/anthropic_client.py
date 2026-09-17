@@ -733,6 +733,8 @@ class AnthropicAsyncClient(LLMClient):
                     final_message = await stream.get_final_message()
                     if final_message and final_message.usage:
                         accumulated_usage = self._extract_usage(final_message.usage)
+                    # why the answer ended: a cut (max_tokens) or a refusal must reach the loop's guards
+                    stop = anthropic_utils.finish_reason(getattr(final_message, "stop_reason", None))
                     # The accumulated final message is the ONLY place the thinking
                     # blocks' signatures exist — the stream deltas carry text only
                     # (and with display="omitted", the default on Opus 5 / Sonnet 5
@@ -758,6 +760,8 @@ class AnthropicAsyncClient(LLMClient):
                 final_result: Dict[str, Any] = {"assistant": assistant}
                 if accumulated_usage:
                     final_result["usage"] = accumulated_usage
+                if stop:
+                    final_result["finish_reason"] = stop
                 
                 # Include thinking in final result if present
                 if accumulated_thinking:

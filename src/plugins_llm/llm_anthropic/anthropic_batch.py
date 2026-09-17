@@ -557,7 +557,7 @@ class AnthropicBatchClient(BatchProviderClient):
                                 "role": "assistant",
                                 "content": text_content,
                             },
-                            "finish_reason": message.get("stop_reason", "stop")
+                            "finish_reason": anthropic_utils.finish_reason(message.get("stop_reason")) or "stop"
                         }],
                         "usage": anthropic_utils.usage_to_openai(message.get("usage") or {}),
                     }

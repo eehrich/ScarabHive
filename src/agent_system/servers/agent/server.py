@@ -2001,9 +2001,6 @@ class Agent(MCPServer):
                     result["usage"] = final_usage
                 # Without carrying it here the truncation guard below never
                 # sees a "length" and silently accepts a cut-off answer.
-                # NOTE: httpx, the gemini clients and openai_responses report
-                # finish_reason -- anthropic and ollama never set it, so the
-                # guard stays inactive for those providers.
                 if final_finish_reason:
                     result["finish_reason"] = final_finish_reason
                 yield result

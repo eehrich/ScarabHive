@@ -572,3 +572,54 @@ class TestOllamaClientStreamingUsageTracking:
         assert "usage" not in final_event
         assert final_event["assistant"]["content"] == "Test response"
 
+
+class TestOllamaSaysWhyTheAnswerEnded:
+    """Ollama's done_reason ("length": cut at num_predict) reaches the agent
+    loop's truncation guard; the client used to drop it."""
+
+    @pytest.mark.asyncio
+    async def test_a_blocking_answer_carries_it(self):
+        with patch("httpx.AsyncClient") as client_class:
+            client = OllamaNativeAsyncClient(model="llama2")
+            response = MagicMock()
+            response.json.return_value = {"message": {"role": "assistant", "content": "Cut"},
+                                          "done": True, "done_reason": "length"}
+            response.raise_for_status = MagicMock()
+            http = MagicMock()
+            http.__aenter__ = AsyncMock(return_value=http)
+            http.__aexit__ = AsyncMock()
+            http.post = AsyncMock(return_value=response)
+            client_class.return_value = http
+
+            result = await client.chat_tools([ChatMessage(role="user", content="Test")], [])
+
+        assert result["finish_reason"] == "length"
+
+    @pytest.mark.asyncio
+    async def test_a_stream_carries_it(self):
+        client = OllamaNativeAsyncClient(model="llama2")
+        lines = ['{"message": {"content": "Cut"}, "done": false}',
+                 '{"done": true, "done_reason": "length", "prompt_eval_count": 3, "eval_count": 1}']
+
+        async def aiter_lines():
+            for line in lines:
+                yield line
+
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.status_code = 200
+        response.aiter_lines = MagicMock(return_value=aiter_lines())
+        stream = MagicMock()
+        stream.__aenter__ = AsyncMock(return_value=response)
+        stream.__aexit__ = AsyncMock()
+        http = MagicMock()
+        http.__aenter__ = AsyncMock(return_value=http)
+        http.__aexit__ = AsyncMock()
+        http.stream = MagicMock(return_value=stream)
+        client._httpx = MagicMock()
+        client._httpx.AsyncClient.return_value = http
+
+        events = [event async for event in client.chat_tools_streaming([ChatMessage(role="user", content="Test")], [])]
+
+        final = next(event for event in events if event.get("type") == "final")
+        assert final["finish_reason"] == "length"

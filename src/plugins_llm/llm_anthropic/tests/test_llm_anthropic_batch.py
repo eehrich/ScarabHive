@@ -433,3 +433,22 @@ class TestAnthropicBatchImageConversion:
         assert result["source"]["type"] == "base64"
         assert result["source"]["media_type"] == "image/jpeg"
         assert result["source"]["data"] == "/9j/4AAQ"
+
+
+class TestAnthropicBatchSaysWhyTheAnswerEnded:
+    """A batch result carries the stop_reason in the loop's words, like the stream."""
+
+    @pytest.mark.parametrize("stop_reason, finish_reason", [
+        ("max_tokens", "length"),
+        ("refusal", "content_filter"),
+        (None, "stop"),
+    ])
+    def test_the_stop_reason_is_translated(self, anthropic_batch_client, stop_reason, finish_reason):
+        message = {"content": [{"type": "text", "text": "Hel"}], "usage": {"input_tokens": 10, "output_tokens": 5}}
+        if stop_reason:
+            message["stop_reason"] = stop_reason
+        jsonl = json.dumps({"custom_id": "req-1", "result": {"type": "succeeded", "message": message}})
+
+        results = anthropic_batch_client._parse_results(jsonl)
+
+        assert results[0]["response"]["choices"][0]["finish_reason"] == finish_reason

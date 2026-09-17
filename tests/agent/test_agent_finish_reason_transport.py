@@ -5,10 +5,9 @@ carried it, so `if finish_reason == "length"` was dead code and a truncated
 answer was accepted as an empty one (which then triggers a 'Continue' nudge and
 replays the same runaway).
 
-Scope: httpx_client, the gemini clients and -- since 2026-09-01 --
-openai_responses report finish_reason (anthropic and ollama still do not),
-so the guard is live for those providers. The transport is provider-agnostic
-regardless.
+Scope: httpx_client, the gemini clients, openai_responses, anthropic (stream
+and batch), ollama and the batch wrapper report finish_reason, so the guard is
+live for those providers. The transport is provider-agnostic regardless.
 """
 import copy
 

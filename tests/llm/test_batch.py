@@ -1543,6 +1543,32 @@ class TestBatchLLMClient:
         assert result["assistant"]["content"] == "Batch response"
     
     @pytest.mark.asyncio
+    async def test_a_batch_answer_says_why_it_ended(
+        self, mock_underlying_client, mock_queue_manager, batch_provider_config
+    ):
+        """The finish_reason of a batch answer reaches the agent loop's guards
+        (a cut answer, a content filter); the conversion used to drop it."""
+        from agent_system.llm.batch.batch_client import BatchLLMClient
+        from agent_system.llm.models import ChatMessage
+
+        mock_queue_manager.submit_request = AsyncMock(return_value={
+            "choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "content_filter"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 0},
+        })
+        client = BatchLLMClient(
+            underlying_client=mock_underlying_client,
+            queue_manager=mock_queue_manager,
+            batch_provider_config=batch_provider_config,
+            model_name="gpt-4",
+            batch_provider="openai",
+        )
+
+        result = await client.chat_tools([ChatMessage(role="user", content="Hello")], [])
+
+        assert result["finish_reason"] == "content_filter"
+        assert result["usage"] == {"prompt_tokens": 3, "completion_tokens": 0}
+
+    @pytest.mark.asyncio
     async def test_fallback_on_batch_failure(
         self, mock_underlying_client, mock_queue_manager, batch_provider_config
     ):

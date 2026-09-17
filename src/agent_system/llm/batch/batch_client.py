@@ -197,6 +197,9 @@ class BatchLLMClient(LLMClient):
         if choices and isinstance(choices, list) and len(choices) > 0:
             message = choices[0].get("message", {})
             native = {"assistant": message}
+            # the loop's guards read it: a cut answer (length), a content filter
+            if choices[0].get("finish_reason"):
+                native["finish_reason"] = choices[0]["finish_reason"]
             # Preserve usage data if present
             if "usage" in result:
                 native["usage"] = result["usage"]

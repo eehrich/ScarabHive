@@ -224,6 +224,9 @@ class OllamaNativeAsyncClient(LLMClient):
             if "prompt_eval_count" in data and "eval_count" in data:
                 usage["total_tokens"] = data["prompt_eval_count"] + data["eval_count"]
             result["usage"] = usage
+        # "length": the answer was cut at num_predict -- the loop's truncation guard reads it
+        if data.get("done_reason"):
+            result["finish_reason"] = data["done_reason"]
 
         return result
 
@@ -279,6 +282,7 @@ class OllamaNativeAsyncClient(LLMClient):
             accumulated_content = []
             accumulated_tool_calls = {}
             accumulated_usage = None  # usage information from final chunk (done=true)
+            done_reason = None  # ...and why the answer ended ("length": cut at num_predict)
 
             try:
                 async with self._httpx.AsyncClient(timeout=self._timeout, verify=self._verify_arg) as client:
@@ -321,6 +325,7 @@ class OllamaNativeAsyncClient(LLMClient):
 
                             # Check if stream is done - final chunk may contain usage info
                             if chunk_data.get("done"):
+                                done_reason = chunk_data.get("done_reason")
                                 # Extract usage metadata if available (prompt_eval_count, eval_count, etc.)
                                 # Ollama provides: eval_count (completion tokens), prompt_eval_count (prompt tokens)
                                 if "eval_count" in chunk_data or "prompt_eval_count" in chunk_data:
@@ -387,6 +392,8 @@ class OllamaNativeAsyncClient(LLMClient):
                 final_result = {"assistant": assistant}
                 if accumulated_usage:
                     final_result["usage"] = accumulated_usage
+                if done_reason:
+                    final_result["finish_reason"] = done_reason
 
                 # Notify post-response hook
                 _duration_ms = (_time.time() - _request_start) * 1000
