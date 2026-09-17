@@ -955,6 +955,30 @@ export function initTabs(root = document) {
   });
 }
 
+// ------------------------------------------------------------ side panes
+
+const sidebarKey = (sidebar) => `pk.sidebar:${location.pathname}${sidebar.id ? `#${sidebar.id}` : ''}`;
+const sidebarsReady = new WeakSet();
+// the browser resizes a .pk-sidebar by writing its width inline: kept for the next visit of the panel
+const keepSidebarWidth = new MutationObserver((changes) => changes.forEach(({ target }) => {
+  try {
+    if (target.style.width) localStorage.setItem(sidebarKey(target), target.style.width);
+  } catch { /* the width lasts this page only */ }
+}));
+
+/** Gives every .pk-sidebar under root the width the viewer last dragged it to, and keeps the next one. Runs at start. */
+export function initSidebars(root = document) {
+  root.querySelectorAll('.pk-sidebar').forEach((sidebar) => {
+    if (sidebarsReady.has(sidebar)) return;
+    sidebarsReady.add(sidebar);
+    try {
+      const width = localStorage.getItem(sidebarKey(sidebar));
+      if (width) sidebar.style.width = width;
+    } catch { /* storage unavailable */ }
+    keepSidebarWidth.observe(sidebar, { attributes: true, attributeFilter: ['style'] });
+  });
+}
+
 // ---------------------------------------------------------------- sortable tables
 
 /*
@@ -1055,6 +1079,7 @@ const bodySize = new ResizeObserver((entries) => entries.forEach(({ target, cont
 
 function start() {
   initTabs();
+  initSidebars();
   sortTables(document);
   keyRows(document);
   document.querySelectorAll('.pk-page-body').forEach((body) => bodySize.observe(body));

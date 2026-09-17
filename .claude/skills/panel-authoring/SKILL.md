@@ -154,6 +154,7 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 | `autoRefresh(fn, ms)` → `{start, stop, running}`; `<pk-refresh interval="s">` | Nachladen, pausiert, solange das Panel nicht sichtbar ist. `<pk-refresh>` feuert `refresh` am `document`; `event.detail.auto` sagt, ob der Takt (true) oder ein Klick (false) fragt — teures Nachladen darf den Takt auslassen. Mit `auto` läuft der Takt von Anfang an (sonst erst nach Klick). `interval` und `auto` sind nur die **Voreinstellung der Seite**: Am Knopf wählt der Nutzer den Takt (5 s, 10 s, 30 s, 1 min, die Voreinstellung, oder aus), und diese Wahl gilt ab dann für diesen Panel-Pfad — gespeichert im localStorage unter `pk.refresh:<pathname>`. |
 | `isVisible()` | ob das Panel zu sehen ist — nicht bei Tab im Hintergrund, geschlossenem Fenster, verdecktem Browser-Tab. `autoRefresh` fragt es selbst. |
 | `initTabs(root)` | `[data-pk-tabs]` bedienbar machen (Klick, Pfeiltasten, Event `tabchange`). Läuft beim Laden von selbst; nach dem Nachrendern erneut aufrufen ist unschädlich. |
+| `initSidebars(root)` | jeder `.pk-sidebar` die zuletzt gezogene Breite geben und die nächste merken (localStorage `pk.sidebar:<pathname>`, mit `#id`, wenn die Leiste eine hat). Läuft beim Laden von selbst; nur eine später gerenderte Leiste braucht den Aufruf. |
 | `placeMenu(menu, box, {matchWidth})` | eigenes Menü positionieren (`matchWidth`: so breit wie das Feld, zu dem es gehört — Vorschlagslisten). Ein `.pk-menu[popover]` mit `id`, das per `popovertarget` geöffnet wird, platziert das Kit selbst. |
 | `setTitle(text)`, `navigate(path)` | Titel im Tab, Pfad im Panel merken (wird beim Wiederherstellen geöffnet und gilt als eigener Pfad: anders als ein Kontext-Link setzt der Starter ihn nicht zurück; ohne Argument der Pfad, den die Seite gerade zeigt). |
 | `setDirty(bool)` | ungespeicherte Eingaben melden: solange `true`, fragt die Shell vor Schließen, Ab- oder Andocken oder einem Link, der das Panel neu lädt, und der eigene Browser-Tab vor dem Verlassen. Nach dem Speichern oder Verwerfen `setDirty(false)`. |
@@ -243,7 +244,10 @@ es gerendert hat (auch die umschließende, wenn nur der `tbody` neu kommt).
   (ein Wert in einer Tonfarbe), `pk-code--full` (Code ohne Höhendeckel),
   `pk-menu-item[aria-selected]` (der gewählte Vorschlag); Layout mit `pk-stack`, `pk-row`,
   `pk-grow`, `pk-toolbar`, `pk-filters` (Filterzeile über einer Liste),
-  `pk-split` (Liste links, Detail rechts, das Detail bleibt stehen), Seiten
+  `pk-split` (Liste links, Detail rechts, das Detail bleibt stehen),
+  `pk-sidebar-layout` mit `pk-sidebar` (Seitenleiste neben dem Hauptbereich:
+  an der Ecke in der Breite ziehbar, das Kit merkt die Breite pro Panel,
+  schmal gestapelt — **jede Seitenleiste nimmt diese**, keine eigene), Seiten
   eines Panels als `<nav class="pk-tabs">` mit `<a class="pk-tab"
   aria-current="page">`.
 - **Farben, Abstände, Radien, Schrift nur über Tokens**: `--surface-0…3`,

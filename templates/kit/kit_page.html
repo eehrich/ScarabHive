@@ -13,6 +13,8 @@
   .kit-icons > div { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-secondary); }
   .kit-brand { display: flex; align-items: center; gap: var(--space-3); color: var(--brand); }
   .kit-brand span { color: var(--text-primary); font-size: var(--text-xl); font-weight: 600; letter-spacing: -0.02em; }
+  .kit-sidebar-main { padding-left: var(--space-3); }
+  #kit-sidebar { padding-right: var(--space-3); }
 </style>
 {% endblock %}
 {% block toolbar %}
@@ -191,6 +193,13 @@ keeps its line breaks.</div>
       <progress class="pk-progress pk-progress--warn" value="62" max="100"></progress>
       <div class="pk-row"><span class="pk-text--ok">92 good</span><span class="pk-text--warn">61 fair</span><span class="pk-text--danger">34 poor</span><span class="pk-text--info">new</span></div>
     </div>
+  </div>
+  <div class="pk-card pk-sidebar-layout">
+    <nav class="pk-sidebar pk-stack" id="kit-sidebar" aria-label="Example list">
+      <label class="pk-search">{{ icon('search') }}<input class="pk-input pk-input--sm" type="search" placeholder="Search" aria-label="Search"></label>
+      <span>Drag the corner to the lower right to resize this pane; the width is kept for the next visit.</span>
+    </nav>
+    <div class="kit-sidebar-main">The main pane takes the rest.</div>
   </div>
   <div class="pk-card">{{ empty('library', 'No books yet', 'Books show up here once a story is written.') }}</div>
   <div class="pk-card">{{ skeleton(3) }}</div>

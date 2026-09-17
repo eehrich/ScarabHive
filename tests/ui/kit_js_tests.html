@@ -747,6 +747,33 @@
       && brokenState.label === '10s' && !brokenState.running;
   });
 
+  await check('a side pane gets the width the viewer last dragged it to, keeps a new one per pane, and resizes at its corner', async () => {
+    const key = `pk.sidebar:${location.pathname}#kit-test-side`;
+    const plainKey = `pk.sidebar:${location.pathname}`;
+    localStorage.setItem(key, '230px');
+    localStorage.removeItem(plainKey);
+    const box = document.createElement('div');
+    box.className = 'pk-sidebar-layout';
+    box.innerHTML = '<nav class="pk-sidebar" id="kit-test-side"></nav><nav class="pk-sidebar"></nav><div></div>';
+    document.body.appendChild(box);
+    try {
+      const [named, plain] = box.querySelectorAll('.pk-sidebar');
+      pk.initSidebars(box);
+      const restored = named.style.width === '230px' && plain.style.width === '';
+      named.style.width = '260px';  // what the browser writes while the corner is dragged
+      plain.style.width = '200px';
+      await nextFrame();
+      const kept = localStorage.getItem(key) === '260px' && localStorage.getItem(plainKey) === '200px';
+      localStorage.setItem(key, '300px');
+      pk.initSidebars(box);  // a second run leaves a pane as the viewer set it
+      return restored && kept && named.style.width === '260px' && getComputedStyle(named).resize === 'horizontal';
+    } finally {
+      box.remove();
+      localStorage.removeItem(key);
+      localStorage.removeItem(plainKey);
+    }
+  });
+
   await check('a refresh says whether the viewer or the timer asked', () => {
     const control = document.createElement('pk-refresh');
     document.body.appendChild(control);

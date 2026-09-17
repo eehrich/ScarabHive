@@ -503,6 +503,20 @@ pk-refresh:has(.pk-refresh-auto[aria-pressed="true"]) .pk-refresh-pick { --btn-b
 .pk-split > :last-child { position: sticky; top: var(--space-3); max-height: calc(var(--pk-body-height, 100vh) - 2 * var(--space-3)); overflow: auto; }
 @media (max-width: 760px) { .pk-split { grid-template-columns: minmax(0, 1fr); } .pk-split > :last-child { position: static; max-height: none; } }
 
+/* a side pane (a list, its filters) beside the main one: the viewer drags its corner to set its width, which the kit
+   keeps for the panel (initSidebars); a narrow panel stacks the two, the side pane at full width */
+.pk-sidebar-layout { flex: 1 1 auto; min-height: 0; display: flex; }
+.pk-sidebar-layout > :not(.pk-sidebar) { flex: 1 1 auto; min-width: 0; }
+.pk-sidebar {
+  flex: none; width: 18rem; min-width: 11rem; max-width: 50%; resize: horizontal; overflow: auto;
+  border-right: 1px solid var(--border-subtle);
+}
+@media (max-width: 640px) {
+  .pk-sidebar-layout { flex-direction: column; }
+  /* !important: over the width dragged on a wider panel, which the kit keeps inline */
+  .pk-sidebar { width: auto !important; max-width: none; max-height: 40vh; resize: none; border-right: 0; border-bottom: 1px solid var(--border-subtle); }
+}
+
 /* a section that folds */
 .pk-details { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 0 var(--space-3); }
 .pk-details > summary {
