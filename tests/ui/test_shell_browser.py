@@ -703,6 +703,7 @@ EXPECTED = [
     'a session offers the panels that open on a session',
     'a session panel pinned from a link can follow the chat again',
     'a request id in the chat offers the panels that take a request',
+    'a panel with unsaved input is only closed or reloaded once the viewer agrees',
     'the plugin panels follow the session the chat switches to, not a slower answer for the one before, and New',
     'a docked panel leaves the header on screen at laptop widths',
     'a stored session that is gone starts a new one',

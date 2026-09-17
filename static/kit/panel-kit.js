@@ -44,11 +44,12 @@ export function html(strings, ...values) {
 export function trusted(markup) { return new SafeHtml(String(markup)); }
 
 export function render(element, content) {
-  // a redraw gives the focus back to the element with the same data-key (a sort head has one)
+  // a redraw gives the focus back to the element with the same data-key (a sort head has one, a row to choose too)
   const focused = document.activeElement;
   const key = element.contains(focused) ? focused.closest('[data-key]')?.dataset.key : undefined;
   element.innerHTML = fragment(content);
   sortTables(element);
+  keyRows(element);
   if (key !== undefined) [...element.querySelectorAll('[data-key]')].find((one) => one.dataset.key === key)?.focus();
 }
 
@@ -60,13 +61,13 @@ export function jsonView(value) {
   const muted = (text) => html`<span class="pk-json-null">${text}</span>`;
   const node = (v) => {
     if (v === null || v === undefined) return muted(String(v));
-    if (typeof v === 'string') return v ? html`<span class="pk-json-string">${v}</span>` : muted('empty');
+    if (typeof v === 'string') return v ? html`<span class="pk-json-string">${v}</span>` : muted(word('jsonEmpty'));
     if (typeof v !== 'object') return html`<span class="pk-json-number">${String(v)}</span>`;
     if (Array.isArray(v)) {
-      return v.length ? html`<ul class="pk-json-list">${v.map((item) => html`<li>${node(item)}</li>`)}</ul>` : muted('no items');
+      return v.length ? html`<ul class="pk-json-list">${v.map((item) => html`<li>${node(item)}</li>`)}</ul>` : muted(word('jsonNoItems'));
     }
     const entries = Object.entries(v);
-    if (!entries.length) return muted('no fields');
+    if (!entries.length) return muted(word('jsonNoFields'));
     return html`<div class="pk-json-object">${entries.map(([key, item]) => {
       const nested = item !== null && typeof item === 'object' && Object.keys(item).length > 0;
       return html`<div class="pk-json-field${nested ? ' pk-json-field--nested' : ''}"><span class="pk-json-key">${key}</span>${node(item)}</div>`;
@@ -92,14 +93,25 @@ export class ApiError extends Error {
 }
 
 const inflight = new Set();
+const latestCalls = new Map();  // name -> the controller of the newest call under that name
 
 /**
  * fetch() for panel code: same-origin cookie auth, JSON in and out, errors as
  * ApiError (and a toast unless quiet), requests aborted when the panel goes.
+ *
+ * latest: a name for a kind of load. A newer call under the same name aborts
+ * the older one, which rejects with an AbortError (never toasted) -- an answer
+ * overtaken by a later one can never be drawn. Check with isAborted(error).
+ * Not with raw: the caller reads that body after api() returned, out of its reach.
  */
-export async function api(path, { method = 'GET', json, body, headers = {}, quiet = false, raw = false } = {}) {
+export async function api(path, { method = 'GET', json, body, headers = {}, quiet = false, raw = false, latest = '' } = {}) {
+  if (raw && latest) throw new Error('api(): latest cannot guard a raw response');
   const controller = new AbortController();
   inflight.add(controller);
+  if (latest) {
+    latestCalls.get(latest)?.abort();
+    latestCalls.set(latest, controller);
+  }
   try {
     // Built inside the try: a bad header value or a cyclic body is a failure
     // like any other, not an escape past the toast and the cleanup.
@@ -114,12 +126,15 @@ export async function api(path, { method = 'GET', json, body, headers = {}, quie
     if (!response.ok) {
       let detail = response.statusText;
       try { detail = (await response.json()).detail ?? detail; } catch { /* not JSON */ }
+      controller.signal.throwIfAborted();  // abandoned while the body was read: an abort, not an error to show
       throw new ApiError(response.status, detail);
     }
     if (raw) return response;
     const type = response.headers.get('content-type') || '';
     // awaited here, so a broken body lands in the catch below like any other failure
-    return await (type.includes('application/json') ? response.json() : response.text());
+    const answer = await (type.includes('application/json') ? response.json() : response.text());
+    controller.signal.throwIfAborted();
+    return answer;
   } catch (error) {
     if (error.name !== 'AbortError' && !quiet) {
       toast(describe(error), { kind: 'error' });
@@ -127,8 +142,12 @@ export async function api(path, { method = 'GET', json, body, headers = {}, quie
     throw error;
   } finally {
     inflight.delete(controller);
+    if (latest && latestCalls.get(latest) === controller) latestCalls.delete(latest);
   }
 }
+
+/** True for a call that was abandoned (a newer `latest` call, or the panel going away): nothing to show. */
+export const isAborted = (error) => error?.name === 'AbortError';
 
 function describe(error) {
   if (error instanceof ApiError) {
@@ -223,10 +242,24 @@ export const session = {
   onChange(fn) { listeners.session.add(fn); return () => listeners.session.delete(fn); },
 };
 
-/** Called with the new theme when the viewer switches it, here or anywhere in the shell. */
+/**
+ * Called with the new theme when the viewer switches it, here or anywhere in the shell -- and with 'system' when the
+ * system's colours change while the theme follows them.
+ */
 export function onThemeChange(fn) {
   listeners.theme.add(fn);
   return () => listeners.theme.delete(fn);
+}
+
+const systemDark = matchMedia('(prefers-color-scheme: dark)');
+systemDark.addEventListener('change', () => {
+  if (currentTheme() === 'system') listeners.theme.forEach((fn) => fn('system'));
+});
+
+/** Whether the page shows dark colours now: for a canvas or an SVG that cannot read the tokens. */
+export function isDark() {
+  const theme = currentTheme();
+  return theme === 'dark' || (theme === 'system' && systemDark.matches);
 }
 
 export function isVisible() { return visible && !document.hidden; }
@@ -243,22 +276,43 @@ export function dialog({ title, message = '', actions, input = null }) {
   return inShell ? request('pk:dialog', { dialog: spec }) : showDialog(document, spec);
 }
 
-export function alert(message, { title = 'Notice' } = {}) {
+// The kit's own words, in the language the page declares (<html lang>; the writer panels are German).
+const WORDS = {
+  en: {
+    notice: 'Notice', confirm: 'Confirm', input: 'Input', cancel: 'Cancel',
+    refresh: 'Refresh', refreshInterval: 'Refresh interval', refreshEvery: 'Refresh every', off: 'Off',
+    refreshingEvery: (s) => `Refreshing every ${s} -- click to pause`, refreshEveryTitle: (s) => `Refresh every ${s}`,
+    copied: 'Copied', copyFailed: 'Could not copy', previous: 'Previous', next: 'Next',
+    jsonEmpty: 'empty', jsonNoItems: 'no items', jsonNoFields: 'no fields',
+    pageOf: (page, pages) => `Page ${page} of ${pages}`,
+  },
+  de: {
+    notice: 'Hinweis', confirm: 'Bestätigen', input: 'Eingabe', cancel: 'Abbrechen',
+    refresh: 'Neu laden', refreshInterval: 'Takt', refreshEvery: 'Neu laden alle', off: 'Aus',
+    refreshingEvery: (s) => `Lädt alle ${s} neu -- klicken zum Anhalten`, refreshEveryTitle: (s) => `Alle ${s} neu laden`,
+    copied: 'Kopiert', copyFailed: 'Kopieren fehlgeschlagen', previous: 'Zurück', next: 'Weiter',
+    jsonEmpty: 'leer', jsonNoItems: 'keine Einträge', jsonNoFields: 'keine Felder',
+    pageOf: (page, pages) => `Seite ${page} von ${pages}`,
+  },
+};
+const word = (key) => (WORDS[document.documentElement.lang.slice(0, 2).toLowerCase()] || WORDS.en)[key];
+
+export function alert(message, { title = word('notice') } = {}) {
   return dialog({ title, message, actions: [{ label: 'OK', value: true, primary: true }] });
 }
 
-export async function confirm(message, { title = 'Confirm', confirmLabel = 'Confirm', danger = false } = {}) {
+export async function confirm(message, { title = word('confirm'), confirmLabel = word('confirm'), danger = false } = {}) {
   const value = await dialog({
     title, message,
-    actions: [{ label: 'Cancel', value: false }, { label: confirmLabel, value: true, primary: !danger, danger }],
+    actions: [{ label: word('cancel'), value: false }, { label: confirmLabel, value: true, primary: !danger, danger }],
   });
   return value === true;
 }
 
-export function prompt(message, { title = 'Input', value = '', placeholder = '', confirmLabel = 'OK' } = {}) {
+export function prompt(message, { title = word('input'), value = '', placeholder = '', confirmLabel = 'OK' } = {}) {
   return dialog({
     title, message, input: { value, placeholder },
-    actions: [{ label: 'Cancel', value: null }, { label: confirmLabel, value: 'input', primary: true }],
+    actions: [{ label: word('cancel'), value: null }, { label: confirmLabel, value: 'input', primary: true }],
   });
 }
 
@@ -340,7 +394,8 @@ export function showDialog(doc, { title, message, actions, input }) {
  * or above when there is more room there; right-aligned in the right half of
  * the window.
  */
-export function placeMenu(menu, box) {
+export function placeMenu(menu, box, { matchWidth = false } = {}) {
+  if (matchWidth) menu.style.width = `${box.width}px`;  // as wide as the field it belongs to
   const gap = 4;
   const margin = 8;
   // client sizes: a fixed position is measured inside the scrollbars
@@ -404,8 +459,21 @@ export function currentTheme() {
   return THEMES.includes(theme) ? theme : 'system';
 }
 
-export function navigate(path) { tell('pk:navigate', { path }); }
+/** Tell the shell the page's path (by default the one it shows now), so a restored panel opens there. */
+export function navigate(path = location.pathname + location.search) { tell('pk:navigate', { path }); }
 export function setTitle(text) { tell('pk:title', { text }); document.title = text; }
+
+let dirty = false;
+/** Unsaved input: until the page says it is clean again, the shell asks before it closes or reloads the panel, a tab before it is left. */
+export function setDirty(value) {
+  const now = Boolean(value);
+  // listened for only while there is something to lose: a beforeunload listener keeps a page out of the back/forward cache
+  if (now && !dirty) window.addEventListener('beforeunload', keepPage);
+  if (!now && dirty) window.removeEventListener('beforeunload', keepPage);
+  dirty = now;
+  tell('pk:dirty', { dirty });
+}
+const keepPage = (event) => event.preventDefault();
 
 // ---------------------------------------------------------- auto refresh
 
@@ -450,15 +518,15 @@ class RefreshControl extends HTMLElement {
     const steps = [...new Set([...REFRESH_STEPS, fallback, choice.interval])].sort((a, b) => a - b);
     const menuId = `pk-refresh-menu-${++refreshMenus}`;
     render(this, html`
-      <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="now" title="Refresh">${icon('refresh-cw')}</button>
+      <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="now" title="${word('refresh')}">${icon('refresh-cw')}</button>
       <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm pk-refresh-auto" data-act="auto" aria-pressed="false"></button>
       <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm pk-refresh-pick" data-act="interval"
-              popovertarget="${menuId}" title="Refresh interval" aria-label="Refresh interval" aria-expanded="false">${icon('chevron-down', { size: 'sm' })}</button>
+              popovertarget="${menuId}" title="${word('refreshInterval')}" aria-label="${word('refreshInterval')}" aria-expanded="false">${icon('chevron-down', { size: 'sm' })}</button>
       <div id="${menuId}" class="pk-menu pk-refresh-menu" popover>
-        <div class="pk-menu-label">Refresh every</div>
+        <div class="pk-menu-label">${word('refreshEvery')}</div>
         ${steps.map((s) => html`<button type="button" class="pk-menu-item" data-interval="${s}" aria-pressed="false">${icon('check', { size: 'sm' })}${seconds(s)}</button>`)}
         <hr class="pk-menu-separator">
-        <button type="button" class="pk-menu-item" data-interval="off" aria-pressed="false">${icon('check', { size: 'sm' })}Off</button>
+        <button type="button" class="pk-menu-item" data-interval="off" aria-pressed="false">${icon('check', { size: 'sm' })}${word('off')}</button>
       </div>`);
     // detail.auto: the timer fired, not the viewer -- a costly reload may skip that
     const fire = (auto) => this.dispatchEvent(new CustomEvent('refresh', { bubbles: true, detail: { auto } }));
@@ -469,7 +537,7 @@ class RefreshControl extends HTMLElement {
       this.auto = autoRefresh(() => fire(true), interval * 1000);
       if (on) this.auto.start();
       toggle.textContent = seconds(interval);
-      toggle.title = on ? `Refreshing every ${seconds(interval)} -- click to pause` : `Refresh every ${seconds(interval)}`;
+      toggle.title = (on ? word('refreshingEvery') : word('refreshEveryTitle'))(seconds(interval));
       toggle.setAttribute('aria-pressed', String(on));
       menu.querySelectorAll('[data-interval]').forEach((item) => {
         const value = item.dataset.interval;
@@ -496,6 +564,224 @@ class RefreshControl extends HTMLElement {
 
   disconnectedCallback() { if (this.auto) this.auto.stop(); }
 }
+
+// ----------------------------------------------------------- page helpers
+
+/** The plugin's address for a panel script served from its static folder: pluginBase(import.meta.url). */
+export function pluginBase(moduleUrl) {
+  return new URL('..', moduleUrl).pathname.replace(/\/$/, '');
+}
+
+// errorText(error): "404: Not Found" -- what a failed api() call says in its toast, for a page that shows it in place
+export { describe as errorText };
+
+/** Abandon the running api() call of that `latest` name, e.g. when the viewer clears what it would fill. */
+export function abandon(name) {
+  latestCalls.get(name)?.abort();
+  latestCalls.delete(name);
+}
+
+const drawnMarkup = new WeakMap();
+
+/**
+ * render(), but only when the markup changed: an unchanged answer keeps scroll, focus, selection and open
+ * <details>. Returns whether it drew. Draw an element either with update() or with render(), not both.
+ */
+export function update(element, content) {
+  const markup = fragment(content);
+  if (drawnMarkup.get(element) === markup) return false;
+  drawnMarkup.set(element, markup);
+  render(element, trusted(markup));
+  return true;
+}
+
+const WITH_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+// without a zone a time is UTC, as the databases write it: read as local time, a clock change would turn two round
+const instant = (value) => Date.parse(value.length > 10 && !WITH_ZONE.test(value) ? `${value.replace(' ', 'T')}Z` : value);
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const STORED_TIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+const STEPS = [['second', 60], ['minute', 60], ['hour', 24], ['day', Infinity]];
+
+/**
+ * A stored timestamp in the viewer's time and language. The databases write UTC without a zone
+ * ("2026-09-16 19:21:29"), so a value without one is read as UTC; a date alone stays that date.
+ * relative: "vor 5 Minuten" instead of the time.
+ */
+export function localTime(value, { relative = false, seconds = false } = {}) {
+  if (value === null || value === undefined || value === '') return '';
+  const text = String(value).trim();
+  const lang = document.documentElement.lang || undefined;
+  if (DATE_ONLY.test(text)) {
+    const [year, month, day] = text.split('-').map(Number);
+    return new Date(year, month - 1, day).toLocaleDateString(lang, { dateStyle: 'short' });
+  }
+  if (!STORED_TIME.test(text)) return text;  // "12" or "2026" are no stored times
+  const date = new Date(instant(text));
+  if (Number.isNaN(date.getTime())) return text;
+  if (!relative) return date.toLocaleString(lang, { dateStyle: 'short', timeStyle: seconds ? 'medium' : 'short' });
+  const format = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' });
+  let amount = (date.getTime() - Date.now()) / 1000;
+  if (Math.abs(amount) < 60) return format.format(0, 'second');  // "now" for the whole first minute: no redraw each tick
+  for (const [unit, size] of STEPS) {
+    const rounded = Math.round(amount);
+    if (Math.abs(rounded) < size) return format.format(rounded, unit);  // 59.6 minutes are an hour, not "60 minutes"
+    amount /= size;
+  }
+  return text;
+}
+
+/** The filled-in fields of a form as query parameters; empty ones are left out. */
+export function formQuery(form) {
+  return new URLSearchParams([...new FormData(form)].filter(([, value]) => typeof value === 'string' && value.trim()));
+}
+
+/** Put params into the page's URL without a reload and tell the shell, so a restored panel opens this view. */
+export function setQuery(params) {
+  const query = new URLSearchParams(params).toString();
+  history.replaceState(history.state, '', query ? `${location.pathname}?${query}` : location.pathname);
+  navigate();
+}
+
+const busyControls = new WeakSet();
+
+/**
+ * Run fn once at a time for these controls (one, an array or a NodeList): they are disabled while it runs, and a
+ * call meanwhile (a double click) returns undefined without starting fn. Afterwards every one of them is enabled -- a page with its own disabled
+ * state sets it again after withBusy. A control a redraw replaces while fn runs is not the one guarded.
+ */
+export async function withBusy(controls, fn) {
+  // a <select> or <form> is iterable itself: only a list of controls is spread
+  const many = Array.isArray(controls) || controls instanceof NodeList || controls instanceof HTMLCollection;
+  const list = (many ? [...controls] : [controls]).filter(Boolean);
+  if (list.some((control) => busyControls.has(control))) return undefined;
+  list.forEach((control) => { busyControls.add(control); control.disabled = true; });
+  try {
+    return await fn();
+  } finally {
+    list.forEach((control) => { busyControls.delete(control); control.disabled = false; });
+  }
+}
+
+/** Copy text to the clipboard and say how it went. */
+export async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(String(text));
+    toast(word('copied'), { kind: 'ok' });
+    return true;
+  } catch (error) {
+    toast(`${word('copyFailed')}: ${error.message || error}`, { kind: 'error' });
+    return false;
+  }
+}
+
+const CALLOUT_KINDS = ['danger', 'warn', 'info', 'ok'];
+
+/** A message in place (element is a .pk-callout): shown with a text, hidden with an empty one. */
+export function notice(element, text, { kind = 'danger' } = {}) {
+  element.classList.add('pk-callout');
+  CALLOUT_KINDS.forEach((one) => element.classList.toggle(`pk-callout--${one}`, one === kind));
+  element.setAttribute('role', kind === 'danger' ? 'alert' : 'status');
+  if (element.textContent !== (text || '')) element.textContent = text || '';  // unchanged: not announced again
+  element.hidden = !text;
+}
+
+/** The empty state: an icon, a title and, if given, a line of explanation. */
+export function emptyState(iconName, title, text = '') {
+  return html`<div class="pk-empty">${icon(iconName)}<div class="pk-empty-title">${title}</div>${text && html`<div>${text}</div>`}</div>`;
+}
+
+/** Placeholder lines while something loads. */
+export function skeleton(lines = 3) {
+  return html`<div class="pk-stack">${Array.from({ length: lines }, () => html`<span class="pk-skeleton"></span>`)}</div>`;
+}
+
+/** Select the tab named `name` (its data-tab) in a [data-pk-tabs] list, as a click would, without the event. */
+export function selectTab(list, name) {
+  const tab = [...list.querySelectorAll('[role="tab"]')].find((one) => one.dataset.tab === name);
+  if (tab) showTab(list, tab);
+  return Boolean(tab);
+}
+
+/**
+ * <pk-pager page="2" pages="7">: previous and next with "Seite 2 von 7"; a step fires `page` ({detail: {page}})
+ * and moves the pager. Hidden while there is a single page. Set page and pages as properties or attributes.
+ */
+class Pager extends HTMLElement {
+  static observedAttributes = ['page', 'pages'];
+
+  get page() { return Math.min(Math.max(1, Math.floor(Number(this.getAttribute('page')) || 1)), this.pages); }
+  set page(value) { this.setAttribute('page', String(value)); }
+  get pages() { return Math.max(1, Math.floor(Number(this.getAttribute('pages')) || 1)); }
+  set pages(value) { this.setAttribute('pages', String(value)); }
+
+  connectedCallback() {
+    if (!this.drawn) {
+      this.drawn = true;
+      render(this, html`
+        <button type="button" class="pk-btn pk-btn--sm" data-step="-1">${icon('chevron-left')}${word('previous')}</button>
+        <span class="pk-pager-label"></span>
+        <button type="button" class="pk-btn pk-btn--sm" data-step="1">${word('next')}${icon('chevron-right')}</button>`);
+      this.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-step]');
+        if (!button || button.disabled) return;
+        this.page = this.page + Number(button.dataset.step);
+        if (button.disabled) this.querySelector('[data-step]:not([disabled])')?.focus();  // the end was reached
+        this.dispatchEvent(new CustomEvent('page', { bubbles: true, detail: { page: this.page } }));
+      });
+    }
+    this.show();
+  }
+
+  attributeChangedCallback() { if (this.drawn) this.show(); }
+
+  show() {
+    const { page, pages } = this;
+    this.hidden = pages <= 1;
+    this.querySelector('.pk-pager-label').textContent = word('pageOf')(page, pages);
+    this.querySelector('[data-step="-1"]').disabled = page <= 1;
+    this.querySelector('[data-step="1"]').disabled = page >= pages;
+  }
+}
+
+/*
+ * <table class="pk-table" data-pk-select>: a body row with data-id (and tabindex="0") is chosen by a click or by
+ * Enter/Space; it is marked aria-selected and the table fires `rowselect` ({detail: {id}}). A click on a control
+ * inside the row stays the control's. selectRow() marks a row again after a redraw, without the event. Such a row
+ * keeps the keyboard focus through a redraw: render() keys it by its data-id.
+ */
+function keyRows(root) {
+  root.querySelectorAll('table[data-pk-select] > tbody > tr[data-id]:not([data-key])')
+    .forEach((row) => { row.dataset.key = `row:${row.dataset.id}`; });
+}
+
+export function selectRow(table, id) {
+  let found = false;
+  for (const row of table.tBodies[0]?.rows ?? []) {
+    const on = row.dataset.id !== undefined && row.dataset.id === String(id);
+    row.setAttribute('aria-selected', String(on));
+    found ||= on;
+  }
+  return found;
+}
+
+// what answers a click itself: a click on one does not choose its row, a head holding one is not made a sort button
+const CONTROLS = 'a[href], button, input, select, textarea, label, summary';
+
+function chooseRow(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  const row = target?.closest('tr[data-id]');
+  const table = row?.closest('table[data-pk-select]');
+  if (!table || row.parentElement !== table.tBodies[0]) return;
+  const control = target.closest(CONTROLS);
+  if (event.type === 'click' ? control && row.contains(control)
+    : !['Enter', ' '].includes(event.key) || target !== row) return;
+  if (event.type === 'keydown') event.preventDefault();
+  selectRow(table, row.dataset.id);
+  table.dispatchEvent(new CustomEvent('rowselect', { bubbles: true, detail: { id: row.dataset.id } }));
+}
+
+document.addEventListener('click', chooseRow);
+document.addEventListener('keydown', chooseRow);
 
 // ------------------------------------------------------------------ tabs
 
@@ -564,12 +850,6 @@ const headKey = (th) => th.textContent.trim();
 const cellValue = (cell) => (cell ? cell.dataset.sortValue ?? cell.textContent : '').trim();
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}|$)/;
-const WITH_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
-// what answers a click itself: a head holding one is not made a sort button
-const CONTROLS = 'a[href], button, input, select, textarea, label, summary';
-
-// without a zone a time is UTC, as the databases write it: read as local time, a clock change would turn two round
-const instant = (value) => Date.parse(value.length > 10 && !WITH_ZONE.test(value) ? `${value.replace(' ', 'T')}Z` : value);
 
 /**
  * How a column's values compare: as numbers or as points in time when all of them are, else all as text. Decided
@@ -637,11 +917,20 @@ document.addEventListener('click', (event) => {
 // ---------------------------------------------------------------- start
 
 // defined last: a custom element on the page is drawn at once, and render() needs everything above
+customElements.define('pk-pager', Pager);
 customElements.define('pk-refresh', RefreshControl);
+
+// the height inside the scroll area's padding, for a pane stuck in it (.pk-split): the viewport does not know the
+// page head above it, and a sticky offset counts from the padding's inner edge
+const bodySize = new ResizeObserver((entries) => entries.forEach(({ target, contentRect }) => {
+  target.style.setProperty('--pk-body-height', `${contentRect.height}px`);
+}));
 
 function start() {
   initTabs();
   sortTables(document);
+  keyRows(document);
+  document.querySelectorAll('.pk-page-body').forEach((body) => bodySize.observe(body));
   if (framed) post('pk:ready');
 }
 

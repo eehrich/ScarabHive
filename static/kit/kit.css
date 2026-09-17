@@ -266,8 +266,10 @@
   background: none; border: 0; cursor: pointer;
 }
 .pk-tab:hover { color: var(--text-primary); }
-.pk-tab[aria-selected="true"] { color: var(--text-primary); }
-.pk-tab[aria-selected="true"]::after {
+/* a.pk-tab in a nav: the pages of one panel, the current one marked with aria-current="page" */
+a.pk-tab { text-decoration: none; }
+.pk-tab[aria-selected="true"], .pk-tab[aria-current="page"] { color: var(--text-primary); }
+.pk-tab[aria-selected="true"]::after, .pk-tab[aria-current="page"]::after {
   content: ""; position: absolute; left: var(--space-2); right: var(--space-2); bottom: -1px;
   height: 2px; border-radius: 2px; background: var(--accent);
 }
@@ -481,3 +483,69 @@ pk-refresh:has(.pk-refresh-auto[aria-pressed="true"]) .pk-refresh-pick { --btn-b
 .pk-refresh-menu { min-width: 128px; }
 .pk-refresh-menu .pk-menu-item { height: var(--control-h-sm); font-variant-numeric: tabular-nums; }
 .pk-refresh-menu .pk-menu-item[aria-pressed="false"] > .pk-icon { visibility: hidden; }
+
+/* ------------------------------------------------------------ page layout */
+
+/* a row of filters above a list: fields side by side, wrapping, their controls on one line */
+.pk-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-2) var(--space-3); }
+.pk-filters > .pk-field { min-width: 140px; }
+
+/* a list beside the detail of the chosen entry; the detail stays in view while the list scrolls */
+.pk-split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: var(--space-4); align-items: start; }
+.pk-split > :last-child { position: sticky; top: var(--space-3); max-height: calc(var(--pk-body-height, 100vh) - 2 * var(--space-3)); overflow: auto; }
+@media (max-width: 760px) { .pk-split { grid-template-columns: minmax(0, 1fr); } .pk-split > :last-child { position: static; max-height: none; } }
+
+/* a section that folds */
+.pk-details { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 0 var(--space-3); }
+.pk-details > summary {
+  display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) 0;
+  font-size: var(--text-sm); font-weight: 600; cursor: pointer; list-style: none;
+}
+.pk-details > summary::-webkit-details-marker { display: none; }
+.pk-details > summary::before { content: "▸" / ""; color: var(--text-muted); }
+.pk-details[open] > summary::before { content: "▾" / ""; }
+.pk-details[open] { padding-bottom: var(--space-3); }
+
+/* text to read: a comfortable measure, stored line breaks kept */
+.pk-prose { max-width: 72ch; font-size: var(--text-md); line-height: 1.65; overflow-wrap: anywhere; }
+.pk-prose p { margin: 0 0 var(--space-3); }
+.pk-prose--breaks { white-space: pre-wrap; }
+
+/* a message in place: an error, a warning, a note, a success (see notice() in panel-kit.js) */
+.pk-callout {
+  margin: 0; padding: var(--space-2) var(--space-3); border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm); background: var(--surface-1); font-size: var(--text-sm); color: var(--text-primary);
+}
+.pk-callout--danger { border-left-color: var(--danger); background: var(--danger-subtle); }
+.pk-callout--warn { border-left-color: var(--warn); background: var(--warn-subtle); }
+.pk-callout--info { border-left-color: var(--info); background: var(--info-subtle); }
+.pk-callout--ok { border-left-color: var(--ok); background: var(--ok-subtle); }
+
+/* previous / next */
+pk-pager { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); font-size: var(--text-sm); }
+pk-pager .pk-pager-label { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
+/* a table whose rows are chosen (data-pk-select) */
+table[data-pk-select] > tbody > tr[data-id] { cursor: pointer; }
+table[data-pk-select] > tbody > tr[data-id]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* a bar in a tone */
+.pk-progress--ok::-webkit-progress-value { background: var(--ok); }
+.pk-progress--ok::-moz-progress-bar { background: var(--ok); }
+.pk-progress--warn::-webkit-progress-value { background: var(--warn); }
+.pk-progress--warn::-moz-progress-bar { background: var(--warn); }
+.pk-progress--danger::-webkit-progress-value { background: var(--danger); }
+.pk-progress--danger::-moz-progress-bar { background: var(--danger); }
+
+/* the chosen entry of a list in a menu (suggestions) */
+.pk-menu-item[aria-selected="true"] { background: var(--surface-3); }
+
+/* a value in a tone, as text */
+.pk-text--ok { color: var(--ok); }
+.pk-text--warn { color: var(--warn); }
+.pk-text--danger { color: var(--danger); }
+.pk-text--info { color: var(--info); }
+
+/* code shown in full, without the height cap */
+.pk-code--full { max-height: none; }
+

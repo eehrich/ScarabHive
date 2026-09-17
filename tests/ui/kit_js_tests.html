@@ -263,6 +263,367 @@
     return focused === 'Cancel' && (await answer) === false;
   });
 
+  await check('the kit speaks the language the page declares', async () => {
+    const declared = document.documentElement.lang;
+    document.documentElement.lang = 'de';
+    try {
+      const answer = pk.confirm('Wirklich?');
+      await nextFrame();
+      const dialog = document.querySelector('dialog.pk-dialog[open]');
+      const labels = [...dialog.querySelectorAll('button')].map((button) => button.textContent.trim()).join(',');
+      dialog.close();
+      await answer;
+      const control = document.createElement('pk-refresh');
+      document.body.appendChild(control);
+      const json = document.createElement('div');
+      pk.render(json, pk.jsonView({ a: '', b: [], c: {} }));
+      document.documentElement.lang = 'DE';
+      const upper = pk.localTime('2026-09-16', {}) && (await (async () => {
+        const asked = pk.confirm('Groß?');
+        await nextFrame();
+        const dialog = document.querySelector('dialog.pk-dialog[open]');
+        const first = dialog.querySelector('button').textContent.trim();
+        dialog.close();
+        await asked;
+        return first === 'Abbrechen';
+      })());
+      document.documentElement.lang = 'de';
+      const german = control.querySelector('.pk-menu-label').textContent === 'Neu laden alle'
+        && control.querySelector('[data-interval="off"]').textContent.trim() === 'Aus'
+        && [...json.querySelectorAll('.pk-json-null')].map((one) => one.textContent).join() === 'leer,keine Einträge,keine Felder'
+        && upper;
+      control.remove();
+      document.documentElement.lang = 'fr';  // a language the kit does not know falls back to English
+      const fallback = pk.confirm('Sure?');
+      await nextFrame();
+      const french = document.querySelector('dialog.pk-dialog[open]');
+      const english = french.querySelector('button').textContent.trim();
+      french.close();
+      await fallback;
+      return labels === 'Abbrechen,Bestätigen' && german && english === 'Cancel';
+    } finally {
+      document.documentElement.lang = declared;
+    }
+  });
+
+  const toastsOf = (kind) => [...document.querySelectorAll(`.pk-toast--${kind}`)].map((one) => one.textContent);
+
+  await check('api with latest abandons the older call of that name, quietly', async () => {
+    const before = document.querySelectorAll('.pk-toast').length;
+    const older = pk.api('/static/kit/kit.css', { latest: 'kit-test' });
+    const other = pk.api('/static/kit/kit.css', { latest: 'another' });
+    const newer = pk.api('/static/kit/kit.css', { latest: 'kit-test' });
+    let abandoned = false;
+    try { await older; } catch (error) { abandoned = pk.isAborted(error); }
+    const answered = typeof (await newer) === 'string' && typeof (await other) === 'string';
+    const dropped = pk.api('/static/kit/kit.css', { latest: 'kit-drop' });
+    pk.abandon('kit-drop');
+    pk.abandon('never-started');
+    let droppedAborted = false;
+    try { await dropped; } catch (error) { droppedAborted = pk.isAborted(error); }
+    return abandoned && answered && droppedAborted && document.querySelectorAll('.pk-toast').length === before
+      && !pk.isAborted(new pk.ApiError(500, 'x'));
+  });
+
+  await check('an abandoned call stays abandoned while its body is still being read', async () => {
+    const realFetch = window.fetch;
+    const before = document.querySelectorAll('.pk-toast').length;
+    const held = [];
+    window.fetch = async (path) => ({
+      ok: path.includes('good'), status: path.includes('good') ? 200 : 500, statusText: 'Server Error',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => new Promise((resolve) => held.push(resolve)),
+    });
+    try {
+      const failing = pk.api('/kit-bad', { latest: 'kit-body' });
+      const answering = pk.api('/kit-good', { latest: 'kit-body-ok' });
+      await nextFrame();
+      pk.abandon('kit-body');
+      pk.abandon('kit-body-ok');
+      held.forEach((resolve) => resolve({ detail: 'boom', rows: [1] }));
+      const outcomes = await Promise.allSettled([failing, answering]);
+      return outcomes.every((one) => one.status === 'rejected' && pk.isAborted(one.reason))
+        && document.querySelectorAll('.pk-toast').length === before;
+    } finally {
+      window.fetch = realFetch;
+    }
+  });
+
+  await check('a page with unsaved input asks before it is left, until it is saved', () => {
+    const leave = () => {
+      const event = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    const clean = leave();
+    pk.setDirty(true);
+    const edited = leave();
+    pk.setDirty(false);
+    return !clean && edited && !leave();
+  });
+
+  await check('withBusy guards every control of a NodeList', async () => {
+    const box = document.createElement('div');
+    box.innerHTML = '<button type="button">a</button><button type="button">b</button>';
+    document.body.appendChild(box);
+    let during = false;
+    try {
+      await pk.withBusy(box.querySelectorAll('button'), async () => { during = [...box.children].every((b) => b.disabled); });
+      return during && [...box.children].every((b) => !b.disabled);
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('api refuses latest for a raw response', async () => {
+    try {
+      await pk.api('/tests/ui/kit_js_tests.html', { raw: true, latest: 'raw' });
+      return false;
+    } catch (error) {
+      return error.message.includes('latest cannot guard a raw response');
+    }
+  });
+
+  await check('a row to choose keeps the keyboard focus through a redraw', () => {
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    const draw = (label) => pk.render(box, pk.html`<table class="pk-table" data-pk-select><tbody>
+      <tr data-id="1" tabindex="0"><td>${label}</td></tr><tr data-id="2" tabindex="0"><td>two</td></tr></tbody></table>`);
+    try {
+      draw('one');
+      box.querySelector('tr[data-id="2"]').focus();
+      draw('one, changed');
+      return document.activeElement === box.querySelector('tr[data-id="2"]');
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('a pane stuck beside a list fits the scroll area beneath the page head', () => new Promise((resolve) => {
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'width: 900px; height: 400px; border: 0';
+    frame.addEventListener('load', async () => {
+      try {
+        const page = frame.contentDocument;
+        const body = page.querySelector('.pk-page-body');
+        for (let i = 0; i < 100 && !body.style.getPropertyValue('--pk-body-height'); i += 1) await nextFrame();
+        body.scrollTop = 1000;
+        await new Promise((r) => frame.contentWindow.requestAnimationFrame(() => frame.contentWindow.requestAnimationFrame(r)));
+        const pane = page.getElementById('detail').getBoundingClientRect();
+        const area = body.getBoundingClientRect();
+        resolve(body.scrollTop > 0 && pane.top >= area.top && pane.bottom <= area.bottom + 1);
+      } finally {
+        frame.remove();
+      }
+    });
+    frame.src = '/tests/ui/kit_split_probe.html';
+    document.body.appendChild(frame);
+  }));
+
+  await check('pluginBase finds the plugin above its static folder', () =>
+    pk.pluginBase('http://host/plugins/writer_admin/static/queue.js') === '/plugins/writer_admin'
+    && pk.pluginBase('http://host/plugins/a%20b/static/x.js?v=2') === '/plugins/a%20b');
+
+  await check('update draws only a changed answer', () => {
+    const box = document.createElement('div');
+    const first = pk.update(box, pk.html`<p>${'a<b'}</p>`);
+    const node = box.firstChild;
+    const again = pk.update(box, pk.html`<p>${'a<b'}</p>`);
+    const kept = box.firstChild === node;
+    const changed = pk.update(box, pk.html`<p>c</p>`);
+    document.body.appendChild(box);
+    try {
+      pk.update(box, pk.html`<button data-key="k">1</button><button data-key="j">x</button>`);
+      box.querySelector('[data-key="k"]').focus();
+      pk.update(box, pk.html`<button data-key="j">x</button><button data-key="k">2</button>`);
+      const refocused = document.activeElement === box.querySelector('[data-key="k"]') && document.activeElement.textContent === '2';
+      return first && !again && kept && changed && refocused;
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('localTime reads a stored time as UTC, in the page language', () => {
+    // in UTC a stored time read as local time would pass: this check needs a zone of its own
+    if (new Date(2026, 8, 16, 12).getTimezoneOffset() === 0) throw new Error('the browser runs in UTC');
+    const declared = document.documentElement.lang;
+    document.documentElement.lang = 'de';
+    try {
+      const stored = new Date(Date.UTC(2026, 8, 16, 19, 21, 29));
+      const expected = stored.toLocaleString('de', { dateStyle: 'short', timeStyle: 'short' });
+      const withSeconds = stored.toLocaleString('de', { dateStyle: 'short', timeStyle: 'medium' });
+      const past = new Date(Date.now() - 5 * 60000).toISOString();
+      return pk.localTime('2026-09-16 19:21:29') === expected
+        && pk.localTime('2026-09-16T19:21:29Z') === expected
+        && pk.localTime('2026-09-16T21:21:29+02:00') === expected
+        && pk.localTime('2026-09-16 19:21:29', { seconds: true }) === withSeconds
+        && pk.localTime('2026-09-16') === new Date(2026, 8, 16).toLocaleDateString('de', { dateStyle: 'short' })
+        && pk.localTime('12') === '12' && pk.localTime(2026) === '2026' && pk.localTime('2026-09') === '2026-09'
+        && pk.localTime(new Date(Date.now() - 59.6 * 60000).toISOString(), { relative: true })
+          === new Intl.RelativeTimeFormat('de', { numeric: 'auto' }).format(-1, 'hour')
+        && pk.localTime(past, { relative: true }) === new Intl.RelativeTimeFormat('de', { numeric: 'auto' }).format(-5, 'minute')
+        && pk.localTime(new Date(Date.now() - 20000).toISOString(), { relative: true })
+          === new Intl.RelativeTimeFormat('de', { numeric: 'auto' }).format(0, 'second')
+        && pk.localTime('kein Datum') === 'kein Datum' && pk.localTime(null) === '';
+    } finally {
+      document.documentElement.lang = declared;
+    }
+  });
+
+  await check('formQuery leaves empty fields out, setQuery writes the URL without a reload', () => {
+    const form = document.createElement('form');
+    pk.render(form, pk.html`<input name="a" value="1"><input name="b" value="  "><select name="c"><option value="x" selected>x</option></select>`);
+    const query = pk.formQuery(form).toString();
+    const address = location.href;
+    try {
+      pk.setQuery({ q: 'ein Wort', page: 2 });
+      const written = location.search === '?q=ein+Wort&page=2';
+      pk.setQuery({});
+      return query === 'a=1&c=x' && written && !location.href.includes('?');
+    } finally {
+      history.replaceState(history.state, '', address);
+    }
+  });
+
+  await check('withBusy disables its controls while it runs and ignores a second call', async () => {
+    const button = document.createElement('button');
+    let release;
+    let runs = 0;
+    const running = pk.withBusy(button, () => { runs += 1; return new Promise((resolve) => { release = resolve; }); });
+    const whileBusy = button.disabled;
+    const second = await pk.withBusy([button, null], () => { runs += 1; return 'again'; });
+    release('done');
+    const other = document.createElement('button');
+    other.disabled = true;  // disabled by the page before: enabled afterwards all the same
+    let failed = false;
+    try { await pk.withBusy(other, () => { throw new Error('kaputt'); }); } catch { failed = true; }
+    return whileBusy && second === undefined && (await running) === 'done' && runs === 1 && !button.disabled
+      && (await pk.withBusy(button, () => 'next')) === 'next' && failed && !other.disabled
+      && (await pk.withBusy(other, () => 'again')) === 'again' && !('isBusy' in pk);
+  });
+
+  await check('placeMenu can match the width of its anchor, and leaves a menu its own width otherwise', () => {
+    const menu = document.createElement('div');
+    menu.style.width = '300px';
+    const box = { left: 10, right: 210, width: 200, top: 10, bottom: 30, height: 20 };
+    pk.placeMenu(menu, box);
+    const kept = menu.style.width === '300px';
+    pk.placeMenu(menu, box, { matchWidth: true });
+    return kept && menu.style.width === '200px' && menu.style.top === '34px';
+  });
+
+  await check('copyText copies and says so, a refusal is an error toast', async () => {
+    const copied = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
+    try {
+      const done = await pk.copyText(42);
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied'); } } });
+      const refused = await pk.copyText('x');
+      return done && copied.join() === '42' && toastsOf('ok').includes('Copied')
+        && refused === false && toastsOf('error').some((text) => text.includes('denied'));
+    } finally {
+      delete navigator.clipboard;  // the stand-in was the instance's own; the browser's own comes back
+    }
+  });
+
+  await check('notice shows a callout of its kind and hides it again', () => {
+    const box = document.createElement('p');
+    box.className = 'keep';
+    pk.notice(box, '<b>kaputt</b>', { kind: 'warn' });
+    const shown = !box.hidden && box.textContent === '<b>kaputt</b>' && box.getAttribute('role') === 'status'
+      && box.classList.contains('pk-callout--warn') && box.classList.contains('keep');
+    const node = box.firstChild;
+    pk.notice(box, '<b>kaputt</b>', { kind: 'warn' });
+    const unchanged = box.firstChild === node;
+    pk.notice(box, 'weg');
+    const switched = box.classList.contains('pk-callout--danger') && !box.classList.contains('pk-callout--warn')
+      && box.getAttribute('role') === 'alert';
+    pk.notice(box, '');
+    return shown && unchanged && switched && box.hidden;
+  });
+
+  await check('emptyState and skeleton draw kit components', () => {
+    const box = document.createElement('div');
+    pk.render(box, pk.emptyState('bug', '<i>Nichts</i>', 'noch'));
+    const empty = box.querySelector('.pk-empty-title').textContent === '<i>Nichts</i>' && box.querySelector('.pk-empty svg')
+      && box.querySelector('.pk-empty > div:last-child').textContent === 'noch';
+    pk.render(box, pk.emptyState('bug', 'Nur Titel'));
+    const titleOnly = box.querySelectorAll('.pk-empty > div').length === 1;
+    pk.render(box, pk.skeleton(4));
+    return Boolean(empty) && titleOnly && box.querySelectorAll('.pk-skeleton').length === 4;
+  });
+
+  await check('pk-pager steps inside its pages and says where it is', () => {
+    const pager = document.createElement('pk-pager');
+    pager.setAttribute('page', '1');
+    pager.setAttribute('pages', '3');
+    document.body.appendChild(pager);
+    try {
+      const steps = [];
+      pager.addEventListener('page', (event) => steps.push(event.detail.page));
+      const [previous, next] = pager.querySelectorAll('button');
+      const start = previous.disabled && !next.disabled && pager.textContent.includes('Page 1 of 3') && !pager.hidden;
+      next.click();
+      next.focus();
+      next.click();
+      const end = next.disabled && pager.page === 3 && pager.textContent.includes('Page 3 of 3')
+        && document.activeElement === previous;
+      next.click();  // disabled: nothing
+      previous.click();
+      pager.pages = 1;
+      return start && end && steps.join() === '2,3,2' && pager.hidden && pager.page === 1;
+    } finally {
+      pager.remove();
+    }
+  });
+
+  await check('a data-pk-select row is chosen by click and Enter, not through its controls', () => {
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    try {
+      pk.render(box, pk.html`<table class="pk-table" data-pk-select><thead><tr><th>A</th></tr></thead><tbody>
+        <tr data-id="1" tabindex="0"><td>eins</td></tr>
+        <tr data-id="2" tabindex="0"><td>zwei <button type="button">x</button></td></tr></tbody></table>`);
+      const table = box.querySelector('table');
+      const chosen = [];
+      table.addEventListener('rowselect', (event) => chosen.push(event.detail.id));
+      const rows = [...table.tBodies[0].rows];
+      rows[0].cells[0].click();
+      rows[1].querySelector('button').click();
+      rows[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      const marked = rows[1].getAttribute('aria-selected') === 'true' && rows[0].getAttribute('aria-selected') === 'false';
+      rows[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+      pk.render(box, pk.html`<table class="pk-table" data-pk-select><tbody><tr data-id="2"><td>zwei</td></tr></tbody></table>`);
+      const restored = pk.selectRow(box.querySelector('table'), 2)
+        && box.querySelector('tr').getAttribute('aria-selected') === 'true';
+      return chosen.join() === '1,2' && marked && restored && !pk.selectRow(box.querySelector('table'), 9);
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('selectTab shows the named tab without a click', () => {
+    const list = document.querySelector('[data-pk-tabs][role="tablist"]');
+    const shown = pk.selectTab(list, 'b') && document.getElementById('t-a').hidden && !document.getElementById('t-b').hidden;
+    const unknown = pk.selectTab(list, 'z');
+    pk.selectTab(list, 'a');
+    return shown && unknown === false && !document.getElementById('t-a').hidden;
+  });
+
+  await check('isDark follows the theme choice', () => {
+    const chosen = pk.currentTheme();
+    try {
+      pk.setTheme('dark');
+      const dark = pk.isDark();
+      pk.setTheme('light');
+      const light = pk.isDark();
+      pk.setTheme('system');
+      return dark === true && light === false && pk.isDark() === matchMedia('(prefers-color-scheme: dark)').matches;
+    } finally {
+      pk.setTheme(chosen);
+    }
+  });
+
   await check('pk-refresh with auto refreshes from the start, and its button stops it', () => {
     const control = document.createElement('pk-refresh');
     control.setAttribute('auto', '');

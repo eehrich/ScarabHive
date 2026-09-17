@@ -1,0 +1,20 @@
+<!doctype html>
+<html class="pk-root" lang="en">
+<head><meta charset="utf-8"><link rel="stylesheet" href="/static/kit/kit.css"></head>
+<body>
+<!-- A panel page as panel_base.html lays it out: a head with a toolbar, a scroll area, a list beside a stuck pane. -->
+<div class="pk-panel">
+  <header class="pk-page-header">
+    <h1 class="pk-page-title">Split</h1>
+    <div class="pk-toolbar"><button type="button" class="pk-btn">Tool</button></div>
+  </header>
+  <main class="pk-page-body">
+    <div class="pk-split">
+      <div id="list" style="height: 3000px">list</div>
+      <div id="detail"><div style="height: 2000px">detail</div></div>
+    </div>
+  </main>
+</div>
+<script type="module">import '/static/kit/panel-kit.js';</script>
+</body>
+</html>

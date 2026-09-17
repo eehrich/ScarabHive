@@ -2,8 +2,9 @@
 // floating windows -- and the host side of the pk:* protocol every panel speaks.
 import { html, render, icon, showToast, showDialog } from '/static/kit/panel-kit.js';
 
-// allow-modals only keeps unmigrated panels' native dialogs working; it goes
-// once no panel calls them (docs/webui_konzept.md, section 4.4).
+// allow-modals keeps unmigrated panels' native dialogs working (docs/webui_konzept.md,
+// section 4.4) -- and a panel's beforeunload question (setDirty), which a sandbox
+// without it suppresses silently.
 const SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads';
 const MIN_WIDTH = 320;
 const MIN_HEIGHT = 200;
@@ -41,8 +42,9 @@ export class Workspace {
     this.layer = document.getElementById('floatingLayer');
     this.floatingList = document.getElementById('floatingList');
     /**
-     * key -> {key, panelId, path, linked, place: 'dock'|'float', frame, element, title, rect}
+     * key -> {key, panelId, path, linked, place: 'dock'|'float', frame, element, title, rect, dirty}
      * linked: the path is where a link sent the panel, not where it navigated itself
+     * dirty: the page reported unsaved input (pk:dirty)
      */
     this.items = new Map();
     this.active = null;
@@ -81,7 +83,7 @@ export class Workspace {
    * path: where a link sends the panel. Opened again without one, a panel a
    * link sent somewhere starts over; a path it navigated to itself stays.
    */
-  open(panelId, { path = '', place = 'dock', rect = null, linked = Boolean(path), quietly = false } = {}) {
+  async open(panelId, { path = '', place = 'dock', rect = null, linked = Boolean(path), quietly = false } = {}) {
     const panel = this.panel(panelId);
     if (!panel) {
       showToast(document, `Panel "${panelId}" is not available`, 'warn');
@@ -91,10 +93,12 @@ export class Workspace {
     if (existing) {
       if (path || existing.linked) {
         const moved = path !== existing.path;
-        existing.path = path;
-        existing.linked = linked;
-        if (moved) this.mount(existing);
-        this.save();
+        if (!moved || !existing.dirty || await this.mayDiscard(existing)) {
+          existing.path = path;
+          existing.linked = linked;
+          if (moved) this.mount(existing);
+          this.save();
+        }
       }
       this.focus(existing.key, { quietly });
       return;
@@ -129,6 +133,7 @@ export class Workspace {
     if (item.element) item.element.remove();
     item.element = null;
     item.title = this.panel(item.panelId).title;
+    item.dirty = false;
     item.frame = this.createFrame(item);
     if (item.place === 'dock') {
       this.frameHost.appendChild(item.frame);
@@ -139,9 +144,21 @@ export class Workspace {
     this.renderFloatingList();
   }
 
-  close(key) {
+  /**
+   * Asked only for a page that reported unsaved input (item.dirty), so a clean panel
+   * still closes and moves at once -- a caller may close tab after tab.
+   */
+  mayDiscard(item) {
+    return showDialog(document, {
+      title: 'Discard unsaved changes?',
+      message: `${item.title} has changes that are not saved yet.`,
+      actions: [{ label: 'Keep editing', value: false }, { label: 'Discard', value: true, danger: true }],
+    });
+  }
+
+  async close(key) {
     const item = this.items.get(key);
-    if (!item) return;
+    if (!item || (item.dirty && !(await this.mayDiscard(item)))) return;
     item.frame.remove();
     if (item.element) item.element.remove();
     this.items.delete(key);
@@ -152,9 +169,9 @@ export class Workspace {
   }
 
   /** Docked becomes floating and back. Moving an iframe reloads it; the path it reported is kept. */
-  move(key, place) {
+  async move(key, place) {
     const item = this.items.get(key);
-    if (!item || item.place === place) return;
+    if (!item || item.place === place || (item.dirty && !(await this.mayDiscard(item)))) return;
     item.place = place;
     if (place === 'dock') this.active = key;
     this.mount(item);
@@ -498,6 +515,7 @@ export class Workspace {
     const message = event.data || {};
     switch (message.type) {
       case 'pk:ready':
+        item.dirty = false;  // a page the panel went to itself starts with nothing unsaved
         this.post(item, 'pk:init', { theme: this.theme(), visible: this.shown(item), session: this.session() });
         break;
       case 'pk:dialog': {
@@ -518,6 +536,9 @@ export class Workspace {
         item.path = String(message.path || '');
         item.linked = false;
         this.save();
+        break;
+      case 'pk:dirty':
+        item.dirty = message.dirty === true;
         break;
       case 'pk:set-theme':
         this.onSetTheme(String(message.theme));

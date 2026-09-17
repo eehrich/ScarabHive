@@ -203,9 +203,8 @@ function drawChart() {
 }
 
 // the chart draws with the theme's colours: a theme change draws it anew -- the viewer's choice, or the system's
-// light and dark under the theme "system"
+// light and dark under the theme "system" (the kit reports both)
 onThemeChange(drawChart);
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawChart);
 
 // ---------------------------------------------------------------------- agents
 

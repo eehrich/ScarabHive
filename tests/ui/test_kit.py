@@ -100,18 +100,27 @@ def _kit_users():
 
 _ICON_CALL = re.compile(r"\b(?:icon|kitIcon)\(([^()]*)\)")
 _ICON_NAME = re.compile(r"""(?<!size: )(?<!label: )(?<!size=)(?<!label=)['"]([a-z][\w-]*)['"]""")
+# the empty state names its icon first (emptyState() in JS, the empty() macro); the rest is text
+_EMPTY_CALL = re.compile(r"""\b(?:emptyState|empty)\(\s*['"]([a-z][\w-]*)['"]""")
+
+
+def _icon_names(text: str) -> list[str]:
+    """Every icon a file names: sprite references, icon() calls and the first argument of an empty state."""
+    found = re.findall(r"icons\.svg#([\w-]+)", text)
+    for call in _ICON_CALL.finditer(text):
+        found += _ICON_NAME.findall(call.group(1))
+    return found + _EMPTY_CALL.findall(text)
 
 
 def test_every_icon_named_in_code_exists_in_the_sprite():
     names = set(sprite_icons())
     referenced = {}
     for path, text in _kit_users():
-        found = re.findall(r"icons\.svg#([\w-]+)", text)
-        for call in _ICON_CALL.finditer(text):
-            found += _ICON_NAME.findall(call.group(1))
-        for name in found:
+        for name in _icon_names(text):
             referenced.setdefault(name, path.name)
     assert {"x", "play", "shield"} <= set(referenced), "fixture: literal, ternary or sprite references went unseen"
+    probe = "emptyState('only-in-an-empty-state', 'Titel', 'text')"
+    assert _icon_names(probe) == ["only-in-an-empty-state"], "fixture: an empty state's icon went unseen"
 
     unknown = {name: where for name, where in referenced.items() if name not in names}
 

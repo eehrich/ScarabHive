@@ -7,3 +7,13 @@
 {% macro logo(size=24) -%}
 <svg class="pk-logo" width="{{ size }}" height="{{ size }}" role="img" aria-label="ScarabHive"><use href="/static/kit/logo.svg#mark"/></svg>
 {%- endmacro %}
+
+{#- The empty state; the JS twin is emptyState() in panel-kit.js. #}
+{% macro empty(icon_name, title, text="") -%}
+<div class="pk-empty">{{ icon(icon_name) }}<div class="pk-empty-title">{{ title }}</div>{% if text %}<div>{{ text }}</div>{% endif %}</div>
+{%- endmacro %}
+
+{#- Placeholder lines while something loads; the JS twin is skeleton(). #}
+{% macro skeleton(lines=3) -%}
+<div class="pk-stack">{% for _ in range(lines) %}<span class="pk-skeleton"></span>{% endfor %}</div>
+{%- endmacro %}

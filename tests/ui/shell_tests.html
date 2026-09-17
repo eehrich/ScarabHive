@@ -1793,6 +1793,87 @@
     return offered.length === 1;
   });
 
+  await check('a panel with unsaved input is only closed or reloaded once the viewer agrees', async () => {
+    const tab = () => $$('.dock-tab').find((t) => t.textContent.includes('Probe'));
+    const where = () => probeFrame().contentDocument.getElementById('location').textContent;
+    const request = (id) => `/tests/ui/shell_probe_panel.html?request_id=${id}`;
+    /** The shell has read what the probe said about its input once the title sent after it has arrived. */
+    const edit = async (dirty) => {
+      const title = dirty ? 'Probe · edited' : 'Probe · saved';
+      probe().pk.setDirty(dirty);
+      probe().pk.setTitle(title);
+      await until('the title sent after it', () => tab()?.querySelector('.dock-tab-title').textContent === title);
+    };
+    /** Answers the shell's question: discard or keep editing. */
+    const answer = async (discard) => {
+      const dialog = await until('the question', () => $('dialog.pk-dialog[open]'));
+      [...dialog.querySelectorAll('.pk-btn')].find((b) => b.classList.contains('pk-btn--danger') === discard).click();
+      await until('the question gone', () => !$('dialog.pk-dialog[open]'));
+    };
+    const link = async (id) => {
+      const row = doc().createElement('div');
+      row.className = 'message-request-id';
+      row.innerHTML = `Request: <span>${id}</span>`;
+      $('#chat').appendChild(row);
+      row.click();
+      (await until('the context menu', () => $('#contextMenu [data-panel="probe"]'))).click();
+    };
+    const answered = () => until('the page answered', () => probe()?.received.some((m) => m.type === 'pk:init'));
+    const floated = () => until('the window', () => $('#floatingLayer .app-window'));
+    const docked = () => until('the tab, the window gone', () => !$('#floatingLayer .app-window') && tab());
+    // kept: nothing happens while the viewer keeps editing
+    await edit(true);
+    const page = probeFrame();
+    tab().querySelector('[data-act="close"]').click();
+    await answer(false);
+    tab().querySelector('[data-act="float"]').click();
+    await answer(false);
+    await link('req 43');
+    await answer(false);
+    const kept = probeFrame() === page && !$('#floatingLayer .app-window') && where() === request('req%2042');
+    // discarded: the move happens, and the page it loads has nothing unsaved -- docking back asks nothing,
+    // even when that page never says it is there (here: an address that fails to load)
+    probe().pk.navigate('gone');
+    await edit(false);  // a title the shell has not shown yet: once it shows, the path before it has arrived
+    await edit(true);
+    tab().querySelector('[data-act="float"]').click();
+    await answer(true);
+    (await floated()).querySelector('[data-act="dock"]').click();
+    await docked();
+    await link('req 42');
+    await until('the probe back on its request', () => where() === request('req%2042'));
+    await answered();
+    // discarded: a link loads its page
+    await edit(true);
+    await link('req 44');
+    await answer(true);
+    await until('the probe on the new request', () => where() === request('req%2044'));
+    await answered();
+    // a page the panel went to itself starts clean, whatever the page before it said
+    await edit(true);
+    probeFrame().contentWindow.location.assign(request('req%2045'));
+    await until('the page it went to', () => where() === request('req%2045'));
+    await answered();
+    tab().querySelector('[data-act="float"]').click();
+    (await floated()).querySelector('[data-act="dock"]').click();
+    await docked();
+    await answered();
+    // a page that saved asks nothing
+    await edit(true);
+    await edit(false);
+    await link('req 43');
+    await until('the probe on request 43, unasked', () => where() === request('req%2043'));
+    await answered();
+    // discarded: closing closes -- and the probe opens again where the later checks expect it
+    await edit(true);
+    tab().querySelector('[data-act="close"]').click();
+    await answer(true);
+    await until('the probe closed', () => !tab());
+    await link('req 42');
+    await until('the probe back on its request', () => where() === request('req%2042'));
+    return kept && !$('dialog.pk-dialog[open]');
+  });
+
   await check('the plugin panels follow the session the chat switches to, not a slower answer for the one before, and New', async () => {
     // what each panel shows of the stub's answers: 7 for s-1, 3 for another session or none --
     // every figure of one answer agreeing, or nothing

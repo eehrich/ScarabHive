@@ -130,7 +130,21 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 
 | Export | Wofür |
 |---|---|
-| `api(path, {method, json, body, headers, quiet, raw})` | jeder Server-Aufruf. Cookie-Auth, JSON rein und raus, Fehler als `ApiError(status, detail)` **plus Toast** (außer `quiet: true`), abgebrochen, wenn das Panel geht. Wer selbst reagiert (404 → leerer Zustand), nimmt `quiet` und fängt. |
+| `api(path, {method, json, body, headers, quiet, raw, latest})` | jeder Server-Aufruf. Cookie-Auth, JSON rein und raus, Fehler als `ApiError(status, detail)` **plus Toast** (außer `quiet: true`), abgebrochen, wenn das Panel geht. Wer selbst reagiert (404 → leerer Zustand), nimmt `quiet` und fängt. **`latest: 'name'`** bricht den vorigen Aufruf gleichen Namens ab — eine überholte Antwort kann nie gezeichnet werden; der abgebrochene wirft einen `AbortError` ohne Toast, erkennbar mit `isAborted(error)`. Das ersetzt jeden eigenen Sequenz-Zähler. |
+| `abandon(name)` | den laufenden `latest`-Aufruf dieses Namens verwerfen, etwa wenn der Nutzer leert, was er füllen würde. |
+| `pluginBase(import.meta.url)` | die Adresse des Plugins für ein Skript aus seinem `static/`-Ordner (`/plugins/<name>`). |
+| `errorText(error)` | der Text, den der Toast zeigen würde („404: Not Found“) — für eine Seite, die den Fehler selbst anzeigt. |
+| `update(el, content)` | `render`, aber nur bei geändertem Markup (Rückgabe: gezeichnet ja/nein). Eine unveränderte Antwort lässt Scroll, Fokus, Auswahl und offene `<details>` stehen. Ein Element entweder mit `update` oder mit `render` zeichnen. |
+| `notice(el, text, {kind})` | Meldung an Ort und Stelle als `.pk-callout` (`danger` Standard, `warn`, `info`, `ok`); leerer Text versteckt sie. Für „Aktualisieren fehlgeschlagen, gezeigt ist der Stand von …“. |
+| `emptyState(icon, title, text)`, `skeleton(lines)` | leerer Zustand und Lade-Platzhalter; in Templates die Makros `empty()` und `skeleton()` aus `kit/macros.html`. |
+| `localTime(ts, {relative, seconds})` | ein gespeicherter Zeitstempel in Ortszeit und Seitensprache. Werte ohne Zone (so schreiben es alle unsere Datenbanken) gelten als UTC; `relative` ergibt „vor 5 Minuten“. |
+| `formQuery(form)`, `setQuery(params)` | Filterformular → Query (leere Felder fallen weg); Query in die URL schreiben (`replaceState`) und der Shell melden. |
+| `withBusy(controls, fn)` | `fn` einmal zur Zeit: die Knöpfe sind gesperrt, ein Doppelklick startet nichts. Danach sind **alle** wieder frei — wer eigene Sperrzustände hat, setzt sie nach `withBusy` neu. Ein Knopf, den ein Neuzeichnen währenddessen ersetzt, ist nicht mehr der gesperrte: Zeilen, die ein Takt neu zeichnet, merken sich ihre Sperre selbst (etwa eine Menge von IDs, die das Markup liest). |
+| `copyText(text)` | in die Zwischenablage, mit Toast. |
+| `<pk-pager page pages>` | Zurück/Weiter mit „Seite 2 von 7“, feuert `page` (`detail.page`), versteckt bei einer Seite. |
+| `<table data-pk-select>`, `selectRow(table, id)` | Zeilen mit `data-id` und `tabindex="0"` sind per Klick oder Enter wählbar (`aria-selected`, Event `rowselect` mit `detail.id`); Bedienelemente in der Zeile bleiben ihre eigenen. `selectRow` markiert nach dem Neuzeichnen wieder. |
+| `selectTab(list, name)` | einen Tab (`data-tab`) wählen, ohne Klick — etwa aus der URL. |
+| `isDark()` | ob die Seite gerade dunkel ist (für Canvas/SVG, die keine Tokens lesen). |
 | ``html`…` ``, `render(el, content)` | Markup bauen: jeder eingesetzte Wert wird escapet, verschachteltes ``html`` `` und Arrays bleiben Markup. `trusted(str)` nur für schon sicheres HTML (z. B. vom Server sanitisiert). `false`, `null` und `undefined` ergeben nichts — damit `${cond && html`…`}` geht; in einem Attribut darum `aria-pressed="${String(on)}"`, sonst steht dort `""`. `render` gibt den Fokus zurück: lag er im Element, bekommt ihn danach das neue Element mit demselben `data-key`. |
 | `escapeHtml(v)`, `jsonView(value)`, `icon(name, {size, label})` | Hilfen für dasselbe. `jsonView` zeigt JSON zum Lesen: alle Ebenen offen, Strings ohne Anführungszeichen und mit ihren Zeilenumbrüchen, Arrays als Liste. Das Roh-JSON bietet das Panel selbst an (Kopieren, Umschalter). |
 | `alert(msg)`, `confirm(msg, {title, confirmLabel, danger})`, `prompt(msg, {title, value, placeholder, confirmLabel})`, `dialog({title, message, actions, input})` | Dialoge — Promise mit dem Ergebnis (`confirm` → `true/false`, `prompt` → Text oder `null`). In der Shell über der ganzen Anwendung, sonst im Panel. |
@@ -139,9 +153,29 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 | `autoRefresh(fn, ms)` → `{start, stop, running}`; `<pk-refresh interval="s">` | Nachladen, pausiert, solange das Panel nicht sichtbar ist. `<pk-refresh>` feuert `refresh` am `document`; `event.detail.auto` sagt, ob der Takt (true) oder ein Klick (false) fragt — teures Nachladen darf den Takt auslassen. Mit `auto` läuft der Takt von Anfang an (sonst erst nach Klick). `interval` und `auto` sind nur die **Voreinstellung der Seite**: Am Knopf wählt der Nutzer den Takt (5 s, 10 s, 30 s, 1 min, die Voreinstellung, oder aus), und diese Wahl gilt ab dann für diesen Panel-Pfad — gespeichert im localStorage unter `pk.refresh:<pathname>`. |
 | `isVisible()` | ob das Panel zu sehen ist — nicht bei Tab im Hintergrund, geschlossenem Fenster, verdecktem Browser-Tab. `autoRefresh` fragt es selbst. |
 | `initTabs(root)` | `[data-pk-tabs]` bedienbar machen (Klick, Pfeiltasten, Event `tabchange`). Läuft beim Laden von selbst; nach dem Nachrendern erneut aufrufen ist unschädlich. |
-| `placeMenu(menu, box)` | eigenes Menü positionieren. Ein `.pk-menu[popover]` mit `id`, das per `popovertarget` geöffnet wird, platziert das Kit selbst. |
-| `setTitle(text)`, `navigate(path)` | Titel im Tab, Pfad im Panel merken (wird beim Wiederherstellen geöffnet und gilt als eigener Pfad: anders als ein Kontext-Link setzt der Starter ihn nicht zurück). |
-| `setTheme(theme)`, `currentTheme()`, `onThemeChange(fn)`, `THEMES` | Theme-Wahl und -Wechsel (Einstellungen, Kit-Seite); `onThemeChange` meldet auch einen Wechsel aus der Shell. |
+| `placeMenu(menu, box, {matchWidth})` | eigenes Menü positionieren (`matchWidth`: so breit wie das Feld, zu dem es gehört — Vorschlagslisten). Ein `.pk-menu[popover]` mit `id`, das per `popovertarget` geöffnet wird, platziert das Kit selbst. |
+| `setTitle(text)`, `navigate(path)` | Titel im Tab, Pfad im Panel merken (wird beim Wiederherstellen geöffnet und gilt als eigener Pfad: anders als ein Kontext-Link setzt der Starter ihn nicht zurück; ohne Argument der Pfad, den die Seite gerade zeigt). |
+| `setDirty(bool)` | ungespeicherte Eingaben melden: solange `true`, fragt die Shell vor Schließen, Ab- oder Andocken oder einem Link, der das Panel neu lädt, und der eigene Browser-Tab vor dem Verlassen. Nach dem Speichern oder Verwerfen `setDirty(false)`. |
+| `setTheme(theme)`, `currentTheme()`, `onThemeChange(fn)`, `THEMES` | Theme-Wahl und -Wechsel (Einstellungen, Kit-Seite); `onThemeChange` meldet auch einen Wechsel aus der Shell und, bei `system`, einen Wechsel der Systemfarben. |
+
+**Das Muster eines Laders** — neueste Antwort gewinnt, Unverändertes bleibt
+stehen, ein Fehler behält das Gezeigte und sagt es:
+
+```js
+async function load() {
+  try {
+    const data = await api(`${base}/jobs?${formQuery(filters)}`, { latest: 'jobs', quiet: true });
+    notice(stale, '');
+    update(list, data.jobs.length ? rows(data.jobs) : emptyState('list-todo', 'Keine Jobs'));
+  } catch (error) {
+    if (isAborted(error)) return;
+    notice(stale, `Nicht aktualisiert (${errorText(error)}) — gezeigt ist der letzte Stand.`);
+  }
+}
+```
+
+Sprache: das Kit spricht die Sprache aus `<html lang>` (Writer-Panels: `de`)
+— Dialogknöpfe, Refresh-Menü, Pager, Kopier-Toast.
 
 Beispiel:
 
@@ -201,8 +235,16 @@ es gerendert hat (auch die umschließende, wenn nur der `tbody` neu kommt).
   `--icon`, `--sm`), `pk-input`/`pk-select`/`pk-textarea`/`pk-check`/`pk-switch`
   in `pk-field` und `pk-form`, `pk-tabs`, `pk-dialog`, `pk-menu`, `pk-table` in
   `pk-table-wrap`, `pk-card`, `pk-stats`/`pk-stat`, `pk-badge`, `pk-dot`,
-  `pk-empty`, `pk-skeleton`, `pk-spinner`, `pk-progress`, `pk-code`, `pk-kv`,
-  `pk-json`; Layout mit `pk-stack`, `pk-row`, `pk-grow`, `pk-toolbar`.
+  `pk-empty`, `pk-skeleton`, `pk-spinner`, `pk-progress` (`--ok/--warn/--danger`),
+  `pk-code`, `pk-kv`, `pk-json`, `pk-callout` (`--danger/--warn/--info/--ok`),
+  `pk-details` (auf einem `<details>`), `pk-prose` (Lesetext; `pk-prose--breaks`
+  hält gespeicherte Zeilenumbrüche), `pk-text--ok/--warn/--danger/--info`
+  (ein Wert in einer Tonfarbe), `pk-code--full` (Code ohne Höhendeckel),
+  `pk-menu-item[aria-selected]` (der gewählte Vorschlag); Layout mit `pk-stack`, `pk-row`,
+  `pk-grow`, `pk-toolbar`, `pk-filters` (Filterzeile über einer Liste),
+  `pk-split` (Liste links, Detail rechts, das Detail bleibt stehen), Seiten
+  eines Panels als `<nav class="pk-tabs">` mit `<a class="pk-tab"
+  aria-current="page">`.
 - **Farben, Abstände, Radien, Schrift nur über Tokens**: `--surface-0…3`,
   `--text-primary/secondary/muted`, `--border-subtle/default/strong`,
   `--accent*`, `--ok/--warn/--danger/--info` (+ `-subtle`), `--space-1…8`,
@@ -239,6 +281,7 @@ Funktionen oben.
 | Panel → Shell | `pk:dialog` → `pk:dialog-result` | `id`, `dialog: {title, message, actions, input}` → `id`, `value` |
 | Panel → Shell | `pk:toast` | `message`, `kind` |
 | Panel → Shell | `pk:title` / `pk:navigate` / `pk:set-theme` | `text` / `path` / `theme` |
+| Panel → Shell | `pk:dirty` | `dirty` (ungespeicherte Eingaben; eine neue Seite im Panel gilt als sauber) |
 
 Was ein Panel vor `pk:init` sagt (Titel, Pfad), hält das Kit zurück und
 schickt es nach dem Handschlag. Ohne Shell (eigener Browser-Tab, fremder

@@ -1,5 +1,5 @@
 {% extends "kit/panel_base.html" %}
-{% from "kit/macros.html" import icon, logo %}
+{% from "kit/macros.html" import icon, logo, empty, skeleton %}
 {% block title %}UI Kit{% endblock %}
 {% block head %}
 <style>
@@ -99,6 +99,12 @@
   <div id="kit-tab-c" role="tabpanel" hidden>
     <dl class="pk-kv"><dt>Retention</dt><dd>5 GB</dd><dt>Capture</dt><dd>requests, responses, hooks</dd></dl>
   </div>
+  <h3>Pages of one panel</h3>
+  <nav class="pk-tabs" aria-label="Pages">
+    <a class="pk-tab" href="#" aria-current="page">Overview</a>
+    <a class="pk-tab" href="#">Queue</a>
+    <a class="pk-tab" href="#">Books</a>
+  </nav>
 </section>
 
 <section class="kit-section">
@@ -151,6 +157,46 @@
 </section>
 
 <section class="kit-section">
+  <h2>Page layout</h2>
+  <form class="pk-filters">
+    <label class="pk-field"><span class="pk-label">Status</span><select class="pk-select"><option>open</option><option>resolved</option></select></label>
+    <label class="pk-field"><span class="pk-label">Search</span><input class="pk-input" placeholder="title or id"></label>
+    <button type="reset" class="pk-btn pk-btn--ghost">Reset</button>
+  </form>
+  <p class="pk-callout pk-callout--danger">The list could not be refreshed -- showing the state of 14:02.</p>
+  <p class="pk-callout pk-callout--warn">Two chapters are still being written.</p>
+  <p class="pk-callout pk-callout--info">Sorted by the server; the heads sort the page shown.</p>
+  <p class="pk-callout pk-callout--ok">Backup written.</p>
+  <div class="pk-split">
+    <div class="pk-stack">
+      <div class="pk-table-wrap">
+        <table class="pk-table" data-pk-select>
+          <thead><tr><th>Id</th><th>Title</th></tr></thead>
+          <tbody>
+            <tr data-id="1" tabindex="0" aria-selected="true"><td class="pk-num">1</td><td>The Night</td></tr>
+            <tr data-id="2" tabindex="0"><td class="pk-num">2</td><td>Buran</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <pk-pager page="2" pages="7"></pk-pager>
+    </div>
+    <div class="pk-card pk-stack">
+      <h3 class="pk-card-title">The Night</h3>
+      <details class="pk-details" open><summary>Synopsis</summary>
+        <div class="pk-prose"><p>A buran holds everyone at the airport.</p><p>The heist is already running.</p></div>
+        <div class="pk-prose pk-prose--breaks">A stored text
+keeps its line breaks.</div>
+      </details>
+      <details class="pk-details"><summary>Raw data</summary><div id="kit-json-small"></div></details>
+      <progress class="pk-progress pk-progress--warn" value="62" max="100"></progress>
+      <div class="pk-row"><span class="pk-text--ok">92 good</span><span class="pk-text--warn">61 fair</span><span class="pk-text--danger">34 poor</span><span class="pk-text--info">new</span></div>
+    </div>
+  </div>
+  <div class="pk-card">{{ empty('library', 'No books yet', 'Books show up here once a story is written.') }}</div>
+  <div class="pk-card">{{ skeleton(3) }}</div>
+</section>
+
+<section class="kit-section">
   <h2>Code and JSON</h2>
   <pre class="pk-code">POST /events  {"agent_name": "writer_review", "task": "Check chapter 3"}</pre>
   <div id="kit-json" class="pk-card"></div>
@@ -181,6 +227,7 @@
   };
   document.querySelectorAll('[data-demo]').forEach((b) => b.addEventListener('click', demos[b.dataset.demo]));
 
+  render(document.getElementById('kit-json-small'), jsonView({ title: 'The Night', chapters: 8, series: null }));
   render(document.getElementById('kit-json'), jsonView({ request_id: '8f2c1a', agent: 'writer_review', usage: { prompt_tokens: 4120, completion_tokens: 380 }, tools: ['writer_content_chapter', 'writer_issues_list'], cached: null }));
 </script>
 {% endblock %}
