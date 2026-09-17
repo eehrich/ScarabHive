@@ -4,7 +4,7 @@
 plugins:
   servers:
     comfyui_agent:
-      type: basic_agent
+      type: multi_turn_agent
       enabled: true
       description: "Generate images, audio, and video using ComfyUI workflows"
       
@@ -43,17 +43,14 @@ plugins:
         
         tools:
           allowed:
-            - "comfyui/*"
-            - "context_engineer/*"
+            - "+comfyui/*"
+            - "+context_engineer/*"
         
         hooks:
           enabled: true
           overrides:
             markdown_formatter.format_markdown_output:
-              enabled: true    
-            context_engineer.engineer_context:
-              enabled: true              
-      
+              enabled: true      
       metadata:
         visibility: "both"
         tags:

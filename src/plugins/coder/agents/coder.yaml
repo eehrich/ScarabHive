@@ -16,7 +16,7 @@ plugins:
   servers:
 
     coder:
-      type: basic_agent
+      type: multi_turn_agent
       enabled: true
       description: "Coding agent with a harness: plans, changes, tests and has its work adversarially reviewed by sub-agents before calling it done"
 
@@ -61,14 +61,14 @@ plugins:
 
         tools:
           allowed:
-            - "coder_fs/*"                 # read/write inside the sandbox
-            - "coder_shell/*"              # builds, tests, git (read)
-            - "coder_sam/*"                # explorer, reviewer, tester
-            - "skills/*"                   # read the bundled reference files
-            - "todo/*"                     # the task list, visible across turns
-            - "coder_okf/*"                # durable project knowledge it wrote
-            - "sequential_thinking/*"      # think a hard step through
-            - "datetime/*"
+            - "+coder_fs/*"                 # read/write inside the sandbox
+            - "+coder_shell/*"              # builds, tests, git (read)
+            - "+coder_sam/*"                # explorer, reviewer, tester
+            - "+skills/*"                   # read the bundled reference files
+            - "+todo/*"                     # the task list, visible across turns
+            - "+coder_okf/*"                # durable project knowledge it wrote
+            - "+sequential_thinking/*"      # think a hard step through
+            - "+datetime/*"
 
           # semantic_search is dead weight here: with ChromaDB embeddings off
           # (the default) every call answers SemanticSearchDisabled, so

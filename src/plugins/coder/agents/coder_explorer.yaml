@@ -10,7 +10,7 @@ plugins:
   servers:
 
     coder_explorer:
-      type: basic_agent
+      type: multi_turn_agent
       enabled: true
       description: "Read-only code explorer — answers 'where is X, who calls Y, how does Z flow' with file paths and line numbers"
 
@@ -36,21 +36,7 @@ plugins:
 
         tools:
           allowed:
-            - "coder_fs_ro/*"
-
-          # semantic_search is dead weight here: with ChromaDB embeddings off
-          # (the default) every call answers SemanticSearchDisabled, so
-          # offering it only costs a turn. grep_search covers the need.
-          # Enable embeddings first if you ever want this back.
-          # Note the doubled name -- that is the house convention and it is
-          # correct: a "server/tool" pattern is matched EXACTLY against
-          # server_name + "/" + tool_name, and the tool name already carries
-          # the instance prefix. Written as "coder_fs/semantic_search" this
-          # pattern matches nothing and blocks nothing, silently. Verified
-          # both ways with tool_matches_patterns(): semantic_search gone,
-          # grep_search still there.
-          blocked:
-            - "coder_fs_ro/coder_fs_ro_semantic_search"
+            - "+coder_fs_ro/*"
 
       metadata:
         author: "Enrico Ehrich"
