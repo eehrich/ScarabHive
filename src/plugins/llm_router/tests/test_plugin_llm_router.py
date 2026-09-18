@@ -171,3 +171,62 @@ class TestLLMRouterServerNew:
             
             # Verify chat was called
             mock_client.chat.assert_called_once()
+
+class TestLLMRouterCancellation:
+    """A cancelled request must not look like a forced tool kill."""
+
+    @staticmethod
+    def _server(mock_system_config, mock_server_config):
+        from types import SimpleNamespace
+
+        mock_system_config.llm_system = SimpleNamespace(
+            profiles={"test": {"provider": "openai", "model": "gpt-5-nano"}},
+            models={"gpt-5-nano": {"provider": "openai"}})
+        return LLMRouterServer("llm_router", mock_system_config, mock_server_config)
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_chat_answers_instead_of_escaping(self, mock_system_config, mock_server_config):
+        """An escaping CancelledError is reported as "force-cancelled" by the agent server."""
+        import asyncio
+
+        from agent_system.core.cancellation import CancellationToken
+
+        server = self._server(mock_system_config, mock_server_config)
+        mock_status = AsyncMock()
+        mock_client = AsyncMock()
+        token = CancellationToken("req-1")
+
+        async def cancel_then_raise(*args, **kwargs):
+            token.cancel()
+            raise asyncio.CancelledError("Request cancelled by user")
+
+        mock_client.chat.side_effect = cancel_then_raise
+
+        with patch.object(server, "_make_client", return_value=mock_client):
+            result = await server.call("llm_router_chat", {
+                "message": "Hello", "profile": "test",
+                "_status": mock_status, "_cancellation_token": token,
+            })
+
+        assert result["cancelled"] is True
+        # Ending the scope would report the cancel as a completed call; the
+        # tool base reports the error result instead (as it does for the
+        # cancel the check before the call answers).
+        mock_status.end.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_the_user_did_not_ask_for_still_escapes(self, mock_system_config, mock_server_config):
+        import asyncio
+
+        from agent_system.core.cancellation import CancellationToken
+
+        server = self._server(mock_system_config, mock_server_config)
+        mock_client = AsyncMock()
+        mock_client.chat.side_effect = asyncio.CancelledError()
+
+        with patch.object(server, "_make_client", return_value=mock_client):
+            with pytest.raises(asyncio.CancelledError):
+                await server.call("llm_router_chat", {
+                    "message": "Hello", "profile": "test",
+                    "_status": AsyncMock(), "_cancellation_token": CancellationToken("req-2"),
+                })

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, TYPE_CHECKING
 
@@ -173,6 +174,16 @@ class LLMRouterServer(SchemaBasedToolServer):
                 "provider": getattr(client, 'provider', 'unknown'),
                 "model": getattr(client, 'model', 'unknown')
             }
+        except asyncio.CancelledError:
+            # The user's cancel reaches the client as CancelledError. Letting
+            # it out of the tool makes the agent server answer the model with
+            # "force-cancelled", so it is answered here -- the same result as
+            # the check before the call, reported the same way: the scope stays
+            # open on purpose, and the tool base turns the error result into an
+            # error event (a cancel is not a completed call).
+            if cancellation_token and cancellation_token.is_cancelled:
+                return {"error": "LLM routing request cancelled by user", "cancelled": True}
+            raise
         except Exception as e:
             return {
                 "error": f"Chat failed with profile '{profile}': {str(e)}",
