@@ -329,7 +329,7 @@ class TestDispatchAppliesStagedCompaction:
     @pytest.mark.asyncio
     async def test_staging_is_left_alone_while_a_request_holds_the_session(self):
         """In-run dispatch (tool_script) must not steal the staging -- the
-        request's own _select_llm_messages/_finalize_request consume it."""
+        request's own rebuild after tool execution/_finalize_request consume it."""
         agent = make_tracking_agent({"summarizer": StagingServer(COMPACTED)},
                                     allowed=["summarizer/*"])
         agent._session_tracker.set_session_messages("s1", OLD_HISTORY)

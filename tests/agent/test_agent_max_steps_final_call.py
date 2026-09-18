@@ -12,7 +12,7 @@ import pytest
 from agent_system.hooks import HookResult, HookType, PluginHook
 from agent_system.hooks.registry import get_hook_registry
 from agent_system.llm.message_roles import DEVELOPER
-from agent_system.llm.models import LLMServerError
+from agent_system.llm.models import ChatMessage, LLMServerError
 from agent_system.servers.agent.server import Agent
 from plugins.message_validator.hooks import InternalMessageValidator
 from test_reasoning_loop_wiring import _real_agent
@@ -92,6 +92,25 @@ class _RecordsPreLLM(PluginHook):
             return HookResult(success=True)
         context.messages = InternalMessageValidator().validate_and_repair(
             list(context.messages), "test").repaired_messages
+        return HookResult(success=True, modified=True, context=context)
+
+
+class _AppendsABlock(PluginHook):
+    """A plugin that appends its block at the END of the list.
+
+    That is how the hook plugins write since they stopped inserting into the
+    leading system run -- and it puts them behind everything the loop itself
+    had added."""
+
+    MARKER = "test.todo"
+
+    def __init__(self):
+        super().__init__({})
+
+    async def on_pre_llm_call(self, context):
+        context.messages = list(context.messages) + [
+            ChatMessage(role=DEVELOPER, content="## Todo\n- [ ] still open",
+                        injected_by=self.MARKER)]
         return HookResult(success=True, modified=True, context=context)
 
 
@@ -186,7 +205,33 @@ async def test_the_max_steps_call_goes_through_the_pre_llm_hooks():
 
     assert len(llm.seen) == 6, f"fixture: {len(llm.seen)} requests"
     assert len(hook.runs) == 6, f"the hooks ran {len(hook.runs)} times for 6 requests: {hook.runs}"
-    assert hook.runs[-1] == (5, MAX_STEPS_REQUEST), hook.runs
+    assert hook.runs[-1][0] == 5, hook.runs
+    # The note is appended AFTER the hooks, which is what keeps the run's last
+    # word last. So the hooks do not see it -- the request does.
+    assert hook.runs[-1][1] != MAX_STEPS_REQUEST, hook.runs
+    assert llm.seen[-1][-1].injected_by == MAX_STEPS_REQUEST, "the run lost its last word"
+    assert _outcome(events) == (["summary of what I have"], [])
+
+
+@pytest.mark.asyncio
+async def test_a_plugin_block_does_not_get_the_last_word_over_the_max_steps_request():
+    """The last thing in the prompt is the run's, not a plugin's.
+
+    The max-steps request says "answer NOW, do NOT use any tools". A model that
+    reads a todo list with open items after it goes back to the tools -- the
+    one thing the request exists to prevent. The note is therefore appended
+    after the pre_llm_call hooks, not before them.
+    """
+    hook = _AppendsABlock()
+    llm = _LLM()
+    events, _, _ = await _run(llm, hooks=[(HookType.PRE_LLM_CALL, "test.final_call.appends", hook)])
+
+    assert len(llm.seen) == 6, f"fixture: {len(llm.seen)} requests"
+    final = llm.seen[-1]
+    assert any(m.injected_by == _AppendsABlock.MARKER for m in final), \
+        "fixture: the hook's block never reached the request"
+    assert final[-1].injected_by == MAX_STEPS_REQUEST, \
+        f"the request ends on {final[-1].injected_by!r}, not on the max-steps request"
     assert _outcome(events) == (["summary of what I have"], [])
 
 

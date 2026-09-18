@@ -870,7 +870,7 @@ class Agent(ToolServer):
 
         # A tool may stage a rewritten history via set_compacted_messages
         # (the summarizer's manual path does). During a run the request's own
-        # machinery consumes that staging (_select_llm_messages /
+        # machinery consumes that staging (the rebuild after tool execution /
         # _finalize_request) -- but a direct dispatch with no active request
         # (chat slash commands, web buttons) has no finalize: the staging sat
         # stale, /stats kept showing the old history, and the NEXT turn's
@@ -969,74 +969,28 @@ class Agent(ToolServer):
     def _select_llm_messages(
         pre_hook_messages: List[ChatMessage],
         modified_messages: Optional[List[ChatMessage]],
-        compacted_messages: Optional[List[ChatMessage]],
-    ) -> tuple[List[ChatMessage], bool]:
+    ) -> List[ChatMessage]:
         """Pick the final message list to send to the LLM.
 
-        Resolves the conflict between two parallel signals that the
-        pre_llm_call hook chain can emit:
+        A hook that wants to change what the model sees returns a NEW list;
+        list identity is the whole signal, and a hook mutating in place is not
+        seen (tool_preload's own comment names this rule). The returned list
+        carries every leading system message — the agent's own plus the ones
+        hooks inject (pinned forum context, restoration hints, sub-agent
+        context) — and the conversation, compacted if a hook compacted it.
 
-        1. ``modified_messages`` — the message list returned by the hook
-           chain. Contains all leading system messages (agent's base
-           system prompt + hook-injected ones like pinned forum context,
-           restoration hints, sub-agent context) and the conversation
-           history (compacted by an earlier hook if applicable).
-
-        2. ``compacted_messages`` — a persistence marker stored on the
-           session tracker via ``set_compacted_messages``. Set explicitly
-           by legacy compaction hooks AND by ``auto_sync_session_messages``
-           on every hook-touched turn (filtered: no ephemeral system
-           messages persisted). Used by end-of-request persistence.
-
-        The historical reconstruction (``[leading systems from pre-hook]
-        + compacted``) is wrong for the modern path: pre-hook messages
-        don't see hook-injected systems, so a rebuild silently drops
-        them. The original bug surfaced when the v5b synopsis moderator
-        looped 100× on ``context_engineer.recall()`` because the
-        debate_forum-pinned ``role=system`` block never reached the LLM.
-
-        Rules:
-        - If the hook chain returned a NEW list (identity differs from
-          input), use it directly AND clear the compacted marker. This
-          is both injection AND modern-compaction safe — the hook is the
-          authority on what the LLM should see. The marker must be
-          cleared because the post-tool-execution code path interprets
-          a still-set ``compacted_messages`` as "a tool modified the
-          conversation mid-request, rebuild messages" and would drop
-          the just-appended assistant tool-call message — causing the
-          agent to lose its tool-call/tool-result history each step.
-        - Else (same identity, no hook touched the list) and
-          compacted_messages is set, fall back to legacy reconstruction
-          from pre-hook leading systems + the explicit compacted list,
-          and clear the marker (legacy path's compacted is one-shot).
-        - Else: nothing to do, return pre_hook_messages as-is.
-
-        Returns:
-            (selected_messages, clear_compacted_marker)
+        There used to be a second signal here: the ``compacted_messages``
+        marker on the session tracker, rebuilt as ``[leading systems from
+        pre-hook] + compacted``. That reconstruction is wrong whenever a hook
+        injects a system block — it is built from the messages BEFORE the
+        hooks ran, so it drops them; that is how the v5b synopsis moderator
+        once looped 100× on ``context_engineer.recall()``. It was also
+        unreachable: whoever sets that marker inside a hook returns a new list
+        in the same round, and the tool path clears it in its own step.
         """
-        hooks_modified_list = (
-            modified_messages is not None
-            and modified_messages is not pre_hook_messages
-        )
-
-        if hooks_modified_list:
-            # Modern path: hook output is the source of truth. The
-            # auto_sync-set compacted_messages is redundant (the hook
-            # output already reflects its content) AND poisonous to the
-            # tool-execution rebuild path — clear it.
-            return modified_messages, True
-
-        if compacted_messages is not None:
-            # Legacy path: hook called ``set_compacted_messages`` without
-            # modifying context.messages. Rebuild from pre-hook leading
-            # system block + the explicit compacted conversation.
-            reconstructed: List[ChatMessage] = _instruction_head(
-                pre_hook_messages, compacted_messages)
-            reconstructed.extend(compacted_messages)
-            return reconstructed, True
-
-        # Nothing modified, no compaction marker.
-        return pre_hook_messages, False
+        if modified_messages is not None and modified_messages is not pre_hook_messages:
+            return modified_messages
+        return pre_hook_messages
 
     # ------------------------------------------------------------------
     # Central prompt rendering utilities (using strategy pattern)
@@ -2310,11 +2264,6 @@ class Agent(ToolServer):
             )
             messages[0] = ChatMessage(role="system", content=updated_system_msg)
 
-            budget_note = self._step_budget_note(step, max_steps)
-            if budget_note is not None:
-                messages.append(budget_note)
-                context.messages = messages
-
             # Emit thinking event before LLM call (for UI step display)
             yield {"type": "thinking", "step": step + 1}
 
@@ -2521,17 +2470,30 @@ class Agent(ToolServer):
                 # selection logic is extracted to ``_select_llm_messages``
                 # so it can be unit-tested in isolation (the surrounding
                 # step-loop is generator-based and hard to test directly).
-                compacted_messages = self._session_tracker.get_compacted_messages(session_id)
-                messages, clear_compacted = self._select_llm_messages(
+                messages = self._select_llm_messages(
                     pre_hook_messages=messages,
                     modified_messages=modified_messages,
-                    compacted_messages=compacted_messages,
                 )
                 context.messages = messages
-                if clear_compacted:
-                    self._session_tracker.clear_compacted_messages(session_id)
+                # Whatever a hook staged now stands in `messages`. What is left
+                # in the marker is spent, and it is poisonous from here on: the
+                # code after tool execution reads a still-set marker as "a tool
+                # rewrote the history mid-request" and rebuilds around it,
+                # dropping the assistant tool-call message just appended.
+                self._session_tracker.clear_compacted_messages(session_id)
             except Exception as e:
                 logger.warning(f"Pre-LLM hooks failed: {e}", exc_info=True)
+
+            # AFTER the hooks, so the run keeps the last word. Plugins append
+            # their blocks in pre_llm_call, and the max-steps request ("answer
+            # NOW, do NOT use any tools") only does its job as the last thing
+            # the model reads -- a todo list with open items behind it sends
+            # the model back to the tools. Outside the try on purpose: a hook
+            # chain that fell over must not also cost the run its step budget.
+            budget_note = self._step_budget_note(step, max_steps)
+            if budget_note is not None:
+                messages.append(budget_note)
+                context.messages = messages
 
             # The blocks are shared by every agent, and the hooks can take
             # minutes (context_summarizer): another request may have blocked
