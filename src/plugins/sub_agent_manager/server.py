@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import logging
 from datetime import UTC, datetime
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Any, List, Optional
 
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
+from agent_system.core.session_presence import presence_for
 from agent_system.services.session_manager import SessionNotFoundError
 from agent_system.utils.id import short_id
 from agent_system.llm.token_utils import extract_text_from_content
@@ -179,7 +181,7 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
         # Track running sub-agent instances to prevent concurrent execution
         # Format: {sub_session_id: True}
         self._running_agents: set[str] = set()
-        self._running_lock = __import__('asyncio').Lock()
+        self._running_lock = asyncio.Lock()
 
         # A blocking create/continue, from the moment it is marked running: instance_id -> {agent, request_id
         # (both None until the run begins), parent_session_id, cancelled, early (a cancel came before that)}.
@@ -190,7 +192,7 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
         # Track async jobs by instance_id: {instance_id: {task, status, started_at, result, error}}
         # A finished job stays until a poll has read its ending (or a continue replaces it); the stored state answers after
         self._async_jobs: dict[str, dict[str, Any]] = {}
-        self._async_jobs_lock = __import__('asyncio').Lock()
+        self._async_jobs_lock = asyncio.Lock()
 
     def reload_config(self, server_config: Any) -> dict:
         """Hot-reload the mutable, config-derived fields from a freshly parsed
@@ -522,6 +524,135 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 await status.error(f"Sub-agent error ({operation}): {str(e)}")
             return {"status": "error", "error": str(e)}
 
+    async def _prepare_agent(
+        self,
+        agent: Any,
+        manager: SubAgentManager,
+        session_service: Any,
+        params: dict[str, Any],
+        *,
+        parent_session_id: str,
+        instance_id: str,
+        agent_name: str,
+        context_vars: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """Hand a registry agent the session it is about to run, and return that session's user.
+
+        The agents come from the registry and are shared, so every run sets this again rather than
+        trusting what the last one left: the session service it persists through (the same pattern
+        app.py and agent_cli.py use), and the session's metadata, which is where tool execution
+        reads the user id from.
+
+        `context_vars` is what the caller has already resolved -- continue refreshes them against
+        the parent's live state. Without it, the sub-session's own vars are read, which is what it
+        inherited from the parent when it was created.
+        """
+        agent._session_service = session_service
+        user_id = manager._extract_user_id(parent_session_id, params)
+        agent._session_tracker.set_session_metadata(instance_id, {
+            "user_id": user_id,
+            "agent_name": agent_name,
+            "llm_profile": getattr(agent.agent_config, 'default_llm_profile', 'normal')
+        })
+        logger.debug(f"Set session metadata for sub-agent {instance_id}: user_id={user_id}")
+
+        try:
+            if context_vars is None:
+                sub_session_data = await session_service.session_manager.load_session(
+                    user_id, instance_id
+                )
+                context_vars = sub_session_data.get("context_vars", {})
+            if context_vars:
+                # Session-scoped template vars (session-isolated, no global mutation)
+                agent._session_tracker.set_session_template_vars(instance_id, context_vars)
+                logger.debug(
+                    f"Restored context_vars for sub-agent {instance_id}: {list(context_vars.keys())}"
+                )
+        except Exception as e:
+            # A run without its inherited vars renders a staler prompt; a run that does not
+            # happen renders none. Both callers have always chosen the first.
+            logger.warning(f"Could not restore context_vars for sub-agent {instance_id}: {e}")
+        return user_id
+
+    async def _consume_run(
+        self,
+        agent: Any,
+        manager: SubAgentManager,
+        *,
+        parent_session_id: str,
+        instance_id: str,
+        task: str,
+        request_id: str,
+        use_advanced_model: bool = False,
+        run: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """One run of a sub-agent, from its first event to its last, and the text it ends with.
+
+        Every caller runs a sub-agent the same way -- create, continue, the retry for a result that
+        came back too short, and the background job -- so they share this. What the callers do
+        differ in is what happens around the run, not inside it.
+
+        `run` is the entry in `_blocking_runs`: with one, a cancel that arrived while the run was
+        still being prepared reaches the request as soon as it exists. A background job has none;
+        it is stopped by its task handle.
+
+        The text is what the caller hands back to the model: the answer, or "Error: ..." /
+        "Cancelled: ..." -- the two prefixes `_outcome_status` reads the outcome from.
+        """
+        result_text = ""
+        async for event in agent.run_events(
+            task=task,
+            request_id=request_id,
+            session_id=instance_id,
+            use_advanced_model=use_advanced_model,
+            # Note: config_overrides would go here if Agent.run_events supported them
+            # For now, sub-agent uses its default configuration
+        ):
+            if run is not None and run.pop("early", False):  # cancelled while it was prepared
+                await agent.cancel_request(request_id)
+            event_type = event.get("type")
+
+            # Track activity for the live status display
+            try:
+                activity = None
+                if event_type == "thinking_delta":
+                    activity = "💭 Thinking..."
+                elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
+                    activity = f"🔧 Running tool: {event.get('action', 'tool')}"
+                elif event_type == "status":
+                    phase = event.get("phase", "progress")
+                    icon = {"error": "❌", "end": "✅"}.get(phase, "⚙️")
+                    activity = f"{icon} {event.get('message', 'Processing...')}"
+                if activity:
+                    await manager.update_sub_agent_activity(parent_session_id, instance_id, activity)
+            except Exception as activity_err:
+                # Don't fail execution if activity tracking fails
+                logger.debug(f"Activity tracking failed: {activity_err}")
+
+            # Collect final result (can be "final", "error", or "cancelled")
+            if event_type == "final":
+                result_text = event.get("summary", "")
+                # Clear activity on completion
+                await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
+                # DON'T break here - continue iterating to get "end" event
+                # This ensures _finalize_request runs and messages are persisted
+            elif event_type == "end":
+                # Generator fully completed, messages are now in SessionTracker
+                break
+            elif event_type in ("error", "cancelled"):
+                if event_type == "error":
+                    result_text = f"Error: {event.get('message', 'Unknown error')}"
+                    logger.warning(f"Sub-agent {instance_id} returned error: {result_text}")
+                else:
+                    # The event the agent loop sends carries neither, and then the run was stopped
+                    # from outside: the sentence says that rather than "Unknown".
+                    reason = event.get("reason") or event.get("message") or "Request was cancelled"
+                    result_text = f"Cancelled: {reason}"
+                    logger.info(f"Sub-agent {instance_id} was cancelled: {result_text}")
+                await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
+                break  # Stop waiting for more events
+        return result_text
+
     async def _handle_create(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'create' operation - create and execute new sub-agent."""
         # Get status context early (before try block) so it's available in except
@@ -663,7 +794,6 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                     }
 
                 # Start background execution
-                import asyncio
                 task_coro = self._execute_async_job(
                     instance_id=sub_session_id,
                     params=params,
@@ -707,41 +837,15 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 if not agent:
                     raise ValueError(f"Agent '{agent_name}' not found in registry")
 
-                # Inject session_service into agent (same pattern as app.py and agent_cli.py)
-                # ALWAYS inject, even if already set, to ensure correct reference
-                agent._session_service = session_service
-
-                # CRITICAL: Set session metadata for sub-agent session
-                # This ensures user_id is available during tool execution
-                user_id = manager._extract_user_id(parent_session_id, params)
-                agent._session_tracker.set_session_metadata(sub_session_id, {
-                    "user_id": user_id,
-                    "agent_name": agent_name,
-                    "llm_profile": getattr(agent.agent_config, 'default_llm_profile', 'normal')
-                })
-                logger.debug(f"Set session metadata for sub-agent {sub_session_id}: user_id={user_id}")
-
-                # CRITICAL: Restore context_vars from sub-session to agent's template_vars
-                # This inherits book_id, workflow_phase, etc. from parent session
-                try:
-                    sub_session_data = await session_service.session_manager.load_session(
-                        user_id, sub_session_id
-                    )
-                    context_vars = sub_session_data.get("context_vars", {})
-                    if context_vars:
-                        # Set session-scoped template vars (session-isolated, no global mutation)
-                        agent._session_tracker.set_session_template_vars(sub_session_id, context_vars)
-                        logger.debug(
-                            f"Inherited context_vars to sub-agent template_vars: {list(context_vars.keys())}"
-                        )
-                except Exception as e:
-                    logger.warning(f"Could not load context_vars for sub-agent: {e}")
+                user_id = await self._prepare_agent(
+                    agent, manager, session_service, params,
+                    parent_session_id=parent_session_id, instance_id=sub_session_id,
+                    agent_name=agent_name,
+                )
 
                 # Execute sub-agent with initial task (blocking)
                 if status:
                     await status.progress(f"Executing {agent_name} with initial task...")
-
-                result_text = ""
 
                 # Generate hierarchical request ID: parent_request_id + "_sub_" + counter
                 parent_request_id = params.get("_request_id")
@@ -756,66 +860,12 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 _register_request_user(sub_request_id, user_id)
                 run.update(agent=agent, request_id=sub_request_id)
 
-                async for event in agent.run_events(
-                    task=task,
-                    request_id=sub_request_id,
-                    session_id=sub_session_id,
-                    use_advanced_model=use_advanced_model
-                    # Note: config_overrides would go here if Agent.run_events supported them
-                    # For now, sub-agent uses its default configuration
-                ):
-                    if run.pop("early", False):  # cancelled while it was prepared: its request exists now
-                        await agent.cancel_request(sub_request_id)
-                    event_type = event.get("type")
-                    
-                    # Track activity for live status display
-                    try:
-                        if event_type == "thinking_delta":
-                            await manager.update_sub_agent_activity(
-                                parent_session_id, sub_session_id, "💭 Thinking..."
-                            )
-                        elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
-                            tool_name = event.get("action", "tool")
-                            await manager.update_sub_agent_activity(
-                                parent_session_id, sub_session_id, f"🔧 Running tool: {tool_name}"
-                            )
-                        elif event_type == "status":
-                            status_msg = event.get("message", "Processing...")
-                            phase = event.get("phase", "progress")
-                            # Use different icons based on status phase
-                            if phase == "error":
-                                icon = "❌"
-                            elif phase == "end":
-                                icon = "✅"
-                            else:
-                                icon = "⚙️"
-                            await manager.update_sub_agent_activity(
-                                parent_session_id, sub_session_id, f"{icon} {status_msg}"
-                            )
-                    except Exception as activity_err:
-                        # Don't fail execution if activity tracking fails
-                        logger.debug(f"Activity tracking failed: {activity_err}")
-                    
-                    # Collect final result (can be "final", "error", or "cancelled")
-                    if event_type == "final":
-                        result_text = event.get("summary", "")
-                        # Clear activity on completion
-                        await manager.update_sub_agent_activity(parent_session_id, sub_session_id, None)
-                        # DON'T break here - continue iterating to get "end" event
-                        # This ensures _finalize_request runs and messages are persisted
-                    elif event_type == "end":
-                        # Generator fully completed, messages are now in SessionTracker
-                        break
-                    elif event_type == "error":
-                        result_text = f"Error: {event.get('message', 'Unknown error')}"
-                        logger.warning(f"Sub-agent {sub_session_id} returned error: {result_text}")
-                        await manager.update_sub_agent_activity(parent_session_id, sub_session_id, None)
-                        break  # Stop waiting for more events
-                    elif event_type == "cancelled":
-                        result_text = f"Cancelled: {event.get('reason', 'Request was cancelled')}"
-                        logger.info(f"Sub-agent {sub_session_id} was cancelled: {result_text}")
-                        await manager.update_sub_agent_activity(parent_session_id, sub_session_id, None)
-                        break  # Stop waiting for more events
+                result_text = await self._consume_run(
+                    agent, manager,
+                    parent_session_id=parent_session_id, instance_id=sub_session_id,
+                    task=task, request_id=sub_request_id,
+                    use_advanced_model=use_advanced_model, run=run,
+                )
 
                 # -- Min result length guard: auto-retry with continue if too short --
                 min_len = self._min_result_length_by_agent.get(agent_name, 0)
@@ -836,27 +886,15 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                             await status.progress(
                                 f"⚠ {agent_name} result too short ({len(result_text)} chars), retrying..."
                             )
-                        retry_result = ""
                         retry_req_id = f"{sub_request_id}_minlen_{retry_attempt}"
                         _register_request_user(retry_req_id, user_id)
                         run["request_id"] = retry_req_id
-                        async for event in agent.run_events(
+                        retry_result = await self._consume_run(
+                            agent, manager,
+                            parent_session_id=parent_session_id, instance_id=sub_session_id,
                             task="Deine Antwort war unvollständig oder leer. Vervollständige deine Antwort.",
-                            request_id=retry_req_id,
-                            session_id=sub_session_id,
-                        ):
-                            event_type = event.get("type")
-                            if event_type == "final":
-                                retry_result = event.get("summary", "")
-                                await manager.update_sub_agent_activity(
-                                    parent_session_id, sub_session_id, None
-                                )
-                            elif event_type in ("end", "error", "cancelled"):
-                                if event_type == "error":
-                                    retry_result = f"Error: {event.get('message', '')}"
-                                elif event_type == "cancelled":
-                                    retry_result = f"Cancelled: {event.get('reason', 'Request was cancelled')}"
-                                break
+                            request_id=retry_req_id, run=run,
+                        )
                         if retry_result and len(retry_result) >= min_len:
                             result_text = retry_result
                             logger.info(
@@ -1023,22 +1061,8 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                     if self._async_jobs.get(instance_id, {}).get("status") in ("completed", "failed", "cancelled"):
                         del self._async_jobs[instance_id]
 
-                # Inject session_service into agent (same pattern as app.py and agent_cli.py)
-                # ALWAYS inject, even if already set, to ensure correct reference
-                agent._session_service = session_service
-
-                # CRITICAL: Set session metadata for sub-agent session (for continued execution)
-                # This ensures user_id is available during tool execution
-                user_id = manager._extract_user_id(parent_session_id, params)
-                agent._session_tracker.set_session_metadata(instance_id, {
-                    "user_id": user_id,
-                    "agent_name": agent_type,
-                    "llm_profile": getattr(agent.agent_config, 'default_llm_profile', 'normal')
-                })
-                logger.debug(f"Set session metadata for continued sub-agent {instance_id}: user_id={user_id}")
-
-                # CRITICAL: Refresh context_vars from the PARENT's live state, then
-                # restore them into the sub-agent's template_vars.
+                # CRITICAL: Refresh context_vars from the PARENT's live state, rather than the
+                # sub-session's own snapshot that _prepare_agent would read.
                 #
                 # A sub-agent inherits context_vars only once, at create time.
                 # Re-reading only its own frozen snapshot here would render the
@@ -1055,21 +1079,20 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                         parent_agent=params.get("_agent"),
                         parent_session_id=parent_session_id,
                     )
-                    if context_vars:
-                        # Set session-scoped template vars (session-isolated, no global mutation)
-                        agent._session_tracker.set_session_template_vars(instance_id, context_vars)
-                        logger.debug(
-                            f"Restored context_vars for continued sub-agent: {list(context_vars.keys())}"
-                        )
                 except Exception as e:
                     logger.warning(f"Could not restore context_vars for continued sub-agent: {e}")
+                    context_vars = {}
+
+                user_id = await self._prepare_agent(
+                    agent, manager, session_service, params,
+                    parent_session_id=parent_session_id, instance_id=instance_id,
+                    agent_name=agent_type, context_vars=context_vars,
+                )
 
                 if status:
                     await status.progress(f"Continuing {agent_type} with new message...")
 
                 # Execute sub-agent with new message (continues existing session)
-                result_text = ""
-
                 # Generate hierarchical request ID for continue operation
                 parent_request_id = params.get("_request_id")
                 if parent_request_id:
@@ -1081,64 +1104,12 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 _register_request_user(sub_request_id, user_id)
                 run.update(agent=agent, request_id=sub_request_id)
 
-                async for event in agent.run_events(
-                    task=message,
-                    request_id=sub_request_id,
-                    session_id=instance_id,  # Continue existing session
-                    use_advanced_model=use_advanced_model
-                ):
-                    if run.pop("early", False):  # cancelled while it was prepared: its request exists now
-                        await agent.cancel_request(sub_request_id)
-                    event_type = event.get("type")
-                    
-                    # Track activity for live status display
-                    try:
-                        if event_type == "thinking_delta":
-                            await manager.update_sub_agent_activity(
-                                parent_session_id, instance_id, "💭 Thinking..."
-                            )
-                        elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
-                            tool_name = event.get("action", "tool")
-                            await manager.update_sub_agent_activity(
-                                parent_session_id, instance_id, f"🔧 Running tool: {tool_name}"
-                            )
-                        elif event_type == "status":
-                            status_msg = event.get("message", "Processing...")
-                            phase = event.get("phase", "progress")
-                            # Use different icons based on status phase
-                            if phase == "error":
-                                icon = "❌"
-                            elif phase == "end":
-                                icon = "✅"
-                            else:
-                                icon = "⚙️"
-                            await manager.update_sub_agent_activity(
-                                parent_session_id, instance_id, f"{icon} {status_msg}"
-                            )
-                    except Exception as activity_err:
-                        # Don't fail execution if activity tracking fails
-                        logger.debug(f"Activity tracking failed: {activity_err}")
-                    
-                    # Collect final result (can be "final", "error", or "cancelled")
-                    if event_type == "final":
-                        result_text = event.get("summary", "")
-                        # Clear activity on completion
-                        await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
-                        # DON'T break here - continue iterating to get "end" event
-                        # This ensures _finalize_request runs and messages are persisted
-                    elif event_type == "end":
-                        # Generator fully completed, messages are now in SessionTracker
-                        break
-                    elif event_type == "error":
-                        result_text = f"Error: {event.get('message', 'Unknown error')}"
-                        logger.warning(f"Sub-agent {instance_id} returned error: {result_text}")
-                        await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
-                        break  # Stop waiting for more events
-                    elif event_type == "cancelled":
-                        result_text = f"Cancelled: {event.get('reason', 'Request was cancelled')}"
-                        logger.info(f"Sub-agent {instance_id} was cancelled: {result_text}")
-                        await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
-                        break  # Stop waiting for more events
+                result_text = await self._consume_run(
+                    agent, manager,
+                    parent_session_id=parent_session_id, instance_id=instance_id,
+                    task=message, request_id=sub_request_id,
+                    use_advanced_model=use_advanced_model, run=run,
+                )
 
                 # Save session with updated messages after execution
                 user_id = manager._extract_user_id(parent_session_id, params)
@@ -1674,6 +1645,105 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
 
     # ========== Async Job Management Handlers ==========
 
+    async def _finish_job(
+        self,
+        instance_id: str,
+        params: dict[str, Any],
+        job_status: str,
+        *,
+        stored: dict[str, Any],
+        manager: Optional[SubAgentManager] = None,
+        drop_task: bool = False,
+        **fields: Any,
+    ) -> None:
+        """How a background job ends -- one place, whichever of the three ways led here: the run
+        came back, the task was cancelled from outside, or it raised.
+
+        Each has to leave the same two traces, because two readers ask different sources. A poll
+        while this process lives reads the job in memory; a poll after a restart reads the stored
+        metadata of the sub-session, and a status that stays "active" there sends a coordinator
+        into a polling loop over a job that nobody runs any more.
+
+        The job is kept, marked `_awaiting_poll`, until a poll has read its ending -- dropping it
+        here would send a `wait` running meanwhile to the stored state, which may still say active.
+        `stored` is what the sub-session's metadata records; the ways differ in that, so each
+        caller says it.
+        """
+        # Memory first, and before anything is awaited: this also runs while the task is being
+        # cancelled, where an await can be cut short. A job left saying "running" in memory is
+        # answered "running" for good -- the polling loop this method exists to end.
+        # The cost is a window: between here and the stored write below, a poll reads the ending
+        # and takes the job away, and a second one in the same window falls back to metadata that
+        # still says active and reads as completed. It closes itself when the write lands.
+        async with self._async_jobs_lock:
+            job = self._async_jobs.get(instance_id)
+            if job is not None:
+                job.update(status=job_status, completed_at=datetime.now(UTC).isoformat(),
+                           _awaiting_poll=True, **fields)
+                if drop_task:
+                    # a task ended by CancelledError keeps it, and with it every frame of the run
+                    job["task_handle"] = None
+
+        parent_session_id = params.get("_session_id")
+        try:
+            if parent_session_id:
+                if manager is None:
+                    registry = self._extract_registry(params)
+                    manager = self._get_manager(self._extract_session_service(params), registry)
+                await manager.update_sub_session_metadata(
+                    parent_session_id=parent_session_id,
+                    sub_session_id=instance_id,
+                    **stored,
+                )
+        except Exception as persist_error:
+            logger.warning(f"Failed to persist {job_status} status for {instance_id}: {persist_error}")
+
+        logger.info(f"Async execution finished for {instance_id} ({job_status}), awaiting result poll")
+
+        # Whatever the ending was: the session that asked to be woken is waiting for this one,
+        # and a job that failed leaves it waiting just as a job that finished does.
+        if params.get("wake_when_done") and parent_session_id:
+            await self._wake_parent(instance_id, parent_session_id, manager, params)
+
+    async def _wake_parent(self, instance_id: str, parent_session_id: str,
+                           manager: Optional[SubAgentManager], params: dict[str, Any]) -> None:
+        """Tell the session that started this job to look: it may have ended its turn over it.
+
+        Who runs where and waking an idle session are core (core/session_presence.py). A session
+        another process holds reads this at its next step; one nobody holds is continued in a run
+        of its own. Off while session_presence is off -- then the caller polls, as it always did.
+
+        A background job lives in the process that started it. That is the API, where the job runs
+        on after the turn that asked for it; a CLI run that ends its turn takes the job with it,
+        and nothing is left to wake anybody. README says so.
+        """
+        try:
+            # Everything from here on belongs to the wake, the reading of the config included: a
+            # job that is over and recorded must not end in its caller's exception handler, which
+            # would record it a second time, as failed.
+            presence = presence_for(self.system_config)
+            if presence is None:
+                logger.debug("Not waking %s for %s: session presence is off",
+                             parent_session_id, instance_id)
+                return
+            # Without a manager the job did not even get started -- and a caller that went to
+            # sleep over it waits forever unless the id it injected answers instead.
+            user_id = (manager._extract_user_id(parent_session_id, params) if manager is not None
+                       else str(params.get("_user_id") or ""))
+            if not user_id:
+                logger.warning("Cannot wake %s for sub-agent %s: no user for the session",
+                               parent_session_id, instance_id)
+                return
+            # notify() reads and writes lock files and may start a process. This job shares its
+            # loop with every other run of this manager, so it does not wait for that here.
+            state, note = await asyncio.to_thread(presence.notify, parent_session_id, user_id)
+            logger.info("Sub-agent %s finished, woke %s: %s%s",
+                        instance_id, parent_session_id, state, f" ({note})" if note else "")
+        except Exception as e:
+            # The job is done and recorded; a wake that fails costs the caller a poll, not the run.
+            logger.warning("Could not wake %s for finished sub-agent %s: %s",
+                           parent_session_id, instance_id, e)
+
     async def _execute_async_job(
         self,
         instance_id: str,
@@ -1691,8 +1761,6 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
             task: Task description
             use_advanced_model: Whether to use advanced model
         """
-        import asyncio
-        
         try:
             # Get dependencies
             registry = self._extract_registry(params)
@@ -1714,32 +1782,13 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 if not agent:
                     raise ValueError(f"Agent '{agent_name}' not found in registry")
 
-                agent._session_service = session_service
-                user_id = manager._extract_user_id(parent_session_id, params)
-                agent._session_tracker.set_session_metadata(instance_id, {
-                    "user_id": user_id,
-                    "agent_name": agent_name,
-                    "llm_profile": getattr(agent.agent_config, 'default_llm_profile', 'normal')
-                })
-
-                # CRITICAL: Restore context_vars from sub-session to agent's template_vars
-                # This inherits book_id, workflow_phase, etc. from parent session
-                try:
-                    sub_session_data = await session_service.session_manager.load_session(
-                        user_id, instance_id
-                    )
-                    context_vars = sub_session_data.get("context_vars", {})
-                    if context_vars:
-                        # Set session-scoped template vars (session-isolated, no global mutation)
-                        agent._session_tracker.set_session_template_vars(instance_id, context_vars)
-                        logger.debug(
-                            f"Inherited context_vars to async sub-agent template_vars: {list(context_vars.keys())}"
-                        )
-                except Exception as e:
-                    logger.warning(f"Could not load context_vars for async sub-agent: {e}")
+                user_id = await self._prepare_agent(
+                    agent, manager, session_service, params,
+                    parent_session_id=parent_session_id, instance_id=instance_id,
+                    agent_name=agent_name,
+                )
 
                 # Execute (collect final result)
-                result_text = ""
                 parent_request_id = params.get("_request_id")
                 sub_request_id = f"{parent_request_id}_async_{short_id(6)}" if parent_request_id else f"async_{short_id()}"
                 if instance_id in self._async_jobs:  # cancel reaches the job's tool calls and sub-agents by it
@@ -1748,54 +1797,12 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 # Register sub-request user mapping for admin dashboard
                 _register_request_user(sub_request_id, user_id)
 
-                async for event in agent.run_events(
-                    task=task,
-                    request_id=sub_request_id,
-                    session_id=instance_id,
-                    use_advanced_model=use_advanced_model
-                ):
-                    event_type = event.get("type")
-                    
-                    # Track activity
-                    try:
-                        if event_type == "thinking_delta":
-                            await manager.update_sub_agent_activity(
-                                parent_session_id, instance_id, "💭 Thinking..."
-                            )
-                        elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
-                            tool_name = event.get("action", "tool")
-                            await manager.update_sub_agent_activity(
-                                parent_session_id, instance_id, f"🔧 Running tool: {tool_name}"
-                            )
-                        elif event_type == "status":
-                            status_msg = event.get("message", "Processing...")
-                            phase = event.get("phase", "progress")
-                            # Use different icons based on status phase
-                            if phase == "error":
-                                icon = "❌"
-                            elif phase == "end":
-                                icon = "✅"
-                            else:
-                                icon = "⚙️"
-                            await manager.update_sub_agent_activity(
-                                parent_session_id, instance_id, f"{icon} {status_msg}"
-                            )
-                    except Exception:
-                        pass  # Don't fail on activity tracking
-
-                    # Collect result
-                    if event_type == "final":
-                        result_text = event.get("summary", "")
-                        await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
-                        # DON'T break here - continue iterating to get "end" event
-                        # This ensures _finalize_request runs and messages are persisted
-                    elif event_type == "end":
-                        # Generator fully completed, messages are now in SessionTracker
-                        break
-                    elif event_type in ["error", "cancelled"]:
-                        result_text = f"{event_type.capitalize()}: {event.get('message', event.get('reason', 'Unknown'))}"
-                        await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
-                        break
+                result_text = await self._consume_run(
+                    agent, manager,
+                    parent_session_id=parent_session_id, instance_id=instance_id,
+                    task=task, request_id=sub_request_id,
+                    use_advanced_model=use_advanced_model,
+                )
 
                 # Save session
                 llm_profile = agent.agent_config.default_llm_profile
@@ -1819,26 +1826,13 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                     outcome, "completed")
 
                 # Update metadata: a finished-but-aborted run is not active any
-                # more, the same way the exception path below records it.
-                await manager.update_sub_session_metadata(
-                    parent_session_id=parent_session_id,
-                    sub_session_id=instance_id,
-                    last_used=datetime.now(UTC).isoformat(),
-                    status="active" if job_status == "completed" else job_status,
+                # more, the same way the two paths below record it.
+                await self._finish_job(
+                    instance_id, params, job_status, manager=manager,
+                    stored={"last_used": datetime.now(UTC).isoformat(),
+                            "status": "active" if job_status == "completed" else job_status},
+                    outcome=outcome, result=result_text,
                 )
-
-                # Mark job as finished (keep in memory until polled once)
-                async with self._async_jobs_lock:
-                    if instance_id in self._async_jobs:
-                        self._async_jobs[instance_id]["status"] = job_status
-                        self._async_jobs[instance_id]["outcome"] = outcome
-                        self._async_jobs[instance_id]["result"] = result_text
-                        self._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
-                        self._async_jobs[instance_id]["_awaiting_poll"] = True  # Will be removed after poll
-
-                logger.info(
-                    f"Async execution finished for {instance_id} ({job_status}), "
-                    "awaiting result poll")
 
             finally:
                 # Release lock
@@ -1846,69 +1840,21 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                     self._running_agents.discard(instance_id)
 
         except asyncio.CancelledError:
-            # Job was cancelled (e.g., parent agent interrupted). Kept, marked, until it is polled -- as a failed
-            # job is: dropped at once, a wait running meanwhile read the stored state, which may still say active
-            async with self._async_jobs_lock:
-                if instance_id in self._async_jobs:
-                    # without its task: a task ended by CancelledError keeps it, and with it every frame of the run
-                    self._async_jobs[instance_id].update(
-                        status="cancelled", completed_at=datetime.now(UTC).isoformat(), _awaiting_poll=True,
-                        task_handle=None)
-            
-            # CRITICAL: Persist cancelled status to DB to prevent polling loops on restart
-            try:
-                registry = self._extract_registry(params)
-                session_service = self._extract_session_service(params)
-                manager = self._get_manager(session_service, registry)
-                parent_session_id = params.get("_session_id")
-                
-                if parent_session_id:
-                    await manager.update_sub_session_metadata(
-                        parent_session_id=parent_session_id,
-                        sub_session_id=instance_id,
-                        status="cancelled",
-                        completed_at=datetime.now(UTC).isoformat()
-                    )
-                    logger.info(f"Persisted cancelled status for {instance_id} in DB after CancelledError")
-            except Exception as persist_error:
-                logger.warning(f"Failed to persist cancelled status for {instance_id}: {persist_error}")
-            
-            logger.info(f"Async execution cancelled for {instance_id}")
+            # Job was cancelled (e.g., parent agent interrupted). Persisting it is what keeps a
+            # coordinator from polling a job nobody runs any more after a restart.
+            await self._finish_job(
+                instance_id, params, "cancelled", drop_task=True,
+                stored={"status": "cancelled", "completed_at": datetime.now(UTC).isoformat()},
+            )
             raise
 
         except Exception as e:
-            # Job failed - update status and remove from memory
             logger.exception(f"Async execution failed for {instance_id}: {e}")
-            
-            # CRITICAL: Update status to "failed" BEFORE removing from memory
-            # This ensures wait() sees the correct status
-            async with self._async_jobs_lock:
-                if instance_id in self._async_jobs:
-                    self._async_jobs[instance_id]["status"] = "failed"
-                    self._async_jobs[instance_id]["error"] = str(e)
-                    self._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
-                    # Keep in memory briefly so wait() can see the failed status
-                    # It will be removed after poll
-                    self._async_jobs[instance_id]["_awaiting_poll"] = True
-            
-            # Also persist failed status to DB
-            try:
-                registry = self._extract_registry(params)
-                session_service = self._extract_session_service(params)
-                manager = self._get_manager(session_service, registry)
-                parent_session_id = params.get("_session_id")
-                
-                if parent_session_id:
-                    await manager.update_sub_session_metadata(
-                        parent_session_id=parent_session_id,
-                        sub_session_id=instance_id,
-                        status="failed",
-                        completed_at=datetime.now(UTC).isoformat(),
-                        error=str(e)
-                    )
-                    logger.info(f"Persisted failed status for {instance_id} in DB after exception")
-            except Exception as persist_error:
-                logger.warning(f"Failed to persist failed status for {instance_id}: {persist_error}")
+            await self._finish_job(
+                instance_id, params, "failed", error=str(e),
+                stored={"status": "failed", "completed_at": datetime.now(UTC).isoformat(),
+                        "error": str(e)},
+            )
 
     async def _handle_poll(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'poll' - check status of running sub-agent without blocking."""
@@ -2050,8 +1996,6 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
 
     async def _handle_wait(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'wait' - poll instance until completed or timeout."""
-        import asyncio
-        
         status_ctx = params.get("_status") if params else None
         
         # Validate params
@@ -2136,6 +2080,7 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
 
                 if job_status in ["completed", "failed", "cancelled"]:
                     job.pop("task_handle", None)
+                    job.pop("_awaiting_poll", None)  # bookkeeping of ours, as in poll -- not an answer
 
                     if status_ctx:
                         if job_status == "completed":
@@ -2166,8 +2111,6 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
 
     async def _handle_wait_all(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'wait_all' - wait for multiple sub-agents to complete."""
-        import asyncio
-        
         status_ctx = params.get("_status") if params else None
         
         # Validate params
@@ -2182,8 +2125,6 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 if status_ctx:
                     await status_ctx.error("Wait_all: 'instance_ids' is required")
                 return {"status": "error", "error": "Missing required parameter: 'instance_ids'"}
-            timeout = self.default_wait_timeout  # Use configured timeout only
-
             if not isinstance(instance_ids, list):
                 # No status.error here: the returned error IS the message, and
                 # call_with_status publishes it for any error result the
@@ -2197,16 +2138,11 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
             if status_ctx:
                 await status_ctx.progress(f"Waiting for {len(instance_ids)} instances...")
 
-            # Wait for all instances
+            # Wait for all instances. Each wait gets the call's own params, minus the status scope
+            # this handler owns: a rebuilt dict used to drop _user_id (so a lookup below fell back
+            # to scanning the session directories), _request_id and the cancellation token.
             wait_tasks = [
-                self._handle_wait({
-                    "instance_id": iid, 
-                    "timeout": timeout,
-                    "_registry": params.get("_registry"),
-                    "_agent": params.get("_agent"),
-                    "_session_id": params.get("_session_id"),
-                    "_session_service": params.get("_session_service")
-                })
+                self._handle_wait({**_without_status(params), "instance_id": iid})
                 for iid in instance_ids
             ]
 

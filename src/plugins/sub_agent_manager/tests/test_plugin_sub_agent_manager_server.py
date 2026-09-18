@@ -6,6 +6,7 @@ Tests the manage_sub_agent tool with all 5 operations.
 import pytest
 from unittest.mock import Mock, AsyncMock
 from plugins.sub_agent_manager.server import SubAgentManagerServer
+from plugins.sub_agent_manager import server as sam_server
 from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 
@@ -736,6 +737,29 @@ class TestAsyncExecution:
         assert result["completed"] == 3
         assert result["failed"] == 0
         assert len(result["results"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_wait_all_hands_each_wait_the_caller_it_was_given(self, server):
+        """It used to rebuild the params from four keys: the waits below ran without the caller's
+        user (so a lookup fell back to scanning the session directories), without its request and
+        without its cancellation token."""
+        seen = []
+
+        async def mock_wait(params):
+            seen.append(params)
+            return {"instance_id": params["instance_id"], "status": "completed"}
+
+        server._handle_wait = mock_wait
+        await server._handle_wait_all({
+            "operation": "wait_all", "instance_ids": ["sub_a", "sub_b"],
+            "_session_id": "parent1", "_user_id": "u1", "_request_id": "req1",
+            "_cancellation_token": "token", "_status": AsyncMock(),
+        })
+
+        assert [p["instance_id"] for p in seen] == ["sub_a", "sub_b"]
+        assert all(p.get("_user_id") == "u1" and p.get("_request_id") == "req1"
+                   and p.get("_cancellation_token") == "token" for p in seen), seen
+        assert all("_status" not in p for p in seen), "wait_all owns the status line of this call"
 
     @pytest.mark.asyncio
     async def test_cancel_running_async_job(self, server):
@@ -2143,3 +2167,187 @@ class TestCancelReachesABlockingRun:
         import asyncio
         while not condition():
             await asyncio.sleep(0.01)
+
+
+class TestTheCallerIsWokenWhenItsJobIsDone:
+    """A background job can wake the session that started it, so its caller may end its turn over it
+    instead of polling. Waking itself is core (core/session_presence.py); what is tested here is who
+    the manager tells about which session, and that the job's own ending never depends on it."""
+
+    @staticmethod
+    def presence(monkeypatch, state=("woke_session", ""), fails=False, watch=None):
+        """The core's presence as the server reaches it. Returns the list of (session, user) told --
+        with `watch`, each entry carries what it saw at the moment the manager told anybody."""
+        told = []
+
+        def notify(session_id, user_id):
+            told.append((session_id, user_id) if watch is None else (session_id, user_id, watch()))
+            if fails:
+                raise OSError("the sessions directory is gone")
+            return state
+
+        monkeypatch.setattr(sam_server, "presence_for", lambda config: Mock(notify=notify))
+        return told
+
+    @staticmethod
+    def start(server, **extra):
+        """A background create of sub_slow, returned once the job is on its way."""
+        return TestCancelReachesABlockingRun.finish(
+            TestCancelReachesABlockingRun.start(server, "create", blocking=False, **extra))
+
+    @staticmethod
+    async def run_to_end(server, agent):
+        """Let the running job answer, and wait for the job -- not just the run -- to be over."""
+        import asyncio
+        await agent.started(1)
+        handle = server._async_jobs["sub_slow"]["task_handle"]
+        agent.releases[0].set()
+        await asyncio.wait_for(handle, 5)
+
+    @pytest.mark.asyncio
+    async def test_a_finished_job_wakes_the_session_that_started_it(self, server, monkeypatch):
+        """And it is told only once the ending is recorded: a woken run reads the job, so a wake
+        that goes out first sends it to a job that still says it is running."""
+        import threading
+        told = self.presence(monkeypatch, watch=lambda: dict(
+            server._async_jobs.get("sub_slow", {}),
+            off_the_loop=threading.current_thread() is not threading.main_thread()))
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+
+        assert [(session, user) for session, user, _ in told] == [("parent1", "u1")], \
+            "the parent session and its user, not the sub-agent's"
+        at_the_wake = told[0][2]
+        assert at_the_wake["status"] == "completed" and at_the_wake["result"] == "done", at_the_wake
+        assert at_the_wake["off_the_loop"], \
+            "notify() opens lock files and may start a process: not on the loop of every other job"
+
+    @pytest.mark.asyncio
+    async def test_a_job_nobody_asked_to_be_woken_for_wakes_nobody(self, server, monkeypatch):
+        """The default: the caller stays awake and polls, as every job did before."""
+        told = self.presence(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server)
+        await self.run_to_end(server, agent)
+
+        assert told == []
+
+    @pytest.mark.asyncio
+    async def test_a_job_that_fails_wakes_it_too(self, server, monkeypatch):
+        """Whoever sleeps on a job must not sleep through its failure -- there is no second ending."""
+        told = self.presence(monkeypatch)
+        agent = SlowAgent()
+        session_service = TestCancelReachesABlockingRun.wire(server, agent)
+        session_service.save_session = AsyncMock(side_effect=RuntimeError("the disk said no"))
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+
+        assert told == [("parent1", "u1")]
+        assert server._async_jobs["sub_slow"]["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_job_wakes_it_too(self, server, monkeypatch):
+        import asyncio
+        told = self.presence(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await agent.started(1)
+        handle = server._async_jobs["sub_slow"]["task_handle"]  # the cancelled job lets go of it
+        await TestCancelReachesABlockingRun.cancel(server)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(handle, 5)
+
+        assert told == [("parent1", "u1")]
+        assert server._async_jobs["sub_slow"]["status"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_with_session_presence_off_the_job_ends_as_it_always_did(self, server, monkeypatch):
+        monkeypatch.setattr(sam_server, "presence_for", lambda config: None)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+
+        assert server._async_jobs["sub_slow"]["status"] == "completed"
+        assert server._async_jobs["sub_slow"]["result"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_a_wake_that_fails_does_not_cost_the_job_its_ending(self, server, monkeypatch):
+        """The run is over and recorded; a wake that cannot be delivered costs a poll, not the result."""
+        told = self.presence(monkeypatch, fails=True)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+
+        assert told == [("parent1", "u1")]
+        assert server._async_jobs["sub_slow"]["status"] == "completed"
+        assert server._async_jobs["sub_slow"]["result"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_a_job_that_never_got_started_wakes_it_too(self, server, monkeypatch):
+        """The job broke before it had a manager, so there is nobody to read the session's user
+        from -- and a caller that went to sleep over it would wait forever. The id it injected
+        answers instead."""
+        import asyncio
+        told = self.presence(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        reached = []
+
+        def registry_for(params):  # create still gets one, the job itself does not
+            reached.append(1)
+            if len(reached) == 1:
+                return Mock(get=Mock(return_value=agent))
+            raise RuntimeError("the registry is gone")
+
+        server._extract_registry = registry_for
+        await self.start(server, wake_when_done=True, _user_id="u1")
+        await asyncio.wait_for(server._async_jobs["sub_slow"]["task_handle"], 5)
+
+        assert told == [("parent1", "u1")]
+        assert server._async_jobs["sub_slow"]["status"] == "failed"
+        assert agent.requests == [], "the run never happened"
+
+    @pytest.mark.asyncio
+    async def test_the_job_is_marked_in_memory_before_the_stored_write(self, server, monkeypatch):
+        """Both orders have a window, and this is the one chosen: the mark sits before any await,
+        so it also happens while the task is being cancelled -- an await there can be cut, and a
+        job left saying "running" answers "running" for good. The stored write follows.
+
+        It matters beyond polling: the abort paths reach the ending with the instance already out
+        of _running_agents, so a `continue` can start meanwhile. Marking behind the await would
+        stamp the dead run's status onto the job that continue put there."""
+        told = self.presence(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        manager = server._get_manager()
+        at_write = []
+        manager.update_sub_session_metadata = AsyncMock(
+            side_effect=lambda **kw: at_write.append(dict(server._async_jobs.get("sub_slow", {}))))
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+
+        assert at_write, "the ending was never written to the sub-session's metadata"
+        assert at_write[-1].get("status") == "completed", at_write[-1]
+        assert at_write[-1].get("result") == "done", at_write[-1]
+        assert told == [("parent1", "u1")], "and the wake comes after both"
+
+    @pytest.mark.asyncio
+    async def test_a_wait_hands_back_no_bookkeeping_of_ours(self, server, monkeypatch):
+        """`_awaiting_poll` says whether WE may drop the job; poll strips it, wait did not, and
+        the model read it in every wait_all result."""
+        self.presence(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server)
+        await self.run_to_end(server, agent)
+        waited = await server.manage_sub_agent(
+            {"operation": "wait", "instance_id": "sub_slow", "_session_id": "parent1"})
+
+        assert waited["status"] == "completed" and waited["result"] == "done"
+        assert "_awaiting_poll" not in waited and "task_handle" not in waited, waited

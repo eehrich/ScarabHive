@@ -27,7 +27,8 @@ and keeping a sub-agent's prompt in sync with the coordinator's state.
 | `info` | read a transcript (see pagination below) |
 | `delete` | archive the instance |
 
-Parallel work is `create(blocking=false)` several times, then `wait_all`.
+Parallel work is `create(blocking=false)` several times, then `wait_all` — or
+`wake_when_done` and no waiting at all (below).
 
 ## A sub-agent is a session, not an object
 
@@ -57,6 +58,30 @@ every other key follows the parent, whose tracker is the live source of truth;
 keys only the sub-agent has are kept. Sessions predating
 `context_vars_inherited` are treated as fully inherited, which lets the
 parent's current values through — the intended behaviour for old sessions.
+
+## Sleeping instead of polling
+
+`create(blocking=false, wake_when_done=true)` lets the caller end its turn over
+a background job. When the job ends — finished, failed or cancelled, there is no
+second ending — the manager tells the core that input is waiting for the calling
+session (`core/session_presence.py`): a session another process holds reads that
+at its next step, a session nobody holds is continued in a run of its own. The
+woken run is told that input waits; it polls the instance and reads the result
+with `info`.
+
+Three things bound it, and none of them are this plugin's:
+
+* **The job lives in the process that started it.** In the API that process
+  outlives the turn, which is what makes sleeping possible. A `agent-cli run`
+  that ends its turn takes its background jobs with it — there is nothing left
+  to finish the job, let alone wake anybody. Use it from sessions the API runs.
+* **`session_presence` can be off.** Then nothing is woken and the caller polls,
+  exactly as every job did before. The flag costs nothing and changes nothing.
+* **`max_wake_depth`** (core, default 3) stops wake chains: a run woken that
+  deep wakes nobody, and the input waits for the session's next run.
+
+A wake that cannot be delivered is logged and costs the caller a poll, never the
+job: the run's ending is recorded before anyone is told about it.
 
 ## Limits and the guards behind them
 

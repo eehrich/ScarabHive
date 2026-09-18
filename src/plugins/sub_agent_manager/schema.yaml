@@ -9,7 +9,7 @@ tools:
 
         Operations (required):
         - create: Spawn+execute (blocking=true default, false=async)
-        - continue: Send new message to existing agent (blocking=true default, false=async)
+        - continue: Send new message to an existing agent, with its history (always blocking)
         - poll: Check async status (NON-BLOCKING) -> Do not poll too frequently!
         - wait/wait_all: Wait for completion (BLOCKING)
         - cancel: Stop running agent
@@ -21,7 +21,8 @@ tools:
           etc. until window.has_more_after is false.
         - delete: Archive instance
 
-        Async: create(blocking=false) + wait_all for parallel execution.
+        Async: create(blocking=false) + wait_all for parallel execution, or
+        create(blocking=false, wake_when_done=true) and end your turn.
         Same instance_id cannot run concurrently.
 
         Important!: Do **not** recreate agents (delete+create) - use existing ones via continue. They have the useful history. Recreate only on Major-Errors.
@@ -54,6 +55,15 @@ tools:
             type: boolean
             description: "Wait for completion (create, default=true). false=async"
             default: true
+
+          wake_when_done:
+            type: boolean
+            description: |
+              Only with create(blocking=false): you may end your turn after
+              starting the sub-agent -- this session is woken when it finishes,
+              however it ends, and you poll the instance then. Without it you
+              stay awake and poll or wait yourself.
+            default: false
 
           use_advanced_model:
             type: boolean
