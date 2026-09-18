@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agent_system.paths import launch_dir
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from .executor import CommandExecutor
@@ -117,6 +118,19 @@ class TerminalServer(SchemaBasedToolServer):
             bash_path_config = 'auto'
             initial_cwd = None
 
+        # The same value serves as the working directory of every command and
+        # as the base the sandbox resolves its workspace root against, and the
+        # harness writes it relative ("data/workspace"). A relative base puts
+        # that segment into the cage path twice, so resolve it once, here.
+        if initial_cwd:
+            initial_cwd = str(Path(initial_cwd).resolve())
+        else:
+            # No directory configured means the one the person started in --
+            # not the working directory, which since the CLIs enter the project
+            # at startup is the checkout. Started from the project, as
+            # everything was until now, the two are the same.
+            initial_cwd = str(launch_dir())
+
         # Process confinement. Absent or unset, the mode is
         # danger-full-access and nothing about spawning changes; an
         # unknown mode raises here rather than silently not confining.
@@ -124,7 +138,7 @@ class TerminalServer(SchemaBasedToolServer):
         if not isinstance(sandbox_config, dict):
             sandbox_config = {}
         self.sandbox = ProcessSandbox.from_config(
-            sandbox_config, base=initial_cwd or Path.cwd())
+            sandbox_config, base=initial_cwd)
         if self.sandbox.confines:
             logger.info("Terminal confinement: mode=%s workspace=%s",
                         self.sandbox.mode, self.sandbox.workspace_root)

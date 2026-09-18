@@ -103,5 +103,6 @@ config:
     # 'auto' = automatically detect bash location on system
     # Persistent terminal sessions: environment variables and cwd persist across commands
     bash_path: auto
-    # null = use terminal's default working directory
+    # null = the directory the command was started in (relative paths are
+    # resolved against the project); this is also the sandbox's workspace root
     initial_cwd: null

@@ -1124,7 +1124,7 @@ plugins:
       # Platform settings
       platform:
         bash_path: "auto"  # Auto-detect or specify path
-        initial_cwd: null  # Default to current directory
+        initial_cwd: null  # Default: the directory the command was started in
 
     audio_ops:
       type: audio_ops
