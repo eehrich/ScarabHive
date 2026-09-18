@@ -3360,7 +3360,15 @@ def run_chat_loop(
                     queued = []
                 if result.get("cancelled"):
                     print("Turn cancelled.", file=sys.stderr)
-                    continue  # nothing new worth saving; next turn saves anyway
+                    # "The next turn saves anyway" held until somebody stopped
+                    # a turn and then LEFT: there was no next turn, the chat
+                    # had never recorded a save, and the farewell -- which
+                    # names the session only when one happened -- said nothing
+                    # at all. Reported from real use: "then I don't even know
+                    # what the session id is". The turn is over here, nothing
+                    # of it is still running, so this is an ordinary save.
+                    _save_now(loop, ctx)
+                    continue
 
                 pending.extend(queued)
 
@@ -3399,6 +3407,15 @@ def run_chat_loop(
         if ctx.last_saved:
             print(f"Session saved: {ctx.last_saved}", file=sys.stderr)
             print(f"Resume with: {_resume_hint(ctx, ctx.last_saved, ctx.last_saved_agent)}",
+                  file=sys.stderr)
+        else:
+            # The id was last seen in the header, scrolled away hours ago.
+            # No claim about saving either way: the agent writes the session
+            # itself when it finalises a request, so "nothing saved" would be
+            # a lie in the very case this line exists for -- and withholding
+            # the way back is what the person actually complained about.
+            print(f"Session: {ctx.session_id}", file=sys.stderr)
+            print(f"Resume with: {_resume_hint(ctx, ctx.session_id, ctx.entry_name)}",
                   file=sys.stderr)
         # A BORROWED loop is not ours to tear down: the CLI's finally still
         # runs shutdown_tools/shutdown_batch_system on it after we return, and

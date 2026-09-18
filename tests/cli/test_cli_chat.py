@@ -3219,6 +3219,25 @@ class TestWhatACtrlCStops:
 
         assert turns == ["erste"], "a Ctrl-C was followed by another paid turn"
 
+    def test_a_cancelled_turn_is_saved_so_the_farewell_can_name_it(
+            self, monkeypatch, capsys):
+        """A cancelled turn skipped the save on "the next turn saves anyway".
+        Stop a turn and then LEAVE and there is no next turn: the chat had
+        recorded no save, and the farewell names the session only when one
+        happened. Reported from real use -- "then I don't even know what the
+        session id is".
+        """
+        def probe(loop, ctx, task, renderer, editor=None):
+            return {"cancelled": True}
+
+        drive_chat_repl(monkeypatch, [], initial_task="abgebrochen",
+                        turn_probe=probe)
+
+        err = capsys.readouterr().err
+        assert "Turn cancelled." in err, "fixture: the turn was not cancelled"
+        assert "Session saved:" in err
+        assert "Resume with:" in err
+
     def test_a_cancelled_turn_still_counts_in_the_session_total(
             self, monkeypatch, capsys):
         def probe(loop, ctx, task, renderer, editor=None):
@@ -4001,6 +4020,20 @@ class TestWorkThatGotThroughAsTheInterruptLanded:
             loop.close()
         assert ctx.last_saved is None
         assert "(save interrupted)" in capsys.readouterr().err
+
+
+class TestTheFarewell:
+    def test_it_names_the_session_and_the_way_back_without_a_save(
+            self, monkeypatch, capsys):
+        """A chat that never saved still knows which session it was. Saying
+        "nothing saved" would be a lie -- the agent writes the session itself
+        when it finalises a request -- and withholding the way back is what
+        the person complained about."""
+        drive_chat_repl(monkeypatch, [])
+
+        err = capsys.readouterr().err
+        assert "Session saved:" not in err, "fixture: something WAS saved"
+        assert "s1" in err and "Resume with:" in err
 
 
 class TestASaveThatWonTheRace:
