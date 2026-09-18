@@ -874,11 +874,6 @@
           ],
           "default": null,
           "title": "Developer Role"
-        },
-        "instructions_field": {
-          "default": false,
-          "title": "Instructions Field",
-          "type": "boolean"
         }
       },
       "title": "ModelCapabilitiesConfig",

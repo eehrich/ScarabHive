@@ -356,32 +356,29 @@ def _payload(caps=None, messages=None):
     return client._build_payload(messages or history(), None)
 
 
-def test_without_the_field_the_note_rides_in_the_input_at_its_place():
-    """The default. The prefix in front of the note stays byte-identical from
-    call to call, which is what keeps the prompt cache hitting."""
+def test_the_note_rides_in_the_input_at_its_place():
+    """Nothing lifts it out any more.
+
+    The Responses API's `instructions` field used to take the newest volatile
+    note. It sits at the TOP of the context, so a text that changes every call
+    rewrote the head of the prompt and the cached prefix behind it was gone --
+    and once the hook plugins started appending marked blocks of their own,
+    "the newest marked note" named whichever of them came last, most often
+    carrying the loop's closing request away from the end, where it is the
+    only thing that makes it work."""
     payload = _payload()
     assert "instructions" not in payload
     assert any(NOTE in _text_of(item.get("content")) for item in payload["input"])
 
 
-def test_the_field_takes_the_volatile_note_out_of_the_input():
-    """`instructions` is the one place a text can sit without being part of
-    the conversation: OpenAI does not carry it over with previous_response_id,
-    so it is replaced instead of accumulated."""
-    payload = _payload(ModelCapabilitiesConfig(instructions_field=True))
-    assert payload.get("instructions") == NOTE
-    assert not any(NOTE in _text_of(item.get("content")) for item in payload["input"]), \
-        "the note was sent twice -- once in the field and once in the input"
-
-
-def test_the_field_leaves_a_note_somebody_placed_deliberately_alone():
-    """No injected_by means nobody rebuilds it next call. Lifting it would
-    move a fact out of the turn it belongs to."""
-    placed = [m for m in history()]
-    placed[3] = ChatMessage(role=DEVELOPER, content=NOTE)  # no marker
-    payload = _payload(ModelCapabilitiesConfig(instructions_field=True), placed)
+def test_a_capability_config_cannot_bring_the_field_back():
+    """The whole option is gone, not merely defaulted off."""
+    payload = _payload(ModelCapabilitiesConfig())
     assert "instructions" not in payload
-    assert any(NOTE in _text_of(item.get("content")) for item in payload["input"])
+    assert not hasattr(ModelCapabilitiesConfig(), "instructions_field")
+    roles = [item.get("role") for item in payload["input"]]
+    assert roles[-2:] == [DEVELOPER, USER], \
+        f"the note no longer sits where it was put: {roles}"
 
 
 def _persisted(messages) -> list[str]:

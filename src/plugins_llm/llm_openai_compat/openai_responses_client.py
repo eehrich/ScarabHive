@@ -714,44 +714,23 @@ class OpenAIResponsesClient(LLMClient):
         mark_last_tool(tools or [])
         cap_cache_control([tools or [], items])
 
-    def _lift_volatile_note(self, messages: list) -> tuple[list, Optional[str]]:
-        """Split off the newest volatile note for the `instructions` field.
-
-        Only this API has the field, and it is the one place a text can sit
-        without becoming part of the conversation: per the OpenAI docs it is
-        NOT carried over by ``previous_response_id``, so it is replaced rather
-        than accumulated. What it costs is stated at
-        ``capabilities.instructions_field`` -- it stands at the TOP of the
-        context, so it rewrites the head of the prompt on every change.
-
-        Volatile means: a developer message carrying ``injected_by``, i.e.
-        rebuilt for this call by whatever injected it. A note somebody placed
-        deliberately has no marker and stays where it was put.
-        """
-        if not getattr(self.capabilities, "instructions_field", False):
-            return messages, None
-        for index in range(len(messages) - 1, -1, -1):
-            msg = messages[index]
-            if _get(msg, "role") != DEVELOPER or not _get(msg, "injected_by"):
-                continue
-            content = _get(msg, "content")
-            text = content if isinstance(content, str) else \
-                "\n".join(part.get("text", "") for part in (content or [])
-                          if isinstance(part, dict))
-            if not text:
-                return messages, None
-            return messages[:index] + messages[index + 1:], text
-        return messages, None
-
     def _build_payload(self, messages: list, tools: Optional[list]) -> dict:
-        messages, instructions = self._lift_volatile_note(messages)
+        # No `instructions` field. It used to carry the newest volatile note
+        # (a developer message with `injected_by`), lifted out of `input` --
+        # the one place a text can sit without joining the conversation, since
+        # OpenAI does not carry it over with previous_response_id. Two things
+        # killed it. It stands at the TOP of the context, so a text that
+        # changes every call rewrites the head of the prompt and takes the
+        # cached prefix with it. And "the newest marked note" stopped naming
+        # one thing once the hook plugins began appending marked blocks of
+        # their own: the pick became a race, and the loop's own last word --
+        # the max-steps request, which only works as the LAST thing the model
+        # reads -- was the most likely one to be carried off to the head.
         payload: dict = {
             "model": self.model,
             "input": self._messages_to_input(messages),
             "store": False,
         }
-        if instructions:
-            payload["instructions"] = instructions
         if self.thinking_level:
             payload["reasoning"] = {"effort": self.thinking_level}
         # Sampling-Temperatur nur ohne Reasoning: die o-/gpt-5.x-Serie
