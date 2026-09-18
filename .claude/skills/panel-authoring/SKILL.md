@@ -211,7 +211,13 @@ es gerendert hat (auch die umschließende, wenn nur der `tbody` neu kommt).
 - Die Wahl hält über jedes Neuzeichnen (Auto-Refresh) und hängt am
   **Kopftext**, nicht an der Spaltennummer; eine Spalte, die nur manchmal da
   ist, verschiebt sie also nicht. Der Name trennt die Tabellen einer Seite.
-  Nach einem Reload ist sie weg.
+  Sie überlebt auch einen Reload: das Kit merkt sie pro Panel-Pfad im
+  localStorage unter `pk.sort:<pathname>` (Tabellenname → Kopftext und
+  Richtung), wie den Refresh-Takt. Gemerkt wird nur ein **schlichter Name**
+  (`[\w.:-]`, höchstens 40 Zeichen) und nur die letzten zwölf pro Panel —
+  ein Name, den ein Panel aus einer Eingabe baut (das SQL-Panel nennt seine
+  Tabelle nach der Abfrage), bleibt in der Seite und geht nicht auf Platte.
+  Ein kaputter Eintrag zählt als keiner.
 - Sortiert wird nach `data-sort-value`, sonst nach dem Text. Sind alle Werte
   einer Spalte Zahlen, als Zahlen; alle ISO-Zeitstempel, als Zeitpunkte (ohne
   Zone als UTC, wie unsere Datenbanken schreiben); sonst

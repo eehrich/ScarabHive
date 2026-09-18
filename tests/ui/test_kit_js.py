@@ -78,6 +78,7 @@ EXPECTED = [
     "timestamps sort as points in time, with or without a fraction of a second, in any offset, and without one as UTC",
     "a column sorts as numbers only when all its values but the blank ones are numbers, else all as text, whatever order the rows came in",
     "a head holding a control of its own is left as it is",
+    "the order a viewer picks outlives a reload of the panel, and only a plain name of the last few is kept",
     "the keyboard stays on the column head it sorted with when the table is drawn anew",
 ]
 

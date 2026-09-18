@@ -951,6 +951,55 @@
     return buttons.join() === 'false,false,true' && unsorted;
   });
 
+  const KEPT_SORTS = 12;  // the kit keeps this many picks per panel page
+  await check('the order a viewer picks outlives a reload of the panel, and only a plain name of the last few is kept', () => {
+    const key = `pk.sort:${location.pathname}`;
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    try {
+      // what a viewer picked here before -- the page that reads it is a new one, so a fresh table name stands for it
+      localStorage.setItem(key, JSON.stringify({ 't-kept': { key: 'Size', dir: 1 }, 't-other': { key: 'When', dir: -1 } }));
+      pk.render(box, sortableTable('t-kept', '<th>Name</th><th class="pk-num" aria-sort="descending">Size</th>',
+        `<tr><td>a</td>${size(9)}</tr><tr><td>b</td>${size(1)}</tr>`));
+      const restored = column(box, 0) === 'b|a' && head(box, 'Size').getAttribute('aria-sort') === 'ascending';
+      clickHead(box, 'Name');
+      const written = JSON.parse(localStorage.getItem(key));
+      // the pick is written down beside the one for the other table
+      const kept = written['t-kept'].key === 'Name' && written['t-kept'].dir === 1 && written['t-other'].dir === -1;
+
+      localStorage.setItem(key, 'not json at all');
+      pk.render(box, sortableTable('t-broken', '<th>Name</th><th class="pk-num" aria-sort="descending">Size</th>',
+        `<tr><td>a</td>${size(9)}</tr><tr><td>b</td>${size(1)}</tr>`));
+      const markupStands = column(box, 0) === 'a|b';
+
+      // an entry without a direction the kit knows: the rows come in the other order, so a kit that takes it shows
+      // a name a panel builds from what the viewer typed stays in the page: it must not reach the browser's store
+      localStorage.setItem(key, JSON.stringify({ 't-kept': { key: 'Name', dir: 1 } }));
+      const typed = "select * from books where title = 'x'";
+      pk.render(box, sortableTable(typed, '<th>Name</th><th class="pk-num">Size</th>',
+        `<tr><td>a</td>${size(9)}</tr><tr><td>b</td>${size(1)}</tr>`));
+      clickHead(box, 'Size');
+      const inPage = column(box, 0) === 'a|b' && !(typed in JSON.parse(localStorage.getItem(key)));
+
+      // only the last few picks of a panel are kept
+      const many = Object.fromEntries([...Array(KEPT_SORTS)].map((_, i) => [`t-old-${i}`, { key: 'Name', dir: 1 }]));
+      localStorage.setItem(key, JSON.stringify(many));
+      pk.render(box, sortableTable('t-new', '<th>Name</th><th class="pk-num">Size</th>',
+        `<tr><td>a</td>${size(9)}</tr><tr><td>b</td>${size(1)}</tr>`));
+      clickHead(box, 'Size');
+      const stored = JSON.parse(localStorage.getItem(key));
+      const capped = Object.keys(stored).length === KEPT_SORTS && !stored['t-old-0'] && Boolean(stored['t-new']);
+
+      localStorage.setItem(key, JSON.stringify({ 't-odd': { key: 'Size', dir: 'up' } }));
+      pk.render(box, sortableTable('t-odd', '<th>Name</th><th class="pk-num" aria-sort="descending">Size</th>',
+        `<tr><td>b</td>${size(1)}</tr><tr><td>a</td>${size(9)}</tr>`));
+      return restored && kept && inPage && capped && markupStands && column(box, 0) === 'a|b';
+    } finally {
+      box.remove();
+      localStorage.removeItem(key);
+    }
+  });
+
   await check('the keyboard stays on the column head it sorted with when the table is drawn anew', () => {
     const box = document.createElement('div');
     document.body.appendChild(box);

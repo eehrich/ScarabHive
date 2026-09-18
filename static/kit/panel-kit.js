@@ -988,10 +988,45 @@ export function initSidebars(root = document) {
  * shown only sometimes does not shift it. A cell sorts by its data-sort-value, else by its text; a column of
  * numbers as numbers, of ISO timestamps as points in time (without a zone: UTC), any other all naturally ("B9"
  * before "B10"), an empty cell or a lone dash last in either direction. A head with data-pk-nosort, without text
- * or with a control of its own stays plain. aria-sort in the markup is the order until the viewer picks one.
- * A <thead> with one row, one <tbody>, no colspan.
+ * or with a control of its own stays plain. aria-sort in the markup is the order until the viewer picks one --
+ * their pick is kept for this panel page and outlives a reload. A <thead> with one row, one <tbody>, no colspan.
  */
-const sortChoices = new Map();  // table name -> { key, dir }
+const sortChoices = new Map();  // table name -> { key, dir } or null, this page's picks
+const sortKey = () => `pk.sort:${location.pathname}`;
+
+/** What the viewer picked on this panel page before, by table name; a broken entry counts as none. */
+function storedSorts() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(sortKey()));
+    return stored && typeof stored === 'object' ? stored : {};
+  } catch { /* no storage or no JSON: the markup's order stands */ }
+  return {};
+}
+
+function storedSort(name) {
+  const stored = storedSorts()[name];
+  return typeof stored?.key === 'string' && (stored.dir === 1 || stored.dir === -1)
+    ? { key: stored.key, dir: stored.dir } : null;
+}
+
+// A name a panel builds from what the viewer typed (writer_admin's SQL panel names its table after the query) is
+// no table they will see again, and it would carry that text into the browser's store: only a plain name is kept,
+// and only the last few of them.
+const KEPT_SORTS = 12;
+const PLAIN_NAME = /^[\w.:-]{1,40}$/;
+
+function rememberSort(name, choice) {
+  sortChoices.set(name, choice);
+  if (!PLAIN_NAME.test(name)) return;
+  try {
+    const all = storedSorts();
+    delete all[name];  // and in again at the end: the picks fall out oldest first
+    all[name] = choice;
+    const kept = Object.keys(all).slice(-KEPT_SORTS).map((one) => [one, all[one]]);
+    localStorage.setItem(sortKey(), JSON.stringify(Object.fromEntries(kept)));
+  } catch { /* no storage: the pick lasts this page only */ }
+}
+
 const renderedAt = new WeakMap();  // row -> its place as rendered, which breaks ties
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 const EMPTY_CELLS = new Set(['', '-', '–', '—']);
@@ -1015,7 +1050,9 @@ function comparer(values) {
 
 /** The viewer's choice while its column is shown, else the one the markup names. */
 function sortChoice(table, heads) {
-  const chosen = sortChoices.get(table.dataset.pkSort);
+  const name = table.dataset.pkSort;
+  if (!sortChoices.has(name)) sortChoices.set(name, storedSort(name));  // what they picked before, read once
+  const chosen = sortChoices.get(name);
   if (chosen && heads.some((th) => headKey(th) === chosen.key)) return chosen;
   const marked = heads.find((th) => ['ascending', 'descending'].includes(th.getAttribute('aria-sort')));
   return marked ? { key: headKey(marked), dir: marked.getAttribute('aria-sort') === 'ascending' ? 1 : -1 } : null;
@@ -1061,7 +1098,7 @@ document.addEventListener('click', (event) => {
   const current = sortChoice(table, [...th.parentElement.cells]);
   const key = headKey(th);
   const dir = current?.key === key ? -current.dir : th.classList.contains('pk-num') ? -1 : 1;
-  sortChoices.set(table.dataset.pkSort, { key, dir });
+  rememberSort(table.dataset.pkSort, { key, dir });
   sortTable(table);
 });
 
