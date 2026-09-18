@@ -967,17 +967,17 @@
       // the pick is written down beside the one for the other table
       const kept = written['t-kept'].key === 'Name' && written['t-kept'].dir === 1 && written['t-other'].dir === -1;
 
+      // the rows come in the other order throughout, so nothing sorting at all is told apart from sorting
       localStorage.setItem(key, 'not json at all');
       pk.render(box, sortableTable('t-broken', '<th>Name</th><th class="pk-num" aria-sort="descending">Size</th>',
-        `<tr><td>a</td>${size(9)}</tr><tr><td>b</td>${size(1)}</tr>`));
+        `<tr><td>b</td>${size(1)}</tr><tr><td>a</td>${size(9)}</tr>`));
       const markupStands = column(box, 0) === 'a|b';
 
-      // an entry without a direction the kit knows: the rows come in the other order, so a kit that takes it shows
       // a name a panel builds from what the viewer typed stays in the page: it must not reach the browser's store
       localStorage.setItem(key, JSON.stringify({ 't-kept': { key: 'Name', dir: 1 } }));
       const typed = "select * from books where title = 'x'";
       pk.render(box, sortableTable(typed, '<th>Name</th><th class="pk-num">Size</th>',
-        `<tr><td>a</td>${size(9)}</tr><tr><td>b</td>${size(1)}</tr>`));
+        `<tr><td>b</td>${size(1)}</tr><tr><td>a</td>${size(9)}</tr>`));
       clickHead(box, 'Size');
       const inPage = column(box, 0) === 'a|b' && !(typed in JSON.parse(localStorage.getItem(key)));
 
@@ -990,6 +990,7 @@
       const stored = JSON.parse(localStorage.getItem(key));
       const capped = Object.keys(stored).length === KEPT_SORTS && !stored['t-old-0'] && Boolean(stored['t-new']);
 
+      // an entry without a direction the kit knows: taking it would leave the rows as they came
       localStorage.setItem(key, JSON.stringify({ 't-odd': { key: 'Size', dir: 'up' } }));
       pk.render(box, sortableTable('t-odd', '<th>Name</th><th class="pk-num" aria-sort="descending">Size</th>',
         `<tr><td>b</td>${size(1)}</tr><tr><td>a</td>${size(9)}</tr>`));
