@@ -180,9 +180,15 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
         # Format: {sub_session_id: True}
         self._running_agents: set[str] = set()
         self._running_lock = __import__('asyncio').Lock()
-        
+
+        # A blocking create/continue, from the moment it is marked running: instance_id -> {agent, request_id
+        # (both None until the run begins), parent_session_id, cancelled, early (a cancel came before that)}.
+        # `cancel` stops it through the agent's own cancellation: the run ends with its "cancelled" event and
+        # saves its session like any other end. (An async job below is stopped by its task handle.)
+        self._blocking_runs: dict[str, dict[str, Any]] = {}
+
         # Track async jobs by instance_id: {instance_id: {task, status, started_at, result, error}}
-        # Only running jobs are kept in memory - completed jobs are removed and loaded from DB on demand
+        # A finished job stays until a poll has read its ending (or a continue replaces it); the stored state answers after
         self._async_jobs: dict[str, dict[str, Any]] = {}
         self._async_jobs_lock = __import__('asyncio').Lock()
 
@@ -690,8 +696,10 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                         "Cannot execute the same sub-agent instance concurrently. "
                         "Wait for current execution to complete or use a different instance."
                     )
-                # Mark as running
+                # Mark as running -- and cancellable from here on, not only once the run has begun
                 self._running_agents.add(sub_session_id)
+                run = self._blocking_runs[sub_session_id] = {
+                    "agent": None, "request_id": None, "parent_session_id": parent_session_id, "cancelled": False}
 
             try:
                 # Get agent from registry
@@ -746,6 +754,7 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
 
                 # Register sub-request user mapping for admin dashboard
                 _register_request_user(sub_request_id, user_id)
+                run.update(agent=agent, request_id=sub_request_id)
 
                 async for event in agent.run_events(
                     task=task,
@@ -755,6 +764,8 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                     # Note: config_overrides would go here if Agent.run_events supported them
                     # For now, sub-agent uses its default configuration
                 ):
+                    if run.pop("early", False):  # cancelled while it was prepared: its request exists now
+                        await agent.cancel_request(sub_request_id)
                     event_type = event.get("type")
                     
                     # Track activity for live status display
@@ -809,7 +820,13 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 # -- Min result length guard: auto-retry with continue if too short --
                 min_len = self._min_result_length_by_agent.get(agent_name, 0)
                 if min_len > 0 and result_text and not result_text.startswith(("Error:", "Cancelled:")) and len(result_text) < min_len:
+                    # a retry gets a request id of its own, which a cancel of the caller (by id prefix) never
+                    # reached: the token of this tool call says whether that happened
+                    caller_token = params.get("_cancellation_token")
                     for retry_attempt in range(self._min_result_retries):
+                        if (run["cancelled"] or result_text.startswith("Cancelled:")  # a stopped run tries no more
+                                or (caller_token is not None and caller_token.is_cancelled)):
+                            break
                         logger.warning(
                             "Sub-agent %s result too short (%d < %d chars), auto-retry %d/%d",
                             agent_name, len(result_text), min_len,
@@ -822,6 +839,7 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                         retry_result = ""
                         retry_req_id = f"{sub_request_id}_minlen_{retry_attempt}"
                         _register_request_user(retry_req_id, user_id)
+                        run["request_id"] = retry_req_id
                         async for event in agent.run_events(
                             task="Deine Antwort war unvollständig oder leer. Vervollständige deine Antwort.",
                             request_id=retry_req_id,
@@ -836,6 +854,8 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                             elif event_type in ("end", "error", "cancelled"):
                                 if event_type == "error":
                                     retry_result = f"Error: {event.get('message', '')}"
+                                elif event_type == "cancelled":
+                                    retry_result = f"Cancelled: {event.get('reason', 'Request was cancelled')}"
                                 break
                         if retry_result and len(retry_result) >= min_len:
                             result_text = retry_result
@@ -900,6 +920,7 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 # ALWAYS release lock, even on error (CRITICAL for preventing deadlock)
                 async with self._running_lock:
                     self._running_agents.discard(sub_session_id)
+                    self._blocking_runs.pop(sub_session_id, None)
                 logger.debug(f"Released running lock for sub-agent {sub_session_id}")
 
         except Exception as e:
@@ -990,10 +1011,18 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                         "Cannot execute the same sub-agent instance concurrently. "
                         "Wait for current execution to complete."
                     )
-                # Mark as running
+                # Mark as running -- and cancellable from here on, not only once the run has begun
                 self._running_agents.add(instance_id)
+                run = self._blocking_runs[instance_id] = {
+                    "agent": None, "request_id": None, "parent_session_id": parent_session_id, "cancelled": False}
 
             try:
+                # An earlier background run of this instance that has ended: this run replaces its ending, which
+                # a later poll or wait would report instead of this run's
+                async with self._async_jobs_lock:
+                    if self._async_jobs.get(instance_id, {}).get("status") in ("completed", "failed", "cancelled"):
+                        del self._async_jobs[instance_id]
+
                 # Inject session_service into agent (same pattern as app.py and agent_cli.py)
                 # ALWAYS inject, even if already set, to ensure correct reference
                 agent._session_service = session_service
@@ -1050,6 +1079,7 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
 
                 # Register sub-request user mapping for admin dashboard
                 _register_request_user(sub_request_id, user_id)
+                run.update(agent=agent, request_id=sub_request_id)
 
                 async for event in agent.run_events(
                     task=message,
@@ -1057,6 +1087,8 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                     session_id=instance_id,  # Continue existing session
                     use_advanced_model=use_advanced_model
                 ):
+                    if run.pop("early", False):  # cancelled while it was prepared: its request exists now
+                        await agent.cancel_request(sub_request_id)
                     event_type = event.get("type")
                     
                     # Track activity for live status display
@@ -1160,6 +1192,7 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 # ALWAYS release lock, even on error (CRITICAL for preventing deadlock)
                 async with self._running_lock:
                     self._running_agents.discard(instance_id)
+                    self._blocking_runs.pop(instance_id, None)
                 logger.debug(f"Released running lock for sub-agent {instance_id}")
 
         except Exception as e:
@@ -1709,6 +1742,8 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 result_text = ""
                 parent_request_id = params.get("_request_id")
                 sub_request_id = f"{parent_request_id}_async_{short_id(6)}" if parent_request_id else f"async_{short_id()}"
+                if instance_id in self._async_jobs:  # cancel reaches the job's tool calls and sub-agents by it
+                    self._async_jobs[instance_id]["request_id"] = sub_request_id
 
                 # Register sub-request user mapping for admin dashboard
                 _register_request_user(sub_request_id, user_id)
@@ -1811,10 +1846,14 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                     self._running_agents.discard(instance_id)
 
         except asyncio.CancelledError:
-            # Job was cancelled (e.g., parent agent interrupted)
-            # Remove from memory tracking immediately
+            # Job was cancelled (e.g., parent agent interrupted). Kept, marked, until it is polled -- as a failed
+            # job is: dropped at once, a wait running meanwhile read the stored state, which may still say active
             async with self._async_jobs_lock:
-                self._async_jobs.pop(instance_id, None)
+                if instance_id in self._async_jobs:
+                    # without its task: a task ended by CancelledError keeps it, and with it every frame of the run
+                    self._async_jobs[instance_id].update(
+                        status="cancelled", completed_at=datetime.now(UTC).isoformat(), _awaiting_poll=True,
+                        task_handle=None)
             
             # CRITICAL: Persist cancelled status to DB to prevent polling loops on restart
             try:
@@ -1899,7 +1938,7 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                     # parent_link comparison used by continue/info/delete.
                     caller_session = params.get("_session_id")
                     job_parent = job.get("parent_session_id")
-                    if caller_session and job_parent and job_parent != caller_session:
+                    if job_parent and job_parent != caller_session:
                         if status:
                             await status.error(f"Poll: {instance_id} not found")
                         return {"status": "error", "error": "Instance not found"}
@@ -2063,45 +2102,48 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
             start_time = asyncio.get_event_loop().time()
 
             while True:
-                # Check status
+                # Check status -- on a copy: _handle_poll below takes the same lock, and an asyncio
+                # lock held across that call hung every job of this manager (a cancelled job is gone)
                 async with self._async_jobs_lock:
-                    if instance_id not in self._async_jobs:
-                        # Async tracking lost - check DB (silent, see above)
-                        poll_result = await self._handle_poll(_without_status(params))
-                        if poll_result.get("status") in ["completed", "error"]:
-                            # Say it ourselves: the inner poll is silent now,
-                            # and the scope default would drop the instance id.
-                            if status_ctx and poll_result.get("status") == "completed":
-                                await status_ctx.end(f"Instance {instance_id} completed")
-                            return poll_result
-                        # Still not found - instance was deleted
-                        if status_ctx:
-                            await status_ctx.error(f"Instance {instance_id} disappeared during wait")
-                        return {"status": "error", "error": f"Instance '{instance_id}' disappeared during wait"}
+                    job = self._async_jobs.get(instance_id)
+                    job = None if job is None else job.copy()
+                if job is None:
+                    # Async tracking lost - check DB (silent, see above)
+                    poll_result = await self._handle_poll(_without_status(params))
+                    if poll_result.get("status") in ["completed", "error", "failed", "cancelled"]:
+                        # Say it ourselves: the inner poll is silent now,
+                        # and the scope default would drop the instance id.
+                        if status_ctx and poll_result.get("status") == "completed":
+                            await status_ctx.end(f"Instance {instance_id} completed")
+                        elif status_ctx and poll_result.get("status") != "error":  # "error" the scope reports itself
+                            await status_ctx.error(f"Instance {instance_id} {poll_result['status']}")
+                        return poll_result
+                    # Still not found - instance was deleted
+                    if status_ctx:
+                        await status_ctx.error(f"Instance {instance_id} disappeared during wait")
+                    return {"status": "error", "error": f"Instance '{instance_id}' disappeared during wait"}
 
-                    job = self._async_jobs[instance_id]
-                    # Ownership check (see _handle_poll): the shared singleton
-                    # _async_jobs is keyed by guessable instance_id; without this
-                    # a session could wait on and read another user's sub-agent.
-                    caller_session = params.get("_session_id")
-                    job_parent = job.get("parent_session_id")
-                    if caller_session and job_parent and job_parent != caller_session:
-                        if status_ctx:
-                            await status_ctx.error(f"Instance {instance_id} not found")
-                        return {"status": "error", "error": "Instance not found"}
-                    job_status = job["status"]
+                # Ownership check (see _handle_poll): the shared singleton
+                # _async_jobs is keyed by guessable instance_id; without this
+                # a session could wait on and read another user's sub-agent.
+                caller_session = params.get("_session_id")
+                job_parent = job.get("parent_session_id")
+                if job_parent and job_parent != caller_session:
+                    if status_ctx:
+                        await status_ctx.error(f"Instance {instance_id} not found")
+                    return {"status": "error", "error": "Instance not found"}
+                job_status = job["status"]
 
-                    if job_status in ["completed", "failed", "cancelled"]:
-                        result = job.copy()
-                        result.pop("task_handle", None)
+                if job_status in ["completed", "failed", "cancelled"]:
+                    job.pop("task_handle", None)
 
-                        if status_ctx:
-                            if job_status == "completed":
-                                await status_ctx.end(f"Instance {instance_id} completed")
-                            else:
-                                await status_ctx.error(f"Instance {instance_id} {job_status}")
+                    if status_ctx:
+                        if job_status == "completed":
+                            await status_ctx.end(f"Instance {instance_id} completed")
+                        else:
+                            await status_ctx.error(f"Instance {instance_id} {job_status}")
 
-                        return result
+                    return job
 
                 # Check timeout
                 elapsed = asyncio.get_event_loop().time() - start_time
@@ -2185,7 +2227,8 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
 
             # Count statuses
             completed = sum(1 for r in formatted_results if r.get("status") == "completed")
-            failed = sum(1 for r in formatted_results if r.get("status") in ["failed", "error"])
+            # a cancelled job did not complete either: counted nowhere, the totals read cleaner than the run was
+            failed = sum(1 for r in formatted_results if r.get("status") in ["failed", "error", "cancelled"])
 
             if status_ctx:
                 await status_ctx.end(f"Completed: {completed}, Failed: {failed} of {len(instance_ids)} instances")
@@ -2204,7 +2247,7 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
             return {"status": "error", "error": str(e)}
 
     async def _handle_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Handle 'cancel' - cancel running async sub-agent."""
+        """Handle 'cancel' - stop a running sub-agent, a blocking run as well as an async job."""
         status_ctx = params.get("_status") if params else None
         
         # Validate params
@@ -2220,11 +2263,37 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                     await status_ctx.error("Cancel: 'instance_id' is required")
                 return {"status": "error", "error": "Missing required parameter: 'instance_id'"}
 
+            # A blocking run first: a finished async job of the same instance can still wait for its poll
+            run = self._blocking_runs.get(instance_id)
+            if run is not None:
+                # ownership, as for an async job below -- a caller without a session owns no sub-agent
+                if run["parent_session_id"] != params.get("_session_id"):
+                    if status_ctx:
+                        await status_ctx.error(f"Cancel: {instance_id} not found")
+                    return {"status": "error", "error": "Instance not found"}
+                # no further retries either -- set before the await, the run goes on meanwhile
+                asked_before, run["cancelled"] = run["cancelled"], True
+                if run["request_id"] is None:
+                    run["early"] = True  # still being prepared: the run stops itself at its first event
+                elif not await run["agent"].cancel_request(run["request_id"]):
+                    run["cancelled"] = asked_before  # an answer that failed changes nothing
+                    if status_ctx:
+                        await status_ctx.error(f"Cancel: {instance_id} is already ending its run")
+                    return {"status": "error", "error": f"Instance '{instance_id}' is already ending its run"}
+                logger.info(f"Cancel requested for the blocking run of {instance_id} ({run['request_id']})")
+                if status_ctx:
+                    await status_ctx.end(f"Cancel requested for {instance_id}")
+                # Requested, not done: the agent stops at its next check (a model not streaming finishes its
+                # answer first). The run's caller learns the outcome; the run saves its session either way.
+                return {"instance_id": instance_id, "status": "cancelling",
+                        "message": "Cancel requested: the sub-agent stops at its next step; "
+                                   "an answer it is already writing may still arrive"}
+
             async with self._async_jobs_lock:
                 if instance_id not in self._async_jobs:
                     if status_ctx:
-                        await status_ctx.error(f"Cancel: {instance_id} not found or not running async")
-                    return {"status": "error", "error": f"Instance '{instance_id}' not found or not running async"}
+                        await status_ctx.error(f"Cancel: {instance_id} not found or not running")
+                    return {"status": "error", "error": f"Instance '{instance_id}' not found or not running"}
 
                 job = self._async_jobs[instance_id]
                 task_handle = job.get("task_handle")
@@ -2234,7 +2303,7 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 # operation on the shared singleton _async_jobs - without this a
                 # session could kill (DoS) another user's in-flight sub-agent.
                 caller_session = params.get("_session_id")
-                if caller_session and parent_session_id and parent_session_id != caller_session:
+                if parent_session_id and parent_session_id != caller_session:
                     if status_ctx:
                         await status_ctx.error(f"Cancel: {instance_id} not found")
                     return {"status": "error", "error": "Instance not found"}
@@ -2248,6 +2317,12 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                     }
 
                 if task_handle and not task_handle.done():
+                    if job.get("request_id"):
+                        # Its tool calls and sub-agents are tasks and requests of their own: cancelling the job's
+                        # task alone leaves them running. Cancelled tokens stop them (and let the timeout monitor
+                        # force what does not stop).
+                        from agent_system.core.cancellation import get_cancellation_manager
+                        get_cancellation_manager().cancel_request(job["request_id"])
                     task_handle.cancel()
                     logger.info(f"Cancelled async execution of {instance_id}")
 

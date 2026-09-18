@@ -111,7 +111,7 @@ commands:
     tool: "{{ name }}_manage_sub_agent"
     params: {operation: list}
   - name: cancel
-    description: "stop a sub-agent that is running in the background"
+    description: "stop a running sub-agent"
     tool: "{{ name }}_manage_sub_agent"
     params: {operation: cancel}
     argument: instance_id
