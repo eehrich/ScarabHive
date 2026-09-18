@@ -32,6 +32,7 @@ from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from agent_system.llm.tls import httpx_verify
 
 from . import anthropic_utils
+from plugins_llm.llm_common import cancellation
 from plugins_llm.llm_common.model_dialects import (
     reasoning_replay_flags,
     resolve_reasoning_details_mode,
@@ -565,6 +566,8 @@ class AnthropicAsyncClient(LLMClient):
 
     async def chat(self, messages: List[ChatMessage], cancellation_token=None) -> str:
         """Simple chat without tools - returns text response."""
+        if cancellation_token and cancellation_token.is_cancelled:
+            raise asyncio.CancelledError("Request cancelled by user")
         system_prompt, converted_messages = self._convert_messages(messages)
         self._cap_anthropic_cache(system_prompt, converted_messages)
 
@@ -582,8 +585,14 @@ class AnthropicAsyncClient(LLMClient):
             if key in self.extra_params:
                 request_kwargs[key] = self.extra_params[key]
         
-        response = await self._client.messages.create(**request_kwargs)
-        
+        if cancellation_token:
+            # The token has to be watched while the call runs; without it a
+            # cancelled request kept billing until the answer arrived.
+            call = asyncio.create_task(self._client.messages.create(**request_kwargs))
+            response = await cancellation.await_call(call, cancellation_token)
+        else:
+            response = await self._client.messages.create(**request_kwargs)
+
         # Extract text content
         text_parts = []
         for block in response.content:

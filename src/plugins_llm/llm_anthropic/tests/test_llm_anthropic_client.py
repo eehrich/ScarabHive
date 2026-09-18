@@ -756,3 +756,48 @@ class TestAnthropicSaysWhyTheAnswerEnded:
 
         final = next(chunk for chunk in chunks if chunk.get("type") == "final")
         assert final["finish_reason"] == finish_reason
+
+
+class TestAnthropicChatCancellation:
+    """chat() took the token and never looked at it: a cancelled call kept billing."""
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_request_is_not_sent(self, anthropic_client):
+        import asyncio
+        from types import SimpleNamespace
+
+        anthropic_client._client.messages.create = AsyncMock(side_effect=AssertionError("must not be sent"))
+
+        with pytest.raises(asyncio.CancelledError):
+            await anthropic_client.chat([ChatMessage(role="user", content="hi")],
+                                        cancellation_token=SimpleNamespace(is_cancelled=True))
+
+        # Without the check before the call the request goes out and is billed;
+        # the cancel would then only be the answer to its own failure.
+        anthropic_client._client.messages.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_during_the_call_ends_it(self, anthropic_client):
+        import asyncio
+        from types import SimpleNamespace
+
+        token = SimpleNamespace(is_cancelled=False)
+
+        async def slow_answer(**kwargs):
+            token.is_cancelled = True
+            await asyncio.sleep(30)  # only the cancel can end this
+
+        anthropic_client._client.messages.create = AsyncMock(side_effect=slow_answer)
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(
+                anthropic_client.chat([ChatMessage(role="user", content="hi")], cancellation_token=token),
+                timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_without_a_token_the_answer_comes_back(self, anthropic_client):
+        block = MagicMock()
+        block.text = "Hello"
+        anthropic_client._client.messages.create = AsyncMock(return_value=MagicMock(content=[block]))
+
+        assert await anthropic_client.chat([ChatMessage(role="user", content="hi")]) == "Hello"

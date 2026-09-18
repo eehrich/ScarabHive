@@ -623,3 +623,125 @@ class TestOllamaSaysWhyTheAnswerEnded:
 
         final = next(event for event in events if event.get("type") == "final")
         assert final["finish_reason"] == "length"
+
+
+class TestOllamaCancelAndErrorShape:
+    """What the agent server reads: a cancel as CancelledError, an error with message/type."""
+
+    @staticmethod
+    def _cancelled_token():
+        token = MagicMock()
+        token.is_cancelled = True
+        return token
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["chat", "chat_tools"], ids=["chat", "chat_tools"])
+    async def test_a_cancelled_request_is_not_sent(self, call):
+        import asyncio
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            client = OllamaNativeAsyncClient(model="llama2")
+            messages = [ChatMessage(role="user", content="Test")]
+
+            with pytest.raises(asyncio.CancelledError):
+                if call == "chat":
+                    await client.chat(messages, cancellation_token=self._cancelled_token())
+                else:
+                    await client.chat_tools(messages, [], cancellation_token=self._cancelled_token())
+
+            mock_client_class.return_value.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_stream_is_not_started(self):
+        import asyncio
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            client = OllamaNativeAsyncClient(model="llama2")
+
+            with pytest.raises(asyncio.CancelledError):
+                async for _ in client.chat_tools_streaming(
+                        [ChatMessage(role="user", content="Test")], [],
+                        cancellation_token=self._cancelled_token()):
+                    pass
+
+            assert not mock_client_class.called, "the cancelled request opened a connection"
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_mid_stream_ends_the_stream(self):
+        """Cancelled after the first line: the run must not read the rest."""
+        import asyncio
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            client = OllamaNativeAsyncClient(model="llama2")
+            token = MagicMock()
+            token.is_cancelled = False
+            lines_read = []
+
+            async def lines():
+                for chunk in ('{"message": {"content": "one"}}', '{"message": {"content": "two"}}'):
+                    lines_read.append(chunk)
+                    token.is_cancelled = True  # the user cancels while it streams
+                    yield chunk
+
+            response = MagicMock()
+            response.status_code = 200
+            response.raise_for_status = MagicMock()
+            response.aiter_lines = lines
+            stream = MagicMock()
+            stream.__aenter__ = AsyncMock(return_value=response)
+            stream.__aexit__ = AsyncMock(return_value=False)
+            instance = MagicMock()
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            instance.stream = MagicMock(return_value=stream)
+            mock_client_class.return_value = instance
+
+            with pytest.raises(asyncio.CancelledError):
+                async for _ in client.chat_tools_streaming(
+                        [ChatMessage(role="user", content="Test")], [], cancellation_token=token):
+                    pass
+
+            assert lines_read == ['{"message": {"content": "one"}}'], "the cancelled stream kept reading"
+            assert stream.__aexit__.await_count == 1, "the stream was left open"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["chat", "chat_tools"], ids=["chat", "chat_tools"])
+    async def test_a_cancel_during_the_call_is_a_cancel_too(self, call):
+        """The token is watched while the request runs (llm_common.cancellation)."""
+        import asyncio
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            client = OllamaNativeAsyncClient(model="llama2")
+            token = MagicMock()
+            token.is_cancelled = False
+
+            async def slow_answer(*args, **kwargs):
+                token.is_cancelled = True
+                await asyncio.sleep(30)  # only the cancel can end this
+
+            instance = MagicMock()
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            # False, not a bare AsyncMock: a truthy __aexit__ swallows the cancel.
+            instance.__aexit__ = AsyncMock(return_value=False)
+            instance.post = AsyncMock(side_effect=slow_answer)
+            mock_client_class.return_value = instance
+
+            messages = [ChatMessage(role="user", content="Test")]
+            answer = (client.chat(messages, cancellation_token=token) if call == "chat"
+                      else client.chat_tools(messages, [], cancellation_token=token))
+
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(answer, timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_stream_reports_an_error_the_server_can_read(self):
+        """agent_system/servers/agent/server.py reads error.message and error.type."""
+        with patch("httpx.AsyncClient") as mock_client_class:
+            client = OllamaNativeAsyncClient(model="llama2")
+            mock_client_class.side_effect = ValueError("boom")
+
+            events = [e async for e in client.chat_tools_streaming(
+                [ChatMessage(role="user", content="Test")], [])]
+
+            error = events[-1]["assistant"]["error"]
+            assert error["message"] == "boom" and error["type"] == "ollama_api_error"

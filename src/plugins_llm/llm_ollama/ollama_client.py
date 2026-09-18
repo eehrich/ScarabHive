@@ -10,6 +10,7 @@ from agent_system.llm.message_roles import DEVELOPER, SYSTEM, USER, developer_tu
 from agent_system.llm.models import ChatMessage, LLMClient
 from agent_system.llm.tls import httpx_verify
 from agent_system.config.models import ModelCapabilitiesConfig
+from plugins_llm.llm_common import cancellation
 from . import ollama_utils
 
 
@@ -51,60 +52,6 @@ class OllamaNativeAsyncClient(LLMClient):
         # process-wide context for that flag (no per-client SSL setup).
         self._verify = verify if verify is not None else True
         self._verify_arg = httpx_verify(self._verify)
-
-    async def _execute_with_cancellation(self, http_task: asyncio.Task, cancellation_token):
-        """Execute HTTP task with efficient event-based cancellation monitoring.
-
-        Instead of polling with timeouts (which throws exceptions every 0.5s),
-        uses asyncio.wait() to efficiently wait for either completion or cancellation.
-
-        Returns:
-            The result of http_task when completed
-
-        Raises:
-            Exception: When cancelled by user
-        """
-        cancel_event = asyncio.Event()
-
-        async def check_cancellation():
-            """Background task that monitors cancellation without polling exceptions"""
-            while not http_task.done():
-                if cancellation_token.is_cancelled:
-                    cancel_event.set()
-                    break
-                await asyncio.sleep(0.1)  # Check every 100ms, doesn't block main task
-
-        cancel_task = asyncio.create_task(check_cancellation())
-
-        # Wait for either HTTP completion or cancellation (efficient, no exceptions!)
-        done, pending = await asyncio.wait(
-            {http_task, cancel_task},
-            return_when=asyncio.FIRST_COMPLETED
-        )
-
-        if cancel_event.is_set():
-            # Cancellation requested - clean up HTTP task
-            http_task.cancel()
-            try:
-                await http_task
-            except asyncio.CancelledError:
-                pass
-            finally:
-                cancel_task.cancel()
-                try:
-                    await cancel_task
-                except asyncio.CancelledError:
-                    pass
-            raise Exception("Request cancelled by user during Ollama call")
-
-        # HTTP completed - clean up cancel task
-        cancel_task.cancel()
-        try:
-            await cancel_task
-        except asyncio.CancelledError:
-            pass
-
-        return await http_task
 
     @property
     def _developer_rung(self) -> str:
@@ -176,12 +123,12 @@ class OllamaNativeAsyncClient(LLMClient):
             body["options"] = self._options
 
         if cancellation_token and cancellation_token.is_cancelled:
-            raise Exception("Request cancelled by user")
+            raise asyncio.CancelledError("Request cancelled by user")
 
         async with self._httpx.AsyncClient(timeout=self._timeout, verify=self._verify_arg) as client:
             if cancellation_token:
                 http_task = asyncio.create_task(client.post(url, json=body))
-                resp = await self._execute_with_cancellation(http_task, cancellation_token)
+                resp = await cancellation.await_call(http_task, cancellation_token)
             else:
                 resp = await client.post(url, json=body)
             resp.raise_for_status()
@@ -203,12 +150,12 @@ class OllamaNativeAsyncClient(LLMClient):
             body["options"] = self._options
 
         if cancellation_token and cancellation_token.is_cancelled:
-            raise Exception("Request cancelled by user")
+            raise asyncio.CancelledError("Request cancelled by user")
 
         async with self._httpx.AsyncClient(timeout=self._timeout, verify=self._verify_arg) as client:
             if cancellation_token:
                 http_task = asyncio.create_task(client.post(url, json=body))
-                resp = await self._execute_with_cancellation(http_task, cancellation_token)
+                resp = await cancellation.await_call(http_task, cancellation_token)
             else:
                 resp = await client.post(url, json=body)
 
@@ -282,7 +229,7 @@ class OllamaNativeAsyncClient(LLMClient):
             body["options"] = self._options
 
         if cancellation_token and cancellation_token.is_cancelled:
-            raise Exception("Request cancelled by user")
+            raise asyncio.CancelledError("Request cancelled by user")
 
         # Retry logic for stream interruptions
         max_retries = 3
@@ -297,7 +244,7 @@ class OllamaNativeAsyncClient(LLMClient):
 
         for attempt in range(max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
-                raise Exception("Request cancelled by user")
+                raise asyncio.CancelledError("Request cancelled by user")
 
             # Initialize/reset accumulated state for each attempt
             accumulated_content = []
@@ -325,7 +272,7 @@ class OllamaNativeAsyncClient(LLMClient):
                         
                         while True:
                             if cancellation_token and cancellation_token.is_cancelled:
-                                raise Exception("Request cancelled by user")
+                                raise asyncio.CancelledError("Request cancelled by user")
                             
                             try:
                                 line = await asyncio.wait_for(line_iter.__anext__(), timeout=chunk_timeout)
@@ -440,13 +387,16 @@ class OllamaNativeAsyncClient(LLMClient):
                 else:
                     await report_status(f"Stream failed after {max_retries + 1} attempts: {self.model}")
                     logger.error(f"Ollama streaming failed after {max_retries + 1} attempts: {e}")
-                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
+                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {
+                        "error": True, "type": "ollama_api_error",
+                        "message": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
                     return
 
             except Exception as e:
                 await report_status(f"Request failed: {self.model}")
                 logger.exception("Ollama streaming failed: %s", e)
-                yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": str(e)}}}
+                yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {
+                    "error": True, "type": "ollama_api_error", "message": str(e)}}}
                 return
 
     def supports_streaming(self) -> bool:

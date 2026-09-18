@@ -16,27 +16,7 @@ from agent_system.llm.message_roles import (
 )
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.config.models import ModelCapabilitiesConfig
-from agent_system.llm.retry_utils import execute_with_cancellation
-from plugins_llm.llm_common import openai_utils
-
-
-async def _cancellable(llm_task: "asyncio.Task", cancellation_token) -> Any:
-    """``execute_with_cancellation``, but a cancel comes back as a cancel.
-
-    The helper reports it as a plain ``Exception``, which the agent server
-    reads as an upstream LLM error: it then retries the cancelled request
-    through every fallback profile and finally reports it as a failed run.
-    Only ``CancelledError`` is reported as a cancel.
-    """
-    try:
-        return await execute_with_cancellation(llm_task, cancellation_token)
-    except Exception as e:
-        # Whatever ended the call, the user had already cancelled it. The
-        # message is the one every other cancel here carries; what really
-        # ended the call stays in the cause.
-        if cancellation_token and cancellation_token.is_cancelled:
-            raise asyncio.CancelledError("Request cancelled by user") from e
-        raise
+from plugins_llm.llm_common import cancellation, openai_utils
 
 
 class OpenAIAsyncClient(LLMClient):
@@ -229,7 +209,7 @@ class OpenAIAsyncClient(LLMClient):
                     client_any = cast(Any, self._client)
                     if cancellation_token:
                         llm_task = asyncio.create_task(client_any.chat.completions.create(**opts))
-                        resp = await _cancellable(llm_task, cancellation_token)
+                        resp = await cancellation.await_call(llm_task, cancellation_token)
                     else:
                         resp = await client_any.chat.completions.create(**opts)
                     break
@@ -507,7 +487,7 @@ class OpenAIAsyncClient(LLMClient):
                     client_any = cast(Any, self._client)
                     if cancellation_token:
                         llm_task = asyncio.create_task(client_any.chat.completions.create(**opts))
-                        resp = await _cancellable(llm_task, cancellation_token)
+                        resp = await cancellation.await_call(llm_task, cancellation_token)
                     else:
                         resp = await client_any.chat.completions.create(**opts)
                     break
