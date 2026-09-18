@@ -21,10 +21,14 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
+import threading
 import time
 import unicodedata
-from typing import Any, Callable, Optional, Sequence, TextIO
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Optional, Sequence, TextIO
 
 from ..llm.pricing import normalize_usage, resolve_call_cost
 from ..paths import user_path
@@ -39,7 +43,7 @@ from .common import (
 from .attachments import sort_attachments
 from .session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 from .session_defaults import session_defaults
-from ..core.session_presence import SessionBusy, presence_for
+from ..core.session_presence import WAKE_TASK, SessionBusy, presence_for
 
 logger = logging.getLogger(__name__)
 
@@ -984,6 +988,16 @@ class _PromptEditor:
     def read_continuation(self, prompt: str) -> str:
         return self._continuation.prompt(prompt)
 
+    def app(self) -> Any:
+        """The prompt_toolkit Application of the MAIN prompt, or None.
+
+        Asked for per use, never held: ``reseed`` builds a new prompt session
+        (and with it a new app) every time /new or /resume swaps the session
+        underneath. Only the main prompt -- the continuation lines of a paste
+        are content, and nothing may cut into them.
+        """
+        return getattr(self._session, "app", None)
+
 
 def _path_candidates(word: str) -> list[tuple[str, str]]:
     """Files and directories under what has been typed of a path so far.
@@ -1444,6 +1458,98 @@ def _release_session(ctx: "_ChatContext", session_id: Optional[str]) -> None:
         presence.release(session_id, ctx.session_user)
 
 
+class _WokenAtThePrompt(Exception):
+    """A wake-up arrived while the REPL sat at the prompt, doing nothing."""
+
+
+#: How often the prompt asks whether input is waiting. A stat() per tick.
+_WAKE_POLL_S = 0.5
+
+
+def _take_wake_mark(ctx: "_ChatContext") -> None:
+    """Clear the wake mark BEFORE the turn the REPL starts for it.
+
+    ``_presence_step`` clears it on the turn's first LLM call anyway
+    (servers/agent/server.py), so this is not what makes the mark go away --
+    it is what keeps a turn that never GETS to an LLM call (a config error, a
+    refused hold) from leaving the mark set: the watcher would see it again a
+    tick later and start another billed turn, and another.
+    """
+    presence = presence_for(getattr(ctx.agent, "system_config", None))
+    if presence is None:
+        return
+    try:
+        presence.take_pending(ctx.session_id, ctx.session_user)
+    except OSError:
+        logger.debug("Could not take the wake mark", exc_info=True)
+
+
+@contextmanager
+def _watch_for_wake(ctx: "_ChatContext",
+                    editor: Optional["_PromptEditor"]) -> Iterator[None]:
+    """Cut into the waiting prompt when input arrives for this session.
+
+    A held session is told about waiting input by a mark on disk, and the mark
+    is picked up on a step of the session -- ``_presence_step`` does it on
+    every LLM call. The chat holds its session across the WHOLE repl, so
+    between turns no call runs: a sub-agent finished with ``wake_when_done``
+    would sit there unmentioned until the person happened to type something.
+    So the prompt itself asks, and starts a turn the way a typed line would.
+
+    Only with the line editor: the fallback reader is ``input()``, which no
+    thread can interrupt -- and that path is the redirected/piped one, where
+    nobody is sitting in front of the prompt to be woken anyway.
+
+    The cut is refused while anything is typed (``current_buffer.text``):
+    ``exit()`` discards the buffer, and losing a half-written message to a
+    background job is a worse trade than a wake-up that waits for the next
+    tick -- by which time their own line has started a turn that takes the
+    mark itself.
+    """
+    presence = presence_for(getattr(ctx.agent, "system_config", None))
+    if presence is None or editor is None:
+        yield
+        return
+
+    stop = threading.Event()
+
+    def _watch() -> None:
+        while not stop.wait(_WAKE_POLL_S):
+            try:
+                if not presence.pending(ctx.session_id, ctx.session_user):
+                    continue
+                app = editor.app()
+                loop = getattr(app, "loop", None)
+                if loop is None or not getattr(app, "is_running", False):
+                    continue
+                loop.call_soon_threadsafe(_cut_in, app)
+            except Exception:
+                # A watcher is never a reason for the chat to end: whatever
+                # goes wrong here costs a wake-up, not the session.
+                logger.debug("Wake watcher tick failed", exc_info=True)
+
+    def _cut_in(app: Any) -> None:
+        # On the prompt's own loop now, so the buffer and the future cannot
+        # change underneath: they typed while the tick was in flight, or the
+        # prompt has already returned by itself.
+        try:
+            if app.current_buffer.text.strip():
+                return
+            if app.future is None or app.future.done():
+                return
+            app.exit(exception=_WokenAtThePrompt)
+        except Exception:
+            logger.debug("Could not cut into the prompt", exc_info=True)
+
+    watcher = threading.Thread(target=_watch, name="chat-wake-watch", daemon=True)
+    watcher.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        watcher.join(timeout=_WAKE_POLL_S * 2)
+
+
 def _resume_hint(ctx: "_ChatContext", session_id: str,
                  agent_name: Optional[str] = None) -> str:
     """The exact command that brings this session back."""
@@ -1831,6 +1937,139 @@ def _export_transcript(ctx: "_ChatContext", payload: str) -> None:
         print(f"Could not write {path}: {e}")
         return
     print(f"Written: {path.resolve()}")
+
+
+def _editor_command() -> list[str]:
+    """What ``/edit`` starts, as argv.
+
+    $VISUAL before $EDITOR, the order every unix tool uses. The value is a
+    COMMAND LINE, not a file name -- "code -w", "subl -n -w" and "vim -u NONE"
+    are all normal contents -- so it is split the way a shell would.
+    """
+    import shlex
+
+    raw = (os.environ.get("VISUAL") or os.environ.get("EDITOR") or "").strip()
+    if not raw:
+        return ["notepad"] if os.name == "nt" else ["vi"]
+    if os.name != "nt":
+        return shlex.split(raw)
+    # Measured, because neither mode is right on its own here: posix splitting
+    # eats the separators (an unquoted C:\Windows\notepad.exe comes back as
+    # C:Windowsnotepad.exe), and non-posix leaves the quotes ON the token, so a
+    # quoted path reaches subprocess as '"C:\Program Files\..."' and cannot be
+    # opened. Split the way the backslashes survive, then take the quotes off.
+    return [token[1:-1] if len(token) > 1 and token[0] == token[-1] == '"'
+            else token
+            for token in shlex.split(raw, posix=False)]
+
+
+def _compose_in_editor(seed: str = "") -> Optional[str]:
+    """Write the next message in $EDITOR.
+
+    Returns the text, "" for an empty file, and None when the editor could not
+    run or the person backed out -- that case has said why already, and the
+    caller adding "nothing sent" on top of it reads as a second failure.
+
+    For the messages a prompt line is the wrong shape for -- a spec, a pasted
+    diff with a paragraph around it, anything worth a second look before it is
+    billed. The fence and the trailing backslash stay what they are: a way to
+    type several lines, not a way to revise them.
+
+    The file ends in .md because that is what the text IS, and every editor
+    that highlights anything highlights that.
+    """
+    fd, path = tempfile.mkstemp(prefix="agent-chat-", suffix=".md")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(seed)
+        argv = [*_editor_command(), path]
+        try:
+            # No capture: the editor IS the terminal now, and a console editor
+            # with its output piped away draws into the pipe and hangs.
+            subprocess.run(argv, check=True)
+        except FileNotFoundError:
+            print(f"No editor: {argv[0]!r} was not found. "
+                  "Set $EDITOR to the one you use.")
+            return None
+        except subprocess.CalledProcessError as e:
+            # `vi` ending non-zero means the person aborted; sending the file
+            # anyway would bill the turn they just backed out of.
+            print(f"{argv[0]} ended with {e.returncode} -- nothing sent.")
+            return None
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as e:
+        print(f"Could not compose the message: {e}")
+        return None
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            logger.debug("Could not remove %s", path, exc_info=True)
+    return text.strip()
+
+
+def _clipboard_writers() -> list[list[str]]:
+    """The clipboard commands to try, best first, for this platform."""
+    if os.name == "nt":
+        return [["clip"]]
+    if sys.platform == "darwin":
+        return [["pbcopy"]]
+    return [["wl-copy"], ["xclip", "-selection", "clipboard"],
+            ["xsel", "--clipboard", "--input"]]
+
+
+def _copy_to_clipboard(text: str) -> Optional[str]:
+    """Put *text* on the system clipboard. Returns the error, or None on success.
+
+    Bytes, not a str through ``input=``: `clip` on Windows reads its stdin in
+    the console codepage and turns every umlaut in an answer into a question
+    mark -- measured. It does understand UTF-16LE, which is what it gets here.
+    """
+    encoding = "utf-16-le" if os.name == "nt" else "utf-8"
+    payload = text.encode(encoding, errors="replace")
+    writers = _clipboard_writers()
+    refused = []
+    for argv in writers:
+        try:
+            subprocess.run(argv, input=payload, check=True)
+            return None
+        except FileNotFoundError:
+            continue
+        except (subprocess.CalledProcessError, OSError) as e:
+            # Installed but not usable is not the end of the list: wl-copy is
+            # on plenty of X11 machines and exits non-zero there, and giving
+            # up on it would skip the xclip that would have taken the text.
+            refused.append(f"{argv[0]}: {e}")
+    if refused:
+        return "; ".join(refused)
+    return ("no clipboard tool found -- tried "
+            + ", ".join(argv[0] for argv in writers))
+
+
+def _copy_last_answer(ctx: "_ChatContext") -> None:
+    """``/copy``: the agent's last answer onto the clipboard, as it was written.
+
+    The TEXT of the message, not what the terminal made of it: the live region
+    wraps to the window and shortens tool lines, so copying from the scrollback
+    gives back a hard-wrapped, truncated version of what the model said.
+    """
+    for message in reversed(_session_messages(ctx)):
+        if getattr(message, "role", None) != "assistant":
+            continue
+        text = _message_text(message).strip()
+        if not text:
+            # A turn's last assistant message can be tool calls and nothing
+            # else; the answer is then the one before it.
+            continue
+        error = _copy_to_clipboard(text)
+        if error:
+            print(f"Could not copy: {error}")
+        else:
+            lines = text.count("\n") + 1
+            print(f"Copied the last answer ({len(text)} chars, {lines} line(s)).")
+        return
+    print("No answer to copy yet.")
 
 
 def _usage_tracker(ctx: "_ChatContext") -> Any:
@@ -3131,6 +3370,9 @@ def run_chat_loop(
         pending: list[str] = [initial_task.strip()] if initial_task and initial_task.strip() else []
         interrupts = 0  # consecutive Ctrl-C at the prompt; two in a row exit
         while True:
+            # Set only by the wake path below: what the REPL starts for a
+            # background job is not a message the person is sending.
+            woken = False
             if pending:
                 task = pending.pop(0)
                 print(f"{prompt}{task}")  # keep the transcript complete
@@ -3142,10 +3384,13 @@ def run_chat_loop(
             else:
                 restore_console_input_mode(input_mode)
                 try:
-                    task = _read_input(prompt, cont_prompt=cont_prompt,
-                                       echo=not interactive,
-                                       read_line=read_line,
-                                       read_cont=read_cont)
+                    # The watcher may cut this read short with
+                    # _WokenAtThePrompt -- see _watch_for_wake.
+                    with _watch_for_wake(ctx, editor):
+                        task = _read_input(prompt, cont_prompt=cont_prompt,
+                                           echo=not interactive,
+                                           read_line=read_line,
+                                           read_cont=read_cont)
                     # The editor runs its own asyncio.run() per prompt, and
                     # that leaves the thread with NO current event loop --
                     # measured: asyncio.get_event_loop() then raises. The REPL
@@ -3162,6 +3407,17 @@ def run_chat_loop(
                         break
                     print("\n(Ctrl-C again or /exit to quit)")
                     continue
+                except _WokenAtThePrompt:
+                    asyncio.set_event_loop(loop)
+                    # Taken here, not left to the turn's first LLM call: a
+                    # turn that never reaches one would leave the mark set and
+                    # the watcher would start the next turn a tick later.
+                    _take_wake_mark(ctx)
+                    task = WAKE_TASK
+                    woken = True
+                    print(renderer._colored(
+                        "(woken: input is waiting for this session)", "90"))
+                    print(f"{prompt}{task}")
             interrupts = 0
             task = task.strip()
             if not task:
@@ -3274,6 +3530,9 @@ def run_chat_loop(
                 if command == "last":
                     _show_last(ctx, renderer)
                     continue
+                if command == "copy":
+                    _copy_last_answer(ctx)
+                    continue
                 if command == "attach":
                     _handle_attach(ctx, payload)
                     continue
@@ -3309,6 +3568,19 @@ def run_chat_loop(
                         print("(/attach stays queued: this retry sends the parts "
                               "the dropped message carried)")
                     print(f"{prompt}{_one_line(asked, 200)}")
+                if command == "edit":
+                    composed = _compose_in_editor(payload)
+                    if composed is None:
+                        continue            # _compose_in_editor said why
+                    if not composed:
+                        print("Empty -- nothing sent.")
+                        continue
+                    task = composed
+                    # It never passed the prompt, so arrow-up would not have
+                    # it -- same reason an initial_task is remembered.
+                    if editor:
+                        editor.remember(task)
+                    print(f"{prompt}{_one_line(task, 200)}")
                 if command == "help":
                     print(_help_text(skill_names, plugin_commands))
                     continue
@@ -3324,7 +3596,11 @@ def run_chat_loop(
                 # isinstance: a /retry hands over the parts the dropped message
                 # already carried, and merging those into a second multimodal
                 # message would send the text twice and the file not at all.
-                if ctx.attachments and isinstance(task, str):
+                # `woken`: files queued with /attach belong to the message
+                # the person is writing, not to a turn a finished background
+                # job started -- sending them here would spend the queue on
+                # "You were woken because input is waiting" and empty it.
+                if ctx.attachments and isinstance(task, str) and not woken:
                     task = _task_with_attachments(ctx, task, renderer)
                     if task is None:
                         continue

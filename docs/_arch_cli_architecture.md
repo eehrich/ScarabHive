@@ -99,6 +99,22 @@ In dieser Reihenfolge, alles in `main`:
    *gehalten, bevor* sie geladen wird. Belegt → Fehler (Exit 1), `--force`
    übergeht einen verwaisten Halt, `--woken` (vom Weck-Befehl gesetzt) tritt
    still zurück.
+
+   `chat` hält seine Session über den **ganzen** REPL, und genau darum muss er
+   den Weckruf selbst abholen: die Marke (`<session>.pending`) wird sonst nur
+   *innerhalb* eines Requests genommen (`_presence_step` bei jedem LLM-Call),
+   und am Prompt läuft kein Call — ein mit `wake_when_done` fertig gewordener
+   Sub-Agent läge da, bis der Nutzer zufällig etwas tippt. Solange der Prompt
+   wartet, fragt deshalb ein Wächter-Thread (`_watch_for_wake` in
+   `cli_utils/chat.py`) im halben Sekundentakt `presence.pending(...)` und
+   schneidet die Eingabe ab; der REPL nimmt die Marke (damit ein Zug, der nie
+   zu einem LLM-Call kommt, keine Endlosschleife auslöst) und startet einen
+   Zug mit `WAKE_TASK`, so wie eine Eingabe es täte. **Nicht** abgeschnitten
+   wird, was schon getippt ist — `exit()` wirft den Puffer weg — und nicht
+   ohne Zeileneditor: `input()` lässt sich von keinem Thread unterbrechen, und
+   das ist ohnehin der umgeleitete Fall, in dem niemand vor dem Prompt sitzt.
+   Anhänge aus `/attach` gehen mit einem geweckten Zug nicht mit: sie gehören
+   der Nachricht, die der Nutzer gerade schreibt.
 9. Session laden oder anlegen, `template_vars` aus der Agent-Config und `--vars`.
 10. **Lauf**: `chat` übergibt an `cli_utils/chat.py:run_chat_loop`; `--raw`
     sammelt über `collect_final_result`; sonst streamt

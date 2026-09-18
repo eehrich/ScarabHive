@@ -76,7 +76,11 @@ agent-cli run "What's in this image?" --attach screenshot.png
 --attach PATH ...               File(s) to attach -- images, audio or text;
                                 the kind is read from the file, like /attach
                                 in the chat (--images/--audio/--text still
-                                work and are sorted the same way)
+                                work and are sorted the same way).
+                                Frisst jedes folgende Wort als Pfad, also
+                                gehoert der Request DAVOR -- steht er
+                                dahinter, sagt die CLI genau das, statt
+                                ihn als fehlend zu melden
 --max-steps N                   Step budget for this run (overrides the
                                 agent's max_steps; this process only)
 --session ID                    Continue an existing session
@@ -179,13 +183,25 @@ Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
 | `/context`, `/ctx` | Was das Kontextfenster füllt. Zwei Blöcke, die nie vermischt werden: was der Anbieter beim **letzten Call gezählt** hat (aus `context_usage_tracker`, mit dem Fenster, gegen das er gezählt wurde — und dem Hinweis „stale", wenn seither kompaktiert wurde), und was das Gespräch **jetzt** enthält, geschätzt und nach Art aufgeschlüsselt: Tool-Ergebnisse, Antworten, deine Nachrichten, System-Prompt, Tool-Schemas. Größtes zuerst, denn das ist die Antwort auf „warum ist mein Fenster voll" — in einer langen Session sind es fast immer die Tool-Ergebnisse. Keine Kategorie wird als „Messung minus Schätzung" gerechnet: das sähe exakt aus und trüge den Fehler von beidem |
 | `/history [n]` | Last `n` exchanges (default 6); tool traffic condensed to one line each |
 | `/last` | The last turn's tool calls and results in full, formatted |
+| `/copy` | Die letzte Antwort in die Zwischenablage — den **Text**, wie das Modell ihn geschrieben hat, nicht das, was das Terminal daraus gemacht hat (die Live-Region bricht auf die Fensterbreite um und kürzt Tool-Zeilen). Unter Windows über `clip` in UTF-16LE, sonst `wl-copy`, `xclip`, `xsel` in dieser Reihenfolge; eines, das installiert ist und trotzdem scheitert, hält das nächste nicht auf |
 | `/undo` | Die letzte Frage und alles, was sie beantwortet hat, aus der Session nehmen. Der Datensatz wird sofort mitgeschnitten, sonst holt `--session <id>` den Turn zurück — auch dann, wenn die Session danach leer ist. Lässt sich der gekürzte Stand nicht schreiben, sagt der Chat es, statt den Turn als weg auszugeben |
 | `/retry` | Dasselbe, und die Frage gleich noch einmal stellen — mit den Anhängen, mit denen sie gestellt wurde. Das Modell sieht seinen ersten Versuch dabei **nicht** mehr, genau darum wird geschnitten statt angehängt |
 | `/export [path]` | Das Gespräch als Markdown schreiben: Fragen, Antworten, die Tool-Aufrufe und ihre Ergebnisse gekürzt (`/last` zeigt sie ganz). Ohne Pfad `chat-<session>.md` im aktuellen Verzeichnis; eine vorhandene Datei wird nie überschrieben |
+| `/edit [text]` | Die nächste Nachricht in `$VISUAL`/`$EDITOR` schreiben (ohne beides: `notepad` bzw. `vi`), das Argument steht schon drin. Für das, wofür eine Prompt-Zeile die falsche Form hat — eine Spezifikation, ein eingefügter Diff mit einem Absatz drumherum. Eine leere Datei schickt nichts, und ein Editor, der mit einem Fehler endet, auch nicht: wer abbricht, will den Turn nicht bezahlen |
 | `/help`, `/h`, `/?` | List the commands |
 | ↑ / ↓ | Walk the input history; Ctrl-R searches it |
 | Tab | Vervollständigt, was zur Zeile passt: am `/` die Kommandos, Plugin-Kommandos und Skills, hinter `/model` die Profile, hinter `/agent` die Agenten, hinter `/vars` die Variablen dieser Session, hinter `/attach` Pfade (auch mit Backslash). Hinter `/resume` die Sessions, die der Prozess schon gesehen hat — `/sessions` oder ein leeres `/resume` füllen die Liste. In einer Nachricht wird nichts angeboten |
 | Ctrl-C | Cancel the **running turn**; twice at the prompt exits. Bricht auch ein laufendes Kommando ab (`/sessions`, `/resume`, `/vars`, `/tools`, ein Plugin-Kommando), ohne den Chat zu beenden; ein laufendes Speichern wird erst zu Ende gebracht, ein zweites Ctrl-C lässt es fallen. Nach Ctrl-C laufen vorgemerkte Zeilen nie als neue Turns — auch dann nicht, wenn die Antwort schneller war |
+
+**Der Chat wacht von selbst auf.** Wartet er am Prompt und trifft Eingabe für
+seine Session ein — ein Sub-Agent, der mit `wake_when_done` fertig geworden ist —,
+dann bricht er das Warten ab und startet den Zug selbst, statt darauf zu warten,
+dass jemand zufällig etwas tippt. Was schon getippt ist, bleibt unangetastet;
+der Weckruf wartet dann auf die nächste halbe Sekunde, und bis dahin hat die
+eigene Zeile ohnehin einen Zug gestartet. Anhänge aus `/attach` gehen mit einem
+geweckten Zug **nicht** mit: sie gehören der Nachricht, die gerade geschrieben
+wird. Umgeleitete Eingabe (`… | agent-cli chat`) weckt nicht — dort gibt es
+keinen Zeileneditor, den man unterbrechen könnte, und niemanden, der wartet.
 
 Plugins add their own, listed under *Plugin commands* in `/help` — but only
 those whose tool this agent may call, so the list differs per agent. They run
@@ -206,11 +222,13 @@ browser can open a session the running process has never loaded, and listing
 only the live half would report "none" for a session whose file is full, then
 overwrite it.
 
-Drei sind terminal-eigen: `/exit` (kein Terminal zum Verlassen), `/attach`
-(der Browser hat seinen Upload-Knopf) und `/model` (der Browser wählt das
-Profil in seinem eigenen Selektor). Alles andere gibt es in **beiden**
-Oberflächen — ein Kommando, das der Nutzer im Terminal findet und im Browser
-nicht, liest sich wie ein Defekt.
+Fünf sind terminal-eigen: `/exit` (kein Terminal zum Verlassen), `/attach`
+(der Browser hat seinen Upload-Knopf), `/model` (der Browser wählt das Profil
+in seinem eigenen Selektor), `/edit` (ein Textfeld IST schon ein Editor, und
+`$EDITOR` läuft auf der Maschine, auf der die CLI läuft) und `/copy` (dort ist
+die Antwort markierbarer Text, ein gescrolltes Terminal gibt sie gar nicht
+mehr her). Alles andere gibt es in **beiden** Oberflächen — ein Kommando, das
+der Nutzer im Terminal findet und im Browser nicht, liest sich wie ein Defekt.
 
 Wo beide dasselbe tun, tun sie es auch durch dieselbe Stelle: der Schnitt von
 `/undo` und `/retry` ist `chat_actions.split_off_last_exchange`, das Markdown

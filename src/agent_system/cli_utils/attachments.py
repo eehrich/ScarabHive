@@ -50,3 +50,29 @@ def sort_attachments(paths: Iterable[str | Path]) -> Tuple[dict[str, list[str]],
             continue
         kinds[kind].append(str(target))
     return kinds, problems
+
+
+def greedy_attach_hint(paths: Iterable[str | Path],
+                       command: str = "agent-cli run") -> str | None:
+    """The line to print when ``--attach`` has probably eaten the request.
+
+    ``--attach`` takes ``nargs="+"``, so argparse reads every word after it as
+    one more path: ``--attach note.png "summarise this"`` hands over two files
+    and leaves no request. What the person got for that was either "Either
+    'request' or --list-sessions must be provided" or "Not a file: summarise
+    this" -- both true, neither says what happened, and the second is the one
+    the report called a trap.
+
+    Only when the LAST entry is missing, which is the signature of the swallow;
+    a mistyped path in the middle is a mistyped path. Returns None when there
+    is nothing to say.
+    """
+    entries = list(paths or [])
+    if not entries:
+        return None
+    last = str(entries[-1])
+    if user_path(last).exists():
+        return None
+    return (f"--attach read {last!r} as a file name and there is no such file. "
+            f"--attach takes EVERY following word as a path, so the request "
+            f'has to come FIRST: {command} "<request>" --attach <path>')

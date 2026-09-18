@@ -9,6 +9,8 @@ import builtins
 import io
 import json
 import logging
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -20,7 +22,16 @@ from agent_system.cli_utils.chat import (
     _ASCII_SYMBOLS,
     _KeyReader,
     _PromptEditor,
+    _WAKE_POLL_S,
+    WAKE_TASK,
+    _WokenAtThePrompt,
     _build_prompt_editor,
+    _compose_in_editor,
+    _copy_last_answer,
+    _copy_to_clipboard,
+    _editor_command,
+    _take_wake_mark,
+    _watch_for_wake,
     _history_seed,
     _poll_typed_input,
     ChatRenderer,
@@ -5012,3 +5023,460 @@ def _message_text_of(message):
     from agent_system.cli_utils.chat import _message_text
 
     return _message_text(message)
+
+def _presence_ctx(tmp_path, monkeypatch, session_id="wake1", user="u"):
+    """A chat context over a REAL SessionPresence on a temporary sessions dir.
+
+    Not a stand-in: presence_for reads the store's root from
+    AGENT_SESSION_STORAGE_PATH at call time, so pointing that at tmp_path
+    gives the production object, with production lock and marker files.
+    """
+    from agent_system.cli_utils.chat import _ChatContext
+    from agent_system.config.models import SessionPresenceConfig
+    from agent_system.core.session_presence import presence_for
+
+    monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path / "sessions"))
+    system_config = SimpleNamespace(
+        session_presence=SessionPresenceConfig(enabled=True))
+    agent = SimpleNamespace(system_config=system_config)
+    ctx = _ChatContext(
+        agent=agent, entry_name="a", session_service=None, session_user=user,
+        session_id=session_id, was_new_session=False, llm_profile="p",
+        llm_override=None, llm_profile_info=None, show_status=True,
+    )
+    presence = presence_for(system_config)
+    assert presence is not None, "no presence -- this test would prove nothing"
+    return ctx, presence
+
+
+def _mark_input_waiting(ctx, presence):
+    """Set the marker notify() leaves for a session somebody HOLDS.
+
+    Placed here rather than by calling notify(): on an unheld session notify
+    SPAWNS a wake run, and on one held by this very process its answer differs
+    per platform (Windows byte-range locks belong to the handle, POSIX fcntl
+    locks to the process). The marker is the same one file either way, and the
+    assertion below reads it back through the production method.
+    """
+    assert presence.hold(ctx.session_id, ctx.session_user, ctx.entry_name)
+    marker = presence.root / ctx.session_user / f"{ctx.session_id}.pending"
+    marker.touch()
+    assert presence.pending(ctx.session_id, ctx.session_user), \
+        "fixture set no mark -- the watcher would have nothing to find"
+
+
+class TestWakingTheWaitingPrompt:
+    """A wake-up has to reach a chat that is sitting at the prompt.
+
+    A held session learns of waiting input from a marker on disk, and the
+    marker is picked up on a STEP of the session -- _presence_step does it on
+    every LLM call. The chat holds its session across the whole REPL, so
+    between turns nothing steps: a sub-agent finished with `wake_when_done`
+    sat there unmentioned until the person happened to type something.
+    """
+
+    def _read_with_deadline(self, editor, pipe, seconds=8.0):
+        """Read the prompt, with a newline in the pipe as a backstop: without
+        it a watcher that never fires hangs the suite instead of failing it."""
+        def _release():
+            time.sleep(seconds)
+            try:
+                pipe.send_text("\n")
+            except Exception:
+                pass
+
+        threading.Thread(target=_release, daemon=True).start()
+        return editor.read("> ")
+
+    def test_it_cuts_into_the_waiting_prompt(self, pt_prompt, tmp_path,
+                                             monkeypatch):
+        ctx, presence = _presence_ctx(tmp_path, monkeypatch)
+        _mark_input_waiting(ctx, presence)
+        editor = _build_prompt_editor([])
+        assert editor is not None, "no editor -- nothing to cut into"
+
+        with _watch_for_wake(ctx, editor):
+            with pytest.raises(_WokenAtThePrompt):
+                self._read_with_deadline(editor, pt_prompt)
+
+    def test_it_leaves_a_half_typed_line_alone(self, pt_prompt, tmp_path,
+                                               monkeypatch):
+        """exit() throws the buffer away, so a wake-up must not take a message
+        being written out of someone's hands. It waits for the next tick -- by
+        which time their own line has started a turn that takes the mark."""
+        ctx, presence = _presence_ctx(tmp_path, monkeypatch)
+        _mark_input_waiting(ctx, presence)
+        editor = _build_prompt_editor([])
+
+        def _type_then_send():
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                if getattr(editor.app(), "is_running", False):
+                    break
+                time.sleep(0.01)
+            pt_prompt.send_text("halb getippt")
+            # Several watcher ticks with the mark set and the buffer not
+            # empty; without the wait the read could return before any tick.
+            time.sleep(_WAKE_POLL_S * 4)
+            pt_prompt.send_text("\n")
+
+        threading.Thread(target=_type_then_send, daemon=True).start()
+        with _watch_for_wake(ctx, editor):
+            assert editor.read("> ") == "halb getippt"
+
+    def test_the_mark_is_taken_before_the_turn_runs(self, tmp_path, monkeypatch):
+        """A turn that never reaches an LLM call would leave the mark set, and
+        the watcher would start the next turn a tick later, and the next."""
+        ctx, presence = _presence_ctx(tmp_path, monkeypatch)
+        _mark_input_waiting(ctx, presence)
+
+        _take_wake_mark(ctx)
+
+        assert not presence.pending(ctx.session_id, ctx.session_user)
+
+    def test_without_an_editor_it_watches_nothing(self, tmp_path, monkeypatch):
+        """The fallback reader is input(), which no thread can interrupt --
+        and that is the piped path, where nobody sits at a prompt anyway."""
+        ctx, presence = _presence_ctx(tmp_path, monkeypatch)
+        _mark_input_waiting(ctx, presence)
+
+        with _watch_for_wake(ctx, None):
+            watching = [t for t in threading.enumerate()
+                        if t.name == "chat-wake-watch"]
+        assert not watching
+
+
+class TestComposeInEditor:
+    """/edit: for the messages a prompt line is the wrong shape for."""
+
+    def _editor(self, monkeypatch, command):
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.setenv("EDITOR", command)
+
+    def test_the_seed_goes_in_and_the_text_comes_back(self, tmp_path,
+                                                      monkeypatch):
+        script = tmp_path / "fake_editor.py"
+        script.write_text(
+            "import sys\n"
+            "with open(sys.argv[1], 'a', encoding='utf-8') as fh:\n"
+            "    fh.write('\\nzweite zeile mit \u00e4\u00f6\u00fc\\n')\n",
+            encoding="utf-8")
+        self._editor(monkeypatch, f"{sys.executable} {script}")
+
+        assert _compose_in_editor("vorgabe") == (
+            "vorgabe\nzweite zeile mit \u00e4\u00f6\u00fc")
+
+    def test_an_empty_file_is_not_a_message(self, monkeypatch):
+        self._editor(monkeypatch, f"{sys.executable} -c pass")
+        assert _compose_in_editor("") == ""
+
+    def test_an_editor_that_fails_sends_nothing(self, capsys, monkeypatch):
+        """`vi` ending non-zero means the person backed out; sending the file
+        anyway would bill the turn they just abandoned. None rather than "",
+        so the REPL does not print a second "nothing sent" over this one."""
+        self._editor(monkeypatch, f'{sys.executable} -c "raise SystemExit(3)"')
+
+        assert _compose_in_editor("etwas") is None
+        assert "3" in capsys.readouterr().out
+
+    def test_the_temporary_file_does_not_stay_behind(self, monkeypatch):
+        seen = {}
+        self._editor(monkeypatch, f"{sys.executable} -c pass")
+        real_run = subprocess.run
+
+        def _spy(argv, **kwargs):
+            seen["path"] = argv[-1]
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", _spy)
+        _compose_in_editor("")
+
+        assert seen.get("path"), "the editor was never started"
+        assert not os.path.exists(seen["path"])
+
+    def test_visual_wins_over_editor(self, monkeypatch):
+        monkeypatch.setenv("EDITOR", "nano")
+        monkeypatch.setenv("VISUAL", "code -w")
+        assert _editor_command() == ["code", "-w"]
+
+    @pytest.mark.skipif(os.name != "nt", reason="the Windows splitting rule")
+    def test_a_windows_path_survives_both_ways(self, monkeypatch):
+        """Measured: posix splitting eats the separators of an unquoted path,
+        non-posix leaves the quotes on a quoted one -- and subprocess cannot
+        open a file whose name has quotes in it."""
+        self._editor(monkeypatch, r"C:\Windows\notepad.exe")
+        assert _editor_command() == [r"C:\Windows\notepad.exe"]
+
+        self._editor(monkeypatch, r'"C:\Program Files\np\np.exe" -multiInst')
+        assert _editor_command() == [r"C:\Program Files\np\np.exe",
+                                     "-multiInst"]
+
+
+class TestCopyLastAnswer:
+    """/copy: the answer as the model wrote it, not as the terminal wrapped it."""
+
+    def _catch(self, monkeypatch):
+        copied = {}
+        monkeypatch.setattr("agent_system.cli_utils.chat._copy_to_clipboard",
+                            lambda text: copied.setdefault("text", text))
+        return copied
+
+    def test_it_copies_the_last_answer(self, monkeypatch):
+        copied = self._catch(monkeypatch)
+        _copy_last_answer(_ctx_with(_TURN))
+        assert copied["text"] == "zweite antwort"
+
+    def test_a_tool_only_message_is_not_the_answer(self, monkeypatch):
+        """The last assistant message of a turn can be tool calls and nothing
+        else; copying "" would silently wipe the clipboard."""
+        copied = self._catch(monkeypatch)
+        _copy_last_answer(_ctx_with([
+            _Msg("user", "frage"),
+            _Msg("assistant", "die antwort"),
+            _Msg("assistant", "", tool_calls=[
+                {"function": {"name": "todo_list", "arguments": "{}"}}]),
+        ]))
+        assert copied["text"] == "die antwort"
+
+    def test_nothing_to_copy_says_so(self, capsys, monkeypatch):
+        monkeypatch.setattr("agent_system.cli_utils.chat._copy_to_clipboard",
+                            lambda text: pytest.fail("nothing should be copied"))
+        _copy_last_answer(_ctx_with([_Msg("user", "frage")]))
+        assert "No answer to copy" in capsys.readouterr().out
+
+    def test_a_failing_clipboard_tool_is_reported(self, capsys, monkeypatch):
+        monkeypatch.setattr("agent_system.cli_utils.chat._copy_to_clipboard",
+                            lambda text: "xclip: not here")
+        _copy_last_answer(_ctx_with(_TURN))
+        assert "xclip: not here" in capsys.readouterr().out
+
+    def test_windows_gets_utf16(self, monkeypatch):
+        """`clip` reads its stdin in the console codepage, which turns every
+        umlaut in an answer into a question mark -- measured. It does
+        understand UTF-16LE, which is what it gets."""
+        sent = {}
+
+        def _run(argv, **kwargs):
+            sent.update(argv=argv, payload=kwargs["input"])
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setattr(subprocess, "run", _run)
+
+        assert _copy_to_clipboard("Gr\u00fc\u00dfe") is None
+        assert sent["argv"] == ["clip"]
+        assert sent["payload"] == "Gr\u00fc\u00dfe".encode("utf-16-le")
+
+    def test_a_tool_that_is_there_but_fails_lets_the_next_one_try(self,
+                                                                  monkeypatch):
+        """wl-copy is installed on plenty of X11 machines and exits non-zero
+        there; stopping at it would skip the xclip that takes the text."""
+        tried = []
+
+        def _run(argv, **kwargs):
+            tried.append(argv[0])
+            if argv[0] == "wl-copy":
+                raise subprocess.CalledProcessError(1, argv)
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(os, "name", "posix")
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(subprocess, "run", _run)
+
+        assert _copy_to_clipboard("text") is None
+        assert tried == ["wl-copy", "xclip"]
+
+    def test_no_clipboard_tool_names_what_it_tried(self, monkeypatch):
+        monkeypatch.setattr(os, "name", "posix")
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        def _missing(argv, **kwargs):
+            raise FileNotFoundError(argv[0])
+
+        monkeypatch.setattr(subprocess, "run", _missing)
+
+        error = _copy_to_clipboard("text")
+        assert error and "xclip" in error and "wl-copy" in error
+
+class _EditorThatIsWokenOnce:
+    """A prompt that is cut short by a wake-up on its first read.
+
+    What prompt_toolkit does when the watcher calls exit(exception=...) --
+    see TestWakingTheWaitingPrompt, which drives the real one.
+    """
+
+    def __init__(self, lines):
+        self.lines = list(lines)
+        self.woken = False
+        self.remembered = []
+        self.commands = []
+
+    def read(self, prompt):
+        if not self.woken:
+            self.woken = True
+            raise _WokenAtThePrompt
+        return self.lines.pop(0)
+
+    def read_continuation(self, prompt):
+        return self.lines.pop(0)
+
+    def reseed(self, seed):
+        pass
+
+    def remember(self, text):
+        self.remembered.append(text)
+
+    def remember_command(self, text):
+        self.commands.append(text)
+
+    def app(self):
+        return None
+
+
+class TestTheWokenTurnInTheLoop:
+    """Wired through run_chat_loop: a command tested only through its handler
+    is a command nobody has ever seen dispatched."""
+
+    def _tasks(self, monkeypatch, editor, **kwargs):
+        seen = []
+
+        def _turn(loop, ctx, task, renderer, editor=None):
+            seen.append(task)
+            return {}
+
+        drive_chat_repl(monkeypatch, [], editor=editor, turn_probe=_turn,
+                        **kwargs)
+        return seen
+
+    def test_the_prompt_read_is_watched(self, monkeypatch):
+        """Without this one, everything below still passes on a repl that
+        never starts a watcher at all: the editor there raises by itself."""
+        import contextlib
+
+        import agent_system.cli_utils.chat as chat
+
+        watched = []
+
+        @contextlib.contextmanager
+        def _watch(ctx, editor):
+            watched.append(ctx.session_id)
+            yield
+
+        monkeypatch.setattr(chat, "_watch_for_wake", _watch)
+        drive_chat_repl(monkeypatch, ["/exit"])
+
+        assert watched == ["s1"]
+
+    def test_a_wake_up_becomes_a_turn(self, monkeypatch):
+        editor = _EditorThatIsWokenOnce(["/exit"])
+        assert self._tasks(monkeypatch, editor) == [WAKE_TASK]
+
+    def test_the_woken_turn_does_not_spend_the_queued_attachments(
+            self, monkeypatch, tmp_path):
+        """/attach queues files for the message the person is WRITING. A turn
+        a finished background job started would send them with "You were woken
+        because input is waiting" and leave the queue empty."""
+        import agent_system.cli_utils.chat as chat
+
+        merged = []
+        monkeypatch.setattr(
+            chat, "_task_with_attachments",
+            lambda ctx, task, renderer: merged.append(task) or task)
+        png = tmp_path / "bild.png"
+        png.write_bytes(b"x")
+        editor = _EditorThatIsWokenOnce(["/exit"])
+
+        tasks = self._tasks(monkeypatch, editor, attachments=[str(png)])
+
+        assert tasks == [WAKE_TASK]
+        assert merged == [], "the wake-up spent the person's queued files"
+
+    def test_a_typed_line_still_gets_them(self, monkeypatch, tmp_path):
+        """The counter-proof: without it the test above would pass on a chat
+        whose attachments never reach any turn at all."""
+        import agent_system.cli_utils.chat as chat
+
+        merged = []
+        monkeypatch.setattr(
+            chat, "_task_with_attachments",
+            lambda ctx, task, renderer: merged.append(task) or task)
+        png = tmp_path / "bild.png"
+        png.write_bytes(b"x")
+
+        self._tasks(monkeypatch, _RecordingEditor(["was ist das", "/exit"]),
+                    attachments=[str(png)])
+
+        assert merged == ["was ist das"]
+
+
+class TestEditAndCopyAreDispatched:
+    """Both are wired into the REPL's own dispatch, not only into a handler."""
+
+    def test_copy_runs_without_an_llm_turn(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        copied = []
+        monkeypatch.setattr(chat, "_copy_last_answer",
+                            lambda ctx: copied.append(ctx.session_id))
+        seen = []
+
+        drive_chat_repl(
+            monkeypatch, ["/copy", "/exit"],
+            turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                seen.append(task) or {})
+
+        assert copied == ["s1"]
+        assert seen == [], "/copy billed a turn"
+
+    def test_edit_becomes_the_turn(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        asked = []
+
+        def _compose(seed):
+            asked.append(seed)
+            return "die lange nachricht"
+
+        monkeypatch.setattr(chat, "_compose_in_editor", _compose)
+        seen = []
+
+        editor = drive_chat_repl(
+            monkeypatch, ["/edit vorgabe", "/exit"],
+            turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                seen.append(task) or {})
+
+        assert asked == ["vorgabe"], "the argument did not pre-fill the file"
+        assert seen == ["die lange nachricht"]
+        # It never passed the prompt, so arrow-up would not have it.
+        assert "die lange nachricht" in editor.remembered
+
+    def test_an_empty_edit_sends_nothing(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.setattr(chat, "_compose_in_editor", lambda seed: "")
+        seen = []
+
+        drive_chat_repl(
+            monkeypatch, ["/edit", "/exit"],
+            turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                seen.append(task) or {})
+
+        assert seen == []
+
+    def test_an_editor_that_could_not_run_says_nothing_more(self, monkeypatch,
+                                                            capsys):
+        """_compose_in_editor has already printed why (no editor, aborted).
+        A second "Empty -- nothing sent." under it reads as a second failure,
+        which is why it answers None there and "" for an empty file."""
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.setattr(chat, "_compose_in_editor", lambda seed: None)
+        seen = []
+
+        drive_chat_repl(
+            monkeypatch, ["/edit", "/exit"],
+            turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                seen.append(task) or {})
+
+        assert seen == []
+        assert "Empty" not in capsys.readouterr().out

@@ -50,7 +50,7 @@ from .cli_utils.session_defaults import (
     profile_for_record,
     usable_session_defaults,
 )
-from .cli_utils.attachments import sort_attachments
+from .cli_utils.attachments import greedy_attach_hint, sort_attachments
 from .cli_utils.session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 
 
@@ -1335,6 +1335,12 @@ def main() -> None:
     for problem in attachment_problems:
         print(f"Error: {problem}", file=sys.stderr)
     if attachment_problems:
+        # `run` defaults its task, so a swallowed request does not even look
+        # like a missing one here -- it looks like a file that is not there.
+        hint = greedy_attach_hint(getattr(args, "attachments", None),
+                                  command=f"agent-cli {args.subcommand}")
+        if hint:
+            print(f"Error: {hint}", file=sys.stderr)
         sys.exit(1)
     has_images = sorted_attachments["image"]
     has_audio = sorted_attachments["audio"]

@@ -32,7 +32,7 @@ from .cli_utils.session_defaults import (
     profile_for_record,
     session_defaults,
 )
-from .cli_utils.attachments import sort_attachments
+from .cli_utils.attachments import greedy_attach_hint, sort_attachments
 from .cli_utils.session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 from .cli_utils.common import (
     set_color_mode,
@@ -627,7 +627,10 @@ Examples:
 
     # Validate that either --list-sessions or request is provided
     if args.list_sessions is None and not args.request:
-        parser.error("Either 'request' or --list-sessions must be provided")
+        # Say WHY there is no request when --attach swallowed it, instead of
+        # sending someone to the usage line for a command they typed in full.
+        hint = greedy_attach_hint(args.attachments, command="agent-run")
+        parser.error(hint or "Either 'request' or --list-sessions must be provided")
 
     # Set color mode globally
     if args.no_color:

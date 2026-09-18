@@ -9,13 +9,14 @@ base64-encoded as a picture, a .png handed to --text is read as text.
 from __future__ import annotations
 
 import asyncio
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 import agent_system.agent_cli as cli
 import agent_system.agent_run as agent_run
-from agent_system.cli_utils.attachments import sort_attachments
+from agent_system.cli_utils.attachments import greedy_attach_hint, sort_attachments
 from agent_system.config.models import (
     AgentConfig,
     AgentSystemConfig,
@@ -695,3 +696,64 @@ class TestTheCapabilityCheckSeesTheModelTheRunUses:
         assert leaving.value.code == 1
         assert checked == [self.CHOSEN]
         assert not chosen_profile.sent, "sent although the chosen model cannot take images"
+
+class TestTheRequestThatAttachSwallowed:
+    """`--attach` takes nargs="+", so every word after it is read as a path.
+
+    `agent-run --attach note.png "fasse das zusammen"` therefore hands argparse
+    two files and NO request, and what came back was "Either 'request' or
+    --list-sessions must be provided" -- true, and no help at all to somebody
+    who just typed the request they are being told is missing.
+    """
+
+    def test_it_names_the_entry_that_is_not_a_file(self, tmp_path):
+        png = tmp_path / "bild.png"
+        png.write_bytes(b"x")
+        hint = greedy_attach_hint([str(png), "fasse das zusammen"])
+        assert hint and "fasse das zusammen" in hint and "FIRST" in hint
+
+    def test_files_that_are_all_there_say_nothing(self, tmp_path):
+        png = tmp_path / "bild.png"
+        png.write_bytes(b"x")
+        assert greedy_attach_hint([str(png)]) is None
+
+    def test_a_typo_in_the_middle_is_a_typo(self, tmp_path):
+        """Only the LAST entry missing is the signature of the swallow. A
+        mistyped path further up is a mistyped path, and "Not a file" already
+        says so -- blaming the grammar there would send people looking in the
+        wrong place."""
+        png = tmp_path / "bild.png"
+        png.write_bytes(b"x")
+        assert greedy_attach_hint(["vertippt.png", str(png)]) is None
+
+    def test_the_command_is_named_the_way_it_was_typed(self, tmp_path):
+        hint = greedy_attach_hint(["fasse das zusammen"], command="agent-run")
+        assert hint and 'agent-run "<request>"' in hint
+
+    def test_agent_run_says_it_instead_of_the_usage_line(self, monkeypatch,
+                                                        capsys, tmp_path):
+        """Through the real parser: this is the message the report named."""
+        png = tmp_path / "bild.png"
+        png.write_bytes(b"x")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["agent-run", "--attach", str(png), "fasse das zusammen"])
+
+        with pytest.raises(SystemExit) as leaving:
+            agent_run.main()
+
+        assert leaving.value.code == 2
+        err = capsys.readouterr().err
+        assert "fasse das zusammen" in err
+        assert "must be provided" not in err
+
+    def test_a_request_that_is_really_missing_keeps_its_old_message(
+            self, monkeypatch, capsys, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "argv", ["agent-run"])
+
+        with pytest.raises(SystemExit):
+            agent_run.main()
+
+        assert "must be provided" in capsys.readouterr().err

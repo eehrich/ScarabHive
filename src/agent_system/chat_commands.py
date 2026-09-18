@@ -94,6 +94,11 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("history", ("/history", "/hist"), "show the last n exchanges (default 6)",
                 usage="/history [n]"),
     ChatCommand("last", ("/last",), "tool calls and results of the last turn, in full"),
+    # Terminal-only, and not because nobody wants it in the browser: there the
+    # answer is selectable text one keystroke away, while a terminal that has
+    # scrolled or a tmux pane over ssh offers no way to get it out at all.
+    ChatCommand("copy", ("/copy",), "copy the last answer to the clipboard",
+                surfaces=(CLI,)),
     # The cut is the same on both surfaces (chat_actions), what it is applied
     # to is not: the terminal shortens the agent's own message list and lets
     # the next save follow, the browser asks the server to shorten the record
@@ -107,6 +112,11 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
                 "attach a file to the NEXT message (repeat for more; "
                 "'/attach' lists, '/attach clear' empties)",
                 usage="/attach [<path> | clear]", surfaces=(CLI,)),
+    # Terminal-only for the same reason as /model: a textarea in the browser
+    # already IS the editor, and $EDITOR runs on the machine the CLI runs on.
+    ChatCommand("edit", ("/edit",),
+                "write the next message in $EDITOR (argument pre-fills it)",
+                usage="/edit [text]", surfaces=(CLI,)),
     ChatCommand("help", ("/help", "/h", "/?"), "this help", usage="/help, /h"),
 )
 
