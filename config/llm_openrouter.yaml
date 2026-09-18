@@ -327,7 +327,23 @@ llm_system:
       capabilities:
         image_input: true
 
+    #
+    # Special Purpose Models
+    #
 
+    # Structured Answer Model
+    openrouter-jev:
+      # TODO: needs /api/alpha/decisions endpoint
+      extends: openrouter-base
+      model: ~typesafe/jev-latest
+      capabilities:
+        tools: false
+        function_calling: false
+        streaming: false
+        json_mode: false
+        image_input: false
+        audio_input: false
+        video_input: false
 
   # =============================================================================
   # PROFILES for easy access
@@ -481,5 +497,10 @@ llm_system:
     or-kimi-k3:
       model_ref: openrouter-kimi-k3
       description: "OpenRouter Kimi K3"
+      max_steps: 500
+
+    or-jev:
+      model_ref: openrouter-jev
+      description: "OpenRouter JEV - Structured Answer Model"
       max_steps: 500
 
