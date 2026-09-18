@@ -1140,8 +1140,11 @@ class HTTPXOpenAIClient(LLMClient):
         self._postprocess_messages_for_provider(message_dicts)
         # Key VOR dem Block-Split aufloesen: die Segment-Leiter braucht den
         # aufgeloesten Key fuer die Registry (docs/prompt_cache_design.md).
+        # Aus den ORIGINAL-Messages, nicht aus message_dicts: die Sanitize-
+        # Whitelist oben wirft `injected_by` weg, und ohne den Marker haelt die
+        # Ableitung einen pro Call neu gebauten Plugin-Block fuer Prompt.
         resolved_cache_key = (
-            derive_prompt_cache_key(self.prompt_cache_key, message_dicts)
+            derive_prompt_cache_key(self.prompt_cache_key, messages)
             if self.prompt_cache_key else None
         )
         self._apply_cache_breakpoints(message_dicts, resolved_cache_key)
@@ -1667,8 +1670,11 @@ class HTTPXOpenAIClient(LLMClient):
         self._postprocess_messages_for_provider(message_dicts)
         # Key VOR dem Block-Split aufloesen: die Segment-Leiter braucht den
         # aufgeloesten Key fuer die Registry (docs/prompt_cache_design.md).
+        # Aus den ORIGINAL-Messages, nicht aus message_dicts: die Sanitize-
+        # Whitelist oben wirft `injected_by` weg, und ohne den Marker haelt die
+        # Ableitung einen pro Call neu gebauten Plugin-Block fuer Prompt.
         resolved_cache_key = (
-            derive_prompt_cache_key(self.prompt_cache_key, message_dicts)
+            derive_prompt_cache_key(self.prompt_cache_key, messages)
             if self.prompt_cache_key else None
         )
         self._apply_cache_breakpoints(message_dicts, resolved_cache_key)

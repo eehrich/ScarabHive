@@ -15,10 +15,18 @@ wuerde zerrissen.
 Loesung ``prompt_cache_key: "auto"`` — der Key wird zur Laufzeit gehasht
 aus:
 
-1. den FUEHRENDEN System-/Developer-Messages, komplett. Der System-Prompt
-   ist pro Agent konstant; ihn voll zu hashen ist deterministisch und
-   verhindert, dass ein langer System-Prompt (>4k, z.B. scene_planner)
-   das Fenster auffrisst, bevor buchspezifischer Inhalt sichtbar wird.
+1. den FUEHRENDEN System-/Developer-Messages, komplett — ausser den
+   INJIZIERTEN (``injected_by`` gesetzt). Der System-Prompt ist pro Agent
+   konstant; ihn voll zu hashen ist deterministisch und verhindert, dass
+   ein langer System-Prompt (>4k, z.B. scene_planner) das Fenster
+   auffrisst, bevor buchspezifischer Inhalt sichtbar wird. Ein injizierter
+   Block dort ist das Gegenteil von konstant: er wird jeden Call neu
+   gebaut, und mitgehasht wanderte der Key mit jedem abgehakten
+   Todo-Punkt auf eine neue Shard. Heute steht dort noch die Restoration
+   von ``context_engineer`` und ein ``simple_prompt_inject`` mit
+   ``role: system``; die Zustandsbloecke der Plugins ziehen ans Ende der
+   Historie, was das eigentliche Heilmittel ist (der Prefix davor bleibt
+   dann byte-identisch) — diese Regel deckt, was dort stehen bleibt.
 2. der ERSTEN Nicht-System-Message, auf ``PREFIX_CHARS`` Zeichen gekappt.
    Nur die erste: spaeter angehaengte Turns derselben Session aendern den
    Key damit nie — alle Calls einer Konversation bleiben in derselben
@@ -264,7 +272,21 @@ def plan_cache_blocks(
     ]
 
 
-def _iter_msg_texts(msg: dict) -> Iterator[str]:
+def _key_field(msg: Any, name: str) -> Any:
+    """Ein Feld einer Message, ob Dict oder ChatMessage.
+
+    Der Key wird aus den ORIGINAL-Messages abgeleitet, nicht aus dem fertigen
+    Payload: dort ist ``injected_by`` laengst weg (httpx whitelistet die
+    API-Felder, der Responses-Client baut neue Items), und ohne den Marker
+    kann die Ableitung einen pro Call neu gebauten Block nicht von einem
+    Prompt unterscheiden.
+    """
+    if isinstance(msg, dict):
+        return msg.get(name)
+    return getattr(msg, name, None)
+
+
+def _iter_msg_texts(msg: Any) -> Iterator[str]:
     """Textfragmente EINER Message (Rollen-Marker + Text-Parts).
 
     Versteht beide Formate:
@@ -277,21 +299,26 @@ def _iter_msg_texts(msg: dict) -> Iterator[str]:
     Nicht-Text-Parts (Bilder/Audio) werden uebersprungen; die Rolle geht
     mit ein, damit Rollen-Grenzen den Hash beeinflussen.
     """
-    role = msg.get("role")
+    role = _key_field(msg, "role")
     if role:
         yield f"<{role}>"
-    content: Any = msg.get("content")
+    content: Any = _key_field(msg, "content")
     if isinstance(content, str):
         yield content
     elif isinstance(content, list):
         for part in content:
-            if isinstance(part, dict):
-                text = part.get("text")
-                if isinstance(text, str):
-                    yield text
+            # Dict ODER pydantic-Modell: ChatMessage.content ist
+            # List[ContentItem], die Parts sind dort TextContent/ImageContent,
+            # keine Dicts. Nur-Dict gelesen blieb von so einer Message der
+            # Rollen-Marker uebrig — der Key war fuer JEDEN Agenten mit
+            # Listen-Content derselbe, also eine geteilte Shard statt einer
+            # pro Buch.
+            text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+            if isinstance(text, str):
+                yield text
     # Responses-API function_call / function_call_output items
     for key in ("name", "arguments", "output"):
-        val = msg.get(key)
+        val = _key_field(msg, key)
         if isinstance(val, str) and val:
             yield val
 
@@ -308,10 +335,28 @@ def derive_prompt_cache_key(configured: str, messages: list) -> str:
         return configured
     h = hashlib.sha256()
     for msg in messages:
-        if not isinstance(msg, dict):
+        # Was keine Message ist, wird uebersprungen — wie vorher, nur dass ein
+        # ChatMessage-Objekt jetzt eine ist. Ohne die zweite Haelfte faellt so
+        # ein Fremdkoerper in den Zweig unten, hasht nichts und BRICHT: die
+        # Task-Message danach ginge nicht mehr in den Key ein, und zwei Buecher
+        # teilten sich eine Shard.
+        if not isinstance(msg, dict) and not hasattr(msg, "role"):
             continue
-        role = str(msg.get("role") or "")
+        role = str(_key_field(msg, "role") or "")
         if role in _SYSTEM_ROLES:
+            # Not an injected block. Whoever puts one into the leading run
+            # rebuilds it on every step -- the todo list, the restored
+            # context, a rendered prompt block. Hashed along, the key moved
+            # with the text: every tick of a checkbox sent the run to a fresh
+            # shard, so not even the system prompt in FRONT of the block could
+            # be read back. The key answers "which prefix is this", and a text
+            # that is rebuilt per call is not part of any prefix. Measured:
+            # same agent, two todo states, two keys.
+            #
+            # An UNMARKED block still counts -- nobody rebuilds it, and it
+            # really is a different prompt.
+            if _key_field(msg, "injected_by"):
+                continue
             for frag in _iter_msg_texts(msg):
                 h.update(frag.encode("utf-8", "replace"))
             continue

@@ -780,8 +780,12 @@ class OpenAIResponsesClient(LLMClient):
         # (s. cache_key.py); kein Extended-Retention-Opt-in.
         resolved_key = None
         if self.prompt_cache_key:
+            # Aus den ORIGINAL-Messages, nicht aus payload["input"]: die Items
+            # dort sind frisch gebaut und tragen kein `injected_by` mehr, und
+            # ohne den Marker haelt die Ableitung einen pro Call neu gebauten
+            # Plugin-Block fuer einen Teil des Prompts.
             resolved_key = derive_prompt_cache_key(
-                self.prompt_cache_key, payload["input"]
+                self.prompt_cache_key, messages
             )
             payload["prompt_cache_key"] = resolved_key
             # Sticky routing on the same key. OpenRouter's prompt cache is
