@@ -39,6 +39,10 @@ config:
 
   role:
     type: string
-    enum: ["system", "user"]
+    enum: ["system", "developer", "user"]
     default: "system"
-    description: "The role of the injected message"
+    description: >-
+      The role of the injected message. "developer" is for what the RUN tells
+      the model rather than what the agent IS — a budget, a deadline, a state
+      the run just reached. Each LLM client sends it on the best rung its wire
+      format has (see agent_system/llm/message_roles.py), so it never errors.

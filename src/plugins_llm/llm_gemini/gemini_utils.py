@@ -11,6 +11,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from agent_system.llm.message_roles import DEVELOPER, USER, developer_turn, resolve_rung
 from agent_system.utils.json_utils import repair_json
 
 from plugins_llm.llm_common.schema_sanitize import sanitize_schema_for_gemini
@@ -191,7 +192,8 @@ def prepare_messages_for_gemini(
     messages: List[Any],
     tools: List[Dict[str, Any]],
     include_critical_instruction: bool = True,
-    enforce_byte_limit: bool = True
+    enforce_byte_limit: bool = True,
+    developer_role: Optional[str] = None,
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """Prepare messages for Gemini API: filter unavailable tool calls and convert.
     
@@ -218,7 +220,7 @@ def prepare_messages_for_gemini(
     
     # Convert to Gemini format
     system_instruction, contents = convert_openai_messages_to_gemini(
-        filtered_messages, include_critical_instruction
+        filtered_messages, include_critical_instruction, developer_role
     )
     
     # Enforce byte limit if enabled (fallback compaction)
@@ -415,14 +417,18 @@ def filter_unavailable_tool_calls_dict(
 
 def convert_openai_messages_to_gemini(
     messages: List[Any],
-    include_critical_instruction: bool = True
+    include_critical_instruction: bool = True,
+    developer_role: Optional[str] = None,
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """Convert ChatMessage list to Gemini format.
-    
+
     Args:
         messages: List of ChatMessage objects
         include_critical_instruction: Whether to prepend critical function calling instruction
-    
+        developer_role: the model entry's ``capabilities.developer_role``, only
+            so that a value this format cannot honour is said out loud rather
+            than dropped in silence (see llm/message_roles.py)
+
     Returns:
         (system_instruction, contents) tuple where:
         - system_instruction: Merged system messages as single string
@@ -450,8 +456,29 @@ def convert_openai_messages_to_gemini(
                 logger.debug(f"Collected system instruction: {len(content)} chars")
             continue
 
-        # Map roles
-        role = "user" if msg.role == "user" else "model"
+        # A developer note: what the run tells the model at the turn it began
+        # to hold. generateContent has no role for it -- it answers 400 "Role
+        # 'developer' is not supported. Please use a valid role: MODEL, USER"
+        # and the same for 'system' -- so it rides the lowest rung, a user turn
+        # in <developer_note> tags. Hoisting it into systemInstruction instead
+        # would be the one thing worse than tags: the note would read as if it
+        # had held since the first turn.
+        if msg.role == DEVELOPER:
+            # resolve_rung for the warning as much as for the answer: this
+            # format's ceiling is `user`, so a model entry claiming `developer`
+            # here is a mistake, and ignoring it in silence is how a mistake
+            # survives. It always answers `user`; the point is that it says so.
+            rung = resolve_rung(developer_role, ceiling=USER, default=USER,
+                                route="Gemini generateContent")
+            text = msg.content if isinstance(msg.content, str) else msg.get_text_content()
+            _note_role, note_text = developer_turn(text, rung)
+            contents.append({"role": rung, "parts": [{"text": note_text}]})
+            continue
+
+        # Map roles. Only the model's own turns may become "model": a role this
+        # function does not know becomes a user turn, because the one thing it
+        # must never do is hand the model words as if it had said them itself.
+        role = "model" if msg.role == "assistant" else "user"
 
         # Handle tool responses
         if msg.role == "tool":

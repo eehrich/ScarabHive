@@ -41,6 +41,9 @@ from agent_system.llm.cache_key import (
     plan_cache_blocks,
     strip_cache_breakpoints,
 )
+from agent_system.llm.message_roles import (
+    DEVELOPER, NOTE_CLOSE, NOTE_OPEN, SYSTEM, USER, as_note, resolve_rung,
+)
 from agent_system.llm.models import LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
 from agent_system.core.cancellation import CancellationToken
 from plugins_llm.llm_common import openai_utils
@@ -826,6 +829,46 @@ class HTTPXOpenAIClient(LLMClient):
         finally:
             for msg in message_dicts:
                 msg.pop("rd_orphaned", None)
+
+        # LAST, deliberately: a lowered developer note becomes a `system`
+        # message here, and mark_last_system above picks system messages. A
+        # note that changes every turn must not carry the cache breakpoint, so
+        # the markers have to run while it still says `developer`. (The tail
+        # marker skips developer notes by itself -- cache_key.py -- because it
+        # takes the last message whatever its role.)
+        self._apply_developer_rung(message_dicts)
+
+    def _apply_developer_rung(self, message_dicts: list) -> None:
+        """Rewrite developer messages to the rung this endpoint takes.
+
+        The wire format has the role -- "with o1 models and newer, `developer`
+        messages replace the previous `system` messages" -- but this client
+        points at whatever ``base_url`` says. OpenRouter documents only
+        user/assistant/system/tool, and an OpenAI-compatible host may be
+        llama.cpp, whose chat template renders a role it does not know as
+        nothing at all: the note would vanish with a 200 and no log line. So
+        `system` is the default and the model entry opts up.
+        """
+        # capabilities is a ModelCapabilitiesConfig, or the empty dict __init__
+        # substitutes for None -- getattr answers both.
+        declared = getattr(self.capabilities, "developer_role", None)
+        rung = resolve_rung(declared, ceiling=DEVELOPER, default=SYSTEM,
+                            route=f"the endpoint at {self.base_url}")
+        if rung == DEVELOPER:
+            return
+        for msg in message_dicts:
+            if msg.get("role") != DEVELOPER:
+                continue
+            content = msg.get("content")
+            if rung == SYSTEM:
+                msg["role"] = SYSTEM
+                continue
+            msg["role"] = USER
+            if isinstance(content, list):
+                msg["content"] = [{"type": "text", "text": NOTE_OPEN}, *content,
+                                  {"type": "text", "text": NOTE_CLOSE}]
+            else:
+                msg["content"] = as_note(content if isinstance(content, str) else "")
 
     def _build_reasoning_param(self) -> dict | None:
         """Build the ``reasoning`` parameter for providers that support it.

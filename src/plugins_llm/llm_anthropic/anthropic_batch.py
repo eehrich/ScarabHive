@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from agent_system.llm.message_roles import DEVELOPER, USER, as_note
 from agent_system.llm.tls import httpx_verify
 
 from agent_system.utils.json_utils import repair_json
@@ -196,6 +197,15 @@ class AnthropicBatchClient(BatchProviderClient):
                     system_prompt = text
                 continue
             
+            # A developer note keeps its place as a tagged user turn: the
+            # Messages API has no role for it (see llm/message_roles.py).
+            if role == DEVELOPER:
+                anthropic_messages.append({
+                    "role": USER,
+                    "content": as_note(content if isinstance(content, str) else str(content)),
+                })
+                continue
+
             # Map roles
             if role == "assistant":
                 anthropic_role = "assistant"

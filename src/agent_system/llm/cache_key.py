@@ -476,7 +476,14 @@ def mark_conversation_tail(message_dicts: list) -> bool:
     ``reasoning_details_mode: keep_all``."""
     if not message_dicts:
         return False
-    msg = message_dicts[-1]
+    # Past a developer note: that is the RUN talking, not the conversation, and
+    # its text is rebuilt for every call. A breakpoint on it would make the
+    # prefix up to the marker differ every turn -- the tail cache would never
+    # hit again, which is the exact opposite of what marking it is for.
+    tail = [m for m in message_dicts if not (isinstance(m, dict) and m.get("role") == "developer")]
+    if not tail:
+        return False
+    msg = tail[-1]
     if not isinstance(msg, dict):
         return False
     content = msg.get("content")

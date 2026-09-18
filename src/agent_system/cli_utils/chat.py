@@ -1728,6 +1728,14 @@ def _show_history(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> 
                 renderer.println(text, color="90")
             for call in getattr(message, "tool_calls", None) or []:
                 _render_tool_call(renderer, call, full=False)
+        elif role == "developer":
+            # Not a turn anybody took -- the run putting something in front of
+            # the model. Hidden, the history reads as if the agent knew things
+            # nobody had told it.
+            if not text:
+                continue
+            renderer.println("")
+            renderer.println(f"[note] {text}", color="90")
         elif role == "tool":
             _render_tool_result(renderer, message, full=False)
     renderer.commit()

@@ -14,6 +14,7 @@ import json
 import logging
 from typing import Any, Callable, Optional
 
+from agent_system.llm.message_roles import DEVELOPER, SYSTEM
 from agent_system.llm.models import ChatMessage
 from plugins_llm.llm_common import openai_utils
 
@@ -85,7 +86,12 @@ def to_request_input(
             if item:
                 items.append(item)
             continue
-        item = _message_item(msg.role, msg.content)
+        # A realtime conversation item takes user, assistant or system -- the
+        # role went in verbatim before, so a developer note would have failed
+        # the session build outright. It becomes a system item AT ITS PLACE,
+        # not folded into the instructions above: that is where it starts to
+        # hold.
+        item = _message_item(SYSTEM if msg.role == DEVELOPER else msg.role, msg.content)
         if item:
             items.append(item)
         if msg.role == "assistant":

@@ -28,6 +28,7 @@ from ...utils.reasoning_artifacts import (
 )
 import httpx
 
+from ...llm.message_roles import leading_instructions, role_of
 from ...llm.model_health import model_health
 from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
 from ...llm.text_sanitizer import sanitize_for_llm
@@ -120,6 +121,35 @@ def _name_the_model(event: dict, llm: Any) -> dict:
         batch = getattr(llm, "batch_provider", None)
         event["batch"] = isinstance(batch, str) and bool(batch)
     return event
+
+
+def _instruction_head(messages: list, rebuilt: list) -> list:
+    """The leading instruction block, minus whatever ``rebuilt`` already has.
+
+    Both history rebuilds below are "the head + the conversation a hook handed
+    back", and what that hook hands back differs per hook. context_engineer
+    strips the prompts and returns only its own compaction system messages
+    (the archive pointers, the prune breadcrumb); context_summarizer returns
+    the WHOLE list, prompts included, and says so in a comment. So there is no
+    fixed set to subtract -- the only rule that holds for both is: do not put
+    back what is already there.
+
+    Prepending blindly sent the breadcrumb twice on one hook and both prompts
+    twice on the other, and the persist right after wrote the copies to disk;
+    the next prune then read a doubled total. The version before that took
+    ``messages[0]`` alone, which duplicated the first prompt and dropped the
+    second one entirely.
+    """
+    def key(msg):
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        return role_of(msg), content if isinstance(content, str) else repr(content)
+
+    # id() as well as the key: a hook usually hands the SAME objects back, and
+    # two different prompts could in principle share a text.
+    seen_ids = {id(msg) for msg in rebuilt}
+    seen = {key(msg) for msg in rebuilt}
+    return [msg for msg in leading_instructions(messages)
+            if id(msg) not in seen_ids and key(msg) not in seen]
 
 
 @dataclass
@@ -671,6 +701,9 @@ class Agent(ToolServer):
             # (archive pointers, the prune breadcrumb). Dropping those loses
             # conversation state for good: the content is in a store, but
             # nothing left in the session says it exists.
+            # Volatile developer notes are dropped one level down, by
+            # set_session_messages: five places write session messages and this
+            # is only one of them.
             conversation_msgs = [
                 msg for msg in messages
                 if msg.role != "system" or is_compaction_system_message(msg)
@@ -997,16 +1030,8 @@ class Agent(ToolServer):
             # Legacy path: hook called ``set_compacted_messages`` without
             # modifying context.messages. Rebuild from pre-hook leading
             # system block + the explicit compacted conversation.
-            reconstructed: List[ChatMessage] = []
-            for msg in pre_hook_messages:
-                role = (
-                    msg.get("role") if isinstance(msg, dict)
-                    else getattr(msg, "role", None)
-                )
-                if role == "system":
-                    reconstructed.append(msg)
-                else:
-                    break
+            reconstructed: List[ChatMessage] = _instruction_head(
+                pre_hook_messages, compacted_messages)
             reconstructed.extend(compacted_messages)
             return reconstructed, True
 
@@ -3293,12 +3318,12 @@ class Agent(ToolServer):
                         f"{len(local_conversation)} old msgs. Reconstructing conversation."
                     )
                     
-                    # Reconstruct messages: system + modified conversation + tool results
-                    system_msg = messages[0] if messages and messages[0].role == "system" else None
-                    if system_msg:
-                        messages = [system_msg] + list(compacted_messages) + tool_messages
-                    else:
-                        messages = list(compacted_messages) + tool_messages
+                    # Reconstruct: the leading instruction block + the modified
+                    # conversation + tool results. It used to be messages[0]
+                    # alone, so the tools prompt — a second system message —
+                    # and anything else standing at the head was dropped.
+                    messages = (_instruction_head(messages, compacted_messages)
+                                + list(compacted_messages) + tool_messages)
                     
                     # Clear compacted messages - they've been applied
                     self._session_tracker.clear_compacted_messages(session_id)

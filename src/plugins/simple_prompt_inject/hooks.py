@@ -16,6 +16,7 @@ from typing import Any
 from jinja2 import Environment, BaseLoader, TemplateSyntaxError, UndefinedError
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
+from agent_system.llm.message_roles import leading_instructions
 from agent_system.llm.models import ChatMessage
 from agent_system.utils.prompt_renderer import strip_prompt_comments
 
@@ -43,7 +44,9 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         prompt_text: Text to inject (empty = no-op)
         prompt_file: Path to .md file (relative to config/ or absolute)
         injection_position: 'before_last_user' or 'end'
-        role: 'system' or 'user'
+        role: 'system', 'developer' or 'user'. A 'developer' message is what
+            the RUN tells the model, and it keeps the position configured
+            here — that placement is the whole point of it.
     """
 
     def __init__(self, plugin_dir: Path | str, server_config: Any = None) -> None:
@@ -216,8 +219,10 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
 
     @staticmethod
     def _find_after_system_index(messages: list[ChatMessage]) -> int:
-        """Return the index right after the last leading system message."""
-        for i, msg in enumerate(messages):
-            if msg.role != "system":
-                return i
-        return len(messages)
+        """Return the index right after the leading instruction block.
+
+        A developer note standing beside the system prompt counts as part of
+        that block: stopping at it would insert the system text BEFORE it and
+        leave the head in an order nobody chose.
+        """
+        return len(leading_instructions(messages))

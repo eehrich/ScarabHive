@@ -124,7 +124,9 @@ class GeminiClient(LLMClient):
         # Filter unavailable tool calls and convert messages to Gemini format
         # This prevents UNEXPECTED_TOOL_CALL when switching agents
         # enforce_byte_limit=True enables fallback compaction if Context Engineer didn't run
-        system_instruction, contents = prepare_messages_for_gemini(messages, tools, enforce_byte_limit=True)
+        system_instruction, contents = prepare_messages_for_gemini(
+            messages, tools, enforce_byte_limit=True,
+            developer_role=getattr(self.capabilities, 'developer_role', None))
         function_declarations = convert_openai_tools_to_gemini(tools)
 
         # Build generationConfig
@@ -648,7 +650,9 @@ class GeminiClient(LLMClient):
         # Filter unavailable tool calls and convert messages to Gemini format
         # This prevents UNEXPECTED_TOOL_CALL when switching agents
         # enforce_byte_limit=True enables fallback compaction if Context Engineer didn't run
-        system_instruction, contents = prepare_messages_for_gemini(messages, tools, enforce_byte_limit=True)
+        system_instruction, contents = prepare_messages_for_gemini(
+            messages, tools, enforce_byte_limit=True,
+            developer_role=getattr(self.capabilities, 'developer_role', None))
         function_declarations = convert_openai_tools_to_gemini(tools)
 
         # Build generationConfig

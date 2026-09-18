@@ -203,7 +203,8 @@ class GeminiSDKClient(LLMClient):
         """
         # Debug: log input messages
         # Use shared conversion utility to get plain dicts
-        system_instruction, dict_contents = convert_openai_messages_to_gemini(messages)
+        system_instruction, dict_contents = convert_openai_messages_to_gemini(
+            messages, developer_role=getattr(self.capabilities, 'developer_role', None))
         
         # Apply byte-limit compaction as fallback (in case Context Engineer wasn't enough)
         dict_contents, bytes_removed = compact_contents_for_byte_limit(dict_contents)

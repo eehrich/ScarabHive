@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent_system.llm.message_roles import DEVELOPER, USER, as_note
 from agent_system.utils.json_utils import repair_json
 
 try:
@@ -519,8 +520,18 @@ class GeminiBatchClient(BatchProviderClient):
                     contents.append(types.Content(role="model", parts=parts))
                 continue
             
-            # Standard user/assistant messages
-            gemini_role = "user" if role == "user" else "model"
+            # A developer note rides the lowest rung here: generateContent takes
+            # MODEL and USER only, so it becomes a user turn in
+            # <developer_note> tags (see llm/message_roles.py).
+            if role == DEVELOPER:
+                text = content if isinstance(content, str) else ""
+                contents.append(types.Content(role=USER, parts=[types.Part(text=as_note(text))]))
+                continue
+
+            # Standard user/assistant messages. Only the model's own turns may
+            # become "model" -- an unknown role becomes a user turn rather than
+            # words the model appears to have said itself.
+            gemini_role = "model" if role == "assistant" else "user"
             
             if isinstance(content, str):
                 contents.append(types.Content(

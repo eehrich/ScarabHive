@@ -846,6 +846,11 @@
         (msg.tool_calls || []).forEach(function (call) {
           parts.push(plain(toolCallLines(call, false).join('\n')));
         });
+      } else if (msg.role === 'developer') {
+        // Not a turn anybody took -- the run putting something in front of the
+        // model. Same line the terminal prints (tests/cli/test_chat_render_parity.py).
+        if (!text) return;
+        parts.push(plain('\n[note] ' + text));
       } else if (msg.role === 'tool') {
         parts.push(plain(toolResultLines(msg, false).join('\n')));
       }
@@ -2748,6 +2753,20 @@
           if (msg.content_format === 'html' && typeof Prism !== 'undefined') {
             Prism.highlightAllUnder(blk.t);
           }
+        } else if (msg.role === 'developer') {
+          // What the run told the model, at the point it told it. Without this
+          // branch the note fell through every else-if and the restored chat
+          // showed an agent acting on something nobody could see.
+          const row = document.createElement('div');
+          row.className = 'row';
+          const note = document.createElement('div');
+          note.className = 'msg note';
+          const pre = document.createElement('pre');
+          pre.className = 'note-text';  // the shape every other note in this chat has
+          pre.textContent = `[note] ${messageText(msg)}`;
+          note.appendChild(pre);
+          row.appendChild(note);
+          chatEl.appendChild(row);
         }
       });
       

@@ -64,6 +64,10 @@ from typing import Any, Optional
 import httpx
 
 from agent_system.llm.tls import httpx_verify
+from agent_system.llm.message_roles import (
+    ASSISTANT, DEVELOPER, NOTE_CLOSE, NOTE_OPEN, SYSTEM, TOOL, USER,
+    as_note, resolve_rung,
+)
 from agent_system.llm.models import (
     ChatMessage,
     LLMClient,
@@ -300,6 +304,14 @@ class OpenAIResponsesClient(LLMClient):
     # ------------------------------------------------------------------
 
     @property
+    def _developer_rung(self) -> str:
+        # The Responses API has the role itself -- a declaration can only lower
+        # it, for a gateway that forwards to a backend without one.
+        return resolve_rung(getattr(self.capabilities, "developer_role", None),
+                            ceiling=DEVELOPER, default=DEVELOPER,
+                            route=f"the Responses API at {self.base_url}")
+
+    @property
     def _supports_audio_input(self) -> bool:
         return bool(getattr(self.capabilities, "audio_input", False)) if self.capabilities else False
 
@@ -386,6 +398,34 @@ class OpenAIResponsesClient(LLMClient):
                 parts.append({"type": "input_text", "text": json.dumps(part, ensure_ascii=False)[:2000]})
         return parts
 
+    def _lower_developer_items(self, items: list) -> None:
+        """Put every developer item on the rung this route uses.
+
+        LAST, after the cache markers: while the item still says `developer`,
+        mark_last_system and mark_conversation_tail both look straight past it,
+        which is the point. Lowered first, a note on the `system` rung would
+        take the system breakpoint off the prompt, and one at the end would
+        take the conversation breakpoint -- in both cases the marker would sit
+        on the one text that is rewritten every call.
+
+        Only the user rung touches the content: there the role no longer says
+        what the text is, so the tags have to. Parts are wrapped part by part
+        rather than stringified, so an image inside a note survives.
+        """
+        rung = self._developer_rung
+        for item in items:
+            if item.get("role") != DEVELOPER:
+                continue
+            item["role"] = rung
+            if rung != USER:
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                item["content"] = [{"type": "input_text", "text": NOTE_OPEN}, *content,
+                                   {"type": "input_text", "text": NOTE_CLOSE}]
+            else:
+                item["content"] = as_note(content if isinstance(content, str) else "")
+
     def _extract_verbatim_items(self, msg: Any) -> Optional[list]:
         """Return the verbatim output items stored on an assistant message,
         or None if the message carries none (foreign/legacy history).
@@ -437,7 +477,11 @@ class OpenAIResponsesClient(LLMClient):
             role = _get(msg, "role")
             content = _get(msg, "content")
 
-            if role in ("system", "user"):
+            # A developer item stays `developer` through this whole function,
+            # even when the rung is lowered: the cache markers run after it and
+            # must be able to tell a run note from the conversation. The rung
+            # is applied at the very end of _build_payload.
+            if role in (SYSTEM, USER, DEVELOPER):
                 # Cache-Breakpoint-Sentinels bleiben hier im String erhalten —
                 # der Split passiert in _build_payload NACH der Key-Ableitung
                 # (die Segment-Leiter braucht den aufgeloesten Key).
@@ -447,7 +491,7 @@ class OpenAIResponsesClient(LLMClient):
                     "content": self._content_to_parts(content, role),
                 })
 
-            elif role == "assistant":
+            elif role == ASSISTANT:
                 # rd_orphaned (set by invalidate_reasoning_artifacts after a
                 # history mutation): this turn's chain predecessors were
                 # stripped — replaying its reasoning items verbatim would send
@@ -492,7 +536,7 @@ class OpenAIResponsesClient(LLMClient):
                         "arguments": fn.get("arguments", "{}"),
                     })
 
-            elif role == "tool":
+            elif role == TOOL:
                 out = content
                 if not isinstance(out, str):
                     out = json.dumps(out, ensure_ascii=False) if out is not None else ""
@@ -512,6 +556,19 @@ class OpenAIResponsesClient(LLMClient):
                             "role": "user",
                             "content": self._content_to_parts(injection.get("content"), "user"),
                         })
+
+            else:
+                # No else used to exist here, so a role this chain does not know
+                # left the request without a trace -- which is how a developer
+                # message was lost before this client learned the role. Send it
+                # as a user turn rather than drop it, and say so.
+                logger.warning("unknown message role %r at index %d sent as a "
+                               "user turn (model=%s)", role, index, self.model)
+                items.append({
+                    "type": "message",
+                    "role": USER,
+                    "content": self._content_to_parts(content, USER),
+                })
         return items
 
     def _create_multimodal_injection(self, tool_msg: Any) -> Optional[dict]:
@@ -657,12 +714,44 @@ class OpenAIResponsesClient(LLMClient):
         mark_last_tool(tools or [])
         cap_cache_control([tools or [], items])
 
+    def _lift_volatile_note(self, messages: list) -> tuple[list, Optional[str]]:
+        """Split off the newest volatile note for the `instructions` field.
+
+        Only this API has the field, and it is the one place a text can sit
+        without becoming part of the conversation: per the OpenAI docs it is
+        NOT carried over by ``previous_response_id``, so it is replaced rather
+        than accumulated. What it costs is stated at
+        ``capabilities.instructions_field`` -- it stands at the TOP of the
+        context, so it rewrites the head of the prompt on every change.
+
+        Volatile means: a developer message carrying ``injected_by``, i.e.
+        rebuilt for this call by whatever injected it. A note somebody placed
+        deliberately has no marker and stays where it was put.
+        """
+        if not getattr(self.capabilities, "instructions_field", False):
+            return messages, None
+        for index in range(len(messages) - 1, -1, -1):
+            msg = messages[index]
+            if _get(msg, "role") != DEVELOPER or not _get(msg, "injected_by"):
+                continue
+            content = _get(msg, "content")
+            text = content if isinstance(content, str) else \
+                "\n".join(part.get("text", "") for part in (content or [])
+                          if isinstance(part, dict))
+            if not text:
+                return messages, None
+            return messages[:index] + messages[index + 1:], text
+        return messages, None
+
     def _build_payload(self, messages: list, tools: Optional[list]) -> dict:
+        messages, instructions = self._lift_volatile_note(messages)
         payload: dict = {
             "model": self.model,
             "input": self._messages_to_input(messages),
             "store": False,
         }
+        if instructions:
+            payload["instructions"] = instructions
         if self.thinking_level:
             payload["reasoning"] = {"effort": self.thinking_level}
         # Sampling-Temperatur nur ohne Reasoning: die o-/gpt-5.x-Serie
@@ -717,6 +806,8 @@ class OpenAIResponsesClient(LLMClient):
             self._apply_anthropic_cache_blocks(payload["input"], converted_tools)
         else:
             self._apply_cache_blocks(payload["input"], resolved_key)
+        # After every marker pass, never before -- see _lower_developer_items.
+        self._lower_developer_items(payload["input"])
         if converted_tools:
             payload["tools"] = converted_tools
             payload["tool_choice"] = "auto"

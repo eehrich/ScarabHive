@@ -35,7 +35,12 @@ CONTEXT_KINDS: tuple[tuple[str, str], ...] = (
     ("questions", "user"),
     ("answers", "assistant"),
     ("tool_results", "tool"),
+    # What the run told the model, as opposed to what a person asked.
+    ("notes", "developer"),
 )
+
+#: Groups that are left out of a breakdown when they are empty.
+_OPTIONAL_KINDS = ("other", "notes")
 
 
 def _field(message: Any, name: str) -> Any:
@@ -214,10 +219,11 @@ def context_breakdown(
         "tokens": estimate_token_count([], tools=tool_list) if tool_list else 0,
         "count": len(tool_list),
     }
-    # "other" only when there is something: a line reading 0 invites the
+    # These only when there is something: a line reading 0 invites the
     # question what it is, and the answer is usually "nothing".
-    if not parts["other"]["count"]:
-        del parts["other"]
+    for optional in _OPTIONAL_KINDS:
+        if not parts[optional]["count"]:
+            del parts[optional]
     return {"parts": parts, "total": sum(p["tokens"] for p in parts.values())}
 
 
@@ -247,6 +253,11 @@ def transcript_markdown(
             for call in tool_calls_of(message):
                 name, arguments = tool_call_summary(call)
                 lines.append(f"- tool `{name}` {one_line(arguments, 120)}")
+        elif role == "developer":
+            # Not a turn anybody took: the run putting something in front of
+            # the model. A transcript that hides it reads as if the agent knew
+            # things nobody told it.
+            lines += ["## Note from the run", "", text, ""]
         elif role == "tool":
             lines.append(f"  -> {one_line(text, 120)}")
     return "\n".join(lines) + "\n"

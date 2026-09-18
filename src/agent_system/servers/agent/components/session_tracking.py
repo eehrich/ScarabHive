@@ -14,6 +14,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
+from ....llm.message_roles import DEVELOPER
 from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm
 
@@ -348,12 +349,27 @@ class SessionTracker:
         """
         Set the persisted messages for a session.
 
+        A volatile developer note never goes in. It is what the RUN told the
+        model for THIS call (a budget, a deadline, the state a job reached) and
+        it carries ``injected_by``, meaning whoever put it there builds it
+        again next call. Stored, it would keep the value of the turn it
+        happened to be built on while the injector adds the next one beside it,
+        and the session fills up with stale budgets. A developer note WITHOUT
+        that marker was placed deliberately and is kept.
+
+        The rule sits HERE, in the one funnel, and not in the caller that
+        filters system messages: five places write session messages, and only
+        one of them filters anything.
+
         Args:
             session_id: The session ID
             messages: The messages to persist
         """
-        self._sessions[session_id] = messages
-        if messages:
+        kept = [msg for msg in messages
+                if not (getattr(msg, "role", None) == DEVELOPER
+                        and getattr(msg, "injected_by", None))]
+        self._sessions[session_id] = kept
+        if kept:
             self._held.add(session_id)
 
     def set_compacted_messages(self, session_id: str, messages: List[ChatMessage] | None) -> None:

@@ -6,6 +6,7 @@ import json
 import time as _time
 from agent_system.utils.id import short_id
 
+from agent_system.llm.message_roles import DEVELOPER, SYSTEM, USER, developer_turn, resolve_rung
 from agent_system.llm.models import ChatMessage, LLMClient
 from agent_system.llm.tls import httpx_verify
 from agent_system.config.models import ModelCapabilitiesConfig
@@ -105,6 +106,11 @@ class OllamaNativeAsyncClient(LLMClient):
 
         return await http_task
 
+    @property
+    def _developer_rung(self) -> str:
+        return resolve_rung(getattr(self.capabilities, "developer_role", None),
+                            ceiling=SYSTEM, default=SYSTEM, route="Ollama /api/chat")
+
     def _map_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         import json
         from agent_system.utils.json_utils import repair_json as _repair_json
@@ -115,6 +121,21 @@ class OllamaNativeAsyncClient(LLMClient):
             d.pop('injected_by', None)  # Internal hook metadata
             d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
             d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent
+
+            # /api/chat documents "either `system`, `user`, `assistant`, or
+            # `tool`". An unknown role is not refused here -- it is handed to
+            # the model's chat template, which typically renders a role it does
+            # not know as nothing at all, so the note would be dropped behind a
+            # 200. A system turn is the documented rung; a model entry may set
+            # `capabilities.developer_role: user` for a template that only ever
+            # renders the FIRST system message.
+            if d.get("role") == DEVELOPER:
+                role, text = developer_turn(
+                    d.get("content") if isinstance(d.get("content"), str) else "",
+                    self._developer_rung)
+                d["role"] = role
+                if role == USER:
+                    d["content"] = text
 
             # Ollama expects tool_calls.function.arguments to be an object, not a string
             # Convert string arguments to dict if needed

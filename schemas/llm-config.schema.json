@@ -857,6 +857,28 @@
           "default": false,
           "title": "Supports File Uploads",
           "type": "boolean"
+        },
+        "developer_role": {
+          "anyOf": [
+            {
+              "enum": [
+                "developer",
+                "system",
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Developer Role"
+        },
+        "instructions_field": {
+          "default": false,
+          "title": "Instructions Field",
+          "type": "boolean"
         }
       },
       "title": "ModelCapabilitiesConfig",

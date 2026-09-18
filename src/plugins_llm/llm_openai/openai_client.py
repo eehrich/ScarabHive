@@ -11,6 +11,9 @@ import httpx
 from agent_system.llm.tls import httpx_verify
 from agent_system.utils.id import short_id
 from agent_system.utils.json_utils import repair_json
+from agent_system.llm.message_roles import (
+    DEVELOPER, NOTE_CLOSE, NOTE_OPEN, SYSTEM, USER, as_note, resolve_rung,
+)
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.config.models import ModelCapabilitiesConfig
 from agent_system.llm.retry_utils import execute_with_cancellation
@@ -94,6 +97,35 @@ class OpenAIAsyncClient(LLMClient):
         self._base_url = base_url or ""
         self._verify = verify  # the Realtime WebSocket needs it too
 
+    def _apply_developer_rung(self, message_dicts: list) -> list:
+        """Rewrite developer messages to the rung this endpoint takes.
+
+        Chat Completions has the role -- "with o1 models and newer, `developer`
+        messages replace the previous `system` messages" -- so nothing moves by
+        default. The step exists because ``base_url`` can point this client at
+        something else, and because a model entry must be able to lower it in
+        one declared place rather than per call site.
+        """
+        rung = resolve_rung(getattr(self.capabilities, "developer_role", None),
+                            ceiling=DEVELOPER, default=DEVELOPER,
+                            route=f"the endpoint at {self._base_url or 'api.openai.com'}")
+        if rung == DEVELOPER:
+            return message_dicts
+        for d in message_dicts:
+            if d.get("role") != DEVELOPER:
+                continue
+            content = d.get("content")
+            if rung == SYSTEM:
+                d["role"] = SYSTEM
+                continue
+            d["role"] = USER
+            if isinstance(content, list):
+                d["content"] = [{"type": "text", "text": NOTE_OPEN}, *content,
+                                {"type": "text", "text": NOTE_CLOSE}]
+            else:
+                d["content"] = as_note(content if isinstance(content, str) else "")
+        return message_dicts
+
     def _create_multimodal_injection(self, tool_msg: ChatMessage, supports_audio: Optional[bool] = None) -> Optional[dict]:
         """Create injected user message for multimodal tool content.
 
@@ -144,7 +176,7 @@ class OpenAIAsyncClient(LLMClient):
                         if not d['content']:
                             d['content'] = ""
                     result.append(d)
-                return result
+                return self._apply_developer_rung(result)
             serialized = await asyncio.to_thread(_serialize)
             
             opts = {"model": self.model, "messages": serialized}
@@ -385,7 +417,7 @@ class OpenAIAsyncClient(LLMClient):
                     injection = self._create_multimodal_injection(m)
                     if injection:
                         result.append(injection)
-            return result
+            return self._apply_developer_rung(result)
         
         msgs = await asyncio.to_thread(_serialize_messages)
 
@@ -710,7 +742,7 @@ class OpenAIAsyncClient(LLMClient):
                     injection = self._create_multimodal_injection(m)
                     if injection:
                         result.append(injection)
-            return result
+            return self._apply_developer_rung(result)
         
         msgs = await asyncio.to_thread(_serialize_messages)
 

@@ -68,6 +68,26 @@ class ModelCapabilitiesConfig(BaseModel):
     supports_files_api: bool = False
     supports_file_uploads: bool = False
 
+    # Which rung of the developer-note ladder this model's BACKEND takes
+    # (llm/message_roles.py): "developer", "system" or "user". None means the
+    # route decides, which is right until an endpoint speaks a richer format
+    # than the thing behind it -- an OpenAI-compatible host may be llama.cpp,
+    # whose chat template silently renders an unknown role as nothing. A value
+    # above what the wire format permits is refused by the client with a
+    # warning, never sent.
+    developer_role: Optional[Literal["developer", "system", "user"]] = None
+
+    # Send a volatile developer note (one carrying injected_by) in the
+    # Responses API's top-level `instructions` field instead of as an item in
+    # `input`. OFF by default, and not out of caution: `instructions` sits at
+    # the TOP of the context, so a text that changes every call rewrites the
+    # head of the prompt each time and the cached prefix behind it is gone.
+    # Left off, the note rides at its place at the END of the input, where the
+    # whole prefix in front of it stays byte-identical. Turn it on when the
+    # note must outrank the conversation rather than be cheap. No effect on
+    # any other route: no other wire format has the field.
+    instructions_field: bool = False
+
     @model_validator(mode="before")
     @classmethod
     def _reject_multimodal_shorthand(cls, data):

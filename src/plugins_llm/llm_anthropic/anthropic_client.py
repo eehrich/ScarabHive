@@ -24,6 +24,9 @@ import random
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
+from agent_system.llm.message_roles import (
+    DEVELOPER, NOTE_CLOSE, NOTE_OPEN, USER, developer_turn, resolve_rung,
+)
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from agent_system.llm.tls import httpx_verify
@@ -275,6 +278,30 @@ class AnthropicAsyncClient(LLMClient):
                     system_prompt = text
                 continue
             
+            # A developer note: the RUN talking to the model mid-conversation.
+            # The Messages API has no role for it -- "there is no `system` role
+            # for input messages" -- so it rides the lowest rung: a user turn in
+            # <developer_note> tags. The top-level system parameter is the wrong
+            # home for it, and not because of style: a note hoisted up there
+            # reads as if it had held since the first turn, and the whole reason
+            # to send it mid-run is that it did not.
+            if role == DEVELOPER:
+                # Built as `developer` and lowered at the END of this function,
+                # after the cache markers: while it says `developer` they look
+                # past it, and a note must never carry a breakpoint -- its text
+                # is rewritten every call, so the marked prefix would differ
+                # every turn and the cache would never hit again.
+                if isinstance(msg.content, list):
+                    converted_messages.append({
+                        "role": DEVELOPER,
+                        "content": anthropic_utils.normalize_content_list(msg.content)})
+                else:
+                    converted_messages.append({
+                        "role": DEVELOPER,
+                        "content": msg.content if isinstance(msg.content, str)
+                        else msg.get_text_content()})
+                continue
+
             # Map roles
             if role == "assistant":
                 anthropic_role = "assistant"
@@ -420,7 +447,37 @@ class AnthropicAsyncClient(LLMClient):
             ):
                 mark_conversation_tail(converted_messages)
 
+        # AFTER the markers, never before: this format has no `developer` role
+        # at all ("there is no `system` role for input messages" either), so a
+        # note becomes a tagged user turn -- but only once nothing is left that
+        # would put a cache breakpoint on it.
+        self._lower_developer_messages(converted_messages)
         return system_prompt, converted_messages
+
+    def _lower_developer_messages(self, converted_messages: List[Dict[str, Any]]) -> None:
+        """Rewrite developer notes to the rung the Messages API permits.
+
+        resolve_rung for the warning as much as for the answer: the ceiling
+        here is `user`, so a model entry claiming `developer` can only be a
+        mistake, and ignoring it in silence is how a mistake survives.
+        """
+        # getattr twice: test doubles and partially built clients reach this
+        # path without a `capabilities` attribute at all -- the same reason the
+        # vision check a few lines up spells it out.
+        rung = resolve_rung(
+            getattr(getattr(self, "capabilities", None), "developer_role", None),
+            ceiling=USER, default=USER, route="the Anthropic Messages API")
+        for message in converted_messages:
+            if message.get("role") != DEVELOPER:
+                continue
+            message["role"] = rung
+            content = message.get("content")
+            if isinstance(content, list):
+                message["content"] = [{"type": "text", "text": NOTE_OPEN}, *content,
+                                      {"type": "text", "text": NOTE_CLOSE}]
+            else:
+                _role, message["content"] = developer_turn(
+                    content if isinstance(content, str) else "", rung)
 
     def _convert_tools(self, tools: List[Dict]) -> List[Dict[str, Any]]:
         """Convert OpenAI tool schema to Anthropic format."""

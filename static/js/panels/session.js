@@ -14,7 +14,10 @@ function when(value) {
 }
 
 function counts(messages) {
-  const out = { user: 0, assistant: 0, tool: 0, toolCalls: 0, images: 0, tokens: 0, estimated: 0 };
+  // `developer` counts too: a note the run put in front of the model is part
+  // of what the session carries, and a role missing here is simply not counted
+  // -- the panel's sum would then quietly disagree with message_count.
+  const out = { user: 0, assistant: 0, tool: 0, developer: 0, toolCalls: 0, images: 0, tokens: 0, estimated: 0 };
   for (const message of messages) {
     if (message.role in out) out[message.role] += 1;
     out.toolCalls += (message.tool_calls || []).length;
@@ -87,6 +90,7 @@ async function load() {
       <div class="pk-stat"><div class="pk-stat-label">User messages</div><div class="pk-stat-value">${c.user}</div></div>
       <div class="pk-stat"><div class="pk-stat-label">Assistant messages</div><div class="pk-stat-value">${c.assistant}</div></div>
       <div class="pk-stat"><div class="pk-stat-label">Tool calls</div><div class="pk-stat-value">${c.toolCalls}</div></div>
+      ${c.developer ? html`<div class="pk-stat"><div class="pk-stat-label">Run notes</div><div class="pk-stat-value">${c.developer}</div></div>` : ''}
       <div class="pk-stat"><div class="pk-stat-label">Estimated tokens</div>
         <div class="pk-stat-value">${c.estimated ? c.tokens.toLocaleString() : '—'}</div></div>
     </div>

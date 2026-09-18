@@ -31,6 +31,7 @@ from agent_system.hooks import (
     HookContext,
     HookResult,
 )
+from agent_system.llm.message_roles import INSTRUCTION_ROLES
 from agent_system.llm.models import ChatMessage
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 
@@ -353,10 +354,12 @@ class InternalMessageValidator:
         """Check for problematic message sequences."""
         issues = []
 
-        # Check that first non-system message is 'user'
+        # Check that the first message that is not an INSTRUCTION is 'user'
         # Gemini requires: user -> assistant (with tool_calls) -> tool responses
+        # A developer message is an instruction, not the start of the
+        # conversation — counting it as one made the repair below delete it.
         for i, msg in enumerate(messages):
-            if msg.role != "system":
+            if msg.role not in INSTRUCTION_ROLES:
                 if msg.role != "user":
                     issues.append(ValidationIssue(
                         type="invalid_first_message",
@@ -619,13 +622,16 @@ class InternalMessageValidator:
             if 0 <= idx < len(repaired):
                 repaired.pop(idx)
 
-        # Ensure first non-system message is 'user' (loop until valid or empty)
-        # This handles cascading removals where removing first bad message exposes another
+        # Ensure the first non-instruction message is 'user' (loop until valid
+        # or empty). This handles cascading removals where removing the first
+        # bad message exposes another. Instructions (system AND developer) are
+        # skipped, not removed: this loop POPS whatever it finds, so counting a
+        # developer note as the first message deleted it without a word.
         max_iterations = 100  # Safety limit
         for _ in range(max_iterations):
             first_non_system_idx = None
             for i, msg in enumerate(repaired):
-                if msg.role != "system":
+                if msg.role not in INSTRUCTION_ROLES:
                     first_non_system_idx = i
                     break
             
