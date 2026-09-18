@@ -435,15 +435,10 @@ llm_system:
       max_steps: 500      
       
     code:
-      model_ref: openrouter-claude-sonnet
-      description: "Special LLM for complex coding tasks"
+      model_ref: openrouter-kimi-k3
+      description: "Special LLM for coding tasks"
       max_steps: 500
-      
-    code-mini:
-      model_ref: openrouter-gpt-terra
-      description: "Special LLM for medium coding tasks"
-      max_steps: 500
-      
+            
     realtime:
       model_ref: gpt-realtime-2.1-mini
       description: "Realtime answers for medium tasks"
