@@ -1963,6 +1963,22 @@ def _editor_command() -> list[str]:
             for token in shlex.split(raw, posix=False)]
 
 
+def _editor_needs_a_terminal() -> bool:
+    """Whether /edit has to refuse: an end that is not a terminal.
+
+    The editor inherits THIS process's stdout. With it redirected
+    (``agent-cli chat > log.txt``) a full-screen editor draws its whole screen
+    into the file while reading keys from the tty -- the person sees nothing
+    and sits in an invisible vim. The line editor refuses the same pairing for
+    the same reason (see the ``interactive`` check in run_chat_loop); this is
+    the one place that hands the terminal to somebody else entirely.
+    """
+    try:
+        return not (sys.stdin.isatty() and sys.stdout.isatty())
+    except Exception:
+        return True
+
+
 def _compose_in_editor(seed: str = "") -> Optional[str]:
     """Write the next message in $EDITOR.
 
@@ -3569,6 +3585,11 @@ def run_chat_loop(
                               "the dropped message carried)")
                     print(f"{prompt}{_one_line(asked, 200)}")
                 if command == "edit":
+                    if _editor_needs_a_terminal():
+                        print("/edit needs a terminal at both ends -- the "
+                              "editor would draw its screen into the "
+                              "redirect. Use \"\"\" for a multi-line message.")
+                        continue
                     composed = _compose_in_editor(payload)
                     if composed is None:
                         continue            # _compose_in_editor said why

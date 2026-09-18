@@ -76,11 +76,10 @@ agent-cli run "What's in this image?" --attach screenshot.png
 --attach PATH ...               File(s) to attach -- images, audio or text;
                                 the kind is read from the file, like /attach
                                 in the chat (--images/--audio/--text still
-                                work and are sorted the same way).
-                                Frisst jedes folgende Wort als Pfad, also
-                                gehoert der Request DAVOR -- steht er
-                                dahinter, sagt die CLI genau das, statt
-                                ihn als fehlend zu melden
+                                work and are sorted the same way). Put the
+                                request FIRST (see above); behind the flag it
+                                is read as one more path, and the CLI says so
+                                instead of reporting a missing request
 --max-steps N                   Step budget for this run (overrides the
                                 agent's max_steps; this process only)
 --session ID                    Continue an existing session

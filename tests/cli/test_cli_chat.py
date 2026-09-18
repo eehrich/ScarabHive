@@ -30,6 +30,7 @@ from agent_system.cli_utils.chat import (
     _copy_last_answer,
     _copy_to_clipboard,
     _editor_command,
+    _editor_needs_a_terminal,
     _take_wake_mark,
     _watch_for_wake,
     _history_seed,
@@ -5193,6 +5194,42 @@ class TestComposeInEditor:
 
         assert seen.get("path"), "the editor was never started"
         assert not os.path.exists(seen["path"])
+
+    def test_it_refuses_when_an_end_is_redirected(self, monkeypatch, capsys):
+        """The editor inherits this process's stdout. With it redirected
+        (`agent-cli chat > log.txt`) a full-screen editor draws its whole
+        screen into the file and reads keys from the tty -- the person sees
+        nothing and sits in an invisible vim."""
+        import agent_system.cli_utils.chat as chat
+
+        started = []
+        monkeypatch.setattr(chat, "_editor_needs_a_terminal", lambda: True)
+        monkeypatch.setattr(chat, "_compose_in_editor",
+                            lambda seed: started.append(seed))
+        seen = []
+
+        drive_chat_repl(
+            monkeypatch, ["/edit", "/exit"],
+            turn_probe=lambda loop, ctx, task, renderer, editor=None:
+                seen.append(task) or {})
+
+        assert started == [], "started an editor into a redirect"
+        assert seen == []
+        assert "terminal" in capsys.readouterr().out
+
+    def test_a_redirected_end_is_what_makes_it_refuse(self, monkeypatch):
+        """The gate itself, on the real streams: both ends or nothing."""
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True,
+                            raising=False)
+        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: True,
+                            raising=False)
+        assert not _editor_needs_a_terminal()
+
+        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: False,
+                            raising=False)
+        assert _editor_needs_a_terminal()
 
     def test_visual_wins_over_editor(self, monkeypatch):
         monkeypatch.setenv("EDITOR", "nano")
