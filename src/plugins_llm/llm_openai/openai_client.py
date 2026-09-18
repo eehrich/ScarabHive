@@ -20,6 +20,25 @@ from agent_system.llm.retry_utils import execute_with_cancellation
 from plugins_llm.llm_common import openai_utils
 
 
+async def _cancellable(llm_task: "asyncio.Task", cancellation_token) -> Any:
+    """``execute_with_cancellation``, but a cancel comes back as a cancel.
+
+    The helper reports it as a plain ``Exception``, which the agent server
+    reads as an upstream LLM error: it then retries the cancelled request
+    through every fallback profile and finally reports it as a failed run.
+    Only ``CancelledError`` is reported as a cancel.
+    """
+    try:
+        return await execute_with_cancellation(llm_task, cancellation_token)
+    except Exception as e:
+        # Whatever ended the call, the user had already cancelled it. The
+        # message is the one every other cancel here carries; what really
+        # ended the call stays in the cause.
+        if cancellation_token and cancellation_token.is_cancelled:
+            raise asyncio.CancelledError("Request cancelled by user") from e
+        raise
+
+
 class OpenAIAsyncClient(LLMClient):
     """Async client using OpenAI SDK.
 
@@ -205,12 +224,12 @@ class OpenAIAsyncClient(LLMClient):
 
             for attempt in range(1, max_attempts + 1):
                 if cancellation_token and cancellation_token.is_cancelled:
-                    raise Exception("Request cancelled by user")
+                    raise asyncio.CancelledError("Request cancelled by user")
                 try:
                     client_any = cast(Any, self._client)
                     if cancellation_token:
                         llm_task = asyncio.create_task(client_any.chat.completions.create(**opts))
-                        resp = await execute_with_cancellation(llm_task, cancellation_token)
+                        resp = await _cancellable(llm_task, cancellation_token)
                     else:
                         resp = await client_any.chat.completions.create(**opts)
                     break
@@ -252,7 +271,7 @@ class OpenAIAsyncClient(LLMClient):
                         if attempt < max_attempts:
                             logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                             if cancellation_token and cancellation_token.is_cancelled:
-                                raise Exception("Request cancelled by user during rate limit backoff")
+                                raise asyncio.CancelledError("Request cancelled by user during rate limit backoff")
                             await self._notify_retry("openai", self.model, self._base_url, False, "Rate limit (429)", attempt - 1, max_attempts)
                             await self._cancellable_sleep(wait, cancellation_token)
                             continue
@@ -276,7 +295,7 @@ class OpenAIAsyncClient(LLMClient):
                         wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
                         logger.warning("OpenAI server error (%d). retrying in %.1f sec (attempt %d/%d)", status, wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
-                            raise Exception("Request cancelled by user during server error backoff")
+                            raise asyncio.CancelledError("Request cancelled by user during server error backoff")
                         await self._notify_retry("openai", self.model, self._base_url, False, f"Server error ({status})", attempt - 1, max_attempts)
                         await self._cancellable_sleep(wait, cancellation_token)
                         continue
@@ -483,12 +502,12 @@ class OpenAIAsyncClient(LLMClient):
 
             for attempt in range(1, max_attempts + 1):
                 if cancellation_token and cancellation_token.is_cancelled:
-                    raise Exception("Request cancelled by user")
+                    raise asyncio.CancelledError("Request cancelled by user")
                 try:
                     client_any = cast(Any, self._client)
                     if cancellation_token:
                         llm_task = asyncio.create_task(client_any.chat.completions.create(**opts))
-                        resp = await execute_with_cancellation(llm_task, cancellation_token)
+                        resp = await _cancellable(llm_task, cancellation_token)
                     else:
                         resp = await client_any.chat.completions.create(**opts)
                     break
@@ -531,7 +550,7 @@ class OpenAIAsyncClient(LLMClient):
                             await report_status(f"Rate limit, waiting {wait:.0f}s, retry {attempt}/{max_attempts}: {self.model}")
                             logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                             if cancellation_token and cancellation_token.is_cancelled:
-                                raise Exception("Request cancelled by user during rate limit backoff")
+                                raise asyncio.CancelledError("Request cancelled by user during rate limit backoff")
                             await self._notify_retry("openai", self.model, self._base_url, False, "Rate limit (429)", attempt - 1, max_attempts)
                             await self._cancellable_sleep(wait, cancellation_token)
                             continue
@@ -553,7 +572,7 @@ class OpenAIAsyncClient(LLMClient):
                         await report_status(f"Server error ({status}), retry {attempt}/{max_attempts} in {wait:.0f}s: {self.model}")
                         logger.warning("OpenAI server error (%d). retrying in %.1f sec (attempt %d/%d)", status, wait, attempt, max_attempts)
                         if cancellation_token and cancellation_token.is_cancelled:
-                            raise Exception("Request cancelled by user during server error backoff")
+                            raise asyncio.CancelledError("Request cancelled by user during server error backoff")
                         await self._notify_retry("openai", self.model, self._base_url, False, f"Server error ({status})", attempt - 1, max_attempts)
                         await self._cancellable_sleep(wait, cancellation_token)
                         continue
@@ -654,12 +673,6 @@ class OpenAIAsyncClient(LLMClient):
         except asyncio.CancelledError:
             raise  # User cancellation must propagate, not become an error dict
         except Exception as e:
-            # Cancellation is also raised above as a plain Exception sentinel
-            # ("Request cancelled by user"). Propagate it cleanly instead of
-            # reporting it as an upstream LLM error (which makes the server
-            # retry the cancelled request through every fallback profile).
-            if "cancelled by user" in str(e).lower():
-                raise
             status = None
             resp_obj = getattr(e, "response", None)
             if resp_obj is not None:

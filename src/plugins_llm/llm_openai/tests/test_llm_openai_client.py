@@ -713,6 +713,91 @@ async def test_a_failed_stream_reports_an_error_the_server_can_read(openai_clien
     assert [info.get("error") for info in seen] == ["boom"], "the debugger kept a request without its response"
 
 
+@pytest.mark.parametrize("call", ["chat", "chat_tools"], ids=["chat", "chat_tools"])
+async def test_a_cancelled_request_is_a_cancel_on_the_non_streaming_paths(openai_client, call):
+    """server.py reports only a CancelledError as a cancel: an error dict or a
+    plain Exception becomes "Agent execution failed" after every fallback."""
+    import asyncio
+
+    client, mock_instance = openai_client
+    token = SimpleNamespace(is_cancelled=True)
+    mock_instance.chat.completions.create = AsyncMock(side_effect=AssertionError("must not be sent"))
+
+    with pytest.raises(asyncio.CancelledError):
+        if call == "chat":
+            await client.chat([ChatMessage(role="user", content="hi")], cancellation_token=token)
+        else:
+            await client.chat_tools([ChatMessage(role="user", content="hi")], [], cancellation_token=token)
+
+
+@pytest.mark.parametrize("call", ["chat", "chat_tools"], ids=["chat", "chat_tools"])
+async def test_a_cancel_during_the_call_is_a_cancel_too(openai_client, call):
+    """execute_with_cancellation reports it as a plain Exception; the client does not."""
+    import asyncio
+
+    client, mock_instance = openai_client
+    token = SimpleNamespace(is_cancelled=False)
+
+    async def slow_answer(**kwargs):
+        token.is_cancelled = True
+        await asyncio.sleep(30)  # longer than the timeout below: only the cancel can end it
+
+    mock_instance.chat.completions.create = AsyncMock(side_effect=slow_answer)
+    answer = (client.chat([ChatMessage(role="user", content="hi")], cancellation_token=token) if call == "chat"
+              else client.chat_tools([ChatMessage(role="user", content="hi")], [], cancellation_token=token))
+
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        await asyncio.wait_for(answer, timeout=5)
+    assert str(cancelled.value) == "Request cancelled by user", "every cancel here reads the same"
+    assert cancelled.value.__cause__ is not None, "the reason the call ended is lost"
+
+
+@pytest.mark.parametrize("call", ["chat", "chat_tools"], ids=["chat", "chat_tools"])
+async def test_an_error_while_a_token_is_watching_stays_an_error(openai_client, call):
+    """Only a cancel is a cancel: an upstream error must keep its fallback chain."""
+    import json
+
+    client, mock_instance = openai_client
+    token = SimpleNamespace(is_cancelled=False)
+    mock_instance.chat.completions.create = AsyncMock(side_effect=ValueError("boom"))
+
+    if call == "chat":
+        answer = await client.chat([ChatMessage(role="user", content="hi")], cancellation_token=token)
+        assert "boom" in json.loads(answer)["_llm_error"]["error"]
+    else:
+        result = await client.chat_tools([ChatMessage(role="user", content="hi")], [], cancellation_token=token)
+        assert result["assistant"]["error"]["message"] == "boom"
+
+
+@pytest.mark.parametrize("call", ["chat", "chat_tools"], ids=["chat", "chat_tools"])
+@pytest.mark.parametrize("status", [429, 500], ids=["rate limit", "server error"])
+async def test_a_cancel_during_a_backoff_is_a_cancel(openai_client, call, status, monkeypatch):
+    """The waits between the retries are where a cancelled request lingers longest."""
+    import asyncio
+    import logging
+
+    client, mock_instance = openai_client
+    token = SimpleNamespace(is_cancelled=False)
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    failure = httpx.HTTPStatusError("upstream", request=request,
+                                    response=httpx.Response(status, request=request))
+    mock_instance.chat.completions.create = AsyncMock(side_effect=failure)
+
+    # The retry is announced first, so the cancel lands between the failed
+    # attempt and the wait -- where only the guard in the backoff branch sees it.
+    logger = logging.getLogger("plugins_llm.llm_openai.openai_client")
+    monkeypatch.setattr(logger, "warning", lambda *a, **kw: setattr(token, "is_cancelled", True))
+
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        if call == "chat":
+            await client.chat([ChatMessage(role="user", content="hi")], cancellation_token=token)
+        else:
+            await client.chat_tools([ChatMessage(role="user", content="hi")], [], cancellation_token=token)
+
+    assert "cancelled by user" in str(cancelled.value).lower()
+    assert mock_instance.chat.completions.create.await_count == 1, "the cancelled request was retried"
+
+
 async def test_a_stream_that_keeps_failing_reaches_the_post_response_hook(openai_client):
     client, mock_instance = openai_client
     mock_instance.chat.completions.create = AsyncMock(side_effect=httpx.ConnectError("down"))

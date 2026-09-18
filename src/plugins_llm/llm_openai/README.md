@@ -21,6 +21,16 @@ my-model:
 `default_base_url` is declared in `plugin.toml` so the config resolver can
 tell a base-URL-less entry apart from one that talks to a gateway.
 
+## A cancel is a cancel
+
+Every path here — `chat`, `chat_tools`, streaming and Realtime — ends a
+cancelled request with `asyncio.CancelledError`, before the request goes out
+and while it is in flight. That is the only form the agent server reports as
+a cancel: as a plain exception it became "Agent execution failed", and as an
+error dict it sent the cancelled request through every fallback profile.
+`execute_with_cancellation` reports the cancel as a plain exception, so the
+client converts it (`_cancellable`).
+
 ## Where the batch backend actually lives
 
 `provides_batch = ["openai"]` names this plugin, but the `/v1/batches`
@@ -62,9 +72,8 @@ A model whose capabilities say `default_api_type: realtime`
   `session.created`; after that every event waits at most the model's
   `request_timeout` (60 s when unset). A closed or silent socket ends the
   call with an error, which also reaches the post-response hook.
-- A cancel ends the call at once, while waiting too, as `CancelledError` —
-  the form the agent server reports as a cancel. A request cancelled before
-  it is sent is not sent.
+- A cancel ends the call at once, while waiting for an event too; a request
+  cancelled before it is sent is not sent (see "A cancel is a cancel").
 - Images go as `input_image` — from user messages and, as on the chat path,
   a tool result's attachments as a user message right after its output
   (read and encoded off the event loop).
