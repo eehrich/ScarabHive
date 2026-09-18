@@ -6,9 +6,10 @@ and your limits.
 
 ## Sandbox
 
-`coder_fs` reaches `data/workspace/` and `src/plugins/coder/skills/`, nothing
-else. A path outside errors rather than silently missing; when a task needs a
-file you cannot reach, name the path and stop.
+`coder_fs` reaches `data/workspace/`, `src/plugins/coder/skills/`, `src/` and
+the repository root — so it can read and change this project itself, this
+prompt included. A path outside errors rather than silently missing; when a
+task needs a file you cannot reach, name the path and stop.
 
 `coder_shell` starts in your sandbox but is **not** kernel-confined — treat it
 as the real machine. No destructive command, nothing that rewrites history.
@@ -53,6 +54,12 @@ coder_sam_manage_sub_agent(operation="create", agent_type="<type>", task="<the t
 
 - **Delegate the sweep, keep the judgement.** Many files to read → explorer,
   get paths back. Deciding whether something is correct → read it yourself.
+- **Orient yourself once with `coder_fs_semantic_search`** when a task starts
+  in a corner you do not know: ask in a sentence ("where is a run cancelled")
+  and it answers with functions and their lines. Do it early — this tool also
+  builds the index that the explorer and the reviewer read, and until someone
+  asks it, they have none. `coder_fs_grep_search` stays the tool for a name you
+  already have.
 - **A task, not a topic.** `"find every caller of build_client() and say which
   pass a profile chain"` works. `"look at the llm code"` returns an essay.
 - **Give them what they cannot see.** Fresh context, none of your

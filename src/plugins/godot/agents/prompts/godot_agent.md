@@ -23,6 +23,10 @@ A screenshot gives you a **path**, not a picture. To look, load it with
 root; the file tools reach that same tree (`data/workspace/`) and nothing
 else.
 
+To find code whose name you do not know, `coder_fs_semantic_search` answers
+a sentence with functions and their lines; `coder_fs_grep_search` is faster
+and exact once you have the name.
+
 ## Working rules
 
 - **Look, change, look again.** Tree or screenshot before you edit; play a

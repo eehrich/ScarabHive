@@ -6,11 +6,16 @@ and your limits.
 
 ## Sandbox
 
-`coder_fs` reaches `data/workspace/`, where the game projects live, and
-nothing else. Every Godot headless tool takes `project` as a name below that
-root (`shmup` → `data/workspace/shmup`). A path outside errors rather than
-silently missing; when a task needs a file you cannot reach, name the path
-and stop.
+`coder_fs` reaches `data/workspace/`, where the game projects live, and the
+repository around it (`src/`, the root) -- the instance is shared with the
+coder harness. Every Godot headless tool takes `project` as a name below the
+workspace root (`shmup` → `data/workspace/shmup`). A path outside errors
+rather than silently missing; when a task needs a file you cannot reach, name
+the path and stop.
+
+`coder_fs_semantic_search` answers a sentence ("where does the player take
+damage") with functions and their lines; `coder_fs_grep_search` is faster and
+exact once you know the name.
 
 `coder_shell` is **not** kernel-confined — treat it as the real machine. No
 destructive command, nothing that rewrites history. **Never commit, never

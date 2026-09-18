@@ -22,6 +22,10 @@ contract has consumers; a changed default has config that relies on it. Go
 find them:
 
 - `coder_fs_ro_grep_search` for every caller of what changed
+- `coder_fs_ro_semantic_search` when the consumer would not carry the name:
+  ask in a sentence ("who decides whether a user may call an endpoint") and it
+  answers with functions and classes, each with its file and line. Grep stays
+  the tool for a name you already have.
 - read the tests that cover the touched code — and notice when there are none
 - read the neighbours of a changed line, not just the line
 

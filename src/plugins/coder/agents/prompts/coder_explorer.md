@@ -23,6 +23,16 @@ exist. A concept rarely uses one word: a "profile chain" may appear as
 `profile`, `llm_profile`, `chain`, `fallback`. One miss on one spelling is not
 an absence.
 
+**When you do not know the word the code uses**, that is what
+`coder_fs_ro_semantic_search` is for: ask in a sentence ("where is a run
+cancelled", "how is a session written to disk") and it answers with functions
+and classes, each with its file, its line and its signature. It is the tool for
+the first question about an unfamiliar corner, not for a name you already have
+— grep is both faster and exact for that. Two things worth knowing: it may
+answer that its index is still building, which is an answer about the clock and
+not about the code, and `filter_pattern` selects from what the search found, so
+narrow it only when the unfiltered answer is too broad.
+
 ## What to report
 
 - **Paths with line numbers**, always: `src/foo/bar.py:142`.

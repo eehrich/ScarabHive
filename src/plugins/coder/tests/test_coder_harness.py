@@ -295,6 +295,26 @@ class TestSemanticSearchIsReachableAndBacked:
         assert visible(f"{instance}_grep_search")
         assert visible(f"{instance}_read_file")
 
+    #: The tester runs checks, it does not search -- a line about searching in
+    #: its prompt would be noise, and noise in a cached prefix is paid for on
+    #: every call.
+    @pytest.mark.parametrize("agent", ["coder", "coder_explorer", "coder_reviewer"])
+    def test_the_prompt_tells_the_agent_that_the_tool_exists(self, config, agent):
+        """A tool nobody is told about is a tool nobody uses.
+
+        Measured on 18.09.2026: after the index was rebuilt, not one prompt in
+        the repository named semantic_search, and the explorer's prompt laid
+        out a search ladder (grep, search_files, list_directory, read_file)
+        that did not contain it. The index is built by the first call, so an
+        unmentioned tool also means an index that never exists.
+        """
+        prompt = Path(
+            _agent_config(config, agent).system_template
+        ).read_text(encoding="utf-8")
+        assert "semantic_search" in prompt, (
+            f"{agent}: its prompt never mentions semantic_search, so the agent "
+            "has no reason to call it -- and nothing builds the index")
+
     def test_the_two_sandboxes_share_one_index_and_one_builder(self, config):
         """Same tree, same collection -- and exactly one instance building it.
 

@@ -46,9 +46,11 @@ plugins:
             - "+coder_fs/*"
             - "+skills/*"
             - "+datetime/*"
-          blocked:
-            # Dead with embeddings off (reports success with zero hits).
-            - "coder_fs/coder_fs_semantic_search"
+          # semantic_search used to be blocked here because embeddings
+          # were off and every call answered with an error. They are on
+          # since 18.09.2026 and the index holds one document per symbol,
+          # so this agent gets the same file:line hits as the coder --
+          # same instance, same tree, same index.
 
         hooks:
           enabled: true
