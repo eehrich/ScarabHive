@@ -1204,8 +1204,8 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
 
             # Format response - load actual message count from each sub-session
             session_manager = session_service.session_manager
-            user_id = manager._extract_user_id(parent_session_id)
-            
+            user_id = manager._extract_user_id(parent_session_id, params)
+
             instances = []
             for metadata in sub_sessions:
                 instance_id = metadata["instance_id"]
@@ -1224,7 +1224,8 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 # CRITICAL: If a sub-agent looks like it's running (status OR activity),
                 # but we have no active async job (e.g., after server restart), mark interrupted.
                 if sub_status in ("running", "pending") or (sub_status == "active" and looks_running):
-                    if not self.is_agent_running(instance_id):
+                    if (not self.is_agent_running(instance_id)
+                            and not await self._runs_in_another_process(instance_id, user_id)):
                         logger.warning(
                             f"Sub-agent {instance_id} has status='{sub_status}' in DB but no active task. "
                             f"Marking as 'interrupted' (likely server restart or crash)."
@@ -1384,6 +1385,19 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                         status="archived",
                         archived_at=datetime.now(UTC).isoformat()
                     )
+
+                    # An archived instance has no reader left for its background job: a poll or
+                    # wait on it answers from the transcript now. A running one keeps its job --
+                    # that is the task handle a cancel needs -- and is marked instead, so its
+                    # ending drops it rather than leaving the result behind for good.
+                    async with self._async_jobs_lock:
+                        job = self._async_jobs.get(sub_id)
+                        if job is None:
+                            pass
+                        elif job.get("status") in ("completed", "failed", "cancelled"):
+                            del self._async_jobs[sub_id]
+                        else:
+                            job["_archived"] = True
 
                     results.append({
                         "instance_id": sub_id,
@@ -1677,6 +1691,12 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
         # still says active and reads as completed. It closes itself when the write lands.
         async with self._async_jobs_lock:
             job = self._async_jobs.get(instance_id)
+            if job is not None:
+                if job.get("_archived"):
+                    # archived while it ran: nobody polls an archived instance, and the entry
+                    # would keep its result for the life of the process
+                    del self._async_jobs[instance_id]
+                    job = None
             if job is not None:
                 job.update(status=job_status, completed_at=datetime.now(UTC).isoformat(),
                            _awaiting_poll=True, **fields)
@@ -2079,6 +2099,13 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
                 job_status = job["status"]
 
                 if job_status in ["completed", "failed", "cancelled"]:
+                    # The ending has been read, so the job may go -- the rule poll has always
+                    # followed. Without it a job waited on but never polled kept its whole result
+                    # text for the life of the process, and nothing else takes it out: only a
+                    # continue of the same instance does, and the usual shape is
+                    # create + wait_all + delete.
+                    async with self._async_jobs_lock:
+                        self._async_jobs.pop(instance_id, None)
                     job.pop("task_handle", None)
                     job.pop("_awaiting_poll", None)  # bookkeeping of ours, as in poll -- not an answer
 
@@ -2138,9 +2165,14 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
             if status_ctx:
                 await status_ctx.progress(f"Waiting for {len(instance_ids)} instances...")
 
-            # Wait for all instances. Each wait gets the call's own params, minus the status scope
-            # this handler owns: a rebuilt dict used to drop _user_id (so a lookup below fell back
-            # to scanning the session directories), _request_id and the cancellation token.
+            # Waiting twice for the same instance is waiting once, and the two waits would race
+            # for its job: the loser finds it taken and answers from the stored state, without the
+            # result. Deduplicated in order, as delete does it.
+            instance_ids = list(dict.fromkeys(instance_ids))
+
+            # Each wait gets the call's own params, minus the status scope this handler owns: a
+            # rebuilt dict used to drop _user_id (so a lookup below fell back to scanning the
+            # session directories), _request_id and the cancellation token.
             wait_tasks = [
                 self._handle_wait({**_without_status(params), "instance_id": iid})
                 for iid in instance_ids
@@ -2313,6 +2345,31 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
         if not allowed:
             logger.debug(f"Agent '{agent_name}' not allowed: allowed={self.allowed_agents} blocked={self.blocked_agents}")
         return allowed
+
+    async def _runs_in_another_process(self, instance_id: str, user_id: str) -> bool:
+        """Whether some other process has this sub-agent's session in hand, i.e. is running it.
+
+        `is_agent_running` knows this process only. A coordinator is not tied to one: a run woken
+        for a finished job continues the session in a process of its own, the API runs beside the
+        writer's worker. Asking only ourselves, `list` calls a live sub-agent interrupted and
+        writes that over its metadata -- the very thing the panel's read-only listing avoids
+        (web_endpoints.py). A run holds the lock file next to its session for as long as it lasts
+        (core/session_presence.py), and that is the same answer in every process.
+
+        False while session presence is off: then there is no such answer, and `list` falls back
+        to what it always did.
+        """
+        presence = presence_for(self.system_config)
+        if presence is None:
+            return False
+        try:
+            # get() opens the lock file and reads the session json beside it -- the sessions this
+            # process reads it takes off the loop too (SessionManager._read_session_file_async).
+            state = await asyncio.to_thread(presence.get, instance_id, user_id)
+        except Exception as error:  # a listing must not fail over a lock file
+            logger.debug(f"Session presence: could not read {instance_id}: {error}")
+            return False
+        return bool(state) and state["status"] in ("running", "waking")
 
     def _get_current_phase(self, params: dict[str, Any]) -> Optional[str]:
         """Get current workflow phase from session template vars or agent config default.

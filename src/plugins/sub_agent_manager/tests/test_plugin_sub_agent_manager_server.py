@@ -1842,7 +1842,24 @@ class TestWaitingOnAJobThatEnds:
         # dropped from memory at once, the job left the wait to the stored state -- which could still say
         # "active", and the wait answered "completed"
         assert (await waiting)["status"] == "cancelled"
-        # kept for its poll, but not its task: ended by CancelledError, that holds every frame of the run
+        assert "sub_slow" not in server._async_jobs, \
+            "the wait that read the ending takes the job with it, as a poll does"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_job_keeps_its_ending_but_not_its_task(self, server):
+        """Ended by CancelledError, the task holds every frame of the run, so the job lets go of it
+        -- and keeps the ending itself until a reader has had it."""
+        import asyncio
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.call(server, "create", agent_type="slow_agent", task="work", blocking=False)
+        await agent.started(1)
+        handle = server._async_jobs["sub_slow"]["task_handle"]
+
+        assert (await self.call(server, "cancel"))["status"] == "cancelled"
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(handle, 5)
+
         assert server._async_jobs["sub_slow"]["task_handle"] is None
         assert (await self.call(server, "poll"))["status"] == "cancelled"
         assert "sub_slow" not in server._async_jobs, "a poll takes a finished job out of memory"
@@ -2351,3 +2368,129 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
 
         assert waited["status"] == "completed" and waited["result"] == "done"
         assert "_awaiting_poll" not in waited and "task_handle" not in waited, waited
+
+
+class TestListDoesNotDeclareALiveSubAgentDead:
+    """`list` heals state a crash left behind: a sub-agent that looks like it runs but has no task
+    here is marked interrupted, and that is written over its metadata. This process is not the only
+    one that runs sub-agents, though -- a woken coordinator runs in its own, the API runs beside the
+    writer's worker -- so the question is whether ANY process has it in hand."""
+
+    RECORD = {"instance_id": "sub_live", "agent_type": "slow_agent", "status": "active",
+              "created_at": "2026-09-18T06:00:00Z", "last_used": "2026-09-18T06:01:00Z",
+              "task_summary": "work", "current_activity": "🔧 Running tool: read",
+              "activity_updated_at": "2026-09-18T06:01:00Z", "message_count": 2}
+
+    @classmethod
+    def wire(cls, server, monkeypatch, state):
+        """One sub-agent that looks like it runs, and what the core says about its session."""
+        TestCancelReachesABlockingRun.wire(server, SlowAgent())
+        manager = server._get_manager()
+        manager.list_sub_sessions = AsyncMock(return_value=[dict(cls.RECORD)])
+        presence = None if state is None else Mock(get=Mock(return_value=state))
+        monkeypatch.setattr(sam_server, "presence_for", lambda config: presence)
+        return manager, presence
+
+    @staticmethod
+    async def listed(server):
+        params = {"operation": "list", "_session_id": "parent1", "_agent": Mock(), "_user_id": "u1"}
+        return params, await server.manage_sub_agent(params)
+
+    @pytest.mark.asyncio
+    async def test_one_another_process_holds_is_left_alone(self, server, monkeypatch):
+        manager, presence = self.wire(server, monkeypatch, {"status": "running", "agent": "slow_agent"})
+
+        params, result = await self.listed(server)
+
+        assert [i["status"] for i in result["instances"]] == ["active"]
+        assert manager.update_sub_session_metadata.await_count == 0, \
+            "a live sub-agent had its metadata overwritten by a listing"
+        # the lock asked about is the SUB-session's, under the user of the session that owns it
+        assert presence.get.call_args.args == ("sub_live", "u1"), presence.get.call_args
+        # and that user is the one the caller injected, not one found by scanning directories
+        assert manager._extract_user_id.call_args.args == ("parent1", params), \
+            manager._extract_user_id.call_args
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", [{"status": "idle", "agent": ""}, None],
+                             ids=["nobody holds it", "presence is off"])
+    async def test_one_nobody_runs_is_marked_interrupted(self, server, monkeypatch, state):
+        """Off, there is no cross-process answer -- then it falls back to what it always did."""
+        manager, _ = self.wire(server, monkeypatch, state)
+
+        _, result = await self.listed(server)
+
+        assert [i["status"] for i in result["instances"]] == ["interrupted"]
+        assert manager.update_sub_session_metadata.await_args.kwargs["status"] == "interrupted"
+
+
+class TestAFinishedJobDoesNotStayInMemory:
+    """Only a poll ever took one out, and a continue of the same instance. The usual shape is
+    create + wait_all + delete, and after it every result text stayed for the life of the process."""
+
+    @staticmethod
+    def job(server, instance_id, status, **extra):
+        server._async_jobs[instance_id] = {
+            "instance_id": instance_id, "status": status, "result": "x" * 1000,
+            "parent_session_id": "parent1", "task_handle": None, **extra}
+
+    @staticmethod
+    async def archive(server, instance_id):
+        return await server.manage_sub_agent(
+            {"operation": "delete", "instance_id": instance_id, "_session_id": "parent1", "_agent": Mock()})
+
+    @pytest.mark.asyncio
+    async def test_archiving_an_instance_takes_its_finished_job(self, server):
+        TestCancelReachesABlockingRun.wire(server, SlowAgent())
+        self.job(server, "sub_done", "completed")
+
+        await self.archive(server, "sub_done")
+
+        assert "sub_done" not in server._async_jobs
+
+    @pytest.mark.asyncio
+    async def test_archiving_leaves_a_running_job_alone(self, server):
+        """Its task handle is what a cancel needs; the run does not stop because the entry was tidied."""
+        import asyncio
+        TestCancelReachesABlockingRun.wire(server, SlowAgent())
+        task = asyncio.ensure_future(asyncio.sleep(30))
+        self.job(server, "sub_busy", "running", task_handle=task)
+        try:
+            await self.archive(server, "sub_busy")
+
+            assert "sub_busy" in server._async_jobs
+        finally:
+            task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_archiving_a_running_instance_drops_its_job_when_the_run_ends(self, server):
+        """The entry stays while it runs -- a cancel needs its handle -- but nobody polls an
+        archived instance, so its ending takes it out instead of leaving the result for good."""
+        TestCancelReachesABlockingRun.wire(server, SlowAgent())
+        self.job(server, "sub_busy", "running")
+
+        await self.archive(server, "sub_busy")
+        assert server._async_jobs["sub_busy"]["_archived"] is True, "kept, and marked"
+
+        await server._finish_job("sub_busy", {"_session_id": "parent1"}, "completed",
+                                 stored={"status": "active"}, manager=server._get_manager(),
+                                 result="an answer nobody will ever ask for")
+
+        assert "sub_busy" not in server._async_jobs
+
+    @pytest.mark.asyncio
+    async def test_wait_all_waits_once_per_instance(self, server):
+        """Two waits on one job race for it, and the loser finds it taken: it answers from the
+        stored state, without the result."""
+        seen = []
+
+        async def mock_wait(params):
+            seen.append(params["instance_id"])
+            return {"instance_id": params["instance_id"], "status": "completed"}
+
+        server._handle_wait = mock_wait
+        result = await server._handle_wait_all(
+            {"instance_ids": ["sub_a", "sub_a", "sub_b"], "_session_id": "parent1"})
+
+        assert seen == ["sub_a", "sub_b"]
+        assert result["completed"] == 2

@@ -111,6 +111,16 @@ Two more that are not limits but guards:
   class-level (shared by every manager instance) behind a class lock, and
   seeded from the time of day rather than zero, so a restart does not re-issue
   the ids of the session still on disk.
+* **A run that ended without saying so is healed by `list`.** A sub-agent that
+  still looks like it runs but that nobody has in hand is marked `interrupted`
+  and its stale activity cleared — otherwise a crash leaves it *running* for
+  good. "Nobody" is asked beyond this process: this manager's own jobs, and the
+  lock file a run holds next to its session (`core/session_presence.py`), which
+  answers the same in every process. Asking only ourselves would declare the
+  writer worker's live sub-agents dead, and a woken coordinator would do it to
+  the very job it was woken for. With `session_presence` off there is no such
+  answer and it falls back to asking itself. This is the only sub-agent state
+  `list` writes; the panel writes none at all.
 
 ## Which agents may be spawned
 
@@ -180,9 +190,7 @@ session it says so and asks nothing.
 - **Figures:** sub-agents, running, idle, interrupted, archived or ended.
   *Running* is an active sub-agent reporting an activity that is not over
   (the rule `list` uses). The panel shows the **stored** state and never
-  writes: unlike the tool's `list`, it does not mark a sub-agent without a run
-  in its own process interrupted — sub-agents run in other processes too (the
-  writer worker), and a refreshing panel would break their running books.
+  writes, where the tool's `list` heals what a crash left behind (above).
 - **Phase:** with `phase_filtering` on, the session's phase and the agents it
   lets the tool spawn, by the tool's own rule.
 - **Cards:** state, id, agent type, messages, last use, task and activity.

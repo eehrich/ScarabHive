@@ -51,9 +51,9 @@ class SubAgentManagerWebFactory:
     async def get_sub_agents(self, request: Request, session_id: str = SESSION) -> dict[str, Any]:
         """Every sub-agent of the session this instance spawned, archived ones included, and the workflow phase.
 
-        Read-only, unlike the tool's ``list``: that one marks a sub-agent without a run in its process interrupted,
-        which is right only in the process that runs them. Sub-agents run in other processes too (the writer worker),
-        and a panel refreshing there would mark their running books interrupted -- so this shows the stored state."""
+        Read-only, unlike the tool's ``list``: that one heals what a crash left behind, marking a sub-agent nobody
+        has in hand interrupted. A panel is a viewer -- it refreshes every ten seconds, of its own accord, in
+        whichever process happens to serve it -- so it writes nothing and shows the stored state."""
         session_service = get_session_service()
         manager = self.server._get_manager(session_service)
         try:
