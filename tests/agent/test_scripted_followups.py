@@ -69,5 +69,9 @@ async def test_each_followup_is_sent_once_and_the_last_answer_is_the_result():
     last_users = llm.seen[-1]
     assert [content for _, content, _ in last_users] == ["Score chapter 3.", *FOLLOWUPS]
     assert [marker for _, _, marker in last_users] == [None, FOLLOWUP_MARKER, FOLLOWUP_MARKER]
+    # A scripted follow-up stays a user turn: the plugin counts what it sent by
+    # the marker, and v4 reads the follow-up back out of the stored transcript
+    # by its configured text. Only the marker tells it from a person.
+    assert [role for role, _, _ in last_users] == ["user", "user", "user"]
     finals = [e for e in events if e.get("type") == "final"]
     assert finals and "answer 3" in str(finals[-1].get("summary"))

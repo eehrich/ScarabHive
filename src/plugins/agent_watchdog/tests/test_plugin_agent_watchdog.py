@@ -91,6 +91,23 @@ class TestExcerpt:
             "Und bitte nur .py-Dateien.",
         ]
 
+    def test_the_judge_sees_what_the_run_told_the_agent(self):
+        """The step budget and the max-steps demand are `developer` notes since
+        the loop got that role. Left out, the judge scores an agent that stopped
+        calling tools and wrote a summary without the instruction that told it
+        to -- and calls it lazy."""
+        messages = _messages() + [
+            {"role": "developer", "content": "You have reached the maximum number of steps (5). "
+                                             "Do NOT use any tools in this response.",
+             "injected_by": "agent.max_steps"},
+        ]
+        excerpt = build_excerpt(messages, None, task_chars=4000, spec_chars=10,
+                                reasoning_chars=100, max_tool_calls=5)
+        assert excerpt["user_messages"] == [
+            "Find every caller of load_config.",
+            "You have reached the maximum number of steps (5). Do NOT use any tools in this response.",
+        ]
+
     def test_the_newest_user_message_wins_the_budget(self):
         messages = [{"role": "user", "content": "old " * 50},
                     {"role": "user", "content": "the current question"}]

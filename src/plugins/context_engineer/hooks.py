@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
+from agent_system.llm.message_roles import is_injected_note
 from agent_system.llm.models import ChatMessage
 from agent_system.tools.status import StatusScope, status_bus
 
@@ -907,8 +908,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # turn, and evicting media on it rewrote old messages at the end of
             # every long run.
             last = len(messages_as_dicts) - 1
-            while (last >= 0 and messages_as_dicts[last].get("role") == "user"
-                   and messages_as_dicts[last].get("injected_by")):
+            while last >= 0 and is_injected_note(messages_as_dicts[last]):
                 last -= 1
             if last >= 0 and messages_as_dicts[last].get("role") == "user":
                 trigger_event = "user_message"

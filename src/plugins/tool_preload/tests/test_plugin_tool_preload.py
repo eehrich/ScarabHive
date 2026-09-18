@@ -271,10 +271,15 @@ class TestFiring:
         assert agent.calls == [("json_store_read", {"doc": "plan.md"})]
 
     @pytest.mark.asyncio
-    async def test_a_loop_note_behind_the_turn_neither_hides_nor_fires_it(self, plugin):
-        """The step budget note follows drained user input at the start of a step."""
+    @pytest.mark.parametrize("note_role", ["developer", "user"])
+    async def test_a_loop_note_behind_the_turn_neither_hides_nor_fires_it(self, plugin, note_role):
+        """The step budget note follows drained user input at the start of a step.
+
+        It rides on `developer` since the loop got that role; a hook that
+        scripts a turn (debate_forum, agent_continuation) still puts one on
+        `user`. Both carry a marker, and the marker is what this must read."""
         rules = [{"match": "(?P<word>\\w+)", "tool": "json_store_read", "params": {"doc": "{word}"}}]
-        note = ChatMessage(role="user", content="Step 29 of 30: wrap up",
+        note = ChatMessage(role=note_role, content="Step 29 of 30: wrap up",
                            injected_by="agent.step_budget")
         agent = FakeAgent()
 

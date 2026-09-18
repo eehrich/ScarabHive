@@ -28,7 +28,7 @@ from ...utils.reasoning_artifacts import (
 )
 import httpx
 
-from ...llm.message_roles import leading_instructions, role_of
+from ...llm.message_roles import DEVELOPER, leading_instructions, role_of
 from ...llm.model_health import model_health
 from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
 from ...llm.text_sanitizer import sanitize_for_llm
@@ -938,7 +938,7 @@ class Agent(ToolServer):
         """
         if step >= max_steps:
             return ChatMessage(
-                role="user",
+                role=DEVELOPER,
                 content=(
                     f"You have reached the maximum number of steps ({max_steps}). "
                     "Please provide your final answer NOW based on the information you have gathered. "
@@ -959,7 +959,7 @@ class Agent(ToolServer):
                     f"Start wrapping up and do not begin new lines of work.")
         # Marked: hooks that look for the last message a person wrote (OKF seeds,
         # scripted follow-ups, tool preloads, compaction) must not take this one.
-        return ChatMessage(role="user", content=note, timestamp=datetime.now(timezone.utc),
+        return ChatMessage(role=DEVELOPER, content=note, timestamp=datetime.now(timezone.utc),
                            injected_by="agent.step_budget")
 
     # ------------------------------------------------------------------
@@ -3103,10 +3103,12 @@ class Agent(ToolServer):
                 # Not on the final call: no step follows to read the nudge, and
                 # the session would keep it as the conversation's last word.
                 if consecutive_empty_responses >= max_consecutive_empty and not final_call:
-                    logger.warning(f"Empty response #{consecutive_empty_responses}: Injecting 'Continue' user message to prompt LLM")
-                    # Instead of breaking, inject a "Continue" user message to nudge the LLM
-                    # This mimics the user typing "weiter" or "continue" manually
-                    continue_message = ChatMessage(role="user", content="Continue with your task.",
+                    logger.warning(f"Empty response #{consecutive_empty_responses}: Injecting 'Continue' note to prompt LLM")
+                    # Instead of breaking, nudge the LLM. The RUN asks for this,
+                    # not a person -- the note used to arrive as a user message
+                    # ("mimics the user typing weiter"), and stayed in the
+                    # session afterwards as if someone had.
+                    continue_message = ChatMessage(role=DEVELOPER, content="Continue with your task.",
                                                    timestamp=datetime.now(timezone.utc),
                                                    injected_by="agent.empty_response")
                     messages.append(continue_message)
@@ -3150,7 +3152,7 @@ class Agent(ToolServer):
                     
                     # Prepare intervention message to nudge the LLM
                     pending_intervention_msg = ChatMessage(
-                        role="user",
+                        role=DEVELOPER,
                         content=loop_result.intervention,
                         timestamp=datetime.now(timezone.utc),
                         injected_by="agent.loop_intervention",
@@ -3404,6 +3406,15 @@ class Agent(ToolServer):
                 logger.info(
                     f"[{self.name}] Continuation #{cont_count} at step {step}: {cont_reason}"
                 )
+                # Stays a `user` turn, unlike the four notes the loop writes
+                # itself. What a hook puts here is a SCRIPTED TURN -- the
+                # `followups:` list in an agent's YAML is written to be said to
+                # the agent, the way a person would say it -- and two readers
+                # take it as one: v4's prose recovery reads the follow-up back
+                # out of the stored transcript and matches it by its configured
+                # TEXT (the info tool hands out no injected_by), and the
+                # watchdog's judge needs it in the picture. As a volatile note
+                # it would be neither a user turn nor stored at all.
                 continuation_msg = ChatMessage(
                     role="user",
                     content=hook_metadata.get(

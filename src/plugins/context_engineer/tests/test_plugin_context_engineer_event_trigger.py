@@ -40,6 +40,10 @@ class TestEventBasedMediaCompaction:
         impl.layer1_threshold = 60000  # High threshold to ensure we're below it
         impl.compact_media_after_user_message = True  # Enable event-based compaction
         impl.min_tokens_between_compactions = 0  # No hysteresis in these tests
+        # Pinned at its default: above 0 this compacts media whatever the
+        # trigger says, and every assertion about the trigger goes green on its
+        # own.
+        impl.always_compact_media_keep_last = 0
         
         return impl
     
@@ -127,9 +131,45 @@ class TestEventBasedMediaCompaction:
             f"Expected compaction hint in content, got: {content_text}"
     
     @pytest.mark.asyncio
+    async def test_a_note_does_not_hide_the_user_message_it_follows(self, hooks_impl, tmp_path):
+        """The other direction: the note is appended at the START of a step,
+        right behind the input just drained. Stopping the search at the note
+        loses the turn behind it, and nothing triggers for the rest of the run.
+
+        `developer` only, and that is the point: a note on `user` would set the
+        trigger by itself, so that case would pass with the search removed."""
+        audio_file = tmp_path / "test_audio.mp3"
+        audio_file.write_bytes(b"x" * 1024)
+        messages = [
+            {"role": "user", "content": "an old message with media",
+             "multimodal_content": [{"type": "audio", "path": str(audio_file), "mime_type": "audio/mpeg"}]},
+            {"role": "assistant", "content": "I processed your audio"},
+            {"role": "user", "content": "and now the next request"},
+            {"role": "developer", "content": "Step 29 of 30", "injected_by": "agent.step_budget"},
+        ]
+        context = HookContext(hook_type="pre_llm_call", request_id="r", session_id="s", agent=None,
+                              agent_name="test_agent", messages=messages, metadata={}, step=28)
+
+        result = await hooks_impl.engineer_context(context)
+
+        # Without this, a green run says nothing: below the threshold the hook
+        # returns the list untouched, and `not media` would also hold if the
+        # message at [0] were some breadcrumb a later layer inserted.
+        assert result.modified is True, f"nothing was compacted at all: {result.metadata}"
+        first = result.context.messages[0]
+        media = first.get("multimodal_content") if isinstance(first, dict) else first.multimodal_content
+        assert not media, "the user message behind the note triggered nothing"
+
+    @pytest.mark.asyncio
     async def test_a_loop_note_after_tool_results_is_no_new_user_message(self, hooks_impl, tmp_path):
         """The step budget note ends the history on the last steps of a run; read
-        as a user message it evicted old media and rewrote old messages there."""
+        as a user message it evicted old media and rewrote old messages there.
+
+        On `user`, because that is the case that can fail: a hook's scripted
+        turn still rides there, and the marker is all that tells it from a
+        person. A `developer` note could not trigger this path whatever the
+        search does -- the test above is where that role is measured."""
+        note_role = "user"
         audio_file = tmp_path / "test_audio.mp3"
         audio_file.write_bytes(b"x" * 1024)
         messages = [
@@ -140,7 +180,7 @@ class TestEventBasedMediaCompaction:
             {"role": "assistant", "content": None, "tool_calls": [
                 {"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
             {"role": "tool", "tool_call_id": "c1", "name": "read", "content": "ok"},
-            {"role": "user", "content": "Step 29 of 30", "injected_by": "agent.step_budget"},
+            {"role": note_role, "content": "Step 29 of 30", "injected_by": "agent.step_budget"},
         ]
         context = HookContext(hook_type="pre_llm_call", request_id="r", session_id="s", agent=None,
                               agent_name="test_agent", messages=messages, metadata={}, step=28)

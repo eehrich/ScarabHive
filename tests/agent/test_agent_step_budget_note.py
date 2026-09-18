@@ -5,6 +5,7 @@ The system prompt is the cached prefix and is re-rendered before every step; a
 """
 import pytest
 
+from agent_system.llm.message_roles import DEVELOPER
 from agent_system.servers.agent.server import Agent
 
 
@@ -20,7 +21,8 @@ def test_the_last_two_steps_get_a_note():
     assert "Step 29 of 30" in second_to_last.content and "1 step left" in second_to_last.content
     assert "step 30 of 30, the last one" in last.content
     assert "closing tool call" in last.content, "an agent that delivers through a tool is told to answer in prose"
-    assert second_to_last.role == last.role == "user"
+    assert second_to_last.role == last.role == DEVELOPER, (
+        "the budget is the RUN talking, not a person asking to wrap up")
 
 
 def test_single_call_agents_get_no_note():
@@ -82,12 +84,12 @@ async def test_every_request_is_a_prefix_of_the_next():
     assert len(llm.seen) == 5, f"fixture: {len(llm.seen)} calls"
     for i, (request, following) in enumerate(zip(llm.seen, llm.seen[1:])):
         assert following[:len(request)] == request, f"call {i + 2} does not start with call {i + 1}"
-    notes = [[text for role, text in request if role == "user" and ("Step " in text or "the last one" in text)]
+    notes = [[text for role, text in request if role == DEVELOPER and ("Step " in text or "the last one" in text)]
              for request in llm.seen]
     assert notes[:3] == [[], [], []], "a note before the last two steps"
     assert len(notes[3]) == 1 and "Step 4 of 5" in notes[3][0], llm.seen[3]
     assert len(notes[4]) == 2 and "the last one" in notes[4][1], llm.seen[4]
-    assert llm.seen[4][-1] == ("user", notes[4][1]), "the last note is not what the model reads last"
+    assert llm.seen[4][-1] == (DEVELOPER, notes[4][1]), "the last note is not what the model reads last"
     followups = [text for role, text in llm.seen[4] if text.startswith("go on")]
     assert followups == ["go on 0", "go on 1", "go on 2", "go on 3"], (
         "the follow-ups restarted: the note was taken for a message a person wrote")
@@ -97,8 +99,9 @@ async def test_every_request_is_a_prefix_of_the_next():
 async def test_a_run_that_hits_the_cap_marks_what_the_loop_adds():
     """A model that answers empty twice, then keeps calling the same failing tool:
     the "continue" nudge, loop interventions, the step notes and the max-steps
-    request all join the history as role user. Unmarked, every hook looking for
-    what a person wrote took them for it.
+    request all join the history as developer notes, every one of them marked.
+    Exactly one user message reaches the model -- the task. As user messages,
+    every hook looking for what a person wrote took them for one.
 
     The max-steps request is a step of its own: its call starts with the one
     before it and sends the same tools -- a tool list that changes on the last
@@ -152,10 +155,12 @@ async def test_a_run_that_hits_the_cap_marks_what_the_loop_adds():
     assert [e.get("summary") for e in events if e.get("type") == "final"] == ["what I have"], (
         [e for e in events if e.get("type") in ("final", "error")])
     users = [(text, marker) for role, text, marker in llm.seen[-1] if role == "user"]
-    assert users[0] == ("the task", None)
-    markers = [marker for _, marker in users[1:]]
-    assert "agent.loop_intervention" in markers, f"fixture: no loop intervention in {users}"
-    assert markers[0] == "agent.empty_response", f"fixture: no continue nudge first in {users}"
+    assert users == [("the task", None)], (
+        f"the loop still speaks as the person: {users}")
+    notes = [(text, marker) for role, text, marker in llm.seen[-1] if role == DEVELOPER]
+    markers = [marker for _, marker in notes]
+    assert "agent.loop_intervention" in markers, f"fixture: no loop intervention in {notes}"
+    assert markers[0] == "agent.empty_response", f"fixture: no continue nudge first in {notes}"
     assert markers.count("agent.step_budget") == 2 and markers[-1] == "agent.max_steps", markers
-    assert None not in markers, f"an unmarked message the loop added: {users}"
+    assert None not in markers, f"an unmarked note the loop added: {notes}"
 

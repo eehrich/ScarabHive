@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
+from agent_system.llm.message_roles import is_injected_note
 from agent_system.llm.models import ChatMessage
 from agent_system.llm.text_sanitizer import sanitize_json_content
 
@@ -82,12 +83,6 @@ def _role(message: Any) -> str:
     if isinstance(message, dict):
         return message.get("role", "")
     return getattr(message, "role", "")
-
-
-def _injected_by(message: Any) -> str | None:
-    if isinstance(message, dict):
-        return message.get("injected_by")
-    return getattr(message, "injected_by", None)
 
 
 def _json_native(value: Any) -> Any:
@@ -280,9 +275,11 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
         try:
             messages = context.messages
             # The turn a person opened, behind any note the loop added after it
-            # (the step budget note follows drained user input).
+            # (the step budget note follows drained user input). Those notes are
+            # `developer` now, so the walk asks for the marker, not the role --
+            # on the role alone it stopped at the first note and no preload ran.
             last = len(messages) - 1
-            while last >= 0 and _role(messages[last]) == "user" and _injected_by(messages[last]):
+            while last >= 0 and is_injected_note(messages[last]):
                 last -= 1
             if last < 0 or _role(messages[last]) != "user":
                 return unchanged

@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from agent_system.config.models import ModelCapabilitiesConfig  # noqa: E402
 from agent_system.llm.message_roles import (  # noqa: E402
     DEVELOPER, NOTE_CLOSE, NOTE_OPEN, RUNGS, SYSTEM, USER,
-    as_note, leading_instructions, resolve_rung,
+    as_note, is_injected_note, leading_instructions, resolve_rung,
 )
 from agent_system.llm.models import ChatMessage  # noqa: E402
 
@@ -313,6 +313,21 @@ def test_an_unreadable_declaration_falls_back_and_says_so(caplog):
 
 def test_nothing_declared_leaves_the_route_to_decide():
     assert resolve_rung(None, ceiling=DEVELOPER, default=SYSTEM, route="x") == SYSTEM
+
+
+def test_what_counts_as_a_note_the_searches_walk_past():
+    """Who looks back for the last thing a PERSON wrote skips these.
+
+    A `system` block does NOT belong in the set, though plugins mark theirs the
+    same way: those stand at the HEAD, in front of everything the searches walk
+    through, and counting them would make the walk run off the front of a
+    history whose prompts happen to carry a marker."""
+    assert is_injected_note({"role": DEVELOPER, "injected_by": "agent.step_budget"})
+    assert is_injected_note(ChatMessage(role=USER, content="go on",
+                                        injected_by="agent_continuation.followup"))
+    assert not is_injected_note({"role": DEVELOPER, "content": "put here on purpose"})
+    assert not is_injected_note(ChatMessage(role=USER, content="what a person typed"))
+    assert not is_injected_note({"role": SYSTEM, "injected_by": "okf"})
 
 
 def test_a_config_mistake_is_reported_once_and_then_kept_quiet(caplog):

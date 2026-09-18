@@ -105,12 +105,17 @@ def build_excerpt(
     # analyses" while it was answering the new question. The newest message
     # says what the agent works on now; older ones are context, and several in
     # a row (a follow-up, an injected note) all belong to the picture.
+    #
+    # A note the run added counts as one of them: it rides on `developer` since
+    # the loop got that role, and "provide your final answer NOW, do NOT use
+    # any tools" is exactly the instruction that explains the behaviour the
+    # judge is about to score.
     user_messages: List[str] = []
     budget = task_chars
     for msg in reversed(history):
         if budget <= 0:
             break
-        if _get(msg, "role") != "user":
+        if _get(msg, "role") not in ("user", "developer"):
             continue
         text = _text(_get(msg, "content")).strip()
         if text:

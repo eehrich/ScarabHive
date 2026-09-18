@@ -351,11 +351,13 @@ class SessionTracker:
 
         A volatile developer note never goes in. It is what the RUN told the
         model for THIS call (a budget, a deadline, the state a job reached) and
-        it carries ``injected_by``, meaning whoever put it there builds it
-        again next call. Stored, it would keep the value of the turn it
-        happened to be built on while the injector adds the next one beside it,
-        and the session fills up with stale budgets. A developer note WITHOUT
-        that marker was placed deliberately and is kept.
+        it carries ``injected_by``: it is bound to the moment it was built for
+        and must not outlive the run. Some are rebuilt every call (the step
+        budget) and would pile up stale beside their successors; the one-offs
+        (the continue nudge, a loop warning) would be read on the next resume
+        as an instruction that still holds -- "provide your final answer NOW,
+        do NOT use any tools" is the last thing every capped run adds. A
+        developer note WITHOUT that marker was placed deliberately and is kept.
 
         The rule sits HERE, in the one funnel, and not in the caller that
         filters system messages: five places write session messages, and only

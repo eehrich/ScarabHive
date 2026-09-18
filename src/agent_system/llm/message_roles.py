@@ -73,11 +73,39 @@ NOTE_OPEN = "<developer_note>"
 NOTE_CLOSE = "</developer_note>"
 
 
+def _field(msg: object, name: str) -> object:
+    """One field of a message, whether it arrives as a dict or a ChatMessage."""
+    if isinstance(msg, dict):
+        return msg.get(name)
+    return getattr(msg, name, None)
+
+
 def role_of(msg: object) -> str:
     """The role of a message, whether it arrives as a dict or a ChatMessage."""
-    if isinstance(msg, dict):
-        return str(msg.get("role") or "")
-    return str(getattr(msg, "role", "") or "")
+    return str(_field(msg, "role") or "")
+
+
+#: Roles a note can wear once it is in the message list. `system` is left out
+#: on purpose: the blocks plugins insert with that role stand at the HEAD, in
+#: front of everything the searches below walk back through.
+_NOTE_ROLES = frozenset({USER, DEVELOPER})
+
+
+def is_injected_note(msg: object) -> bool:
+    """Something the run or a hook put in front of the model, not a turn taken.
+
+    Two searches walk back from the end of the history to find the last thing a
+    PERSON wrote: tool_preload (act once per turn) and context_engineer (does a
+    user message trigger media compaction). Both used to skip ``user`` messages
+    carrying ``injected_by``, which was every note there was. The loop's notes
+    are ``developer`` now: on the role alone the walk stops at the first note
+    and finds nothing behind it.
+
+    agent_continuation asks the same question the other way round -- it counts
+    the follow-ups it already sent by their marker and anchors on a user
+    message without one -- so it reads the fields itself.
+    """
+    return role_of(msg) in _NOTE_ROLES and bool(_field(msg, "injected_by"))
 
 
 def leading_instructions(messages: list) -> list:

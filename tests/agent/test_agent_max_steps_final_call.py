@@ -11,6 +11,7 @@ import pytest
 
 from agent_system.hooks import HookResult, HookType, PluginHook
 from agent_system.hooks.registry import get_hook_registry
+from agent_system.llm.message_roles import DEVELOPER
 from agent_system.llm.models import LLMServerError
 from agent_system.servers.agent.server import Agent
 from plugins.message_validator.hooks import InternalMessageValidator
@@ -99,6 +100,28 @@ class _Continues(PluginHook):
         return HookResult(success=True, metadata={"continue": True, "continue_injected_by": "test.continue"})
 
 
+#: What the last _run() finished with, notes and all. The session keeps no
+#: volatile developer note, so "what the loop added after the final call" is
+#: only measurable here -- ``stored`` answers the other question, what a resume
+#: of that session would read back.
+_LAST_LIVE: list = []
+
+
+def _notes(messages):
+    """The loop's own notes in a REQUEST, in order."""
+    return [m for m in messages if m.role == DEVELOPER]
+
+
+def _loop_notes(messages):
+    """What the loop added, found by its MARKER.
+
+    Against the session a role filter is worthless: the tracker drops exactly
+    `developer` + marker, so it comes back empty whatever the loop does --
+    including when a site goes back to signing its notes `user` and they are
+    persisted again. The marker outlives that."""
+    return [m for m in messages if (m.injected_by or "").startswith("agent.")]
+
+
 def _orphans(messages):
     called = {tc["id"] for m in messages if m.role == "assistant" for tc in (m.tool_calls or [])}
     answered = {m.tool_call_id for m in messages if m.role == "tool"}
@@ -128,9 +151,22 @@ async def _run(llm, *, max_steps=5, hooks=(), fallback=None, session="final_call
             async for item in execute(**kwargs):
                 yield item
         agent._tool_execution_manager.execute_tools_streaming = counting
+        # Cleared first: a run that never persists (a cancel) would otherwise
+        # leave the previous test's list standing and be measured for this one.
+        _LAST_LIVE.clear()
+        # What the loop finished with, before the tracker drops the notes.
+        # get_live_messages() is written per step and is stale after the final
+        # call -- the last persist is the only point that sees the whole list.
+        persist = agent._persist_conversation
+
+        async def capturing(session_id, messages, **kwargs):
+            _LAST_LIVE[:] = list(messages)
+            return await persist(session_id, messages, **kwargs)
+        agent._persist_conversation = capturing
         events = [event async for event in agent.run_events("the task", request_id=REQUEST_ID,
                                                          session_id=session)]
         stored = list(agent._session_tracker.get_session_messages(session))
+        assert _LAST_LIVE, "no persist captured -- the wrapper missed the funnel"
     finally:
         for hook_type, name, _ in hooks:
             await registry.unregister_hook(hook_type, name)
@@ -179,7 +215,7 @@ async def test_the_max_steps_call_falls_back_on_a_server_error():
 def test_the_call_after_the_budget_gets_the_max_steps_request(max_steps):
     note = Agent._step_budget_note(max_steps, max_steps)
 
-    assert note is not None and note.role == "user"
+    assert note is not None and note.role == DEVELOPER
     assert note.injected_by == MAX_STEPS_REQUEST
     assert f"maximum number of steps ({max_steps})" in note.content
 
@@ -219,9 +255,11 @@ async def test_an_empty_final_call_persists_no_continue_nudge():
     events, _, stored = await _run(_LLM(empty_from_call=5))
 
     assert _outcome(events) == ([], ["LLM planner reached max steps without final answer."])
-    markers = [m.injected_by for m in stored if m.role == "user"]
+    markers = [m.injected_by for m in _notes(_LAST_LIVE)]
     assert MAX_STEPS_REQUEST in markers, f"fixture: no max-steps request in {markers}"
     assert "agent.empty_response" not in markers[markers.index(MAX_STEPS_REQUEST):], markers
+    assert not _loop_notes(stored), (
+        f"what the loop added outlived the run: {[m.injected_by for m in _loop_notes(stored)]}")
 
 
 @pytest.mark.asyncio
@@ -237,7 +275,7 @@ async def test_tool_calls_blocked_on_the_final_call_leave_nothing_unanswered():
     assert _outcome(events) == ([], ["LLM planner reached max steps without final answer."])
     assert not _orphans(stored), f"unanswered tool calls in the session: {_orphans(stored)}"
     assert all(m.content or m.tool_calls for m in stored if m.role == "assistant"), "an empty assistant message"
-    tail = stored[[m.injected_by for m in stored].index(MAX_STEPS_REQUEST):]
+    tail = _LAST_LIVE[[m.injected_by for m in _LAST_LIVE].index(MAX_STEPS_REQUEST):]
     assert [m.injected_by for m in tail] == [MAX_STEPS_REQUEST], f"the loop added after the final call: {tail}"
 
 
@@ -284,7 +322,12 @@ async def test_a_blank_text_answer_to_the_final_call_leaves_no_blank_assistant()
 
     assert len(llm.seen) == 6, f"fixture: {len(llm.seen)} requests"
     assert _outcome(events) == ([], ["LLM planner reached max steps without final answer."])
-    assert stored[-1].injected_by == MAX_STEPS_REQUEST, f"the session ends on {stored[-1]!r}"
+    assert _LAST_LIVE[-1].injected_by == MAX_STEPS_REQUEST, f"the run ends on {_LAST_LIVE[-1]!r}"
+    # And the session behind it: no blank turn, and no demand for a final
+    # answer left standing. Resumed, that demand would be the last instruction
+    # the model reads before whatever the person asks next.
+    assert stored[-1].role == "tool", f"the session ends on {stored[-1]!r}"
+    assert not _loop_notes(stored), "the max-steps demand outlived the run"
 
 
 @pytest.mark.asyncio
@@ -355,5 +398,5 @@ async def test_a_loop_detected_on_the_final_call_adds_no_intervention(caplog):
 
     assert executed == [0, 1, 2, 3, 4, 5], f"fixture: tool rounds at {executed}"
     assert "Tool loop detected at step 5" in caplog.text, "fixture: no loop detected on the final call"
-    tail = stored[[m.injected_by for m in stored].index(MAX_STEPS_REQUEST):]
+    tail = _LAST_LIVE[[m.injected_by for m in _LAST_LIVE].index(MAX_STEPS_REQUEST):]
     assert "agent.loop_intervention" not in [m.injected_by for m in tail], [m.injected_by for m in tail]
