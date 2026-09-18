@@ -22,11 +22,16 @@ aus:
    auffrisst, bevor buchspezifischer Inhalt sichtbar wird. Ein injizierter
    Block dort ist das Gegenteil von konstant: er wird jeden Call neu
    gebaut, und mitgehasht wanderte der Key mit jedem abgehakten
-   Todo-Punkt auf eine neue Shard. Heute steht dort noch die Restoration
-   von ``context_engineer`` und ein ``simple_prompt_inject`` mit
-   ``role: system``; die Zustandsbloecke der Plugins ziehen ans Ende der
-   Historie, was das eigentliche Heilmittel ist (der Prefix davor bleibt
-   dann byte-identisch) — diese Regel deckt, was dort stehen bleibt.
+   Todo-Punkt auf eine neue Shard. Das eigentliche Heilmittel ist die
+   STELLE — ein Block am Ende laesst den Prefix davor byte-identisch —,
+   diese Regel deckt, was trotzdem im Kopf steht.
+
+   ⚠️ Der Umkehrschluss: was markiert ist, traegt keine Identitaet mehr.
+   Ein injizierter Block, der pro Buch/Story verschiedenen Text haette
+   (z.B. ein ``simple_prompt_inject`` mit buchspezifischer
+   ``template_vars``-Variable), faellt damit aus dem Key und legt zwei
+   Laeufe auf dieselbe Shard. Was ein Lauf vom anderen unterscheidet,
+   gehoert in den System-Prompt oder in die Task-Message.
 2. der ERSTEN Nicht-System-Message, auf ``PREFIX_CHARS`` Zeichen gekappt.
    Nur die erste: spaeter angehaengte Turns derselben Session aendern den
    Key damit nie — alle Calls einer Konversation bleiben in derselben
