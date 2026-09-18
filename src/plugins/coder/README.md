@@ -197,19 +197,29 @@ let a review check a change against a recorded convention, and `okf` supports
 `read_only: true` for exactly that. It needs one more instance, and it is only
 worth it once the bundle actually holds conventions — add it then.
 
-## One tool is deliberately blocked
+## Semantic search, and the one index behind it
 
-`semantic_search` is in `tools.blocked` for all four agents. With ChromaDB
-embeddings off — the default — every call answers `SemanticSearchDisabled`, so
-offering it only costs the agent a turn. `grep_search` covers the need. Turn
-the embeddings on first if you ever want it back.
+`semantic_search` is on for all four agents since 18.09.2026. It was blocked
+before, for a good reason that no longer holds: with embeddings off every call
+answered `SemanticSearchDisabled` and cost the agent a turn.
 
-Note the doubled name in that pattern — `coder_fs/coder_fs_semantic_search` —
-because a `server/tool` pattern is matched **exactly** against
-`server_name + "/" + tool_name`, and the tool name already carries the
-instance prefix. Written the intuitive way, `coder_fs/semantic_search` matches
-nothing and blocks nothing, without a word of complaint. The rest of the repo
-uses the doubled form throughout; this is the trap it avoids.
+What changed is what the index stores. One document per **symbol** — a
+function, a class, a heading section — so a hit is `file:line` with a
+signature, not a file you then have to read. Measured on the coder tree:
+3.295 files, 51.730 documents, a first build of seven minutes in the
+background, and incremental passes in 0.4 s afterwards. The
+build state is written next to the vectors, so a restart does not pay for it
+again.
+
+**One index, two sandboxes.** `coder_fs` and `coder_fs_ro` see the same tree,
+so indexing it twice would be the same seven minutes twice — and because a
+full rebuild clears its collection first, the two would also take turns
+emptying each other's index. Both therefore name the same
+`collection_name: file_ops_coder_tree`, and only `coder_fs_ro` has
+`enable_indexing: true`. The read-only twin builds, the read-write one reads.
+
+`grep_search` stays the first choice whenever the agent knows the word the code
+uses. This tool is for when it does not.
 
 ## Where the shell is honest about its limits
 
@@ -287,7 +297,7 @@ instead of at runtime.
 properties that are specific to this plugin and would otherwise break in
 silence — the read-only instance offering no write tools, both sandboxes
 covering the same tree, every tool named in a prompt existing and being
-visible, `semantic_search` blocked while `grep_search` survives, and the
+visible, `semantic_search` reachable and backed by an index, and the
 prompts staying free of per-call template variables.
 
 Each of those was checked by mutation — break the config, watch the right test
@@ -297,7 +307,7 @@ go red, restore:
 |---|---|
 | `read_only: false` on `coder_fs_ro` | write tools reappear in the schema |
 | dropped one directory from the read-only sandbox | sandboxes-cover-the-same-tree |
-| block pattern written as `coder_fs/semantic_search` | dead-tool-stays-blocked |
+| `enable_indexing` on both twins | the-two-sandboxes-share-one-index-and-one-builder |
 | `{{ current_step }}` added to a prompt | no-per-call-template-variables |
 | prompt naming `coder_fs_ro_manage` | prompt-names-unusable-tools |
 | `coder_fs/*` given to the explorer | read-only-agents-have-no-writable-tools |

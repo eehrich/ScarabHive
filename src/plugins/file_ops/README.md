@@ -359,16 +359,25 @@ Binary files (decided by content, not extension) and files above `max_file_size_
 
 ### 7. `file_ops_semantic_search`
 
-AI-powered semantic code search using ChromaDB embeddings. Finds files by meaning, not just keywords.
+Finds code by meaning instead of by wording. Every hit is a **symbol** — a
+function, a class, a heading section — with its file, its line and its
+signature.
 
 **What makes it semantic?**
-- Understands context: "authentication logic" finds login/verify functions
+- Understands context: "how a run is cancelled" finds `_handle_cancel()`
 - Language-independent: Finds concepts across different naming conventions
 - Fuzzy matching: Finds related code even with different terminology
 
+**Why symbols and not files** (measured 18.09.2026 on this repository): the
+embedding model reads 256 tokens and drops the rest silently. A whole file as
+one document is therefore indexed by its module head alone — which is why the
+old version answered code questions with READMEs. A 50-line window is no
+better (95 % of them exceed 256 tokens; at 30 lines still 81 %). A symbol has
+a median of 59 tokens, so what the index holds is what the model read.
+
 **Parameters:**
 - `query` (string, required): Natural language search query
-- `max_results` (integer, optional): Maximum results to return (default: 10)
+- `max_results` (integer, optional): Maximum symbols to return (default: 10)
 - `filter_pattern` (string, optional): Glob pattern to filter results (e.g., "*.py")
 
 **Example:**
@@ -389,6 +398,8 @@ AI-powered semantic code search using ChromaDB embeddings. Finds files by meanin
     {
       "file_path": "/project/src/auth.py",
       "filename": "auth.py",
+      "line": 42,
+      "symbol": "def verify_credentials(username, password)",
       "similarity_score": 0.5263,
       "distance": 0.8999,
       "size_bytes": 2048,
@@ -397,6 +408,8 @@ AI-powered semantic code search using ChromaDB embeddings. Finds files by meanin
     {
       "file_path": "/project/src/session.py",
       "filename": "session.py",
+      "line": 17,
+      "symbol": "class SessionStore()",
       "similarity_score": 0.4102,
       "distance": 1.4378,
       "size_bytes": 1536,
@@ -417,20 +430,27 @@ AI-powered semantic code search using ChromaDB embeddings. Finds files by meanin
   - Formula: similarity = 1 / (1 + distance)
 
 **Requirements:**
-- Requires ChromaDB: `pip install chromadb`
+- Requires ChromaDB: `pip install chromadb` (Windows falls back to sqlite-vec)
 - Off unless configured (`search.enable_semantic_search: true`); a disabled instance answers with `error_type: SemanticSearchDisabled`, not with an empty result
-- First search triggers index build (may take time for large codebases)
+- The first search never waits for the index. While the background build is
+  running the answer is `error_type: IndexNotReady` and names `grep_search` —
+  an empty result would read as a verdict about the code
 
-**Performance:**
-- Initial indexing: ~50-100 files/second (depends on file size)
-- Search: ~100-500ms (cached in ChromaDB)
-- Index stored in: `data/cache/file_ops_chromadb/`
+**Performance** (measured on this repository, the coder instance's four roots):
+- 3.295 indexable files → 51.730 documents, 288 MB of store
+- First build 423 s, in the background; an incremental pass over the same tree
+  takes 0.4 s, and a restart reads the state file instead of rebuilding
+- Search: ~100-500 ms
+- Index stored in `data/cache/file_ops_chromadb/`, one collection per instance
+  (`file_ops_<instance>`) plus a `<collection>_state.json` next to it
 
 **Tips:**
 - Use specific queries: "database connection pooling" > "database"
 - Combine with filter_pattern for faster results
 - Similarity > 0.4 usually indicates good match
 - Results sorted by similarity (best first)
+- `grep_search` is better whenever you know the word the code uses; this tool
+  is for when you do not
 
 ## Configuration Reference
 
@@ -462,6 +482,8 @@ file_ops:
   search:
     search_hidden: false                 # Also search dotfiles/dot-directories
     enable_semantic_search: false        # Semantic index (ChromaDB); off by default
+    enable_indexing: true                # false = read an index another instance builds
+    collection_name: file_ops_<instance> # Share it to share one index over one tree
     auto_reindex_interval: 300           # Semantic index refresh, seconds
     exclude_patterns:                    # Pruned by search and index, relative to each allowed dir
       - "**/.git/**"
@@ -561,7 +583,25 @@ There is deliberately one implementation. A ripgrep backend was built and measur
 
 ### Semantic index
 
-Only `semantic_search` uses an index: file contents embedded into ChromaDB, walked with the same pruning rules. It is built on the first `semantic_search` call and refreshed incrementally by file mtime (`auto_reindex_interval`). Files above `max_file_size_for_indexing_kb` and binary files are not indexed.
+Only `semantic_search` uses an index, and it holds one document per **symbol**
+(`symbols.py`: Python functions and classes via `ast`, Markdown heading
+sections, overlapping line windows for everything else), walked with the same
+pruning rules. Files above `max_file_size_for_indexing_kb` and binary files are
+not indexed.
+
+The build runs in the **background**, started by the first `semantic_search`
+call and repeated incrementally by file mtime (`auto_reindex_interval`). The
+search itself never waits for it. What each file contributed is written next to
+the vectors (`<collection>_state.json`), so a restart picks the index up
+instead of paying for the whole tree again — and a state file that disagrees
+with its collection is dropped rather than trusted.
+
+Each instance owns its collection (`file_ops_<instance>`), because two
+instances are two trees: with one shared name the second instance's full
+rebuild cleared the first one's index. Instances that deliberately share a tree
+set the same `collection_name` and switch `enable_indexing: false` on all but
+one of them — that one builds, the others only read (this is what the coder
+harness does with `coder_fs` and `coder_fs_ro`).
 
 ### Configuration
 
@@ -747,7 +787,8 @@ All tools return structured error responses:
 ### Performance Considerations
 - **Search cost**: proportional to the files that survive pruning, not to the tree
   - `include_ignored: true` walks everything except `.git` — measured on this repository with the coder roots: glob 17 s, grep 8.5 min. Keep the pattern or `include_pattern` narrow.
-- **Semantic index**: ChromaDB adds ~10-50KB per file on disk
+- **Semantic index**: one document per symbol -- measured on the coder roots,
+  3.295 files became 51.730 documents and 288 MB of store
 
 ### Platform-Specific
 - **Windows**: Path separators auto-converted (`/` → `\\`)
@@ -781,6 +822,7 @@ file_ops/
 ├── security.py          # PathValidator (100 lines)
 ├── operations.py        # FileOperations (457 lines)
 ├── search.py            # FileSearchEngine: search seam + semantic index
+├── symbols.py           # What the index stores: one document per symbol
 ├── textsearch.py        # Index-free glob/grep: pruning walk, gitignore, skip report
 ├── cli.py               # CLI interface (370 lines)
 └── __main__.py          # CLI entry point
@@ -790,6 +832,7 @@ file_ops/
 - `PathValidator`: Security validation, path resolution
 - `FileOperations`: CRUD operations, atomic writes
 - `FileSearchEngine`: Search entry points, semantic index
+- `symbols`: Cuts a file into the documents the index holds
 - `textsearch`: Walking, glob semantics, ignore rules, what was skipped
 - `FileOperationsServer`: tool interface, error handling
 

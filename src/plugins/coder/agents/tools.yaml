@@ -36,9 +36,28 @@ plugins:
       default_line_limit: 500
       search:
         # grep_search and search_files walk the disk and need no index.
-        # Semantic search stays off (the file_ops default): it is the only part
-        # that builds an index and persists a ChromaDB store, and grep over a
-        # code tree does not need embeddings.
+        #
+        # This instance OWNS the semantic index of the coder tree; the
+        # read-only twin below reads the same collection. It is the owner
+        # because it is the one that always exists: instances are built on
+        # first use, and the read-only twin only comes up when a reviewer or
+        # explorer sub-agent is spawned -- an index that waits for that is an
+        # index the main agent never gets.
+        #
+        # Measured on this repository on 18.09.2026: 3.295 indexable files ->
+        # 51.730 documents, 423 s for the first build (288 MB on disk), and
+        # 0.4 s for an incremental pass afterwards. The build starts with
+        # the first semantic_search on THIS instance and runs in the
+        # background; searches that arrive before it is done say so and
+        # point at grep_search instead of answering "nothing found" --
+        # including those of the read-only twin, which only reads.
+        enable_semantic_search: true
+        enable_indexing: true
+        index_on_startup: true
+        collection_name: file_ops_coder_tree
+        # Every five minutes: a coder writes code and then looks for it. The
+        # pass only reads what changed.
+        auto_reindex_interval: 300
         exclude_patterns:
           - '**/.git/**'
           - '**/__pycache__/**'
@@ -68,6 +87,14 @@ plugins:
       max_unpaginated_file_size_kb: 200
       default_line_limit: 500
       search:
+        # READS the index coder_fs builds -- same tree, same collection name.
+        # Indexing it here as well would be the same 51.730 documents and the
+        # same seven minutes twice over, and because a full rebuild clears its
+        # collection first, the two would also take turns emptying each other's
+        # index. `enable_indexing: false` is what makes this instance a reader.
+        enable_semantic_search: true
+        enable_indexing: false
+        collection_name: file_ops_coder_tree
         exclude_patterns:
           - '**/.git/**'
           - '**/__pycache__/**'

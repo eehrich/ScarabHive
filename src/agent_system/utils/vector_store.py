@@ -164,6 +164,31 @@ def compute_embedding(text: str) -> List[float]:
     return model.encode(text, convert_to_numpy=True).tolist()
 
 
+def compute_embeddings(texts: List[str], batch_size: int = 128,
+                       normalize: bool = True) -> List[List[float]]:
+    """Embed many texts in one batched pass.
+
+    Measured on this machine (18.09.2026, CPU, all-MiniLM-L6-v2): letting the
+    store embed document by document costs 26 ms each -- 22 minutes for the
+    51.730 documents of one code tree. The same texts through one batched
+    encode take about 8 ms each, the store write included. Callers that index
+    a corpus should compute the vectors here and hand them to
+    :meth:`VectorStore.add`.
+
+    `normalize` is on by default so that an L2 store ranks by direction, which
+    is what a text query means. A caller that normalises its documents MUST
+    normalise its queries the same way -- mixing the two compares vectors of
+    different length and quietly reorders the results.
+    """
+    if not texts:
+        return []
+    model = get_embedding_model()
+    vectors = model.encode(texts, batch_size=batch_size,
+                           normalize_embeddings=normalize,
+                           convert_to_numpy=True, show_progress_bar=False)
+    return [vector.tolist() for vector in vectors]
+
+
 def cosine_similarity(a: List[float], b: List[float]) -> float:
     """Cosine similarity between two equal-length float vectors."""
     dot = sum(x * y for x, y in zip(a, b))
@@ -412,6 +437,20 @@ class VectorStore:
             self._ensure_sqlite_vec_table(name)
             return None
     
+    @_synchronized
+    def refresh_collection(self, name: str) -> Any:
+        """Drop the cached handle for *name* and fetch it again.
+
+        Two VectorStore instances can point at the same collection (a
+        read-write and a read-only file_ops twin share one index). Each caches
+        its own handle, so when the owner drops and recreates the collection --
+        which every full rebuild does -- the other one keeps a handle to
+        something that no longer exists, and every call through it fails. This
+        is how the other one recovers without restarting the process.
+        """
+        self._chroma_collections.pop(name, None)
+        return self.get_or_create_collection(name)
+
     @_synchronized
     def list_ids(self, collection: str) -> List[str]:
         """Alle IDs einer Collection.

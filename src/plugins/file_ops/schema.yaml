@@ -204,17 +204,18 @@ tools:
     function:
       name: "{{ name }}_semantic_search"
       description: |
-        Semantic/AI-powered code search using embeddings. Finds files by meaning, not just keywords.
-        Uses ChromaDB for intelligent similarity search.
+        Find code by meaning instead of by wording. Each hit is a SYMBOL — a
+        function, a class, a heading section — with its file, its line and its
+        signature, so you can read straight to it.
 
         Examples:
-          - "find authentication logic" → matches verify_credentials(), login(), auth functions
+          - "how a run is cancelled" → _handle_cancel() in the sub-agent manager
           - "database connection code" → finds DB setup, connection pools, ORM configs
           - "error handling patterns" → locates try/except blocks, error classes
 
-        Better than grep for conceptual searches where exact keywords vary.
-        Off unless configured: a disabled instance answers with an error, not
-        with an empty result.
+        Use it when you do NOT know the word the code uses; grep_search is
+        better whenever you do. Off unless configured, and while the index is
+        still building the answer says so instead of returning nothing.
       parameters:
         type: object
         properties:
@@ -226,7 +227,7 @@ tools:
             minimum: 1
             maximum: 50
             default: 10
-            description: "Maximum number of files to return"
+            description: "Maximum number of symbols to return"
           filter_pattern:
             type: string
             description: "Optional glob pattern to filter results by file type (e.g., '*.py')"
@@ -261,16 +262,25 @@ config:
     maximum: 10000
   
   search:
-    # These govern the SEMANTIC index only, and it is built on the first
-    # semantic_search call. search_files and grep_search walk the disk and never
-    # wait for an index — that wait was the reason a glob over a large tree did
-    # not return within 150 seconds.
+    # DOCUMENTATION, not defaults: nothing reads this block for a tool
+    # server (only hook plugins read `config:`), so an instance that leaves
+    # a key out gets the fallback in search.py -- which is what the values
+    # below repeat. These govern the SEMANTIC index only. It is built in the BACKGROUND,
+    # started by the first semantic_search call; that call itself never waits
+    # for it. search_files and grep_search walk the disk and need no index at
+    # all — that wait was the reason a glob over a large tree did not return
+    # within 150 seconds.
     enable_indexing: true
     index_on_startup: true
+    # The vector collection. Defaults to file_ops_<instance>: two instances are
+    # two trees, and one shared name let the second one's rebuild clear the
+    # first one's index. Set the same name on two instances that share a tree,
+    # and switch enable_indexing off on all but one of them.
+    # collection_name: file_ops_coder_fs_ro
     # Requires ChromaDB Python package for vector embeddings and similarity search.
     # Off unless configured — the server defaults it to false.
     enable_semantic_search: false
-    auto_reindex_interval: 3600
+    auto_reindex_interval: 300
 
     # Search dotfiles and dot-directories as well.
     search_hidden: false

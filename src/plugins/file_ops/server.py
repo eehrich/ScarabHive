@@ -95,12 +95,27 @@ class FileOpsServer(SchemaBasedToolServer):
         # Initialize search engine with configuration
         search_config = getattr(server_config, "search", {})
 
-        # Temporarily disable semantic search to avoid ChromaDB conflicts
+        # Off unless an instance asks for it: it is the only feature that
+        # builds an index and persists a vector store.
         if "enable_semantic_search" not in search_config:
             search_config["enable_semantic_search"] = False
-            logger.info("Semantic search temporarily disabled to avoid ChromaDB conflicts")
+            logger.info("Semantic search off by default (search.enable_semantic_search)")
+
+        # One collection per INSTANCE, because two instances are two trees.
+        # Sharing the default name meant the second instance's full rebuild
+        # cleared the first one's index. Instances that deliberately share a
+        # tree (a read-write and a read-only twin) can share the index by
+        # setting the same `collection_name` — then only one of them needs to
+        # build it.
+        search_config.setdefault("collection_name", f"file_ops_{name}")
 
         self.search_engine = FileSearchEngine(self.validator.allowed_dirs, search_config)
+        # NOT started here. Building the index at construction looks tempting --
+        # the instance that owns an index is not always the one that searches
+        # it -- but measured on this machine it started four background builds
+        # at once, one per instance that has semantic search configured
+        # (file_ops, amiga_fs, agent_file_ops, coder_fs), for trees nobody had
+        # asked a question about yet. The first semantic_search starts it.
 
         logger.info(f"FileOperationsServer initialized with {len(allowed_dirs)} allowed directories")
         logger.info(f"Search indexing: {search_config.get('enable_indexing', True)}")

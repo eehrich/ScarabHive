@@ -7,7 +7,7 @@ that a plausible edit would break silently:
 * both sandboxes see the same tree -- a reviewer that cannot read what the
   coder wrote reviews nothing, and says nothing about it
 * every tool a prompt names actually exists and is visible to that agent
-* the dead ``semantic_search`` stays blocked while ``grep_search`` survives
+* ``semantic_search`` is reachable AND an index is configured to back it
 * the knowledge bundle is reachable by the injection hook AND isolated from
   every other agent's bundle -- both failure modes are silent
 * the prompts stay free of per-call template variables, so the cached system
@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_system.config.settings import load_settings
+from agent_system.config.settings import get_tool_server_config, load_settings
 from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 
 HARNESS_AGENTS = ["coder", "coder_explorer", "coder_reviewer", "coder_tester"]
@@ -47,7 +47,15 @@ def config():
 
 
 def _agent_config(config, name):
-    server = config.plugins.servers.get(name)
+    """The config the agent really runs with -- inheritance applied.
+
+    NOT ``config.plugins.servers[name]``: that raw entry still carries the merge
+    prefixes ("+coder_fs/*"), and every pattern here is matched against a tool
+    name. "+coder_fs/*" matches nothing, so each check below silently read as
+    "the agent may not use this tool" and the whole file failed on tools the
+    agent has all along.
+    """
+    server = get_tool_server_config(name, config)
     assert server is not None, f"agent {name} is not configured"
     return server.agent_config
 
@@ -249,9 +257,15 @@ class TestPromptsMatchTheToolset:
         )
 
 
-class TestDeadToolStaysBlocked:
-    """With embeddings off, semantic_search can only answer
-    SemanticSearchDisabled, so offering it costs the agent a turn."""
+class TestSemanticSearchIsReachableAndBacked:
+    """A search tool without an index answers SemanticSearchDisabled every
+    time, which costs the agent a turn and teaches it the tool is broken.
+
+    Both halves therefore belong in one test: the tool must be visible AND the
+    instance behind it must be configured to have an index. Until 18.09.2026
+    this file asserted the opposite -- the tool was blocked in all four agents
+    because the index was off.
+    """
 
     @pytest.mark.parametrize(
         "agent,instance",
@@ -262,7 +276,7 @@ class TestDeadToolStaysBlocked:
             ("coder_tester", "coder_fs_ro"),
         ],
     )
-    def test_semantic_search_is_blocked_and_grep_is_not(
+    def test_semantic_search_is_offered_and_grep_survives(
         self, config, agent, instance
     ):
         tools = _agent_config(config, agent).tools
@@ -272,16 +286,37 @@ class TestDeadToolStaysBlocked:
                 tool_name, instance, tools.allowed
             ) and not tool_matches_patterns(tool_name, instance, tools.blocked or [])
 
-        assert not visible(f"{instance}_semantic_search"), (
-            f"{agent}: semantic_search is reachable. Note that the block "
-            "pattern must read '<instance>/<instance>_semantic_search' -- the "
-            "tool name already carries the instance prefix, so the intuitive "
+        assert visible(f"{instance}_semantic_search"), (
+            f"{agent}: semantic_search is not reachable. A block pattern reads "
+            "'<instance>/<instance>_semantic_search' -- the tool name already "
+            "carries the instance prefix, so the intuitive "
             "'<instance>/semantic_search' matches nothing, silently."
         )
-        # Both directions: an over-broad block would take the search tools the
-        # explorer lives on with it.
         assert visible(f"{instance}_grep_search")
         assert visible(f"{instance}_read_file")
+
+    def test_the_two_sandboxes_share_one_index_and_one_builder(self, config):
+        """Same tree, same collection -- and exactly one instance building it.
+
+        Two builders over the same tree is the same seven minutes twice, and
+        because a full rebuild clears the collection first, the two would also
+        take turns emptying each other's index.
+
+        The builder is coder_fs because tool servers are built on first use:
+        coder_fs_ro only exists once a reviewer or explorer is spawned, so an
+        index owned by it is one the main agent may never get.
+        """
+        rw = get_tool_server_config("coder_fs", config).search
+        ro = get_tool_server_config("coder_fs_ro", config).search
+
+        assert rw["enable_semantic_search"] and ro["enable_semantic_search"]
+        assert rw["collection_name"] == ro["collection_name"], \
+            "the twins must read the same collection, or one of them searches an empty index"
+        assert rw.get("index_on_startup", True),             "coder_fs has enable_indexing but index_on_startup off -- then nothing builds"
+        builders = [name for name, cfg in (("coder_fs", rw), ("coder_fs_ro", ro))
+                    if cfg.get("enable_indexing", True)]
+        assert builders == ["coder_fs"], \
+            f"exactly the always-present instance builds the index, not {builders}"
 
 
 @pytest.mark.parametrize("agent", HARNESS_AGENTS)

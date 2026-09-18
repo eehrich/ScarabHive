@@ -29,7 +29,12 @@ async def file_ops_server(tmp_allowed_dir):
     server_config = ToolServerConfig(type="file_ops", enabled=True)
     server_config.allowed_directories = [str(tmp_allowed_dir)]
     server_config.search = {
-        "enable_indexing": False  # Disable for faster tests
+        "enable_indexing": False,  # Disable for faster tests
+        # A tmp store, never data/cache: the tree is a fresh tmp directory on
+        # every run, so a shared store carries the vectors AND the index state
+        # of trees that no longer exist -- and the test that switches semantic
+        # search on then searches somebody else's leftovers.
+        "chroma_db_path": str(tmp_allowed_dir.parent / "vector_store"),
     }
 
     server = FileOpsServer("file_ops", system_config, server_config)

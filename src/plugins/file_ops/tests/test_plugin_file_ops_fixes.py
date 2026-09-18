@@ -120,6 +120,12 @@ async def test_semantic_search_indexes_root_files(workspace_config, tmp_path):
     """Test that semantic search includes root-level files."""
     system_config, server_config = workspace_config
     server_config.search["enable_semantic_search"] = True
+    # One subtree, not all of src/ and tests/: since the index stores one
+    # document per SYMBOL (18.09.2026) the whole tree is 51.730 of them and
+    # seven minutes of embedding, which is past the 120 s test timeout. What this
+    # test is about — that the walk reaches files directly under a root — does
+    # not need the big tree.
+    server_config.allowed_directories = ["src/plugins/file_ops"]
     # tmp_path, not data/cache: a fixed path keeps the index BETWEEN runs, and
     # one written by an older chromadb makes this test fail on a healthy tree.
     server_config.search["chroma_db_path"] = str(tmp_path / "semantic_root")
@@ -156,23 +162,33 @@ async def test_semantic_search_indexes_root_files(workspace_config, tmp_path):
 
 @pytest.mark.slow
 @pytest.mark.asyncio
-async def test_chromadb_batch_size_handling(workspace_config, tmp_path):
-    """Test that large file sets don't exceed ChromaDB batch limits."""
+async def test_chromadb_batch_size_handling(workspace_config, tmp_path, monkeypatch):
+    """Every document survives the chunking, not just the first batch.
+
+    The assertion used to be `count >= 0` on a tree that produced fewer
+    documents than one batch holds -- so the loop ran exactly once and the
+    chunking it was named after was never executed.
+    """
     system_config, server_config = workspace_config
     server_config.search["enable_semantic_search"] = True
+    # See the note above: one subtree is enough, and it stays inside the
+    # 120 s timeout now that a file is many documents.
+    server_config.allowed_directories = ["src/plugins/file_ops"]
     server_config.search["chroma_db_path"] = str(tmp_path / "batch_limit")
     
+    from plugins.file_ops import search as search_module
+    monkeypatch.setattr(search_module, "EMBED_BATCH_SIZE", 50)
+
     server = FileOpsServer("test", system_config, server_config)
-    
-    # Build index with many files
     await server.search_engine.rebuild_index(incremental=False)
-    
-    # Should not raise batch size errors
-    if server.search_engine._vector_store:
-        count = server.search_engine._vector_store.count(server.search_engine._collection_name)
-        # Should handle more than 5000 files (old batch limit)
-        assert count >= 0, "Vector store indexing should complete without errors"
-    
+
+    expected = sum(len(ids) for ids in server.search_engine.file_symbol_ids.values())
+    assert expected > 50, "the tree must span more than one batch to test chunking"
+    count = server.search_engine._vector_store.count(
+        server.search_engine._collection_name)
+    assert count == expected, (
+        f"{expected - count} documents were lost between the batches")
+
     await server.search_engine.stop()
 
 
