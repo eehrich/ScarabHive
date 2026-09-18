@@ -133,7 +133,8 @@ class LLMRouterServer(SchemaBasedToolServer):
         # Check for cancellation before LLM routing
         cancellation_token = params.get("_cancellation_token")
         if cancellation_token and cancellation_token.is_cancelled:
-            return {"error": "LLM routing request cancelled by user", "cancelled": True}
+            return {"error": "LLM routing request cancelled by user", "cancelled": True,
+                    "forced": cancellation_token.is_forced}
 
         # Handle both message formats first
         if "messages" in params:
@@ -181,8 +182,15 @@ class LLMRouterServer(SchemaBasedToolServer):
             # the check before the call, reported the same way: the scope stays
             # open on purpose, and the tool base turns the error result into an
             # error event (a cancel is not a completed call).
+            # The token here is the TOOL's (tool_execution.py), and a forced
+            # termination never marks it: the manager forces the MAIN token and
+            # cancels this task, so the kill arrives as an ordinary cancel with
+            # `is_forced` false. Answering it ends the tool right here -- the
+            # provider call is already gone with the same CancelledError -- so
+            # nothing survives the kill, which is what the rule protects.
             if cancellation_token and cancellation_token.is_cancelled:
-                return {"error": "LLM routing request cancelled by user", "cancelled": True}
+                return {"error": "LLM routing request cancelled by user", "cancelled": True,
+                        "forced": cancellation_token.is_forced}
             raise
         except Exception as e:
             return {

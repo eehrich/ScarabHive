@@ -230,3 +230,20 @@ class TestLLMRouterCancellation:
                     "message": "Hello", "profile": "test",
                     "_status": AsyncMock(), "_cancellation_token": CancellationToken("req-2"),
                 })
+
+    @pytest.mark.asyncio
+    async def test_the_answer_says_whether_the_cancel_was_forced(self, mock_system_config, mock_server_config):
+        """docs/plugin_authoring.md defines the shape: error, cancelled, forced."""
+        from agent_system.core.cancellation import CancellationToken
+
+        server = self._server(mock_system_config, mock_server_config)
+        token = CancellationToken("req-3")
+        token.cancel()
+
+        result = await server.call("llm_router_chat", {
+            "message": "Hello", "profile": "test",
+            "_status": AsyncMock(), "_cancellation_token": token,
+        })
+
+        assert result == {"error": "LLM routing request cancelled by user",
+                          "cancelled": True, "forced": False}
