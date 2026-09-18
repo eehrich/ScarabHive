@@ -1,7 +1,7 @@
 """Tests for sequential thinking UX improvements (relative timestamps, quick actions, multi-session)."""
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 from agent_system.hooks.plugin_hook import HookContext

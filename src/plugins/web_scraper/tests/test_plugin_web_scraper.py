@@ -15,7 +15,7 @@ import pytest
 
 from agent_system.config.models import AgentConfig, ToolServerConfig
 from agent_system.plugins.cache import PluginCache
-from plugins.web_scraper.server import WebScraperSSRFError, WebScraperServer
+from plugins.web_scraper.server import WebScraperServer
 
 PAGE = """<html><head><title>Copper (Amiga)</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/x.js"></script></head>
@@ -356,9 +356,12 @@ FILE = b"%PDF-1.7 " + b"x" * 500
 
 
 def serve(status_code=200, body=FILE, headers=None):
+    """The handler keeps every request it was given, for a test about what was never asked for."""
     def handler(request):
+        handler.requests.append(request)
         return httpx.Response(status_code, content=body,
                               headers={"content-type": "application/pdf", **(headers or {})})
+    handler.requests = []
     return handler
 
 
@@ -375,11 +378,13 @@ async def test_download_writes_the_file_and_reports_its_hash(downloader, tmp_pat
 
 
 async def test_download_outside_the_allowed_directory_is_refused_without_a_request(downloader, tmp_path):
-    with no_ssrf_check(), transport(serve()) as t:
+    handler = serve()
+    with no_ssrf_check(), transport(handler):
         result, _ = await call(downloader, "web_scraper_download",
                                url="https://example.com/x", path=str(tmp_path / "elsewhere.pdf"))
     assert "outside the allowed directories" in result["error"]
     assert not (tmp_path / "elsewhere.pdf").exists()
+    assert handler.requests == [], "the path is refused before anything is asked of the server"
 
 
 async def test_download_refuses_to_overwrite_unless_told(downloader, tmp_path):

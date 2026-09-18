@@ -457,10 +457,10 @@ class WebScraperServer(SchemaBasedToolServer):
         if operation == "links":
             links = page["links"]
             if not params.get("include_nofollow", False):
-                links = [l for l in links if "nofollow" not in l["rel"]]
+                links = [link for link in links if "nofollow" not in link["rel"]]
             if params.get("only_same_domain", False):
                 domain = urllib.parse.urlparse(page["final_url"]).netloc
-                links = [l for l in links if urllib.parse.urlparse(l["abs_url"]).netloc == domain]
+                links = [link for link in links if urllib.parse.urlparse(link["abs_url"]).netloc == domain]
             max_links = int(_number(params, "max_links", 0))
             if max_links > 0:
                 links = links[:max_links]

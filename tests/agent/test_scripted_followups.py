@@ -7,7 +7,7 @@ whole path shows both.
 
 import pytest
 
-from agent_system.hooks import HookResult, HookType, PluginHook
+from agent_system.hooks import HookType, PluginHook
 from agent_system.hooks.registry import get_hook_registry
 from plugins.agent_continuation.hooks import FOLLOWUP_MARKER, AgentContinuationPlugin
 from plugins import agent_continuation
