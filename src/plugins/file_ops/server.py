@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from agent_system.config import AgentSystemConfig, ToolServerConfig
+from agent_system.paths import launch_dir
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from .security import PathValidator, SecurityError
@@ -68,8 +69,14 @@ class FileOpsServer(SchemaBasedToolServer):
             resolved_dirs = []
             for dir_path in allowed_dirs:
                 if dir_path == ".":
-                    # Special case: "." means project root
-                    resolved_dirs.append(str(project_root))
+                    # "." is where the PERSON stands, not where the process
+                    # runs. Both CLIs enter the project at startup, so the
+                    # working directory is the checkout -- allowing "." is
+                    # how an agent is let into the directory it was started
+                    # in, which is the whole point of typing it. Started from
+                    # the project, as everything was until now, the two are
+                    # the same directory and nothing changes.
+                    resolved_dirs.append(str(launch_dir()))
                 else:
                     # Resolve relative to project root
                     resolved_path = (project_root / dir_path).resolve()

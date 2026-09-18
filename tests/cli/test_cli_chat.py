@@ -4173,6 +4173,29 @@ class TestCompletion:
         from agent_system.cli_utils.chat import _completion_word
         assert _completion_word(line) == "Program Files/zi"
 
+    def test_it_offers_the_files_where_the_person_stands(self, monkeypatch,
+                                                         tmp_path):
+        """The completer and the commands that consume it have to name the
+        same directory. Offering the project's files and then looking for the
+        accepted name in the launch directory gives "Not a file" at best --
+        and where both trees hold that name, the wrong file without a word.
+        """
+        from agent_system import paths
+
+        here = tmp_path / "hier"
+        here.mkdir()
+        project = tmp_path / "projekt"
+        project.mkdir()
+        (here / "im-startordner.png").write_bytes(b"x")
+        (project / "im-projekt.png").write_bytes(b"y")
+        monkeypatch.setattr(paths, "_launch_dir", here)
+        monkeypatch.chdir(project)
+
+        values = self._values(_completion_ctx(monkeypatch), "/attach im-")
+
+        assert "im-startordner.png" in values
+        assert "im-projekt.png" not in values, "it offered the project's files"
+
     def test_export_completes_paths_as_one_argument_too(self, monkeypatch, tmp_path):
         (tmp_path / "alte transkripte").mkdir()
         monkeypatch.chdir(tmp_path)
@@ -4879,18 +4902,45 @@ class TestExport:
         assert (tmp_path / "chat-s1.md").exists(), sorted(
             p.name for p in tmp_path.iterdir())
 
-    def test_a_tilde_name_with_no_home_does_not_take_the_chat_down(
-            self, tmp_path, monkeypatch, capsys):
+    def test_a_tilde_name_with_no_home_is_written_and_not_a_crash(
+            self, tmp_path, monkeypatch):
         """Path.expanduser() RAISES for a "~name" it cannot resolve --
         `/export ~$notes.md` is the lock file Word leaves next to a document,
-        and nothing catches around the dispatch. /attach learned this once."""
+        and nothing catches around the dispatch, so it took the chat down.
+        It is not a magic name, it is a file name, and it gets written.
+
+        The setenv is what makes this measure anything on a machine where
+        USERNAME and the profile directory match -- there it is the
+        difference between red and green.
+        """
         import agent_system.cli_utils.chat as chat
 
+        monkeypatch.setenv("USERNAME", "jemand_ganz_anderes")
         monkeypatch.chdir(tmp_path)
 
         chat._export_transcript(_ctx_with([_Msg("user", "frage")]), "~$notes.md")
 
-        assert "Cannot write there" in capsys.readouterr().out
+        assert (tmp_path / "~$notes.md").is_file(), sorted(
+            p.name for p in tmp_path.iterdir())
+
+    def test_it_writes_where_the_person_stands_not_where_the_process_runs(
+            self, tmp_path, monkeypatch):
+        """The chat runs from the project since enter_project(), so a name
+        typed at the prompt would land in the checkout."""
+        import agent_system.cli_utils.chat as chat
+        from agent_system import paths
+
+        here = tmp_path / "wo der mensch steht"
+        here.mkdir()
+        project = tmp_path / "projekt"
+        project.mkdir()
+        monkeypatch.setattr(paths, "_launch_dir", here)
+        monkeypatch.chdir(project)
+
+        chat._export_transcript(_ctx_with([_Msg("user", "frage")]), "transkript.md")
+
+        assert (here / "transkript.md").is_file()
+        assert not (project / "transkript.md").exists(), "written into the project"
 
     def test_an_existing_file_is_never_overwritten(self, tmp_path, capsys):
         """Without a path every export of a session picks the same name."""

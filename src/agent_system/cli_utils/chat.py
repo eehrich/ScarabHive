@@ -24,10 +24,10 @@ import shutil
 import sys
 import time
 import unicodedata
-from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, TextIO
 
 from ..llm.pricing import normalize_usage, resolve_call_cost
+from ..paths import user_path
 from .common import (
     format_output_with_hooks,
     reassert_vt,
@@ -1001,7 +1001,11 @@ def _path_candidates(word: str) -> list[tuple[str, str]]:
     separator = "\\" if "\\" in word and "/" not in word else "/"
     directory, slash, prefix = word.replace("\\", "/").rpartition("/")
     try:
-        entries = sorted(Path(directory or ".").iterdir())
+        # Where the person stands, the same directory /attach and /export
+        # resolve against. Listing the process's own would offer them the
+        # project's files and then look for the accepted name somewhere else
+        # -- and where both trees hold that name, silently take the wrong one.
+        entries = sorted(user_path(directory or ".").iterdir())
     except OSError:
         return []  # no such directory yet: the person is still typing it
     head = (directory + slash).replace("/", separator)
@@ -1809,14 +1813,11 @@ def _export_transcript(ctx: "_ChatContext", payload: str) -> None:
     if not messages:
         print("Nothing to export -- this session has no messages yet.")
         return
-    try:
-        path = Path(payload.strip() or f"chat-{ctx.session_id}.md").expanduser()
-    except RuntimeError as e:
-        # A "~name" with no home behind it RAISES -- `/export ~$notes.md`, the
-        # lock file Word leaves next to a document. Nothing catches around the
-        # dispatch, so it took the whole chat down. /attach learned this once.
-        print(f"Cannot write there: {e}")
-        return
+    # Written where the person stands, not where the process runs -- the chat
+    # runs from the project since enter_project(). user_path also holds the ~
+    # handling this used to do itself: `/export ~$notes.md`, the lock file Word
+    # leaves beside a document, RAISED out of pathlib and took the chat down.
+    path = user_path(payload.strip() or f"chat-{ctx.session_id}.md")
     if path.exists():
         print(f"{path} exists already -- /export <path> writes somewhere else.")
         return

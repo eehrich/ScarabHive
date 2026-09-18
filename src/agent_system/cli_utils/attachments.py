@@ -12,9 +12,10 @@ guess and it does not silently drop.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Iterable, Tuple
+
+from ..paths import user_path
 
 KINDS = ("image", "audio", "text")
 
@@ -32,13 +33,11 @@ def sort_attachments(paths: Iterable[str | Path]) -> Tuple[dict[str, list[str]],
     kinds: dict[str, list[str]] = {kind: [] for kind in KINDS}
     problems: list[str] = []
     for raw in paths or []:
-        # os.path.expanduser, not Path.expanduser: the pathlib one RAISES
-        # RuntimeError("Could not determine home directory") for a name it
-        # cannot resolve, and `~$notes.md` -- the lock file Word leaves next
-        # to a document -- is such a name whenever USERNAME differs from the
-        # profile directory, as it does on this machine. A file name is not
-        # allowed to crash the listing of what could not be attached.
-        target = Path(os.path.expanduser(str(raw)))
+        # An attached file is named where the person stands, which after
+        # enter_project() is no longer the working directory. user_path also
+        # holds the ~ expansion this used to do here, and the reason it
+        # cannot be the pathlib one.
+        target = user_path(raw)
         if not target.is_file():
             problems.append(f"Not a file: {target}")
             continue

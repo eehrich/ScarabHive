@@ -3,6 +3,7 @@ commands removed in the 2026-09 cleanup."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -64,7 +65,11 @@ def test_users_failure_exits_non_zero_and_reads_the_given_config(monkeypatch, tm
         cli.main()
 
     assert exit_info.value.code == 1
-    assert seen == ["elsewhere.yaml"]
+    # Absolute, and still the file that was named: a --config is typed where
+    # the person stands, and the users branch returns before the run path
+    # would have resolved it (agent_system.paths.user_path).
+    assert len(seen) == 1 and Path(seen[0]).is_absolute()
+    assert Path(seen[0]).name == "elsewhere.yaml"
 
 
 def test_users_update_and_create_validate_like_the_api_and_never_echo_the_password(monkeypatch, tmp_path, capsys):
@@ -132,18 +137,23 @@ def test_users_gets_the_tokens_as_typed(monkeypatch, argv, handed_over):
     assert received == [handed_over]
 
 
-@pytest.mark.parametrize("argv, config_path", [
+@pytest.mark.parametrize("argv, config_name", [
     (["--config", "c.yaml", "users", "list"], "c.yaml"),
     # A password that happens to abbreviate --config became the config path
     (["users", "create", "bob", "b@x.de", "-p", "--conf", "x.yaml"], None),
 ])
-def test_users_config_comes_only_from_before_the_subcommand(monkeypatch, argv, config_path):
+def test_users_config_comes_only_from_before_the_subcommand(monkeypatch, argv, config_name):
     monkeypatch.setattr(users_cli, "CONFIG_PATH", "untouched")
     seen = []
     monkeypatch.setattr(users_cli, "app", lambda args, prog_name=None: seen.append(users_cli.CONFIG_PATH))
     monkeypatch.setattr("sys.argv", ["agent-cli", *argv])
     cli.main()
-    assert seen == [config_path]
+    assert len(seen) == 1
+    if config_name is None:
+        assert seen[0] is None
+    else:
+        # The name survives the resolution; only its directory is added.
+        assert Path(seen[0]).is_absolute() and Path(seen[0]).name == config_name
 
 
 def _plugins_loaded_with(monkeypatch, registry):

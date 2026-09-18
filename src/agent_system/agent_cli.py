@@ -20,6 +20,7 @@ except Exception:
     tabulate = None
 
 from .config.settings import get_tool_server_config, load_settings
+from .paths import enter_project, user_path
 from .config.models import AgentSystemConfig
 from .core.session_presence import SessionBusy, presence_for
 from .llm.models import ChatMessage
@@ -489,6 +490,11 @@ def _run_users_cli(users_args: List[str], config_path: Optional[str]) -> None:
 
 def main() -> None:
     global logger
+    # Run from the repository, whatever directory this was started in: config,
+    # prompts, databases and logs are declared as repository-relative strings
+    # all over the plugin configs. What the person meant by "." is kept by
+    # paths.launch_dir() for the arguments THEY typed.
+    enter_project()
     # Windows-Konsolen/Pipes laufen oft mit cp1252 — Unicode in Ausgaben
     # (Box-Zeichen der Plugin-Tabelle, Emojis in Beschreibungen) crashte dann
     # mit UnicodeEncodeError.
@@ -550,7 +556,12 @@ def main() -> None:
         at = orig_args.index("users")
         ns_before, stray = prelim.parse_known_args(orig_args[:at])
         if not stray:  # nothing but global options before it: it is the subcommand
-            return _run_users_cli(orig_args[at + 1:], ns_before.config)
+            # Resolved here as well: this branch RETURNS, so the --config the
+            # run path resolves further down never reaches it, and the same
+            # flag would have named two different files.
+            return _run_users_cli(
+                orig_args[at + 1:],
+                str(user_path(ns_before.config)) if ns_before.config else None)
 
     ns, rest = prelim.parse_known_args(orig_args)
 
@@ -763,8 +774,10 @@ def main() -> None:
             print(msg, flush=True)
 
     vprint("[cli] verbose mode on")
-    vprint(f"[cli] loading config: {args.config or os.environ.get('AGENT_CONFIG_PATH') or 'config/config.yaml'}")
-    config = load_settings(args.config)
+    # A --config is typed where the person stands, not where the process runs.
+    cfg_arg = str(user_path(args.config)) if args.config else None
+    vprint(f"[cli] loading config: {cfg_arg or os.environ.get('AGENT_CONFIG_PATH') or 'config/config.yaml'}")
+    config = load_settings(cfg_arg)
     # A mistyped --llm needs only the config to be recognised -- behind the
     # bootstrap it cost the whole plugin start before the error. Not with
     # --list-sessions: the listing needs no profile and must not be hidden

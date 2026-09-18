@@ -22,6 +22,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from .config.settings import load_settings
+from .paths import enter_project
 from .tools.status import status_bus
 from .servers.agent.server import Agent
 from .services.session_manager import SessionPermissionError
@@ -493,6 +494,9 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
 
 def main() -> None:
     """Main entry point for the agent-run CLI tool."""
+    # Same as agent-cli: run from the repository whatever directory this was
+    # started in, and keep where the person started for the paths they typed.
+    enter_project()
     parser = argparse.ArgumentParser(
         description="Simple Agent Runner - Execute requests with the default agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
