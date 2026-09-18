@@ -189,7 +189,7 @@ class BasicAgent(SchemaBasedAgent):
                 "request_id": request_id
             }
 
-    async def list_available_tools(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def list_available_tools(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
         """List all available tools for this agent.
 
         This method is automatically called for the "basic_agent_list_available_tools" tool.

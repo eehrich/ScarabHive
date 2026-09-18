@@ -206,7 +206,11 @@ def test_the_branch_is_told_to_branch_only_when_it_can(config):
 
 # ── where it is spawned ───────────────────────────────────────────────────
 
-@pytest.mark.parametrize("manager", ["sub_agent_manager", "sysadmin_agent_manager"])
+#: sysadmin_agent_manager stood here too until 764c2134 (17.09.2026) took that
+#: instance out of config/agents/sysadmin_agent.yaml -- the sysadmin agent has no
+#: manager of its own any more. A name that no longer exists cannot be checked;
+#: what stays checked is that every manager that DOES exist may spawn it.
+@pytest.mark.parametrize("manager", ["sub_agent_manager"])
 def test_it_is_registered_with_the_managers_that_used_to_spawn_its_predecessor(config, manager):
     cfg = get_tool_server_config(manager, config)
     assert cfg is not None, manager
