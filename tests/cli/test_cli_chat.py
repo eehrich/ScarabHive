@@ -3975,6 +3975,33 @@ class TestWorkThatGotThroughAsTheInterruptLanded:
         finally:
             loop.close()
 
+    def test_a_save_that_ended_in_a_cancellation_did_not_get_through(self, capsys):
+        """A task is marked CANCELLED for any CancelledError that escapes its
+        coroutine, asked for or not -- and a plugin command lets one through,
+        run_plugin_command catches Exception, not BaseException. Reading such
+        a task with .exception() RAISES, so without the cancelled check the
+        CancelledError leaves _save_now past its own except and ends the chat.
+        """
+        import agent_system.cli_utils.chat as chat
+
+        async def save_cancelled_as_the_interrupt_lands(ctx):
+            # No await in between: the task must be DONE when the callback
+            # fires, or the interrupt lands on a task that is merely pending.
+            asyncio.get_running_loop().call_soon(_raise_interrupt)
+            raise asyncio.CancelledError
+
+        ctx = _inject_ctx(None)
+        loop = asyncio.new_event_loop()
+        original = chat._save_session
+        chat._save_session = save_cancelled_as_the_interrupt_lands
+        try:
+            assert chat._save_now(loop, ctx) is False
+        finally:
+            chat._save_session = original
+            loop.close()
+        assert ctx.last_saved is None
+        assert "(save interrupted)" in capsys.readouterr().err
+
 
 class TestASaveThatWonTheRace:
     def test_a_save_that_got_through_counts(self, capsys):
