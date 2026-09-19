@@ -19,6 +19,18 @@ from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm
 
 
+def is_volatile_note(msg: object) -> bool:
+    """A developer note bound to the one call it was built for.
+
+    Deliberately NOT ``message_roles.is_injected_note``, which also matches a
+    marked ``user`` message. One of those is a hook's scripted follow-up -- a
+    turn somebody is meant to have said, and v4 reads it back out of the STORED
+    transcript by its configured text. Widening this predicate would delete it.
+    """
+    return (getattr(msg, "role", None) == DEVELOPER
+            and bool(getattr(msg, "injected_by", None)))
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -218,6 +230,20 @@ class SessionTracker:
             return True, self._session_lock_owners[session_id]
         return False, None
 
+    def active_sessions(self) -> Dict[str, str]:
+        """Every session this server is running right now: session_id -> request_id.
+
+        The same ownership ``check_session_locked`` answers for one session, for
+        all of them at once -- the sidebar asks "which of these is busy", and
+        asking per row would be one call per visible node.
+
+        A plain snapshot, taken without the async lock on purpose: the caller is
+        a UI poll, and a session that starts or ends between two polls is shown
+        one tick later either way. Blocking the run loop's lock for that would
+        buy nothing.
+        """
+        return dict(self._session_lock_owners)
+
     async def append_to_session(self, session_id: str, content: str) -> bool:
         """
         Append a user message directly to a persisted session.
@@ -367,9 +393,7 @@ class SessionTracker:
             session_id: The session ID
             messages: The messages to persist
         """
-        kept = [msg for msg in messages
-                if not (getattr(msg, "role", None) == DEVELOPER
-                        and getattr(msg, "injected_by", None))]
+        kept = [msg for msg in messages if not is_volatile_note(msg)]
         self._sessions[session_id] = kept
         if kept:
             self._held.add(session_id)

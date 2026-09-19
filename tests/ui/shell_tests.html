@@ -52,11 +52,14 @@
   const whileRunning = async (fn, { stops = true } = {}) => {
     const chat = win().chatModule;
     const original = { has: chat.hasActiveRequest, run: chat.activeRun, cancel: chat.cancelActiveRequest };
+    // `state.cancels` is how a test says "and the run was left alone": leaving a
+    // session no longer stops its run, and nothing else would show the difference.
+    const state = { cancels: 0 };
     chat.hasActiveRequest = () => true;
     chat.activeRun = () => ({});
-    chat.cancelActiveRequest = async () => (stops ? 'stopped' : 'unconfirmed');
+    chat.cancelActiveRequest = async () => { state.cancels++; return stops ? 'stopped' : 'unconfirmed'; };
     try {
-      return await fn();
+      return await fn(state);
     } finally {
       Object.assign(chat, { hasActiveRequest: original.has, activeRun: original.run, cancelActiveRequest: original.cancel });
     }
@@ -809,43 +812,43 @@
     return kept;
   });
 
-  await check('/new during a run asks about the run and stays in the session while it goes on', () => whileRunning(async () => {
-    const command = win().chatModule.runCommand('new');
-    const question = await until('the run question', () => {
-      const open = $('dialog.pk-dialog[open]');
-      return open && open.textContent.includes('still running') && open;
-    }, 2000);
-    [...question.querySelectorAll('[data-index]')].find((b) => !b.classList.contains('pk-btn--danger')).click();
-    await command;
-    return $('#headerSessionId').textContent === 'Refactor the kit' && win().chatModule.getCurrentSessionId() === 's-1'
-      && !$('#chatWelcome');
+  await check('/new during a run opens the new session and leaves the run going', () => whileRunning(async (state) => {
+    // It used to ask whether to cancel the run and keep the session when declined.
+    // A run belongs to its session, not to the view: New opens the new session and
+    // the agent works on in the old one.
+    await win().chatModule.runCommand('new');
+    return win().chatModule.getCurrentSessionId() === null
+      && $('.session-item[data-id="s-1"]').getAttribute('aria-current') === 'false'
+      && state.cancels === 0;
   }));
 
   await check('a slash command that ends while a newer line resolves leaves that line its guard against a second Send', async () => {
+    // Both moving parts are held by hand: the line resolution, and the command it runs
+    // -- /sessions waits on a list the stub holds open. It used to be held by the cancel
+    // question /new asked during a run; there is none now, and a command that ends by
+    // itself cannot be caught in the middle.
     const slash = win().slashCommands;
     const originalResolve = slash.resolve;
     const resolving = [];
-    slash.resolve = (line) => new Promise((resolve) => resolving.push(resolve));
+    slash.resolve = () => new Promise((resolve) => resolving.push(resolve));
+    cookie('stub_cmd_list', 'held');
     try {
-      return await whileRunning(async () => {  // /new asks about the running request, and waits for the answer
-        $('#task').value = '/new';
-        $('#f').requestSubmit();
-        await until('the first line resolving', () => resolving.length === 1);
-        resolving[0]({ kind: 'command', name: 'new', payload: '' });
-        const question = await until('the run question', () => {
-          const open = $('dialog.pk-dialog[open]');
-          return open && open.textContent.includes('still running') && open;
-        }, 2000);
-        $('#task').value = '/session';
-        $('#f').requestSubmit();  // a newer line, still resolving
-        await until('the second line resolving', () => resolving.length === 2);
-        [...question.querySelectorAll('[data-index]')].find((b) => !b.classList.contains('pk-btn--danger')).click();  // /new ends
-        await sleep(100);
-        $('#f').requestSubmit();  // Send again, while the newer line still resolves
-        await sleep(100);
-        return resolving.length === 2;
-      });
+      $('#task').value = '/sessions';
+      $('#f').requestSubmit();
+      await until('the first line resolving', () => resolving.length === 1);
+      resolving[0]({ kind: 'command', name: 'sessions', payload: '' });
+      await until('its command waiting on the list', async () => (await (await stub('/__stub/lists')).json()).held > 0, 3000);
+      $('#task').value = '/session';
+      $('#f').requestSubmit();  // a newer line, still resolving
+      await until('the second line resolving', () => resolving.length === 2);
+      await stub('/__stub/lists/release', {});  // the older command ends, while that line still resolves
+      await sleep(200);
+      $('#f').requestSubmit();  // Send again
+      await sleep(200);
+      return resolving.length === 2;
     } finally {
+      cookie('stub_cmd_list', null);
+      await stub('/__stub/lists/release', {});
       resolving.slice(1).forEach((resolve) => resolve(null));  // let the lines still resolving finish
       slash.resolve = originalResolve;
       await loadShell();
@@ -1235,13 +1238,9 @@
     return $('#headerSessionId').textContent === 'Fresh session' && await hits('session:s-going') === 0;
   });
 
-  await check('leaving a session during its run: past its answer a pick or New asks nothing and takes the chat with its composer, and the last click wins; a later choice wins, and a message sent while the run stops keeps the session', async () => {
+  await check('leaving a session during its run: a pick or New takes the chat at once and leaves the run working, the last click wins, and a message goes to the session it was typed in', async () => {
     await stub('/__stub/sessions', { session_id: 's-later', title: 'Later pick', has_children: false });
     const header = () => $('#headerSessionId').textContent;
-    const runQuestion = () => until('the run question', () => {
-      const open = $('dialog.pk-dialog[open]');
-      return open && open.textContent.includes('still running') && open.querySelector('.pk-btn--danger');
-    }, 2000);
     try {
       // Past its answer, while its stream waits for the save: a pick asks nothing and takes the chat at once, the
       // chat follows that stream no more, and whatever the stream still brings leaves the new session alone.
@@ -1284,36 +1283,32 @@
       sessionButton('s-1', 'open').click();
       await sleep(2500);
       if (header() !== 'Refactor the kit') return false;
-      // a pick whose run honours the cancel at once, while the answer takes its time: a pick after that wins
+      // a pick while the run is STILL GOING: it takes the chat at once, the run is not
+      // cancelled, and a pick after it still wins
       storeRun('r-live-honouring', 's-1');
       await go(`/?load=${performance.now()}`);
       await until('the reattached run', () => reattached() && sessionButton('s-later', 'open'), 4000);
-      cookie('stub_cancel', 'slow');
+      const cancels = await hits('cancel:r-live-honouring:force') + await hits('cancel:r-live-honouring');
       sessionButton('s-2', 'open').click();
-      (await runQuestion()).click();
-      await until('the cancelled run', () => !win().chatModule.hasActiveRequest(), 2000);
+      await until('the pick at once', () => header() === 'Fresh session' && !$('dialog.pk-dialog[open]'), 2000);
       sessionButton('s-later', 'open').click();
       await until('the later pick', () => header() === 'Later pick', 2000);
-      await sleep(4000);  // the cancel has been answered, and the server has let the run go
-      cookie('stub_cancel', null);
+      await sleep(500);
       if (header() !== 'Later pick') return false;
-      // /new, typed: a message sent while its run stops is held, and keeps the chat in the session
+      if (await hits('cancel:r-live-honouring:force') + await hits('cancel:r-live-honouring') !== cancels) return false;
+      // /new, typed, while a run goes on: the new session opens and the run is left to
+      // work; the message typed after it belongs to the new session, not the old run
       storeRun('r-live-leaving', 's-1');  // its stream goes on for 5 s
       await go(`/?load=${performance.now()}`);
       await until('the run to leave', reattached, 4000);
-      cookie('stub_cancel', 'slow');
       $('#task').value = '/new';
       $('#f').requestSubmit();
-      (await runQuestion()).click();
-      await until('the stop asked for', () => stopAsked('r-live-leaving'), 1000);
-      $('#task').value = 'Keep going here';
+      await until('the new session', () => win().chatModule.getCurrentSessionId() === null
+        && !win().chatModule.hasActiveRequest(), 3000);
+      $('#task').value = 'Start here instead';
       $('#f').requestSubmit();
-      await until('the held message', () => $$('#chat .msg.note').some((note) => note.textContent.includes('being stopped')), 2000);
-      await until('the run stopped', () => !win().chatModule.hasActiveRequest(), 8000);
-      await sleep(1000);  // the server has let it go, and /new has had its say
-      cookie('stub_cancel', null);
-      if ($('#chatWelcome') || win().chatModule.getCurrentSessionId() !== 's-1' || $('#task').value !== 'Keep going here'
-        || await hits('append:r-live-leaving') !== 0) return false;
+      await sleep(600);
+      if (await hits('append:r-live-leaving') !== 0) return false;  // nothing reached the run left behind
       // a Stop whose cancel fails may have been taken all the same: the run's messages stay held
       storeRun('r-live-kept', 's-unsaved');  // its stream goes on for 5 s
       await go(`/?load=${performance.now()}`);
@@ -1325,17 +1320,9 @@
       $('#task').value = 'After a failed Stop';
       $('#f').requestSubmit();
       await until('the message held', () => $$('#chat .msg.note').some((note) => note.textContent.includes('being stopped')), 1000);
-      // and so does a failed cancel on the way out of the session
-      cookie('stub_cancel', 'fails');
-      sessionButton('s-2', 'open').click();
-      (await runQuestion()).click();
-      await until('the failed cancel', () => $$('.pk-toast--error').some((t) => t.textContent.includes('did not confirm')), 3000);
-      cookie('stub_cancel', null);
-      $('#task').value = 'After a failed switch';
-      $('#f').requestSubmit();
-      await until('the message held again', () => $$('#chat .msg.note').filter((note) => note.textContent.includes('being stopped')).length === 2, 1000);
       if (await hits('append:r-live-kept') !== 0) return false;
-      // leaving before the run's start has named it: there is nothing to cancel yet, and the chat says so
+      // leaving before the run's start has named it: nothing has to be named to leave,
+      // the pick takes the chat at once
       forgetRun();
       await loadShell();
       sessionButton('s-1', 'open').click();
@@ -1344,9 +1331,8 @@
       $('#f').requestSubmit();  // its stream names no run for 5 s
       await until('its stream', () => win().chatModule.hasActiveRequest(), 1000);
       sessionButton('s-2', 'open').click();
-      (await runQuestion()).click();
-      await until('the answer', () => $$('.pk-toast--error').some((t) => t.textContent.includes('still starting')), 2000);
-      return header() === 'Refactor the kit';
+      await until('the pick', () => header() === 'Fresh session', 2000);
+      return !$('dialog.pk-dialog[open]');
     } finally {
       cookie('stub_cancel', null);
       forgetRun();
@@ -1443,62 +1429,358 @@
     }
   });
 
-  await check('while a run stops for a pick: a later pick wins, a declined one is no pick, a click on the open session keeps it', async () => {
+  await check('picks while a run goes on: each takes the chat at once, the last wins, and none of them stops the run', async () => {
+    // This used to be "while a run stops for a pick": a pick cancelled the run and the
+    // next pick had to wait out that stop. Nothing stops now, so what is left to protect
+    // is that a burst of picks still ends on the last one -- and that the run survives them.
     const header = () => $('#headerSessionId').textContent;
-    const runQuestion = () => until('the run question', () => {
-      const open = $('dialog.pk-dialog[open]');
-      return open && open.textContent.includes('still running') && open;
-    }, 2000);
-    const confirmIt = async () => (await runQuestion()).querySelector('.pk-btn--danger').click();
-    const declineIt = async () => [...(await runQuestion()).querySelectorAll('[data-index]')]
-      .find((button) => !button.classList.contains('pk-btn--danger')).click();
-    // [the phase, the run -- its stream goes on for 5 s -- what it does while the pick of s-2 waits, the cancels
-    //  answered in the end, the session shown in the end]
-    const phases = [
-      ['a later pick answered first', 'r-live-kept-later', async () => {
-        cookie('stub_cancel', null);  // its cancel is answered before the first one's
-        sessionButton('s-later', 'open').click();
-        await confirmIt();
-      }, 2, 'Later pick'],
-      ['a later pick declined', 'r-live-kept-declined', async () => {
-        sessionButton('s-later', 'open').click();
-        await declineIt();
-      }, 1, 'Fresh session'],
-      ['a click on the open session', 'r-live-kept-open', async () => {
-        sessionButton('s-1', 'open').click();
-      }, 1, 'Refactor the kit'],
-    ];
+    const cancels = async () => await hits('cancel:r-live-kept-later:force') + await hits('cancel:r-live-kept-later');
     try {
-      for (const [phase, run, meanwhile, answered, shown] of phases) {
-        storeRun(run, 's-1');
-        await go(`/?load=${performance.now()}`);
-        await until(`the run for ${phase}`, () => reattached() && sessionButton('s-later', 'open'), 4000);
-        cookie('stub_cancel', 'slower');  // the pick's cancel is answered after 6 s, once the run's stream has ended
-        sessionButton('s-2', 'open').click();
-        await confirmIt();
-        await until(`the stop asked for in ${phase}`, () => stopAsked(run), 1000);
-        await meanwhile();
-        await until(`every cancel answered in ${phase}`, async () => await hits(`answered:${run}`) === answered, 9000);
-        cookie('stub_cancel', null);
-        await sleep(2000);  // the server has let the run go, and every pick has had its say
-        if (header() !== shown) return false;
-      }
-      return true;
+      storeRun('r-live-kept-later', 's-1');  // its stream goes on for 5 s
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', () => reattached() && sessionButton('s-later', 'open'), 4000);
+      const before = await cancels();
+      sessionButton('s-2', 'open').click();
+      await until('the first pick', () => header() === 'Fresh session', 2000);
+      sessionButton('s-later', 'open').click();
+      await until('the second pick', () => header() === 'Later pick', 2000);
+      sessionButton('s-1', 'open').click();
+      await until('the session of the run again', () => header() === 'Refactor the kit', 2000);
+      await sleep(500);
+      if ($('dialog.pk-dialog[open]')) return false;      // nothing was asked on the way
+      if (header() !== 'Refactor the kit') return false;  // the last click won
+      return await cancels() === before;                  // and the run was never stopped
     } finally {
-      cookie('stub_cancel', null);
       forgetRun();
       await loadShell();
     }
   });
 
-  await check('while the viewer is asked: a start that arrives is no choice, a run that ends is not cancelled, a stream that breaks still has its run cancelled, a refused request leaves a lost run to the pick; a delete started after a cancel asks nothing', async () => {
+  await check('a run works on while another session is read, and the chat picks it up again on return', async () => {
+    // The whole point of the change: an agent at work must not pin the viewer to its
+    // session. The server is what the chat asks on the way back -- so a run this tab
+    // never started is picked up just the same.
     const header = () => $('#headerSessionId').textContent;
-    const runQuestion = () => until('the run question', () => {
-      const open = $('dialog.pk-dialog[open]');
-      return open && open.textContent.includes('still running') && open.querySelector('.pk-btn--danger');
-    }, 2000);
     try {
-      // a message's run that ends while the viewer is asked: nothing is left to cancel
+      await stub('/__stub/active-runs', { 's-1': 'r-live' });
+      sessionButton('s-1', 'open').click();
+      await until('the run picked up', () => header() === 'Refactor the kit'
+        && win().chatModule.hasActiveRequest(), 4000);
+      sessionButton('s-2', 'open').click();
+      await until('the other session', () => header() === 'Fresh session', 3000);
+      if (win().chatModule.hasActiveRequest()) return false;  // it is no longer followed here
+      if (await hits('cancel:r-live:force') + await hits('cancel:r-live') !== 0) return false;
+      sessionButton('s-1', 'open').click();
+      await until('the run picked up again', () => header() === 'Refactor the kit'
+        && win().chatModule.hasActiveRequest(), 4000);
+      return true;
+    } finally {
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('leaving a session with a file run does not cut that run short', async () => {
+    // POST /run streams the agent INLINE -- no background job. Closing that
+    // connection ends the run mid-step, so letting go must only stop READING it.
+    // The stub says of every stream whether it was read to its end or cut off.
+    const streamOf = async (request) => (await (await stub('/__stub/streams')).json())[request];
+    const upload = () => win().fileUploadModule;
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      upload().addFiles([new (win().File)(['a note'], 'notes.txt', { type: 'text/plain' })]);
+      $('#task').value = 'Read this';
+      $('#f').requestSubmit();  // its run starts half a second later
+      await until('its run', () => win().chatModule.hasActiveRequest(), 2000);
+      sessionButton('s-2', 'open').click();
+      await until('the other session', () => $('#headerSessionId').textContent === 'Fresh session', 3000);
+      await until('the file run read to its end', async () => await streamOf('r-files-ended') === 'read', 8000);
+      return true;
+    } finally {
+      upload().removeFiles(upload().getFiles());
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a delete finds the run of a session that is running somewhere else', async () => {
+    // Before, a session could not be left while it ran, so "running, but not the one on
+    // screen" did not exist. It does now -- and the chat has forgotten that run, so the
+    // delete has to ask the server for it. Without this an agent would work on for a
+    // session nobody will ever write again.
+    //
+    // Driven at `cancelLostRun`, the gate remove() puts every delete through, rather
+    // than through the two dialogs of the full delete: this is the decision that
+    // regressed, and the delete's own dialogs are covered by the tests around it.
+    try {
+      await loadShell();
+      await stub('/__stub/active-runs', { 's-busy-elsewhere': 'r-live-kept-open' });
+      const before = await hits('cancel:r-live-kept-open:force');
+      const gate = win().sessionManager.cancelLostRun('s-busy-elsewhere');
+      (await until('the run question', () => {
+        const open = $('dialog.pk-dialog[open]');
+        return open && open.textContent.includes('may still be going') && open.querySelector('.pk-btn--danger');
+      }, 4000)).click();
+      if (await gate !== true) throw new Error('the gate refused the delete');
+      const forced = await hits('cancel:r-live-kept-open:force');
+      if (forced !== before + 1) throw new Error(`cancels force ${before} -> ${forced}`);
+      // and a session nobody is running in is no question at all
+      return await win().sessionManager.cancelLostRun('s-1') === true && !$('dialog.pk-dialog[open]');
+    } finally {
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a run the chat cannot follow is marked but not attached to', async () => {
+    // A /run carrying files and a sub-agent's run have no background job. GET /events
+    // answers 409 for those, and the chat would render that as "connection lost" on a
+    // session that is working perfectly well. The server says `attachable`; the pane
+    // still marks the session, the chat still keeps its hands off.
+    try {
+      await loadShell();
+      await stub('/__stub/active-runs', { 's-1': 'r-live!' });  // "!": known, not attachable
+      sessionButton('s-1', 'open').click();
+      await until('the session', () => $('#headerSessionId').textContent === 'Refactor the kit', 4000);
+      await until('the pane to mark it', () => {
+        const item = $('.session-item[data-id="s-1"]');
+        return item && item.classList.contains('is-running');
+      }, 8000);
+      await sleep(600);  // long enough for an attach to have happened
+      if (win().chatModule.hasActiveRequest()) return false;
+      return !$('#chat').textContent.includes('reload the page to follow it');
+    } finally {
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('the sessions pane marks the sessions an agent is working in', async () => {
+    // Both marks are checked as the user gets them, not as the class list has them:
+    // the dot by whether it is actually displayed (a selector that stopped matching
+    // would leave the class on and show nothing), the word by its text.
+    const mark = (id) => $(`.session-item[data-id="${id}"]`);
+    const dotShown = (id) => getComputedStyle(mark(id).querySelector('.session-running')).display !== 'none';
+    const said = (id) => mark(id).querySelector('.session-running-said').textContent.trim();
+    try {
+      await stub('/__stub/active-runs', { 's-2': 'r-live' });
+      await until('the mark on the running session',
+        () => mark('s-2') && mark('s-2').classList.contains('is-running'), 8000);
+      if (mark('s-1').classList.contains('is-running')) return false;  // only the one that runs
+      if (!dotShown('s-2')) return false;
+      if (dotShown('s-1')) return false;
+      if (!said('s-2')) return false;
+      if (said('s-1')) return false;
+      // aria-busy says "being changed, skip me for now" -- and it sat on the element
+      // that wraps the expanded sub-sessions, so a whole branch could go quiet for as
+      // long as an agent worked in its parent.
+      if (mark('s-2').hasAttribute('aria-busy')) return false;
+      await stub('/__stub/active-runs', {});
+      await until('the mark gone once the run ends',
+        () => !mark('s-2').classList.contains('is-running'), 8000);
+      return !dotShown('s-2') && !said('s-2');
+    } finally {
+      await stub('/__stub/active-runs', {});
+    }
+  });
+
+
+  await check('coming back shows what the run sent while away, and shows it once', async () => {
+    // The catch-up used to drop the run's whole buffer, which also threw away
+    // everything sent between the session load and the reconnect. Now the load says
+    // how far the stream had come (`live_events_seen`) and the chat hands that back
+    // as `seen`, so the run replays only what the load did not already account for.
+    try {
+      await stub('/__stub/sessions', { session_id: 's-caught-up', title: 'Caught up session',
+                                       live_events_seen: 2, has_children: false });
+      await stub('/__stub/active-runs', { 's-caught-up': 'r-live-buffered' });
+      await win().sessionManager.loadSessions();
+      sessionButton('s-caught-up', 'open').click();
+      await until('the run picked up', () => win().chatModule.hasActiveRequest(), 4000);
+      await until('the reconnect to name what was seen',
+        async () => await hits('catch-up:r-live-buffered') === 'skip/2', 4000);
+      await until('the events it had not seen', () => $('#chat').textContent.includes('buffered 4'), 5000);
+      const shown = $('#chat').textContent;
+      // 1 and 2 were in the session load already; 3 and 4 were not.
+      if (shown.includes('buffered 1') || shown.includes('buffered 2')) return false;
+      if (!shown.includes('buffered 3')) return false;
+      return await hits('catch-up:r-live-buffered') === 'skip/2';
+    } finally {
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('the session of a run being read for its end is not attached to a second time', async () => {
+    // Between a run's answer and its end -- the seconds of the save and the session-end
+    // hooks -- its stream is still being read, for the end and the session-list refresh
+    // that comes with it. Opening that same session again would attach a second reader
+    // to the same run, and the server hands each event to one reader only: the two split
+    // them, and the newcomer waits for an end that went to the other.
+    cookie('stub_stream', 'answered');  // its final answer, its end 3 s later
+    try {
+      await loadShell();
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit', 4000);
+      $('#task').value = 'Answer and then save';
+      $('#f').requestSubmit();
+      await stub('/__stub/active-runs', { 's-1': 'r-answered' });  // the server still calls it running
+      await until('its answer', () => $('#chat').textContent.includes('Done')
+        && !win().chatModule.activeRun(), 6000);
+      // The state this is about: answered, and the stream still being read for the end
+      // that comes 3 s later. Said out loud -- a stream that had already finished would
+      // make the test pass or fail on something else entirely.
+      if (!win().chatModule.hasActiveRequest()) throw new Error('fixture: the stream had already ended');
+      sessionButton('s-1', 'open').click();  // the same session again, while its run finishes
+      await until('the session shown again', () => $('#headerSessionId').textContent === 'Refactor the kit', 3000);
+      await sleep(600);  // an attach is one fetch away; this is several times that
+      if (!win().chatModule.hasActiveRequest()) return true;
+      throw new Error('a second reader was attached to the run still being read');
+    } finally {
+      cookie('stub_stream', '');
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a run that ended while the viewer was away is not reported as a lost connection', async () => {
+    // The stream of a finished run closes as soon as its buffer is out. Without
+    // reading the status the server sends in its reconnect, that close reads as
+    // "connection lost -- reload the page", on a run that finished cleanly.
+    try {
+      await stub('/__stub/sessions', { session_id: 's-ended-away', title: 'Ended away', has_children: false });
+      await stub('/__stub/active-runs', { 's-ended-away': 'r-live-over' });
+      await win().sessionManager.loadSessions();
+      sessionButton('s-ended-away', 'open').click();
+      await until('the session', () => $('#headerSessionId').textContent === 'Ended away', 4000);
+      await sleep(1200);  // long enough for the attach, its close, and the notice that used to follow
+      if ($('#chat').textContent.includes('reload the page to follow it')) return false;
+      return !win().chatModule.hasActiveRequest();
+    } finally {
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a click on another session is not swallowed by an attach that answers late', async () => {
+    // The attach asked only whether the CURRENT session was still the one it started
+    // for -- and the current one changes only once a load answers. An answer arriving
+    // between a click and its load attached anyway, took the header, and bumped the
+    // pane's loading count, which dropped the load already on its way. The click
+    // vanished without a word. `requested` is set before the load, so it settles it.
+    // The window has to be built, or there is no race to see: the activity answer takes
+    // 1.2 s and the session picked next takes 2 s, so the answer lands while the pane has
+    // asked for the second session and the first is still the current one.
+    await stub('/__stub/sessions', { session_id: 's-late-pick', title: 'Late pick', delay: 2, has_children: false });
+    cookie('stub_active', 'slow');
+    try {
+      await loadShell();
+      await stub('/__stub/active-runs', { 's-1': 'r-live' });
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit', 4000);
+      await sleep(200);  // its attach is now waiting on the slow activity answer
+      sessionButton('s-late-pick', 'open').click();
+      await until('the session that was clicked',
+        () => $('#headerSessionId').textContent === 'Late pick', 6000);
+      await sleep(800);  // nothing may take it back afterwards
+      return $('#headerSessionId').textContent === 'Late pick'
+        && !win().chatModule.hasActiveRequest();
+    } finally {
+      cookie('stub_active', '');
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a run past its answer is left alone when its session is deleted', async () => {
+    // cancel_session spares a run that has answered: cancelling it would take its
+    // background sub-agents with it (their cancellation tokens share the run's id as
+    // a prefix), and it is only finishing anyway. Whoever cancels from the activity
+    // answer has to spare it too -- the server says which runs those are.
+    try {
+      await loadShell();
+      await stub('/__stub/active-runs', { 's-answered-elsewhere': 'r-live-answered~',
+                                          's-busy-elsewhere': 'r-live-kept-open' });
+      // The decision itself, both ways -- a run that has answered is no run to cancel,
+      // one that is still working is.
+      if (await win().sessionManager.runningIn('s-answered-elsewhere') !== null) return false;
+      if (await win().sessionManager.runningIn('s-busy-elsewhere') !== 'r-live-kept-open') return false;
+      // and the delete asks nothing about it. Raced against a timer: without the rule the
+      // gate opens a dialog and waits for an answer that never comes, which would hang
+      // the page rather than fail the check.
+      const before = await hits('cancel:r-live-answered:force');
+      const settled = await Promise.race([win().sessionManager.cancelLostRun('s-answered-elsewhere'),
+                                          sleep(1500).then(() => 'asked')]);
+      if (settled !== true) return false;
+      if ($('dialog.pk-dialog[open]')) return false;  // nothing to ask about
+      return await hits('cancel:r-live-answered:force') === before;
+    } finally {
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a failed activity poll leaves the marks as they were', async () => {
+    // The pane polls every few seconds. A poll that fails must not wipe the marks --
+    // that would make every hiccup flicker the whole list -- and must not toast: the
+    // user asked for nothing.
+    const mark = (id) => $(`.session-item[data-id="${id}"]`);
+    try {
+      await loadShell();
+      await stub('/__stub/active-runs', { 's-2': 'r-live' });
+      await until('the mark', () => mark('s-2') && mark('s-2').classList.contains('is-running'), 8000);
+      cookie('stub_active', 'broken');
+      await sleep(5000);  // more than one poll interval, all of them failing
+      if (!mark('s-2').classList.contains('is-running')) return false;  // the mark stood
+      if ($$('.pk-toast--error').length) return false;  // and said nothing about it
+      cookie('stub_active', '');
+      await stub('/__stub/active-runs', {});
+      await until('the mark gone once the poll works again',
+        () => !mark('s-2').classList.contains('is-running'), 8000);
+      return true;
+    } finally {
+      cookie('stub_active', '');
+      await stub('/__stub/active-runs', {});
+    }
+  });
+
+  await check('a run asked to stop is still known as stopping after a session switch', async () => {
+    // Leaving a session let its stored run go, and letting go also cleared the
+    // "asked to stop" mark that goes with the request id. Back in the session, a
+    // message would then be appended to a run that is being cancelled -- which the
+    // run saves unanswered, the one thing that mark exists to prevent.
+    storeRun('r-live-kept-stopping', 's-1');  // followed again after a reload, and still going
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the run picked up after the reload',
+        () => $('#headerSessionId').textContent === 'Refactor the kit' && win().chatModule.hasActiveRequest(), 6000);
+      await win().chatModule.cancelActiveRequest(win().chatModule.activeRun());
+      await until('the run marked as stopping', () => stopAsked('r-live-kept-stopping'), 4000);
+      sessionButton('s-2', 'open').click();
+      await until('the other session', () => $('#headerSessionId').textContent === 'Fresh session', 4000);
+      return stopAsked('r-live-kept-stopping');
+    } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('switching away never stops the run, whatever its stream is doing; a delete after a cancel asks nothing', async () => {
+    // Was "while the viewer is asked": four ways a run could change state while the
+    // cancel question stood open. There is no question on the way out any more, so what
+    // matters is the same in every one of those states -- the run is left alone.
+    const header = () => $('#headerSessionId').textContent;
+    try {
+      // a run that ends just as the viewer leaves
       sessionButton('s-1', 'open').click();
       await until('the kit session', () => header() === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
       cookie('stub_stream', 'ending');  // its final answer and end after a second
@@ -1507,62 +1789,25 @@
       await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-ending', 1000);
       cookie('stub_stream', null);
       sessionButton('s-2', 'open').click();
-      const ended = await runQuestion();
-      await until('its end', () => !win().chatModule.hasActiveRequest(), 3000);
-      ended.click();
-      await until('the pick after its end', () => header() === 'Fresh session', 3000);
+      await until('the pick', () => header() === 'Fresh session', 3000);
       if (await hits('cancel:r-ending:force') !== 0) return false;
-      // a message with files in a new session, asked about before its start has named its run
-      $('#sessionsPane [data-act="new"]').click();
-      await until('a new session', () => $('#chatWelcome'));
-      win().fileUploadModule.addFiles([new (win().File)(['a note'], 'notes.txt', { type: 'text/plain' })]);
-      $('#task').value = 'Read this';
-      $('#f').requestSubmit();  // its run starts after half a second
-      await until('its stream', () => win().chatModule.hasActiveRequest(), 1000);
-      sessionButton('s-2', 'open').click();
-      const question = await runQuestion();
-      await until('its start', () => !win().fileUploadModule.hasValidFiles(), 2000);  // its files are sent
-      question.click();
-      await until('the pick', () => header() === 'Fresh session', 6000);
-      if (await hits('cancel:r-files-ended:force') !== 1) return false;
-      // a message's run whose stream breaks while the viewer is asked
+      // a run whose stream broke: it may still be going, and leaving must not end it --
+      // it used to be cancelled here, which is exactly what the change is about
       sessionButton('s-1', 'open').click();
-      await until('the kit session', () => header() === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
+      await until('the kit session again', () => header() === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
       cookie('stub_stream', 'question-drops');  // cut off after 1.5 s
       $('#task').value = 'Go on';
       $('#f').requestSubmit();
       await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-question-dropped', 1000);
       cookie('stub_stream', null);
+      await until('the lost connection', () => $('#chat').textContent.includes('reload the page to follow it'), 4000);
       sessionButton('s-2', 'open').click();
-      const second = await runQuestion();
-      await until('the lost connection', () => $('#chat').textContent.includes('reload the page to follow it'), 3000);
-      second.click();
-      await until('the pick after the cancel', () => header() === 'Fresh session', 5000);
-      if (await hits('cancel:r-question-dropped:force') !== 1 || sessionStorage.getItem('activeRequestId') !== null) return false;
-      // a message the server refuses while the viewer is asked, beside a lost run of the session: the question was
-      // about the refused request -- the pick goes on, and lets the lost run go without cancelling it
-      sessionButton('s-1', 'open').click();
-      await until('the kit session for the refusal', () => header() === 'Refactor the kit' && $$('#chat .msg.user').length === 1);
-      cookie('stub_stream', 'drops');
-      $('#task').value = 'Go on';
-      $('#f').requestSubmit();
-      await until('the lost run', () => $('#chat').textContent.includes('reload the page to follow it'), 3000);
-      cookie('stub_stream', 'refused-late');  // refused after a second: its error, then its end
-      $('#task').value = 'Once more';
-      $('#f').requestSubmit();
-      await until('the refused stream', () => win().chatModule.hasActiveRequest(), 1000);
-      cookie('stub_stream', null);
-      const lostCancels = await hits('cancel:r-dropped:force');
-      sessionButton('s-2', 'open').click();
-      const refused = await runQuestion();
-      await until('the refusal', () => !win().chatModule.hasActiveRequest(), 3000);
-      refused.click();
-      await until('the pick after the refusal', () => header() === 'Fresh session', 3000);
-      if (await hits('cancel:r-dropped:force') !== lostCancels || sessionStorage.getItem('activeRequestId') !== null) return false;
-      // a delete started once a stopped run has brought its cancelled event: nothing asked, the run is not cancelled
-      // again, and the session goes
+      await until('the pick after the loss', () => header() === 'Fresh session', 4000);
+      if (await hits('cancel:r-question-dropped:force') !== 0) return false;
+      // a delete started once a stopped run has brought its cancelled event: nothing
+      // asked, the run is not cancelled again, and the session goes
       await stub('/__stub/sessions', { session_id: 's-honour', title: 'Honouring session', has_children: false });
-      storeRun('r-live-honouring-late', 's-honour');  // honours a cancel a second after it is asked, then saves
+      storeRun('r-live-honouring-late', 's-honour');
       await go(`/?load=${performance.now()}`);
       await until('the run to stop', () => reattached() && sessionButton('s-honour', 'delete') && $('#stopBtn').style.display !== 'none', 4000);
       $('#stopBtn').click();

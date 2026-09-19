@@ -151,6 +151,35 @@ class SessionManager:
                 return pid
         return None
 
+    def belongs_to(self, user_id: str, session_id: str) -> bool:
+        """Whether ``session_id`` is one of ``user_id``'s sessions.
+
+        One stat call, for callers that must not answer about a session before
+        knowing it is the asker's -- ``load_session`` decides the same thing, but
+        reads and parses the whole file for it. Used by the poll behind the
+        sessions pane, which asks about every row on screen, several times a minute.
+
+        Goes through ``_session_file`` rather than ``_get_session_path``: the latter
+        CREATES the user directory on its way to the path, and a question is not a
+        reason to write to disk.
+
+        Weaker than ``load_session``'s check in one way, and deliberately: that one
+        also holds the file's own ``user_id`` against the asker, because a directory
+        is not the last word on who owns a session. Two accounts can share a
+        directory where the filesystem ignores case -- ``Alice`` and ``alice`` are
+        two users to SQLite and one directory to Windows. Every listing in this class
+        already answers from that shared directory, so this adds no exposure that a
+        session list does not; it is the pre-existing case-folding gap, not a new one.
+
+        False for a session that exists only in memory (one a run is creating right
+        now, before its first save). Say "not yours" rather than "not there": the
+        caller is deciding what to hand out.
+        """
+        try:
+            return self._session_file(user_id, session_id).exists()
+        except ValueError:  # a session id that cannot name a file cannot be anyone's
+            return False
+
     def _get_session_path(self, user_id: str, session_id: str) -> Path:
         """Get the file path for a session.
         
@@ -164,15 +193,26 @@ class SessionManager:
         Raises:
             ValueError: If session_id contains invalid characters
         """
+        path = self._session_file(user_id, session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _session_file(self, user_id: str, session_id: str) -> Path:
+        """Where a session's file would be -- without making anything.
+
+        Split out of ``_get_session_path`` for the readers: that one creates the
+        user directory, which is right for a save and wrong for a question. Same
+        validation either way, so the two can never name different files.
+
+        Raises:
+            ValueError: If session_id contains invalid characters
+        """
         # Sanitize user_id to prevent directory traversal
         safe_user_id = self._sanitize_user_id(user_id)
         # Validate session_id format
         safe_session_id = self._validate_session_id(session_id)
-        
-        user_dir = self.storage_path / safe_user_id
-        user_dir.mkdir(parents=True, exist_ok=True)
-        
-        return user_dir / f"{safe_session_id}.json"
+
+        return self.storage_path / safe_user_id / f"{safe_session_id}.json"
 
     def _generate_session_id(self) -> str:
         """Generate a unique session ID.

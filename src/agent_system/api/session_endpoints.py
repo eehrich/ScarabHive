@@ -6,6 +6,7 @@ Provides CRUD endpoints for managing user conversation sessions.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -19,6 +20,29 @@ from agent_system.services.background_job_manager import get_background_job_mana
 logger = logging.getLogger(__name__)
 
 session_router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+#: How many session ids one ``/active`` poll may ask about. The sidebar asks for
+#: what it shows -- roots plus the children of expanded nodes -- and a tree that
+#: deep is a scrolling problem before it is a polling one. Cut rather than
+#: refused: a poll is repeated seconds later anyway.
+_ACTIVE_IDS_LIMIT = 200
+
+
+async def _events_emitted(request_id: Optional[str]) -> Optional[int]:
+    """How many events the run behind ``request_id`` has sent so far, or None.
+
+    None for a run with no background job -- a ``/run`` carrying files, a
+    sub-agent's run. Those stream inline and cannot be reconnected to anyway, so
+    there is nothing for the number to be used for.
+    """
+    if not request_id:
+        return None
+    try:
+        job = await get_background_job_manager().get_job(request_id)
+    except Exception as err:  # noqa: BLE001 -- a missing job manager is not a failed session load
+        logger.debug("Could not read the event count for %s: %s", request_id, err)
+        return None
+    return job.events_emitted if job is not None else None
 
 
 async def _build_descendants_context_vars(
@@ -271,6 +295,74 @@ async def list_sessions_hierarchy(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+@session_router.get("/active", response_model=Dict[str, Any])
+async def list_active_sessions(
+    ids: str = "",
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """Of the sessions named in ``ids``, which are running right now.
+
+    Declared BEFORE ``/{session_id}``: FastAPI matches in order, and the
+    parameterised route would swallow "active" as a session id.
+
+    The caller names the sessions it is asking about -- the rows the sidebar has
+    on screen. That is the question the sidebar actually has ("which of these is
+    busy") and it keeps the answer small.
+
+    Naming the ids is NOT what makes it safe, though; every entry is checked
+    against the caller. A background job carries the user who started it, and a
+    lock-held session usually has one in the tracker's metadata; only where
+    neither names a user does this fall back to whose directory the session file
+    sits in. Without that, this would be the one route here that answers about a
+    session it never established belongs to the asker, and it hands out a
+    ``request_id`` that ``POST /api/requests/{id}/cancel`` acts on -- an endpoint
+    that, today, checks no ownership of its own.
+
+    ``answered`` marks a run that has sent its answer and is only finishing.
+    ``cancel_session`` spares those deliberately (cancelling one takes its
+    background sub-agents with it), so a caller that cancels from this answer
+    spares them too.
+
+    ``attachable`` says whether a client may follow this run's stream: only a
+    background job can be reconnected to. A ``/run`` carrying files and a
+    sub-agent's run have no job -- they are reported (the sidebar marks them)
+    but following them would answer 409 and read to the viewer as a lost
+    connection.
+
+    Not reported: a session the run itself creates, until its first turn has
+    named it. It has no row in the sidebar yet either, and the chat that started
+    it follows its own run directly.
+    """
+    wanted = [s for s in (i.strip() for i in ids.split(",")) if s][:_ACTIVE_IDS_LIMIT]
+    if not wanted:
+        return {"active": {}}
+    user_id = current_user.username if current_user else "anonymous"
+    try:
+        active = await get_background_job_manager().active_sessions()
+    except Exception as e:
+        logger.exception("Failed to read active sessions: %s", e)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    answer = {}
+    for session_id in wanted:
+        info = active.get(session_id)
+        if not info:
+            continue
+        owner = info.get("user_id")
+        if owner is None:
+            # Neither the job nor the tracker's metadata named a user: fall back to
+            # whose directory the session file sits in.
+            if not session_manager.belongs_to(user_id, session_id):
+                continue
+        elif owner != user_id:
+            continue
+        answer[session_id] = {"request_id": info.get("request_id"),
+                              "agent_name": info.get("agent_name"),
+                              "attachable": bool(info.get("attachable")),
+                              "answered": bool(info.get("answered"))}
+    return {"active": answer}
+
+
 @session_router.get("/{session_id}/children", response_model=Dict[str, Any])
 async def list_session_children(
     session_id: str,
@@ -321,6 +413,48 @@ async def get_session(
                 logger.debug(f"Session agent '{session_agent_name}' not found in registry, skipping live lookups")
             except Exception as e:
                 logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, skipping live lookups")
+
+        # A session with a run still in flight: hand out what the run has, not
+        # what is on disk. The persisted list ends at the last FINISHED turn --
+        # _finalize_request writes at the end of a request -- so opening such a
+        # session mid-run showed the history up to that point and then the live
+        # stream, with everything in between missing. Same "in-flight means the
+        # tracker holds the truth" rule the context_vars merge below applies,
+        # and gated on the session lock rather than on the live state being
+        # present: that state outlives the run it belongs to.
+        #
+        # The lock is the gate, and it is a hair narrower than it looks: the run
+        # releases it just BEFORE its final save, so for the length of that write
+        # this falls back to disk and shows the previous turn. The next load is
+        # right. Named rather than papered over -- closing it means moving the
+        # release past the save, which is the run's lifecycle, not this endpoint's.
+        if session_agent is not None and hasattr(session_agent, "_session_tracker"):
+            try:
+                is_running, owner_request_id = session_agent._session_tracker.check_session_locked(session_id)
+            except Exception as lock_err:
+                logger.debug(f"Could not read the session lock for {session_id}: {lock_err}")
+                is_running, owner_request_id = False, None
+            if is_running:
+                try:
+                    live = session_agent.get_live_conversation(session_id)
+                except Exception as live_err:
+                    logger.debug(f"Could not read live messages for {session_id}: {live_err}")
+                    live = None
+                if live:
+                    from agent_system.services.session_service import _msg_to_dict, _add_estimated_tokens
+                    messages = [_msg_to_dict(m) for m in live]
+                    # The panel sums estimated_tokens and counts how many messages carried
+                    # one; the persisted path adds them, so the live one has to as well or
+                    # the token figure reads 0 for exactly the sessions worth watching.
+                    # Off the loop, as there: the estimator probes media files.
+                    await asyncio.to_thread(_add_estimated_tokens, messages)
+                    session["messages"] = messages
+                    # How much of the run's stream these messages already account for, so a
+                    # client attaching next can ask the run to skip just that much. Without
+                    # it the reconnect either replays turns the client has (duplicates) or
+                    # drops the buffer whole -- which loses whatever the run emitted between
+                    # this response and the attach, up to and including its final answer.
+                    session["live_events_seen"] = await _events_emitted(owner_request_id)
 
         # Inject live runtime template_vars from the agent's session tracker.
         # save_session persists context_vars only after messages are committed

@@ -1158,6 +1158,31 @@ class Agent(ToolServer):
                 return entry["messages"]
         return None
 
+    def get_live_conversation(self, session_id: Optional[str]) -> Optional[List[ChatMessage]]:
+        """The in-flight messages of a session as a READER should see them.
+
+        ``get_live_messages`` hands out the run's own working list: it opens
+        with the rendered system prompt and carries the notes the run wrote for
+        this one call. Persistence drops both -- the prompt is rebuilt per turn
+        from config, a volatile note belongs to the call it was built for -- so
+        a viewer joining a session mid-run must have them dropped too, or the
+        chat shows the agent its own system prompt as a message.
+
+        Both rules are the ones persistence uses, not copies of them: a system
+        message that IS conversation (an archived_ref, a prune breadcrumb) stays
+        by ``is_compaction_system_message``, and the volatile notes go by
+        ``is_volatile_note``.
+        """
+        live = self.get_live_messages(session_id)
+        if live is None:
+            return None
+        from .components.hook_integration import is_compaction_system_message
+        from .components.session_tracking import is_volatile_note
+        return [msg for msg in live
+                if not is_volatile_note(msg)
+                and (getattr(msg, "role", None) != "system"
+                     or is_compaction_system_message(msg))]
+
     def get_live_tools_schema(self, session_id: Optional[str]) -> Optional[List[Dict[str, Any]]]:
         """Live tool schema for a session, or None if not tracked."""
         if session_id:

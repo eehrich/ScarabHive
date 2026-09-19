@@ -459,43 +459,6 @@ class TestBackgroundJobManager:
         assert job.sse_client_count == 0
     
     @pytest.mark.asyncio
-    async def test_get_active_jobs(self, job_manager):
-        """Test getting list of active jobs."""
-        async def slow_runner():
-            yield {"type": "start"}
-            await asyncio.sleep(10)
-        
-        # Create multiple jobs
-        await job_manager.create_job(
-            request_id="req1",
-            user_id="user1",
-            agent_name="agent1",
-            session_id=None,
-            agent_runner=slow_runner,
-        )
-        
-        await job_manager.create_job(
-            request_id="req2",
-            user_id="user2",
-            agent_name="agent2",
-            session_id=None,
-            agent_runner=slow_runner,
-        )
-        
-        await asyncio.sleep(0.1)  # Let jobs start
-        
-        # Get all active jobs
-        active = await job_manager.get_active_jobs()
-        assert len(active) == 2
-        assert any(j["request_id"] == "req1" for j in active)
-        assert any(j["request_id"] == "req2" for j in active)
-        
-        # Get by user
-        user1_jobs = await job_manager.get_active_jobs(user_id="user1")
-        assert len(user1_jobs) == 1
-        assert user1_jobs[0]["request_id"] == "req1"
-    
-    @pytest.mark.asyncio
     async def test_get_all_jobs(self, job_manager):
         """Test getting all jobs including completed."""
         async def quick_runner():

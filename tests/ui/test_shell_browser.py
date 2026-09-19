@@ -66,6 +66,21 @@ plugin for, memory searches included, is counted by the session it names,
 answered with a number per session in every figure the panels show and, for
 ``s-lagging``, late. A message to a running request is appended through
 /events/<id>/append.
+
+Which sessions are running is set by a test through POST /__stub/active-runs
+(session id -> request id), and ``GET /api/sessions/active`` answers from that
+table, capping the ids at 200 as the real endpoint does. A value ending in
+``!`` is a run the server knows of but that cannot be reconnected to
+(``attachable`` false) -- and ``GET /events`` answers 409 for exactly those
+request ids, as app.py does, so the stub cannot say "not attachable" here and
+let the reconnect through anyway; one ending in ``~`` has answered already and
+is only finishing (``answered`` true). ``stub_active=broken`` fails the poll
+with 502, ``slow`` answers it after 1.2 s. A reconnect records what it was told
+to catch up on: ``catch-up:<request_id>`` is ``"<catch_up>/<seen>"``.
+``r-live-buffered`` holds four buffered events and sends only those past
+``seen``; ``r-live-over`` reports a finished run in its reconnect and closes at
+once. A session added through /__stub/sessions may carry ``live_events_seen``,
+which is what the chat hands back as ``seen``.
 """
 from __future__ import annotations
 
@@ -355,9 +370,33 @@ def stub_app() -> FastAPI:
         return StreamingResponse(stream(), media_type="text/event-stream")
 
     @app.get("/events")
-    async def reattach(request_id: str = "", session_id: str = ""):
+    async def reattach(request_id: str = "", session_id: str = "", catch_up: str = "", seen: str = ""):
+        hits[f"catch-up:{request_id}"] = f"{catch_up or 'replay'}/{seen or '-'}"
+        # As app.py does: only a job can be reconnected to, and a run without one
+        # answers 409 -- which is what `attachable` in /api/sessions/active exists
+        # to keep a client from walking into. Read from the same table the active
+        # answer is built from, so the stub cannot say "attachable: false" here and
+        # let the reconnect through anyway.
+        if request_id in {v.rstrip("!~") for v in active_runs.values() if "!" in v}:
+            raise HTTPException(status_code=409, detail="No background job for this request")
+        status_of = "completed" if request_id == "r-live-over" else "running"
+
         async def stream():  # the server names the run first
-            yield event({"type": "reconnect", "request_id": request_id, "session_id": session_id, "message": "Reconnected"})
+            yield event({"type": "reconnect", "request_id": request_id, "session_id": session_id,
+                         "status": status_of, "message": "Reconnected"})
+            if request_id == "r-live-over":
+                return  # the run had finished: the buffer is empty and the stream closes at once
+            if request_id == "r-live-buffered":
+                # Four events waited in the run's buffer; the client says how many of
+                # them its session load already accounted for, and gets the rest.
+                skip = int(seen) if (catch_up == "skip" and seen.isdigit()) else 0
+                # each its own node in the status tree (a child id of the run), so four
+                # events read as four lines rather than one line written over four times
+                for n in range(skip + 1, 5):
+                    yield event({"type": "status", "phase": "start", "message": f"buffered {n}",
+                                 "request_id": f"{request_id}_{n:03d}"})
+                await asyncio.sleep(3)
+                return
             if request_id == "r-live-dropping":  # drops before the run's end
                 await asyncio.sleep(0.5)
             elif request_id in ("r-live-closing", "r-live-stopping"):  # the run ends
@@ -575,6 +614,47 @@ def stub_app() -> FastAPI:
             raise HTTPException(status_code=502, detail="The server is restarting")
         return {"sessions": listed, "root_count": len(listed)}
 
+    @app.get("/api/sessions")
+    async def sessions_flat(request: Request):
+        """The plain list the /sessions chat command reads. With
+        ``stub_cmd_list=held`` it is held open until POST /__stub/lists/release --
+        which is how a test keeps a slash command running while it does something
+        else."""
+        listed = list(sessions)
+        if request.cookies.get("stub_cmd_list") == "held":
+            return held(listed)
+        return listed
+
+    # Which sessions an agent is working in. Declared BEFORE /api/sessions/{session_id},
+    # as in the real app: FastAPI matches in order, and the parameterised route would
+    # take "active" for a session id.
+    active_runs: dict[str, str] = {}
+
+    @app.post("/__stub/active-runs")
+    async def set_active_runs(payload: dict):
+        """A test says which sessions are running; the pane and the chat both read it."""
+        active_runs.clear()
+        active_runs.update(payload or {})
+        return {"ok": True}
+
+    @app.get("/api/sessions/active")
+    async def sessions_active(request: Request, ids: str = ""):
+        hits["sessions-active"] = hits.get("sessions-active", 0) + 1
+        if request.cookies.get("stub_active") == "broken":
+            raise HTTPException(status_code=502, detail="the job registry is unavailable")
+        if request.cookies.get("stub_active") == "slow":
+            await asyncio.sleep(1.2)  # long enough for a session pick to start meanwhile
+        wanted = [i for i in ids.split(",") if i][:200]  # the endpoint's own cap
+        hits["sessions-active-ids"] = len(wanted)
+        # A value of "<id>" is a job-backed run (attachable); "<id>!" is one the
+        # server knows of but cannot be reconnected to -- a /run with files, a
+        # sub-agent's run. A trailing "~" marks a run past its answer, which
+        # cancel_session spares and so must whoever cancels from this answer.
+        def entry(rid: str) -> dict:
+            return {"request_id": rid.rstrip("!~"), "agent_name": "assistant",
+                    "attachable": "!" not in rid, "answered": "~" in rid}
+        return {"active": {sid: entry(active_runs[sid]) for sid in wanted if sid in active_runs}}
+
     @app.get("/api/sessions/{session_id}/children")
     async def session_children(request: Request, session_id: str):
         listed = list(children.get(session_id, []))  # the branch as it is when asked
@@ -673,7 +753,7 @@ EXPECTED = [
     'a session opened by a load on its way while its delete runs takes no message',
     'after New, deleting the session left behind leaves the chat alone',
     'a message sent while a pick is on its way stays when that pick is deleted',
-    '/new during a run asks about the run and stays in the session while it goes on',
+    '/new during a run opens the new session and leaves the run going',
     'a slash command that ends while a newer line resolves leaves that line its guard against a second Send',
     'files sent while a request runs stay attached, and so does their message',
     'a message sent before the running request has started stays in the input',
@@ -687,11 +767,23 @@ EXPECTED = [
     'deleting the open session whose run loses its stream while it stops cancels the run and goes',
     'deleting a session cancels the run it asks about: one named and cut off while the run question is open is cancelled, one past its answer -- asked about or not -- is not',
     'a session being deleted does not open again',
-    'leaving a session during its run: past its answer a pick or New asks nothing and takes the chat with its composer, and the last click wins; a later choice wins, and a message sent while the run stops keeps the session',
+    'leaving a session during its run: a pick or New takes the chat at once and leaves the run working, the last click wins, and a message goes to the session it was typed in',
     'a run let go of past its answer is read to its end, and its save shows in the session list: a message, one with files beside a new run, and a run followed again after a reload',
     'a run let go of whose stream breaks while it saves leaves the session list alone: a message, and one with files',
-    'while a run stops for a pick: a later pick wins, a declined one is no pick, a click on the open session keeps it',
-    'while the viewer is asked: a start that arrives is no choice, a run that ends is not cancelled, a stream that breaks still has its run cancelled, a refused request leaves a lost run to the pick; a delete started after a cancel asks nothing',
+    'picks while a run goes on: each takes the chat at once, the last wins, and none of them stops the run',
+    'a run works on while another session is read, and the chat picks it up again on return',
+    'leaving a session with a file run does not cut that run short',
+    'a delete finds the run of a session that is running somewhere else',
+    'a run the chat cannot follow is marked but not attached to',
+    'coming back shows what the run sent while away, and shows it once',
+    'a run that ended while the viewer was away is not reported as a lost connection',
+    'the session of a run being read for its end is not attached to a second time',
+    'a click on another session is not swallowed by an attach that answers late',
+    'a run past its answer is left alone when its session is deleted',
+    'a failed activity poll leaves the marks as they were',
+    'a run asked to stop is still known as stopping after a session switch',
+    'the sessions pane marks the sessions an agent is working in',
+    'switching away never stops the run, whatever its stream is doing; a delete after a cancel asks nothing',
     'deleting the session of a run whose connection was lost cancels that run first',
     'a restored message names image and audio parts stored without their data',
     'the theme button cycles the theme and every panel follows',
@@ -753,3 +845,12 @@ EXPECTED = [
 @pytest.mark.parametrize("name", EXPECTED)
 def test_shell(results, name):
     assert results.get(name) == "ok", results
+
+
+def test_every_check_the_page_ran_is_one_this_list_knows(results):
+    """The list is what turns a check into a test. A check named here but gone from
+    the page fails loudly (nothing answers for it); one added to the page and not
+    added here ran and was never looked at -- it could have been failing for weeks.
+    Six were in exactly that state once, which is why this is here."""
+    unexpected = sorted(set(results) - set(EXPECTED))
+    assert not unexpected, f"checks the page ran that EXPECTED does not name: {unexpected}"

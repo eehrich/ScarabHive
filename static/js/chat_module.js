@@ -1655,14 +1655,16 @@
     return requestId && { requestId, sessionId: sessionStorage.getItem(RUN_SESSION_KEY) };
   }
 
+  // A reload of this tab follows the stored run no more. Only that: whether the run itself is
+  // over is a different question, and the "asked to stop" mark answers it for as long as the
+  // run may still take a message. Unmarking here would tie the mark to the viewer's navigation
+  // -- leave the session and come back, and a run being cancelled would take a message again.
   function clearStoredRun() {
-    const stored = storedRun();
-    if (stored) unmarkStopping(stored.requestId);
     sessionStorage.removeItem(RUN_KEY);
     sessionStorage.removeItem(RUN_SESSION_KEY);
   }
 
-  // A run the chat has asked the server to end -- by Stop, or by leaving its session. It ends in its own
+  // A run the chat has asked the server to end -- by Stop, or by deleting its session. It ends in its own
   // time and takes no more messages, which it would save unanswered; an ask whose answer failed or went
   // missing may have been taken all the same. Kept per request for a reload of the tab, until the run
   // is forgotten.
@@ -1717,12 +1719,53 @@
 
   // A session takes the chat from a run past its answer or its cancel: the chat follows its stream no more -- the
   // stream only waits for the run's save and session-end hooks, and would hold the messages of the session now shown
-  // until then. It reads on to its end, its events ignored.
+  // until then. The fetch stream reads on to its end, its events ignored; a /run streams its agent inline, and a
+  // reader that stops reading cuts the run short.
+  //
+  // The run of a stream let go of past its answer, still being read for its end -- or null. Attaching a second
+  // reader to it would have the two split its events between them: the one still reading discards what it gets,
+  // and the new one waits for an `end` that went to the other, which reads to the viewer as a lost connection on
+  // a run that is finishing cleanly.
+  let lingeringRequestId = null;
+
+  // Its stream is NOT closed -- neither the EventSource of a run followed again nor the fetch stream of one this
+  // chat started: it still brings the run's `end`, and with it the refresh that puts the run's save in the session
+  // list, and a /run carrying files would be cut short by a reader that stops. But it stays a reader of the run's
+  // queue, which the server hands each event to exactly once -- so the run it is reading is remembered above, and
+  // a second reader is never attached to the same one.
   function letGoOfFinishedRun() {
     if (!chatModule.hasActiveRequest() || !run.over) return;
+    lingeringRequestId = run.requestId || null;  // before the two are let go of: either one is still reading
     followedStream = null;
     currentEventSource = null;
     endRun();
+  }
+
+  /**
+   * The viewer opens another session while this run is STILL GOING: the chat stops
+   * following it. Nothing is cancelled -- the run owns its session on the server and
+   * works on; only this chat stops watching.
+   *
+   * Unlike letting go of a finished run, the connection is CLOSED, not merely
+   * ignored. The server hands each event to whoever is reading, so a reader left
+   * draining and discarding would eat the run's output, and coming back to the
+   * session would show an idle-looking agent. Closed, the events wait in the run's
+   * buffer (the oldest are dropped past its size, which is why coming back reloads
+   * the session rather than trusting the buffer).
+   *
+   * A reload of this tab does NOT follow it: showing another session lets the stored
+   * run go (leaveLostRun), or the reload would open the session left behind rather
+   * than the one on screen. Coming back to it asks the server instead.
+   */
+  function letGoOfRunningRun() {
+    if (!chatModule.hasActiveRequest() || run.over) return;
+    const stream = followedStream;
+    followedStream = null;
+    const source = currentEventSource;
+    currentEventSource = null;
+    try { stream?.stop?.(); } catch { /* a stream already finishing needs no stopping */ }
+    try { source?.close(); } catch { /* same */ }
+    endRun(true);
   }
 
   // A lasting row about the run's connection in the block's status (a status without a
@@ -2315,6 +2358,12 @@
           formData.append('session_id', currentSessionId);
         }
 
+        // NO abort handle on purpose. POST /run runs the agent INLINE in its SSE
+        // response (app.py: `async for event in selected_agent.run_events(...)`, no
+        // create_job) -- closing this connection kills the run mid-step. Letting go
+        // therefore only stops READING it, as it does for a finished run. That is
+        // also harmless here: without a job there is no buffer to eat and nothing to
+        // reconnect to later.
         const stream = {};
         try {
           followedStream = stream;
@@ -2394,6 +2443,8 @@
         } finally {
           // The run ran inline in this request, not as a job a reload could follow: it was never stored,
           // and the run stored for a reload is another one.
+          // Whatever became of it, nothing reads this run any more.
+          if (lingeringRequestId === run.requestId) lingeringRequestId = null;
           if (followedStream === stream) {
             followedStream = null;
             endRun();
@@ -2417,13 +2468,20 @@
       if (selectedLLMProfile) postBody.llm_profile = selectedLLMProfile;
 
       let lost = false;  // the connection broke before the run's end
-      const stream = {};
+      // `stop` ENDS the connection, where letting go of a finished run only stops
+      // reading it. A run that is still going must have its connection closed:
+      // the server hands each event to the reader that takes it, so a reader
+      // that keeps draining and discarding would empty the run's buffer -- and
+      // the chat coming back to that session would find nothing waiting.
+      const runAbort = new AbortController();
+      const stream = { stop: () => runAbort.abort() };
       try {
         followedStream = stream;
         const response = await fetch('/events', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(postBody)
+          body: JSON.stringify(postBody),
+          signal: runAbort.signal
         });
 
         if (!response.ok) {
@@ -2510,6 +2568,8 @@
         }
       } finally {
         // The run is over for this chat; a lost one stays stored for a reload to follow.
+        // Whatever became of it, nothing reads this run any more.
+        if (lingeringRequestId === run.requestId) lingeringRequestId = null;
         if (followedStream === stream) {
           followedStream = null;
           endRun(lost);
@@ -2541,6 +2601,7 @@
         if (!status) return;  // the server could not be asked: the run stays stored, and a later reload asks again
         if (status.status !== 'running') {
           clearStoredRun();
+          unmarkStopping(stored.requestId);  // over: it takes no message, mark or no mark
           return;
         }
         attachRun(stored);
@@ -2550,7 +2611,7 @@
       }
     }
 
-    function attachRun({ requestId, sessionId: session }) {
+    function attachRun({ requestId, sessionId: session }, { catchUp = 'replay', seen = null } = {}) {
       // The live run takes the chat -- over a session picked meanwhile (a read-only one too:
       // the run's session takes messages). A chat that shows that session keeps it.
       if (currentSessionId !== session) {
@@ -2575,7 +2636,14 @@
       run = { requestId, sessionId: session, over: false };
       // Only request_id: the backend uses the job's agent. No token in the URL either:
       // the server does not accept one, and the access_token cookie goes along.
-      const es = new EventSource(`/events?task=&request_id=${encodeURIComponent(requestId)}&session_id=${encodeURIComponent(session || '')}`,
+      // catch_up=skip&seen=N: the session was just loaded and already carries the run's
+      // live messages -- everything the run's first N events said. Replaying those would
+      // show the same turns twice; anything the run sent SINCE still comes, which is how
+      // an answer that landed between the load and this connect reaches the screen. After
+      // a reload there is nothing on screen and the buffer IS the history -- that path
+      // replays.
+      const es = new EventSource(`/events?task=&request_id=${encodeURIComponent(requestId)}&session_id=${encodeURIComponent(session || '')}`
+        + (catchUp === 'skip' ? `&catch_up=skip&seen=${encodeURIComponent(Number(seen) || 0)}` : ''),
         { withCredentials: true });
       currentEventSource = es;
 
@@ -2587,9 +2655,18 @@
             // saved its session by then
             if (data.type === 'end') {
               es.close();
+              if (lingeringRequestId === requestId) lingeringRequestId = null;
               window.sessionManager.loadSessions();
             }
             return;
+          }
+          // The run was already over when this connection reached it: the server says so
+          // in the reconnect, and its stream now carries whatever is left in the buffer
+          // and then closes. Without noting it here, that close reads as a connection
+          // lost on a run that finished cleanly -- and the session, which HAS the answer
+          // on disk by then, is never asked again.
+          if (data.type === 'reconnect' && data.status && data.status !== 'running') {
+            run.over = true;
           }
           handleSSEEvent(data, blk);
         } catch (err) {
@@ -2601,6 +2678,7 @@
       // not tell apart -- may leave the run going: a reload asks the server again.
       es.onerror = () => {
         es.close();
+        if (lingeringRequestId === requestId) lingeringRequestId = null;
         if (currentEventSource !== es) return;  // let go of already
         currentEventSource = null;
         if (run.over) {
@@ -2611,6 +2689,56 @@
         }
       };
     }
+
+    /**
+     * Follow the run of the session just opened, if one is going.
+     *
+     * The SERVER is asked, not a note this tab kept. A run started in another tab or
+     * through the API is then picked up just the same, and there is no bookkeeping in
+     * the browser that could fall out of step with what is actually running.
+     *
+     * What the viewer missed while away comes from the session load, not from the
+     * stream: the load hands out the run's live messages for a session in flight, and
+     * a run's event buffer drops its oldest events when it fills. The stream is joined
+     * for what happens from here on -- `live_events_seen` is how far "from here on"
+     * starts, the number of events the run had sent when that load was taken.
+     */
+    async function attachRunOfOpenSession(session) {
+      const sessionId = session && session.session_id;
+      if (!sessionId || chatModule.hasActiveRequest()) return;
+      let active = null;
+      try {
+        const response = await fetch(`/api/sessions/active?ids=${encodeURIComponent(sessionId)}`,
+          { credentials: 'include', signal: AbortSignal.timeout(10000) });
+        if (!response.ok) return;
+        active = (await response.json()).active?.[sessionId];
+      } catch (error) {
+        console.warn('[chat_module] Could not ask whether the session has a run:', error);
+        return;
+      }
+      // `attachable` is false for a run with no background job (a /run with files, a
+      // sub-agent's run): GET /events answers 409 for those, which the chat would show
+      // as a lost connection on a session that is working perfectly well.
+      if (!active || !active.request_id || !active.attachable) return;
+      // Already being read: a stream let go of past its answer is still bringing that
+      // run's end, and the server hands each event to one reader only.
+      if (active.request_id === lingeringRequestId) return;
+      // Another session was opened while the server answered, or a run started here
+      // meanwhile: that one is the chat's, not this answer.
+      //
+      // `requested` as well as the current one: a pick sets it BEFORE its load, while
+      // the current session only changes once that load answers. Asked about the
+      // current one alone, an answer arriving between the two would attach here and
+      // take the header -- which bumps the session pane's loading count and drops the
+      // load already on its way. The click would vanish without a word.
+      if (window.sessionManager.getCurrentSessionId() !== sessionId) return;
+      if (window.sessionManager.requested !== sessionId) return;
+      if (chatModule.hasActiveRequest()) return;
+      attachRun({ requestId: active.request_id, sessionId },
+        { catchUp: 'skip', seen: session.live_events_seen });
+    }
+
+    chatModule.followRunOfOpenSession = attachRunOfOpenSession;
 
     return followRun();
   };
@@ -2642,6 +2770,8 @@
 
   // Listen for new conversation events
   window.addEventListener('session:new', (event) => {
+    // Starting a new session leaves a run going, like switching to another one does.
+    letGoOfRunningRun();
     letGoOfFinishedRun();
     currentSessionId = null;
     const chatEl = document.getElementById('chat');
@@ -2657,12 +2787,11 @@
   window.addEventListener('session:loaded', (event) => {
     const { session, readOnly, reason } = event.detail;
 
-    // A run the chat follows keeps the chat until its answer or its cancel: a load would overwrite its live output.
-    // Past them a session picked meanwhile takes the chat.
-    if (chatModule.activeRun()) {
-      console.warn('[session:loaded] Ignoring session load - a run is still streaming');
-      return;
-    }
+    // The run of the session being LEFT goes on -- the chat just stops watching it.
+    // This used to refuse the load outright ("a run is still streaming"), which is
+    // why no session could be opened while any run was going: the one thing a run
+    // must not do is pin the viewer to the session it runs in.
+    letGoOfRunningRun();
     letGoOfFinishedRun();
     leaveLostRun(session.session_id);
 
@@ -2794,7 +2923,11 @@
       removeReadOnlyBanner();
     }
     updateComposer();
+    // The session shown may have an agent working in it. Not awaited: the session is
+    // rendered either way, and the run joins the view when the server has answered.
+    chatModule.followRunOfOpenSession?.(session);
   });
+
 
   // A run whose connection was lost stays stored for a reload of its session; showing
   // another one lets it go.
@@ -2865,6 +2998,7 @@
     }
     // a run stored meanwhile is another one
     if (storedRun()?.requestId === requestId) clearStoredRun();
+    unmarkStopping(requestId);  // cancelled: it is ending and takes no message
     return true;
   };
 

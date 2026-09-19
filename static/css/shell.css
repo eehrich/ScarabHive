@@ -98,6 +98,17 @@ body.app {
   font: 400 var(--text-sm)/1 var(--font-ui); color: inherit; text-align: left;
   background: none; border: 0; cursor: pointer;
 }
+/* An agent is working in this session. Shown on the row itself, not only on the open
+   one: the point is to see the runs you are NOT looking at. Kept next to the title so
+   it survives the hover swap below, which hides the timestamp. */
+.session-running { display: none; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent, currentColor); }
+.session-item.is-running > .session-row > .session-running { display: block; animation: session-running-pulse 1.6s ease-in-out infinite; }
+@keyframes session-running-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+/* A run can last hours; a dot pulsing all that time in the corner of the eye is a
+   cost with no message. Anyone who asked for less motion gets a steady dot. */
+@media (prefers-reduced-motion: reduce) {
+  .session-item.is-running > .session-row > .session-running { animation: none; }
+}
 .session-row .session-meta { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .session-row .session-actions { display: none; }
 .session-row:hover .session-actions, .session-row:focus-within .session-actions { display: flex; }

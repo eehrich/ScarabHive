@@ -26,6 +26,19 @@ function dayGroup(dateString) {
   return 'Earlier';
 }
 
+/**
+ * How often the pane asks which sessions are running.
+ *
+ * A run is the thing being watched, and runs last from seconds to hours -- so the
+ * mark has to appear soon after Send, not eventually. Four seconds is short enough
+ * that it feels immediate and long enough that an idle pane is quiet; the poll is
+ * one request with a list of ids in it, and it sleeps while the tab is hidden.
+ */
+const ACTIVITY_POLL_MS = 4000;
+
+/** As many ids as one poll asks about; the server caps at the same number. */
+const ACTIVITY_POLL_MAX_IDS = 200;
+
 /** What the pane needs of a session -- not its messages, which a loaded session carries. */
 function summary(session) {
   const { session_id, title, agent_name, updated_at, has_children } = session;
@@ -58,16 +71,16 @@ export class SessionManager {
     this.loading = 0;
     /** the session last asked for -- by a pick, the restore or the chat: open, or still on its way */
     this.requested = null;
-    /** counted up by every pick and New as it is made -- before a run it leaves has stopped */
-    this.navigations = 0;
-    /** counted up by every message the chat writes into its session, sent or held */
-    this.chatChoices = 0;
     /** session id -> the messages the chat has written into it, sent or held */
     this.written = new Map();
     /** the sessions whose delete is past its questions and has not answered yet: they go */
     this.going = new Set();
     /** counted up by every reload of the list; an older reload's answer is dropped */
     this.listLoads = 0;
+    /** session id -> the run working in it, as the server last reported them */
+    this.active = new Map();
+    /** counted up by every activity poll; an older poll's answer is dropped */
+    this.activityPolls = 0;
     render(this.pane, html`
       <div class="sessions-head">
         <h2 class="pk-grow">Sessions</h2>
@@ -126,6 +139,8 @@ export class SessionManager {
             ? html`<button type="button" class="session-expand" data-act="expand" aria-expanded="${String(Boolean(children))}" title="Sub-sessions">${icon('chevron-right', { size: 'sm' })}</button>`
             : html`<span class="session-expand-spacer"></span>`}
           <button type="button" class="session-open pk-truncate" data-act="open" title="${session.title || 'Untitled'}">${session.title || 'Untitled'}</button>
+          <span class="session-running" title="An agent is working in this session" aria-hidden="true"></span>
+          <span class="session-running-said pk-sr-only"></span>
           <span class="session-meta">${relative(session.updated_at)}</span>
           <span class="session-actions">
             <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="info" title="Open in a panel">${icon('info', { size: 'sm' })}</button>
@@ -159,6 +174,104 @@ export class SessionManager {
     if (refocus?.id) {
       this.list.querySelector(`[data-id="${CSS.escape(refocus.id)}"] [data-act="${refocus.act}"]`)?.focus();
     }
+    this.markActive();
+  }
+
+  /**
+   * Session ids the pane is showing: the roots, plus the children of expanded nodes.
+   *
+   * Cut to what one poll may ask about. The server cuts too, but silently and after
+   * the query string has already been built -- past a few hundred ids that string
+   * runs into proxy limits, and the rows beyond the cut would stay unmarked with
+   * nothing saying why. Cut here, it is one place and it can be said out loud.
+   */
+  visibleIds() {
+    const ids = this.sessions.map((s) => s.session_id);
+    for (const children of this.expanded.values()) {
+      for (const child of children || []) ids.push(child.session_id);
+    }
+    const shown = ids.filter(Boolean);
+    if (shown.length > ACTIVITY_POLL_MAX_IDS) {
+      console.warn(`[sessions] ${shown.length} sessions shown; only the first `
+        + `${ACTIVITY_POLL_MAX_IDS} are checked for a running agent`);
+    }
+    return shown.slice(0, ACTIVITY_POLL_MAX_IDS);
+  }
+
+  /**
+   * Put the running marks on the rows, in place.
+   *
+   * In place rather than through render(): the marks change on their own timer, and
+   * redrawing the list for them would fight the focus restore above and throw away the
+   * expanded branches' DOM several times a minute for a dot.
+   *
+   * For anyone not looking at it, the mark is a word in the row's own text, revealed
+   * and hidden with the dot. It used to be `aria-busy` on the `.session-item`, which
+   * says something else: that the element is being CHANGED and may be skipped for now
+   * -- and that element wraps the expanded sub-sessions too, so a whole branch could
+   * go quiet for as long as an agent worked in its parent. The dot itself stays
+   * decoration (aria-hidden); a title on a span is mouse-only anyway.
+   */
+  markActive() {
+    this.list.querySelectorAll('.session-item').forEach((item) => {
+      const running = this.active.has(item.dataset.id);
+      item.classList.toggle('is-running', running);
+      const said = item.querySelector(':scope > .session-row > .session-running-said');
+      if (said) said.textContent = running ? 'An agent is working in this session' : '';
+    });
+  }
+
+  /**
+   * The run working in one session right now, or null -- asked of the server.
+   *
+   * NOT read from `this.active`: that map is drawn from a poll on its own timer and
+   * is replaced whole on every tick. A delete that consulted it could find the entry
+   * gone a moment after the pane drew the mark, and would then leave the agent
+   * working for a session nobody will write again -- silently, since there is nothing
+   * left to show. Drawing may be a tick stale; cancelling may not.
+   */
+  async runningIn(id) {
+    const data = await api(`/api/sessions/active?ids=${encodeURIComponent(id)}`, { quiet: true })
+      .catch(() => null);
+    const run = data?.active?.[id];
+    // A run past its answer is left alone, as the server leaves it when IT cancels a
+    // deleted session's runs: cancelling one takes its background sub-agents with it,
+    // and it is only finishing anyway -- saves and session-end hooks.
+    if (!run || run.answered) return null;
+    return run.request_id || null;
+  }
+
+  /**
+   * Which of the shown sessions an agent is working in right now.
+   *
+   * Polled, not pushed. A run's start and end are all this has to catch, the pane
+   * already lives on timers, and a second long-lived stream per tab would need its own
+   * reconnect and backoff to say the same thing. The poll asks only about the rows on
+   * screen, which is also what keeps the answer free of other users' sessions.
+   *
+   * A failed poll changes nothing: the marks stand until the next one corrects them.
+   * Better a mark one tick stale than a list that flickers empty on one bad request.
+   */
+  async refreshActivity() {
+    if (document.visibilityState !== 'visible') return;
+    const ids = this.visibleIds();
+    if (!ids.length) return;
+    const poll = ++this.activityPolls;
+    const data = await api(`/api/sessions/active?ids=${encodeURIComponent(ids.join(','))}`,
+      { quiet: true }).catch(() => null);
+    if (!data) return;
+    // A slow answer must not land on top of a newer one: the marks would jump back to
+    // an older picture and stay there until the next tick.
+    if (poll !== this.activityPolls) return;
+    this.active = new Map(Object.entries(data.active || {}));
+    this.markActive();
+  }
+
+  /** Start the activity poll. The shell owns the cadence, as it does for health. */
+  watchActivity(everyMs = ACTIVITY_POLL_MS) {
+    this.refreshActivity();
+    document.addEventListener('visibilitychange', () => this.refreshActivity());
+    return setInterval(() => this.refreshActivity(), everyMs);
   }
 
   async onListClick(event) {
@@ -278,7 +391,16 @@ export class SessionManager {
    */
   async cancelLostRun(id) {
     // taken before asking: the chat may let the run go while the question is open
-    const run = window.chatModule.lostRunIn(id);
+    //
+    // Two kinds of run end up here. One whose connection was lost, which the chat
+    // still has stored -- and, since leaving a session stopped cancelling, one that
+    // is simply working in a session the viewer is not looking at. The chat knows
+    // nothing of the second: it let go of its stream and forgot it. The activity poll
+    // does, which is why it is asked as well. Without this a delete would leave an
+    // agent working for a session the server will never write again.
+    // The open session's own run is left to leaveRunningRequest below, or both would ask.
+    const followedHere = id === this.currentSessionId && window.chatModule.activeRun();
+    const run = window.chatModule.lostRunIn(id) || (followedHere ? null : await this.runningIn(id));
     if (!run) return true;
     const ok = await confirm('A run of this session may still be going. Deleting the session cancels it.',
       { title: 'Run may still be going', confirmLabel: 'Cancel the run', danger: true });
@@ -316,20 +438,6 @@ export class SessionManager {
     return answer === 'nothing' || (answer === 'confirmed' && await this.cancelRunningRequest(run));
   }
 
-  /**
-   * Leave the open session for a pick or New. False when its running request stays -- or when, while it
-   * stopped, a later pick or New was made, or the chat wrote into the session: that one wins. A declined
-   * pick is none, and a delete takes no pick's place: the pick opens, the deleted session goes.
-   */
-  async leaveFor(action) {
-    const { answer, run } = await this.askToCancelRunningRequest(action);
-    if (answer === 'declined') return false;
-    const navigation = ++this.navigations;
-    const chatChoices = this.chatChoices;
-    if (answer === 'confirmed' && !await this.cancelRunningRequest(run)) return false;
-    return navigation === this.navigations && chatChoices === this.chatChoices;
-  }
-
   /** The new session: nothing still loading may replace it. */
   startNew({ chosen = true } = {}) {
     this.loading++;
@@ -344,7 +452,6 @@ export class SessionManager {
   }
 
   async newConversation() {
-    if (!await this.leaveFor('Starting a new session')) return;
     this.startNew();
     this.onShown();
   }
@@ -355,14 +462,12 @@ export class SessionManager {
       toast('The session is being deleted', { kind: 'warn' });
       return false;
     }
-    // the open session while its run works: nothing to switch to, nothing to cancel -- and a pick still
-    // waiting for the run to stop gives way to it
+    // the open session while its run works: it is already shown, and there is no
+    // stream to move -- the chat keeps following the one it has
     if (id === this.currentSessionId && window.chatModule.activeRun()) {
-      this.navigations++;
       this.onShown();
       return true;
     }
-    if (!await this.leaveFor('Switching sessions')) return false;
     const attempt = ++this.loading;
     this.requested = id;
     let session;
@@ -415,9 +520,8 @@ export class SessionManager {
     this.setCurrent(id, id ? this.byId.get(id)?.title : null);
   }
 
-  /** The chat writes a message into its session, sent or held: a pick, New or delete still waiting for the run to stop gives way. */
+  /** The chat writes a message into its session, sent or held: a delete waiting for its run to stop gives way to it. */
   messageWritten(id) {
-    this.chatChoices++;
     this.written.set(id, (this.written.get(id) ?? 0) + 1);
     this.setCurrentSession(id);
   }

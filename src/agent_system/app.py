@@ -2110,8 +2110,45 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 }
                 if existing_job.last_status_message:
                     reconnect_payload["last_status"] = existing_job.last_status_message
+
+                # ``catch_up=skip&seen=N``: the client has just loaded this session, and
+                # that load told it the run had sent N events by then -- everything those
+                # events say is already in the messages it is showing. Replaying them
+                # would show the same turns twice.
+                #
+                # Only those. An earlier version dropped the buffer WHOLE, which also
+                # threw away everything the run emitted between that load and this
+                # connect -- a window of two round trips, and if the run's final answer
+                # fell into it the viewer never saw the answer and got a
+                # "connection lost" notice on a run that had finished cleanly.
+                #
+                # Worked out BEFORE the yield below: yielding hands control back to the
+                # event loop, and what the run puts in the queue meanwhile has not been
+                # seen by anyone.
+                skip_count = 0
+                if request.query_params.get("catch_up") == "skip":
+                    try:
+                        seen = int(request.query_params.get("seen", ""))
+                    except ValueError:
+                        seen = 0
+                    skip_count = existing_job.catch_up_skip(seen)
+
                 yield f"data: {json.dumps(reconnect_payload, ensure_ascii=False)}\n\n"
-                
+
+                dropped = 0
+                while dropped < skip_count:
+                    try:
+                        item = existing_job.event_queue.get_nowait()
+                    except Exception:  # noqa: BLE001 -- drained by another reader meanwhile
+                        break
+                    if item is None:
+                        existing_job.event_queue.put_nowait(None)  # the run's end marker stays
+                        break
+                    dropped += 1
+                if skip_count:
+                    logger.debug("[EVENTS] %s: skipped %d of %d buffered events on catch-up",
+                                 request_id, dropped, skip_count)
+
                 keepalive_interval = config.status.sse_keepalive_interval
                 actual_session_id = existing_job.actual_session_id or existing_job.session_id
                 

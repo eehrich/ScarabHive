@@ -95,14 +95,16 @@ in-place rebind pattern as the `continuation` event handler).
   Showing another session, New or `/new` lets the stored run go; the start page
   the tab falls back to when a session cannot be shown does not, but a message
   sent there starts a run that takes the stored run's place -- a tab stores one
-  run. Deleting the session cancels the run first. Leaving or deleting a
-  session whose request is running asks first, cancels it, and waits for its
-  stream to bring the cancel or end, and a choice made meanwhile -- a later
-  pick, New, a message into the session -- wins. What is cancelled is the run
-  the viewer was asked about: cut off while they were asked, it is cancelled
-  all the same; past its answer or its cancel meanwhile, it is not -- a cancel
-  would take its background sub-agents and session-end hooks along -- and
-  neither is a stored run of an earlier message. A message sent in the session
+  run. Leaving a session whose run is going cancels NOTHING: the chat lets go
+  of the stream, the run keeps working, and coming back to the session asks the
+  server whether one is going and joins it again. Only DELETING a session asks
+  first, cancels its run, and waits for its stream to bring the cancel or end,
+  and a choice made meanwhile -- a later pick, New, a message into the session
+  -- wins. What is cancelled is the run the viewer was asked about: cut off
+  while they were asked, it is cancelled all the same; past its answer or its
+  cancel meanwhile, it is not -- a cancel would take its background sub-agents
+  and session-end hooks along -- and neither is a stored run of an earlier
+  message. A message sent in the session
   before a reload starts a new run, which the server refuses while the old one
   still holds the session -- the refusal keeps the stored run.
 - A run saves its session at its end, and its request handler once more after
@@ -111,8 +113,9 @@ in-place rebind pattern as the `continuation` event handler).
   an idle session for it, and a delete cancels every run of the session the
   server process holds that has not answered yet -- another tab's too, which
   sees the run cancelled -- so no delete waits for a save. A run past its answer
-  only finishes, its save refused: as when the viewer leaves, a cancel would
-  take its background sub-agents along. A message
+  only finishes, its save refused: a cancel would take its background sub-agents
+  along. The panel spares it for the same reason when it cancels before the
+  delete, reading `answered` from `GET /api/sessions/active`. A message
   appended to a cancelled run in the moment before its cancel takes is lost
   with it. Once a delete is past its questions,
   the session opens no more, and a message into it -- shown again by a load that
@@ -120,12 +123,13 @@ in-place rebind pattern as the `continuation` event handler).
   when it restarts, or when another process (agent-cli, a woken run) writes the
   session again; without session presence a run of the server still going may
   then save over it, as two processes on one session do anyway.
-- Stop, or leaving the session, asks the server to cancel the run; the run's
+- Stop, or deleting the session, asks the server to cancel the run; the run's
   stream still brings its end, and a message sent meanwhile waits in the
   composer -- the stopping run would save it unanswered. That holds even when
   the answer to the ask failed or went missing, since the cancel may have been
-  taken all the same; the tab remembers the ask across a reload. Leaving before
-  the run's start has named it cancels nothing, and the chat says so.
+  taken all the same; the tab remembers the ask across a reload, and across
+  leaving the session and coming back. Deleting before the run's start has
+  named it cancels nothing, and the chat says so.
 - A run's own `final` or `cancelled` event ends its answer: the controls go
   idle, with nothing left to stop, a message sent after it waits in the composer
   as well, a reload no longer follows the run -- it shows the answer from the

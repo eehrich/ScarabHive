@@ -77,6 +77,34 @@ class BackgroundJob:
     llm_profile: Optional[str] = None
     # The run has sent its answer (ANSWER_EVENTS) and only finishes now: saves, session-end hooks
     answered: bool = False
+    # How many items the run has handed to the queue, counted from the first -- its events, and
+    # the end marker as the last. NOT the queue's length: the buffer drops its oldest when it
+    # fills, and this keeps counting. It is what lets a client that has already seen the run's
+    # first N events say so, so the reconnect can skip exactly those and no more.
+    events_emitted: int = 0
+
+    def catch_up_skip(self, seen: int) -> int:
+        """How many of the buffered items a client that already holds the run's first ``seen``
+        events may be sent past.
+
+        The buffer keeps the LAST ``qsize`` of the ``events_emitted`` items, the oldest having
+        been pushed out as it filled, so its first entry is item number
+        ``events_emitted - qsize + 1`` and the client wants everything after number ``seen``.
+
+        Both ends are held: never more than the buffer holds, and never less than nothing. A
+        client that has seen nothing (``seen`` 0, or a reconnect that names no number) skips
+        nothing, which is the replay this reconnect did before it could be told; one that has
+        seen everything the run has sent skips the buffer whole. And one the buffer has
+        OUTRUN -- its oldest pushed out past what the client had seen -- skips nothing: none
+        of what is left is on its screen. Its gap stays, and only its next session load
+        closes it; skipping here would widen it.
+
+        Read before the reconnect answer goes out, not after: answering hands control back to
+        the event loop, and what the run puts in the queue meanwhile has not been seen.
+        """
+        buffered = self.event_queue.qsize()
+        first_buffered = self.events_emitted - buffered + 1
+        return max(0, min(buffered, seen - first_buffered + 1))
 
 
 class BackgroundJobManager:
@@ -238,6 +266,10 @@ class BackgroundJobManager:
                             event_queue.put_nowait(event)
                         except asyncio.QueueEmpty:
                             pass
+                    # Counted whether or not it had to push an older one out: the number
+                    # says which event this was, not how many are still waiting.
+                    if own_job is not None:
+                        own_job.events_emitted += 1
                 
                 # Mark as completed
                 async with self._lock:
@@ -264,6 +296,13 @@ class BackgroundJobManager:
                 # Signal end to any waiting consumers
                 try:
                     event_queue.put_nowait(None)
+                    # Counted like an event although it is not one: what reads the count
+                    # against the queue's length (the reconnect's catch-up) needs the two
+                    # to mean the same items, and the marker occupies a place in the queue.
+                    # No client ever reports having seen it -- it only arrives once the run
+                    # is over, and then there is nothing left to catch up on.
+                    if own_job is not None:
+                        own_job.events_emitted += 1
                 except asyncio.QueueFull:
                     pass
         
@@ -567,35 +606,68 @@ class BackgroundJobManager:
                 pass
         return False
 
-    async def get_active_jobs(self, user_id: Optional[str] = None) -> list[dict[str, Any]]:
-        """Get list of active jobs, optionally filtered by user.
-        
-        Args:
-            user_id: If provided, only return jobs for this user
-            
-        Returns:
-            List of job info dictionaries
+    async def active_sessions(self) -> dict[str, dict[str, Any]]:
+        """Which sessions this process is running right now: session_id -> info.
+
+        Two sources, because neither sees everything:
+
+        * The background jobs. That is what the web UI starts, and the source
+          that always knows whose run it is. A job's session is read under both
+          names -- ``session_id`` is empty for a session the run itself creates,
+          and only ``actual_session_id`` names it once the start event has. The
+          same pair ``cancel_session`` matches on; matching one of them alone
+          makes a fresh session look idle for its whole first turn.
+        * The agent servers' session locks. A ``/run`` that carries files is no
+          job, and a sub-agent's session never was one -- those show up here and
+          nowhere else. The owner comes from the same tracker's session metadata,
+          which every run writes (the API layer, agent-cli, the sub-agent manager
+          all set it); it stays None where the run reached the tracker without a
+          user, and then the caller has to decide from somewhere else.
+
+        Jobs win on conflict, for the user_id. The result is process-internal
+        truth and says nothing about who may SEE a session -- the caller filters.
         """
         async with self._lock:
-            jobs = [
-                {
-                    "request_id": job.request_id,
-                    "user_id": job.user_id,
-                    "agent_name": job.agent_name,
-                    "session_id": job.session_id,
-                    "status": job.status.value,
-                    "created_at": job.created_at,
-                    "sse_clients": job.sse_client_count,
-                }
-                for job in self._jobs.values()
-                if job.status == JobStatus.RUNNING
-            ]
-            
-            if user_id:
-                jobs = [j for j in jobs if j["user_id"] == user_id]
-            
-            return jobs
-    
+            running = [job for job in self._jobs.values() if job.status == JobStatus.RUNNING]
+        active: dict[str, dict[str, Any]] = {}
+        for server in self._agent_servers():
+            tracker = getattr(server, "_session_tracker", None)
+            try:
+                owners = tracker.active_sessions()
+            except Exception as err:  # noqa: BLE001 -- one agent must not cost the others their runs
+                # Nothing known holds a tracker back today, so this is a guard, not a
+                # path. Logged rather than passed over: unanswered, it shows up as an
+                # agent whose runs quietly stop being marked anywhere.
+                logger.debug("[ACTIVE_SESSIONS] %s has no readable session tracker: %s",
+                             getattr(server, "name", server), err, exc_info=True)
+                continue
+            for session_id, request_id in owners.items():
+                if session_id:
+                    meta = tracker.get_session_metadata(session_id) or {}
+                    active[session_id] = {
+                        "request_id": request_id,
+                        "agent_name": getattr(server, "name", None),
+                        "user_id": meta.get("user_id"),
+                        "attachable": False,
+                        "answered": False,
+                    }
+        for job in running:
+            for session_id in (job.session_id, job.actual_session_id):
+                if session_id:
+                    active[session_id] = {
+                        "request_id": job.request_id,
+                        "agent_name": job.agent_name,
+                        "user_id": job.user_id,
+                        # Only a job can be reconnected to: /events finds it by id and
+                        # streams its buffer. A run without one answers 409 there.
+                        "attachable": True,
+                        # Past its answer, only finishing. ``cancel_session`` spares those
+                        # on purpose -- cancelling one takes its background sub-agents with
+                        # it -- so whoever cancels from this answer has to spare them too.
+                        "answered": job.answered,
+                    }
+        return active
+
     async def get_all_jobs(self, include_completed: bool = False) -> list[dict[str, Any]]:
         """Get all jobs info.
         

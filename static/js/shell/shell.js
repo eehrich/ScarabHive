@@ -324,6 +324,8 @@ async function start() {
   workspace.restore();
   await sessions.restore();
   setInterval(pollHealth, 30000);
+  // After restore, so the first poll asks about the rows that are actually shown.
+  sessions.watchActivity();
 }
 
 function showStartupError(error) {
