@@ -988,6 +988,21 @@ class _PromptEditor:
     def read_continuation(self, prompt: str) -> str:
         return self._continuation.prompt(prompt)
 
+    def typed_text(self) -> str:
+        """What stands in the line being written -- wherever the focus is.
+
+        NOT ``app.current_buffer``: that one follows the FOCUS. Ctrl-R moves
+        the focus to the search buffer (prompt_toolkit's ``start_search``
+        focuses ``search_buffer_control``, and ``Layout.current_buffer``
+        returns whatever is focused), and where the focus is on no buffer at
+        all ``Application.current_buffer`` hands out an empty DUMMY buffer by
+        design. Both read as "nothing typed" while the person's line sits
+        untouched in the default buffer -- and the one caller of this asks in
+        order NOT to throw that line away.
+        """
+        buffer = getattr(self._session, "default_buffer", None)
+        return getattr(buffer, "text", "") or ""
+
     def app(self) -> Any:
         """The prompt_toolkit Application of the MAIN prompt, or None.
 
@@ -1500,7 +1515,8 @@ def _watch_for_wake(ctx: "_ChatContext",
     thread can interrupt -- and that path is the redirected/piped one, where
     nobody is sitting in front of the prompt to be woken anyway.
 
-    The cut is refused while anything is typed (``current_buffer.text``):
+    The cut is refused while anything is typed (``_PromptEditor.typed_text``,
+    which asks the DEFAULT buffer and not the focused one -- see there):
     ``exit()`` discards the buffer, and losing a half-written message to a
     background job is a worse trade than a wake-up that waits for the next
     tick -- by which time their own line has started a turn that takes the
@@ -1533,7 +1549,7 @@ def _watch_for_wake(ctx: "_ChatContext",
         # change underneath: they typed while the tick was in flight, or the
         # prompt has already returned by itself.
         try:
-            if app.current_buffer.text.strip():
+            if editor.typed_text().strip():
                 return
             if app.future is None or app.future.done():
                 return

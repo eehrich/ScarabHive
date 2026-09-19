@@ -5125,6 +5125,37 @@ class TestWakingTheWaitingPrompt:
         with _watch_for_wake(ctx, editor):
             assert editor.read("> ") == "halb getippt"
 
+    def test_a_line_survives_a_focus_change_too(self, pt_prompt, tmp_path,
+                                                monkeypatch):
+        """Ctrl-R moves the FOCUS to the search buffer, and prompt_toolkit's
+        Application.current_buffer follows the focus -- it even hands out an
+        empty dummy buffer when nothing focusable has it. Asking that one
+        reads "nothing typed" while the line sits in the default buffer, and
+        the cut would throw exactly the line away that this guard exists for.
+        """
+        ctx, presence = _presence_ctx(tmp_path, monkeypatch)
+        _mark_input_waiting(ctx, presence)
+        editor = _build_prompt_editor([])
+
+        def _type_search_and_send():
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                if getattr(editor.app(), "is_running", False):
+                    break
+                time.sleep(0.01)
+            pt_prompt.send_text("wie geht")
+            time.sleep(0.2)
+            pt_prompt.send_text("\x12")       # Ctrl-R: focus leaves the line
+            # Several watcher ticks with the mark set and the focus away.
+            time.sleep(_WAKE_POLL_S * 4)
+            pt_prompt.send_text("\n")         # accept the (empty) search
+            time.sleep(0.2)
+            pt_prompt.send_text("\n")         # submit the line itself
+
+        threading.Thread(target=_type_search_and_send, daemon=True).start()
+        with _watch_for_wake(ctx, editor):
+            assert editor.read("> ") == "wie geht"
+
     def test_the_mark_is_taken_before_the_turn_runs(self, tmp_path, monkeypatch):
         """A turn that never reaches an LLM call would leave the mark set, and
         the watcher would start the next turn a tick later, and the next."""
