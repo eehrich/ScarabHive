@@ -6,6 +6,7 @@ answer the front end cannot work out for itself: what is running right now.
 """
 
 import asyncio
+import json
 
 import pytest
 
@@ -760,3 +761,278 @@ async def test_the_live_messages_carry_their_token_estimate(tmp_path, monkeypatc
         assert answer["messages"][-1]["estimated_tokens"] > 0
     finally:
         await _stop(jobs, release)
+
+
+# ---------------------------------------------------------------------------
+# What opening a session costs: the sub-session tree
+# ---------------------------------------------------------------------------
+
+async def _tree_on_disk(tmp_path, user_id="ada"):
+    """A real three-level tree through the real SessionManager.
+
+    root
+      kid-a         context_vars {"phase": "a"}
+        grandkid    context_vars {"phase": "deep"}
+      kid-b         context_vars {"phase": "b"}
+    """
+    from agent_system.services.session_manager import SessionManager
+    manager = SessionManager(storage_path=str(tmp_path))
+
+    async def make(sid, parent=None, phase=None):
+        session = await manager.create_session(user_id=user_id, title=sid, agent_name="an_agent",
+                                               session_id=sid, parent_session_id=parent)
+        if phase:
+            session["context_vars"] = {"phase": phase}
+            await manager.save_session(session)
+        return session
+
+    await make("root")
+    await make("kid-a", parent="root", phase="a")
+    await make("grandkid", parent="kid-a", phase="deep")
+    await make("kid-b", parent="root", phase="b")
+
+    # The whole point of the walk is that it never asks for this. `list_sessions`
+    # merges the main index with EVERY per-parent sub-index -- 51 MB across 1303
+    # files on the user's store, about a second -- and the tree it produced was
+    # the same shape, so every assertion about the SHAPE stays green if it comes
+    # back. Only this says it is gone.
+    async def refuse(*_args, **_kwargs):
+        raise AssertionError("list_sessions was called: the expensive path is back")
+
+    manager.list_sessions = refuse
+    return manager
+
+
+@pytest.mark.asyncio
+async def test_the_sub_session_tree_is_walked_down_from_the_root(tmp_path):
+    """It used to come from list_sessions, which merges the main index with EVERY
+    per-parent sub-index -- on the user's store 51 MB across 1303 files, about a
+    second, to find a handful of ids below one root. Walking down reads one
+    sub-index per parent. Same tree, and the nesting is the point: a flat answer
+    would satisfy a test that only counted."""
+    manager = await _tree_on_disk(tmp_path)
+    tree = await session_endpoints._build_descendants_context_vars(
+        session_manager=manager, tool_registry=None, user_id="ada", root_session_id="root")
+
+    by_id = {node["session_id"]: node for node in tree}
+    assert set(by_id) == {"kid-a", "kid-b"}, "the direct children are the top level"
+    assert by_id["kid-a"]["context_vars"] == {"phase": "a"}
+    assert by_id["kid-b"]["children"] == [], "a leaf has no children"
+    deeper = by_id["kid-a"]["children"]
+    assert [n["session_id"] for n in deeper] == ["grandkid"], "the grandchild hangs under its own parent"
+    assert deeper[0]["context_vars"] == {"phase": "deep"}
+    assert deeper[0]["agent_name"] == "an_agent"
+
+
+@pytest.mark.asyncio
+async def test_a_sub_index_naming_a_session_further_up_does_not_loop(tmp_path):
+    """The tree cannot loop, but a stale sub-index can name a session above it,
+    and walking down from there would not end. Guarded rather than trusted: the
+    walk now reads those files one at a time instead of one merged picture."""
+    manager = await _tree_on_disk(tmp_path)
+    # grandkid's sub-index claims kid-a, its own parent -- the shape a stale partition
+    # leaves. Pointed at the middle of the tree and not at the root on purpose: a guard
+    # that only refused to walk the root again would pass that and still hang here.
+    path = manager._get_index_path("ada", "grandkid")
+    template = json.loads(manager._get_index_path("ada", "kid-a").read_text(encoding="utf-8"))
+    entry = next(iter(template.values()))
+    path.write_text(json.dumps({"kid-a": {**entry, "session_id": "kid-a",
+                                          "parent_session": {"session_id": "grandkid"}}}),
+                    encoding="utf-8")
+    # Said out loud: if this ever stops being read back as a child, the test below
+    # degenerates into a second copy of the one above without anybody noticing.
+    assert [c["session_id"] for c in await manager.list_child_sessions("ada", "grandkid")] == ["kid-a"], \
+        "fixture: the stale entry is not read back as a child, so there is no loop to guard against"
+
+    # Measured on which parents the walk asks for, not on how long it takes: without
+    # the guard this does not merely take longer, it never ends, and a test that waits
+    # for a timeout to prove that hangs the suite instead of failing it. The cap turns
+    # the runaway into a stop; the duplicate is what the assertion is about.
+    asked: list[str] = []
+    real_children = manager.list_child_sessions
+
+    async def counting(user_id, parent_id, **kwargs):
+        asked.append(parent_id)
+        if len(asked) > 20:
+            raise RuntimeError("the walk is going in circles")
+        return await real_children(user_id, parent_id)
+
+    manager.list_child_sessions = counting
+
+    tree = await session_endpoints._build_descendants_context_vars(
+        session_manager=manager, tool_registry=None, user_id="ada", root_session_id="root")
+
+    assert sorted(asked) == ["grandkid", "kid-a", "kid-b", "root"], \
+        f"every parent below the root is walked once, and only once: {asked}"
+    assert asked.count("kid-a") == 1, "the walk went back up to a session it had already been through"
+
+    walked = set()
+
+    def collect(nodes):
+        for node in nodes:
+            walked.add(node["session_id"])
+            collect(node["children"])
+
+    collect(tree)
+    assert "root" not in walked, "the walk came back to where it started"
+    assert {"kid-a", "kid-b", "grandkid"} <= walked, "and it still found everything below"
+
+
+@pytest.mark.asyncio
+async def test_the_sub_session_tree_is_built_only_for_whoever_asks_for_it(tmp_path):
+    """The expensive half of this answer, and only the Session Info panel shows it:
+    building it opens EVERY session below the one asked for. 28 % of this user's
+    sessions have more than two hundred descendants and the largest has 3055 --
+    half a second to two seconds, on every open, thrown away by every caller but
+    one. So it is off unless asked for, which is the unusual direction for a
+    field that used to be there: the alternative was for the chat to ask for
+    LESS, and that gives its GET a different URL from the DELETE of the same
+    session -- which the delete path relies on being the same."""
+    manager = await _tree_on_disk(tmp_path)
+    asked = []
+    real_children = manager.list_child_sessions
+
+    async def counting(user_id, parent_id, **kwargs):
+        asked.append(parent_id)
+        # The walk knows the whole subtree, so it has no use for `has_children` --
+        # which is one stat per child, hundreds of them for nothing on a wide node.
+        assert kwargs.get("annotate_children") is False, \
+            "the walk asked for the expand-toggle flag it never reads"
+        return await real_children(user_id, parent_id, **kwargs)
+
+    manager.list_child_sessions = counting
+
+    asked_for_it = await session_endpoints.get_session(
+        "root", descendants=True, current_user=_User("ada"), session_manager=manager,
+        default_agent=None, tool_registry=None)
+    assert {n["session_id"] for n in asked_for_it["descendants_context_vars"]} == {"kid-a", "kid-b"}, \
+        "fixture: asking for the tree did not produce one"
+    assert asked, "fixture: nothing was read for the tree"
+
+    asked.clear()
+    plain = await session_endpoints.get_session(
+        "root", current_user=_User("ada"), session_manager=manager,
+        default_agent=None, tool_registry=None)
+    assert plain["descendants_context_vars"] == [], "the default hands out the expensive half again"
+    assert asked == [], "and it was built anyway"
+    # the session itself still comes: the same fields the chat renders from
+    assert plain["session_id"] == "root" and plain["agent_name"] == "an_agent"
+    assert "messages" in plain
+
+
+@pytest.mark.asyncio
+async def test_a_descendants_vars_are_merged_with_what_its_run_holds(tmp_path):
+    """The reason this tree exists at all: a sub-agent sets context_vars during its
+    run and they are persisted only at the next checkpoint. Every other test here
+    passes tool_registry=None, which skips the merge entirely -- so without this,
+    handing out the persisted vars alone would pass them all."""
+    manager = await _tree_on_disk(tmp_path)
+    agent = await _agent_running("kid-a", "r-1", [])
+    agent._session_tracker.set_session_template_vars("kid-a", {"phase": "live", "chapter": 7})
+
+    tree = await session_endpoints._build_descendants_context_vars(
+        session_manager=manager, tool_registry=_Registry(an_agent=agent),
+        user_id="ada", root_session_id="root")
+
+    by_id = {node["session_id"]: node for node in tree}
+    assert by_id["kid-a"]["context_vars"] == {"phase": "live", "chapter": 7}, \
+        "the run's vars did not reach the answer, or did not win over the saved ones"
+    assert by_id["kid-b"]["context_vars"] == {"phase": "b"}, \
+        "a session the run holds nothing for keeps what is on disk"
+
+
+@pytest.mark.asyncio
+async def test_no_more_than_sixteen_session_files_are_read_at_once(tmp_path):
+    """A session file can be megabytes and a tree here has hundreds of nodes. The
+    reads run together -- that is what makes this fast -- but one panel's request
+    must not decide how much of the process's memory is JSON. The number is read
+    from the module rather than written down twice."""
+    from agent_system.services.session_manager import SessionManager
+    manager = SessionManager(storage_path=str(tmp_path))
+    await manager.create_session(user_id="ada", title="root", agent_name="an_agent", session_id="root")
+    for i in range(40):  # more than the cap, or "bounded" and "there was no more" look the same
+        await manager.create_session(user_id="ada", title=f"k{i}", agent_name="an_agent",
+                                     session_id=f"kid-{i:02d}", parent_session_id="root")
+
+    live = 0
+    high_water = 0
+
+    def counted(real):
+        """Both kinds of read are bounded: the session files AND the sub-indexes.
+        The biggest single file this walk opens on the user's store is a 943 KB
+        sub-index, so counting only the session files would measure the smaller
+        half and call the bound proved."""
+        async def counting(*args, **kwargs):
+            nonlocal live, high_water
+            live += 1
+            high_water = max(high_water, live)
+            try:
+                await asyncio.sleep(0)  # give the others a chance to pile up
+                return await real(*args, **kwargs)
+            finally:
+                live -= 1
+        return counting
+
+    manager.load_session = counted(manager.load_session)
+    manager.list_child_sessions = counted(manager.list_child_sessions)
+
+    tree = await session_endpoints._build_descendants_context_vars(
+        session_manager=manager, tool_registry=None, user_id="ada", root_session_id="root")
+
+    assert len(tree) == 40, "fixture: the walk did not find the children it was meant to bound"
+    assert high_water > 1, "fixture: the reads never overlapped, so nothing was bounded"
+    assert high_water <= session_endpoints._DESCENDANT_READS_AT_ONCE
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_branch_costs_the_branch_not_the_session(tmp_path):
+    """A sub-index that cannot be read is a branch nobody can show. Opening the
+    session must still work -- the messages are what the viewer came for."""
+    manager = await _tree_on_disk(tmp_path)
+    real_children = manager.list_child_sessions
+
+    async def sometimes_broken(user_id, parent_id, **kwargs):
+        if parent_id == "kid-a":
+            raise OSError("the sub-index is unreadable")
+        return await real_children(user_id, parent_id, **kwargs)
+
+    manager.list_child_sessions = sometimes_broken
+
+    answer = await session_endpoints.get_session(
+        "root", descendants=True, current_user=_User("ada"), session_manager=manager,
+        default_agent=None, tool_registry=None)
+
+    by_id = {n["session_id"]: n for n in answer["descendants_context_vars"]}
+    assert set(by_id) == {"kid-a", "kid-b"}, "the readable siblings went with it"
+    assert by_id["kid-a"]["children"] == [], "the branch below the unreadable index is empty"
+    assert "messages" in answer, "the session itself did not survive a branch it could not read"
+
+
+@pytest.mark.asyncio
+async def test_the_query_that_asks_for_the_tree_is_the_one_the_panel_sends(tmp_path, monkeypatch):
+    """Driven through the app, because the panel sends a QUERY STRING and every
+    other test here hands the flag over as a keyword -- which proves nothing about
+    what FastAPI would parse. Rename the parameter or change how it coerces and
+    the panel silently shows no sub-sessions while every test stays green."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_tool_registry
+    from agent_system.auth.dependencies import get_optional_user
+
+    manager = await _tree_on_disk(tmp_path)
+    app = FastAPI()
+    app.include_router(session_router)
+    app.dependency_overrides[get_session_manager] = lambda: manager
+    app.dependency_overrides[get_optional_user] = lambda: _User("ada")
+    app.dependency_overrides[get_agent_optional] = lambda: None
+    app.dependency_overrides[get_tool_registry] = lambda: None
+
+    with TestClient(app) as client:
+        # exactly what static/js/panels/session.js puts in the URL
+        asked = client.get("/api/sessions/root", params={"descendants": "true"})
+        assert asked.status_code == 200, asked.text
+        assert {n["session_id"] for n in asked.json()["descendants_context_vars"]} == {"kid-a", "kid-b"}
+
+        plain = client.get("/api/sessions/root")
+        assert plain.status_code == 200, plain.text
+        assert plain.json()["descendants_context_vars"] == []

@@ -1238,11 +1238,15 @@ class SessionManager:
         return sessions
 
     async def list_child_sessions(
-        self, user_id: str, parent_session_id: str
+        self, user_id: str, parent_session_id: str, annotate_children: bool = True
     ) -> List[Dict[str, Any]]:
         """Direct children of one parent, newest first, each flagged ``has_children``.
 
         Reads exactly that parent's ``.subs.<parent>.index.json`` — one file.
+
+        ``annotate_children=False`` leaves off ``has_children``, which costs one stat
+        per child. The sidebar needs it to draw an expand toggle; a caller that walks
+        the whole subtree itself already knows and pays hundreds of stats for nothing.
         """
         path = self._get_index_path(user_id, parent_session_id)  # validates the id
         if not path.exists():
@@ -1257,16 +1261,24 @@ class SessionManager:
                 logger.warning("Failed to read sub-index %s: %s", path, e)
                 return {}
 
-        index_data = await asyncio.to_thread(read_one)
-        # A sub-index is a partition of ONE parent, but stay strict: only return
-        # entries that actually name this parent.
-        children = [
-            meta for meta in index_data.values()
-            if self._extract_parent_id(meta) == parent_session_id
-        ]
-        children.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
-        self._annotate_children_flag(user_id, children)
-        return children
+        def read_and_shape() -> List[Dict[str, Any]]:
+            index_data = read_one()
+            # A sub-index is a partition of ONE parent, but stay strict: only return
+            # entries that actually name this parent.
+            children = [
+                meta for meta in index_data.values()
+                if self._extract_parent_id(meta) == parent_session_id
+            ]
+            children.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
+            if annotate_children:
+                self._annotate_children_flag(user_id, children)
+            return children
+
+        # The flag is one stat per child, and it used to run here, on the event loop,
+        # AFTER the read came back from its thread: 1127 children of one node measured
+        # 11 ms of contiguous block, which every SSE stream in the process waits out.
+        # It is stat work like the read, so it belongs in the same thread.
+        return await asyncio.to_thread(read_and_shape)
 
     async def rename_session(self, user_id: str, session_id: str, new_title: str) -> None:
         """Rename a session.

@@ -1753,6 +1753,36 @@
     }
   });
 
+  await check('the chat loads a session at the same URL the delete uses', async () => {
+    // Two things at once, and they are the same thing.
+    //
+    // The sub-session tree is the expensive half of GET /api/sessions/{id}: building it
+    // opens EVERY session below the one asked for. On the user's store 28 % of sessions
+    // have more than two hundred descendants and the largest has 3055 -- half a second
+    // to two seconds the chat throws away. Only the Session Info panel shows it, so the
+    // tree is off unless asked for and only that panel asks.
+    //
+    // Why it is the PANEL that asks, and not the chat that asks for less: the delete
+    // path relies on the chat's load and the DELETE being the SAME URL, because that is
+    // what makes the browser hold the DELETE back until the load has its headers. So
+    // this measures the URL, not the flag -- `?descendants=false` parses to the same
+    // False as sending nothing at all, and would pass a test that only read the value.
+    const queriesFor = async (id) => (await (await stub('/__stub/hits')).json())[`session-query:${id}`] || [];
+    try {
+      await loadShell();
+      sessionButton('s-2', 'open').click();
+      await until('the session', () => $('#headerSessionId').textContent === 'Fresh session', 4000);
+      // the restore after a reload is the same load, and it is the one on the critical path
+      await reloadUntilAsked('session:s-2');
+      const queries = await queriesFor('s-2');
+      if (!queries.length) throw new Error('the session was never loaded');
+      return queries.every((q) => q === '');
+    } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
   await check('a run asked to stop is still known as stopping after a session switch', async () => {
     // Leaving a session let its stored run go, and letting go also cleared the
     // "asked to stop" mark that goes with the request id. Back in the session, a

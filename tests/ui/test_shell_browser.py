@@ -59,7 +59,10 @@ answer and word a second later, and is cut off a second after that. /__stub/stre
 it was read to its end or cut off by the browser. A session added through
 /__stub/sessions may carry ``delay`` (seconds to answer), ``trickle`` (headers
 at once, the body after that many seconds), ``fails`` (its load fails),
-``delete_delay`` and ``delete_fails`` (how many deletes of it fail). The
+``delete_delay`` and ``delete_fails`` (how many deletes of it fail);
+``session-query:<id>`` collects the raw query string of every load of it, which
+is how a test says that the chat's load and the DELETE of a session stay the
+same URL. The
 Sub-Agents instance ``sam_writer``, ``context_engineer``, ``memory``, ``todo``
 and ``context_usage_tracker`` are the real plugin panels; what they ask their
 plugin for, memory searches included, is counted by the session it names,
@@ -663,8 +666,15 @@ def stub_app() -> FastAPI:
         return {"sessions": listed}
 
     @app.get("/api/sessions/{session_id}")
-    async def session(session_id: str):
+    async def session(request: Request, session_id: str, descendants: bool = False):  # off unless asked for, as the endpoint has it
         hits[f"session:{session_id}"] = hits.get(f"session:{session_id}", 0) + 1
+        # The RAW query, not the parsed flag: what the delete path needs is that the
+        # chat's load and the DELETE of the same session are the same URL, and
+        # `?descendants=false` parses to exactly the same False as sending nothing.
+        # Every query this session was loaded with, so a second load cannot hide a
+        # first one that asked for more.
+        key = f"session-query:{session_id}"
+        hits[key] = hits.get(key, []) + [request.url.query]
         if checking:
             hits["session-while-checking"] = hits.get("session-while-checking", 0) + 1
         if session_id == "s-unsaved":
@@ -782,6 +792,7 @@ EXPECTED = [
     'a run past its answer is left alone when its session is deleted',
     'a failed activity poll leaves the marks as they were',
     'a run asked to stop is still known as stopping after a session switch',
+    'the chat loads a session at the same URL the delete uses',
     'the sessions pane marks the sessions an agent is working in',
     'switching away never stops the run, whatever its stream is doing; a delete after a cancel asks nothing',
     'deleting the session of a run whose connection was lost cancels that run first',

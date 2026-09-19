@@ -27,6 +27,14 @@ session_router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 #: refused: a poll is repeated seconds later anyway.
 _ACTIVE_IDS_LIMIT = 200
 
+#: How many files the descendants walk may read at the same time -- session files
+#: and sub-indexes alike. The reads run together because they are waiting on disk,
+#: not working, but a session file can be megabytes and a tree here can have
+#: thousands of nodes: unbounded, one panel's request would decide how much of this
+#: process's memory is parsed JSON, and would fill the shared thread pool that every
+#: session save also queues in.
+_DESCENDANT_READS_AT_ONCE = 16
+
 
 async def _events_emitted(request_id: Optional[str]) -> Optional[int]:
     """How many events the run behind ``request_id`` has sent so far, or None.
@@ -69,31 +77,56 @@ async def _build_descendants_context_vars(
     For each session the persisted ``context_vars`` are merged with whatever
     the agent's session_tracker currently holds, so live updates show up
     even before the next checkpoint write.
+
+    The topology is walked DOWN from the root, one parent at a time, because a
+    sub-index is exactly one parent's children: ``list_child_sessions`` reads
+    that one file. It used to come from ``list_sessions``, which merges the main
+    index with EVERY per-parent sub-index -- for this user 51 MB across 1303
+    files, about a second, to find the handful of ids below one root. Measured
+    on that store: 978 ms for a root with two descendants, now under 40 ms.
     """
     if not session_manager:
         return []
 
-    # The list_sessions index does not include context_vars, so we list once
-    # to get the parent->children topology, then load each descendant's full
-    # session file to read its persisted context_vars.
-    sessions = await session_manager.list_sessions(user_id)
-    children_by_parent: Dict[str, List[Dict[str, Any]]] = {}
-    for entry in sessions:
-        parent_info = entry.get("parent_session")
-        if not isinstance(parent_info, dict):
-            continue
-        parent_id = parent_info.get("session_id")
-        if not parent_id:
-            continue
-        children_by_parent.setdefault(parent_id, []).append(entry)
+    seen: set[str] = {root_session_id}
+    reading = asyncio.Semaphore(_DESCENDANT_READS_AT_ONCE)
+
+    async def children_of(parent_id: str) -> List[Dict[str, Any]]:
+        """This parent's children -- one sub-index file, not the whole store.
+
+        ``seen`` is not about the tree, which cannot loop: it is about a stale
+        sub-index naming a session further up. Walking that would not end.
+        """
+        try:
+            async with reading:
+                # Under the same bound as the session files: a sub-index is a file read
+                # too, and the biggest one on the user's store is 943 KB -- bigger than
+                # most session files. Ungated, a node with a thousand children put a
+                # thousand reads into the shared executor in one tick, ahead of whatever
+                # a run was trying to save.
+                listed = await session_manager.list_child_sessions(
+                    user_id, parent_id, annotate_children=False)
+        except Exception as err:  # noqa: BLE001 -- one unreadable branch, not a failed load
+            # Warning, not debug: this is the only thing between the panel and the
+            # truth, and what it hides looks exactly like a session with no children.
+            logger.warning("Could not list the sub-sessions of %s: %s", parent_id, err)
+            return []
+        fresh = []
+        for child in listed:
+            sid = child.get("session_id")
+            if sid and sid not in seen:
+                seen.add(sid)
+                fresh.append(child)
+        return fresh
 
     async def _load_persisted_vars(sid: str) -> Dict[str, Any]:
-        try:
-            data = await session_manager.load_session(user_id, sid)
-            cv = data.get("context_vars")
-            return cv if isinstance(cv, dict) else {}
-        except Exception:
-            return {}
+        async with reading:
+            try:
+                data = await session_manager.load_session(user_id, sid)
+                cv = data.get("context_vars")
+                return cv if isinstance(cv, dict) else {}
+            except Exception:
+                return {}
 
     # Cache tool_registry agent lookups so we don't re-resolve per node
     agent_cache: Dict[str, Any] = {}
@@ -127,22 +160,29 @@ async def _build_descendants_context_vars(
         return merged
 
     async def _walk(parent_id: str) -> List[Dict[str, Any]]:
-        out: List[Dict[str, Any]] = []
-        for child in children_by_parent.get(parent_id, []):
-            sid = child.get("session_id")
-            if not sid:
-                continue
+        children = await children_of(parent_id)
+        if not children:
+            return []
+        # One node's session file and its own children are independent of its
+        # siblings', and every one of them is a file read that spends its time
+        # waiting. Run them together: a branch then costs its DEPTH in round
+        # trips rather than its size.
+        async def node(child: Dict[str, Any]) -> Dict[str, Any]:
+            # No guard on a missing session_id: children_of only passes on the ones
+            # that have it. The old shape needed the guard, because its children came
+            # from a list filtered on the PARENT id.
+            sid = child["session_id"]
             agent_name = child.get("agent_name")
             agent = _resolve_agent(agent_name)
-            persisted = await _load_persisted_vars(sid)
-            merged = _live_merge_vars(agent, sid, persisted)
-            out.append({
+            persisted, below = await asyncio.gather(_load_persisted_vars(sid), _walk(sid))
+            return {
                 "session_id": sid,
                 "agent_name": agent_name,
-                "context_vars": merged,
-                "children": await _walk(sid),
-            })
-        return out
+                "context_vars": _live_merge_vars(agent, sid, persisted),
+                "children": below,
+            }
+
+        return list(await asyncio.gather(*(node(c) for c in children)))
 
     return await _walk(root_session_id)
 
@@ -384,12 +424,28 @@ async def list_session_children(
 @session_router.get("/{session_id}")
 async def get_session(
     session_id: str,
+    descendants: bool = False,
     current_user: Optional[User] = Depends(get_optional_user),
     session_manager=Depends(get_session_manager),
     default_agent=Depends(get_agent_optional),
     tool_registry=Depends(get_tool_registry),
 ):
-    """Get session with messages (authenticated or anonymous)."""
+    """Get session with messages (authenticated or anonymous).
+
+    ``descendants=true`` adds ``descendants_context_vars``, the expensive half of
+    this answer: building it opens EVERY session below this one. On this user's
+    store 28 % of sessions have more than two hundred descendants and the largest
+    has 3055 -- half a second to two seconds, on every open, for something only
+    the Session Info panel shows. So the panel asks for it and nobody else does,
+    and opening a session in the chat no longer pays for it.
+
+    Off by default, which is the unusual direction for a field that used to be
+    there. The alternative was for the chat to ask for LESS -- and that gives the
+    chat's GET a different URL from the DELETE of the same session, which changes
+    which of two paths the delete takes (see docs/mid_run_message_injection.md).
+    Measured: it failed the test that pins the current one. The panel loads the
+    same session at a different URL and that is fine -- it opens nothing.
+    """
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = current_user.username if current_user else "anonymous"
 
@@ -479,16 +535,17 @@ async def get_session(
         # The Session Info panel uses this so users can see vars set on sub-agent
         # sessions even when the top-level session has none yet (e.g. linear_book
         # in early phases — vars are only set on spawned sub-agents).
-        try:
-            session["descendants_context_vars"] = await _build_descendants_context_vars(
-                session_manager=session_manager,
-                tool_registry=tool_registry,
-                user_id=user_id,
-                root_session_id=session_id,
-            )
-        except Exception as desc_err:
-            logger.debug(f"Could not build descendants tree for {session_id}: {desc_err}")
-            session["descendants_context_vars"] = []
+        session["descendants_context_vars"] = []
+        if descendants:
+            try:
+                session["descendants_context_vars"] = await _build_descendants_context_vars(
+                    session_manager=session_manager,
+                    tool_registry=tool_registry,
+                    user_id=user_id,
+                    root_session_id=session_id,
+                )
+            except Exception as desc_err:
+                logger.debug(f"Could not build descendants tree for {session_id}: {desc_err}")
 
         # Format assistant messages to HTML for frontend display
         if session.get("messages"):

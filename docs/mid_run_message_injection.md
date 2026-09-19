@@ -123,6 +123,22 @@ in-place rebind pattern as the `continuation` event handler).
   when it restarts, or when another process (agent-cli, a woken run) writes the
   session again; without session presence a run of the server still going may
   then save over it, as two processes on one session do anyway.
+- ⚠️ **The CHAT's load of a session and the DELETE of it are the same URL, and
+  changing that changes which of two paths the delete takes.** `remove()` handles
+  both -- a load that has already answered (the session is open, so the chat lets
+  go of it) and one still on its way (it is discarded by the loading counter) --
+  but which of them runs is decided by whether the browser serialises the two
+  requests, which it does for the same URL; the comment in `sessions.js` calls
+  that out. Measured, not reasoned: adding `?descendants=false` to the chat's GET
+  flipped it to the second path and failed the test that pins the first. What was
+  NOT established is the mechanism (connection reuse would explain it just as
+  well) or that the second path is wrong -- only that a query parameter on that
+  GET silently changes observable delete behaviour, while looking harmless.
+  That is why `descendants` on `GET /api/sessions/{id}` is off by DEFAULT and the
+  Session Info panel asks for it, rather than the chat asking to do without.
+  The rule is about the chat's load: the panel loads the same session at
+  `?descendants=true` and that is fine, because nothing it renders ever opens or
+  restores a session.
 - Stop, or deleting the session, asks the server to cancel the run; the run's
   stream still brings its end, and a message sent meanwhile waits in the
   composer -- the stopping run would save it unanswered. That holds even when
