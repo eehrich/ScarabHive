@@ -342,6 +342,35 @@
       && statValue('total') === '1';
   });
 
+  await check('the way back from a link: the toolbar names the session it was sent to, and one click follows the chat again', async () => {
+    const listed = async (session) => (await asked())[`list:${session}`] || 0;
+    await go('/plugins/memory/?session_id=s-2');
+    await until('the memories of s-2', () => statValue('total'));
+    await autoOff();
+    const named = $('pk-session').hidden === false && $('pk-session .pk-badge').textContent.includes('s-2')
+      && $('pk-session [data-act="follow"]');
+    // this page stands in for the shell: the chat is on s-1, and it answers the panel the way back reloads too
+    const shell = (event) => {
+      if (event.data?.type === 'pk:ready') tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-1', title: 'First' } });
+    };
+    window.addEventListener('message', shell);
+    try {
+      const askedForS1 = await listed('s-1');
+      tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-1', title: 'First' } });
+      await sleep(300);
+      const keptToTheLink = (await listed('s-1')) === askedForS1;  // pinned: the chat's session is none of its business
+      const reloaded = new Promise((resolve) => { frame.onload = resolve; });
+      $('pk-session [data-act="follow"]').click();
+      await reloaded;
+      await autoOff();  // what comes now comes from the switch, not from the next tick
+      await until('the panel asking about the session open in the chat', async () => (await listed('s-1')) > askedForS1);
+      return Boolean(named) && keptToTheLink && frame.contentWindow.location.search === ''
+        && $('pk-session').hidden === true && !$('pk-session [data-act="follow"]');
+    } finally {
+      window.removeEventListener('message', shell);
+    }
+  });
+
   await check('with no session open the panel says so and asks for nothing', async () => {
     const total = async () => Object.values(await asked()).reduce((sum, count) => sum + count, 0);
     const before = await total();

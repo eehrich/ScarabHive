@@ -4,7 +4,6 @@ import { api, html, render, icon, confirm, session } from '/static/kit/panel-kit
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
-const pinned = new URLSearchParams(location.search).get('session_id');
 /** Messages per page loaded above the transcript's tail: fewer once the server has capped a page. */
 let page = 50;
 
@@ -20,8 +19,6 @@ const archiving = new Set();
 /** The transcript in the drawer: {id, session, data, messages, start}. Its card gets the focus back on close. */
 let opened = null;
 let opening = 0;
-
-const scoped = () => pinned || session.id;
 
 const STATES = {
   active: { label: 'Active', kind: 'ok' },  // stored: running or idle, which only the list's activity tells
@@ -65,7 +62,7 @@ function ago(stamp) {
 
 async function refresh(event) {
   if (event?.detail?.auto && busy) return;  // a tick while the last answer is on its way would only discard it
-  const id = scoped();
+  const id = session.shown;
   const mine = ++load;
   if (!id) {
     busy = false;
@@ -213,7 +210,7 @@ async function openTranscript(id) {
   } catch {
     return;  // api() has shown the failure
   }
-  if (mine !== opening || sessionId !== scoped()) return;  // another opened since, or the session left
+  if (mine !== opening || sessionId !== session.shown) return;  // another opened since, or the session left
   opened = { id, session: sessionId, data, messages: data.messages, start: data.window.start_index };
   drawTranscript();
   if (!$('detail').open) $('detail').showModal();
@@ -250,9 +247,8 @@ async function loadEarlier(control) {
 // ---------------------------------------------------------------------- wiring
 
 document.addEventListener('refresh', refresh);
-session.onChange(() => {
-  if (!pinned) refresh();  // an open transcript stays: it names its session, and closing it would take the focus from the chat
-});
+// an open transcript stays: it names its session, and closing it would take the focus from the chat
+document.addEventListener('sessionscope', refresh);
 $('show').addEventListener('change', drawAgents);
 $('agents').addEventListener('click', (event) => {
   const control = event.target.closest('button[data-act]');

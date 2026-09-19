@@ -4,15 +4,10 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
-const pinned = new URLSearchParams(location.search).get('session_id');
 
-let scope = 'session';
 let drawn = null;
 let load = 0;
 let busy = false;
-
-/** The session asked about: null for all sessions -- and in session scope when none is open. */
-const scoped = () => (scope === 'session' ? pinned || session.id : null);
 
 const LAYERS = {
   T: ['T', 'info', 'Pre-Layer T: a new tool result larger than its share of the context window was stored on arrival'],
@@ -42,9 +37,9 @@ const layer = (name) => {
 
 async function refresh(event) {
   if (event?.detail?.auto && busy) return;  // a tick while the last answer is on its way would only discard it
-  const id = scoped();
+  const id = session.shown;
   const mine = ++load;
-  if (scope === 'session' && !id) {
+  if (session.scope === 'session' && !id) {
     busy = false;
     show(null, null);
     render($('stats'), empty('message-square', 'No session open', 'Open a session in the chat, or show all sessions.'));
@@ -77,7 +72,7 @@ function show(history, stores) {
   $('shown').textContent = history && history.events.length < history.stats.events
     ? `the newest ${history.events.length} of ${number(history.stats.events)}` : '';
   $('shown').hidden = !$('shown').textContent;
-  const key = JSON.stringify([scope, history, stores]);
+  const key = JSON.stringify([session.scope, history, stores]);
   if (key === drawn) return;  // unchanged: nothing is drawn anew
   drawn = key;
   if (!history) {
@@ -109,7 +104,7 @@ function drawStats(stats, stores) {
 }
 
 function table(events) {
-  const all = scope === 'all';
+  const all = session.scope === 'all';
   // sorted by Time until the viewer picks a column: the server sends the newest first
   return html`<div class="pk-table-wrap"><table class="pk-table ce-table" data-pk-sort="compactions">
     <thead><tr><th aria-sort="descending">Time</th><th>Agent</th>${all ? html`<th>Session</th>` : ''}<th class="pk-num">Before</th><th class="pk-num">After</th>
@@ -143,15 +138,7 @@ function facts(list) {
 
 // ---------------------------------------------------------------------- wiring
 
-document.querySelectorAll('[data-scope]').forEach((button) => button.addEventListener('click', () => {
-  if (scope === button.dataset.scope) return;
-  scope = button.dataset.scope;
-  document.querySelectorAll('[data-scope]').forEach((other) => other.setAttribute('aria-pressed', String(other === button)));
-  refresh();
-}));
 document.addEventListener('refresh', refresh);
-session.onChange(() => {
-  if (scope === 'session' && !pinned) refresh();
-});
+document.addEventListener('sessionscope', refresh);  // another session, or all of them: <pk-session> says when
 
 refresh();

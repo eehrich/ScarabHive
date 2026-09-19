@@ -4,9 +4,7 @@ import { api, html, render, icon, confirm, session } from '/static/kit/panel-kit
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
-const pinned = new URLSearchParams(location.search).get('session_id');
 
-let scope = 'session';
 /** The events shown, newest first, or null: no session open, or they could not be loaded. */
 let events = null;
 let drawn = null;
@@ -16,9 +14,6 @@ let opening = 0;
 /** The run the drawer shows: its row gets the focus back on close, also when redrawn meanwhile. */
 let opened = null;
 let clearing = false;
-
-/** The session asked about: null for all sessions -- and in session scope when none is open. */
-const scoped = () => (scope === 'session' ? pinned || session.id : null);
 
 const STATUSES = {
   success: { label: 'applied', kind: 'ok' },
@@ -47,9 +42,9 @@ const stat = (key, label, value, sub = '') => html`<div class="pk-stat" data-sta
 
 async function refresh(event) {
   if (event?.detail?.auto && busy) return;  // a tick while the last answer is on its way would only discard it
-  const id = scoped();
+  const id = session.shown;
   const mine = ++load;
-  if (scope === 'session' && !id) {
+  if (session.scope === 'session' && !id) {
     busy = false;
     show(null);
     render($('stats'), empty('message-square', 'No session open', 'Open a session in the chat, or show all sessions.'));
@@ -91,7 +86,7 @@ function drawStats(stats) {
 function show(list) {
   events = list;
   if (!list) $('shown').hidden = true;
-  const key = JSON.stringify([scope, list]);
+  const key = JSON.stringify([session.scope, list]);
   if (key === drawn) return;  // unchanged: the rows, and the focus on one, stay
   drawn = key;
   const focused = document.activeElement?.closest?.('#events tr[data-id]')?.dataset.id;
@@ -100,7 +95,7 @@ function show(list) {
 }
 
 function table(list) {
-  const all = scope === 'all';
+  const all = session.scope === 'all';
   // newest first, as the server lists them, until the viewer picks another order
   return html`<div class="pk-table-wrap"><table class="pk-table cs-table" data-pk-sort="runs">
     <thead><tr><th aria-sort="descending">Time</th><th>Run</th>${all ? html`<th>Session</th>` : ''}<th class="pk-num">Messages</th>
@@ -177,15 +172,8 @@ async function clearHistory() {
 
 // ---------------------------------------------------------------------- wiring
 
-document.querySelectorAll('[data-scope]').forEach((button) => button.addEventListener('click', () => {
-  scope = button.dataset.scope;
-  document.querySelectorAll('[data-scope]').forEach((other) => other.setAttribute('aria-pressed', String(other === button)));
-  refresh();
-}));
 document.addEventListener('refresh', refresh);
-session.onChange(() => {
-  if (scope === 'session' && !pinned) refresh();
-});
+document.addEventListener('sessionscope', refresh);  // another session, or all of them: <pk-session> says when
 $('clearButton').addEventListener('click', clearHistory);
 $('events').addEventListener('click', (event) => {
   const row = event.target.closest('tr[data-id]');

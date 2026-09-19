@@ -1021,6 +1021,120 @@
     return kept && untouched;
   });
 
+  // <pk-session>: which session a panel shows, and the way back to the chat's.
+
+  await check('following the chat the session control names it, and with no choice to make it keeps out of the way', () => {
+    const box = document.createElement('div');
+    box.innerHTML = '<pk-session all></pk-session><pk-session></pk-session>';
+    document.body.appendChild(box);  // appended, not created: the element upgrades and draws itself
+    try {
+      const [withChoice, plain] = box.children;
+      return withChoice.hidden === false && plain.hidden === true
+        && withChoice.querySelector('[data-scope="session"]').textContent.trim() === 'Chat session'
+        && withChoice.querySelector('[data-scope="session"]').getAttribute('aria-pressed') === 'true'
+        && !withChoice.querySelector('[data-act="follow"]')  // nothing to go back from
+        && pk.session.pinned === null && pk.session.shown === null;
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('the scope picked says what a panel asks about, and the scope already shown asks nothing', async () => {
+    const box = document.createElement('div');
+    box.innerHTML = '<pk-session all></pk-session>';
+    document.body.appendChild(box);
+    const seen = [];
+    const heard = (event) => seen.push(`${event.detail.scope}:${event.detail.id ?? ''}`);
+    document.addEventListener('sessionscope', heard);
+    try {
+      const button = (which) => box.querySelector(`[data-scope="${which}"]`);
+      button('all').click();
+      button('all').click();  // the same scope again
+      const toAll = pk.session.scope === 'all' && pk.session.shown === null
+        && button('all').getAttribute('aria-pressed') === 'true' && button('session').getAttribute('aria-pressed') === 'false';
+      button('session').click();
+      // no session is open here, so both scopes show nothing -- the change is still news: "nothing of one session"
+      // is a different picture from "nothing of all of them"
+      return toAll && pk.session.scope === 'session' && seen.join() === 'all:,session:';
+    } finally {
+      document.removeEventListener('sessionscope', heard);
+      box.remove();
+    }
+  });
+
+  await check('a link pins a panel to a session: the control names it, and the way back keeps the rest of the link', async () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const told = [];
+    const listen = (event) => {
+      if (event.source !== frame.contentWindow) return;
+      told.push(event.data.type);
+      // stand in for the shell, and answer with a session open in the chat -- the one the way back leads to
+      if (event.data.type === 'pk:ready') {
+        frame.contentWindow.postMessage({ type: 'pk:init', theme: 'dark', visible: true, session: { id: 'chat-1', title: 'Chat' } },
+          location.origin);
+      }
+    };
+    window.addEventListener('message', listen);
+    const loaded = () => new Promise((resolve) => { frame.onload = resolve; });
+    try {
+      let next = loaded();
+      frame.src = '/tests/ui/kit_session_probe.html?session_id=abcdef0123456789&keep=yes';
+      await next;
+      // the handshake first: what a panel says before it is answered waits in the outbox
+      for (let i = 0; i < 200 && frame.contentWindow.probeChat() !== 'chat-1'; i += 1) await nextFrame();
+      const named = frame.contentDocument.querySelector('#plain .pk-badge');
+      const shown = frame.contentDocument.querySelector('#plain').hidden === false
+        && named.textContent.includes('abcdef01') && !named.textContent.includes('abcdef0123456789')
+        && named.title.includes('abcdef0123456789')  // the whole id is there to read
+        && frame.contentDocument.querySelector('#withChoice [data-scope="session"]').textContent.includes('abcdef01');
+      next = loaded();
+      frame.contentDocument.querySelector('#plain [data-act="follow"]').click();
+      await next;
+      // the shell is told before the reload, or a restored panel would go back to the pinned session
+      return shown && told.includes('pk:navigate') && frame.contentWindow.location.search === '?keep=yes'
+        && frame.contentDocument.querySelector('#plain').hidden === true
+        && frame.contentDocument.querySelector('#withChoice [data-scope="session"]').textContent.trim() === 'Chat session';
+    } finally {
+      window.removeEventListener('message', listen);
+      frame.remove();
+    }
+  });
+
+  await check('the session control still reports the chat switching after it was moved in the page', async () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const shell = (event) => {
+      if (event.source === frame.contentWindow && event.data.type === 'pk:ready') {
+        frame.contentWindow.postMessage({ type: 'pk:init', theme: 'dark', visible: true, session: { id: 'chat-1', title: 'One' } },
+          location.origin);
+      }
+    };
+    window.addEventListener('message', shell);
+    try {
+      await new Promise((resolve) => { frame.onload = resolve; frame.src = '/tests/ui/kit_session_probe.html'; });
+      for (let i = 0; i < 200 && frame.contentWindow.probeChat() !== 'chat-1'; i += 1) await nextFrame();
+      const doc = frame.contentDocument;
+      const seen = [];
+      // a panel that draws its toolbar anew moves the element: it is disconnected and connected again
+      const control = doc.querySelector('#withChoice');
+      control.addEventListener('sessionscope', (event) => seen.push(event.detail.id));  // this one, not its neighbour
+      doc.body.appendChild(doc.createElement('div')).appendChild(control);
+      frame.contentWindow.postMessage({ type: 'pk:session', session: { id: 'chat-2', title: 'Two' } }, location.origin);
+      for (let i = 0; i < 200 && !seen.length; i += 1) await nextFrame();
+      // and the switch that happens while it hangs loose: it is told on the way back, not at the next one
+      control.remove();
+      frame.contentWindow.postMessage({ type: 'pk:session', session: { id: 'chat-3', title: 'Three' } }, location.origin);
+      for (let i = 0; i < 200 && frame.contentWindow.probeChat() !== 'chat-3'; i += 1) await nextFrame();
+      const quietWhileLoose = seen.join() === 'chat-2';
+      doc.body.appendChild(control);
+      return seen.join() === 'chat-2,chat-3' && quietWhileLoose && control.isConnected;
+    } finally {
+      window.removeEventListener('message', shell);
+      frame.remove();
+    }
+  });
+
   await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });
 </script>
 </body>

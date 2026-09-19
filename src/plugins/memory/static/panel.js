@@ -3,7 +3,6 @@ import { api, html, render, icon, confirm, session } from '/static/kit/panel-kit
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
-const pinned = new URLSearchParams(location.search).get('session_id');
 
 /** The memories shown, or null: no session open, or they could not be loaded. */
 let memories = null;
@@ -17,8 +16,6 @@ let busy = false;
 /** The memory the drawer shows: its row gets the focus back on close, or the row now in its place. */
 let opened = null;
 let deleting = false;
-
-const scoped = () => pinned || session.id;
 
 const number = (value) => Number(value ?? 0).toLocaleString();
 const percent = (ratio) => `${Math.round(ratio * 100)}%`;
@@ -35,7 +32,7 @@ const rows = () => [...$('memories').querySelectorAll('tr[data-memory]')];
 
 async function refresh(event) {
   if (event?.detail?.auto && busy) return;  // a tick while the last answer is on its way would only discard it
-  const id = scoped();
+  const id = session.shown;
   const query = searched;
   const mine = ++load;
   if (!id) {
@@ -177,8 +174,7 @@ function clearSearch() {
 }
 
 document.addEventListener('refresh', refresh);
-session.onChange(() => {
-  if (pinned) return;
+document.addEventListener('sessionscope', () => {
   // a search belongs to its session; an open drawer stays: closed, it would take the focus from the chat
   // (a dialog gives it back to where it was before it opened), and its Delete still names the memory's own session
   clearSearch();

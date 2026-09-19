@@ -80,9 +80,21 @@ EXPECTED = [
     "a head holding a control of its own is left as it is",
     "the order a viewer picks outlives a reload of the panel, and only a plain name of the last few is kept",
     "the keyboard stays on the column head it sorted with when the table is drawn anew",
+    "following the chat the session control names it, and with no choice to make it keeps out of the way",
+    "the scope picked says what a panel asks about, and the scope already shown asks nothing",
+    "a link pins a panel to a session: the control names it, and the way back keeps the rest of the link",
+    "the session control still reports the chat switching after it was moved in the page",
 ]
 
 
 @pytest.mark.parametrize("name", EXPECTED)
 def test_panel_kit(results, name):
     assert results.get(name) == "ok", results
+
+
+def test_every_check_the_page_ran_is_one_this_list_knows(results):
+    """The list is what turns a check into a test: one added to the page but not
+    here ran and was never looked at. (test_shell_browser.py keeps the same guard,
+    after six checks were found in exactly that state.)"""
+    unexpected = sorted(set(results) - set(EXPECTED))
+    assert not unexpected, f"checks the page ran that EXPECTED does not name: {unexpected}"

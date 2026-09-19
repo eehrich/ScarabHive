@@ -56,7 +56,7 @@ web_ui:
 | `description` | | ein Satz, erscheint im Starter und wird durchsucht. |
 | `keywords` | | Suchwörter, die nicht im Titel stehen. |
 | `window` | | Größe des herausgelösten Fensters. |
-| `contexts` | | Einstiege aus dem Zusammenhang: `session` (Info-Knopf einer Session, Klick auf den Session-Titel im Kopf) und `request` (Request-ID unter einer Antwort). Die URL **muss mit `endpoint` beginnen**; `{session_id}` bzw. `{request_id}` setzt die Shell URL-kodiert ein. Nur eintragen, wenn das Panel den Parameter wirklich liest. |
+| `contexts` | | Einstiege aus dem Zusammenhang: `session` (Info-Knopf einer Session, Klick auf den Session-Titel im Kopf) und `request` (Request-ID unter einer Antwort). Die URL **muss mit `endpoint` beginnen**; `{session_id}` bzw. `{request_id}` setzt die Shell URL-kodiert ein. Nur eintragen, wenn das Panel den Parameter wirklich liest. **Ein `session`-Kontext heftet ein Panel an, das sonst dem Chat folgt** — es folgt ihm dann nicht mehr, bis der Nutzer die Anheftung löst. Wer ihn einträgt, zeigt die angeheftete Session deshalb sichtbar und wieder lösbar: mit `<pk-session>` in der Toolbar, oder in einem Feld, das man leeren kann (so macht es `message_debugger`). Stumm anheften ist der Fehler. |
 
 **Wer das Panel sieht, steht nicht im Block:** der Katalog zeigt es den Rollen,
 die beide Schichten der Route-Security in `config/config.yaml` den `endpoint`
@@ -150,7 +150,9 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 | `yamlCode(text)` | YAML-Text eingefärbt (`.pk-yaml-*`), der Text selbst unverändert: für ein `<pre class="pk-code">` oder als Kopie unter einer Textarea. `\|`/`>`-Blöcke behalten ihre Farbe über Leerzeilen, ein unquotiertes `!…` erscheint als Tag. Kein Prism nötig. |
 | `alert(msg)`, `confirm(msg, {title, confirmLabel, danger})`, `prompt(msg, {title, value, placeholder, confirmLabel})`, `dialog({title, message, actions, input})` | Dialoge — Promise mit dem Ergebnis (`confirm` → `true/false`, `prompt` → Text oder `null`). In der Shell über der ganzen Anwendung, sonst im Panel. |
 | `toast(msg, {kind})` | `info`, `ok`, `warn`, `error`. |
-| `session.id`, `session.onChange(fn)` | die Session, die im Chat offen ist: ihre ID oder `null`; `onChange` bekommt `{id, title}` oder `null`. |
+| `session.id`, `session.current`, `session.onChange(fn)` | die Session, die im **Chat** offen ist: ihre ID oder `null`, `current` dazu den Titel; `onChange` bekommt `{id, title}` oder `null`. |
+| `session.shown`, `session.scope`, `session.pinned`, `session.follow()` | die Session, die das **Panel** zeigt (siehe `<pk-session>` unten): `shown` ist die ID, um die es gerade geht (`null` für alle Sessions und wenn keine offen ist), `scope` ist `'session'` oder `'all'`, `pinned` die ID aus einem Kontext-Link, `follow()` löst die Anheftung — **die Seite lädt dabei neu**. Ein Panel mit ungespeicherter Eingabe (`setDirty`) gehört heute nicht zu denen mit `<pk-session>`: die Shell erfährt den gelösten Pfad, bevor der Browser fragen kann. |
+| `<pk-session>`, `<pk-session all>` | in die Toolbar. Sagt, **welche** Session das Panel zeigt, und bietet den Weg zurück zum Chat; mit `all` dazu die Wahl zwischen dieser Session und allen. Feuert `sessionscope` am `document`, sobald sich ändert, was das Panel zeigen soll — der Chat wechselt, der Nutzer wählt einen Bereich, die Anheftung fällt. Das Panel liest dann `session.shown`/`session.scope` und lädt neu; ein eigener `session.onChange` daneben lädt doppelt. Folgt es dem Chat und gibt es nichts zu wählen, hält sich das Element heraus (`hidden`). |
 | `autoRefresh(fn, ms)` → `{start, stop, running}`; `<pk-refresh interval="s">` | Nachladen, pausiert, solange das Panel nicht sichtbar ist. `<pk-refresh>` feuert `refresh` am `document`; `event.detail.auto` sagt, ob der Takt (true) oder ein Klick (false) fragt — teures Nachladen darf den Takt auslassen. Mit `auto` läuft der Takt von Anfang an (sonst erst nach Klick). `interval` und `auto` sind nur die **Voreinstellung der Seite**: Am Knopf wählt der Nutzer den Takt (5 s, 10 s, 30 s, 1 min, die Voreinstellung, oder aus), und diese Wahl gilt ab dann für diesen Panel-Pfad — gespeichert im localStorage unter `pk.refresh:<pathname>`. |
 | `isVisible()` | ob das Panel zu sehen ist — nicht bei Tab im Hintergrund, geschlossenem Fenster, verdecktem Browser-Tab. `autoRefresh` fragt es selbst. |
 | `initTabs(root)` | `[data-pk-tabs]` bedienbar machen (Klick, Pfeiltasten, Event `tabchange`). Läuft beim Laden von selbst; nach dem Nachrendern erneut aufrufen ist unschädlich. |
@@ -321,6 +323,8 @@ Ein Plugin nach dem anderen; Writer-Panels mit der Writer-Session absprechen.
 1. **Inventur:** welche Endpoints, welche Zustände (leer, Fehler, lädt), welche
    Aktionen (löschen → `confirm` mit `danger`), welche Parameter liest es
    (`session_id`, `request_id`)? Nur was es wirklich liest, wird zu `contexts`.
+   Liest es `session_id`, gehört `<pk-session>` in die Toolbar und
+   `session.shown` an die Stelle von `pinned || session.id`.
 2. Route auf `ui_templates()`, Template auf `kit/panel_base.html`.
 3. Eingebettetes `<style>` löschen; was bleibt, auf Tokens. Eigene `.btn`,
    `.modal`, `.tab`, `.toast`, `.badge` → Kit-Klassen.

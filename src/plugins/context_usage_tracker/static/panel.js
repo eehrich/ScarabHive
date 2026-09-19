@@ -4,18 +4,13 @@ import { api, html, render, icon, trusted, confirm, session, onThemeChange } fro
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
-const pinned = new URLSearchParams(location.search).get('session_id');
 
-let scope = 'session';
 let usage = { latest: null, agents: {}, statistics: {}, history: [] };
 let load = 0;
 let busy = false;
 let chart = null;
 /** the calls the table shows, newest first: a row opens its index */
 let callRows = [];
-
-/** The session asked about: null for all sessions -- and in session scope when none is open. */
-const scoped = () => (scope === 'session' ? pinned || session.id : null);
 
 // ------------------------------------------------------------------ formatting
 
@@ -47,9 +42,9 @@ const stat = (key, label, value, sub = '') => html`<div class="pk-stat" data-sta
 async function refresh(event) {
   const auto = Boolean(event?.detail?.auto);
   if (auto && busy) return;  // a tick while the last answer is on its way would only discard it
-  const id = scoped();
+  const id = session.shown;
   const mine = ++load;
-  if (scope === 'session' && !id) {
+  if (session.scope === 'session' && !id) {
     busy = false;
     drawNoSession();
     return;
@@ -106,7 +101,7 @@ function drawStats() {
   render($('stats'), [
     stat('cost', 'Total cost', html`${estimated ? '~' : ''}${cents(totals.cost)}`,
       calls ? (estimated ? `${billed} billed · ${estimated} estimated` : `${billed} of ${calls} calls billed`) : ''),
-    stat('calls', 'Calls', number(calls), scope === 'session' ? 'this session and its sub-agents' : 'all sessions'),
+    stat('calls', 'Calls', number(calls), session.scope === 'session' ? 'this session and its sub-agents' : 'all sessions'),
     stat('output', 'Output tokens', number(totals.completion_tokens), `prompt ${number(totals.prompt_tokens)}`),
     stat('cached', 'Cached', number(totals.cached_tokens),
       totals.prompt_tokens ? `${percent(totals.cache_hit_rate)} of the prompt` : ''),
@@ -331,7 +326,7 @@ function drawCalls() {
     render($('calls'), empty('history', 'No calls recorded'));
     return;
   }
-  const own = scoped();
+  const own = session.shown;
   // newest first until the viewer sorts; a sort orders the calls shown, the select says which those are
   render($('calls'), html`<div class="pk-table-wrap"><table class="pk-table cu-table cu-calls" data-pk-sort="calls">
     <thead><tr><th>Time</th><th>Agent</th><th>Session · Request</th><th>Model</th><th class="pk-num">Prompt</th>
@@ -390,15 +385,8 @@ async function clearHistory() {
   refresh();
 }
 
-document.querySelectorAll('[data-scope]').forEach((button) => button.addEventListener('click', () => {
-  scope = button.dataset.scope;
-  document.querySelectorAll('[data-scope]').forEach((other) => other.setAttribute('aria-pressed', String(other === button)));
-  refresh();
-}));
 document.addEventListener('refresh', refresh);
-session.onChange(() => {
-  if (scope === 'session' && !pinned) refresh();
-});
+document.addEventListener('sessionscope', refresh);  // another session, or all of them: <pk-session> says when
 $('clearButton').addEventListener('click', clearHistory);
 $('chartAgent').addEventListener('change', drawChart);
 $('callAgent').addEventListener('change', drawCalls);

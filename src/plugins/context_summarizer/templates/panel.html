@@ -3,10 +3,7 @@
 {% block title %}Context Summarizer{% endblock %}
 {% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
 {% block toolbar %}
-<div class="pk-row" role="group" aria-label="Scope">
-  <button type="button" class="pk-btn pk-btn--sm" data-scope="session" aria-pressed="true">This session</button>
-  <button type="button" class="pk-btn pk-btn--sm" data-scope="all" aria-pressed="false">All sessions</button>
-</div>
+<pk-session all></pk-session>
 <pk-refresh interval="5" auto></pk-refresh>
 <button id="clearButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" aria-label="Clear the summarization history" title="Clear the summarization history">{{ icon('trash-2') }}</button>
 {% endblock %}

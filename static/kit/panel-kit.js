@@ -356,6 +356,8 @@ function flushOutbox() {
 
 let currentSession = null;
 let visible = true;
+/** 'session' or 'all' -- what <pk-session all> is set to; without one a panel asks about a session. */
+let scope = 'session';
 
 function setSession(value) {
   const changed = value?.id !== currentSession?.id;
@@ -363,10 +365,33 @@ function setSession(value) {
   if (changed) listeners.session.forEach((fn) => fn(currentSession));
 }
 
+/** The session a link sent this panel to, or null. Read afresh: setQuery() may have changed it. */
+const pinnedSession = () => new URLSearchParams(location.search).get('session_id') || null;
+
 export const session = {
   /** The id of the shell's active session, or null; onChange gets {id, title} or null. */
   get id() { return currentSession?.id ?? null; },
+  /** The shell's active session as {id, title}, or null. */
+  get current() { return currentSession; },
+  /** The session a link pinned this panel to (?session_id=), or null: then it does not follow the chat. */
+  get pinned() { return pinnedSession(); },
+  /** The session a panel shows: the pinned one, else the chat's -- null for all sessions, and for none open. */
+  get shown() { return scope === 'all' ? null : pinnedSession() || currentSession?.id || null; },
+  /** 'session' or 'all': which of the two <pk-session all> is set to. */
+  get scope() { return scope; },
   onChange(fn) { listeners.session.add(fn); return () => listeners.session.delete(fn); },
+  /** Drop the pin and follow the chat's session again. The panel reloads: every view of it named the old session. */
+  follow() {
+    const query = new URLSearchParams(location.search);
+    query.delete('session_id');
+    const rest = query.toString();  // whatever else a link carried stays: only the session is dropped
+    const path = rest ? `${location.pathname}?${rest}` : location.pathname;
+    // Told before the reload, so a restored panel follows the chat too. The gap: if a beforeunload
+    // prompt then keeps the page, the shell has forgotten the pin while this panel still shows it.
+    // No panel with <pk-session> has unsaved input today, and none may have without closing that.
+    navigate(path);
+    location.replace(path);
+  },
 };
 
 /**
@@ -412,6 +437,10 @@ const WORDS = {
     copied: 'Copied', copyFailed: 'Could not copy', previous: 'Previous', next: 'Next',
     jsonEmpty: 'empty', jsonNoItems: 'no items', jsonNoFields: 'no fields',
     pageOf: (page, pages) => `Page ${page} of ${pages}`,
+    sessionScope: 'Scope', chatSession: 'Chat session', chatSessionTitle: 'The session open in the chat',
+    allSessions: 'All sessions', sessionNamed: (id) => `Session ${id}`,
+    pinnedTitle: (id) => `A link sent this panel to session ${id}: it does not follow the chat`,
+    followChat: 'Follow the chat', followChatTitle: 'Show the session open in the chat again',
   },
   de: {
     notice: 'Hinweis', confirm: 'Bestätigen', input: 'Eingabe', cancel: 'Abbrechen',
@@ -420,6 +449,10 @@ const WORDS = {
     copied: 'Kopiert', copyFailed: 'Kopieren fehlgeschlagen', previous: 'Zurück', next: 'Weiter',
     jsonEmpty: 'leer', jsonNoItems: 'keine Einträge', jsonNoFields: 'keine Felder',
     pageOf: (page, pages) => `Seite ${page} von ${pages}`,
+    sessionScope: 'Welche Session', chatSession: 'Chat-Session', chatSessionTitle: 'Die Session, die im Chat offen ist',
+    allSessions: 'Alle Sessions', sessionNamed: (id) => `Session ${id}`,
+    pinnedTitle: (id) => `Ein Link hat dieses Panel auf Session ${id} gesetzt: es folgt dem Chat nicht`,
+    followChat: 'Dem Chat folgen', followChatTitle: 'Wieder die Session zeigen, die im Chat offen ist',
   },
 };
 const word = (key) => (WORDS[document.documentElement.lang.slice(0, 2).toLowerCase()] || WORDS.en)[key];
@@ -690,6 +723,79 @@ class RefreshControl extends HTMLElement {
   }
 
   disconnectedCallback() { if (this.auto) this.auto.stop(); }
+}
+
+// ---------------------------------------------------------- session scope
+
+/** Enough of a session id to recognise it; the whole one is in the title. */
+const shortId = (id) => (id.length > 10 ? `${id.slice(0, 8)}…` : id);
+
+/**
+ * Which session the panel shows -- and the way back to the chat. In the toolbar:
+ *
+ *   <pk-session></pk-session>       says when a link pinned the panel to a session, and offers to follow again
+ *   <pk-session all></pk-session>   and lets the viewer ask about every session instead
+ *
+ * Following the chat without that choice there is nothing to say, and the element stays out of the way.
+ *
+ * `sessionscope` (bubbles) fires whenever what the panel should show changes -- the viewer picked a scope, the
+ * chat switched session, the pin was dropped. The panel then asks `session.shown` and `session.scope`, nothing
+ * else: which session that is, and whether one was named at all, is this element's business.
+ *
+ * One per page: the scope is the page's, so a second element would show a scope it does not follow. The
+ * catalogue (/ui/kit) puts both forms side by side to show them, which is the one place that does not hold.
+ */
+class SessionScope extends HTMLElement {
+  connectedCallback() {
+    // before the guard: moved in the DOM, an element is disconnected and connected again, and its watch was dropped
+    this.stopWatching = session.onChange(() => this.announce());
+    if (this.wired) {
+      this.announce();  // the chat may have switched while the element hung loose
+      return;
+    }
+    this.wired = true;
+    const pinned = session.pinned;
+    const all = this.hasAttribute('all');
+    // Nothing to say: the panel follows the chat, and the chat is right there.
+    this.hidden = !pinned && !all;
+    // A name for the session shown, or the plain word for it: the label is what the viewer reads as "which session".
+    const named = pinned
+      ? html`${icon('pin', { size: 'sm' })}${word('sessionNamed')(shortId(pinned))}`
+      : word('chatSession');
+    const title = pinned ? word('pinnedTitle')(pinned) : word('chatSessionTitle');
+    render(this, html`
+      ${all
+        ? html`<div class="pk-row" role="group" aria-label="${word('sessionScope')}">
+            <button type="button" class="pk-btn pk-btn--sm" data-scope="session" aria-pressed="true" title="${title}">${named}</button>
+            <button type="button" class="pk-btn pk-btn--sm" data-scope="all" aria-pressed="false">${word('allSessions')}</button>
+          </div>`
+        : html`<span class="pk-badge" title="${title}">${named}</span>`}
+      ${pinned ? html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" data-act="follow"
+                              title="${word('followChatTitle')}">${icon('pin-off', { size: 'sm' })}${word('followChat')}</button>` : ''}`);
+    // What the panel already draws by itself at load; only a change from here is news. The scope belongs in it:
+    // switched to one session while none is open, nothing is shown any more -- the same "nothing" by another name.
+    this.told = this.state();
+    this.addEventListener('click', (event) => {
+      if (event.target.closest('[data-act="follow"]')) return session.follow();
+      const button = event.target.closest('[data-scope]');
+      if (!button) return;
+      scope = button.dataset.scope;  // the scope already shown asks nothing: announce() has nothing to tell
+      this.querySelectorAll('[data-scope]').forEach((one) => one.setAttribute('aria-pressed', String(one === button)));
+      this.announce();
+    });
+  }
+
+  disconnectedCallback() { this.stopWatching?.(); }
+
+  state() { return `${scope}:${session.shown ?? ''}`; }
+
+  announce() {
+    if (this.told === this.state()) return;
+    this.told = this.state();
+    this.dispatchEvent(new CustomEvent('sessionscope', {
+      bubbles: true, detail: { id: session.shown, scope, pinned: session.pinned },
+    }));
+  }
 }
 
 // ----------------------------------------------------------- page helpers
@@ -1107,6 +1213,7 @@ document.addEventListener('click', (event) => {
 // defined last: a custom element on the page is drawn at once, and render() needs everything above
 customElements.define('pk-pager', Pager);
 customElements.define('pk-refresh', RefreshControl);
+customElements.define('pk-session', SessionScope);
 
 // the height inside the scroll area's padding, for a pane stuck in it (.pk-split): the viewport does not know the
 // page head above it, and a sticky offset counts from the padding's inner edge

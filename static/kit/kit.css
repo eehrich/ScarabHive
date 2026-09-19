@@ -481,6 +481,10 @@ kbd.pk-kbd {
 .pk-yaml-punct { color: var(--text-secondary); }
 .pk-yaml-tag, .pk-yaml-anchor { color: var(--info); }
 
+/* --------------------------------------------------------- session scope */
+
+pk-session { display: inline-flex; align-items: center; gap: var(--space-2); }
+
 /* ----------------------------------------------------------- refresh ctrl */
 
 pk-refresh { display: inline-flex; align-items: center; gap: 2px; }

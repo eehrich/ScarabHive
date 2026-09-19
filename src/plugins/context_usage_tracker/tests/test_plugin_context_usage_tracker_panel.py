@@ -90,6 +90,7 @@ def results(tmp_path_factory):
 
 EXPECTED = [
     'opened on a session, the panel counts it and its sub-agents: billed and estimated cost apart, cache share, context',
+    'the scope chosen takes effect at once, not at the next tick',
     'all sessions count every call, and the calls tab shows the newest of them',
     'the overview draws the newest 60 calls, tokens and cost, for the agent chosen',
     'a line hidden in the legend stays hidden when the chart draws anew',

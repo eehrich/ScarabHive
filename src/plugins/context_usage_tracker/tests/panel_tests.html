@@ -48,6 +48,20 @@
       && statValue('context') === n(1800) && statSub('context') === `18.0% of ${n(10000)}`;
   });
 
+  await check('the scope chosen takes effect at once, not at the next tick', async () => {
+    const toggle = $('pk-refresh [data-act="auto"]');
+    toggle.click();  // no tick: what the check waits for has to come from the click
+    try {
+      $('[data-scope="all"]').click();
+      await until('every call, from the click alone', () => statValue('calls') === '124', 2000);
+      $('[data-scope="session"]').click();
+      await until('the calls of s-1 again', () => statValue('calls') === '3', 2000);
+      return true;
+    } finally {
+      toggle.click();  // the checks after this one expect the tick to run
+    }
+  });
+
   await check('all sessions count every call, and the calls tab shows the newest of them', async () => {
     $('[data-scope="all"]').click();
     await until('every call', () => statValue('calls') === '124');

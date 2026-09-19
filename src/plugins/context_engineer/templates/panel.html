@@ -2,10 +2,7 @@
 {% block title %}Context Engineer{% endblock %}
 {% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
 {% block toolbar %}
-<div class="pk-row" role="group" aria-label="Scope">
-  <button type="button" class="pk-btn pk-btn--sm" data-scope="session" aria-pressed="true">This session</button>
-  <button type="button" class="pk-btn pk-btn--sm" data-scope="all" aria-pressed="false">All sessions</button>
-</div>
+<pk-session all></pk-session>
 <pk-refresh interval="10" auto></pk-refresh>
 {% endblock %}
 {% block content %}

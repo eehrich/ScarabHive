@@ -59,6 +59,22 @@
 </section>
 
 <section class="kit-section">
+  <h2>Which session a panel shows</h2>
+  <div class="pk-row">
+    <pk-session all></pk-session>
+    <pk-session></pk-session>
+    <span class="pk-muted"><code class="pk-mono">&lt;pk-session&gt;</code> in the toolbar, <code class="pk-mono">all</code> for the choice
+      between that session and every session. Following the chat it stays out of the way. A panel has one of them —
+      both stand here only to show both forms.</span>
+  </div>
+  <div class="pk-row">
+    <a class="pk-btn pk-btn--sm" href="/ui/kit?session_id=kit-demo-00000001">{{ icon('pin') }} Open this page as a context link opens a panel</a>
+    <span class="pk-muted">A link with <code class="pk-mono">?session_id=</code> pins a panel to one session: it stops following the chat,
+      both controls say which session that is, and Follow the chat drops the pin.</span>
+  </div>
+</section>
+
+<section class="kit-section">
   <h2>Form controls</h2>
   <form class="pk-form">
     <label class="pk-field"><span class="pk-label">Name</span><input class="pk-input" placeholder="writer_review"><span class="pk-help">Shown in the dock.</span></label>

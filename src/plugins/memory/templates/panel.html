@@ -2,7 +2,7 @@
 {% from "kit/macros.html" import icon %}
 {% block title %}Memory{% endblock %}
 {% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
-{% block toolbar %}<pk-refresh interval="5" auto></pk-refresh>{% endblock %}
+{% block toolbar %}<pk-session></pk-session><pk-refresh interval="5" auto></pk-refresh>{% endblock %}
 {% block content %}
 <div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
 <form id="searchForm" class="pk-row" hidden>

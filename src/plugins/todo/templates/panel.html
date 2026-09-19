@@ -1,7 +1,7 @@
 {% extends "kit/panel_base.html" %}
 {% block title %}Todos{% endblock %}
 {% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
-{% block toolbar %}<pk-refresh interval="5" auto></pk-refresh>{% endblock %}
+{% block toolbar %}<pk-session></pk-session><pk-refresh interval="5" auto></pk-refresh>{% endblock %}
 {% block content %}
 <div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
 <div class="pk-row">

@@ -1,9 +1,8 @@
 // Session panel: what the active session carries -- messages, token estimate, context variables.
-// Follows the shell's session; ?session_id= pins it (the chat's context link).
-import { api, ApiError, html, render, icon, session, jsonView, navigate, setTitle } from '/static/kit/panel-kit.js';
+// Follows the shell's session; ?session_id= pins it (the chat's context link) and <pk-session> says so.
+import { api, ApiError, html, render, icon, session, jsonView, setTitle } from '/static/kit/panel-kit.js';
 
 const view = document.getElementById('sessionView');
-const pinned = new URLSearchParams(location.search).get('session_id');
 let latest = 0;
 
 const EMPTY = html`<div class="pk-empty">${icon('message-square')}<div class="pk-empty-title">No session</div>
@@ -53,7 +52,7 @@ function descendants(tree) {
 
 async function load() {
   const request = ++latest;  // switching fast: only the newest answer is shown
-  const id = pinned || session.id;
+  const id = session.shown;
   if (!id) {
     render(view, EMPTY);
     setTitle('Session');
@@ -61,7 +60,10 @@ async function load() {
   }
   let data;
   try {
-    data = await api(`/api/sessions/${encodeURIComponent(id)}`, { quiet: true });
+    // descendants=true: the sub-session tree is the expensive half of this answer -- building it opens
+    // every session below this one, seconds for a session with hundreds. Only this panel shows it, so
+    // with the flag named here the endpoint can stop building it for everyone else.
+    data = await api(`/api/sessions/${encodeURIComponent(id)}?descendants=true`, { quiet: true });
   } catch (error) {
     if (request !== latest) return;
     const text = error instanceof ApiError && error.status === 404 ? 'This session no longer exists' : `Could not be loaded: ${error.message}`;
@@ -74,10 +76,7 @@ async function load() {
   setTitle(data.title || 'Session');
   render(view, html`
     <div class="pk-card">
-      <div class="pk-card-head"><h3 class="pk-card-title">${data.title || 'Untitled'}</h3>
-        ${pinned ? html`<span class="pk-grow"></span>
-          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="follow" title="Show the session open in the chat instead">
-            ${icon('pin-off', { size: 'sm' })} Follow the chat</button>` : ''}</div>
+      <div class="pk-card-head"><h3 class="pk-card-title">${data.title || 'Untitled'}</h3></div>
       <dl class="pk-kv">
         <dt>Agent</dt><dd>${data.agent_name || '—'}</dd>
         <dt>Model profile</dt><dd>${data.llm_profile || '—'}</dd>
@@ -100,11 +99,6 @@ async function load() {
       <div class="pk-stack"><h3 class="pk-card-title">Sub-sessions</h3>${descendants(data.descendants_context_vars)}</div>` : ''}`);
 }
 
-view.addEventListener('click', (event) => {
-  if (!event.target.closest('[data-act="follow"]')) return;
-  navigate(location.pathname);  // the shell forgets the pinned path, a reload keeps following
-  location.replace(location.pathname);
-});
 document.addEventListener('refresh', load);
-if (!pinned) session.onChange(load);
+document.addEventListener('sessionscope', load);
 load();

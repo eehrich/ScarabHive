@@ -186,6 +186,7 @@ EXPECTED = [
     'a tick of the auto refresh leaves a load still on its way alone',
     'the panel follows the session the chat switches to, drops its search and draws no late answer of the one before',
     'a link to a session keeps to it and to its search, whatever session the chat opens',
+    'the way back from a link: the toolbar names the session it was sent to, and one click follows the chat again',
     'with no session open the panel says so and asks for nothing',
     'the server refuses a session id that is no session id',
     'rows drawn anew keep the keyboard focus, and an unchanged answer draws nothing',

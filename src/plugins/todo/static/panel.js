@@ -3,7 +3,6 @@ import { api, html, render, icon, confirm, session } from '/static/kit/panel-kit
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
-const pinned = new URLSearchParams(location.search).get('session_id');
 
 /** The tasks shown, or null: no session open, or they could not be loaded. */
 let tasks = null;
@@ -11,8 +10,6 @@ let tasks = null;
 let shownFor = null;
 let load = 0;
 let busy = false;
-
-const scoped = () => pinned || session.id;
 
 const STATUSES = {
   'not-started': { label: 'Not started', icon: 'square', kind: '' },
@@ -42,7 +39,7 @@ function ago(stamp) {
 
 async function refresh(event) {
   if (event?.detail?.auto && busy) return;  // a tick while the last answer is on its way would only discard it
-  const id = scoped();
+  const id = session.shown;
   const mine = ++load;
   if (!id) {
     busy = false;
@@ -161,9 +158,7 @@ async function act(button) {
 // ---------------------------------------------------------------------- wiring
 
 document.addEventListener('refresh', refresh);
-session.onChange(() => {
-  if (!pinned) refresh();
-});
+document.addEventListener('sessionscope', refresh);
 $('statusFilter').addEventListener('change', drawTasks);
 $('priorityFilter').addEventListener('change', drawTasks);
 $('tasks').addEventListener('click', (event) => {

@@ -148,3 +148,37 @@ def test_kit_users_make_no_native_dialog_calls():
                 line = text.count("\n", 0, match.start()) + 1
                 offenders.append(f"{path.name}:{line}")
     assert offenders == []
+
+
+def _panel_name(path: Path) -> str:
+    """What a template and the script beside it have in common: the plugin, or the core panel's own name."""
+    parts = path.relative_to(REPO).parts
+    return parts[2] if parts[0] == "src" else path.stem
+
+
+def test_a_panel_scoped_to_a_session_says_which_one():
+    """`session.shown` decides which session a panel asks about -- and a link
+    (?session_id=) can make that another one than the chat's, for as long as the
+    panel lives. <pk-session> in the toolbar is what says so and offers the way
+    back; a panel that takes the one without showing the other is the bug the
+    element was built for.
+
+    A tripwire, not a proof: it reads the two names off the source, so a panel
+    that reaches the session another way (`const {shown} = session`) is invisible
+    to it, and a plugin with two panels is satisfied by the element in either
+    template. No plugin under src/plugins has two panels today. A panel that
+    shows its session some other way -- message_debugger puts the id in a filter
+    field the viewer can clear -- never reads `session.shown` and is not asked."""
+    scoped, saying = {}, set()
+    for path, text in _kit_users():
+        if path.name == "panel-kit.js":
+            continue  # where it is defined, not a panel that uses it
+        if path.suffix == ".js" and ("session.shown" in text or "session.pinned" in text):
+            scoped[_panel_name(path)] = path
+        if path.suffix == ".html" and "<pk-session" in text:
+            saying.add(_panel_name(path))
+    assert len(scoped) > 3, "fixture: hardly a panel scopes to a session any more"
+
+    silent = {name: str(path) for name, path in scoped.items() if name not in saying}
+
+    assert silent == {}
