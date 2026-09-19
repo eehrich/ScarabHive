@@ -2064,6 +2064,23 @@
       && $('.dock-tab[aria-selected="true"]') !== null && !$('#contextMenu').matches(':popover-open');
   });
 
+  await check('the session panel is the one that asks for the sub-session tree', async () => {
+    // The other half of the contract the chat's load holds up: the tree is off unless
+    // asked for, so the ONE caller that shows it has to ask. Break `?descendants=true`
+    // in the panel and nothing else in this suite notices -- the panel just quietly
+    // stops showing sub-sessions.
+    //
+    // The raw query again, not the parsed flag, and a list of them: the chat loads the
+    // same session with no query at all, and "some load asked" is the claim.
+    const queries = async (id) => (await (await stub('/__stub/hits')).json())[`session-query:${id}`] || [];
+    await until('the panel to have loaded its session',
+      async () => (await queries('s-1')).some((q) => q.includes('descendants')), 8000);
+    const all = await queries('s-1');
+    if (!all.some((q) => q === 'descendants=true')) return false;
+    // and the chat's own loads of it are still bare
+    return all.some((q) => q === '');
+  });
+
   await check('a session panel pinned from a link can follow the chat again', async () => {
     const panel = await until('the pinned panel', () => panelFrame('/ui/panels/session').contentDocument.querySelector('[data-act="follow"]')
       && panelFrame('/ui/panels/session').contentDocument);

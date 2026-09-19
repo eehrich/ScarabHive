@@ -807,6 +807,7 @@ EXPECTED = [
     'the palette lists instances of one plugin once and narrows to them',
     'in the palette a name stays whole beside a long description, and a long name leaves its hint room',
     'a session offers the panels that open on a session',
+    'the session panel is the one that asks for the sub-session tree',
     'a session panel pinned from a link can follow the chat again',
     'a request id in the chat offers the panels that take a request',
     'a panel with unsaved input is only closed or reloaded once the viewer agrees',
