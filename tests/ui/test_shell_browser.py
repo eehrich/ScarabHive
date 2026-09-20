@@ -48,7 +48,9 @@ second, with its error and then its end. With ``reasons`` a run ``r-reasons``
 sends a step the way a reasoning model does -- its reasoning in three deltas
 split mid-word, then the step's answer as markup and a tool call -- and ends;
 with ``steps`` a run ``r-steps`` sends TWO calls, a tool scope that carries no
-step of its own, and the run's own start and end, which carry none either. One
+step of its own, the run's own start and end, which carry none either, a
+sub-agent counting ITS steps, and a row whose parent is never sent. Every status
+event of it carries a ``tree``, as the run's stream does since 6b6a1348. One
 with files starts half a second later, names ``r-files-ended`` and brings its
 final answer and end -- with ``stub_stream=stale``, ``r-files-stale`` in
 ``s-files-new``, and it goes on; with ``final-drops``, ``r-files-final-dropped``,
@@ -425,22 +427,25 @@ def stub_app() -> FastAPI:
                 # own loop suffixes `_nnn`, and anything with a run of its own suffixes
                 # `_sub_<id>` and counts ITS OWN steps.
                 yield event({"type": "status", "server": "coordinator", "phase": "start",
-                             "request_id": f"{request_id}_001", "message": "started", "meta": {}})
+                             "request_id": f"{request_id}_001", "message": "started", "meta": {},
+                             "tree": {"parent_id": request_id, "depth_level": 1, "child_count": 0, "is_leaf": True}})
                 yield event({"type": "thinking", "step": 1})
                 yield event({"type": "status", "server": "coordinator", "phase": "progress",
                              "request_id": f"{request_id}_001", "message": "step 1/30",
-                             "meta": {"step": 1}})
+                             "meta": {"step": 1}, "tree": {"parent_id": request_id, "depth_level": 1, "child_count": 0, "is_leaf": True}})
                 yield event({"type": "status", "server": "worker", "phase": "progress",
                              "request_id": f"{request_id}_002", "message": "Calling LLM (one)",
-                             "meta": {"step": 1}})
+                             "meta": {"step": 1}, "tree": {"parent_id": request_id, "depth_level": 1, "child_count": 0, "is_leaf": True}})
                 for delta in ("weighing the ", "first move."):
                     yield event({"type": "reasoning_delta", "step": 1, "delta": delta})
                 yield event({"type": "thinking", "step": 1, "assistant": {
                     "content": "", "tool_calls": [{"function": {"name": "file_ops_read_file"}}]}})
                 yield event({"type": "status", "server": "file_ops.read_file()", "phase": "start",
-                             "request_id": f"{request_id}_003", "message": "started", "meta": {}})
+                             "request_id": f"{request_id}_003", "message": "started", "meta": {},
+                             "tree": {"parent_id": request_id, "depth_level": 1, "child_count": 0, "is_leaf": True}})
                 yield event({"type": "status", "server": "file_ops.read_file()", "phase": "end",
-                             "request_id": f"{request_id}_003", "message": "Read README.md", "meta": {}})
+                             "request_id": f"{request_id}_003", "message": "Read README.md", "meta": {},
+                             "tree": {"parent_id": request_id, "depth_level": 1, "child_count": 0, "is_leaf": True}})
                 # Same request id as the scope above, and after its lines -- the shape a
                 # real run sends. The result is deliberately past the page's cap.
                 yield event({"type": "tool_call", "step": 1, "server": "file_ops",
@@ -489,7 +494,8 @@ def stub_app() -> FastAPI:
                 # this: it shares its start's request id, so addStatusEvent updates the
                 # row where it already is, wherever that is.)
                 yield event({"type": "status", "server": "lessons_learned.extract()", "phase": "start",
-                             "request_id": f"{request_id}_009", "message": "after the answer", "meta": {}})
+                             "request_id": f"{request_id}_009", "message": "after the answer", "meta": {},
+                             "tree": {"parent_id": request_id, "depth_level": 1, "child_count": 0, "is_leaf": True}})
                 yield event({"type": "status", "server": "coordinator", "phase": "end",
                              "request_id": request_id, "message": "completed (2 steps)", "meta": {}})
                 yield event({"type": "end"})

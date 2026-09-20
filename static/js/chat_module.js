@@ -1422,58 +1422,34 @@
     return operationDiv;
   }
 
-  function insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel) {
+  function insertOperationHierarchically(container, operationDiv, requestId, parentId) {
     if (!parentId) {
-      // Root level - insert in sorted order by request ID
-      if (!requestId) {
-        container.appendChild(operationDiv);
-        return;
-      }
-      
-      // Find all root-level operations (those with same depth)
-      const rootElements = [];
-      for (const [nodeId, nodeInfo] of treeNodes.entries()) {
-        if (nodeInfo.depth === depthLevel && !nodeInfo.parent && container.contains(nodeInfo.element)) {
-          rootElements.push({ id: nodeId, element: nodeInfo.element });
-        }
-      }
-      
-      // Sort by request ID
-      rootElements.sort((a, b) => {
-        const aSeq = a.id.split('_').pop();
-        const bSeq = b.id.split('_').pop();
-        return aSeq.localeCompare(bSeq);
-      });
-      
-      // Find insertion position
-      const newSeq = requestId.split('_').pop();
-      let insertBefore = null;
-      
-      for (const root of rootElements) {
-        const rootSeq = root.id.split('_').pop();
-        if (rootSeq.localeCompare(newSeq) > 0) {
-          insertBefore = root.element;
-          break;
-        }
-      }
-      
-      // Insert at correct position
-      if (insertBefore) {
-        container.insertBefore(operationDiv, insertBefore);
-      } else {
-        container.appendChild(operationDiv);
-      }
+      // A row with no parent goes at the end, which is to say in the order it arrived.
+      //
+      // There were thirty lines here that sorted root rows by the last segment of their
+      // request id, and they never ran: the filter asked for `nodeInfo.depth` and
+      // `nodeInfo.parent`, while registerNode stores `depthLevel` and `parentId`. Both
+      // comparisons were against undefined, so the list of roots was always empty and
+      // every row was appended anyway.
+      //
+      // Removed rather than repaired, because repairing it would START sorting, and
+      // sorting is wrong here: these are status lines, and their order is the order
+      // things happened. It would also sort by a segment that carries nothing to sort
+      // by -- since the tree is forwarded (6b6a1348) the only rows reaching this branch
+      // are the ones with no parent at all, such as the connection notice, whose id
+      // ends in `_connection`.
+      container.appendChild(operationDiv);
       return;
     }
     
     // Find parent element -- in THIS container. Out of it, insertAfter.nextSibling is a
-    // node of another container and insertBefore throws NotFoundError. Unreachable
-    // today: the run's stream carries no tree at all (DirectStatusHandler sends server,
-    // message, phase, level, timestamp and meta, and no `tree` key), so parentId is
-    // always null here and only the root branch above ever runs. It becomes reachable
-    // the moment that handler starts forwarding the tree -- which is what the status
-    // display's whole nesting machinery is waiting for -- and then a parent sitting in
-    // another call's section would take the stream down with it.
+    // node of another container and insertBefore throws NotFoundError, which takes the
+    // stream down with it.
+    //
+    // That is the everyday case now, not an edge one: every operation of a run is a
+    // child of the run (6b6a1348 forwards the tree), and the run's own node stands in
+    // the section of whatever arrived first -- its `started`, in the run's section --
+    // while its children are spread across the section of each call.
     const parentNode = treeNodes.get(parentId);
     if (parentNode && parentNode.element && container.contains(parentNode.element)) {
       // Collect all children with their request IDs for sorting
@@ -1571,7 +1547,7 @@
         const operationDiv = createTreeOperationDiv(operationKey, ev, depthLevel, parentId);
         
         // Insert at correct hierarchical position
-        insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
+        insertOperationHierarchically(container, operationDiv, requestId, parentId);
         
         activeOperations.set(operationKey, operationDiv);
         // Register node with requestId (if available) for tree structure
@@ -1586,7 +1562,7 @@
         operationDiv = createTreeOperationDiv(operationKey, ev, depthLevel, parentId);
         
         // Insert at correct hierarchical position
-        insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
+        insertOperationHierarchically(container, operationDiv, requestId, parentId);
         
         activeOperations.set(operationKey, operationDiv);
         // Register node with requestId (if available) for tree structure
@@ -1617,7 +1593,7 @@
       // If END arrives before START was processed, create the operation now
       if (!operationDiv) {
         operationDiv = createTreeOperationDiv(operationKey, ev, depthLevel, parentId);
-        insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
+        insertOperationHierarchically(container, operationDiv, requestId, parentId);
         if (requestId) {
           registerNode(requestId, parentId, operationDiv, depthLevel);
         }
@@ -1639,7 +1615,7 @@
       // If ERROR arrives before START was processed, create the operation now
       if (!operationDiv) {
         operationDiv = createTreeOperationDiv(operationKey, ev, depthLevel, parentId);
-        insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
+        insertOperationHierarchically(container, operationDiv, requestId, parentId);
         if (requestId) {
           registerNode(requestId, parentId, operationDiv, depthLevel);
         }
