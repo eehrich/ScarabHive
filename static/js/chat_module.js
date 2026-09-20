@@ -1240,7 +1240,62 @@
   const TOOL_DETAIL_CHARS = 4000;
 
   /**
-   * The arguments a tool call was made with, and what came back, on the tool's own row.
+   * Make `trigger` fold `body`, by mouse and by keyboard.
+   *
+   * The trigger is a span, not a button: the thing to click is the status line's own
+   * text, and a button there would be a second control on a line that already has one.
+   * A span has to be given what a button brings along -- the role, a tab stop, the
+   * state, and Enter/Space -- or the detail exists for mouse users only.
+   */
+  function foldOnActivate(trigger, body) {
+    trigger.setAttribute('role', 'button');
+    trigger.setAttribute('tabindex', '0');
+    trigger.setAttribute('aria-expanded', 'false');
+    const flip = () => {
+      body.hidden = !body.hidden;
+      trigger.setAttribute('aria-expanded', body.hidden ? 'false' : 'true');
+    };
+    trigger.addEventListener('click', flip);
+    trigger.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();  // Space scrolls the chat away otherwise
+      flip();
+    });
+  }
+
+  /**
+   * The one folded block a tool's row carries, created on the first half that arrives.
+   *
+   * Arguments and result are two events and ONE thing to read: what this call was and
+   * what came of it. Two controls for that put a choice on the line that nobody wants
+   * to make, and a line of status text plus two link labels is mostly labels.
+   *
+   * The status text itself is the control. It costs no width, and a row without a
+   * detail keeps looking exactly as it did -- the hover is the only thing that gives
+   * it away, which is the point: a run is read by its lines, not by its widgets.
+   */
+  function detailBlockFor(row) {
+    const existing = row.querySelector(':scope > .tool-detail-body');
+    if (existing) return existing;
+    const line = row.querySelector('.progress-line');
+    const trigger = line && line.querySelector('.progress-message');
+    if (!trigger) return null;
+    const body = document.createElement('div');
+    body.className = 'tool-detail-body';
+    body.hidden = true;
+    // The line carries its own indent, the row does not -- so the block would start at
+    // the left edge while the line it belongs to sits three levels in.
+    body.style.marginLeft = line.style.paddingLeft || '';
+    row.appendChild(body);
+    // Quiet on purpose, and without a tooltip to explain itself either: the hover
+    // says the line can be pressed, and what comes out is named in the block.
+    row.classList.add('has-detail');
+    foldOnActivate(trigger, body);
+    return body;
+  }
+
+  /**
+   * The arguments a tool call was made with, and what came back, ON the tool's own row.
    *
    * `tool_call` and `tool_result` carry the same `request_id` as the status scope of
    * that call (measured: `_003`, `_004`, `_005` in a real run) and arrive after its
@@ -1248,30 +1303,60 @@
    * this switch at all until now: the status lines say what a tool did, and what it was
    * asked and what it answered went nowhere.
    */
-  function toolDetail(blk, data, label, payload) {
+  function toolDetail(blk, data, kind, payload) {
     if (!blk || !blk.steps) return;
     const text = JSON.stringify(payload, null, 2) || '';
     const shown = text.length > TOOL_DETAIL_CHARS
       ? `${text.slice(0, TOOL_DETAIL_CHARS)}\n… ${text.length - TOOL_DETAIL_CHARS} more characters`
       : text;
+    const action = data.action || 'tool';
     const row = data.request_id
       ? blk.steps.querySelector(`.operation-progress[data-request-id="${CSS.escape(data.request_id)}"]`)
       : null;
     // No row means the call opened no status scope -- an unknown tool, say. What it was
-    // asked still belongs to the call that asked, rather than nowhere.
-    const host = row || statusBodyFor(blk);
-    if (!host) return;
-    const detail = document.createElement('div');
-    detail.className = 'tool-detail';
-    detail.innerHTML = `
-      <button type="button" class="tool-detail-toggle">${escapeHtml(label)}</button>
-      <pre class="tool-detail-body" style="display: none;"></pre>`;
-    const body = detail.querySelector('.tool-detail-body');
-    body.textContent = shown;  // a tool's answer is data, never markup
-    detail.querySelector('.tool-detail-toggle').addEventListener('click', () => {
-      body.style.display = body.style.display === 'none' ? 'block' : 'none';
-    });
-    host.appendChild(detail);
+    // asked still belongs to the call that asked, rather than nowhere; with no line to
+    // click it brings a line of its own, naming the tool.
+    const body = row ? detailBlockFor(row) : looseDetailBlock(blk, action, data.request_id);
+    if (!body) return;
+
+    const part = document.createElement('div');
+    part.className = 'tool-detail-part';
+    const label = document.createElement('span');
+    label.className = 'tool-detail-label';
+    label.textContent = kind;
+    const pre = document.createElement('pre');
+    pre.textContent = shown;  // a tool's answer is data, never markup
+    part.append(label, pre);
+    body.appendChild(part);
+  }
+
+  /**
+   * The same block for a call with no status line of its own.
+   *
+   * Keyed by the call, not by the tool: two calls to the same tool in one step are two
+   * things to read, and the `request_id` that separates them is right there. Only where
+   * there is none does the tool's name have to do -- then both halves of one call have
+   * nothing else in common.
+   */
+  function looseDetailBlock(blk, action, requestId) {
+    const host = statusBodyFor(blk);
+    if (!host) return null;
+    const key = requestId || action;
+    const existing = host.querySelector(`:scope > .tool-detail[data-key="${CSS.escape(key)}"]`);
+    if (existing) return existing.querySelector('.tool-detail-body');
+    const loose = document.createElement('div');
+    loose.className = 'tool-detail';
+    loose.dataset.key = key;
+    const trigger = document.createElement('span');
+    trigger.className = 'tool-detail-name';
+    trigger.textContent = action;
+    const body = document.createElement('div');
+    body.className = 'tool-detail-body';
+    body.hidden = true;
+    loose.append(trigger, body);
+    host.appendChild(loose);
+    foldOnActivate(trigger, body);
+    return body;
   }
 
   const activeOperations = new Map();
@@ -2052,10 +2137,10 @@
         }
         break;
       case 'tool_call':
-        toolDetail(blk, data, `${data.action || 'tool'} · arguments`, data.params);
+        toolDetail(blk, data, 'arguments', data.params);
         break;
       case 'tool_result':
-        toolDetail(blk, data, `${data.action || 'tool'} · result`, data.result);
+        toolDetail(blk, data, 'result', data.result);
         break;
       case 'status':
         // Status events are now delivered through /events stream

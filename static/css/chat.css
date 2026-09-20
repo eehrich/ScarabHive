@@ -72,19 +72,37 @@
 .steps:not(:empty) { margin-bottom: var(--space-2); }
 .step-note { margin-left: var(--space-1); font-size: var(--text-xs); }
 
-/* What a tool was asked and what it answered, folded away on its own status row. */
-.tool-detail { padding-left: var(--space-5); }
-.tool-detail-toggle {
-  padding: 0; border: 0; background: none; cursor: pointer;
-  font: 400 var(--text-xs)/1.6 var(--font-mono); color: var(--text-muted);
-  text-decoration: underline dotted; text-underline-offset: 2px;
+/* What a tool was asked and what it answered: ONE folded block under its status line,
+   opened by clicking the status text itself. No control of its own — a line of status
+   plus two link labels is mostly labels, and the two halves are one thing to read.
+   Quiet on purpose: a row that has a detail looks like every other row until the
+   pointer is on it, so a run is still read by its lines. */
+.operation-progress.has-detail > .progress-line > .progress-message { cursor: pointer; }
+.operation-progress.has-detail > .progress-line > .progress-message:hover,
+.tool-detail-name:hover {
+  color: var(--text-primary);
+  text-decoration: underline dotted; text-underline-offset: 3px;
 }
-.tool-detail-toggle:hover { color: var(--text-secondary); }
-.tool-detail-body {
-  margin: var(--space-1) 0 0; padding: var(--space-2); max-height: 320px; overflow: auto;
+.operation-progress.has-detail > .progress-line > .progress-message:focus-visible,
+.tool-detail-name:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm);
+}
+.tool-detail-body { margin: var(--space-1) 0 var(--space-2); }
+.tool-detail-part + .tool-detail-part { margin-top: var(--space-2); }
+.tool-detail-label {
+  display: block; color: var(--text-muted);
+  font: 400 var(--text-xs)/1.6 var(--font-mono);
+}
+.tool-detail-body pre {
+  margin: 2px 0 0; padding: var(--space-2); max-height: 320px; overflow: auto;
   white-space: pre-wrap; font: 400 var(--text-xs)/1.5 var(--font-mono);
   color: var(--text-secondary); background: var(--surface-1);
   border-left: 2px solid var(--border-default); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+/* A call that opened no status scope has no line to click and brings one of its own. */
+.tool-detail { padding-left: var(--space-5); }
+.tool-detail-name {
+  cursor: pointer; font: 400 var(--text-xs)/1.6 var(--font-mono); color: var(--text-muted);
 }
 
 /* ------------------------------------------------------------- status tree */

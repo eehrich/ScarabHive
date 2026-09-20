@@ -1256,10 +1256,13 @@
     }
   });
 
-  await check('a tool call carries its arguments and its result on its own row, folded and capped', async () => {
+  await check('clicking a tool status line unfolds what it was asked and what it answered, as one block per call', async () => {
     // `tool_call` and `tool_result` had no branch in the event switch at all: the
     // status lines said what a tool did, and what it was asked and what it answered
-    // were dropped. They share the scope's request id, so they hang on its row.
+    // were dropped. They share the scope's request id, so they hang on its row --
+    // and the STATUS TEXT is what opens them, with no control of its own: the two
+    // halves are one thing to read, and a line of status plus two link labels is
+    // mostly labels.
     try {
       sessionButton('s-1', 'open').click();
       await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
@@ -1270,26 +1273,73 @@
       await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
       const box = $$('#chat .msg.assistant').at(-1);
       const step = (n) => box.querySelector(`.step-section[data-step="${n}"]`);
+      // call 1 folded itself away when call 2 opened. Open it again, or every
+      // visibility check below would pass for the wrong reason.
+      const body1 = step('1').querySelector('.container-body');
+      if (body1.getClientRects().length === 0) step('1').querySelector('.container-header').click();
+      if (body1.getClientRects().length === 0) return false;
       const row = step('1').querySelector('.operation-progress[data-request-id$="_003"]');
       if (!row) return false;
-      const details = [...row.querySelectorAll('.tool-detail')];
-      if (details.length !== 2) return false;
-      const bodyOf = (d) => d.querySelector('.tool-detail-body');
+      // nothing was added to the line itself: the status text IS the control
+      const message = row.querySelector('.progress-line .progress-message');
+      if (row.querySelector('.progress-line button')) return false;
+      if (!row.classList.contains('has-detail')) return false;
+      if (message.getAttribute('role') !== 'button') return false;
+      if (message.getAttribute('tabindex') !== '0') return false;
+      if (message.getAttribute('aria-expanded') !== 'false') return false;
+      // and nothing explains itself in a tooltip either: the hover is the whole hint
+      if (message.title) return false;
+      // ONE block, both halves in it, in the order they happened
+      const bodies = [...row.children].filter((el) => el.classList.contains('tool-detail-body'));
+      if (bodies.length !== 1) return false;
+      const parts = [...bodies[0].querySelectorAll('.tool-detail-part')];
+      if (parts.length !== 2) return false;
+      if (parts.map((p) => p.querySelector('.tool-detail-label').textContent).join()
+          !== 'arguments,result') return false;
       // folded: a run that reads twenty files must not unfold twenty walls of JSON
-      if (details.some((d) => bodyOf(d).style.display !== 'none')) return false;
-      details[0].querySelector('.tool-detail-toggle').click();
-      if (bodyOf(details[0]).style.display === 'none') return false;
-      if (!bodyOf(details[0]).textContent.includes('README.md')) return false;
+      if (bodies[0].getClientRects().length > 0) return false;
+      message.click();
+      if (bodies[0].getClientRects().length === 0) return false;
+      if (message.getAttribute('aria-expanded') !== 'true') return false;
+      // one click, both halves -- there is no second thing to press
+      if (parts.some((p) => p.getClientRects().length === 0)) return false;
+      if (!parts[0].querySelector('pre').textContent.includes('README.md')) return false;
       // a big result is capped rather than poured into the page, and says it was
-      const result = bodyOf(details[1]).textContent;
+      const result = parts[1].querySelector('pre').textContent;
       if (result.length > 4300 || !result.includes('more characters')) return false;
       // and a result is DATA: tags in it are shown, not parsed. Rendered as markup the
       // angle brackets would be gone from textContent -- and a tool could put anything
       // it liked into the page.
       if (!result.includes('<b>not markup</b>')) return false;
-      if (bodyOf(details[1]).querySelector('b')) return false;
-      // and it hangs on the call that made it, not on the next one
-      return step('2').querySelector('.tool-detail') === null;
+      if (parts[1].querySelector('b')) return false;
+      // the keyboard reaches it too: a span is not a button until it is given one
+      message.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+      if (bodies[0].getClientRects().length > 0) return false;
+      if (message.getAttribute('aria-expanded') !== 'false') return false;
+      // and it hangs on the call that made it: no row of the next step carries one
+      if ([...step('2').querySelectorAll('.operation-progress')]
+          .some((r) => r.querySelector('.tool-detail-body'))) return false;
+      // A call that opens NO scope has no line to click, so it brings one of its own,
+      // naming the tool. Two such calls to the SAME tool are two things to read --
+      // grouped by the tool's name they would land in one block, although the request
+      // id that separates them is right there.
+      // step 1 was opened above, which folds step 2 -- without this every visibility
+      // check below would fail for a reason that has nothing to do with the block.
+      const body2 = step('2').querySelector('.container-body');
+      if (body2.getClientRects().length === 0) step('2').querySelector('.container-header').click();
+      if (body2.getClientRects().length === 0) return false;
+      const loose = [...step('2').querySelectorAll('.status-body > .tool-detail')];
+      if (loose.length !== 2) return false;
+      if (loose.some((l) => l.querySelector('.tool-detail-name').textContent !== 'datetime_now'))
+        return false;
+      if (loose[0].dataset.key === loose[1].dataset.key) return false;
+      const first = loose[0].querySelector('.tool-detail-body');
+      if (first.querySelectorAll('.tool-detail-part').length !== 2) return false;
+      if (first.getClientRects().length > 0) return false;  // folded like the rest
+      loose[0].querySelector('.tool-detail-name').click();
+      if (first.getClientRects().length === 0) return false;
+      return first.textContent.includes('Europe/Berlin1')
+          && !first.textContent.includes('Europe/Berlin2');
     } finally {
       cookie('stub_stream', null);
       forgetRun();

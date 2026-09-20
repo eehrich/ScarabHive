@@ -49,7 +49,8 @@ sends a step the way a reasoning model does -- its reasoning in three deltas
 split mid-word, then the step's answer as markup and a tool call -- and ends;
 with ``steps`` a run ``r-steps`` sends TWO calls, a tool scope that carries no
 step of its own, the run's own start and end, which carry none either, a
-sub-agent counting ITS steps, and a row whose parent is never sent. Every status
+sub-agent counting ITS steps, a row whose parent is never sent, and two calls to
+one tool that open no scope at all. Every status
 event of it carries a ``tree``, as the run's stream does since 6b6a1348. One
 with files starts half a second later, names ``r-files-ended`` and brings its
 final answer and end -- with ``stub_stream=stale``, ``r-files-stale`` in
@@ -483,6 +484,18 @@ def stub_app() -> FastAPI:
                              "meta": {},
                              "tree": {"parent_id": f"{request_id}_sub_002", "depth_level": 2,
                                       "child_count": 0, "is_leaf": True}})
+                # TWO calls to the same tool that open NO status scope -- what an
+                # unknown tool does. There is no row to hang them on, and only the
+                # request id tells them apart.
+                for nth, stamp in ((1, "19:15:22"), (2, "19:15:23")):
+                    yield event({"type": "tool_call", "step": 2, "server": "datetime",
+                                 "action": "datetime_now",
+                                 "request_id": f"{request_id}_10{nth}",
+                                 "params": {"tz": f"Europe/Berlin{nth}"}})
+                    yield event({"type": "tool_result", "step": 2, "server": "datetime",
+                                 "action": "datetime_now",
+                                 "request_id": f"{request_id}_10{nth}",
+                                 "result": {"status": "success", "current": stamp}})
                 for delta in ("now I can ", "answer."):
                     yield event({"type": "reasoning_delta", "step": 2, "delta": delta})
                 yield event({"type": "thinking", "step": 2, "assistant": {"content": "", "tool_calls": []}})
@@ -960,7 +973,7 @@ EXPECTED = [
     'collapse all closes every open branch and keeps the focus it was pressed with',
     'each LLM call keeps its own reasoning, its own tool lines, and folds when the next one starts',
     'a sub-agents lines nest under the call that spawned it, and none of them go missing',
-    'a tool call carries its arguments and its result on its own row, folded and capped',
+    'clicking a tool status line unfolds what it was asked and what it answered, as one block per call',
     'a session panel pinned from a link can follow the chat again',
     'a request id in the chat offers the panels that take a request',
     'a panel with unsaved input is only closed or reloaded once the viewer agrees',
