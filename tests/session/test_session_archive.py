@@ -563,6 +563,33 @@ async def test_the_young_are_counted_whole_however_early_the_cap_stops(sm, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_a_full_pass_is_capped_even_when_the_rest_is_in_use(sm, tmp_path):
+    """A busy tree must not swallow the cap.
+
+    With the busy check first, a pass whose remaining trees are all in use
+    skipped every one of them and ran off the end without setting `capped` --
+    so a pass that wrote its full quota with work left over said it was a
+    finished one, in the log, the CLI and the panel alike.
+    """
+    for index in range(3):
+        await _make_tree(sm, f"root_y{index}", [])
+    _age(sm, [f"root_y{index}" for index in range(3)], days=60)
+
+    async def busy() -> set[str]:
+        return {"root_y2"}  # the only one left once the cap is reached
+
+    archive = SessionArchive(
+        sm, archive_path=str(tmp_path / "session_archive"),
+        max_trees_per_sweep=2, busy_sessions=busy)
+    report = await archive.archive_user(USER)
+
+    assert report.trees == 2
+    assert report.capped is True, "the pass wrote its quota and stopped"
+    assert report.skipped_busy == 0, "the cap ended it before that tree was asked about"
+    assert report.remaining == 1
+
+
+@pytest.mark.asyncio
 async def test_a_tree_in_use_is_what_the_next_pass_finds(sm, tmp_path):
     """Not capped, yet something is left: "remaining" is not the cap's word."""
     await _make_tree(sm, "root_x1", [])

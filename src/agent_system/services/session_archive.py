@@ -391,14 +391,20 @@ class SessionArchive:
         report.skipped_young = len(trees) - len(eligible)
 
         for tree in eligible:
-            if (held | await self._running()).intersection(tree.sessions):
-                report.skipped_busy += 1
-                continue
-            # The cap bounds what one pass WRITES; a dry run writes nothing, and
-            # a report that stops counting at 200 would read as "that is all".
+            # The cap bounds what one pass WRITES; a dry run writes nothing,
+            # and a report that stops counting at 200 would read as "that is
+            # all". It is asked FIRST, ahead of the busy check: behind it, a
+            # pass whose remaining trees are all in use skips every one of
+            # them and runs off the end without ever setting `capped` -- a
+            # pass that wrote its full quota with work left over, calling
+            # itself finished. Asking first also saves the job manager a
+            # question per tree whose answer cannot change anything.
             if not dry_run and report.trees >= self.max_trees_per_sweep:
                 report.capped = True
                 break
+            if (held | await self._running()).intersection(tree.sessions):
+                report.skipped_busy += 1
+                continue
             try:
                 archived_bytes, failures = await self._archive_tree(
                     user_id, tree, dry_run=dry_run)
