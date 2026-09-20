@@ -71,10 +71,16 @@ with `info`.
 
 Three things bound it, and none of them are this plugin's:
 
-* **The job lives in the process that started it.** In the API that process
-  outlives the turn, which is what makes sleeping possible. A `agent-cli run`
-  that ends its turn takes its background jobs with it — there is nothing left
-  to finish the job, let alone wake anybody. Use it from sessions the API runs.
+* **The job lives in the process that started it, and runs while that process
+  drives its event loop.** In the API that process outlives the turn, which is
+  what makes sleeping possible. A `agent-cli run` that ends its turn takes its
+  background jobs with it — the teardown cancels the task, so the wake it
+  still sends carries no result. `agent-cli chat` keeps them, and its prompt now waits *on* that
+  loop rather than blocking the thread (`9d9c4652`), so a job runs on while
+  nobody types and the wake arrives at the prompt. The same run before and
+  after that change: four minutes of wall clock in which it never finished,
+  against fourteen seconds. Still no wake on a redirected input path, whose
+  fallback reader blocks — and nothing here lets a job outlive its process.
 * **`session_presence` can be off.** Then nothing is woken and the caller polls,
   exactly as every job did before. The flag costs nothing and changes nothing.
 * **`max_wake_depth`** (core, default 3) stops wake chains: a run woken that
