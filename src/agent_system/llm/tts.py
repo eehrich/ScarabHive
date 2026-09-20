@@ -152,16 +152,20 @@ async def notify_tts_response(
     *, provider: str, model: str, url: str, duration_ms: float,
     audio_seconds: Optional[float] = None,
     audio_bytes_len: Optional[int] = None,
+    usage: Optional[dict] = None,
     error: Optional[str] = None,
     finish_reason: Optional[str] = None,
 ) -> None:
     """Fire POST_LLM_RESPONSE with the TTS result or error.
 
-    NO ``usage`` is sent, and that is a decision rather than an omission: a
-    synthesis is measured in audio seconds and bytes, not in prompt and
-    completion tokens. That absence is what keeps TTS out of the live cost
-    table (context_usage_tracker skips a call that reports no usage) — a row
-    booking seconds as tokens would be worse than no row.
+    ``usage`` only when the provider actually reports one, and the two
+    providers here differ: Gemini answers a synthesis with the same
+    ``usage_metadata`` its chat calls carry, so those tokens are real and
+    measured; OpenAI's ``/audio/speech`` returns audio and nothing else, and
+    is billed per character. Passing a guess for the second would be worse
+    than passing nothing — context_usage_tracker skips a call with no usage,
+    so a provider that cannot say stays out of the live cost table instead of
+    entering it with an invented number.
     """
     response_data: dict[str, Any] = {}
     if audio_seconds is not None:
@@ -170,7 +174,7 @@ async def notify_tts_response(
         response_data["audio_bytes"] = audio_bytes_len
     await hook_notify.notify_response(
         provider=provider, model=model, url=url, duration_ms=duration_ms,
-        response_data=response_data or None, error=error,
+        response_data=response_data or None, usage=usage, error=error,
         finish_reason=finish_reason)
 
 

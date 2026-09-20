@@ -105,6 +105,52 @@ class TestRegistryDispatch:
         assert "openrouter.ai" in client.base_url
 
 
+class TestTheNotificationCarriesAUsage:
+    @pytest.mark.asyncio
+    async def test_a_reported_usage_reaches_the_hook_context(self):
+        """context_usage_tracker books an agent-less call by reading exactly
+        this field, so a provider that counts tokens must not have them
+        dropped between the client and the registry."""
+        from agent_system.llm import tts
+
+        seen = []
+
+        class _Registry:
+            async def execute_hooks(self, hook_type, context, **kwargs):
+                seen.append(context)
+                return context
+
+        with patch("agent_system.hooks.get_hook_registry", lambda: _Registry()):
+            await tts.notify_tts_response(
+                provider="gemini_tts", model="gemini-2.5-flash-preview-tts",
+                url="https://example.invalid", duration_ms=1.0,
+                audio_seconds=2.0, audio_bytes_len=10,
+                usage={"prompt_tokens": 33, "completion_tokens": 4})
+
+        assert seen and seen[0].llm_usage == {"prompt_tokens": 33, "completion_tokens": 4}
+
+    @pytest.mark.asyncio
+    async def test_a_provider_that_counts_nothing_sends_nothing(self):
+        """openai_speech has no token counts to report, and a call with no
+        usage is what keeps it out of the live cost table."""
+        from agent_system.llm import tts
+
+        seen = []
+
+        class _Registry:
+            async def execute_hooks(self, hook_type, context, **kwargs):
+                seen.append(context)
+                return context
+
+        with patch("agent_system.hooks.get_hook_registry", lambda: _Registry()):
+            await tts.notify_tts_response(
+                provider="openai_speech", model="tts-1",
+                url="https://example.invalid", duration_ms=1.0,
+                audio_seconds=2.0, audio_bytes_len=10)
+
+        assert seen and seen[0].llm_usage is None
+
+
 class TestCreateTTSFromProfile:
     def _make_config(self):
         """Create a minimal mock config."""

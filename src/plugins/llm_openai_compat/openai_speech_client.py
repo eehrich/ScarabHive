@@ -224,6 +224,17 @@ class OpenAISpeechTTSClient(TTSClient):
                             f"— model={self.model}, url={url}"))
                 else:
                     result = self._to_result(response, voice_name)
+                    # NO usage -- and this client cannot know whether there
+                    # is one to have. The body is taken as raw audio bytes and
+                    # the only header read is content-type, so nothing here
+                    # has ever looked. That matters because the default
+                    # base_url is OPENROUTER, not OpenAI: OpenRouter reports a
+                    # `cost` in usage on its other endpoints, so the spend on
+                    # this route may well be reportable and is simply not
+                    # being asked for. Left as it is rather than guessed at --
+                    # a call with no usage stays out of the live cost table,
+                    # which is the honest state until someone measures what
+                    # this endpoint actually answers with.
                     await notify_tts_response(
                         provider="openai_speech", model=self.model, url=url,
                         duration_ms=(time.time() - started) * 1000,

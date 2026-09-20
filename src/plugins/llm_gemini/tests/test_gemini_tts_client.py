@@ -432,6 +432,117 @@ class TestTheRequestItself:
         assert warnings, "a dead hook dispatch stayed below WARNING"
 
 
+class TestItReportsWhatTheSynthesisCost:
+    """A Gemini synthesis answers with the same usage_metadata a chat call
+    does. The client dropped it, so the spend reached no live total."""
+
+    def test_the_reported_tokens_are_passed_on_under_canonical_names(self):
+        from plugins.llm_gemini.gemini_tts_client import _usage_from
+
+        response = MagicMock()
+        response.usage_metadata.prompt_token_count = 42
+        response.usage_metadata.candidates_token_count = 7
+        response.usage_metadata.total_token_count = 49
+
+        assert _usage_from(response) == {"prompt_tokens": 42, "completion_tokens": 7,
+                                         "total_tokens": 49}
+
+    def test_a_float_count_is_still_a_count(self):
+        """Refusing floats means returning None, and None is exactly the
+        "silently free" outcome this extractor exists to end. pricing's own
+        _first_int accepts both."""
+        from plugins.llm_gemini.gemini_tts_client import _usage_from
+
+        response = MagicMock()
+        response.usage_metadata.prompt_token_count = 42.0
+        response.usage_metadata.candidates_token_count = 7.0
+        response.usage_metadata.total_token_count = 49.0
+
+        usage = _usage_from(response)
+        assert usage == {"prompt_tokens": 42, "completion_tokens": 7,
+                         "total_tokens": 49}
+        # By TYPE, not by value: 49.0 == 49, so equality alone cannot tell a
+        # converted count from a passed-through float. total_tokens is the one
+        # that matters -- normalize_usage runs int() over prompt and
+        # completion, but the tracker reads total_tokens straight out of this
+        # dict into an INTEGER column.
+        assert [type(v) for v in usage.values()] == [int, int, int]
+
+    def test_the_total_is_carried_when_the_sdk_reports_it(self):
+        """Thinking tokens are billed as output and appear in the total but
+        NOT in candidates_token_count; without the total the consumer falls
+        back to prompt + completion and loses them."""
+        from plugins.llm_gemini.gemini_tts_client import _usage_from
+
+        response = MagicMock()
+        response.usage_metadata.prompt_token_count = 10
+        response.usage_metadata.candidates_token_count = 20
+        response.usage_metadata.total_token_count = 95
+
+        assert _usage_from(response)["total_tokens"] == 95
+
+    def test_a_usage_that_cannot_be_read_does_not_lose_the_audio(self):
+        """The audio is already downloaded when this runs. Bookkeeping that
+        throws here would land in the retry handler, which re-raises — the
+        whole scene aborts over a field nobody asked for."""
+        from plugins.llm_gemini.gemini_tts_client import _usage_from
+
+        class _Exploding:
+            @property
+            def usage_metadata(self):
+                raise RuntimeError("proto field went away")
+
+        assert _usage_from(_Exploding()) is None
+
+    def test_a_response_without_usage_reports_none(self):
+        """An openai_speech-shaped answer, and every older SDK: no usage is a
+        real answer, and it keeps the call out of the cost table."""
+        from plugins.llm_gemini.gemini_tts_client import _usage_from
+
+        response = MagicMock()
+        response.usage_metadata = None
+        assert _usage_from(response) is None
+
+    def test_a_boolean_is_not_a_token_count(self):
+        """isinstance(True, int) is True in Python, so a placeholder of the
+        wrong kind would be booked as one token."""
+        from plugins.llm_gemini.gemini_tts_client import _usage_from
+
+        response = MagicMock()
+        response.usage_metadata.prompt_token_count = True
+        response.usage_metadata.candidates_token_count = False
+        response.usage_metadata.total_token_count = True
+        assert _usage_from(response) is None
+
+    def test_an_object_that_answers_everything_reports_none(self):
+        """A bare MagicMock answers every attribute with another MagicMock.
+        Taken at face value that becomes a usage made of nothing — booked as
+        a call whose token counts are objects."""
+        from plugins.llm_gemini.gemini_tts_client import _usage_from
+
+        assert _usage_from(MagicMock()) is None
+
+    @pytest.mark.asyncio
+    async def test_a_synthesis_hands_its_tokens_to_the_hooks(self, mock_genai):
+        """End to end: the counts reach notify_tts_response, which is what
+        context_usage_tracker reads to book an agent-less call."""
+        from unittest.mock import AsyncMock
+
+        response = _make_mock_response(b"\x00\x00" * 100)
+        response.usage_metadata.prompt_token_count = 33
+        response.usage_metadata.candidates_token_count = 4
+        response.usage_metadata.total_token_count = 37
+        mock_genai._client.models.generate_content = MagicMock(return_value=response)
+
+        with patch("plugins.llm_gemini.gemini_tts_client.notify_tts_response",
+                   new=AsyncMock()) as notified:
+            await mock_genai.synthesize("Hallo")
+
+        sent = [c.kwargs for c in notified.await_args_list if c.kwargs.get("usage")]
+        assert sent and sent[0]["usage"] == {"prompt_tokens": 33, "completion_tokens": 4,
+                                             "total_tokens": 37}
+
+
 class TestNoCloning:
     """Gemini cannot clone. A reference on the voice must fail the CALL --
     through synthesize()/synthesize_multi_speaker(), before any request --

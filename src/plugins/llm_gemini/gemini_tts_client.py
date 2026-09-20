@@ -297,6 +297,7 @@ class GeminiTTSClient(TTSClient):
                     duration_ms=(_time.time() - _start) * 1000,
                     audio_seconds=duration,
                     audio_bytes_len=len(audio_bytes),
+                    usage=_usage_from(response),
                 )
                 return audio_bytes
 
@@ -379,6 +380,61 @@ class GeminiTTSClient(TTSClient):
     async def _notify_tts_post_response(self, **kwargs) -> None:
         await notify_tts_response(
             provider="gemini_tts", model=self.model, **kwargs)
+
+
+def _usage_from(response: Any) -> Optional[dict]:
+    """Token counts for a synthesis, if the SDK reported any.
+
+    A Gemini synthesis answers with the same ``usage_metadata`` a chat call
+    does — the numbers were here all along and this client dropped them, so
+    the spend showed up in no live total. Read off ATTRIBUTES, the way
+    gemini_batch.py reads the same SDK object (gemini_client.py reads a dict
+    because it parses raw REST JSON), and translated to the canonical names on
+    the way out: pricing.normalize_usage reads ``promptTokenCount`` but NOT
+    the SDK's snake_case spelling, so handing the attributes over unchanged
+    would count every synthesis as ZERO tokens — which in a cost table is
+    indistinguishable from free.
+
+    A number is a number whether the SDK hands back an int or a float: the
+    narrower check rejected floats, and rejecting them means returning None,
+    which is the very "silently free" outcome this function exists to end.
+    Booleans are not numbers here, though ``isinstance(True, int)`` says
+    otherwise, and neither is whatever a mock answers.
+
+    Nothing in here may fail the synthesis. The audio is already downloaded
+    when this runs, and bookkeeping that discards it is worse than
+    bookkeeping that is missing.
+    """
+    try:
+        # No early return for a missing usage_metadata: `getattr(None, name,
+        # None)` is None, so the "nothing readable" check below already
+        # answers that case -- and a branch no test can tell from its absence
+        # is not a guard, it is a second place to keep correct.
+        meta = getattr(response, "usage_metadata", None)
+
+        def _count(name: str) -> Optional[int]:
+            value = getattr(meta, name, None)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            return int(value)
+
+        prompt = _count("prompt_token_count")
+        completion = _count("candidates_token_count")
+        total = _count("total_token_count")
+        if prompt is None and completion is None and total is None:
+            return None
+        usage = {"prompt_tokens": prompt or 0, "completion_tokens": completion or 0}
+        if total is not None:
+            # Carried because it is the authoritative number: thinking tokens
+            # are billed as output and appear in the total without appearing
+            # in candidates_token_count, and the consumer falls back to
+            # prompt + completion when this is absent.
+            usage["total_tokens"] = total
+        return usage
+    except Exception as e:  # noqa: BLE001 - see the docstring
+        logger.warning("Gemini TTS: could not read usage_metadata (%s: %s) — "
+                       "this synthesis is not booked", type(e).__name__, e)
+        return None
 
 
 # Available Gemini TTS voices for reference / validation
