@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
-from agent_system.llm.message_roles import DEVELOPER, opens_a_turn
+from agent_system.llm.message_roles import DEVELOPER, is_input
 
 if TYPE_CHECKING:
     from .database import DebateForumDB
@@ -345,15 +345,17 @@ class DebateForumHooks(SchemaBasedPluginHook):
 
     @staticmethod
     def _find_last_user_position(messages: list) -> int:
-        """Where the current turn begins -- new posts go in front of it.
+        """Where new posts go: in front of the last thing being answered.
 
-        The head of the turn, not the last `user` message: a woken run opens
-        its turn with a `developer` message (cli_utils/agent_runner), and on
-        the role alone the posts landed in front of a question from an earlier
-        turn instead of in front of the task being answered.
+        `is_input`, not `role == "user"` and not `opens_a_turn`. New posts are
+        delivered to the CURRENT tail, so the anchor has to find a woken run's
+        `developer` wake as well as the marked user messages this plugin and
+        the loop append inside a turn (a direct message, a continuation nudge,
+        an earlier batch of posts). On the head of the turn they would land in
+        front of the whole exchange that already answered it.
         """
         for i in range(len(messages) - 1, -1, -1):
-            if opens_a_turn(messages[i]):
+            if is_input(messages[i]):
                 return i
         return len(messages)
 

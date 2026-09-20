@@ -16,7 +16,7 @@ from typing import Any
 from jinja2 import Environment, BaseLoader, TemplateSyntaxError, UndefinedError
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
-from agent_system.llm.message_roles import SYSTEM, opens_a_turn
+from agent_system.llm.message_roles import SYSTEM, is_input
 from agent_system.llm.models import ChatMessage
 from agent_system.utils.prompt_renderer import strip_prompt_comments
 
@@ -225,17 +225,17 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
 
     @staticmethod
     def _find_last_user_index(messages: list[ChatMessage]) -> int | None:
-        """Index of the head of the current turn, or None.
+        """Index of the last thing the model is being asked to answer, or None.
 
-        The head, not the last `user` message: a woken run's task is a
-        `developer` message (cli_utils/agent_runner.wake_message), and asking
-        for the role alone put the reminder in front of a question from an
-        EARLIER turn -- behind an assistant turn and the whole exchange after
-        it. That loses the only thing "before_last_user" is for, the distance
-        to the end, and it rewrites the history at an old index, which costs
-        the cached prefix from there on, on every call.
+        `is_input`, not `role == "user"` and not `opens_a_turn`: this anchor
+        exists for its DISTANCE TO THE END, so it has to find whatever stands
+        last -- a woken run's `developer` wake as well as the marked user
+        messages the run appends inside a turn (a delivered direct message, a
+        continuation nudge, a debate post). Asking for the role alone missed
+        the wake; asking for the head of the turn missed all the marked ones
+        and buried the reminder in front of the whole answered exchange.
         """
         for i in range(len(messages) - 1, -1, -1):
-            if opens_a_turn(messages[i]):
+            if is_input(messages[i]):
                 return i
         return None

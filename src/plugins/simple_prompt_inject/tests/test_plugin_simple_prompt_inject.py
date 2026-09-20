@@ -213,6 +213,27 @@ class TestInjectPrompt:
         assert msgs[3].role == "developer", "the reminder goes in front of the wake"
 
     @pytest.mark.asyncio
+    async def test_a_delivered_message_is_what_gets_answered(self, plugin, make_context):
+        """The anchor is whatever stands LAST, marked or not. A direct message
+        delivered mid-run, a continuation nudge, a debate post -- all `user`
+        with an `injected_by`, all appended after the person's task, and all of
+        them the thing the model is about to answer. Anchored on the head of
+        the turn instead, the reminder sits in front of the whole exchange that
+        already answered it, which is the one place it must not be."""
+        ctx = make_context([
+            ChatMessage(role="user", content="analysiere X"),
+            ChatMessage(role="assistant", content="fertig"),
+            ChatMessage(role="user", content="v6 fragt: wie weit bist du?",
+                        injected_by="debate_forum_direct"),
+        ])
+
+        msgs = (await plugin.inject_prompt(ctx)).context.messages
+
+        assert msgs[2].injected_by == "simple_prompt_inject"
+        assert msgs[3].injected_by == "debate_forum_direct", \
+            "the reminder must be the last thing before what is being answered"
+
+    @pytest.mark.asyncio
     async def test_a_note_inside_the_turn_is_not_the_anchor(self, plugin, make_context):
         """The counter-proof, and why this asks for the marker and not for the
         role: the loop's own notes are `developer` as well and stand INSIDE a

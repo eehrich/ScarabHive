@@ -147,7 +147,8 @@ def _orphans(messages):
     return sorted(called - answered)
 
 
-async def _run(llm, *, max_steps=5, hooks=(), fallback=None, session="final_call"):
+async def _run(llm, *, max_steps=5, hooks=(), fallback=None, session="final_call",
+               task="the task"):
     registry = get_hook_registry()
     for hook_type, name, hook in hooks:
         await registry.register_hook(hook_type, name, hook)
@@ -182,7 +183,7 @@ async def _run(llm, *, max_steps=5, hooks=(), fallback=None, session="final_call
             _LAST_LIVE[:] = list(messages)
             return await persist(session_id, messages, **kwargs)
         agent._persist_conversation = capturing
-        events = [event async for event in agent.run_events("the task", request_id=REQUEST_ID,
+        events = [event async for event in agent.run_events(task, request_id=REQUEST_ID,
                                                          session_id=session)]
         stored = list(agent._session_tracker.get_session_messages(session))
         assert _LAST_LIVE, "no persist captured -- the wrapper missed the funnel"

@@ -120,6 +120,15 @@ def starts_a_turn(message: Any) -> bool:
     The loop's own notes are `developer` too. They carry `injected_by` and
     stand INSIDE a turn, not at its head -- and a session drops them on the way
     to disk anyway (servers/agent/components/session_tracking).
+
+    A MARKED `user` message is not a turn head either, and that is a change:
+    a scripted follow-up ("Check your work.") and a debate post are stored, and
+    on the bare role they used to end the walk. /undo cut at the nudge and
+    /retry re-sent it as if it were the question; both now take the whole
+    request the person actually asked for. /history and /last follow: they
+    count exchanges, and a nudge is not one -- so a window of six reaches back
+    over six real questions now, which is more output than before and the
+    number the person asked for.
     """
     return opens_a_turn(message) and bool(message_text(message).strip())
 

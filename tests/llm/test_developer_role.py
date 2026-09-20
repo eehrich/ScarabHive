@@ -700,3 +700,29 @@ def test_a_breakdown_without_notes_does_not_show_an_empty_line():
     from agent_system.chat_actions import context_breakdown
     plain = [m for m in history() if m.role != DEVELOPER]
     assert "notes" not in context_breakdown(plain)["parts"]
+
+
+def _woken_history() -> list[ChatMessage]:
+    """What a woken run opens with: the wake is the whole conversation, first
+    and last, and it carries no marker (cli_utils/agent_runner.wake_message)."""
+    return [
+        ChatMessage(role=SYSTEM, content="You are a careful assistant."),
+        ChatMessage(role=DEVELOPER, content=NOTE),
+    ]
+
+
+def test_a_note_alone_is_still_a_conversation_anthropic():
+    """The route with the real risk: the Messages API has no system role among
+    the input messages and wants a `user` turn first. A wake is a run's ONLY
+    input, so if the lowering ran on freshly built notes rather than on the
+    whole converted list, this is where it would 400."""
+    from unittest.mock import MagicMock, patch
+    with patch("anthropic.AsyncAnthropic") as sdk:
+        sdk.return_value = MagicMock()
+        from plugins.llm_anthropic.anthropic_client import AnthropicAsyncClient
+        client = AnthropicAsyncClient(model="claude-sonnet-4-5", api_key="k")
+
+    _system, messages = client._convert_messages(_woken_history())
+
+    assert [m.get("role") for m in messages] == [USER], messages
+    assert NOTE in _text_of(messages[0].get("content"))

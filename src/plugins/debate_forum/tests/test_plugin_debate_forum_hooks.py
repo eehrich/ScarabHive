@@ -506,7 +506,6 @@ class TestDebateForumHooksSchema:
 
 
 
-
 class TestWhereNewPostsGo:
     """New posts are inserted in front of the task being answered. That place
     is found by walking back for the head of the turn, and on the role alone a
@@ -518,6 +517,21 @@ class TestWhereNewPostsGo:
             ChatMessage(role="user", content="analysiere X"),
             ChatMessage(role="assistant", content="fertig"),
             ChatMessage(role="developer", content="You were woken because input is waiting."),
+        ]
+
+        assert DebateForumHooks._find_last_user_position(messages) == 2
+
+    def test_a_delivered_message_is_what_gets_answered(self):
+        """New posts go in front of whatever stands LAST -- including the
+        marked user messages this plugin and the loop append inside a turn (a
+        direct message, a continuation nudge, an earlier batch of posts). On
+        the head of the turn they land in front of the exchange that already
+        answered it."""
+        messages = [
+            ChatMessage(role="user", content="analysiere X"),
+            ChatMessage(role="assistant", content="fertig"),
+            ChatMessage(role="user", content="v6 fragt: wie weit bist du?",
+                        injected_by="debate_forum_direct"),
         ]
 
         assert DebateForumHooks._find_last_user_position(messages) == 2

@@ -1514,6 +1514,25 @@ class TestFollowups:
         assert result.metadata["continue_message"] == FOLLOWUPS[0]
 
     @pytest.mark.asyncio
+    async def test_a_wake_starts_the_list_again(self):
+        """A woken run is a new request, and it opens with a `developer`
+        message rather than a person's line. Walked past, the follow-ups of
+        the request BEFORE it are counted as this one's -- so the woken turn
+        gets the wrong entry of the list, or none at all."""
+        from agent_system.core.session_presence import WAKE_TASK
+        from agent_system.llm.models import ChatMessage
+
+        plugin = _make_plugin()
+        history = _history("followup", "followup") + [
+            ChatMessage(role="developer", content=WAKE_TASK),
+            ChatMessage(role="assistant", content="Score: 5"),
+        ]
+
+        result = await plugin.evaluate_completion(_followup_context(history))
+
+        assert result.metadata["continue_message"] == FOLLOWUPS[0]
+
+    @pytest.mark.asyncio
     async def test_a_plain_continuation_is_not_mistaken_for_a_person(self):
         plugin = _make_plugin()
         result = await plugin.evaluate_completion(

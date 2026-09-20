@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
+from agent_system.llm.message_roles import opens_a_turn
 from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
@@ -432,9 +433,18 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         """(index, message) of the follow-up due after this final answer, or None.
 
         No state: the follow-ups already sent are the messages marked
-        FOLLOWUP_MARKER after the last user message a person wrote (one with
-        no ``injected_by``). A new request starts the list again; a cancelled
-        run leaves nothing behind.
+        FOLLOWUP_MARKER after the HEAD of the current request
+        (``message_roles.opens_a_turn``) -- what a person wrote, or the wake of
+        a woken run, which opens its turn with an unmarked ``developer``
+        message. A new request starts the list again; a cancelled run leaves
+        nothing behind.
+
+        Asking for ``role == "user"`` here walked straight past a wake into the
+        request before it: the follow-ups of THAT one were counted as this
+        one's, which either sent the wrong entry of the list or none at all,
+        and ``request_start`` then pointed so far back that
+        ``followups_on_continue: false`` read a continued request as a
+        session's first one and fired anyway.
 
         ``followups_on_continue: false`` limits the list to the first request
         of a session: when an assistant answer precedes that user message, the
@@ -456,13 +466,10 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         request_start = 0
         for pos in range(len(messages) - 1, -1, -1):
             msg = messages[pos]
-            if getattr(msg, "role", None) != "user":
-                continue
-            marker = getattr(msg, "injected_by", None)
-            if marker is None:
+            if opens_a_turn(msg):
                 request_start = pos
                 break
-            if marker == FOLLOWUP_MARKER:
+            if getattr(msg, "injected_by", None) == FOLLOWUP_MARKER:
                 sent += 1
         if not self._followups_on_continue(agent_cfg, context.agent_name) and any(
             getattr(msg, "role", None) == "assistant" for msg in messages[:request_start]
