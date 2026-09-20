@@ -416,9 +416,9 @@ class TestTheRequestItself:
         working, and the only trace is a DEBUG line nobody has enabled."""
         import logging
 
-        from agent_system.llm import tts as tts_module
+        from agent_system.llm import hook_notify
 
-        tts_module._hook_failures_reported.clear()
+        hook_notify._reported_failures.clear()
         mock_genai._client.models.generate_content = MagicMock(
             return_value=_make_mock_response(b"\x00\x00" * 100))
         with patch("agent_system.hooks.get_hook_registry",

@@ -368,9 +368,14 @@ async def test_a_cancel_reaches_the_hooks_too():
 
 
 async def test_a_hook_that_throws_cannot_break_a_decision(caplog):
-    """And it says so once, above DEBUG: this exact silence hid a bug in the TTS clients."""
-    from plugins_llm.llm_decisions import openrouter as module
-    module._reported_hook_failures.clear()
+    """And it says so once, above DEBUG: this exact silence hid a bug in the TTS clients.
+
+    The warning comes from agent_system.llm.hook_notify, which both this
+    client and the TTS clients dispatch through -- one place to repair, and
+    one place where the silence could come back.
+    """
+    from agent_system.llm import hook_notify
+    hook_notify._reported_failures.clear()
 
     class _Broken:
         async def execute_hooks(self, *args, **kwargs):
@@ -381,7 +386,43 @@ async def test_a_hook_that_throws_cannot_break_a_decision(caplog):
             result = await _client().decide(STATE, SAFE_TO_RUN)
 
     assert result["safe_to_run"].value == 0.05
-    assert any("hook dispatch failed" in r.message for r in caplog.records if r.levelname == "WARNING")
+    assert any("hooks are NOT being dispatched" in r.getMessage()
+               for r in caplog.records if r.levelname == "WARNING")
+
+
+async def test_a_dead_dispatch_is_reported_once_and_then_stays_quiet(caplog):
+    """Both halves matter, and neither was pinned before the dispatch became
+    shared: above DEBUG so it is findable at all, and ONCE so a run of many
+    decisions does not bury the log under the same line."""
+    from agent_system.llm import hook_notify
+    hook_notify._reported_failures.clear()
+
+    class _Broken:
+        async def execute_hooks(self, *args, **kwargs):
+            raise ImportError("the registry moved")
+
+    with patch("agent_system.hooks.get_hook_registry", lambda: _Broken()):
+        with caplog.at_level("DEBUG"):
+            with _respond(_response(), _response()):
+                await _client().decide(STATE, SAFE_TO_RUN)
+                await _client().decide(STATE, SAFE_TO_RUN)
+
+    warnings = [r for r in caplog.records if r.levelno >= 30]
+    # Two calls, two phases each: four dispatches, two distinct markers.
+    assert len(warnings) == 2, [r.getMessage()[:60] for r in warnings]
+    assert any("hook error" in r.getMessage() for r in caplog.records if r.levelno < 30), (
+        "the repeats vanished entirely instead of dropping to DEBUG")
+
+
+async def test_every_dispatch_says_there_is_no_agent(caplog):
+    """context_usage_tracker counts a call as agent-less spend exactly when
+    this field is None (b9222431); on a chat call the same hook fires WITH an
+    agent, and counting those would book every chat call twice."""
+    registry, watching = _watching_hooks()
+    with watching, _respond(_response()):
+        await _client().decide(STATE, SAFE_TO_RUN, session_id="s-9")
+
+    assert registry.seen and all(c.agent is None for _, c in registry.seen)
 
 
 async def test_a_busy_endpoint_is_tried_again(monkeypatch):

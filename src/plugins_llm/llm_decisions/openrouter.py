@@ -40,6 +40,7 @@ from typing import Any, Mapping, Optional, Sequence, Union
 
 import httpx
 
+from agent_system.llm import hook_notify
 from agent_system.llm.tls import httpx_verify
 from plugins_llm.llm_common import cancellation
 from plugins_llm.llm_common.api_keys import resolve_api_key
@@ -51,6 +52,9 @@ DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 #: What a question's ``type`` may be, and which field of the answer decides.
 _DECIDING_FIELD = {"noul": "noul", "choice": "choice", "score": "score"}
+#: What the hooks see as the provider of these calls; also the name the
+#: API key is resolved under.
+_PROVIDER = "openrouter_decisions"
 
 State = Union[str, Mapping[str, Any], Sequence[Any]]
 
@@ -115,7 +119,7 @@ class DecisionsClient:
         # service name -- travels with that key. Give such an endpoint its own
         # api_key in the config rather than relying on the fallback.
         self.api_key, _ = resolve_api_key(api_key, url, default_base_url=DECISIONS_URL,
-                                          provider="openrouter_decisions")
+                                          provider=_PROVIDER)
         self.model = model
         self.url = url
         self.request_timeout = request_timeout
@@ -320,78 +324,27 @@ class DecisionsClient:
         )
 
 # --------------------------------------------------------------------- hooks
+# The dispatch lives in agent_system/llm/hook_notify.py, shared with the TTS
+# clients: the same "no agent around this call, so tell the registry yourself"
+# problem, and the same once-per-phase warning when that dispatch is dead.
+# What stays here is this API's vocabulary -- answers, a served model, a token
+# usage -- which is exactly the half that could NOT be shared.
 
-#: Kept local rather than reusing the TTS helpers: ``notify_tts_response`` can
-#: only carry audio seconds and byte counts, and this call has answers, a served
-#: model and a token count instead. (Its request half would have been reusable --
-#: it takes the provider as a parameter.)
-async def _notify_request(*, model: str, url: str, payload: dict, session_id: Optional[str] = None) -> None:
-    await _dispatch("PRE_LLM_REQUEST", model=model, url=url, request_data=payload, session_id=session_id)
+
+async def _notify_request(*, model: str, url: str, payload: dict,
+                          session_id: Optional[str] = None) -> None:
+    await hook_notify.notify_request(
+        provider=_PROVIDER, model=model, url=url, payload=payload,
+        session_id=session_id or "")
 
 
 async def _notify_response(*, model: str, url: str, duration_ms: float, data: Optional[dict] = None,
                            usage: Optional[dict] = None, served_by: Optional[str] = None,
                            session_id: Optional[str] = None,
                            error: Optional[str] = None, finish_reason: Optional[str] = None) -> None:
-    await _dispatch("POST_LLM_RESPONSE", model=model, url=url, response_data=data, usage=usage,
-                    served_by=served_by, session_id=session_id,
-                    duration_ms=duration_ms, error=error, finish_reason=finish_reason)
-
-
-#: One warning per phase, then silence: a dead dispatch must be findable above
-#: DEBUG (agent_system/llm/tts.py names the bug this hid), without turning a
-#: run of many decisions into noise.
-_reported_hook_failures: set = set()
-
-
-async def _dispatch(hook_name: str, *, model: str, url: str, request_data: Optional[dict] = None,
-                    response_data: Optional[dict] = None, usage: Optional[dict] = None,
-                    served_by: Optional[str] = None, session_id: Optional[str] = None,
-                    duration_ms: float = 0.0,
-                    error: Optional[str] = None, finish_reason: Optional[str] = None) -> None:
-    """Tell the global hook registry about this call; never fail because of it."""
-    try:
-        from agent_system.hooks import HookContext, HookType, get_hook_registry
-        hook_type = getattr(HookType, hook_name)
-        context = HookContext(
-            hook_type=hook_type,
-            request_id=_current_request_id(),
-            session_id=session_id or "",
-            agent=None,
-            agent_name="openrouter_decisions",
-            llm_request_payload=request_data,
-            llm_response_data=response_data,
-            llm_usage=usage,
-            llm_provider="openrouter_decisions",
-            llm_model=model,
-            llm_request_url=url,
-            llm_duration_ms=duration_ms,
-            llm_error=error,
-            llm_finish_reason=finish_reason or ("stop" if not error else None),
-            llm_is_streaming=False,
-            # where the debugger reads the backend a gateway routed to
-            metadata={"timestamp_ms": time.time() * 1000, "served_by": served_by},
-        )
-        await get_hook_registry().execute_hooks(hook_type, context)
-    except Exception as e:  # a blind debugger is bad; a failed decision because of it is worse
-        if hook_name not in _reported_hook_failures:
-            _reported_hook_failures.add(hook_name)
-            logger.warning("Decisions %s hook dispatch failed (%s: %s) -- the debugger will not see these "
-                           "calls; reported once per phase", hook_name, type(e).__name__, e)
-        else:
-            logger.debug("Decisions %s hook dispatch failed: %s", hook_name, e)
-
-
-def _current_request_id() -> str:
-    """The run this call belongs to, so the debugger can group it; empty outside one.
-
-    ``or ""`` is the whole guard: the contextvar is declared with
-    ``default=None`` (tools/status.py), so a call made outside a run reads None
-    rather than raising -- and None in a field typed ``str`` is what reaches
-    the database as NULL instead of "belongs to no run".
-    """
-    try:
-        from agent_system.tools.status import current_request_id
-        return current_request_id.get() or ""
-    except Exception:
-        return ""
+    await hook_notify.notify_response(
+        provider=_PROVIDER, model=model, url=url, duration_ms=duration_ms,
+        response_data=data, usage=usage, session_id=session_id or "",
+        error=error, finish_reason=finish_reason,
+        # where the debugger reads the backend a gateway routed to
+        metadata={"served_by": served_by})
