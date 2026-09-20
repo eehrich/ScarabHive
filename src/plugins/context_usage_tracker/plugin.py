@@ -1,7 +1,10 @@
 """
 Context Usage Tracker Plugin
 
-Tracks LLM context usage and token consumption by implementing a post_llm_call hook.
+Tracks LLM context usage and token consumption: a post_llm_call hook for what
+an agent spends, and a post_llm_response hook for the clients that run without
+one and report a token usage (the decisions client; NOT TTS -- see the second
+hook).
 Provides web UI for viewing usage statistics and history.
 """
 import asyncio
@@ -167,6 +170,84 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
         except Exception as e:
             logger.error(f"Error tracking LLM usage: {e}", exc_info=True)
             # Don't fail the request if tracking fails
+            return HookResult(success=True, modified=False, context=context)
+
+
+    async def track_non_agent_usage(self, context: HookContext) -> HookResult:
+        """Record an LLM call that belongs to no agent (post_llm_response).
+
+        The decisions client talks to a provider with no agent around it, so
+        the agent-level hook above never sees it: its spend appeared in no live
+        total, only in the message debugger -- whose rows a retention setting
+        prunes and a config switch can turn off entirely. For chat there were
+        always two ledgers; for that call there was one.
+
+        The guard is the whole trick. ``post_llm_response`` fires for chat
+        calls too (servers/agent/components/hook_integration.py wires it with
+        the agent attached), so counting those here would book every single
+        chat call TWICE. An agent-less context is exactly what the other hook
+        cannot see, and nothing else.
+
+        **TTS is deliberately NOT covered, and this is the reason.**
+        ``llm/tts.py:notify_tts_response`` takes no usage at all -- it reports
+        audio seconds and bytes -- so a TTS call arrives here with
+        ``llm_usage`` empty and is skipped two lines below. Wiring one through
+        would be the smaller half of the work: a synthesised minute is not
+        measured in prompt and completion tokens, and a row that pretends
+        otherwise is worse than no row. Audio spend stays where it is (the
+        message debugger and writer_audio's own accounting) until this table
+        has a unit for it.
+        """
+        try:
+            if context.agent is not None:
+                return HookResult(success=True, modified=False, context=context)
+            if context.llm_error:
+                # A retry or a failed call: the client reports those through the
+                # same hook, and a failure that never billed must not appear as
+                # spend. A retry that LATER succeeds is reported again, without
+                # the error, and that is the call that gets counted.
+                return HookResult(success=True, modified=False, context=context)
+
+            usage = context.llm_usage or {}
+            if not usage:
+                return HookResult(success=True, modified=False, context=context)
+
+            call = normalize_usage(usage)
+            model = context.llm_model or ""
+            # Same rule as the agent path: the figure the provider billed wins
+            # over any estimate, which is what makes a decisions call honest --
+            # it has no per-token price and reports its cost itself.
+            cost, cost_is_estimate = resolve_call_cost(usage, model or None)
+
+            # Who spent it: the provider, because there is no agent. The panel
+            # shows it next to the agents, with a context window of 0 -- a call
+            # that carries no conversation cannot fill one, and a made-up
+            # window would put it on a percentage scale it does not live on.
+            who = context.agent_name or context.llm_provider or "llm"
+
+            await asyncio.to_thread(
+                self.tracker.record_usage,
+                agent_id=who,
+                agent_name=who,
+                session_id=context.session_id or "",
+                total_tokens=usage.get("total_tokens")
+                or (call.prompt_tokens + call.completion_tokens),
+                prompt_tokens=call.prompt_tokens,
+                completion_tokens=call.completion_tokens,
+                context_window=0,
+                cached_tokens=call.cached_tokens,
+                cache_write_tokens=call.cache_write_tokens,
+                cost=cost,
+                cost_is_estimate=cost_is_estimate,
+                model=model,
+                request_id=context.request_id or "",
+                latency_ms=context.llm_duration_ms,
+            )
+            return HookResult(success=True, modified=False, context=context)
+
+        except Exception as e:
+            logger.error(f"Error tracking non-agent LLM usage: {e}", exc_info=True)
+            # Never fail the call over bookkeeping, same as the hook above.
             return HookResult(success=True, modified=False, context=context)
 
 

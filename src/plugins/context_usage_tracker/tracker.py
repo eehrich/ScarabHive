@@ -321,7 +321,13 @@ class UsageTracker:
 
         # Calculate statistics
         token_counts = [s.get("total_tokens", 0) for s in history_list]
-        percentages = [s.get("usage_percentage", 0.0) for s in history_list]
+        # Only calls that HAVE a context window carry a meaningful percentage.
+        # A call without a conversation (the decisions client) is recorded with
+        # context_window 0 and usage_percentage 0 -- averaging those in would
+        # halve the figure the panel shows for how full the window ran, and
+        # would hold `min` at 0 % forever. The tokens are real and stay in.
+        percentages = [s.get("usage_percentage", 0.0) for s in history_list
+                       if s.get("context_window", 0) > 0]
 
         stats = {
             "timespan": {
@@ -338,10 +344,10 @@ class UsageTracker:
                 "avg": sum(token_counts) / len(token_counts)
             },
             "usage_percentage": {
-                "current": percentages[-1],
-                "min": min(percentages),
-                "max": max(percentages),
-                "avg": sum(percentages) / len(percentages)
+                "current": percentages[-1] if percentages else 0.0,
+                "min": min(percentages) if percentages else 0.0,
+                "max": max(percentages) if percentages else 0.0,
+                "avg": (sum(percentages) / len(percentages)) if percentages else 0.0
             },
         }
 

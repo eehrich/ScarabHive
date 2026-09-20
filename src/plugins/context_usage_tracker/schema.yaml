@@ -9,6 +9,17 @@ hooks:
       after: ["begin"]
       before: ["end"]
 
+  # The client-level twin: the decisions client calls a provider with no agent
+  # around it, so the hook above never sees it. It counts ONLY agent-less calls
+  # -- post_llm_response fires for chat too, and counting those here would book
+  # every chat call twice. TTS is not covered: its notification carries no
+  # token usage at all (see the hook's docstring).
+  - name: track_non_agent_usage
+    type: post_llm_response
+    enabled: true
+    timeout: 5.0
+    description: "Records what a client without an agent spends (decisions calls)"
+
 web_ui:
   # The panel's catalogue entry: launcher, command palette and chat links read it
   # (agent_system/ui/catalog.py lists the fields and categories).
