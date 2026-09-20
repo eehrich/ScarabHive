@@ -67,6 +67,11 @@
 .container-section:has(> [data-toggle="response"]) > .container-header { display: none; }
 .container-section:has(> [data-toggle="response"]) > .container-body { padding: 0; }
 
+/* One section per LLM call, built as the run goes. The steps sit above the answer and
+   keep it in view: folded, a thirty-step run is thirty lines rather than thirty walls. */
+.steps:not(:empty) { margin-bottom: var(--space-2); }
+.step-note { margin-left: var(--space-1); font-size: var(--text-xs); }
+
 /* ------------------------------------------------------------- status tree */
 
 .operation-progress { font: 400 var(--text-xs)/1.5 var(--font-mono); }

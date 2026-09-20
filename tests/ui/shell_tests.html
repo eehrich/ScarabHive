@@ -1155,10 +1155,57 @@
       // per delta instead of appending would hold a fragment.
       const box = $$('#chat pre').find((pre) => pre.textContent.includes('No datetime tool here, so I say so.'));
       if (!box) return false;
-      // and it is shown, not left behind a section nobody reveals
-      if (box.closest('.container-section').style.display === 'none') return false;
+      // and the viewer can SEE it. textContent reads a hidden box just as happily, so
+      // the box being in the DOM says nothing -- a mutant that wrote the reasoning and
+      // left it invisible survived this check until this line. Rects rather than the
+      // computed display: that one reports the box's OWN display and would still say
+      // "block" inside a section someone had hidden.
+      if (box.getClientRects().length === 0) return false;
       // the answer's markup and the tool call Status already names stay out
       return !box.textContent.includes('<p>') && !box.textContent.includes('datetime_now');
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('each LLM call keeps its own reasoning, its own tool lines, and folds when the next one starts', async () => {
+    // One Thinking box and one Status box per MESSAGE said nothing about which of a
+    // run's calls a line came from. A tool scope carries no step at all, so its place
+    // can only come from the order of the stream -- which is what this measures.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'steps');
+      $('#task').value = 'Two calls please';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-steps', 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
+      const box = $$('#chat .msg.assistant').at(-1);
+      const step = (n) => box.querySelector(`.step-section[data-step="${n}"]`);
+      const text = (n) => (step(n) ? step(n).textContent : '');
+      if (!step('1') || !step('2') || !step('run')) return false;
+      // each call's reasoning stays in its own section
+      if (!text('1').includes('weighing the first move.') || text('1').includes('now I can answer.')) return false;
+      if (!text('2').includes('now I can answer.')) return false;
+      // the tool scope carried no step: it belongs to the call that was open
+      if (!text('1').includes('Read README.md') || text('2').includes('Read README.md')) return false;
+      // a sub-agent counts its OWN steps, so its `meta.step: 1` is not this run's call 1.
+      // It belongs to the call that spawned it -- the one in flight.
+      if (!text('2').includes('sub-agent at work') || text('1').includes('sub-agent at work')) return false;
+      // the run's own lines belong to the run, not to the call that happened to be open.
+      // The one that measures this is the scope opening AFTER the answer under a fresh
+      // request id: the coordinator's end shares its start's id, so addStatusEvent
+      // updates that row wherever it already sits and would pass either way.
+      if (!text('run').includes('after the answer')) return false;
+      if (text('1').includes('after the answer') || text('2').includes('after the answer')) return false;
+      if (!text('run').includes('completed (2 steps)')) return false;
+      // the header names what the call decided to do
+      if (!step('1').querySelector('.step-note').textContent.includes('file_ops_read_file')) return false;
+      // and the finished call folds away, so a long run does not bury its own answer
+      if (step('1').querySelector('.container-body').style.display !== 'none') return false;
+      return step('2').querySelector('.container-body').style.display !== 'none';
     } finally {
       cookie('stub_stream', null);
       forgetRun();

@@ -46,7 +46,9 @@ second after it has started; with
 ``stub_stream=refused`` the server refuses the run, with ``refused-late`` after a
 second, with its error and then its end. With ``reasons`` a run ``r-reasons``
 sends a step the way a reasoning model does -- its reasoning in three deltas
-split mid-word, then the step's answer as markup and a tool call -- and ends. One
+split mid-word, then the step's answer as markup and a tool call -- and ends;
+with ``steps`` a run ``r-steps`` sends TWO calls, a tool scope that carries no
+step of its own, and the run's own start and end, which carry none either. One
 with files starts half a second later, names ``r-files-ended`` and brings its
 final answer and end -- with ``stub_stream=stale``, ``r-files-stale`` in
 ``s-files-new``, and it goes on; with ``final-drops``, ``r-files-final-dropped``,
@@ -413,6 +415,55 @@ def stub_app() -> FastAPI:
                 yield event({"type": "final", "content": "Done"})
                 yield event({"type": "end"})
                 return
+            if ending == "steps":
+                # A two-call run, shaped like the one measured through agent.run_events
+                # on 2026-09-20. What matters here is what carries a step and what does
+                # not: the coordinator's own start and end carry none (they are the
+                # RUN's), and a tool scope carries none either -- status_scope knows the
+                # tool, not the loop -- so only the order says which call set it off.
+                # The request ids are the shapes the real run uses (measured): the run's
+                # own loop suffixes `_nnn`, and anything with a run of its own suffixes
+                # `_sub_<id>` and counts ITS OWN steps.
+                yield event({"type": "status", "server": "coordinator", "phase": "start",
+                             "request_id": f"{request_id}_001", "message": "started", "meta": {}})
+                yield event({"type": "thinking", "step": 1})
+                yield event({"type": "status", "server": "coordinator", "phase": "progress",
+                             "request_id": f"{request_id}_001", "message": "step 1/30",
+                             "meta": {"step": 1}})
+                yield event({"type": "status", "server": "worker", "phase": "progress",
+                             "request_id": f"{request_id}_002", "message": "Calling LLM (one)",
+                             "meta": {"step": 1}})
+                for delta in ("weighing the ", "first move."):
+                    yield event({"type": "reasoning_delta", "step": 1, "delta": delta})
+                yield event({"type": "thinking", "step": 1, "assistant": {
+                    "content": "", "tool_calls": [{"function": {"name": "file_ops_read_file"}}]}})
+                yield event({"type": "status", "server": "file_ops.read_file()", "phase": "start",
+                             "request_id": f"{request_id}_003", "message": "started", "meta": {}})
+                yield event({"type": "status", "server": "file_ops.read_file()", "phase": "end",
+                             "request_id": f"{request_id}_003", "message": "Read README.md", "meta": {}})
+                yield event({"type": "thinking", "step": 2})
+                # A sub-agent spawned by the SECOND call, reporting ITS first step. Its
+                # `meta.step` is a step of the sub-run -- taken at face value it would
+                # file these lines under the parent's call 1.
+                yield event({"type": "status", "server": "sub_agent.coordinator", "phase": "start",
+                             "request_id": f"{request_id}_sub_001_001",
+                             "message": "sub-agent at work", "meta": {"step": 1}})
+                for delta in ("now I can ", "answer."):
+                    yield event({"type": "reasoning_delta", "step": 2, "delta": delta})
+                yield event({"type": "thinking", "step": 2, "assistant": {"content": "", "tool_calls": []}})
+                yield event({"type": "thinking", "content": "Done"})  # the simplified one: no step
+                yield event({"type": "final", "content": "Done"})
+                # A scope that opens AFTER the answer, under a request id nothing has
+                # seen yet -- what a session-end hook does. It belongs to the run: no
+                # call is in flight any more. (The coordinator's own end does not test
+                # this: it shares its start's request id, so addStatusEvent updates the
+                # row where it already is, wherever that is.)
+                yield event({"type": "status", "server": "lessons_learned.extract()", "phase": "start",
+                             "request_id": f"{request_id}_009", "message": "after the answer", "meta": {}})
+                yield event({"type": "status", "server": "coordinator", "phase": "end",
+                             "request_id": request_id, "message": "completed (2 steps)", "meta": {}})
+                yield event({"type": "end"})
+                return
             if ending in ("closes", "stale", "ending", "answered", "saving"):
                 return
             if ending in ("final-drops", "cancelled-drops"):
@@ -513,7 +564,8 @@ def stub_app() -> FastAPI:
         started = {"drops": "r-dropped", "final-drops": "r-final-dropped", "cancelled-drops": "r-cancelled-dropped",
                    "late-drops": "r-late-dropped", "question-drops": "r-question-dropped", "closes": "r-closed",
                    "ending": "r-ending", "late-start-drops": "r-late-started", "answered": "r-answered",
-                   "saving": "r-saving", "saving-drops": "r-saving-dropped", "reasons": "r-reasons"}
+                   "saving": "r-saving", "saving-drops": "r-saving-dropped", "reasons": "r-reasons",
+                   "steps": "r-steps"}
         if ending in started:
             return started_stream(started[ending], body.get("session_id", ""), ending,
                                   start_after=1.5 if ending == "late-start-drops" else 0)
@@ -870,6 +922,7 @@ EXPECTED = [
     'the session panel is the one that asks for the sub-session tree',
     'the thinking box carries the reasoning, and not the answer a second time',
     'collapse all closes every open branch and keeps the focus it was pressed with',
+    'each LLM call keeps its own reasoning, its own tool lines, and folds when the next one starts',
     'a session panel pinned from a link can follow the chat again',
     'a request id in the chat offers the panels that take a request',
     'a panel with unsaved input is only closed or reloaded once the viewer agrees',

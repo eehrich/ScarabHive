@@ -1115,25 +1115,10 @@
     const box = document.createElement('div');
     box.className = 'msg assistant';
     box.style.position = 'relative'; // Enable absolute positioning for request ID
+    // One section per LLM call is built as the run goes (see stepOf); an answer with no
+    // run behind it -- a session read back from disk -- has none and shows its text only.
     box.innerHTML = `
-      <div class="container-section" style="display: none;">
-        <div class="container-header" data-toggle="thinking">
-          <span class="toggle-arrow">${kitIcon('chevron-right')}</span>
-          <span class="type-icon">${kitIcon('brain')}</span>
-          <span class="container-label">Thinking</span>
-        </div>
-        <div class="container-body" style="display: none;">
-          <pre class="thinking-content"></pre>
-        </div>
-      </div>
-      <div class="container-section" style="display: none;">
-        <div class="container-header" data-toggle="status">
-          <span class="toggle-arrow">${kitIcon('chevron-right')}</span>
-          <span class="type-icon">${kitIcon('activity')}</span>
-          <span class="container-label">Status</span>
-        </div>
-        <div class="container-body status-body" style="display: block;"></div>
-      </div>
+      <div class="steps"></div>
       <div class="container-section" style="display: none;">
         <div class="container-header" data-toggle="response">
           <span class="toggle-arrow">${kitIcon('chevron-right')}</span>
@@ -1146,29 +1131,107 @@
     row.appendChild(box);
     chatContainer.appendChild(row);
     scrollBottom();
-
-    const headers = box.querySelectorAll('.container-header');
-    headers.forEach(header => {
-      const body = header.nextElementSibling;
-      // data-open drives the arrow (chat.css); the body's display stays the state
-      header.parentElement.dataset.open = String(body.style.display !== 'none');
-      header.addEventListener('click', () => {
-        const isHidden = body.style.display === 'none';
-        body.style.display = isHidden ? 'block' : 'none';
-        header.parentElement.dataset.open = String(isHidden);
-      });
-    });
+    foldOnClick(box.querySelector('[data-toggle="response"]'));
 
     return {
       row,
       box,
       t: box.querySelector('.assistant-text'),
-      think: box.querySelector('.thinking-content'),
-      status: box.querySelector('.status-body'),
-      thinkingSection: box.querySelector('[data-toggle="thinking"]').parentElement,
-      statusSection: box.querySelector('[data-toggle="status"]').parentElement,
-      responseSection: box.querySelector('[data-toggle="response"]').parentElement
+      steps: box.querySelector('.steps'),
     };
+  }
+
+  /** A container-section header that folds its body away, and says so to chat.css. */
+  function foldOnClick(header) {
+    const body = header.nextElementSibling;
+    const section = header.parentElement;
+    // data-open drives the arrow (chat.css); the body's display stays the state
+    section.dataset.open = String(body.style.display !== 'none');
+    header.addEventListener('click', () => {
+      const hidden = body.style.display === 'none';
+      body.style.display = hidden ? 'block' : 'none';
+      section.dataset.open = String(hidden);
+      // Touched by hand: from here on this section is the viewer's, and the next step
+      // starting must not fold it away under them.
+      section.dataset.touched = 'true';
+    });
+  }
+
+  /** The section that belongs to no single call: the run's own start and end. */
+  const RUN_SECTION = 'run';
+
+  /**
+   * The section for one LLM call, created on first sight.
+   *
+   * A message used to have ONE Thinking box and ONE Status box for all of its steps,
+   * so a run of five calls piled five lots of reasoning and every tool line into the
+   * same two boxes with nothing saying which call a line came from. Measured on a real
+   * three-step run, the stream already answers that: `thinking` with a step and no
+   * assistant opens the call, everything of that call follows it, and the next one
+   * closes it. Tool status events carry no step of their own (they come from
+   * status_scope, which knows the tool and not the loop) -- they are placed by the call
+   * that is open when they arrive, which is what the ORDER of the stream says.
+   */
+  function stepOf(blk, step) {
+    if (!blk || !blk.steps) return null;
+    const key = String(step);
+    const existing = blk.steps.querySelector(`[data-step="${CSS.escape(key)}"]`);
+    if (existing) return existing;
+    const section = document.createElement('div');
+    section.className = 'container-section step-section';
+    section.dataset.step = key;
+    section.innerHTML = `
+      <div class="container-header" data-toggle="step">
+        <span class="toggle-arrow">${kitIcon('chevron-right')}</span>
+        <span class="type-icon">${kitIcon(key === RUN_SECTION ? 'activity' : 'brain')}</span>
+        <span class="container-label">${key === RUN_SECTION ? 'Run' : `Step ${escapeHtml(key)}`}</span>
+        <span class="step-note pk-muted"></span>
+      </div>
+      <div class="container-body">
+        <pre class="thinking-content" style="display: none;"></pre>
+        <div class="status-body"></div>
+      </div>`;
+    blk.steps.appendChild(section);
+    foldOnClick(section.querySelector('.container-header'));
+    return section;
+  }
+
+  /**
+   * Open the section for a call and fold the one before it away.
+   *
+   * Without the folding a long run is a wall: every step of it open at once, the answer
+   * pushed off the screen. Folded, the live step is the one you are reading. A section
+   * the viewer opened or closed by hand is left alone -- it is theirs from that moment.
+   */
+  function openStep(blk, step) {
+    const section = stepOf(blk, step);
+    if (!section) return null;
+    for (const other of blk.steps.querySelectorAll('.step-section')) {
+      if (other === section || other.dataset.touched === 'true') continue;
+      other.querySelector('.container-body').style.display = 'none';
+      other.dataset.open = 'false';
+    }
+    return section;
+  }
+
+  /**
+   * Where a status event belongs: the call in flight, or the run if none is.
+   *
+   * Deliberately NOT `meta.step`, although status events carry one. Measured on a real
+   * run: it never decides anything, because addStatusEvent places an operation once, at
+   * the event that creates it, and updates it where it is from then on. The coordinator
+   * and the worker are both created by their `started`, which carries no step, so their
+   * later "step 2/30" only rewrites a row that already sits in the run's section; and a
+   * tool scope carries no step at all.
+   *
+   * The one event that IS new and does carry a step is a sub-agent's -- and there the
+   * number is a step of the SUB-run. Taken at face value it files a sub-agent working
+   * for call 5 under call 1. So the only case the field would ever have decided is the
+   * one case where it lies, and the call in flight is the right answer for all of them.
+   */
+  function statusBodyFor(blk) {
+    const section = stepOf(blk, currentStatusStep || RUN_SECTION);
+    return section ? section.querySelector('.status-body') : null;
   }
 
   const activeOperations = new Map();
@@ -1363,9 +1426,16 @@
       return;
     }
     
-    // Find parent element
+    // Find parent element -- in THIS container. Out of it, insertAfter.nextSibling is a
+    // node of another container and insertBefore throws NotFoundError. Unreachable
+    // today: the run's stream carries no tree at all (DirectStatusHandler sends server,
+    // message, phase, level, timestamp and meta, and no `tree` key), so parentId is
+    // always null here and only the root branch above ever runs. It becomes reachable
+    // the moment that handler starts forwarding the tree -- which is what the status
+    // display's whole nesting machinery is waiting for -- and then a parent sitting in
+    // another call's section would take the stream down with it.
     const parentNode = treeNodes.get(parentId);
-    if (parentNode && parentNode.element) {
+    if (parentNode && parentNode.element && container.contains(parentNode.element)) {
       // Collect all children with their request IDs for sorting
       const childElements = [];
       for (const childId of parentNode.children) {
@@ -1571,10 +1641,11 @@
   let currentStreamingContent = '';
   let currentStreamingStep = null;
 
-  // Which step the Thinking box is currently collecting reasoning for. Only to
-  // decide when a new "Step N" header is due -- the text itself is appended to
-  // the DOM, never held here.
-  let currentReasoningStep = null;
+  // The call that is in flight, for the status events that carry no step of their own
+  // (every tool scope, which knows its tool and not the loop around it). Null between
+  // the run's answer and its end, so the run's own closing lines do not land in the
+  // last call that happened to be open.
+  let currentStatusStep = null;
 
   // Set when a user message was appended to the RUNNING request. The stream's
   // block is rebound to a fresh one only when the NEXT step actually starts —
@@ -1593,11 +1664,7 @@
     blk.row = newBlk.row;
     blk.box = newBlk.box;
     blk.t = newBlk.t;
-    blk.think = newBlk.think;
-    blk.status = newBlk.status;
-    blk.thinkingSection = newBlk.thinkingSection;
-    blk.statusSection = newBlk.statusSection;
-    blk.responseSection = newBlk.responseSection;
+    blk.steps = newBlk.steps;
     scrollBottom();
   }
   
@@ -1776,7 +1843,10 @@
   // A lasting row about the run's connection in the block's status (a status without a
   // phase renders nothing; the synthetic request_id keeps it off the run's own row).
   function connectionNotice(blk, message) {
-    addStatusEvent(blk.status, {
+    // The run's section, not a call's: a lost connection is the run's business, and the
+    // call that happened to be open when the line dropped did not cause it.
+    const section = stepOf(blk, RUN_SECTION);
+    addStatusEvent(section && section.querySelector('.status-body'), {
       type: 'status',
       phase: 'error',
       message,
@@ -1810,9 +1880,9 @@
         run.requestId = data.request_id;
         run.sessionId = data.session_id;
         currentSessionId = data.session_id;
-        // Steps count from 1 again, so a leftover from the previous run would
-        // swallow the first header of this one.
-        currentReasoningStep = null;
+        // Steps count from 1 again, so a leftover from the previous run would put this
+        // one's first tool lines into the last one's call.
+        currentStatusStep = null;
 
         // Notify session manager about new/updated session
         if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
@@ -1865,14 +1935,13 @@
         // Appended as a text node rather than `textContent +=`, which re-reads
         // and rewrites the whole box per delta -- a run reasons in hundreds of
         // them.
-        if (blk.think) {
-          if (data.step !== currentReasoningStep) {
-            currentReasoningStep = data.step;
-            blk.think.appendChild(document.createTextNode(
-              `${blk.think.textContent ? '\n\n' : ''}Step ${data.step}\n`));
+        {
+          const section = stepOf(blk, data.step);
+          if (section) {
+            const pre = section.querySelector('.thinking-content');
+            pre.style.display = 'block';  // a call that does not reason shows no box
+            pre.appendChild(document.createTextNode(data.delta || ''));
           }
-          blk.think.appendChild(document.createTextNode(data.delta || ''));
-          showSection(blk.think);
         }
         break;
       case 'thinking_delta':
@@ -1924,12 +1993,20 @@
           // Final thinking event with content - clear streaming state
           currentStreamingContent = '';
           currentStreamingStep = null;
-          // Its `assistant.content` is NOT written to the Thinking box. It is the
+          // Its `assistant.content` is NOT written into the call's section. It is the
           // step's answer, which the Response box already shows -- and it arrives
           // here past the format_output hook, so a `<pre>` rendered it as literal
-          // `<p>…</p>` markup beside the rendered copy. Its `tool_calls` are not
-          // listed either: Status names every call as `plugin.method()` from
-          // call_with_status, with the arguments this listing dropped.
+          // `<p>…</p>` markup beside the rendered copy.
+          //
+          // Its tool_calls only NAME the call in the header. The lines themselves are
+          // Status's, with the arguments and the outcome this listing dropped.
+          const chose = (data.assistant.tool_calls || [])
+            .map((tc) => (tc.function || {}).name).filter(Boolean);
+          const section = data.step ? stepOf(blk, data.step) : null;
+          if (section && chose.length) {
+            section.querySelector('.step-note').textContent =
+              `· ${chose.slice(0, 3).join(', ')}${chose.length > 3 ? ` +${chose.length - 3}` : ''}`;
+          }
         } else {
           // Step marker event (before LLM call) - don't interfere with streaming
           // Next step starting: apply a deferred mid-run-append rebind so the
@@ -1942,35 +2019,43 @@
             pendingAppendRebind = false;
             rebindLiveBlock(blk);
           }
+          // This marker, and only this one, opens a call's section: it is sent before
+          // the LLM call. The simplified event at the END of a text-only step carries
+          // `content` and NO step -- opening on that one would add an empty section
+          // after the answer.
+          if (data.step && !data.content) {
+            currentStatusStep = data.step;
+            openStep(blk, data.step);
+          }
         }
         break;
       case 'status':
         // Status events are now delivered through /events stream
         // Show status events for this request AND all hierarchical children (sub-agents)
         // e.g., if the run's request id is "abc123", also show "abc123_sub_001", "abc123_001_sub_002", etc.
-        if (blk && blk.status) {
+        if (blk && blk.steps) {
           const eventRequestId = data.request_id || '';
           // Check if this event belongs to current request hierarchy
           // Either exact match OR starts with current request_id followed by underscore (child operation)
           const matches = eventRequestId === run.requestId ||
               (eventRequestId && run.requestId && eventRequestId.startsWith(run.requestId + '_'));
-          
+
           if (matches) {
-            addStatusEvent(blk.status, data);
+            addStatusEvent(statusBodyFor(blk), data);
           }
           // Otherwise silently ignore status from other requests/sessions
         }
         break;
       case 'status_batch':
         // Batched status events for efficiency (multiple events in one SSE message)
-        if (blk && blk.status && data.events && Array.isArray(data.events)) {
+        if (blk && blk.steps && data.events && Array.isArray(data.events)) {
           data.events.forEach(statusEvent => {
             const eventRequestId = statusEvent.request_id || '';
             const matches = eventRequestId === run.requestId ||
                 (eventRequestId && run.requestId && eventRequestId.startsWith(run.requestId + '_'));
-            
+
             if (matches) {
-              addStatusEvent(blk.status, statusEvent);
+              addStatusEvent(statusBodyFor(blk), statusEvent);
             }
           });
         }
@@ -1994,6 +2079,9 @@
         break;
       case 'final':
         run.over = true;
+        // The answer is here, so no call is in flight any more: what the run says while
+        // it saves and runs its end hooks belongs to the run, not to its last call.
+        currentStatusStep = null;
         if (pendingAppendRebind) {
           // Edge (e.g. max-steps): the run finalizes without another step. The
           // final would be suppressed against the old block's non-empty content
