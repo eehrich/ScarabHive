@@ -12,7 +12,11 @@ from __future__ import annotations
 import pytest
 
 from plugins.context_engineer.archival_memory import ArchivalMemory
-from plugins.context_engineer.compaction import CompactionConfig, LayeredCompactionStrategy
+from plugins.context_engineer.compaction import (
+    CompactionConfig,
+    LayeredCompactionStrategy,
+    _request_user_indices,
+)
 from plugins.context_engineer.core_memory import CoreMemory
 from plugins.context_engineer.tool_result_store import ToolResultStore
 
@@ -141,3 +145,106 @@ class TestLayerTwo:
 
         assert 2 in result.layers_applied
         assert _inline(result.modified_messages, "The current request")
+
+
+#: What a woken run is handed, verbatim (cli_utils/agent_runner.wake_message).
+WAKE = "You were woken because input is waiting for this session. Read it and act on it."
+
+
+class TestAWokenRunsOnlyInstruction:
+    """A run woken at a fresh prompt has no `user` message at all -- the wake
+    IS its task, and it is a `developer` message. Three places read the bare
+    role and none of them could reach it: both protected-set builders gate on
+    there being a user message, and the sequence guard deletes whatever stands
+    first and is not one."""
+
+    @staticmethod
+    def _history(steps: int) -> list[dict]:
+        messages = [{"role": "system", "content": "You are an agent."},
+                    {"role": "developer", "content": WAKE}]
+        for n in range(steps):
+            messages += _step(n)
+        return messages
+
+    @staticmethod
+    async def _pruned(tmp_path, messages):
+        """Pre-Layer P, the layer that actually fires in production."""
+        return await _strategy(tmp_path, max_messages=20, max_messages_prune_to=8).compact(
+            messages, current_tokens=10, force=True)
+
+    @pytest.mark.asyncio
+    async def test_the_wake_survives_the_prune(self, tmp_path):
+        """It is the oldest candidate and the cheapest to drop, so it went
+        first -- the run lost the only thing it had been told."""
+        result = await self._pruned(tmp_path, self._history(40))
+
+        assert result.messages_pruned > 0, "fixture: nothing was pruned, so nothing is proven"
+        assert _inline(result.modified_messages, WAKE)
+
+    @pytest.mark.asyncio
+    async def test_no_stand_in_task_is_invented_for_it(self, tmp_path):
+        """With no `user` message left the guard writes one: "Continue with the
+        task." Which then IS the task, for the model and for every later
+        compaction that protects the first user message as the thing everything
+        refers to."""
+        result = await self._pruned(tmp_path, self._history(40))
+
+        assert not _inline(result.modified_messages, "Continue with the task.")
+        first = next(msg for msg in result.modified_messages if msg.get("role") != "system")
+        assert first.get("content") == WAKE, "the conversation opens on something else"
+
+    @pytest.mark.asyncio
+    async def test_the_wake_is_protected_when_layer_three_cuts_to_a_target(self, tmp_path):
+        """Layer 3 builds a protected set of its own before it selects, and it
+        was gated on a `user` message the same way Pre-Layer P is. Here the
+        target leaves no room, so everything unprotected is fair game."""
+        result = await _strategy(tmp_path, layer3_threshold=1, target_tokens=1,
+                                 drop_after_turns=10**9).compact(
+            self._history(40), current_tokens=10**6, force=True)
+
+        assert result.messages_dropped > 0, "fixture: nothing was selected, so nothing is proven"
+        assert _inline(result.modified_messages, WAKE)
+
+
+class TestWhatTheRequestStandsOn:
+    """`_request_user_indices` answers three claims with one set, and they came
+    apart when the wake arrived: the API needs the last input, Layer 1 needs
+    the last message a PERSON sent (its media is evicted otherwise), and the
+    protected sets need the head of the turn. Letting the head take the
+    person's slot spends it on a message that never carries media."""
+
+    @staticmethod
+    def _conversation(*, woken: bool) -> list[dict]:
+        messages = [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "an answer"},
+            {"role": "user", "content": "here is the screenshot"},
+            {"role": "assistant", "content": "another answer"},
+            {"role": "user", "content": "Check your answer again.",
+             "injected_by": "agent_continuation.followup"},
+            {"role": "assistant", "content": "checked"},
+        ]
+        if woken:
+            messages.append({"role": "developer", "content": WAKE})
+        return messages
+
+    def test_a_wake_does_not_take_the_persons_slot(self):
+        """Index 2 is the last thing a person sent -- the screenshot. With the
+        wake answering for "person" as well, it falls out of the set and its
+        media is evicted on this very call."""
+        assert _request_user_indices(self._conversation(woken=True)) == {2, 6}
+
+    def test_without_a_wake_nothing_moved(self):
+        """The counter-proof: the same conversation one message shorter must
+        answer exactly as it always did."""
+        assert _request_user_indices(self._conversation(woken=False)) == {2, 4}
+
+    def test_the_head_keeps_its_slot_behind_a_later_delivery(self):
+        """A direct message delivered after the wake becomes the last input.
+        Without a slot of its own the wake -- that run's whole task -- then
+        falls out of the set while its own turn is still being worked on."""
+        messages = self._conversation(woken=True) + [
+            {"role": "user", "content": "v6 fragt: wie weit bist du?",
+             "injected_by": "debate_forum_direct"}]
+
+        assert _request_user_indices(messages) == {2, 6, 7}

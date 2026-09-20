@@ -76,6 +76,21 @@ MESSAGES = {
     "blank": "   ",
 }
 
+#: The same predicate asked about the ROLE rather than the text. The cases
+#: above only ever vary the content, all of them as `role: "user"` -- so the
+#: one input the two halves came to disagree on (a wake) was never handed to
+#: either of them.
+TURN_SHAPES = {
+    "typed": {"role": "user", "content": "hallo"},
+    "woken": {"role": "developer",
+              "content": "You were woken because input is waiting for this session."},
+    "note_from_the_run": {"role": "developer", "content": "2 steps left",
+                          "injected_by": "agent.step_budget"},
+    "scripted_followup": {"role": "user", "content": "Check your work.",
+                          "injected_by": "agent_continuation.followup"},
+    "an_answer": {"role": "assistant", "content": "fertig"},
+}
+
 #: The harness. It slices the helpers out of the shipped file and applies them
 #: to the cases this test hands it, so what runs here is the code that ships.
 NODE_HARNESS = r"""
@@ -93,10 +108,13 @@ const h = new Function('window', block +
   '\nreturn {messageText, isRealTurn, toolCallLines, toolResultLines};')(window);
 
 const cases = JSON.parse(fs.readFileSync(0, 'utf8'));
-const out = { messages: {}, results: {}, calls: {}, turns: {} };
+const out = { messages: {}, results: {}, calls: {}, turns: {}, shapes: {} };
 for (const [name, content] of Object.entries(cases.messages)) {
   out.messages[name] = h.messageText({ content: content });
   out.turns[name] = h.isRealTurn({ role: 'user', content: content });
+}
+for (const [name, msg] of Object.entries(cases.shapes || {})) {
+  out.shapes[name] = h.isRealTurn(msg);
 }
 for (const [name, content] of Object.entries(cases.results)) {
   out.results[name] = {
@@ -128,9 +146,10 @@ class _Recorder:
 
 
 class _Message:
-    def __init__(self, content, role: str = "tool") -> None:
+    def __init__(self, content, role: str = "tool", injected_by=None) -> None:
         self.content = content
         self.role = role
+        self.injected_by = injected_by
 
 
 def _python_side() -> dict:
@@ -150,6 +169,9 @@ def _python_side() -> dict:
                      for name, content in MESSAGES.items()},
         "turns": {name: _is_real_turn(_Message(content, role="user"))
                   for name, content in MESSAGES.items()},
+        "shapes": {name: _is_real_turn(_Message(shape["content"], role=shape["role"],
+                                                injected_by=shape.get("injected_by")))
+                   for name, shape in TURN_SHAPES.items()},
         "results": {name: {"full": result(content, True), "compact": result(content, False)}
                     for name, content in TOOL_RESULTS.items()},
         "calls": {name: {"full": call(payload, True), "compact": call(payload, False)}
@@ -172,7 +194,8 @@ def javascript_side(tmp_path_factory) -> dict:
         pytest.skip("node is not on PATH -- the browser half cannot be executed here")
 
     finished = _run_harness(
-        {"messages": MESSAGES, "results": TOOL_RESULTS, "calls": TOOL_CALLS},
+        {"messages": MESSAGES, "results": TOOL_RESULTS, "calls": TOOL_CALLS,
+         "shapes": TURN_SHAPES},
         tmp_path_factory.mktemp("parity") / "harness.js")
 
     assert finished.returncode == 0, (
@@ -198,6 +221,18 @@ class TestBothSurfacesRenderTheSame:
             "an escaped message is a turn -- hiding it orphaned its answer"
         assert expected["blank"] is False, "fixture: one case must not be a turn"
         assert javascript_side["turns"] == expected
+
+    def test_what_counts_as_a_turn_by_its_role(self, javascript_side):
+        """The other half of the same predicate. The cases above vary the text
+        and are all `user`; this one varies role and marker, which is where the
+        two halves drifted apart: a wake opens a turn and the browser's copy
+        did not know it, so /last sliced from the exchange BEFORE it and
+        /history counted one where the terminal counted two."""
+        expected = _python_side()["shapes"]
+        assert expected == {"typed": True, "woken": True, "note_from_the_run": False,
+                            "scripted_followup": False, "an_answer": False}, \
+            "fixture: the Python side itself must answer these five this way"
+        assert javascript_side["shapes"] == expected
 
     def test_a_tool_result(self, javascript_side):
         assert javascript_side["results"] == _python_side()["results"]

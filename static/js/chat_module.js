@@ -268,12 +268,17 @@
   }
 
   /**
-   * A user message with something in it. Every stored user message went to
-   * the agent -- one that opens with a command word was sent escaped ("//"),
-   * so it is shown like any other. Mirrors chat._is_real_turn.
+   * A message that OPENED a turn, with something in it. Every stored user
+   * message went to the agent -- one that opens with a command word was sent
+   * escaped ("//"), so it is shown like any other. A woken run opens its turn
+   * with an unmarked `developer` message, which counts; the notes the run and
+   * the hooks leave INSIDE a turn carry `injected_by`, which does not.
+   * Mirrors chat._is_real_turn / message_roles.opens_a_turn -- the two are
+   * compared case by case in tests/cli/test_chat_render_parity.py.
    */
   function isRealTurn(msg) {
-    if (!msg || msg.role !== 'user') return false;
+    if (!msg || (msg.role !== 'user' && msg.role !== 'developer')) return false;
+    if (msg.injected_by) return false;
     return !!messageText(msg).trim();
   }
 

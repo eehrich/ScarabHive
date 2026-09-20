@@ -33,7 +33,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, fields
 from typing import Any, Iterator, NamedTuple
 
-from agent_system.llm.message_roles import opens_a_turn
+from agent_system.llm.message_roles import is_input, opens_a_turn
 from agent_system.utils.multimodal_tool_content import extract_inline_media
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 from agent_system.llm.token_utils import (
@@ -457,13 +457,23 @@ def _opens_turn(msg: dict[str, Any]) -> bool:
 
 
 def _request_user_indices(messages: list[dict[str, Any]]) -> set[int]:
-    """The user messages the current request stands on: the last one (the API
-    needs it) and the last one a person wrote. The agent loop adds marked user
-    messages after it (step budget note, loop intervention, follow-ups), and
-    the task or the image they refer to was compacted like any old turn."""
-    last = [i for i, msg in enumerate(messages) if msg.get("role") == "user"][-1:]
-    person = [i for i, msg in enumerate(messages) if _opens_turn(msg)][-1:]
-    return {*last, *person}
+    """The messages the current request stands on, by three different claims:
+    the last input (the API needs one), the last one a PERSON wrote, and the
+    head of the current turn.
+
+    They used to be two, because two of them were the same message. The agent
+    loop adds marked user messages after a person's (step budget note, loop
+    intervention, follow-ups, debate posts), and the task or the image they
+    refer to was compacted like any old turn -- that is what the "person" slot
+    is for, and it has to keep meaning a PERSON: a woken run's wake is the head
+    of its turn but never carries what a person sent, so letting the head take
+    that slot spends it on a message with no media and drops the human's last
+    real one out of the set entirely."""
+    last = [i for i, msg in enumerate(messages) if is_input(msg)][-1:]
+    person = [i for i, msg in enumerate(messages)
+              if msg.get("role") == "user" and msg.get("injected_by") is None][-1:]
+    head = [i for i, msg in enumerate(messages) if _opens_turn(msg)][-1:]
+    return {*last, *person, *head}
 
 
 class LayeredCompactionStrategy:
@@ -1943,7 +1953,10 @@ class LayeredCompactionStrategy:
             return set()
 
         protected = {i for i, msg in enumerate(messages) if self._is_protected(msg)}
-        user_indices = [i for i, msg in enumerate(messages) if msg.get("role") == "user"]
+        # `is_input`, not the bare role: a run woken at a fresh prompt has no
+        # `user` message at all, and the gate then skipped the whole block --
+        # leaving the wake, that run's only instruction, an ordinary candidate.
+        user_indices = [i for i, msg in enumerate(messages) if is_input(msg)]
         if user_indices:
             protected.add(user_indices[0])
             protected.update(_request_user_indices(messages))
@@ -2031,8 +2044,9 @@ class LayeredCompactionStrategy:
         protected = {i for i, msg in enumerate(messages)
                      if self._is_protected(msg)}
 
+        # `is_input`, not the bare role -- see the same gate in Layer 3.
         user_indices = [
-            i for i, msg in enumerate(messages) if msg.get("role") == "user"
+            i for i, msg in enumerate(messages) if is_input(msg)
         ]
         if user_indices:
             # The LAST user message must survive or the API call is invalid.
@@ -2459,12 +2473,19 @@ class LayeredCompactionStrategy:
                 break  # Only system messages left
             
             first_msg = messages[first_non_system_idx]
-            if first_msg.get("role") == "user":
-                break  # Good - first non-system message is user
-            
+            if is_input(first_msg):
+                # Good -- the conversation opens on something the model can be
+                # asked to answer. `is_input`, not the bare role: a woken run
+                # opens with a `developer` wake, which every route that needs a
+                # user turn first lowers to one (llm/message_roles). Asking for
+                # the role deleted it here, and with it every message behind it
+                # until the loop found a `user` one -- the run's only
+                # instruction, gone from the view mid-run.
+                break
+
             # Check if we would remove ALL user messages by continuing
             # Count remaining user messages
-            user_message_count = sum(1 for msg in messages if msg.get("role") == "user")
+            user_message_count = sum(1 for msg in messages if is_input(msg))
             
             if user_message_count == 0:
                 # CRITICAL: No user messages left at all - add a fallback
@@ -2499,7 +2520,7 @@ class LayeredCompactionStrategy:
             )
         
         # Final safety check: ensure at least one user message exists
-        user_message_count = sum(1 for msg in messages if msg.get("role") == "user")
+        user_message_count = sum(1 for msg in messages if is_input(msg))
         if user_message_count == 0:
             logger.warning(
                 f"{caller}: Final check - no user messages! Adding fallback."

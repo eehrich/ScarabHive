@@ -130,6 +130,27 @@ def opens_a_turn(msg: object) -> bool:
     return role_of(msg) in _NOTE_ROLES and not _field(msg, "injected_by")
 
 
+def is_input(msg: object) -> bool:
+    """Whether the model is being asked to act on this message.
+
+    Any ``user`` turn, whoever put it there -- a person, a scripted follow-up,
+    a debate post, a direct message delivered mid-run -- and the wake of a
+    woken run.
+
+    This is the TAIL question: what stands last in front of the answer. A
+    reminder placed "before the last user message", a forum post delivered into
+    the current turn, and the check "is there anything here for the model at
+    all" all ask it. Anchoring any of them on ``opens_a_turn`` instead buries
+    them in front of the whole answered exchange, which is the one thing they
+    are placed to avoid.
+
+    ``opens_a_turn`` is the HEAD question. The two differ exactly on the
+    messages the run added INSIDE a turn, and every caller has to know which of
+    the two it wants.
+    """
+    return role_of(msg) == USER or opens_a_turn(msg)
+
+
 def leading_instructions(messages: list) -> list:
     """The instruction block at the head of a history.
 
