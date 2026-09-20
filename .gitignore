@@ -53,30 +53,8 @@ tmp_backlog.md
 # v5b/v4 batch test outputs (per-run logs + scene-draft JSON dumps)
 src/plugins_writer/**/batch_logs/
 
-data/users.db
-data/cache/
-data/sessions/
-data/todos/
-data/memories/
-data/workspace/
-data/writer/
-data/context_engineer/
-data/context_usage_tracker/
-data/message_debugger/
-data/agent_watchdog/
-data/batch_jobs/
-data/json_store/
-data/ssh_control/
-data/batch/
-data/comfyui/
-data/debate_forum/
-data/audio_ops/
-data/lessons_learned/
-data/okf/
-data/context_usage_tracker.json
-data/writer_books.db
-tests/data/
-data/media/
+# ignore all data files
+data/
 
 # #673 Blind-Reader Test-Driver Scratch
 src/plugins_writer/writer_pipeline_v4/test_suite/_blind_task.md
