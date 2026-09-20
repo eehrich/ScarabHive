@@ -194,7 +194,7 @@ async function loadServers(forceRefresh = false) {
   button.disabled = true;
   let data;
   try {
-    data = await api(`/mcp/status${forceRefresh ? '?force_refresh=true' : ''}`, { quiet: true });
+    data = await api(`/tools/status${forceRefresh ? '?force_refresh=true' : ''}`, { quiet: true });
   } catch (error) {
     if (unavailable($('serverList'), error)) refused.add('servers');
     return;
