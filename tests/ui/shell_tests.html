@@ -1213,6 +1213,47 @@
     }
   });
 
+  await check('a tool call carries its arguments and its result on its own row, folded and capped', async () => {
+    // `tool_call` and `tool_result` had no branch in the event switch at all: the
+    // status lines said what a tool did, and what it was asked and what it answered
+    // were dropped. They share the scope's request id, so they hang on its row.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'steps');
+      $('#task').value = 'Read something';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-steps', 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
+      const box = $$('#chat .msg.assistant').at(-1);
+      const step = (n) => box.querySelector(`.step-section[data-step="${n}"]`);
+      const row = step('1').querySelector('.operation-progress[data-request-id$="_003"]');
+      if (!row) return false;
+      const details = [...row.querySelectorAll('.tool-detail')];
+      if (details.length !== 2) return false;
+      const bodyOf = (d) => d.querySelector('.tool-detail-body');
+      // folded: a run that reads twenty files must not unfold twenty walls of JSON
+      if (details.some((d) => bodyOf(d).style.display !== 'none')) return false;
+      details[0].querySelector('.tool-detail-toggle').click();
+      if (bodyOf(details[0]).style.display === 'none') return false;
+      if (!bodyOf(details[0]).textContent.includes('README.md')) return false;
+      // a big result is capped rather than poured into the page, and says it was
+      const result = bodyOf(details[1]).textContent;
+      if (result.length > 4300 || !result.includes('more characters')) return false;
+      // and a result is DATA: tags in it are shown, not parsed. Rendered as markup the
+      // angle brackets would be gone from textContent -- and a tool could put anything
+      // it liked into the page.
+      if (!result.includes('<b>not markup</b>')) return false;
+      if (bodyOf(details[1]).querySelector('b')) return false;
+      // and it hangs on the call that made it, not on the next one
+      return step('2').querySelector('.tool-detail') === null;
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
   await check('Stop leaves the end of a run to its stream and holds the messages sent meanwhile; a late answer leaves the next run alone', async () => {
     const stopShown = () => $('#stopBtn').style.display !== 'none';
     const stored = () => sessionStorage.getItem('activeRequestId');

@@ -441,6 +441,15 @@ def stub_app() -> FastAPI:
                              "request_id": f"{request_id}_003", "message": "started", "meta": {}})
                 yield event({"type": "status", "server": "file_ops.read_file()", "phase": "end",
                              "request_id": f"{request_id}_003", "message": "Read README.md", "meta": {}})
+                # Same request id as the scope above, and after its lines -- the shape a
+                # real run sends. The result is deliberately past the page's cap.
+                yield event({"type": "tool_call", "step": 1, "server": "file_ops",
+                             "action": "file_ops_read_file", "request_id": f"{request_id}_003",
+                             "params": {"filePath": "README.md"}})
+                yield event({"type": "tool_result", "step": 1, "server": "file_ops",
+                             "action": "file_ops_read_file", "request_id": f"{request_id}_003",
+                             "result": {"status": "success", "note": "<b>not markup</b>",
+                                        "content": "x" * 5000}})
                 yield event({"type": "thinking", "step": 2})
                 # A sub-agent spawned by the SECOND call, reporting ITS first step. Its
                 # `meta.step` is a step of the sub-run -- taken at face value it would
@@ -923,6 +932,7 @@ EXPECTED = [
     'the thinking box carries the reasoning, and not the answer a second time',
     'collapse all closes every open branch and keeps the focus it was pressed with',
     'each LLM call keeps its own reasoning, its own tool lines, and folds when the next one starts',
+    'a tool call carries its arguments and its result on its own row, folded and capped',
     'a session panel pinned from a link can follow the chat again',
     'a request id in the chat offers the panels that take a request',
     'a panel with unsaved input is only closed or reloaded once the viewer agrees',

@@ -72,6 +72,21 @@
 .steps:not(:empty) { margin-bottom: var(--space-2); }
 .step-note { margin-left: var(--space-1); font-size: var(--text-xs); }
 
+/* What a tool was asked and what it answered, folded away on its own status row. */
+.tool-detail { padding-left: var(--space-5); }
+.tool-detail-toggle {
+  padding: 0; border: 0; background: none; cursor: pointer;
+  font: 400 var(--text-xs)/1.6 var(--font-mono); color: var(--text-muted);
+  text-decoration: underline dotted; text-underline-offset: 2px;
+}
+.tool-detail-toggle:hover { color: var(--text-secondary); }
+.tool-detail-body {
+  margin: var(--space-1) 0 0; padding: var(--space-2); max-height: 320px; overflow: auto;
+  white-space: pre-wrap; font: 400 var(--text-xs)/1.5 var(--font-mono);
+  color: var(--text-secondary); background: var(--surface-1);
+  border-left: 2px solid var(--border-default); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
 /* ------------------------------------------------------------- status tree */
 
 .operation-progress { font: 400 var(--text-xs)/1.5 var(--font-mono); }

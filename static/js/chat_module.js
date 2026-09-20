@@ -1234,6 +1234,46 @@
     return section ? section.querySelector('.status-body') : null;
   }
 
+  // How much of one tool's arguments or result is put into the page. A read of a big
+  // file comes back whole, and a run that reads twenty would otherwise carry megabytes
+  // of text in the DOM for a panel almost nobody opens.
+  const TOOL_DETAIL_CHARS = 4000;
+
+  /**
+   * The arguments a tool call was made with, and what came back, on the tool's own row.
+   *
+   * `tool_call` and `tool_result` carry the same `request_id` as the status scope of
+   * that call (measured: `_003`, `_004`, `_005` in a real run) and arrive after its
+   * lines, so the row is already there to hang them on. Neither event had a branch in
+   * this switch at all until now: the status lines say what a tool did, and what it was
+   * asked and what it answered went nowhere.
+   */
+  function toolDetail(blk, data, label, payload) {
+    if (!blk || !blk.steps) return;
+    const text = JSON.stringify(payload, null, 2) || '';
+    const shown = text.length > TOOL_DETAIL_CHARS
+      ? `${text.slice(0, TOOL_DETAIL_CHARS)}\n… ${text.length - TOOL_DETAIL_CHARS} more characters`
+      : text;
+    const row = data.request_id
+      ? blk.steps.querySelector(`.operation-progress[data-request-id="${CSS.escape(data.request_id)}"]`)
+      : null;
+    // No row means the call opened no status scope -- an unknown tool, say. What it was
+    // asked still belongs to the call that asked, rather than nowhere.
+    const host = row || statusBodyFor(blk);
+    if (!host) return;
+    const detail = document.createElement('div');
+    detail.className = 'tool-detail';
+    detail.innerHTML = `
+      <button type="button" class="tool-detail-toggle">${escapeHtml(label)}</button>
+      <pre class="tool-detail-body" style="display: none;"></pre>`;
+    const body = detail.querySelector('.tool-detail-body');
+    body.textContent = shown;  // a tool's answer is data, never markup
+    detail.querySelector('.tool-detail-toggle').addEventListener('click', () => {
+      body.style.display = body.style.display === 'none' ? 'block' : 'none';
+    });
+    host.appendChild(detail);
+  }
+
   const activeOperations = new Map();
   const treeNodes = new Map(); // requestId -> { element, parentId, depth, children:Set }
   const pendingChildren = new Map(); // parentId -> [{elementInfo}]
@@ -2028,6 +2068,12 @@
             openStep(blk, data.step);
           }
         }
+        break;
+      case 'tool_call':
+        toolDetail(blk, data, `${data.action || 'tool'} · arguments`, data.params);
+        break;
+      case 'tool_result':
+        toolDetail(blk, data, `${data.action || 'tool'} · result`, data.result);
         break;
       case 'status':
         // Status events are now delivered through /events stream
