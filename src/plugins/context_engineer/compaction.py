@@ -1627,6 +1627,15 @@ class LayeredCompactionStrategy:
         # Process messages in reverse (newer first, but skip last N tool results UNLESS too large)
         tool_results_seen = 0
 
+        # Once, outside the loop: it reads roles and markers only, the loop
+        # writes back `content` and `multimodal_content`, and the index range is
+        # fixed -- so the answer cannot change under it. Asked per multimodal
+        # user message it was three full passes over the history each time, for
+        # a set that is the same every time. The cost of reading it here is that
+        # a Layer 1 with no media at all now pays for it; three O(n) passes next
+        # to the two token estimates this method already makes either way.
+        request_user_indices = _request_user_indices(messages)
+
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
             is_tool = msg.get("role") == "tool"
@@ -1731,7 +1740,7 @@ class LayeredCompactionStrategy:
                     # (preserve audio/image/video inline data)
                     compacted_content = await self._compact_multimodal_content(
                         content, result, session_id=self._current_session_id,
-                        preserve_media=i in _request_user_indices(messages)
+                        preserve_media=i in request_user_indices
                     )
                     if compacted_content != content:
                         messages[i] = {**msg, "content": compacted_content}

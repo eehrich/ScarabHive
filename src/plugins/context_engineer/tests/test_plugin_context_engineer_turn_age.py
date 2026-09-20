@@ -205,6 +205,29 @@ class TestAWokenRunsOnlyInstruction:
         assert result.messages_dropped > 0, "fixture: nothing was selected, so nothing is proven"
         assert _inline(result.modified_messages, WAKE)
 
+    def test_the_repair_clears_the_way_to_the_wake_instead_of_inventing_a_task(self, tmp_path):
+        """The shape the counting branch decides: nothing a person sent is left
+        -- archived away, and Layer 2 protects nothing -- but the wake is still
+        there, behind an assistant turn.
+
+        Counting only `user` messages, this reads as "no input at all" and a
+        stand-in is written in front of the head: "Continue with the task."
+        That sentence then IS the task, for the model and for every later
+        compaction, which protects the first user message as the thing
+        everything else refers to. Counting inputs, the repair does its job --
+        it clears down to the wake and stops there."""
+        messages = [
+            {"role": "system", "content": "You are an agent."},
+            {"role": "assistant", "content": "what is left of an archived turn"},
+            {"role": "developer", "content": WAKE},
+        ]
+
+        removed = _strategy(tmp_path)._ensure_valid_message_sequence(messages, "test")
+
+        assert removed == 1, "it kept deleting past the wake, or stopped before the head"
+        assert not _inline(messages, "Continue with the task.")
+        assert [msg.get("role") for msg in messages] == ["system", "developer"]
+
 
 class TestWhatTheRequestStandsOn:
     """`_request_user_indices` answers three claims with one set, and they came
