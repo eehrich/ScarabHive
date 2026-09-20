@@ -2375,6 +2375,9 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         assert at_write, "the ending was never written to the sub-session's metadata"
         assert at_write[-1].get("status") == "completed", at_write[-1]
         assert at_write[-1].get("result") == "done", at_write[-1]
+        # and it is marked as not handed over yet: without that, the bookkeeping cannot tell an
+        # ending nobody has read from one that was already given away, and drops it too early
+        assert at_write[-1].get("_awaiting_poll") is True, at_write[-1]
         assert told == [("parent1", "u1")], "and the wake comes after both"
 
     @pytest.mark.asyncio
@@ -2698,3 +2701,164 @@ class TestAFinishedJobDoesNotStayInMemory:
 
         assert seen == ["sub_a", "sub_b"]
         assert result["completed"] == 2
+
+
+class TestWhatEveryRunSetsUpAndReports:
+    """The three copies of "run a sub-agent" were merged into `_prepare_agent` and `_consume_run`
+    (18.09.2026). The suite that was the net under that merge turned out to leave several of
+    their branches unmeasured, found by mutating them one at a time; these are those branches:
+    what a run is handed before it starts, and what it reports while it runs.
+
+    Each one is silent when it breaks -- a sub-session filed under the wrong user or written into
+    the coordinator's own session, a panel whose activity never moves, a prompt rendered from the
+    snapshot a refresh was supposed to replace. Which is why the assertions name WHICH session and
+    WHICH user, not just that somebody was told something.
+    """
+
+    @staticmethod
+    def agent():
+        """A registry agent as _prepare_agent finds it: shared, and carrying whatever the run
+        before it left behind."""
+        made = Mock()
+        made.agent_config = Mock(default_llm_profile="normal")
+        made._session_tracker = Mock()
+        made._session_service = "whatever the last run left here"
+        return made
+
+    @staticmethod
+    def manager(user_id="u1", stored_vars=None):
+        manager = AsyncMock()
+        manager._extract_user_id = Mock(return_value=user_id)
+        manager._session_service.session_manager.load_session = AsyncMock(
+            return_value={"context_vars": stored_vars or {}})
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_the_run_persists_through_the_session_service_it_was_given(self, server):
+        """The agent comes from the registry and is shared; its `_session_service` is whatever
+        the previous run set. Left alone, a sub-agent writes its transcript through somebody
+        else's store -- and `info` then reads an empty one."""
+        agent, manager = self.agent(), self.manager()
+        session_service = manager._session_service
+
+        await server._prepare_agent(agent, manager, session_service, {},
+                                    parent_session_id="parent1", instance_id="sub_1",
+                                    agent_name="worker")
+
+        assert agent._session_service is session_service
+
+    @pytest.mark.asyncio
+    async def test_the_session_is_filed_under_the_user_the_manager_resolved(self, server):
+        """Tool execution reads the user id from this metadata, and every session path is built
+        from it. A wrong one files the sub-session in another user's directory, where its own
+        `info` will not find it again."""
+        agent, manager = self.agent(), self.manager(user_id="the_real_user")
+        params = {"_user_id": "the_real_user"}
+
+        returned = await server._prepare_agent(agent, manager, manager._session_service, params,
+                                               parent_session_id="parent1", instance_id="sub_1",
+                                               agent_name="worker")
+
+        instance, metadata = agent._session_tracker.set_session_metadata.call_args.args
+        assert instance == "sub_1", "the sub-agent's session, not the coordinator's"
+        assert metadata["user_id"] == "the_real_user"
+        assert metadata["agent_name"] == "worker"
+        assert returned == "the_real_user", "and the caller is told the same user"
+        # asked the right way round: the other order makes the params the session id, and the
+        # user resolves to "anonymous" -- a sub-session in a directory its own `info` never finds
+        manager._extract_user_id.assert_called_once_with("parent1", params)
+
+    @pytest.mark.asyncio
+    async def test_the_vars_the_caller_resolved_reach_the_session(self, server):
+        """A `continue` refreshes the vars against the parent's live state before the run. If
+        they are never set, the prompt renders from the snapshot the sub-agent inherited at
+        creation -- the coordinator says `aufgabe=World`, the task text says World, and
+        `{{ aufgabe }}` still says Idee, in one prompt."""
+        agent, manager = self.agent(), self.manager()
+
+        await server._prepare_agent(agent, manager, manager._session_service, {},
+                                    parent_session_id="parent1", instance_id="sub_1",
+                                    agent_name="worker", context_vars={"aufgabe": "World"})
+
+        agent._session_tracker.set_session_template_vars.assert_called_once_with(
+            "sub_1", {"aufgabe": "World"})
+        # and the session's own vars are not read over them: that snapshot is what the refresh
+        # exists to replace
+        manager._session_service.session_manager.load_session.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_without_them_the_session_s_own_vars_are_read(self, server):
+        """The other half: a create or a background job brings none, and then what the sub-agent
+        inherited when it was created is what its prompt renders from. Read from its session, not
+        from the parent's -- the parent's live values are the caller's job to resolve."""
+        agent, manager = self.agent(), self.manager(user_id="u1", stored_vars={"aufgabe": "Idee"})
+
+        await server._prepare_agent(agent, manager, manager._session_service, {},
+                                    parent_session_id="parent1", instance_id="sub_1",
+                                    agent_name="worker")
+
+        manager._session_service.session_manager.load_session.assert_awaited_once_with(
+            "u1", "sub_1")
+        agent._session_tracker.set_session_template_vars.assert_called_once_with(
+            "sub_1", {"aufgabe": "Idee"})
+
+    @pytest.mark.asyncio
+    async def test_a_run_says_what_it_is_doing_while_it_does_it(self, server):
+        """The only live signal there is: `list` and the panel show this, and the `list` healing
+        reads it to tell a crashed run from a working one. Without it a working sub-agent looks
+        idle for the whole run, and its last activity stays whatever it was."""
+        manager = self.manager()
+        agent, asked = Mock(), {}
+
+        async def run_events(**kwargs):
+            asked.update(kwargs)
+            yield {"type": "thinking_delta"}
+            yield {"type": "tool_call", "action": "file_ops_read"}
+            yield {"type": "mcp_call", "action": "legacy_name"}  # until every deployed side is new
+            yield {"type": "status", "phase": "progress", "message": "reading"}
+            yield {"type": "final", "summary": "done"}
+            yield {"type": "end"}
+
+        agent.run_events = run_events
+        await server._consume_run(agent, manager, parent_session_id="parent1",
+                                  instance_id="sub_1", task="the task", request_id="r")
+
+        # The run belongs to the sub-agent's session, not the coordinator's: the other way round
+        # the sub-agent writes its transcript into the session of the agent that spawned it.
+        assert asked["session_id"] == "sub_1"
+        assert asked["task"] == "the task" and asked["request_id"] == "r"
+
+        # WHICH sub-agent, under WHICH parent -- swapped, the activity is written where nobody
+        # looks, and `list` reads an empty one and cannot tell a working run from a crashed one.
+        said = [call.args[2] for call in manager.update_sub_agent_activity.call_args_list]
+        for tool in ("file_ops_read", "legacy_name"):
+            assert any(tool in (s or "") for s in said), tool
+            manager.update_sub_agent_activity.assert_any_call(
+                "parent1", "sub_1", f"🔧 Running tool: {tool}")
+        assert any("reading" in (s or "") for s in said), "a status event is activity too"
+        assert len([s for s in said if s]) >= 4, said
+        assert said[-1] is None, "and it is cleared when the run is over"
+
+    @pytest.mark.asyncio
+    async def test_a_run_is_over_when_it_says_end(self, server):
+        """"final" does not stop the loop -- the generator has to run out for the messages to be
+        persisted -- so "end" is what stops it. Reading on past it consumes events of a run that
+        is finished, and a later "final" would overwrite the answer already collected."""
+        manager = self.manager()
+        agent, after_end, asked = Mock(), [], {}
+
+        async def run_events(**kwargs):
+            asked.update(kwargs)
+            yield {"type": "final", "summary": "the answer"}
+            yield {"type": "end"}
+            after_end.append("asked for more")
+            yield {"type": "final", "summary": "a second run's answer"}
+
+        agent.run_events = run_events
+        result = await server._consume_run(agent, manager, parent_session_id="parent1",
+                                           instance_id="sub_1", task="t", request_id="r")
+
+        assert result == "the answer"
+        assert after_end == [], "nothing after the end is read"
+        assert asked["session_id"] == "sub_1", "and it ran in the sub-agent's own session"
+
