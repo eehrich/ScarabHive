@@ -691,21 +691,26 @@ def test_session_filter_includes_sub_and_sub_sub_agents(tmp_path):
     hierarchical request-id tree — including sub-sub-agents; other sessions
     stay excluded."""
     tracker = UsageTracker(storage_path=tmp_path / "t.json")
+    # Every one of these is an AGENT call, so every one carries a window --
+    # measured 20.09.2026: of 16.729 rows in the live store not one agent call
+    # is stored without one. That is what "Context Now" selects on, and a
+    # fixture without it describes a row the store does not hold.
     # main conversation call in the root session
     tracker.record_usage(agent_id="main", agent_name="Main", session_id="root-sess",
                          total_tokens=10, prompt_tokens=8, completion_tokens=2,
-                         cost=0.1, request_id="req1")
+                         context_window=200_000, cost=0.1, request_id="req1")
     # sub-agent call: own sub-session, request prefixed by the parent request
     tracker.record_usage(agent_id="subA", agent_name="SubA", session_id="sub-sess-1",
                          total_tokens=20, prompt_tokens=15, completion_tokens=5,
-                         cost=0.2, request_id="req1_sub_abc123")
+                         context_window=200_000, cost=0.2, request_id="req1_sub_abc123")
     # sub-sub-agent call (transitively prefixed)
     tracker.record_usage(agent_id="subB", agent_name="SubB", session_id="sub-sub-sess",
                          total_tokens=30, prompt_tokens=25, completion_tokens=5,
-                         cost=0.3, request_id="req1_sub_abc123_sub_def456")
+                         context_window=200_000, cost=0.3,
+                         request_id="req1_sub_abc123_sub_def456")
     # unrelated session must NOT leak in
     tracker.record_usage(agent_id="other", agent_name="Other", session_id="other-sess",
-                         total_tokens=99, request_id="reqX")
+                         total_tokens=99, context_window=200_000, request_id="reqX")
 
     hist = tracker.get_history(session_id="root-sess")
     assert [h["agent_id"] for h in hist] == ["main", "subA", "subB"]

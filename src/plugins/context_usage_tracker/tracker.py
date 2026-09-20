@@ -75,6 +75,23 @@ class AgentStats:
     latency_calls: int = 0  # How many calls carried a latency measurement
 
 
+def _series(values: List[float]) -> Dict[str, Any]:
+    """Current, min, max and average over a series that may be empty.
+
+    Empty is not an error here: a window in which nothing carried a context
+    (only decisions or synthesis calls) has no context series, and zeros say
+    that. The panel draws the row either way.
+    """
+    if not values:
+        return {"current": 0, "min": 0, "max": 0, "avg": 0.0}
+    return {
+        "current": values[-1],
+        "min": min(values),
+        "max": max(values),
+        "avg": sum(values) / len(values),
+    }
+
+
 class UsageTracker:
     """Tracks context usage over time.
 
@@ -319,15 +336,18 @@ class UsageTracker:
         if not history_list:
             return {"error": "No usage data available"}
 
-        # Calculate statistics
-        token_counts = [s.get("total_tokens", 0) for s in history_list]
-        # Only calls that HAVE a context window carry a meaningful percentage.
-        # A call without a conversation (the decisions client) is recorded with
-        # context_window 0 and usage_percentage 0 -- averaging those in would
-        # halve the figure the panel shows for how full the window ran, and
-        # would hold `min` at 0 % forever. The tokens are real and stay in.
-        percentages = [s.get("usage_percentage", 0.0) for s in history_list
-                       if s.get("context_window", 0) > 0]
+        # "Context tokens" and "Context used" are one series the panel reads
+        # two ways, so they take the same rows: only a call that HAS a window
+        # fills one. A call without a conversation -- the decisions client, a
+        # synthesis that reports tokens -- is recorded with context_window 0,
+        # and its total is a per-call amount, not a context size. Mixing the
+        # two halves the figure for how full the window ran, holds `min` at
+        # the smallest stray call forever, and puts audio tokens on the same
+        # line as a conversation. Those tokens are real SPEND and stay in
+        # `totals` below, which is where spend is read.
+        in_context = [s for s in history_list if s.get("context_window", 0) > 0]
+        token_counts = [s.get("total_tokens", 0) for s in in_context]
+        percentages = [s.get("usage_percentage", 0.0) for s in in_context]
 
         stats = {
             "timespan": {
@@ -337,18 +357,8 @@ class UsageTracker:
                                      - history_list[0].get("timestamp", 0)),
                 "sample_count": len(history_list)
             },
-            "tokens": {
-                "current": token_counts[-1],
-                "min": min(token_counts),
-                "max": max(token_counts),
-                "avg": sum(token_counts) / len(token_counts)
-            },
-            "usage_percentage": {
-                "current": percentages[-1] if percentages else 0.0,
-                "min": min(percentages) if percentages else 0.0,
-                "max": max(percentages) if percentages else 0.0,
-                "avg": (sum(percentages) / len(percentages)) if percentages else 0.0
-            },
+            "tokens": _series(token_counts),
+            "usage_percentage": _series(percentages),
         }
 
         # Cost / cache aggregates over the (filtered) window — the analysis

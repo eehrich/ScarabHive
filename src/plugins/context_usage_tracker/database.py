@@ -500,11 +500,21 @@ class UsageDatabase:
             return {}
         return {r["agent_id"]: dict(r) for r in rows}
 
+    # "The latest snapshot" means the latest CONVERSATION, which is what every
+    # caller does with it: the panel's "Context now" card, the chat footer's
+    # measured fill, and the two context plugins asking how full it got. A
+    # call that carries no conversation -- a decision, a synthesis that
+    # reports tokens -- is stored with context_window 0, and it arrives on the
+    # same session id as the chat it was made from. Without this predicate the
+    # last such call would answer "how full is the context" with its own size
+    # and a window of 0.
+    _LATEST = "SELECT * FROM usage_snapshots WHERE context_window > 0"
+
     def latest_snapshot(self) -> Optional[Dict[str, Any]]:
         try:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT * FROM usage_snapshots ORDER BY id DESC LIMIT 1").fetchone()
+                f"{self._LATEST} ORDER BY id DESC LIMIT 1").fetchone()
         except sqlite3.Error as e:
             logger.error(f"Failed to read latest snapshot: {e}")
             return None
@@ -514,7 +524,7 @@ class UsageDatabase:
         try:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT * FROM usage_snapshots WHERE session_id = ? "
+                f"{self._LATEST} AND session_id = ? "
                 "ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
         except sqlite3.Error as e:
             logger.error(f"Failed to read latest snapshot for {session_id}: {e}")

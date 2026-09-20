@@ -13,9 +13,11 @@ hook that is not careful books every chat call a second time.
 The other half exists because the first version of this file got it wrong in
 the opposite direction: every test built its own context and filled in the
 field it wanted to read, so the suite was green while the hook recorded
-nothing at all for TTS -- whose notification carries no usage. A fixture that
-invents the input proves the hook works on the input the author imagined.
-``TestTheRealDispatchers`` runs the producers instead.
+nothing at all for TTS. A fixture that invents the input proves the hook works
+on the input the author imagined. ``TestTheRealDispatchers`` fires the real
+dispatch instead -- which is also how the claim that a synthesis "reports no
+usage" was caught: Gemini reports one, and the test that was supposed to turn
+red over that had written the absence into its own call.
 """
 from pathlib import Path
 from unittest.mock import Mock
@@ -234,35 +236,67 @@ class TestTheRealDispatchers:
         assert recorded[0]["prompt_tokens"] == 120
 
     @pytest.mark.asyncio
-    async def test_a_tts_call_is_knowingly_not_counted(self, hooks):
-        """The gap this hook does NOT close, pinned so nobody claims it does.
+    async def test_a_synthesis_that_reports_tokens_is_counted(self, hooks):
+        """Gemini measures a synthesis, so its spend is spend like any other.
 
-        `notify_tts_response` reports audio seconds and bytes and takes no
-        usage at all, so there is nothing here to book. Wiring it up needs a
-        unit this table does not have -- a synthesised minute is not prompt and
-        completion tokens. If TTS ever does report a usage, this test turns red
-        and whoever changed it has to decide what the row means.
+        Fired through ``hook_notify.notify_response`` and not through
+        ``tts.notify_tts_response``: the wrapper only fills in audio seconds
+        and bytes and hands the usage straight down to this same call, so this
+        is the dispatch either way -- and it is the one that exists no matter
+        which TTS provider passes a usage on.
+
+        The counts are what a synthesis really reports: text in, AUDIO tokens
+        out. They are spend; what they are not is a context, which is why the
+        window is 0 (``TestItDoesNotDiluteTheStatistics`` holds that end).
+        """
+        from agent_system.llm import hook_notify
+
+        await self._with_hook_registered(hooks, lambda: hook_notify.notify_response(
+            provider="gemini_tts", model="gemini-2.5-flash-preview-tts",
+            url="https://generativelanguage.googleapis.com/v1beta/models",
+            duration_ms=4200.0, session_id="session_7",
+            response_data={"audio_seconds": 37.5, "audio_bytes": 1_200_000},
+            usage={"prompt_tokens": 42, "completion_tokens": 1_850,
+                   "total_tokens": 1_892}))
+
+        recorded = snapshots(hooks)
+        assert len(recorded) == 1, "a measured synthesis was not counted"
+        assert recorded[0]["prompt_tokens"] == 42
+        assert recorded[0]["completion_tokens"] == 1_850
+        assert recorded[0]["context_window"] == 0, (
+            "audio tokens were given a context window to fill")
+        assert recorded[0]["agent_name"] == "gemini_tts", (
+            "the spend has to be attributable to something")
+
+    @pytest.mark.asyncio
+    async def test_a_synthesis_that_measures_nothing_stays_out(self, hooks):
+        """OpenAI's /audio/speech returns audio and is billed per character.
+
+        Its notification carries no usage, and the real producer is called
+        here to prove it: a row with invented tokens would be worse than the
+        gap. The gap itself is named in the hook's docstring.
         """
         from agent_system.llm import tts
 
         await self._with_hook_registered(hooks, lambda: tts.notify_tts_response(
-            provider="gemini_tts", model="gemini-2.5-flash-preview-tts",
-            url="https://generativelanguage.googleapis.com/v1beta/models",
+            provider="openai_tts", model="gpt-4o-mini-tts",
+            url="https://api.openai.com/v1/audio/speech",
             duration_ms=4200.0, audio_seconds=37.5, audio_bytes_len=1_200_000))
 
         assert snapshots(hooks) == [], (
-            "a TTS call was booked -- with what token counts?")
+            "a synthesis was booked -- with what token counts?")
 
 
 class TestItDoesNotDiluteTheStatistics:
     """A row without a window must not drag down how full the window ran."""
 
     @staticmethod
-    def _an_agent_call(hooks):
+    def _an_agent_call(hooks, total_tokens=100_000):
         hooks.tracker.record_usage(
             agent_id="a1", agent_name="coder", session_id="session_7",
-            total_tokens=100_000, prompt_tokens=99_000, completion_tokens=1_000,
-            context_window=200_000, cost=0.4, model="sonnet")
+            total_tokens=total_tokens, prompt_tokens=total_tokens - 1_000,
+            completion_tokens=1_000, context_window=200_000, cost=0.4,
+            model="sonnet")
 
     @pytest.mark.asyncio
     async def test_a_windowless_call_is_left_out_of_the_percentages(self, hooks):
@@ -280,11 +314,59 @@ class TestItDoesNotDiluteTheStatistics:
             "the call itself still counts -- only its percentage does not")
 
     @pytest.mark.asyncio
+    async def test_audio_tokens_do_not_land_on_the_context_line(self, hooks):
+        """The case that made this a guard rather than a comment.
+
+        A book run synthesises hundreds of times. Each of those rows carries
+        real tokens and no conversation, so a context series that takes them
+        reads as a context that collapsed.
+        """
+        # Two agent calls, so "current" cannot pass by accident: it has to be
+        # the LAST context-bearing call, not simply the only one.
+        self._an_agent_call(hooks, total_tokens=60_000)
+        self._an_agent_call(hooks, total_tokens=100_000)
+        await hooks.track_non_agent_usage(a_response(
+            usage={"prompt_tokens": 42, "completion_tokens": 1_850},
+            agent_name="gemini_tts", model="gemini-2.5-flash-preview-tts"))
+
+        stats = hooks.tracker.get_statistics()
+
+        assert stats["tokens"]["min"] == 60_000, (
+            "a synthesis was read as a context that had shrunk to nothing")
+        assert stats["tokens"]["current"] == 100_000, (
+            "the last call happened to be a synthesis -- that is not the context now")
+        assert stats["tokens"]["avg"] == pytest.approx(80_000)
+        assert stats["totals"]["completion_tokens"] == 3_850, (
+            "the tokens are spend and have to stay in the cost totals")
+
+    @pytest.mark.asyncio
+    async def test_context_now_still_means_the_conversation(self, hooks):
+        """The card and the chat footer both ask `get_latest` what is open.
+
+        An agent-less call arrives on the SAME session id as the chat it was
+        made from -- the decisions client passes one through -- so "the last
+        row of this session" would answer "how full is the context" with a
+        decision's own 120 tokens and a window of nothing.
+        """
+        self._an_agent_call(hooks)
+        await hooks.track_non_agent_usage(a_response())
+
+        latest = hooks.tracker.get_latest(session_id="session_7")
+
+        assert latest["agent_id"] == "a1", "a call with no conversation answered for one"
+        assert latest["total_tokens"] == 100_000
+        assert hooks.tracker.get_latest()["agent_id"] == "a1", (
+            "and the same across all sessions, which is the panel's scope")
+
+    @pytest.mark.asyncio
     async def test_nothing_but_windowless_calls_is_zero_not_a_crash(self, hooks):
         await hooks.track_non_agent_usage(a_response())
 
         stats = hooks.tracker.get_statistics()
 
         assert stats["usage_percentage"]["avg"] == 0.0
-        assert stats["tokens"]["avg"] == 124
+        assert stats["tokens"]["avg"] == 0.0, (
+            "no call carried a context, so there is no context series to average")
+        assert stats["totals"]["prompt_tokens"] == 120, (
+            "the spend is still there -- only the context line is empty")
 

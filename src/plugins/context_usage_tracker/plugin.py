@@ -3,8 +3,8 @@ Context Usage Tracker Plugin
 
 Tracks LLM context usage and token consumption: a post_llm_call hook for what
 an agent spends, and a post_llm_response hook for the clients that run without
-one and report a token usage (the decisions client; NOT TTS -- see the second
-hook).
+one and report a token usage -- the decisions client, and a synthesis from a
+provider that measures one (see the second hook).
 Provides web UI for viewing usage statistics and history.
 """
 import asyncio
@@ -188,15 +188,21 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
         chat call TWICE. An agent-less context is exactly what the other hook
         cannot see, and nothing else.
 
-        **TTS is deliberately NOT covered, and this is the reason.**
-        ``llm/tts.py:notify_tts_response`` takes no usage at all -- it reports
-        audio seconds and bytes -- so a TTS call arrives here with
-        ``llm_usage`` empty and is skipped two lines below. Wiring one through
-        would be the smaller half of the work: a synthesised minute is not
-        measured in prompt and completion tokens, and a row that pretends
-        otherwise is worse than no row. Audio spend stays where it is (the
-        message debugger and writer_audio's own accounting) until this table
-        has a unit for it.
+        **A synthesis lands here too, and only when it was measured.** What
+        decides is the usage, not the kind of call: Gemini answers a synthesis
+        with the same ``usage_metadata`` its chat calls carry, so those tokens
+        are real and get booked; OpenAI's ``/audio/speech`` returns audio and
+        nothing else, is billed per character, and arrives with ``llm_usage``
+        empty -- skipped two lines below, because a row that invents a number
+        is worse than no row. Its spend stays where it was (the message
+        debugger and writer_audio's own accounting).
+
+        What such a row is NOT is a context: it is recorded with a window of
+        0, and that zero is what keeps it off every context reading --
+        ``get_statistics`` leaves it out of the series, ``get_latest`` never
+        answers "how full is it now" with it. Output tokens from a synthesis
+        are audio tokens, so they are spend on the cost cards and nothing on
+        the "Context tokens" line.
         """
         try:
             if context.agent is not None:
