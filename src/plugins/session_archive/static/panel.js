@@ -67,10 +67,14 @@ function draw() {
     return;
   }
 
-  render($('archived'), html`<div class="pk-table-wrap"><table class="pk-table">
+  // data-pk-sort makes the heads sort (the kit does it, and keeps the pick
+  // through every redraw); aria-sort names the order the service already
+  // returns, so the first sight is unchanged and the mark tells the truth.
+  render($('archived'), html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="archived">
     <thead><tr>
       <th>Conversation</th><th>Agent</th><th class="pk-num">Sessions</th>
-      <th class="pk-num">Size</th><th>Last used</th><th>Archived</th><th></th>
+      <th class="pk-num">Size</th><th>Last used</th>
+      <th aria-sort="descending">Archived</th><th></th>
     </tr></thead>
     <tbody>${archived.map(row)}</tbody>
   </table></div>`);
@@ -83,13 +87,18 @@ function row(entry) {
     class="pk-btn pk-btn--icon pk-btn--sm${danger ? ' pk-btn--danger' : ''}"
     data-act="${act}" data-id="${id}" title="${label}" aria-label="${label}"
     ${off ? 'disabled' : ''}>${icon(name, { size: 'sm' })}</button>`;
+  // Four cells sort by something other than what they show: the title cell
+  // also carries the id, a size rounded to "0.0 MB" makes every small archive
+  // equal, and a date alone cannot tell apart two conversations archived in
+  // the same minute -- which is exactly what a sweep produces.
   return html`<tr data-entry="${id}">
-    <td><div>${entry.title || id}</div><div class="pk-muted pk-mono">${id}</div></td>
+    <td data-sort-value="${entry.title || id}">
+      <div>${entry.title || id}</div><div class="pk-muted pk-mono">${id}</div></td>
     <td>${entry.agent_name || ''}</td>
     <td class="pk-num">${entry.session_count || 0}</td>
-    <td class="pk-num">${mb(entry.bytes)}</td>
-    <td>${day(entry.updated_at)}</td>
-    <td>${day(entry.archived_at)}</td>
+    <td class="pk-num" data-sort-value="${entry.bytes || 0}">${mb(entry.bytes)}</td>
+    <td data-sort-value="${entry.updated_at || ''}">${day(entry.updated_at)}</td>
+    <td data-sort-value="${entry.archived_at || ''}">${day(entry.archived_at)}</td>
     <td>${button('restore', 'arrow-left', `Restore “${entry.title || id}”`)}
       ${button('forget', 'trash-2', `Delete “${entry.title || id}” for good`, true)}</td>
   </tr>`;

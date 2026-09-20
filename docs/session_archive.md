@@ -156,6 +156,14 @@ Kopie mehr.
 Liste, *Restore*, *Delete*, *Archive now*. Jeder Endpoint antwortet nur über
 das Archiv des **anfragenden** Benutzers; es gibt keinen Parameter für fremde.
 
+Die Liste ist über jede Spalte sortierbar (zuletzt archiviert zuerst, bis man
+etwas anderes wählt; die Wahl überlebt den Refresh-Takt und einen Reload).
+Vier Spalten sortieren nach dem Wert **hinter** der Zelle, nicht nach dem
+Angezeigten: der Titel ohne die ID darunter, die Größe in Bytes statt auf
+`0.0 MB` gerundet, und beide Daten nach dem vollen Zeitstempel — ein Sweep
+legt einen ganzen Schwung innerhalb derselben Minute ab, und die zeigen alle
+denselben Tag.
+
 **CLI**:
 
 ```bash

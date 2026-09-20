@@ -35,6 +35,8 @@
   const ids = () => rows().map((row) => row.dataset.entry);
   const cells = (row) => [...row.children].map((cell) => cell.textContent.trim());
   const rowOf = (id) => rows().find((row) => row.dataset.entry === id);
+  const head = (label) => [...doc().querySelectorAll('#archived thead th')]
+    .find((th) => th.textContent.trim() === label);
   const act = (id, what) => rowOf(id).querySelector(`[data-act="${what}"]`);
   const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
   const question = () => $('dialog.pk-dialog[open]:not([id])');
@@ -59,6 +61,36 @@
     return counts && ids().join() === 'root_three,root_two,root_one'
       && first[0].includes('The first conversation') && first[0].includes('root_one')
       && first[1] === 'chat_agent' && first[2] === '3';
+  });
+
+  await check('a number column sorts by its value, not by the text it rounds to', async () => {
+    // Every archive here is far under a megabyte, so all three cells read
+    // "0.0 MB": an order by this column can only come from the byte count
+    // behind the cell. root_one holds three sessions and is the biggest.
+    const shown = new Set(rows().map((row) => cells(row)[3]));
+    head('Size').click();
+    await until('the biggest first', () => ids()[0] === 'root_one');
+    return shown.size === 1;
+  });
+
+  await check('a sort holds through a redraw, and clicking again reverses it', async () => {
+    // Same trap on the dates: the three were archived seconds apart and all
+    // show today, so only the timestamp behind the cell can order them.
+    const shown = new Set(rows().map((row) => cells(row)[5]));
+    head('Archived').click();
+    await until('the oldest first', () => ids().join() === 'root_one,root_two,root_three');
+    const marked = head('Archived').getAttribute('aria-sort') === 'ascending';
+    // Waited for by the row being REPLACED, not by a timer: a fixed sleep that
+    // is shorter than the answer would compare the table to itself and pass
+    // without a redraw ever happening. This panel refreshes on a tick, so
+    // losing the sort to one is the failure that matters here.
+    const before = rowOf('root_one');
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await until('the table to be drawn again', () => rowOf('root_one') !== before);
+    const held = ids().join() === 'root_one,root_two,root_three';
+    head('Archived').click();  // back to the order the page opened with
+    await until('the newest first again', () => ids().join() === 'root_three,root_two,root_one');
+    return shown.size === 1 && marked && held;
   });
 
   await check('a conversation restored leaves the archive and is a session again', async () => {

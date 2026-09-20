@@ -138,6 +138,8 @@ def results(tmp_path_factory):
 
 EXPECTED = [
     'the panel lists every archived conversation with its figures',
+    'a number column sorts by its value, not by the text it rounds to',
+    'a sort holds through a redraw, and clicking again reverses it',
     'a conversation restored leaves the archive and is a session again',
     'deleting asks first, and a cancelled question changes nothing',
     'deleting confirmed takes the archive away for good',

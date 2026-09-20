@@ -26,6 +26,10 @@ Opened from the panel launcher (category *session*) or at `/plugins/session_arch
 
 - **Stats**: archived conversations, sessions in them, bytes on disk, and after how many days a conversation moves.
 - **Table**: title and id, agent, number of sessions, size, when it was last used, when it was archived.
+  Every head sorts, newest archived first until you pick otherwise, and the pick survives the refresh tick
+  and a reload. Four columns sort by the value behind the cell, not by what it reads: the title without the
+  id under it, the size in bytes rather than rounded to `0.0 MB`, and both dates by their full timestamp --
+  a sweep archives a whole batch within the same minute, and they all show the same day.
 - **Restore** (←): puts the whole tree back into the live store, timestamps untouched. It is listed in the sidebar
   again afterwards and can be continued.
 - **Delete** (🗑, asks first): deletes the archive for good. There is no copy after this.
