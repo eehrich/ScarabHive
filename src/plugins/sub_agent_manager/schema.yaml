@@ -61,8 +61,10 @@ tools:
             description: |
               Only with create(blocking=false): you may end your turn after
               starting the sub-agent -- this session is woken when it finishes,
-              however it ends, and you poll the instance then. Without it you
-              stay awake and poll or wait yourself.
+              however it ends, and you poll the instance then. Read the create
+              answer before you sleep: it says whether the wake is armed for
+              THIS session, and when it says it is not, stay awake and poll.
+              Without the flag you stay awake and poll or wait yourself.
             default: false
 
           use_advanced_model:

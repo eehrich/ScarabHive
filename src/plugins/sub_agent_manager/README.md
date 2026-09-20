@@ -64,10 +64,31 @@ parent's current values through — the intended behaviour for old sessions.
 `create(blocking=false, wake_when_done=true)` lets the caller end its turn over
 a background job. When the job ends — finished, failed or cancelled, there is no
 second ending — the manager tells the core that input is waiting for the calling
-session (`core/session_presence.py`): a session another process holds reads that
-at its next step, a session nobody holds is continued in a run of its own. The
-woken run is told that input waits; it polls the instance and reads the result
-with `info`.
+session (`core/session_presence.wake_session`): a session another process holds
+reads that at its next step, a session nobody holds is continued in a run of its
+own. The woken run is told that input waits; it polls the instance and reads the
+result with `info`, and its task arrives as a `developer` message, so the model
+can tell a wake from somebody typing.
+
+Two things make that hold rather than nearly hold:
+
+* **The bell is rung again while the session stays held.** A job that ends
+  inside the caller's own turn leaves only a marker, and the next LLM step of
+  that turn takes the marker because a pre-LLM hook is expected to hand the
+  waiting input over. Nothing hands over "your sub-agent is done", so a single
+  ring lands in that window and is thrown away — the caller then sleeps over a
+  finished job. Measured: a turn that ended 4.3 s before its job did. The core
+  repeats the ring, and the manager tells it when to stop: the ending sits in
+  the job marked `_awaiting_poll` until somebody reads it, and ringing past that
+  would start a second woken run, a whole turn on the user's money.
+* **The promise is checked before the caller sleeps on it.** `create` asks what
+  can be answered up front — `session_presence` off, no session behind the call,
+  a wake chain already at `max_wake_depth` — and says so in its answer, with the
+  reason. "Armed" is not a guarantee: two exits cannot be checked there, the
+  process holding the job outliving the turn (below) and the caller being a
+  sub-agent's own session, which is never woken and whose detection means
+  parsing a whole session file on the caller's loop. "Not armed" is a certainty,
+  and it used to be the one thing the caller was never told.
 
 Three things bound it, and none of them are this plugin's:
 

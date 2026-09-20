@@ -2193,19 +2193,48 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
     the manager tells about which session, and that the job's own ending never depends on it."""
 
     @staticmethod
-    def presence(monkeypatch, state=("woke_session", ""), fails=False, watch=None):
-        """The core's presence as the server reaches it. Returns the list of (session, user) told --
-        with `watch`, each entry carries what it saw at the moment the manager told anybody."""
+    def presence(monkeypatch, state="woke_session", fails=None, watch=None, guards=None,
+                 order=None):
+        """The core's wake as the server reaches it.
+
+        The seam is `wake_session`, not `notify`: the repeating, its bounds, and that notify()
+        never runs on the caller's loop all belong to the core and are measured there
+        (tests/session/test_session_wake_helper.py). What is left here is what the MANAGER
+        decides -- which session, which user, when, and with which guard.
+
+        Returns the list of (session, user) told; with `watch`, each entry carries what it saw at
+        the moment the manager told anybody, `guards` collects the `still_needed` handed over,
+        and `order` records "woken" among whatever else the test is ordering it against.
+        """
         told = []
 
-        def notify(session_id, user_id):
+        async def wake(system_config, session_id, user_id, what="", still_needed=None):
+            if guards is not None:
+                guards.append(still_needed)
+            if order is not None:
+                order.append("woken")
             told.append((session_id, user_id) if watch is None else (session_id, user_id, watch()))
-            if fails:
-                raise OSError("the sessions directory is gone")
+            if fails is not None:
+                # The real one swallows its own failures; this measures the manager's guard
+                # around it, which is what keeps a finished job out of its caller's error path.
+                raise fails
             return state
 
-        monkeypatch.setattr(sam_server, "presence_for", lambda config: Mock(notify=notify))
+        monkeypatch.setattr(sam_server, "wake_session", wake)
         return told
+
+    @staticmethod
+    def arming(monkeypatch, blocked=""):
+        """What the core answers when the manager asks, BEFORE the job runs, whether this session
+        can be woken at all. Returns the list of (session, user) asked about."""
+        asked = []
+
+        def wake_blocked(system_config, session_id, user_id):
+            asked.append((session_id, user_id))
+            return blocked
+
+        monkeypatch.setattr(sam_server, "wake_blocked", wake_blocked)
+        return asked
 
     @staticmethod
     def start(server, **extra):
@@ -2226,10 +2255,8 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
     async def test_a_finished_job_wakes_the_session_that_started_it(self, server, monkeypatch):
         """And it is told only once the ending is recorded: a woken run reads the job, so a wake
         that goes out first sends it to a job that still says it is running."""
-        import threading
-        told = self.presence(monkeypatch, watch=lambda: dict(
-            server._async_jobs.get("sub_slow", {}),
-            off_the_loop=threading.current_thread() is not threading.main_thread()))
+        told = self.presence(monkeypatch,
+                             watch=lambda: dict(server._async_jobs.get("sub_slow", {})))
         agent = SlowAgent()
         TestCancelReachesABlockingRun.wire(server, agent)
         await self.start(server, wake_when_done=True)
@@ -2239,8 +2266,6 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
             "the parent session and its user, not the sub-agent's"
         at_the_wake = told[0][2]
         assert at_the_wake["status"] == "completed" and at_the_wake["result"] == "done", at_the_wake
-        assert at_the_wake["off_the_loop"], \
-            "notify() opens lock files and may start a process: not on the loop of every other job"
 
     @pytest.mark.asyncio
     async def test_a_job_nobody_asked_to_be_woken_for_wakes_nobody(self, server, monkeypatch):
@@ -2257,11 +2282,15 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
     async def test_with_presence_off_nothing_is_woken_and_nothing_breaks(self, server, monkeypatch, caplog):
         """What the README promises for a host that switched session_presence off: the caller
         polls, exactly as every job did before. Found by a mutation that came back green --
-        `presence is None` was the one branch of the wake nothing measured. Without the return
-        the wake runs into a presence that is not there and leaves a warning about a setting the
-        host chose itself; the job's own ending is unaffected either way.
+        `presence is None` was the one branch of the wake nothing measured.
+
+        The ONLY test in this class that drives the real `wake_session` -- every other one
+        replaces it. Nothing is patched to get there: the fixture's config is a Mock, and
+        `presence_for` answers None for anything that is not a real SessionPresenceConfig, so
+        presence is off here by construction. That is the point: the manager hands the core a
+        session it cannot wake, and what comes back must not touch the job's ending or leave the
+        caller a warning about a setting the host chose itself.
         """
-        monkeypatch.setattr(sam_server, "presence_for", lambda config: None)
         agent = SlowAgent()
         TestCancelReachesABlockingRun.wire(server, agent)
         with caplog.at_level(logging.WARNING, logger=sam_server.logger.name):
@@ -2304,21 +2333,17 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         assert told == [("parent1", "u1")]
         assert server._async_jobs["sub_slow"]["status"] == "cancelled"
 
+    @pytest.mark.parametrize("failure", [
+        OSError("the sessions directory is gone"),
+        RuntimeError("something nobody expected"),
+    ], ids=["disk", "anything"])
     @pytest.mark.asyncio
-    async def test_with_session_presence_off_the_job_ends_as_it_always_did(self, server, monkeypatch):
-        monkeypatch.setattr(sam_server, "presence_for", lambda config: None)
-        agent = SlowAgent()
-        TestCancelReachesABlockingRun.wire(server, agent)
-        await self.start(server, wake_when_done=True)
-        await self.run_to_end(server, agent)
-
-        assert server._async_jobs["sub_slow"]["status"] == "completed"
-        assert server._async_jobs["sub_slow"]["result"] == "done"
-
-    @pytest.mark.asyncio
-    async def test_a_wake_that_fails_does_not_cost_the_job_its_ending(self, server, monkeypatch):
-        """The run is over and recorded; a wake that cannot be delivered costs a poll, not the result."""
-        told = self.presence(monkeypatch, fails=True)
+    async def test_a_wake_that_fails_does_not_cost_the_job_its_ending(
+            self, server, monkeypatch, failure):
+        """The run is over and recorded; a wake that cannot be delivered costs a poll, not the
+        result. Whatever it fails with: narrowed to the disk error the obvious fake raises, the
+        next one through lands in the JOB's error handler and records a finished run as failed."""
+        told = self.presence(monkeypatch, fails=failure)
         agent = SlowAgent()
         TestCancelReachesABlockingRun.wire(server, agent)
         await self.start(server, wake_when_done=True)
@@ -2362,16 +2387,21 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         It matters beyond polling: the abort paths reach the ending with the instance already out
         of _running_agents, so a `continue` can start meanwhile. Marking behind the await would
         stamp the dead run's status onto the job that continue put there."""
-        told = self.presence(monkeypatch)
+        order = []
+        told = self.presence(monkeypatch, order=order)
         agent = SlowAgent()
         TestCancelReachesABlockingRun.wire(server, agent)
         manager = server._get_manager()
         at_write = []
         manager.update_sub_session_metadata = AsyncMock(
-            side_effect=lambda **kw: at_write.append(dict(server._async_jobs.get("sub_slow", {}))))
+            side_effect=lambda **kw: (order.append("stored"),
+                                      at_write.append(dict(server._async_jobs.get("sub_slow", {}))))[1])
         await self.start(server, wake_when_done=True)
         await self.run_to_end(server, agent)
 
+        assert order[-2:] == ["stored", "woken"], (
+            "the woken run polls, and a poll that misses the job in memory falls back to stored "
+            f"metadata -- which would still say active: {order}")
         assert at_write, "the ending was never written to the sub-session's metadata"
         assert at_write[-1].get("status") == "completed", at_write[-1]
         assert at_write[-1].get("result") == "done", at_write[-1]
@@ -2379,6 +2409,176 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         # ending nobody has read from one that was already given away, and drops it too early
         assert at_write[-1].get("_awaiting_poll") is True, at_write[-1]
         assert told == [("parent1", "u1")], "and the wake comes after both"
+
+    @pytest.mark.asyncio
+    async def test_the_ringing_does_not_hold_the_instance(self, server, monkeypatch):
+        """The run is over before the bell is rung, and the ringing lasts up to five minutes.
+        Held that long, the instance answers "already running" to the `continue` the tool
+        description pushes the woken caller towards, and `list` reports a run long finished."""
+        running = []
+
+        async def wake(system_config, session_id, user_id, what="", still_needed=None):
+            running.append(set(server._running_agents))
+            return "woke_session"
+
+        monkeypatch.setattr(sam_server, "wake_session", wake)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+
+        assert running == [set()], "the slot was still held while the bell was ringing"
+
+    @pytest.mark.asyncio
+    async def test_the_core_is_handed_this_servers_config_and_the_name_of_the_work(
+            self, server, monkeypatch):
+        """Handed None instead, `wake_blocked` finds no `session_presence` on it: every wake
+        dies as "presence is off" and every caller is told it will not be woken, silently. And
+        `what` is the only name the work has in the operator's log."""
+        seen = []
+
+        async def wake(system_config, session_id, user_id, what="", still_needed=None):
+            seen.append((system_config, what))
+            return "woke_session"
+
+        monkeypatch.setattr(sam_server, "wake_session", wake)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+
+        (config, what), = seen
+        assert config is server.system_config
+        assert "sub_slow" in what, what
+
+    @pytest.mark.asyncio
+    async def test_without_a_user_for_the_session_it_says_so_and_stops(
+            self, server, monkeypatch, caplog):
+        """The id is injected per tool call. Missing, there is no session directory to ring at --
+        and a caller asleep over the job would wait for good, so the operator hears about it."""
+        told = self.presence(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        manager = server._get_manager()
+        monkeypatch.setattr(manager, "_extract_user_id", lambda *a, **kw: "")
+        await self.start(server, wake_when_done=True)
+        with caplog.at_level(logging.WARNING, logger=sam_server.logger.name):
+            await self.run_to_end(server, agent)
+
+        assert told == []
+        assert any("no user for the session" in r.message for r in caplog.records), \
+            [r.message for r in caplog.records]
+
+    @pytest.mark.asyncio
+    async def test_a_create_does_not_fail_over_the_wording_of_its_own_answer(
+            self, server, monkeypatch):
+        """The job is running by then. Whatever reading the config runs into, the neutral
+        sentence is the one that was there before any of this."""
+        self.presence(monkeypatch)
+
+        def explodes(system_config, session_id, user_id):
+            raise RuntimeError("the sessions directory is gone")
+
+        monkeypatch.setattr(sam_server, "wake_blocked", explodes)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+
+        started = await self.start(server, wake_when_done=True)
+
+        assert started["status"] == "running"
+        assert "Use poll or wait" in started["message"], started["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_caller_told_it_may_sleep_is_told_when_it_may_not(self, server, monkeypatch):
+        """The tool description promises the wake without conditions, because it describes the
+        argument and not this session. Three things rule one out before the job runs at all, and
+        a caller that ends its turn on the promise waits for good. So the answer says which."""
+        self.presence(monkeypatch)
+        asked = self.arming(monkeypatch, blocked="session presence is off")
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+
+        started = await self.start(server, wake_when_done=True)
+
+        assert asked == [("parent1", "u1")], "it did not ask about the session it would wake"
+        assert "NOT be woken" in started["message"], started["message"]
+        assert "session presence is off" in started["message"], "the reason is what to act on"
+        assert "poll or wait" in started["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_caller_that_can_be_woken_is_told_it_may_sleep(self, server, monkeypatch):
+        """The counter-proof: without it the sentence above could be the only one there is."""
+        self.presence(monkeypatch)
+        self.arming(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+
+        started = await self.start(server, wake_when_done=True)
+
+        assert "NOT be woken" not in started["message"], started["message"]
+        assert "end your turn" in started["message"], started["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_job_nobody_wants_to_sleep_on_is_not_asked_about(self, server, monkeypatch):
+        """`wake_when_done` off is the default, and it costs nothing: no lock file is read, and
+        the answer is the one every background job gave before any of this existed."""
+        self.presence(monkeypatch)
+        asked = self.arming(monkeypatch, blocked="session presence is off")
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+
+        started = await self.start(server)
+
+        assert asked == []
+        assert "woken" not in started["message"], started["message"]
+
+    @pytest.mark.asyncio
+    async def test_the_ringing_is_told_when_it_may_stop(self, server, monkeypatch):
+        """One ring is not enough: a job that ends while the caller's own turn is still running
+        only leaves a marker, and the next LLM step of that turn takes it in the belief that a
+        hook passes the input on. Nothing passes on "your sub-agent is done", so the core rings
+        again while the session stays held -- and `still_needed` is what stops it, because a ring
+        that lands after the woken run has read the result starts a SECOND run.
+
+        The guard is the bookkeeping the manager already keeps: the ending sits in `_async_jobs`
+        marked `_awaiting_poll` until somebody reads it, and a poll takes the job with it."""
+        guards = []
+        self.presence(monkeypatch, guards=guards)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+
+        still_needed, = guards
+        assert still_needed is not None and still_needed() is True, \
+            "the ending is sitting there unread -- the ringing has to go on"
+
+        await server.manage_sub_agent(
+            {"operation": "poll", "instance_id": "sub_slow", "_session_id": "parent1"})
+
+        assert still_needed() is False, "it rings on after the caller read the result itself"
+
+        # And a fresh job under the same id -- what a `continue` on the instance leaves behind --
+        # is not an unread ending either: asking only whether SOMETHING is there would ring on
+        # over it, and that second ring starts a second woken run.
+        server._async_jobs["sub_slow"] = {"instance_id": "sub_slow", "status": "running"}
+        assert still_needed() is False, "any job under that id counted as an ending nobody read"
+
+    @pytest.mark.asyncio
+    async def test_an_archived_job_hands_over_no_guard_at_all(self, server, monkeypatch):
+        """Archived while it ran, the job is dropped from `_async_jobs` the moment it ends -- so
+        the guard would answer "already read" on the first ring and stop it, for an ending nobody
+        has seen. Nothing here can tell, and saying so is what makes the core ring its budget."""
+        guards = []
+        self.presence(monkeypatch, guards=guards)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await agent.started(1)
+        await server._archive_job("sub_slow")
+        await self.run_to_end(server, agent)
+
+        assert guards == [None], "a guard that cannot see the job must not be handed over"
 
     @pytest.mark.asyncio
     async def test_a_wait_hands_back_no_bookkeeping_of_ours(self, server, monkeypatch):

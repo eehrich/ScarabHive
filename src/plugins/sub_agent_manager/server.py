@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, List, Optional
 
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
-from agent_system.core.session_presence import presence_for
+from agent_system.core.session_presence import presence_for, wake_blocked, wake_session
 from agent_system.services.session_manager import SessionNotFoundError
 from agent_system.utils.id import short_id
 from agent_system.llm.token_utils import extract_text_from_content
@@ -828,7 +828,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     "instance_id": sub_session_id,
                     "status": "running",
                     "agent_type": agent_name,
-                    "message": "Sub-agent execution started in background. Use poll or wait to check status."
+                    "message": self._async_started_message(
+                        params, parent_session_id, manager),
                 }
 
             # BLOCKING path: Check if sub-agent is already running (prevent concurrent execution)
@@ -1805,32 +1806,108 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
         logger.info(f"Async execution finished for {instance_id} ({job_status}), awaiting result poll")
 
+        # The RUN is over here, on every path that reaches this method, so the slot it held goes
+        # now -- before the bell, not after it. The success path reaches `_finish_job` inside the
+        # try whose finally releases it, and the ringing below can last five minutes: held that
+        # long, the instance answers "already running" to the `continue` the woken caller makes,
+        # and `list` reports a run that ended long ago. The abort paths have already released it;
+        # discard is idempotent, and this is the one place all three endings meet.
+        async with self._running_lock:
+            self._running_agents.discard(instance_id)
+
         # Whatever the ending was: the session that asked to be woken is waiting for this one,
         # and a job that failed leaves it waiting just as a job that finished does.
         if params.get("wake_when_done") and parent_session_id:
-            await self._wake_parent(instance_id, parent_session_id, manager, params)
+            await self._wake_parent(instance_id, parent_session_id, manager, params,
+                                    tracked=not was_archived)
+
+    def _async_started_message(self, params: dict[str, Any], parent_session_id: str,
+                               manager: Optional[SubAgentManager]) -> str:
+        """What `create(blocking=false)` tells the model about the job it just started.
+
+        The tool description promises the wake without conditions, because it describes the
+        argument and not this session. What `wake_blocked` can answer up front -- presence
+        switched off, no session behind the call, a wake chain already at `max_wake_depth` --
+        a caller told nothing about ends its turn over and waits for good. So the answer says
+        which of the two it is, with the reason, because the reason is what a model can act on.
+
+        "Not blocked" is not a promise either, and `wake_blocked` names the two exits it cannot
+        check up front: whether the process holding the job outlives the turn, and whether this
+        is a sub-agent's own session, which is never woken -- reading that means parsing the
+        whole session file on the caller's loop. Both show only at the ending, as a wake that did
+        not happen. Being woken stays the good case and polling stays the fallback.
+        """
+        started = "Sub-agent execution started in background."
+        if not params.get("wake_when_done"):
+            return f"{started} Use poll or wait to check status."
+        try:
+            # `manager` is never None here: this runs on the create path, which built one.
+            user_id = manager._extract_user_id(parent_session_id, params)
+            blocked = wake_blocked(self.system_config, parent_session_id, user_id)
+        except Exception as e:
+            # The job is running. A create must not fail over the wording of its own answer, and
+            # the neutral sentence is the one that was there before any of this.
+            logger.warning("Could not tell whether %s can be woken: %s", parent_session_id, e)
+            return f"{started} Use poll or wait to check status."
+        if blocked:
+            return (f"{started} This session will NOT be woken ({blocked}) -- do not end your "
+                    f"turn over it: poll or wait for the result yourself.")
+        return (f"{started} You may end your turn: this session is woken when it finishes, "
+                f"however it ends, and you poll the instance then.")
+
+    def _ending_is_unread(self, instance_id: str) -> bool:
+        """Whether this job's ending is still waiting for somebody to read it.
+
+        The ending sits in the job marked `_awaiting_poll` until somebody takes it, and whoever
+        takes it takes the job with it -- a poll, a wait, a `continue` on the instance, or
+        archiving a job that has already ended. So the answer is "is it still there", not "did a
+        poll happen": the three others each mean the caller is awake and handling it itself.
+
+        Asked between rings to stop them: a ring that goes out after the woken run has already
+        read the result starts a SECOND run, which is a whole turn on the user's money.
+
+        Read without the lock on purpose. This is asked on the loop between rings, a dict lookup
+        is atomic per step, and taking the lock would make the ringing wait on whatever else the
+        manager is doing.
+        """
+        job = self._async_jobs.get(instance_id)
+        return bool(job and job.get("_awaiting_poll"))
 
     async def _wake_parent(self, instance_id: str, parent_session_id: str,
-                           manager: Optional[SubAgentManager], params: dict[str, Any]) -> None:
+                           manager: Optional[SubAgentManager], params: dict[str, Any],
+                           *, tracked: bool = True) -> None:
         """Tell the session that started this job to look: it may have ended its turn over it.
 
-        Who runs where and waking an idle session are core (core/session_presence.py). A session
-        another process holds reads this at its next step; one nobody holds is continued in a run
-        of its own. Off while session_presence is off -- then the caller polls, as it always did.
+        Waking is core (`core/session_presence.wake_session`), and so is the REPEATING, which is
+        the part this plugin got wrong on its own. A session that is still held when the job ends
+        is only handed a marker, and the next LLM step of that same turn takes the marker in the
+        belief that a pre-LLM hook passes the waiting input on. Nothing passes on "your sub-agent
+        is done", so a single ring that lands inside the caller's own turn is thrown away and the
+        caller sleeps over a finished job. How narrow that is: in the session it was reported
+        from, the turn ended 4.3 seconds before its job did -- three times in a row it came in
+        just behind the turn, and one more poll would have put it inside.
+
+        `still_needed` says the ending is still in hand. It answers "no" once a poll or a wait has
+        handed it over -- and also once the job is simply GONE, which is what the core's own
+        wording covers ("read by its caller, or gone from the registry"): a `continue` on the
+        instance takes it too, and so does archiving a job that has already ended. In each of
+        those the caller is demonstrably awake and working, which is when the ringing should
+        stop.
+
+        `tracked` is the one case where there is nothing left to ask: a job archived WHILE it ran
+        is dropped the moment it ends, so the guard would answer "already read" on the first ring
+        for an ending nobody has seen. It hands over no guard and rings the budget instead.
 
         A background job lives in the process that started it. That is the API, where the job runs
-        on after the turn that asked for it; a CLI run that ends its turn takes the job with it,
-        and nothing is left to wake anybody. README says so.
+        on after the turn that asked for it, and `agent-cli chat`, whose prompt waits on the same
+        loop. A one-shot `agent-cli run` that ends its turn takes the job with it, and nothing is
+        left to wake anybody. README says so.
         """
         try:
-            # Everything from here on belongs to the wake, the reading of the config included: a
-            # job that is over and recorded must not end in its caller's exception handler, which
-            # would record it a second time, as failed.
-            presence = presence_for(self.system_config)
-            if presence is None:
-                logger.debug("Not waking %s for %s: session presence is off",
-                             parent_session_id, instance_id)
-                return
+            # Everything from here on belongs to the wake, reading the config included: a job that
+            # is over and recorded must not end in its caller's exception handler, which would
+            # record it a second time, as failed.
+            #
             # Without a manager the job did not even get started -- and a caller that went to
             # sleep over it waits forever unless the id it injected answers instead.
             user_id = (manager._extract_user_id(parent_session_id, params) if manager is not None
@@ -1839,11 +1916,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 logger.warning("Cannot wake %s for sub-agent %s: no user for the session",
                                parent_session_id, instance_id)
                 return
-            # notify() reads and writes lock files and may start a process. This job shares its
-            # loop with every other run of this manager, so it does not wait for that here.
-            state, note = await asyncio.to_thread(presence.notify, parent_session_id, user_id)
-            logger.info("Sub-agent %s finished, woke %s: %s%s",
-                        instance_id, parent_session_id, state, f" ({note})" if note else "")
+            await wake_session(
+                self.system_config, parent_session_id, user_id,
+                what=f"sub-agent {instance_id}",
+                still_needed=(lambda: self._ending_is_unread(instance_id)) if tracked else None,
+            )
         except Exception as e:
             # The job is done and recorded; a wake that fails costs the caller a poll, not the run.
             logger.warning("Could not wake %s for finished sub-agent %s: %s",
