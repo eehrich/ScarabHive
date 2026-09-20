@@ -138,8 +138,11 @@ async function sweep() {
   button.disabled = true;
   try {
     const report = await api(`${BASE}sweep`, { method: 'POST' });
+    // A pass stops at a cap, so "Archived 200" is not "done" -- and the list
+    // refreshing under it looks exactly like done.
+    const left = report.capped ? `, ${report.remaining} still waiting — run it again` : '';
     toast(report.trees
-      ? `Archived ${report.trees} conversation(s), ${report.sessions} sessions`
+      ? `Archived ${report.trees} conversation(s), ${report.sessions} sessions${left}`
       : 'Nothing was old enough to archive', { kind: report.trees ? 'ok' : 'info' });
     if (report.errors?.length) toast(report.errors[0], { kind: 'warn' });
   } catch {

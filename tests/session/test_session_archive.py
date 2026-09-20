@@ -520,7 +520,65 @@ async def test_a_dry_run_is_not_capped(sm, tmp_path):
     wet = await archive.archive_user(USER)
     assert wet.trees == 2
     assert wet.capped is True
+    assert wet.remaining == 2, "a capped pass has to say how much it left"
     assert len(await archive.list_archived(USER)) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_young_are_counted_whole_however_early_the_cap_stops(sm, tmp_path):
+    """The count must not depend on how far into the forest the pass got.
+
+    Raised inside the loop it said how many young trees THIS pass walked past
+    before the cap ended it -- which climbs every pass as the archivable trees
+    ahead of them go, while the log reads it out as "this many are too young".
+    Measured on the live store 20.09.2026 over an unchanged set: 328, 667, 970.
+    """
+    old_trees = [f"root_w{index}" for index in range(4)]
+    for root in old_trees:
+        await _make_tree(sm, root, [])
+    _age(sm, old_trees, days=60)
+    # Young ones BEHIND the cap: with one tree per pass, a counter raised in
+    # the loop never reaches them.
+    for index in range(3):
+        await _make_tree(sm, f"root_young{index}", [])
+
+    archive = SessionArchive(
+        sm, archive_path=str(tmp_path / "session_archive"), max_trees_per_sweep=1)
+
+    first = await archive.archive_user(USER)
+    assert first.trees == 1 and first.capped is True
+    assert first.skipped_young == 3, "the young trees the pass never reached"
+    assert first.remaining == 3, "three old ones are still waiting"
+
+    second = await archive.archive_user(USER)
+    assert second.skipped_young == 3, "the same set, so the same number"
+    assert second.remaining == 2
+
+    # And once nothing old is left, the pass is not capped and leaves nothing.
+    for _ in range(2):
+        await archive.archive_user(USER)
+    done = await archive.archive_user(USER)
+    assert done.trees == 0 and done.capped is False
+    assert done.skipped_young == 3 and done.remaining == 0
+
+
+@pytest.mark.asyncio
+async def test_a_tree_in_use_is_what_the_next_pass_finds(sm, tmp_path):
+    """Not capped, yet something is left: "remaining" is not the cap's word."""
+    await _make_tree(sm, "root_x1", [])
+    await _make_tree(sm, "root_x2", [])
+    _age(sm, ["root_x1", "root_x2"], days=60)
+
+    async def busy() -> set[str]:
+        return {"root_x1"}
+
+    archive = SessionArchive(
+        sm, archive_path=str(tmp_path / "session_archive"), busy_sessions=busy)
+    report = await archive.archive_user(USER)
+
+    assert report.trees == 1 and report.capped is False
+    assert report.skipped_busy == 1
+    assert report.remaining == 1, "the running one comes back to the next pass"
 
 
 @pytest.mark.asyncio
@@ -1048,7 +1106,7 @@ def test_the_report_carries_every_field_the_panel_reads():
     report = ArchiveReport(user_id="u1")
     assert set(report.as_dict()) == {
         "user_id", "dry_run", "trees", "sessions", "bytes_live", "bytes_archived",
-        "skipped_young", "skipped_busy", "capped", "roots", "errors",
+        "skipped_young", "skipped_busy", "capped", "remaining", "roots", "errors",
     }
 
 

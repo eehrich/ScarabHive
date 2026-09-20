@@ -178,6 +178,22 @@ async def test_a_sweep_says_what_it_left_alone(sm, config, capsys):
 
 
 @pytest.mark.asyncio
+async def test_a_capped_sweep_does_not_read_as_the_whole_job(sm, config, capsys):
+    """Without this line the run prints what it did and nothing about the rest."""
+    for index in range(3):
+        await _tree(sm, f"root_cap{index}", [], days=90)
+    archive = build_archive(sm, config)
+    archive.max_trees_per_sweep = 1
+
+    await run_sweep(archive, USER)
+
+    out = capsys.readouterr().out
+    assert "Archived 1 conversation(s)" in out
+    assert "2 conversation(s) still waiting" in out
+    assert "run it again" in out
+
+
+@pytest.mark.asyncio
 async def test_a_retention_given_on_the_command_line_wins(sm, config, capsys):
     await _tree(sm, "root_e", [], days=60)
     archive = build_archive(sm, config)

@@ -75,6 +75,7 @@ class ArchiveReport:
     skipped_young: int = 0
     skipped_busy: int = 0
     capped: bool = False         # max_trees_per_sweep stopped this pass early
+    remaining: int = 0           # old enough, still there: what the next pass finds
     roots: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
@@ -89,6 +90,7 @@ class ArchiveReport:
             "skipped_young": self.skipped_young,
             "skipped_busy": self.skipped_busy,
             "capped": self.capped,
+            "remaining": self.remaining,
             "roots": self.roots,
             "errors": self.errors,
         }
@@ -377,10 +379,18 @@ class SessionArchive:
         # from under its own run just because it was idle in minute 0.
         held = await asyncio.to_thread(self._held_sessions, user_id)
 
-        for tree in trees:
-            if tree.newest > cutoff:
-                report.skipped_young += 1
-                continue
+        # Counted over the WHOLE forest and before the loop, because the cap
+        # below ends the pass early: raised inside the loop, this said how many
+        # young trees THIS PASS happened to walk past before it stopped -- a
+        # number that climbs every pass as the archivable trees ahead of them
+        # go, while the log reads it out as "this many are too young".
+        # Measured 20.09.2026 on cli_user, over an unchanged set: 328, 667, 970.
+        # Age is free to decide (the walk already carries it); being in use is
+        # not, so skipped_busy stays a count over the trees actually reached.
+        eligible = [tree for tree in trees if tree.newest <= cutoff]
+        report.skipped_young = len(trees) - len(eligible)
+
+        for tree in eligible:
             if (held | await self._running()).intersection(tree.sessions):
                 report.skipped_busy += 1
                 continue
@@ -403,6 +413,11 @@ class SessionArchive:
             report.bytes_archived += archived_bytes
             report.roots.append(tree.root)
 
+        # Old enough and still on disk: the cap's leftovers, the trees that were
+        # in use, and any that failed. "More is left for the next pass" was true
+        # and said nothing about how much.
+        report.remaining = len(eligible) - report.trees
+
         if report.trees or report.errors:
             logger.info(
                 "session archive%s: user=%s trees=%d sessions=%d %.1f MB -> %.1f MB "
@@ -414,7 +429,8 @@ class SessionArchive:
         if report.capped:
             logger.info(
                 "session archive: user=%s stopped at max_trees_per_sweep=%d, "
-                "more is left for the next pass", user_id, self.max_trees_per_sweep,
+                "%d conversation(s) wait for the next pass",
+                user_id, self.max_trees_per_sweep, report.remaining,
             )
         return report
 

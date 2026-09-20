@@ -146,14 +146,23 @@
       && statValue('trees') === '0';
   });
 
-  await check('archiving by hand takes what is old enough and says what it took', async () => {
+  await check('a capped pass says how much is still waiting, and a finished one does not', async () => {
     // Live and old enough by now: root_old (2 sessions, seeded) plus the two
     // this page restored again, root_one (3) and root_three (2). root_new is
-    // a day old and stays.
+    // a day old and stays. The first pass is held to ONE tree, so it ends
+    // capped -- and a toast that only counts what it did reads as "done"
+    // while the table refreshing under it looks the same way.
+    cookie('cap');
     doc().getElementById('sweep').click();
-    await said('Archived 3 conversation(s), 7 sessions', 'ok');
-    await until('the archives', () => rows().length === 3);
-    return ids().sort().join() === 'root_old,root_one,root_three'
+    await said('2 still waiting', 'ok');
+    await until('the first archive', () => rows().length === 1);
+    cookie('');
+    doc().getElementById('sweep').click();
+    await said('Archived 2 conversation(s)', 'ok');
+    await until('the rest', () => rows().length === 3);
+    const finished = !toasts('ok').some((text) =>
+      text.includes('Archived 2 conversation(s)') && text.includes('still waiting'));
+    return finished && ids().sort().join() === 'root_old,root_one,root_three'
       && statValue('sessions') === '7';
   });
 

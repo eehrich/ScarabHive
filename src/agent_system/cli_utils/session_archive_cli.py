@@ -102,6 +102,11 @@ async def run_sweep(
     if report.skipped_young or report.skipped_busy:
         print(f"  left alone: {report.skipped_young} not old enough, "
               f"{report.skipped_busy} in use")
+    if report.capped:
+        # Without this a capped pass reads as the whole job: it prints the 200
+        # it did and nothing about the rest waiting behind them.
+        print(f"  stopped at {archive.max_trees_per_sweep} per pass -- "
+              f"{report.remaining} conversation(s) still waiting, run it again")
     for error in report.errors:
         print(f"  error: {error}")
 

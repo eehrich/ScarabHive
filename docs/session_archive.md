@@ -229,4 +229,11 @@ Gemessen am 20.09.2026:
   im Sekundenbereich.
 * Der Deckel `max_trees_per_sweep` begrenzt, was ein Durchgang **schreibt**.
   Ein Trockenlauf zählt alles: ein Bericht, der bei 200 aufhört zu zählen,
-  läse sich wie „mehr ist nicht da".
+  läse sich wie „mehr ist nicht da". Aus demselben Grund nennt ein gedeckelter
+  Durchgang in Log, CLI und Panel, **wie viele** noch warten (`remaining`) —
+  „Archived 200" sieht sonst aus wie fertig, gerade im Panel, dessen Liste
+  sich darunter aktualisiert.
+* `skipped_young` zählt **alle** zu jungen Bäume des Benutzers, nicht die, an
+  denen ein Durchgang zufällig vorbeikam, bevor der Deckel ihn stoppte. Vorher
+  wuchs die Zahl mit jedem Durchgang, obwohl sich die Menge nicht änderte
+  (gemessen am 20.09.2026 auf `cli_user`: 328, 667, 970).

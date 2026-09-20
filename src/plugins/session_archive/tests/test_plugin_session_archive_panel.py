@@ -7,7 +7,7 @@ first conversation", three sessions), ``root_two`` (two) and ``root_three``
 that is not.
 
 With the cookie ``sa_mode=refuse`` a restore is answered 409, ``slow`` holds it
-1.5 s, ``fails`` fails the listing. GET /__stub/live says which sessions are
+1.5 s, ``fails`` fails the listing, ``cap`` lets a sweep take one tree. GET /__stub/live says which sessions are
 live again; POST /__stub/asked counts the deletions that reached the service.
 """
 from __future__ import annotations
@@ -103,6 +103,9 @@ def panel_app(tmp_path: Path) -> FastAPI:
             return JSONResponse({"detail": "The archive is locked"}, status_code=500)
         if mode == "slow" and path.endswith("/restore"):
             await asyncio.sleep(1.5)
+        if path.endswith("/sweep"):
+            # One tree per pass, so the pass ends capped with the rest waiting.
+            archive.max_trees_per_sweep = 1 if mode == "cap" else 200
         if request.method == "DELETE" and "/archived/" in path:
             asked["forgets"] += 1
         return await call_next(request)
@@ -146,7 +149,7 @@ EXPECTED = [
     'a refusal from the server is shown and the conversation stays',
     'the buttons of a row stay off until the action is answered',
     'with nothing archived the panel says when conversations move here',
-    'archiving by hand takes what is old enough and says what it took',
+    'a capped pass says how much is still waiting, and a finished one does not',
     'archiving by hand again finds nothing and says that too',
     'a failed load shows the error instead of what was there before',
 ]
