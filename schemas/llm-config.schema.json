@@ -90,18 +90,6 @@
           "title": "Tts Profiles",
           "type": "object"
         },
-        "default_tts_profile": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Default Tts Profile"
-        },
         "decision_models": {
           "additionalProperties": {
             "$ref": "#/$defs/DecisionModelConfig"

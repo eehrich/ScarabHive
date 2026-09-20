@@ -430,18 +430,34 @@ class LLMSystemConfig(BaseModel):
                 f"declares it via provides_decisions "
                 f"(known: {sorted(known_decisions)})")
 
-        # A profile pointing at no model used to fail at the first decision.
-        # That moment is now inside an agent loop (agent_continuation asks one
-        # per step), where a config typo is the most expensive thing to learn.
-        dangling = sorted(
-            f"{name} -> {profile.model_ref}"
-            for name, profile in self.decision_profiles.items()
-            if profile.model_ref not in self.decision_models
-        )
-        if dangling:
-            raise ValueError(
-                f"llm_system.decision_profiles: {dangling} name no entry in "
-                f"decision_models (have: {sorted(self.decision_models)})")
+        # A profile pointing at no model fails at the first USE of it: a decision
+        # inside an agent loop (agent_continuation asks one per step), a synthesis for
+        # TTS. Both are loud and both are late, and a typo in a config file is cheapest
+        # at config load. Measured over the shipped config, none of the 3 + 1 profiles
+        # in these two sections dangles, so this refuses nothing that works today.
+        #
+        # NOT `profiles` (the chat ones), although the mistake is the same there. That
+        # section has a deliberate degrade-and-name design behind it: an agent whose
+        # profile does not resolve is built anyway with llm=None and logs a warning
+        # carrying its own name, because on 2026-09-05 one model removed from llm.yaml
+        # produced 50 warnings nobody could tell apart (see
+        # test_a_swallowed_llm_error_names_the_agent). Refusing the config instead
+        # would take the whole API down over one typo in one of 83 profiles, mid book
+        # run — that is a trade to be decided, not to be slipped in here.
+        for section, profiles, models in (
+            ("tts_profiles", self.tts_profiles, self.tts_models),
+            ("decision_profiles", self.decision_profiles, self.decision_models),
+        ):
+            dangling = sorted(
+                f"{name} -> {profile.model_ref}"
+                for name, profile in (profiles or {}).items()
+                if profile.model_ref not in (models or {})
+            )
+            if dangling:
+                raise ValueError(
+                    f"llm_system.{section}: {dangling} name no entry in "
+                    f"{section.replace('profiles', 'models')} "
+                    f"(have: {sorted(models or {})})")
 
         default_profile = self.default_decision_profile
         if default_profile and default_profile not in self.decision_profiles:
@@ -451,19 +467,21 @@ class LLMSystemConfig(BaseModel):
                 f"(have: {sorted(self.decision_profiles)})")
         return self
 
-    # TTS (Text-to-Speech) configuration
+    # TTS (Text-to-Speech) configuration. No default_tts_profile: it was set in
+    # llm.yaml, mirrored into three schemas and asserted by a test, and read by
+    # nothing in the repo — the test only checked that pydantic returned the value it
+    # had been handed three lines above, which is what let it look like configuration
+    # for a year. Every caller names the profile it wants.
     tts_models: Dict[str, TTSModelConfig] = {}
     tts_profiles: Dict[str, TTSProfile] = {}
-    default_tts_profile: Optional[str] = None
 
     # Decision models — see DecisionModelConfig: a questionnaire, not a chat.
     decision_models: Dict[str, DecisionModelConfig] = {}
     decision_profiles: Dict[str, DecisionProfile] = {}
-    #: Which profile a caller gets when it names none. UNLIKE its neighbour
-    #: default_tts_profile, which is set in llm.yaml and read by nobody, this
-    #: one has a reader from the start: create_decisions_from_profile falls
-    #: back to it. A default nothing reads is not configuration, it is
-    #: decoration — so if this ever loses its reader, it should go with it.
+    #: Which profile a caller gets when it names none. This one has a reader from
+    #: the start: create_decisions_from_profile falls back to it. Its TTS twin had
+    #: none and has been removed — a default nothing reads is not configuration, it
+    #: is decoration, so if this ever loses its reader it should go the same way.
     default_decision_profile: Optional[str] = None
 
 

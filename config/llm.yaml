@@ -639,4 +639,3 @@ llm_system:
       model_ref: openrouter-qwen-tts
       description: "Qwen Audio 3.0 TTS Flash via OpenRouter speech API"
 
-  default_tts_profile: gemini-tts

@@ -163,6 +163,21 @@ class TestLLMFactoryIntegration:
         with pytest.raises(ValueError, match="Model reference"):
             resolve_llm_config_for_agent(broken, AgentConfig(llm_profile=["dangling"]))
 
+    def test_a_dangling_chat_profile_still_loads_and_fails_when_used(self):
+        """Deliberately NOT refused at config load, unlike its TTS and decision twins.
+
+        An agent whose profile does not resolve is built with llm=None and logs a
+        warning naming itself (test_a_swallowed_llm_error_names_the_agent, after an
+        incident where one removed model produced 50 warnings nobody could tell
+        apart). Refusing the config instead would stop the whole API over one typo in
+        one of 83 profiles. This pins the decision, so that flipping it is a choice
+        someone makes rather than a side effect.
+        """
+        from agent_system.config.models import LLMProfile, LLMSystemConfig
+
+        loads = LLMSystemConfig(profiles={"dangling": LLMProfile(model_ref="no_such_model")})
+        assert "dangling" in loads.profiles
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

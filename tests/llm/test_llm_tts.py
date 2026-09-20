@@ -181,10 +181,19 @@ class TestTTSConfigModels:
             tts_profiles={
                 "test-profile": TTSProfile(model_ref="test"),
             },
-            default_tts_profile="test-profile",
         )
         assert "test" in cfg.tts_models
         assert "test-profile" in cfg.tts_profiles
-        assert cfg.default_tts_profile == "test-profile"
+
+    def test_a_tts_profile_pointing_at_no_model_is_refused_at_load(self):
+        """Config load is the cheap moment; the first synthesis is not.
+
+        This section used to carry a `default_tts_profile` too, set in llm.yaml and
+        read by nothing, with a test that asserted pydantic returned the value it had
+        just been handed. That is what made it look like configuration for a year.
+        """
+        from agent_system.config.models import LLMSystemConfig, TTSProfile
+        with pytest.raises(ValueError, match="tts_profiles"):
+            LLMSystemConfig(tts_profiles={"a": TTSProfile(model_ref="gone")})
 
 
