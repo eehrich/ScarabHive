@@ -21,12 +21,12 @@ Audit findings these tests pin down:
 import pytest
 
 from agent_system.config.models import LLMModelConfig
-from plugins_llm.llm_gemini.gemini_utils import (
+from plugins.llm_gemini.gemini_utils import (
     adjust_thinking_for_retry,
     apply_retry_thinking_config,
     build_thinking_config,
 )
-from plugins_llm.llm_openai_compat.httpx_client import HTTPXOpenAIClient
+from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient
 from agent_system.llm.models import ChatMessage
 
 

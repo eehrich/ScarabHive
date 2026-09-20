@@ -19,7 +19,7 @@ SRC = REPO / "src"
 
 def _repo_yaml_files() -> list[Path]:
     files = set(REPO.glob("config/**/*.yaml"))
-    for pkg in ("plugins", "plugins_writer", "plugins_llm"):
+    for pkg in ("plugins", "plugins_writer"):
         files.update((SRC / pkg).rglob("schema.yaml"))
     return sorted(files)
 
@@ -71,7 +71,7 @@ def test_no_production_code_calls_the_pure_python_loader():
                   "from yaml import safe_load"):
         assert pattern.search(probe), f"the scan pattern no longer matches {probe!r}"
     scanned = 0
-    for pkg in ("agent_system", "plugins", "plugins_writer", "plugins_llm", "plugins_trading"):
+    for pkg in ("agent_system", "plugins", "plugins_writer", "plugins_trading"):
         for py in (SRC / pkg).rglob("*.py"):
             if "tests" in py.parts or py.name == "yaml_io.py":
                 continue

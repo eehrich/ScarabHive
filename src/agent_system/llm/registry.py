@@ -1,7 +1,10 @@
 """LLM provider registry — lazy dispatch to provider plugins.
 
-Providers live as plugins under ``src/plugins_llm/``; each one declares in
-its ``plugin.toml`` which provider names it serves (``provides``, plus the
+Providers live as plugins under ``src/plugins/``, beside the tool
+servers and told apart from them by ``type = ["llm-provider"]`` in the
+manifest — they had a root of their own until 2026-09-20, and nothing
+but the manifest says so now. Each one declares in its ``plugin.toml``
+which provider names it serves (``provides``, plus the
 optional ``provides_batch`` / ``provides_tts`` / ``provides_decisions``) and
 exports the matching factories from its entrypoint module (``PROVIDERS`` /
 ``BATCH_BACKENDS`` / ``TTS_PROVIDERS`` / ``DECISION_PROVIDERS`` dicts). A
@@ -45,7 +48,7 @@ ProviderFactory = Callable[..., "LLMClient"]
 #: or None when it cannot come up (e.g. no API key) — the caller logs skips.
 BatchBackendFactory = Callable[..., Optional["BatchProviderClient"]]
 
-PLUGIN_PACKAGE = "plugins_llm"
+PLUGIN_PACKAGE = "plugins"
 
 #: Every seam this registry dispatches: the manifest key a plugin declares it
 #: under, the dict its provider.py must export, and what a name collision is
@@ -76,11 +79,11 @@ _default_base_urls: Dict[str, str] = {}
 
 
 class ProviderNotFoundError(ValueError):
-    """No plugin under plugins_llm declares the requested provider."""
+    """No plugin's manifest declares the requested provider."""
 
 
 def _plugins_root() -> Path:
-    """Locate the plugins_llm package directory.
+    """Locate the plugins package directory.
 
     Preferred: wherever the import system finds it (installed package, or
     src/ already on sys.path). Fallbacks for running from a repo checkout
@@ -90,9 +93,24 @@ def _plugins_root() -> Path:
     sys.path so the later import_module resolves to the SAME module objects
     tests import directly (no duplicate class identities).
     """
-    spec = importlib.util.find_spec(PLUGIN_PACKAGE)
-    if spec and spec.submodule_search_locations:
-        return Path(next(iter(spec.submodule_search_locations)))
+    # sys.modules first, and deliberately. plugins/discovery.py registers a
+    # hand-built types.ModuleType under this name when nothing has imported
+    # the package yet; such a module carries __spec__ = None, and find_spec
+    # on a module already in sys.modules reads exactly that attribute and
+    # raises ValueError instead of searching. Its __path__ is the directory
+    # we want anyway. Measured 2026-09-20 — until the providers moved out of
+    # their own root this asked for a package discovery never touches, so
+    # the collision could not happen.
+    module = sys.modules.get(PLUGIN_PACKAGE)
+    search = getattr(module, "__path__", None)
+    if search is None:
+        try:
+            spec = importlib.util.find_spec(PLUGIN_PACKAGE)
+        except ValueError:
+            spec = None  # in sys.modules, but not a package
+        search = spec.submodule_search_locations if spec else None
+    if search:
+        return Path(next(iter(search)))
     src = Path(__file__).resolve().parents[2]
     for cand in (src / PLUGIN_PACKAGE, Path.cwd() / "src" / PLUGIN_PACKAGE):
         if cand.is_dir():
@@ -134,7 +152,13 @@ def _read_manifest(plugin_dir: Path) -> Dict:
 
 
 def _scan_manifests() -> None:
-    """Read every plugins_llm/*/plugin.toml once; imports nothing."""
+    """Read every plugins/*/plugin.toml once; imports nothing.
+
+    Every plugin's, not just the providers': the manifest is what says
+    which is which. 63 directories, 15 ms, once per process (measured
+    2026-09-20) — and no import, which is the part that has to stay
+    true, because config validation calls in here.
+    """
     global _scanned
     if _scanned:
         return
@@ -413,7 +437,7 @@ def batch_client_provider(batch_provider: str) -> str:
             known = sorted(_owners["provides_batch"])
             raise ProviderNotFoundError(
                 f"Unknown batch_provider: {batch_provider} — no plugin under "
-                f"src/plugins_llm declares it via provides_batch "
+                f"src/plugins declares it via provides_batch "
                 f"(known: {', '.join(known)})")
         return batch_provider
 

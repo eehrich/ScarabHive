@@ -10,7 +10,7 @@ Components:
 - BatchJob: Represents a submitted batch job
 
 The provider-specific backends (OpenAI, Gemini, Anthropic) live in their
-LLM provider plugins under src/plugins_llm/ and are looked up through
+LLM provider plugins under src/plugins/ and are looked up through
 agent_system.llm.registry.get_batch_backend().
 """
 

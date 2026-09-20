@@ -20,13 +20,13 @@ from .capabilities import (
 __all__ = [
     "ChatMessage",
     "LLMClient",
-    # TTS (service definition; clients live in plugins_llm via provides_tts)
+    # TTS (service definition; clients live in plugins via provides_tts)
     "TTSClient",
     "TTSResult",
     "TTSVoice",
     "TTSSpeaker",
     "create_tts_from_profile",
-    # Decisions (profile lookup; clients live in plugins_llm via provides_decisions)
+    # Decisions (profile lookup; clients live in plugins via provides_decisions)
     "create_decisions_from_profile",
     # Capabilities
     "ModelCapability",

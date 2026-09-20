@@ -491,7 +491,7 @@ llm_system:
   # =============================================================================
   # Named questions in, a typed answer with a probability out. No messages, no
   # prose, no tools -- and no entry in llm_pricing.yaml: the answer reports its
-  # own cost. Client: src/plugins_llm/llm_decisions (provides_decisions).
+  # own cost. Client: src/plugins/llm_decisions (provides_decisions).
 
   decision_models:
     jev:

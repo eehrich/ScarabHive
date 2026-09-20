@@ -220,7 +220,7 @@ class TestTheRealDispatchers:
     @pytest.mark.asyncio
     async def test_a_decisions_call_arrives_through_its_own_client(self, hooks):
         """End to end: the client's notification, the registry, this hook."""
-        from plugins_llm.llm_decisions import openrouter
+        from plugins.llm_decisions import openrouter
 
         await self._with_hook_registered(hooks, lambda: openrouter._notify_response(
             model="~typesafe/jev-latest", url=openrouter.DECISIONS_URL,

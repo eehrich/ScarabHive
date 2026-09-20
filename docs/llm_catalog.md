@@ -221,7 +221,7 @@ deshalb.
 ## `openrouter_sdk`: dieselbe Route über das offizielle SDK
 
 Seit 2026-09-01 gibt es einen zweiten Weg zum selben `/responses`-Endpunkt:
-`provider: openrouter_sdk` (Plugin `plugins_llm/llm_openrouter`) schickt den
+`provider: openrouter_sdk` (Plugin `plugins/llm_openrouter`) schickt den
 Request über OpenRouters offizielles Python-SDK. Er ist ein **A/B-Kandidat**,
 kein Ersatz: der Client erbt vom `openai_responses`-Client und tauscht nur
 `_post` — Payload-Bau, Cache-Breakpoints, Parser, Heilungsschleife und Hooks

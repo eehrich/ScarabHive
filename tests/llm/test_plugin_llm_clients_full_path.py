@@ -179,10 +179,20 @@ class TestNoPluginHandRollsTheArguments:
         """
         import ast
 
+        from llm_provider_dirs import llm_provider_dirs
+
         root = Path(__file__).parents[2] / "src" / "plugins"
         assert root.is_dir(), "src/plugins moved — this check would be vacuous"
 
-        modules = [p for p in root.rglob("*.py") if "tests" not in p.parts]
+        # The provider plugins are exempt: building a client IS their job,
+        # and create_llm_from_profile would be a cycle through them.
+        # llm_ollama reaches the openai FACTORY through get_provider on
+        # purpose — its own comment says why. They were out of scope only
+        # because they sat in a root of their own until 2026-09-20.
+        providers = {d.name for d in llm_provider_dirs(root)}
+        modules = [p for p in root.rglob("*.py")
+                   if "tests" not in p.parts
+                   and p.relative_to(root).parts[0] not in providers]
         assert len(modules) > 100, (
             f"only {len(modules)} plugin modules found — the scan lost its "
             f"tree and would pass on anything")

@@ -152,7 +152,7 @@ def _third_party_imports(plugin_dir: Path) -> set[str]:
                 top = mod.split(".")[0]
                 if top.lower() in stdlib:
                     continue
-                if top in ("agent_system", "plugins", "plugins_writer", "plugins_llm"):
+                if top in ("agent_system", "plugins", "plugins_writer"):
                     continue
                 found.add(top)
     return found
@@ -185,7 +185,7 @@ def test_every_import_is_declared_in_core_or_the_plugins_toml():
     assert len(core) >= 20, "core requirements did not load — test would be vacuous"
     plugins = _plugin_dirs()
     assert len(plugins) >= 65, f"only {len(plugins)} plugins found — scan went blind"
-    assert len(PLUGIN_ROOTS) >= 4, (
+    assert len(PLUGIN_ROOTS) >= 3, (
         f"aggregator reports only {PLUGIN_ROOTS} — root list did not load")
     scanned_roots = {d.parent.name for d in plugins}
     assert scanned_roots == set(PLUGIN_ROOTS), (
@@ -217,7 +217,7 @@ def test_every_import_is_declared_in_core_or_the_plugins_toml():
 
 #: Core llm/ imports that deliberately live on a PLUGIN-declared dist, each
 #: with the reason. EMPTY since 2026-08-26: GeminiTTSClient (the last SDK
-#: import, google-genai in tts.py) moved to plugins_llm/llm_gemini — core
+#: import, google-genai in tts.py) moved to plugins/llm_gemini — core
 #: llm/ is fully SDK-free. Anything new here needs a written justification.
 CORE_LLM_KNOWN_PLUGIN_DEPS: set = set()
 
@@ -247,22 +247,32 @@ def test_core_llm_imports_stay_provider_free():
         f"{sorted(CORE_LLM_KNOWN_PLUGIN_DEPS)})")
 
 
-def test_plugins_llm_modules_use_no_parent_relative_imports():
+def test_plugin_modules_use_no_parent_relative_imports():
     """Review finding (moved code class): code moved from agent_system into a
-    plugin keeps its `from ..hooks import ...` — which now resolves inside
-    plugins_llm, fails, and (in hook paths wrapped in except Exception) dies
+    plugin keeps its `from ..hooks import ...` — which now resolves inside the
+    plugin root, fails, and (in hook paths wrapped in except Exception) dies
     SILENTLY. Level-1 relative imports (same plugin package) are fine;
-    anything above must be absolute."""
-    root = REPO_ROOT / "src" / "plugins_llm"
+    anything above must be absolute.
+
+    src/plugins only. plugins_writer does the opposite on purpose: its plugins
+    reach the shared writer_core through `from ..writer_core`, and discovery
+    pre-registers that module for them — 101 such imports, measured
+    2026-09-20. The guard used to sit on the LLM providers' own root; they
+    live under src/plugins now, and the rule was never about them in
+    particular."""
+    root = REPO_ROOT / "src" / "plugins"
     offenders = []
+    scanned = 0
     for py in root.rglob("*.py"):
+        scanned += 1
         tree = ast.parse(py.read_text(encoding="utf-8-sig", errors="replace"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.level >= 2:
                 offenders.append(
                     f"{py.relative_to(root)}:{node.lineno}: "
                     f"from {'.' * node.level}{node.module or ''} import ...")
+    assert scanned >= 400, f"the scan walked only {scanned} modules — it went blind"
     assert not offenders, (
-        "parent-relative imports inside plugins_llm resolve against the "
-        "plugin package, not agent_system — make them absolute:\n  "
+        "parent-relative imports inside src/plugins resolve against the "
+        "plugins package, not agent_system — make them absolute:\n  "
         + "\n  ".join(offenders))

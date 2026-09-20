@@ -1,0 +1,407 @@
+from __future__ import annotations
+
+from typing import Optional, Any
+import asyncio
+import json
+import time as _time
+from agent_system.utils.id import short_id
+
+from agent_system.llm.message_roles import DEVELOPER, SYSTEM, USER, developer_turn, resolve_rung
+from agent_system.llm.models import ChatMessage, LLMClient
+from agent_system.llm.tls import httpx_verify
+from agent_system.config.models import ModelCapabilitiesConfig
+from plugins.llm_common import cancellation
+from . import ollama_utils
+
+
+class OllamaNativeAsyncClient(LLMClient):
+    """Async client for native Ollama REST API (/api/chat).
+
+    Supports per-request options including num_ctx.
+    """
+
+    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None, timeout: Optional[float] = None, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[ModelCapabilitiesConfig] = None) -> None:
+        import httpx  # lazy import
+        self._httpx = httpx
+        self._base = (base_url.rstrip("/")) if base_url else "http://127.0.0.1:11434"
+        self.model = model
+        self.provider = "ollama"
+        self.context_window = context_window
+        self._options = options or {}
+        self._timeout = timeout or 60.0
+        self.capabilities = capabilities  # Pydantic model or None
+
+        # Validate API type - Ollama only supports chat_completions (native API)
+        if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
+            api_type = self.capabilities.default_api_type
+            # Extract value from enum if it's an enum
+            if hasattr(api_type, 'value'):
+                api_type = api_type.value
+            else:
+                api_type = str(api_type) if api_type else 'chat_completions'
+
+            if api_type not in ('chat_completions', None):
+                raise NotImplementedError(
+                    f"Ollama client only supports 'chat_completions' API (native Ollama API). "
+                    f"Requested API type: '{api_type}'. "
+                    f"Ollama does not support OpenAI's Realtime or Assistants APIs. "
+                    f"Current model: {self.model}"
+                )
+
+        # The configured flag stays readable as-is; what httpx gets is the
+        # process-wide context for that flag (no per-client SSL setup).
+        self._verify = verify if verify is not None else True
+        self._verify_arg = httpx_verify(self._verify)
+
+    @property
+    def _developer_rung(self) -> str:
+        return resolve_rung(getattr(self.capabilities, "developer_role", None),
+                            ceiling=SYSTEM, default=SYSTEM, route="Ollama /api/chat")
+
+    def _map_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        import json
+        from agent_system.utils.json_utils import repair_json as _repair_json
+        out: list[dict[str, Any]] = []
+        for m in messages:
+            # Use model_dump() with mode='json' to properly serialize nested Pydantic models and datetime objects
+            d = m.model_dump(exclude_none=True, mode='json')
+            d.pop('injected_by', None)  # Internal hook metadata
+            d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
+            d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent
+
+            # /api/chat documents "either `system`, `user`, `assistant`, or
+            # `tool`". An unknown role is not refused here -- it is handed to
+            # the model's chat template, which typically renders a role it does
+            # not know as nothing at all, so the note would be dropped behind a
+            # 200. A system turn is the documented rung; a model entry may set
+            # `capabilities.developer_role: user` for a template that only ever
+            # renders the FIRST system message.
+            if d.get("role") == DEVELOPER:
+                role, text = developer_turn(
+                    d.get("content") if isinstance(d.get("content"), str) else "",
+                    self._developer_rung)
+                d["role"] = role
+                if role == USER:
+                    d["content"] = text
+
+            # Ollama expects tool_calls.function.arguments to be an object, not a string
+            # Convert string arguments to dict if needed
+            if "tool_calls" in d and d["tool_calls"]:
+                for tc in d["tool_calls"]:
+                    if "function" in tc and "arguments" in tc["function"]:
+                        args = tc["function"]["arguments"]
+                        if isinstance(args, str):
+                            try:
+                                # Parse JSON string to dict
+                                tc["function"]["arguments"] = json.loads(args)
+                            except (json.JSONDecodeError, TypeError):
+                                # Attempt repair — local LLMs are most prone to malformed JSON
+                                repaired = _repair_json(args)
+                                if repaired is not None and isinstance(repaired, dict):
+                                    tc["function"]["arguments"] = repaired
+                                else:
+                                    tc["function"]["arguments"] = {}
+
+            # Normalize for Ollama format (extract images to separate field)
+            d = ollama_utils.normalize_message(d)
+            out.append(d)
+        return out
+
+    async def _map_messages_async(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        """Async wrapper for message mapping to avoid blocking event loop."""
+        return await asyncio.to_thread(self._map_messages, messages)
+
+    async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
+        url = f"{self._base}/api/chat"
+        mapped_messages = await self._map_messages_async(messages)
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": mapped_messages,
+            "stream": False,
+        }
+        if self._options:
+            body["options"] = self._options
+
+        if cancellation_token and cancellation_token.is_cancelled:
+            raise asyncio.CancelledError("Request cancelled by user")
+
+        async with self._httpx.AsyncClient(timeout=self._timeout, verify=self._verify_arg) as client:
+            if cancellation_token:
+                http_task = asyncio.create_task(client.post(url, json=body))
+                resp = await cancellation.await_call(http_task, cancellation_token)
+            else:
+                resp = await client.post(url, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+        msg = (data or {}).get("message") or {}
+        return msg.get("content") or ""
+
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None) -> dict:
+        url = f"{self._base}/api/chat"
+        mapped_messages = await self._map_messages_async(messages)
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": mapped_messages,
+            "stream": False,
+        }
+        if tools:
+            body["tools"] = tools
+        if self._options:
+            body["options"] = self._options
+
+        if cancellation_token and cancellation_token.is_cancelled:
+            raise asyncio.CancelledError("Request cancelled by user")
+
+        async with self._httpx.AsyncClient(timeout=self._timeout, verify=self._verify_arg) as client:
+            if cancellation_token:
+                http_task = asyncio.create_task(client.post(url, json=body))
+                resp = await cancellation.await_call(http_task, cancellation_token)
+            else:
+                resp = await client.post(url, json=body)
+
+            resp.raise_for_status()
+            data = resp.json()
+        message = (data or {}).get("message") or {}
+        out: dict[str, Any] = {"role": "assistant", "content": message.get("content")}
+        tcs = message.get("tool_calls") or []
+        if tcs:
+            out_calls = []
+            for tc in tcs:
+                func = tc.get("function", {})
+                tc_id = tc.get("id") or f"call_{short_id()}"
+                out_calls.append({
+                    "id": tc_id,
+                    "function": {
+                        "name": func.get("name"),
+                        "arguments": func.get("arguments"),
+                    },
+                })
+            out["tool_calls"] = out_calls
+
+        # Build result with usage information
+        result = {"assistant": out}
+
+        # Extract usage metadata if available (Ollama format)
+        # Ollama provides: eval_count (completion tokens), prompt_eval_count (prompt tokens)
+        if "eval_count" in data or "prompt_eval_count" in data:
+            usage = {}
+            if "prompt_eval_count" in data:
+                usage["prompt_tokens"] = data["prompt_eval_count"]
+            if "eval_count" in data:
+                usage["completion_tokens"] = data["eval_count"]
+            if "prompt_eval_count" in data and "eval_count" in data:
+                usage["total_tokens"] = data["prompt_eval_count"] + data["eval_count"]
+            result["usage"] = usage
+        # "length": the answer was cut at num_predict -- the loop's truncation guard reads it
+        if data.get("done_reason"):
+            result["finish_reason"] = data["done_reason"]
+
+        return result
+
+    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None):
+        """Stream LLM responses from Ollama using native streaming API.
+
+        Ollama's /api/chat endpoint supports streaming with `stream: true`.
+        Each line is a JSON object with message deltas.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Status reporting helper
+        async def report_status(message: str) -> None:
+            if status_scope is None:
+                return
+            try:
+                await status_scope.progress(message)
+            except Exception as e:
+                logger.debug(f"Failed to report LLM status: {e}")
+        
+        url = f"{self._base}/api/chat"
+        mapped_messages = await self._map_messages_async(messages)
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": mapped_messages,
+            "stream": True,  # Enable streaming
+        }
+        if tools:
+            body["tools"] = tools
+        if self._options:
+            body["options"] = self._options
+
+        if cancellation_token and cancellation_token.is_cancelled:
+            raise asyncio.CancelledError("Request cancelled by user")
+
+        # Retry logic for stream interruptions
+        max_retries = 3
+        retry_backoff = 1.0
+
+        _request_start = _time.time()
+        await self._notify_pre_request({
+            "provider": "ollama", "model": self.model,
+            "url": url, "is_streaming": True,
+            "timestamp_ms": _request_start * 1000,
+        })
+
+        for attempt in range(max_retries + 1):
+            if cancellation_token and cancellation_token.is_cancelled:
+                raise asyncio.CancelledError("Request cancelled by user")
+
+            # Initialize/reset accumulated state for each attempt
+            accumulated_content = []
+            accumulated_tool_calls = {}
+            accumulated_usage = None  # usage information from final chunk (done=true)
+            done_reason = None  # ...and why the answer ended ("length": cut at num_predict)
+
+            try:
+                async with self._httpx.AsyncClient(timeout=self._timeout, verify=self._verify_arg) as client:
+                    async with client.stream("POST", url, json=body) as response:
+                        # Handle server errors (5xx) - retry with exponential backoff
+                        if response.status_code >= 500 and attempt < max_retries:
+                            backoff_time = retry_backoff * (2 ** attempt)
+                            await report_status(f"Server error ({response.status_code}), retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
+                            logger.warning(f"Ollama server error {response.status_code}, retrying in {backoff_time}s")
+                            await self._notify_retry("ollama", self.model, url, True, f"Server error ({response.status_code})", attempt, max_retries + 1)
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
+                            continue
+                        
+                        response.raise_for_status()
+
+                        # Use timeout from config for chunk-level timeout
+                        chunk_timeout = self._timeout
+                        line_iter = response.aiter_lines().__aiter__()
+                        
+                        while True:
+                            if cancellation_token and cancellation_token.is_cancelled:
+                                raise asyncio.CancelledError("Request cancelled by user")
+                            
+                            try:
+                                line = await asyncio.wait_for(line_iter.__anext__(), timeout=chunk_timeout)
+                            except StopAsyncIteration:
+                                break  # Stream completed
+                            except asyncio.TimeoutError:
+                                await report_status(f"Stream timeout after {chunk_timeout}s: {self.model}")
+                                logger.warning(f"Ollama stream chunk timeout after {chunk_timeout}s")
+                                raise Exception(f"Stream stalled - no data for {chunk_timeout}s")
+
+                            if not line.strip():
+                                continue
+
+                            try:
+                                chunk_data = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+
+                            # Check if stream is done - final chunk may contain usage info
+                            if chunk_data.get("done"):
+                                done_reason = chunk_data.get("done_reason")
+                                # Extract usage metadata if available (prompt_eval_count, eval_count, etc.)
+                                # Ollama provides: eval_count (completion tokens), prompt_eval_count (prompt tokens)
+                                if "eval_count" in chunk_data or "prompt_eval_count" in chunk_data:
+                                    accumulated_usage = {}
+                                    if "prompt_eval_count" in chunk_data:
+                                        accumulated_usage["prompt_tokens"] = chunk_data["prompt_eval_count"]
+                                    if "eval_count" in chunk_data:
+                                        accumulated_usage["completion_tokens"] = chunk_data["eval_count"]
+                                    if "prompt_eval_count" in chunk_data and "eval_count" in chunk_data:
+                                        accumulated_usage["total_tokens"] = chunk_data["prompt_eval_count"] + chunk_data["eval_count"]
+                                break
+
+                            message = chunk_data.get("message", {})
+
+                            # Handle content delta
+                            content = message.get("content")
+                            if content:
+                                accumulated_content.append(content)
+                                yield {
+                                    "type": "content_delta",
+                                    "delta": content,
+                                    "accumulated": "".join(accumulated_content)
+                                }
+
+                            # Handle tool call deltas
+                            tool_calls = message.get("tool_calls")
+                            if tool_calls:
+                                for tc in tool_calls:
+                                    # Ollama sends complete tool calls, not deltas
+                                    # Extract index if available, otherwise use name as key
+                                    func = tc.get("function", {})
+                                    tc_id = tc.get("id") or f"call_{short_id()}"
+                                    name = func.get("name", "")
+                                    index = len(accumulated_tool_calls)  # Assign next index
+
+                                    if index not in accumulated_tool_calls:
+                                        accumulated_tool_calls[index] = {
+                                            "id": tc_id,
+                                            "type": "function",
+                                            "function": {"name": name, "arguments": func.get("arguments", {})}
+                                        }
+
+                                    # Inside the for loop: one delta PER tool
+                                    # call -- outside it, only the last of a
+                                    # multi-call chunk was ever emitted.
+                                    yield {
+                                        "type": "tool_call_delta",
+                                        "index": index,
+                                        "delta": tc,
+                                        "accumulated": accumulated_tool_calls[index]
+                                    }
+
+                # Build final assistant message (after async with block)
+                assistant = {
+                    "role": "assistant",
+                    "content": "".join(accumulated_content) if accumulated_content else None
+                }
+
+                if accumulated_tool_calls:
+                    tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
+                    assistant["tool_calls"] = tool_calls_list
+
+                # Build final result with usage
+                final_result = {"assistant": assistant}
+                if accumulated_usage:
+                    final_result["usage"] = accumulated_usage
+                if done_reason:
+                    final_result["finish_reason"] = done_reason
+
+                # Notify post-response hook
+                _duration_ms = (_time.time() - _request_start) * 1000
+                await self._notify_post_response({
+                    "provider": "ollama", "model": self.model,
+                    "url": url, "is_streaming": True,
+                    "duration_ms": _duration_ms,
+                    "usage": accumulated_usage,
+                    "timestamp_ms": _time.time() * 1000,
+                })
+
+                yield {"type": "final", **final_result}
+                return  # Success - exit retry loop
+
+            except (self._httpx.RemoteProtocolError, self._httpx.NetworkError, self._httpx.ConnectError) as e:
+                if attempt < max_retries:
+                    backoff_time = retry_backoff * (2 ** attempt)
+                    await report_status(f"Stream interrupted, retry {attempt + 1}/{max_retries} in {backoff_time:.0f}s: {self.model}")
+                    logger.warning(f"Ollama stream interrupted (attempt {attempt + 1}/{max_retries + 1}), retrying in {backoff_time}s: {e}")
+                    await self._notify_retry("ollama", self.model, url, True, f"Stream interrupted: {e}", attempt, max_retries + 1)
+                    await self._cancellable_sleep(backoff_time, cancellation_token)
+                    continue
+                else:
+                    await report_status(f"Stream failed after {max_retries + 1} attempts: {self.model}")
+                    logger.error(f"Ollama streaming failed after {max_retries + 1} attempts: {e}")
+                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {
+                        "error": True, "type": "ollama_api_error",
+                        "message": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
+                    return
+
+            except Exception as e:
+                await report_status(f"Request failed: {self.model}")
+                logger.exception("Ollama streaming failed: %s", e)
+                yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {
+                    "error": True, "type": "ollama_api_error", "message": str(e)}}}
+                return
+
+    def supports_streaming(self) -> bool:
+        """Check if this client supports streaming based on model capabilities."""
+        # Check if capabilities explicitly disable streaming
+        if self.capabilities and hasattr(self.capabilities, 'streaming'):
+            return self.capabilities.streaming
+        return True  # Default to True if capabilities not set

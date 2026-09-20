@@ -169,7 +169,7 @@ class TestTheKeyTheRequestReallyCarries:
     @staticmethod
     async def _httpx_payload(messages, *, streaming=False):
         from unittest.mock import patch
-        from plugins_llm.llm_openai_compat.httpx_client import HTTPXOpenAIClient
+        from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient
 
         seen = {}
 
@@ -235,7 +235,7 @@ class TestTheKeyTheRequestReallyCarries:
     @staticmethod
     def _responses_payload(messages):
         from unittest.mock import patch
-        from plugins_llm.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
+        from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
 
         with patch("httpx.AsyncClient"):
             client = OpenAIResponsesClient(api_key="k", model="openai/gpt-5.1",

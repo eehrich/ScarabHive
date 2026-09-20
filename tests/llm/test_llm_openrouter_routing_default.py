@@ -14,7 +14,7 @@ Drei Dinge muessen halten, und jedes davon ist schon einmal schiefgegangen:
 * Er darf NUR an OpenRouter gehen. ``provider`` ist ein OpenRouter-Body-Feld;
   an einem fremden Endpunkt waere es ein unbekannter Key im Request.
 * Massgeblich ist die WIRKSAME base_url. Die openai_responses-Factory
-  (plugins_llm/llm_openai_compat) setzt mangels base_url OpenRouter ein —
+  (plugins/llm_openai_compat) setzt mangels base_url OpenRouter ein —
   ein solcher Eintrag redet mit OpenRouter, obwohl im Config-Feld nichts
   steht.
 """

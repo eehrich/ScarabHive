@@ -1,7 +1,7 @@
 """The LLM provider registry: manifest scan, lazy loading, and closure.
 
 The registry replaced the make_llm if-chain (2026-08). Its contract:
-`plugins_llm/*/plugin.toml` declares which provider names a plugin serves
+`plugins/*/plugin.toml` declares which provider names a plugin serves
 (`provides` for chat, plus `provides_batch` / `provides_tts` /
 `provides_decisions` — `registry.SEAMS` is the full list, and these tests read
 it rather than keeping a copy), and the first build for a name imports exactly
@@ -60,7 +60,58 @@ class TestManifestScan:
         missing = used - known - {"batch"}
         assert not missing, (
             f"providers configured in the shipped config but served by no "
-            f"plugin under src/plugins_llm: {sorted(missing)}")
+            f"plugin under src/plugins: {sorted(missing)}")
+
+    def test_the_root_lookup_survives_the_module_discovery_hand_builds(
+            self, tmp_path):
+        """The providers share `plugins` with the tool servers since
+        2026-09-20, and that package has a second registrar.
+
+        plugins/discovery.py puts a hand-built types.ModuleType into
+        sys.modules whenever nothing has imported the package yet. Such a
+        module carries __spec__ = None, and importlib.util.find_spec on a
+        module already in sys.modules reads exactly that attribute and raises
+        ValueError instead of searching — measured, below, through discovery
+        itself. Until the move the registry asked for a package name discovery
+        never touches, so the collision could not happen.
+
+        An empty directory named `plugins` is enough: what is being measured
+        is which directory the lookup reports, not what is in it.
+        """
+        import importlib.util
+
+        from agent_system.plugins.discovery import discover_plugins
+
+        fake_root = tmp_path / registry.PLUGIN_PACKAGE
+        fake_root.mkdir()
+
+        # Hand-rolled, not monkeypatch.delitem: with raising=False and no
+        # entry to record, its undo leaves whatever the test ADDED behind —
+        # and what this test adds is a stand-in for `plugins` that every
+        # later test in the process would then import from.
+        outside = object()
+        saved = sys.modules.pop(registry.PLUGIN_PACKAGE, outside)
+        try:
+            discover_plugins(fake_root)
+            registered = sys.modules[registry.PLUGIN_PACKAGE]
+            assert registered.__spec__ is None, (
+                "discovery now registers a module WITH a spec — this test no "
+                "longer reproduces the collision it was written for")
+            with pytest.raises(ValueError):
+                importlib.util.find_spec(registry.PLUGIN_PACKAGE)
+
+            assert registry._plugins_root() == fake_root
+        finally:
+            sys.modules.pop(registry.PLUGIN_PACKAGE, None)
+            if saved is not outside:
+                sys.modules[registry.PLUGIN_PACKAGE] = saved
+
+    def test_the_root_lookup_finds_the_real_package(self):
+        """The other half: with the package properly imported, the lookup
+        lands on src/plugins — the directory the manifests are read from."""
+        import plugins  # noqa: F401  — the real package, not a stand-in
+
+        assert registry._plugins_root() == REPO_ROOT / "src" / "plugins"
 
     def test_config_validation_rejects_an_unknown_provider(self):
         """The Literal used to catch typos at config load; now the
@@ -120,7 +171,7 @@ class TestManifestScan:
         for key, (attr, _label) in registry.SEAMS.items():
             for name, dir_name in sorted(registry._owners[key].items()):
                 checked += 1
-                module = importlib.import_module(f"plugins_llm.{dir_name}.provider")
+                module = importlib.import_module(f"plugins.{dir_name}.provider")
                 assert name in (getattr(module, attr, None) or {}), (
                     f"{dir_name}/plugin.toml declares {key} '{name}' but "
                     f"{attr} does not export it")
@@ -140,7 +191,7 @@ class TestManifestScan:
             owners = registry._owners[key]
             for dir_name in sorted(set(owners.values())):
                 checked += 1
-                module = importlib.import_module(f"plugins_llm.{dir_name}.provider")
+                module = importlib.import_module(f"plugins.{dir_name}.provider")
                 declared = {n for n, d in owners.items() if d == dir_name}
                 exported = set(getattr(module, attr, None) or {})
                 assert exported <= declared, (
@@ -151,7 +202,7 @@ class TestManifestScan:
 
     @staticmethod
     def _manifests():
-        """Every plugins_llm manifest as (dir name, [plugin] table).
+        """Every plugins manifest as (dir name, [plugin] table).
 
         Read here instead of taken from the registry's scan: the scan keeps
         only what it claims, and both tests below are about what a manifest

@@ -14,11 +14,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent_system.llm.models import ChatMessage
-from plugins_llm.llm_common import openai_utils
-from plugins_llm.llm_ollama.ollama_client import OllamaNativeAsyncClient
-from plugins_llm.llm_openai.openai_client import OpenAIAsyncClient
-from plugins_llm.llm_openai_compat.httpx_client import HTTPXOpenAIClient
-from plugins_llm.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
+from plugins.llm_common import openai_utils
+from plugins.llm_ollama.ollama_client import OllamaNativeAsyncClient
+from plugins.llm_openai.openai_client import OpenAIAsyncClient
+from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient
+from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
 
 TURN = [ChatMessage(role="user", content="hi"),
         ChatMessage(role="assistant", content="ok", served_by="Google AI Studio"),

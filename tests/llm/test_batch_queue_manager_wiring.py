@@ -90,9 +90,9 @@ class TestTheTrackerKeyComesFromRegistration:
         assert client._tracker_key() == "openai_httpx"
 
     @pytest.mark.parametrize("module,cls", [
-        ("plugins_llm.llm_openai_compat.openai_batch", "OpenAIBatchClient"),
-        ("plugins_llm.llm_gemini.gemini_batch", "GeminiBatchClient"),
-        ("plugins_llm.llm_anthropic.anthropic_batch", "AnthropicBatchClient"),
+        ("plugins.llm_openai_compat.openai_batch", "OpenAIBatchClient"),
+        ("plugins.llm_gemini.gemini_batch", "GeminiBatchClient"),
+        ("plugins.llm_anthropic.anthropic_batch", "AnthropicBatchClient"),
     ])
     def test_no_batch_client_hardcodes_a_tracker_key(self, module, cls):
         """Read the source: a literal provider name in the cancellation path

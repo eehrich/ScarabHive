@@ -36,7 +36,7 @@ A plugin in AgentSystem is a **tool server**: a Python object with a `call(tool,
 
 ### How Plugins Work
 
-1. **Discovery**: AgentSystem finds plugins in the `plugins.plugin_dirs` of `config/plugins.yaml` (`src/plugins`, `src/plugins_writer`, `src/plugins_trading`) and in installed packages via the `agent_system.tool_plugins` entry point group. LLM providers under `src/plugins_llm/` are found separately by the LLM registry.
+1. **Discovery**: AgentSystem finds plugins in the `plugins.plugin_dirs` of `config/plugins.yaml` (`src/plugins`, `src/plugins_writer`, `src/plugins_trading`) and in installed packages via the `agent_system.tool_plugins` entry point group. LLM providers sit in the same directory but are found separately, by the LLM registry, which reads the manifests rather than the folder name.
 2. **Schema**: Each plugin describes its tools in `schema.yaml` (what parameters, what they do)
 3. **Activation**: A server entry under `plugins: servers:` with `type: <plugin folder name>` and `enabled: true` (the default is `false`) builds an instance; an agent sees its tools only if its `agent_config.tools.allowed` admits them
 4. **Execution**: The agent calls tools via `call(tool_name, parameters)`
@@ -274,8 +274,7 @@ src/plugins/<plugin_name>/tests/
 **Example test file:** `src/plugins/hello_world/tests/test_plugin_hello_world_basic.py`
 
 `pytest.ini` collects these via the `src/plugins/*/tests`,
-`src/plugins_writer/*/tests`, `src/plugins_trading/*/tests` and
-`src/plugins_llm/*/tests` testpaths. The shared fixtures (`mock_system_config`,
+`src/plugins_writer/*/tests` and `src/plugins_trading/*/tests` testpaths. The shared fixtures (`mock_system_config`,
 `reset_global_state`, the fake-LLM patch, …) live in the **root-level
 `conftest.py`**, so colocated tests inherit them exactly like tests under `tests/`.
 
@@ -344,8 +343,9 @@ The `type` list describes a plugin's capabilities; combine values for hybrids.
 The runtime does **not** read it to decide what a plugin can do: tools come from
 `tools:` in `schema.yaml`, hooks from `hooks:` in `schema.yaml`, web routes from a
 `get_web_router()` method. `type` is checked by `src/scripts/validate_plugin.py` —
-and by the LLM registry, which skips every plugin under `src/plugins_llm/` without
-`llm-provider`. Set it correctly anyway.
+and by the LLM registry, which skips every plugin whose `type` does not
+contain `llm-provider` — that list is what tells its providers apart from
+the tool servers beside them. Set it correctly anyway.
 
 ```toml
 # Tool-only plugin (provides tool server/tools)
@@ -381,7 +381,7 @@ Other single-capability examples: `type = ["web"]` (web UI/endpoints only),
 - `library`: Config only — agents, skills, prompts, no code. Such a plugin has
   **no `entrypoint` and no `plugin.py`** (`coder`, `amiga`, `research`,
   `writer_publish`)
-- `llm-provider`: An LLM/TTS/batch/decisions backend under `src/plugins_llm/`.
+- `llm-provider`: An LLM/TTS/batch/decisions backend under `src/plugins/`.
   Found by `agent_system.llm.registry` through its `provides` /
   `provides_batch` / `provides_tts` / `provides_decisions` manifest keys and
   its `provider.py`, which exports the matching dict (`PROVIDERS`,
@@ -465,7 +465,7 @@ Plugin-owned requirements do **not** live in the root `pyproject.toml`. Instead:
 2. `scripts/aggregate_plugin_deps.py` merges `requirements/core.txt` (framework
    deps shared by many plugins) with every plugin's `dependencies` into
    `requirements/all.txt`. Scanned roots: `src/plugins`, `src/plugins_writer`,
-   `src/plugins_trading` and `src/plugins_llm` (LLM provider plugins).
+   `src/plugins_trading` and `src/plugins` (LLM provider plugins).
 3. The root `pyproject.toml` reads `requirements/all.txt` via
    `[tool.setuptools.dynamic]`, so `pip install .` installs the full set.
 
@@ -1644,7 +1644,7 @@ enforces this — reviews do.
 
 **Scope:** plugins whose tools a model calls. A package that exposes no tools
 to a model — `type = ["llm-provider"]` (the LLM clients under
-`src/plugins_llm/`) or `type = ["library"]` — has no model-facing surface to
+`src/plugins/`) or `type = ["library"]` — has no model-facing surface to
 describe, and these three sections do not apply to it. Its README still owes
 the ordinary things: what it provides, how to configure it, and the gotchas.
 

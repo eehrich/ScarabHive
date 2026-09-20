@@ -36,7 +36,7 @@ The Plugin System provides extensibility through:
 - **Web plugins** - FastAPI routers / panels
 - **Hybrid plugins** - Any combination of tools, hooks and web
 - **Agent plugins and config-based agents** - Agent classes and YAML-defined agents
-- **LLM provider plugins** - LLM clients (`src/plugins_llm/`)
+- **LLM provider plugins** - LLM clients (`src/plugins/`)
 
 ### 1.2 Scope
 
@@ -96,7 +96,7 @@ At runtime, capabilities are detected from the instance and its `schema.yaml`, n
 
 Special cases:
 - **library** (config-only): only `agents/*.yaml`, prompts, skills; no entrypoint module, not a discoverable type.
-- **llm-provider:** `src/plugins_llm/<dir>/provider.py` exporting `PROVIDERS`, loaded by `llm/registry.py`, which requires `type` to contain `llm-provider` and the provider name to be declared in `provides`.
+- **llm-provider:** `src/plugins/<dir>/provider.py` exporting `PROVIDERS`, loaded by `llm/registry.py`, which requires `type` to contain `llm-provider` and the provider name to be declared in `provides`.
 - **Agent plugins:** an `Agent` / `SchemaBasedAgent` subclass exported via `PLUGIN_FACTORY = make_agent_plugin_factory(MyAgent)` (`plugins/factory_utils.py`).
 
 ### 3.1 Tool Plugins (SchemaBasedToolServer)

@@ -84,7 +84,7 @@ class TestRegistryDispatch:
             registry.get_tts_provider("unknown_provider")
 
     def test_profile_builds_the_real_gemini_client(self):
-        from plugins_llm.llm_gemini.gemini_tts_client import GeminiTTSClient
+        from plugins.llm_gemini.gemini_tts_client import GeminiTTSClient
         config = TestCreateTTSFromProfile._make_config(None)
         client = create_tts_from_profile(config, "gemini-tts")
         assert isinstance(client, GeminiTTSClient)
@@ -94,7 +94,7 @@ class TestRegistryDispatch:
     def test_openai_speech_provider_builds_the_httpx_client(self):
         from agent_system.config.models import TTSModelConfig
         from agent_system.llm import registry
-        from plugins_llm.llm_openai_compat.openai_speech_client import (
+        from plugins.llm_openai_compat.openai_speech_client import (
             OpenAISpeechTTSClient,
         )
         client = registry.build_tts_client(TTSModelConfig(

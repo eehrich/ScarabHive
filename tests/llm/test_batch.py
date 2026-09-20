@@ -24,9 +24,9 @@ from agent_system.llm.batch.models import (
     BatchStatus,
 )
 from agent_system.llm.batch.queue_manager import BatchQueueManager
-from plugins_llm.llm_openai_compat.openai_batch import OpenAIBatchClient
-from plugins_llm.llm_gemini.gemini_batch import GeminiBatchClient
-from plugins_llm.llm_common.schema_sanitize import sanitize_schema_for_gemini
+from plugins.llm_openai_compat.openai_batch import OpenAIBatchClient
+from plugins.llm_gemini.gemini_batch import GeminiBatchClient
+from plugins.llm_common.schema_sanitize import sanitize_schema_for_gemini
 
 # Filter out deprecation warnings from test setup
 warnings.filterwarnings("ignore", category=DeprecationWarning)

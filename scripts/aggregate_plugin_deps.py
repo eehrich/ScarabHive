@@ -29,7 +29,6 @@ PLUGIN_DIRS = [
     ROOT / "src" / "plugins",
     ROOT / "src" / "plugins_writer",
     ROOT / "src" / "plugins_trading",
-    ROOT / "src" / "plugins_llm",
 ]
 CORE_FILE = ROOT / "requirements" / "core.txt"
 OUT_FILE = ROOT / "requirements" / "all.txt"

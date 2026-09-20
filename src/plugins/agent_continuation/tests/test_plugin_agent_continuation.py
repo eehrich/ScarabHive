@@ -1598,7 +1598,7 @@ class TestFollowups:
 
 class _FakeAnswer:
     """What the caller reads off an answer. The real shape (Answer /
-    DecisionsResult) is pinned by src/plugins_llm/llm_decisions/tests; here
+    DecisionsResult) is pinned by src/plugins/llm_decisions/tests; here
     only the two members this hook touches are needed."""
 
     def __init__(self, value):
@@ -1630,7 +1630,7 @@ class _FakeClient:
         # that same static check here is what turns the assertions below from
         # "the hook built the dict the test watched it build" into "the hook
         # built a dict the endpoint accepts".
-        from plugins_llm.llm_decisions.openrouter import DecisionsClient
+        from plugins.llm_decisions.openrouter import DecisionsClient
         DecisionsClient.check_questions(questions)
         self.calls.append({"state": state, "questions": questions,
                            "session_id": session_id})

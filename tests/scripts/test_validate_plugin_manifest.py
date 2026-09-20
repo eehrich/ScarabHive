@@ -128,8 +128,8 @@ class TestTheShapesTheRuntimeSupports:
 
         Two things drifted apart here before: WHICH file marks a plugin
         (``plugin.toml`` won, the collector still asked for ``plugin.yaml``),
-        and WHICH roots are searched (``--all`` named two of four, so
-        plugins_trading and plugins_llm were unreachable).
+        and WHICH roots are searched (``--all`` named two of the roots
+        that existed, so plugins_trading was unreachable).
         """
         found = {p.resolve() for p in find_plugin_directories(plugin_roots(REPO))}
         # The other side is derived from the FILESYSTEM, never from

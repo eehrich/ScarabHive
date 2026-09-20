@@ -53,7 +53,7 @@ class TestRegistryDispatch:
         """The whole seam end to end, and the half that silently rots: a
         factory that drops request_timeout or max_retries builds a client
         that works -- with someone else's numbers."""
-        from plugins_llm.llm_decisions.openrouter import DecisionsClient
+        from plugins.llm_decisions.openrouter import DecisionsClient
         config = _config(jev=DecisionModelConfig(
             provider="openrouter_decisions", model="typesafe/jev-1.13",
             api_key="sk-test", request_timeout=7, max_retries=5))
@@ -79,7 +79,7 @@ class TestRegistryDispatch:
         assert client.url == "https://proxy.internal/decisions"
 
     def test_no_url_means_the_providers_own_endpoint(self):
-        from plugins_llm.llm_decisions.openrouter import DECISIONS_URL
+        from plugins.llm_decisions.openrouter import DECISIONS_URL
         config = _config(jev=DecisionModelConfig(
             provider="openrouter_decisions", model="jev", api_key="sk-test"))
 

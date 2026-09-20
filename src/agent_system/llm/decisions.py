@@ -2,12 +2,12 @@
 
 A decision model answers NAMED QUESTIONS about a piece of content with a typed
 value and a probability: no message list, no prose, no tool calls. The clients
-live in plugins under ``src/plugins_llm/`` and declare ``provides_decisions``
+live in plugins under ``src/plugins/`` and declare ``provides_decisions``
 in their manifest; dispatch goes through ``registry.build_decisions_client``,
 the same seam the TTS clients use.
 
 Only the profile lookup lives here. What a client can do is the plugin's
-business — ``plugins_llm.llm_decisions`` documents the question types and the
+business — ``plugins.llm_decisions`` documents the question types and the
 answer shape.
 """
 from __future__ import annotations

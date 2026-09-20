@@ -131,7 +131,7 @@ left out of the prompt. Example `coder`; guard test
 `src/plugins/amiga/tests/test_amiga_config.py` (loads settings, checks allowlist
 patterns and skills, actually renders the prompt).
 
-## LLM providers (`src/plugins_llm/`)
+## LLM providers (`src/plugins/`)
 
 ```toml
 [plugin]

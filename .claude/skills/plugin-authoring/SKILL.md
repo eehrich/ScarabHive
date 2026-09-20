@@ -28,7 +28,7 @@ is silently not registered). Set it correctly anyway.
 | a panel / endpoints | `web` | `get_web_router` | skill `panel-authoring` |
 | an agent without Python | `library` | just `agents/*.yaml` + `prompts/` + `skills/` | [agents.md](references/agents.md) |
 | an agent with its own code | `tool-server` | `SchemaBasedAgent` + `make_agent_plugin_factory` | [agents.md](references/agents.md) |
-| an LLM provider | `llm-provider` (only `src/plugins_llm/`) | `provider.py` exporting `PROVIDERS` | [agents.md](references/agents.md) §LLM |
+| an LLM provider | `llm-provider`, and no `plugin.py` | `provider.py` exporting `PROVIDERS` | [agents.md](references/agents.md) §LLM |
 
 **Check whether it already exists first** — about fifty plugins live in
 `src/plugins/`. A second server entry with different config (`type: file_ops`)

@@ -2,7 +2,7 @@
 Text-to-Speech (TTS) client abstraction layer — service definition only.
 
 Provides the provider-agnostic interface for TTS generation. Concrete
-clients live in TTS provider plugins under src/plugins_llm/ (their
+clients live in TTS provider plugins under src/plugins/ (their
 manifests declare `provides_tts`; dispatch goes through
 agent_system.llm.registry, same seam as the LLM providers).
 

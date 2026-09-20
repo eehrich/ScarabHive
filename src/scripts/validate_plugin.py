@@ -53,10 +53,11 @@ logger = logging.getLogger(__name__)
 #: passed on an empty list.
 MANIFEST_NAME = "plugin.toml"
 
-#: Every root that actually holds plugins. Measured 2026-09-06: 52 + 12 + 2 + 7
+#: Every root that actually holds plugins. Measured 2026-09-20: 62 + 12 + 2
 #: manifests. ``--all`` and ``--plugin`` used to name only the first two, so
-#: plugins_trading and plugins_llm were unreachable by either.
-PLUGIN_ROOTS = ("plugins", "plugins_writer", "plugins_trading", "plugins_llm")
+#: plugins_trading was unreachable by either; the LLM providers had their own
+#: root as well until they moved into ``plugins``.
+PLUGIN_ROOTS = ("plugins", "plugins_writer", "plugins_trading")
 
 
 def has_manifest(path: Path) -> bool:

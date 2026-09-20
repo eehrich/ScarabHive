@@ -42,7 +42,7 @@ in a loop. The one exception is a user cancel — `CancelledError` is a
 ## `decision`: ask one question, get a probability
 
 A decision model (`llm_system.decision_models`, see
-`src/plugins_llm/llm_decisions`) does not write prose. It takes the answer plus
+`src/plugins/llm_decisions`) does not write prose. It takes the answer plus
 one named question and returns how likely it is that the answer is *final* —
 which is exactly the judgement this hook needs, and the reason it is worth a
 second kind of model here.

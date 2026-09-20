@@ -136,7 +136,7 @@ class LLMModelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # A free string, NOT a Literal: the provider plugins under
-    # src/plugins_llm/ are the source of truth (their plugin.toml `provides`
+    # src/plugins/ are the source of truth (their plugin.toml `provides`
     # lists). Typos still fail at config load — see
     # LLMSystemConfig._providers_must_exist_as_plugins. "batch" is the one
     # pseudo-provider: the resolver maps it to the real provider via
@@ -204,7 +204,7 @@ class TTSModelConfig(BaseModel):
     generation parameters.
     """
     # Free string like LLMModelConfig.provider: the plugins under
-    # src/plugins_llm/ own the vocabulary via `provides_tts` in their
+    # src/plugins/ own the vocabulary via `provides_tts` in their
     # manifests; typos fail at config load through the same
     # LLMSystemConfig validator that guards LLM providers.
     provider: str = "gemini_tts"
@@ -254,7 +254,7 @@ class DecisionModelConfig(BaseModel):
     # copying the old entry over hits this too.
     model_config = ConfigDict(extra="forbid")
     # Free string like TTSModelConfig.provider: the plugins under
-    # src/plugins_llm/ own the vocabulary via `provides_decisions` in their
+    # src/plugins/ own the vocabulary via `provides_decisions` in their
     # manifests; a typo fails at config load through the same
     # LLMSystemConfig validator that guards LLM and TTS providers.
     provider: str = "openrouter_decisions"
@@ -328,7 +328,7 @@ class LLMSystemConfig(BaseModel):
         """A typo in `provider:` must fail at config load, not at first use.
 
         The provider vocabulary is owned by the plugins under
-        src/plugins_llm/ (their manifests' `provides` lists) — this used to
+        src/plugins/ (their manifests' `provides` lists) — this used to
         be a Literal here, which made the core the second registry. "batch"
         is the resolver-internal pseudo-provider and always allowed.
 
@@ -361,7 +361,7 @@ class LLMSystemConfig(BaseModel):
         if unknown:
             raise ValueError(
                 f"llm_system.models: unknown provider on {unknown} — no plugin "
-                f"under src/plugins_llm declares it (known: {sorted(known)})")
+                f"under src/plugins declares it (known: {sorted(known)})")
 
         # provider: batch is the resolver's pseudo-provider — the REAL work is
         # done by the provider batch_provider names. Without this the typo
@@ -403,7 +403,7 @@ class LLMSystemConfig(BaseModel):
             if unknown_batch_cfg:
                 raise ValueError(
                     f"llm_system.batch.providers: unknown batch provider on "
-                    f"{unknown_batch_cfg} — no plugin under src/plugins_llm "
+                    f"{unknown_batch_cfg} — no plugin under src/plugins "
                     f"declares it via provides_batch "
                     f"(known: {sorted(known_batch_providers())})")
 
@@ -439,7 +439,7 @@ class LLMSystemConfig(BaseModel):
             if unknown:
                 raise ValueError(
                     f"llm_system.{kind}_models: unknown {label} provider on "
-                    f"{unknown} — no plugin under src/plugins_llm declares it "
+                    f"{unknown} — no plugin under src/plugins declares it "
                     f"via {manifest_key} (known: {sorted(known_names)})")
 
             dangling = sorted(

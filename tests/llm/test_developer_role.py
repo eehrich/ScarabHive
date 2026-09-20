@@ -98,7 +98,7 @@ def _responses(caps=None) -> list[tuple[str, str]]:
     markers -- reading the intermediate item list would show a note that is
     still on the `developer` rung and call the lowering untested.
     """
-    from plugins_llm.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
+    from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
     client = OpenAIResponsesClient(model="openai/gpt-5.1", api_key="k",
                                    base_url="https://openrouter.ai/api/v1",
                                    capabilities=caps)
@@ -107,7 +107,7 @@ def _responses(caps=None) -> list[tuple[str, str]]:
 
 
 def _chat_completions(caps=None) -> list[tuple[str, str]]:
-    from plugins_llm.llm_openai_compat.httpx_client import HTTPXOpenAIClient
+    from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient
     client = HTTPXOpenAIClient(model="openai/gpt-5.1", api_key="k",
                                base_url="https://openrouter.ai/api/v1",
                                capabilities=caps)
@@ -126,7 +126,7 @@ def _openai(caps=None) -> list[tuple[str, str]]:
     import asyncio
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from plugins_llm.llm_openai.openai_client import OpenAIAsyncClient
+    from plugins.llm_openai.openai_client import OpenAIAsyncClient
 
     with patch("openai.AsyncOpenAI"):
         client = OpenAIAsyncClient(model="gpt-5.1", api_key="k", capabilities=caps)
@@ -150,7 +150,7 @@ def _anthropic(caps=None) -> list[tuple[str, str]]:
     from unittest.mock import MagicMock, patch
     with patch("anthropic.AsyncAnthropic") as sdk:
         sdk.return_value = MagicMock()
-        from plugins_llm.llm_anthropic.anthropic_client import AnthropicAsyncClient
+        from plugins.llm_anthropic.anthropic_client import AnthropicAsyncClient
         client = AnthropicAsyncClient(model="claude-sonnet-4-5", api_key="k",
                                       capabilities=caps)
     _system, messages = client._convert_messages(history())
@@ -162,7 +162,7 @@ def _gemini(caps=None) -> list[tuple[str, str]]:
     uses -- not the inner converter. Calling the inner one directly would
     prove the conversion works while the wrapper quietly stopped passing the
     declaration down."""
-    from plugins_llm.llm_gemini.gemini_utils import prepare_messages_for_gemini
+    from plugins.llm_gemini.gemini_utils import prepare_messages_for_gemini
     _system, contents = prepare_messages_for_gemini(
         history(), tools=[], include_critical_instruction=False,
         developer_role=getattr(caps, "developer_role", None))
@@ -174,7 +174,7 @@ def _gemini(caps=None) -> list[tuple[str, str]]:
 def _ollama(caps=None) -> list[tuple[str, str]]:
     from unittest.mock import patch
     with patch("httpx.AsyncClient"):
-        from plugins_llm.llm_ollama.ollama_client import OllamaNativeAsyncClient
+        from plugins.llm_ollama.ollama_client import OllamaNativeAsyncClient
         client = OllamaNativeAsyncClient(model="qwen3", capabilities=caps)
     return [(d.get("role", "?"), _text_of(d.get("content")))
             for d in client._map_messages(history())]
@@ -349,7 +349,7 @@ def test_a_config_mistake_is_reported_once_and_then_kept_quiet(caplog):
 # --------------------------------------------------------------------------
 
 def _payload(caps=None, messages=None):
-    from plugins_llm.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
+    from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
     client = OpenAIResponsesClient(model="openai/gpt-5.1", api_key="k",
                                    base_url="https://openrouter.ai/api/v1",
                                    capabilities=caps)
@@ -487,7 +487,7 @@ def test_the_anthropic_payload_never_marks_the_note():
     from unittest.mock import MagicMock, patch
     with patch("anthropic.AsyncAnthropic") as sdk:
         sdk.return_value = MagicMock()
-        from plugins_llm.llm_anthropic.anthropic_client import AnthropicAsyncClient
+        from plugins.llm_anthropic.anthropic_client import AnthropicAsyncClient
         client = AnthropicAsyncClient(model="claude-sonnet-4-5", api_key="k",
                                       enable_prompt_caching=True, prompt_cache_mode=None)
     # the note LAST, which is where `injection_position: end` puts it
@@ -514,7 +514,7 @@ def test_the_responses_payload_never_marks_the_note(declared):
     a line that changes every call. (The OpenAI marker style is not a case:
     without a CACHE_BREAKPOINT sentinel in the text it marks nothing at all.)
     """
-    from plugins_llm.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
+    from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
     client = OpenAIResponsesClient(
         model="openai/gpt-5.1", api_key="k", base_url="https://openrouter.ai/api/v1",
         prompt_cache_key="auto", prompt_cache_marker_style="anthropic",
@@ -592,7 +592,7 @@ def test_an_unknown_role_is_not_silently_dropped(caplog):
     """The Responses item chain had no else at all: a role it did not know
     left the request without a trace. That is exactly how the developer role
     was lost before this work, so the hole itself is nailed shut."""
-    from plugins_llm.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
+    from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
     client = OpenAIResponsesClient(model="m", api_key="k", base_url="https://openrouter.ai/api/v1")
     items = client._messages_to_input([ChatMessage(role="narrator", content=NOTE)])
     assert [_text_of(i.get("content")) for i in items] == [NOTE]
@@ -603,7 +603,7 @@ def test_an_unknown_role_never_becomes_the_models_own_words():
     """Gemini mapped every role that was not "user" to "model". A role nobody
     planned for then arrived as something the model had said itself -- the one
     outcome worse than dropping it."""
-    from plugins_llm.llm_gemini.gemini_utils import convert_openai_messages_to_gemini
+    from plugins.llm_gemini.gemini_utils import convert_openai_messages_to_gemini
     _system, contents = convert_openai_messages_to_gemini(
         [ChatMessage(role="user", content="q"), ChatMessage(role="narrator", content=NOTE)],
         include_critical_instruction=False)
@@ -646,8 +646,8 @@ def test_the_gemini_sdk_path_reads_the_declaration_too(caplog):
     from unittest.mock import MagicMock, patch
 
     caplog.set_level("WARNING")
-    with patch("plugins_llm.llm_gemini.gemini_sdk_client.genai", MagicMock()):
-        from plugins_llm.llm_gemini.gemini_sdk_client import GeminiSDKClient
+    with patch("plugins.llm_gemini.gemini_sdk_client.genai", MagicMock()):
+        from plugins.llm_gemini.gemini_sdk_client import GeminiSDKClient
         client = GeminiSDKClient.__new__(GeminiSDKClient)
         client.capabilities = ModelCapabilitiesConfig(developer_role=DEVELOPER)
         _system, contents = client._convert_messages_to_sdk(history())
@@ -663,7 +663,7 @@ def test_the_realtime_session_takes_the_note_as_a_system_item_at_its_place():
     """A realtime conversation item takes user, assistant or system. The role
     went in verbatim, so a developer note failed the session build outright --
     and folding it into the instructions would date it back to turn one."""
-    from plugins_llm.llm_openai.realtime_adapter import to_request_input
+    from plugins.llm_openai.realtime_adapter import to_request_input
     instructions, items = to_request_input(history())
 
     assert instructions == "You are a careful assistant."

@@ -26,21 +26,21 @@ from agent_system.llm.batch.models import BatchStatus
 
 @pytest.fixture
 def gemini():
-    from plugins_llm.llm_gemini.gemini_batch import GeminiBatchClient
+    from plugins.llm_gemini.gemini_batch import GeminiBatchClient
     with patch("google.genai.Client"):
         return GeminiBatchClient(api_key="k")
 
 
 @pytest.fixture
 def openai():
-    from plugins_llm.llm_openai_compat.openai_batch import OpenAIBatchClient
+    from plugins.llm_openai_compat.openai_batch import OpenAIBatchClient
     with patch("httpx.AsyncClient"):
         return OpenAIBatchClient(api_key="k")
 
 
 @pytest.fixture
 def anthropic():
-    from plugins_llm.llm_anthropic.anthropic_batch import AnthropicBatchClient
+    from plugins.llm_anthropic.anthropic_batch import AnthropicBatchClient
     with patch("httpx.AsyncClient"):
         return AnthropicBatchClient(api_key="k", default_model="claude-sonnet-4-6")
 

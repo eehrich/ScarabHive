@@ -21,7 +21,7 @@ from agent_system.config.models import (
     LLMSystemConfig,
 )
 from agent_system.llm.factory import resolve_llm_config_for_agent
-from plugins_llm.llm_openai_compat.httpx_client import HTTPXOpenAIClient
+from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient
 
 
 def _system_config() -> AgentSystemConfig:

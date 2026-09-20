@@ -16,6 +16,7 @@ import pytest
 
 from agent_system.llm import tls
 from agent_system.llm.tls import httpx_verify
+from llm_provider_dirs import llm_provider_dirs
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -50,7 +51,7 @@ async def test_the_streaming_transport_carries_the_shared_context(monkeypatch):
     client's verify -- the transport wins -- so the context has to reach the
     transport itself, or every streaming call builds its own (measured: one
     CA-bundle load per request)."""
-    from plugins_llm.llm_openai_compat.httpx_client import HTTPXOpenAIClient
+    from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient
 
     seen = []
 
@@ -135,7 +136,7 @@ async def test_the_non_streaming_client_carries_the_shared_context(monkeypatch):
     ``httpx.AsyncClient(**client_kwargs)`` -- the guard test below cannot see
     inside a splat, so the kwargs are measured here. (``_make_request``
     itself streams by default and would record the streaming client.)"""
-    from plugins_llm.llm_openai_compat.httpx_client import HTTPXOpenAIClient
+    from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient
 
     seen = []
 
@@ -165,7 +166,7 @@ def test_a_context_passed_in_is_returned_untouched():
 def test_the_httpx_openai_client_hands_the_shared_context_to_httpx():
     """Production path: the client's normalised verify value IS the shared
     context, for both settings -- not a private copy built per client."""
-    from plugins_llm.llm_openai_compat.httpx_client import HTTPXOpenAIClient
+    from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient
 
     verifying = HTTPXOpenAIClient(model="m", api_key="k", verify=True)
     default = HTTPXOpenAIClient(model="m", api_key="k")
@@ -178,8 +179,8 @@ def test_the_httpx_openai_client_hands_the_shared_context_to_httpx():
 
 def test_every_async_client_on_the_llm_path_passes_verify():
     """Anti-drift: a new ``httpx.AsyncClient(...)`` or ``httpx.AsyncHTTPTransport(...)``
-    in agent_system or plugins_llm without ``verify=`` silently brings the
-    per-client context back (a transport passed to a client REPLACES the
+    in agent_system or an LLM provider plugin without ``verify=`` silently
+    brings the per-client context back (a transport passed to a client REPLACES the
     client's verify -- httpx does not merge them). Scans the balanced call
     span, so multi-line calls count. Only the module-qualified constructor is
     a construction site (``AnthropicAsyncClient(`` is a class definition; the
@@ -194,8 +195,12 @@ def test_every_async_client_on_the_llm_path_passes_verify():
     # removed. Only a value that comes from somewhere else (httpx_verify, or a
     # field fed by it) passes.
     literal = re.compile(r"""verify\s*=\s*(True|False|["'])""")
-    for pkg in ("agent_system", "plugins_llm"):
-        for py in (REPO / "src" / pkg).rglob("*.py"):
+    # The LLM path, not every plugin. The providers lost their own root on
+    # 2026-09-20 and their manifests pick them out now. All of src/plugins
+    # would pull in mcp_client, whose verify=False is a deliberate
+    # per-server opt-out and has nothing to do with this context.
+    for pkg_root in [REPO / "src" / "agent_system", *llm_provider_dirs()]:
+        for py in pkg_root.rglob("*.py"):
             if "tests" in py.parts or py.name == "tls.py":
                 continue
             text = py.read_text(encoding="utf-8", errors="replace")
@@ -213,5 +218,9 @@ def test_every_async_client_on_the_llm_path_passes_verify():
                     offenders.append(f"{py.relative_to(REPO)}:{line} (literal verify=, not the shared context)")
     # A scanner that finds no construction site at all is green for the wrong
     # reason -- rename the module alias and this whole test goes blind.
-    assert sites, "no httpx construction site found: the scan pattern no longer matches the code"
+    # A count, not a bool: losing a whole root stayed invisible to `assert
+    # sites` as long as one site anywhere survived. 17 measured 2026-09-20.
+    assert sites >= 17, (
+        f"only {sites} httpx construction sites found, 17 measured — the "
+        f"scan pattern or the root list no longer matches the code")
     assert not offenders, "\n".join(offenders)
