@@ -30,6 +30,10 @@ tools:
           process_id:
             type: string
             description: "Custom process ID for background processes (auto-generated if omitted, only used when background=true)"
+          wake:
+            type: boolean
+            default: false
+            description: "Only with background=true: wake this session when the process ends, so you can end your turn instead of polling. When woken, call get_output with the process_id to read the result. The answer says whether the wake is armed; if it is not, poll instead. A wake is best effort even when armed - if you are not woken, fall back to polling."
         required: ["command"]
         additionalProperties: false
 

@@ -24,6 +24,7 @@ Execute a shell command either synchronously (wait for completion) or as a backg
 - `cwd` (string, optional): Working directory for command execution
 - `env_vars` (object, optional): Additional environment variables (key-value pairs)
 - `process_id` (string, optional): Custom process ID for background processes (auto-generated if not provided)
+- `wake` (boolean, optional): Only with `background=true` — wake this session when the process ends, so the turn can be ended instead of polling (default: false)
 
 **Returns (foreground execution, background=false):**
 ```json
@@ -48,6 +49,9 @@ Execute a shell command either synchronously (wait for completion) or as a backg
   "command": "python server.py"
 }
 ```
+
+With `wake: true` the answer carries one more field, `"wake"`, and a
+`"wake_note"` whenever it is `false`. See **Waking instead of polling**.
 
 **Examples:**
 
@@ -136,6 +140,66 @@ Terminate a background process.
   "force": false
 }
 ```
+
+## Waking instead of polling
+
+`execute(background=true, wake=true)` lets the caller end its turn over a long
+command. When the process ends — finished or failed, there is no second ending —
+the plugin tells the core that input is waiting for the calling session
+(`core/session_presence.py`, `wake_session`): a session another process holds
+reads that at its next step, a session nobody holds is continued in a run of its
+own. The woken run is told that input waits; it reads the result with
+`get_output` on the `process_id` from its own history.
+
+**The answer says whether the wake is armed**, because a caller that asked for one
+and silently did not get it would end its turn over work it never hears about
+again. Both reasons are known before the process starts:
+
+| `wake` | `wake_note` | What to do |
+|---|---|---|
+| `true` | — | End the turn. `get_output` when woken. |
+| `false` | `session presence is off (config: session_presence.enabled)` | Poll `get_output`. |
+| `false` | `this call belongs to no session, so there is nobody to wake` | Poll `get_output`. |
+
+A `process_id` you choose yourself must be free: reusing one returns
+`ProcessIdInUse` rather than replacing the entry, which would leave the
+process behind it running with no way to read or kill it.
+
+A call that did not ask is told nothing about a wake — the two fields are absent.
+
+**An armed wake is best effort, not a promise.** What cannot be checked up front
+is whether the process holding the work is still there when the work ends —
+nothing marks which kind of process this is. A caller that is not woken should
+poll `get_output`.
+
+**A woken run is a different process, so the outcome is recorded.** Waking a
+session nobody holds starts a fresh `agent-cli run`, which builds its own tool
+servers — its process registry is empty, and `get_output` on an id from the old
+process would find nothing. When a wake is armed, the outcome (exit code and
+the tail of both streams) is therefore written to the plugin's cache
+(`data/cache/<instance>/`, one hour, at most 30 000 characters per stream).
+`get_output` answers from it when the process is not in this process's memory,
+marks the answer `"source": "recorded"`, and drops the record — it is handed
+over, not kept. A call without `wake` writes nothing: its caller polls from the
+process that holds the result anyway.
+
+**A wake is rung more than once.** The core only leaves a marker, and a session
+that is in the middle of a turn takes that marker at its next step expecting a
+hook to hand the waiting input over — nothing hands over "your command
+finished". So the ringing repeats while the session stays busy (10 s apart, up
+to five minutes) and stops early once `get_output` has read the finished
+result: a session that dealt with it itself is not started again for it.
+
+Three further cases end with no wake, and only the first is refused up front:
+
+| Case | What happens |
+|---|---|
+| `session_presence.max_wake_depth` reached, or `0` | refused before the start, with the setting named |
+| A sub-agent's session | armed, but never woken — the run that spawned it hands its result over. Reading this up front means parsing the whole session file on the event loop for every armed wake, so it is not checked |
+| A one-shot `agent-cli run` | armed, but the run ends and takes the work with it |
+
+`wake: true` without `background: true` is answered too: the result is already
+in that answer, so there is nothing to wake for.
 
 ## Configuration
 
@@ -327,6 +391,10 @@ naming the pattern. A command that cannot be confined returns
 "your command was rejected" from "this host cannot confine me" and does not
 retry the latter with a reworded command.
 
+With `wake: true` the model gets back `"wake": true` or `"wake": false` with a
+`wake_note` naming the reason. That one field decides whether it may end its turn
+or has to poll `get_output`, so it is never omitted when it was asked for.
+
 Under confinement, a denied write is **not** a plugin error: the command runs
 and fails on its own, so the model sees the ordinary non-zero exit code and
 the shell's `Permission denied` on stdout. That is deliberate — it is what the
@@ -351,6 +419,13 @@ all, because the wrapping happens below the model. Output is capped at
   unconfined spawn — but that path is not live-verified.
 - **Confinement is decided at spawn.** A mode change takes effect on the next
   command, never on one already running.
+- **A recorded result lives one hour and is read once.** A woken run that never
+  calls `get_output` leaves it to expire; a second reader finds nothing.
+- **A wake needs the process that started the work.** Background processes live
+  in the tool server's memory, so the API and `agent-cli chat` (whose prompt waits
+  on the same loop) can wake; a one-shot `agent-cli run` ends its turn and takes
+  its background processes with it. `wake: true` is still reported as armed there
+  — the session exists, and nothing in this process knows it is about to end.
 
 ## Security Best Practices
 

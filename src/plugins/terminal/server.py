@@ -10,6 +10,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agent_system.core.session_presence import wake_blocked, wake_session
+from agent_system.plugins.cache import PluginCache
 from agent_system.paths import launch_dir
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
@@ -29,6 +31,11 @@ logger = logging.getLogger(__name__)
 # several lines and pushes everything around it out of view -- so commands get
 # folded to one line and capped here before they go into a status message.
 _CMD_DISPLAY_LIMIT = 70
+
+#: What a recorded result may carry per stream. terminal caps a live answer at
+#: max_output_size_kb (60 KB) -- half of that each keeps the recorded one in the
+#: same order of magnitude instead of writing a whole build log to disk.
+_RECORDED_STREAM_CAP = 30_000
 
 
 def _short_cmd(command: str, limit: int = _CMD_DISPLAY_LIMIT) -> str:
@@ -173,6 +180,10 @@ class TerminalServer(SchemaBasedToolServer):
             sandbox=self.sandbox,
         )
 
+        # Where a finished process's outcome survives THIS process: a woken
+        # run is a new one and has none of these in memory.
+        self._recorded = PluginCache(name)
+
         # Initialize process manager for background processes
         self.process_manager = ProcessManager(max_buffer_lines=1000)
 
@@ -203,6 +214,7 @@ class TerminalServer(SchemaBasedToolServer):
                 - timeout: Timeout for foreground commands
                 - env_vars: Environment variables
                 - process_id: Custom process ID for background
+                - wake: Wake this session when a background process ends
         
         Returns:
             dict: Execution result (foreground) or process info (background)
@@ -212,9 +224,15 @@ class TerminalServer(SchemaBasedToolServer):
         if background:
             # Route to background execution
             return await self.execute_background(params)
-        else:
-            # Route to foreground execution
-            return await self.execute_command(params)
+        # Route to foreground execution
+        result = await self.execute_command(params)
+        if params.get("wake"):
+            # The one case where asking for a wake used to be answered with
+            # nothing at all. There is nothing to wake for: the result is here.
+            result["wake"] = False
+            result["wake_note"] = ("wake applies to background=true only; this ran in "
+                                   "the foreground and its result is in this answer")
+        return result
 
     async def execute_command(self, params: dict[str, Any]) -> dict[str, Any]:
         """
@@ -285,12 +303,45 @@ class TerminalServer(SchemaBasedToolServer):
 
         return result
 
+    def _wake_callback(self, params: dict[str, Any]):
+        """What runs when a background process ends -- or the reason nothing will.
+
+        Returns (callback, note); exactly one of them is set. The note is what
+        the caller is told INSTEAD of a wake: a model that asked to be woken
+        and silently was not would end its turn and wait for a message that
+        never comes. Both reasons are known before the process starts, which
+        is why this is asked then and not at the end.
+        """
+        session_id = params.get("_session_id") or ""
+        user_id = params.get("_user_id") or ""
+        blocked = wake_blocked(self.system_config, session_id, user_id)
+        if blocked:
+            return None, blocked
+
+        def still_needed() -> bool:
+            info = self.process_manager.processes.get(process_id_of[0])
+            return info is not None and not info["read_after_finish"]
+
+        process_id_of = [""]   # filled in below; the callback outlives this call
+
+        async def on_finish(process_id: str) -> None:
+            process_id_of[0] = process_id
+            info = self.process_manager.processes.get(process_id, {})
+            exit_code = info.get("exit_code")
+            await self._record(process_id, info)
+            await wake_session(
+                self.system_config, session_id, user_id,
+                what=f"background process {process_id} (exit {exit_code})",
+                still_needed=still_needed)
+
+        return on_finish, ""
+
     async def execute_background(self, params: dict[str, Any]) -> dict[str, Any]:
         """
         Execute a long-running command in background.
 
         Args:
-            params: Tool parameters including command, cwd, env_vars, process_id
+            params: Tool parameters including command, cwd, env_vars, process_id, wake
 
         Returns:
             dict: Process information with process_id, pid, command
@@ -299,6 +350,17 @@ class TerminalServer(SchemaBasedToolServer):
         cwd = params.get("cwd")
         env_vars = params.get("env_vars")
         custom_process_id = params.get("process_id")
+        # Before the process is spawned, not after: replacing the entry of a
+        # running process would leave it running with nobody able to read its
+        # output or kill it.
+        if custom_process_id and custom_process_id in self.process_manager.processes:
+            message = (f"process_id {custom_process_id} is already in use; "
+                       f"choose another one or leave it out")
+            await params["_status"].error(message[:140])
+            return {"status": "error", "error": message,
+                    "error_type": "ProcessIdInUse"}
+        on_finish, wake_note = (self._wake_callback(params) if params.get("wake")
+                                else (None, ""))
 
         # Get status context
         status = params["_status"]
@@ -324,22 +386,87 @@ class TerminalServer(SchemaBasedToolServer):
             command=command,
             cwd=cwd,
             process_id=custom_process_id,
-            owner_session=params.get("_session_id")
+            owner_session=params.get("_session_id"),
+            on_finish=on_finish
         )
 
-        # process_id is what the follow-up tools take, so it leads.
-        await status.end(
-            f"Background process {process_id} started (PID {process.pid}): "
-            f"{_short_cmd(command)}"
-        )
+        # process_id is what the follow-up tools take, so it leads. The wake
+        # goes in front of the command, not behind it: the WebUI cuts the row
+        # at the right edge, and the command is the part that may be cut.
+        wake_tag = " (wakes this session)" if on_finish is not None else ""
+        # process_id may be one the caller chose, of any length, so it gets
+        # its own budget: a blind cut of the whole row would drop the PID and
+        # the wake note and keep only the id. The command is last and is the
+        # part that may lose characters.
+        head = (f"Background process {_short_cmd(process_id, 30)} started "
+                f"(PID {process.pid}){wake_tag}")
+        await status.end(f"{head}: {_short_cmd(command, 138 - len(head))}")
 
-        return {
+        result = {
             "status": "success",
             "process_id": process_id,
             "pid": process.pid,
             "command": command,
             "cwd": cwd or self.executor.initial_cwd,
             "started_at": self.process_manager.processes[process_id]["started_at"]
+        }
+        # Only when it was asked for: an answer about a wake nobody wanted is
+        # noise in every single background call.
+        if params.get("wake"):
+            result["wake"] = on_finish is not None
+            if wake_note:
+                result["wake_note"] = wake_note
+        return result
+
+    async def _record(self, process_id: str, info: dict[str, Any]) -> None:
+        """Put the outcome where another process can read it.
+
+        Only for a wake: without one the caller polls from this process and
+        never needs the file. A failure here costs the recording, not the
+        process -- which is over either way.
+        """
+        if not info:
+            return
+        try:
+            await self._recorded.set(process_id, {
+                "process_id": process_id,
+                "command": info.get("command"),
+                "exit_code": info.get("exit_code"),
+                "started_at": info.get("started_at"),
+                "finished_at": info.get("finished_at"),
+                "owner_session": info.get("owner_session"),
+                "stdout": "".join(info.get("stdout_buffer", []))[-_RECORDED_STREAM_CAP:],
+                "stderr": "".join(info.get("stderr_buffer", []))[-_RECORDED_STREAM_CAP:],
+            })
+        except Exception as e:  # noqa: BLE001 - reporting must not break the process
+            logger.warning(f"Could not record the result of {process_id}: {e}")
+
+    async def _recall(self, process_id: str, requester_session: str | None) -> dict | None:
+        """A result recorded by the process that ran it, for the run that was
+        woken for it. Read once: it is handed over, not kept."""
+        try:
+            record = await self._recorded.get(process_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not read the recorded result of {process_id}: {e}")
+            return None
+        if not record:
+            return None
+        # Same rule as the live registry: a foreign-owned process is not this
+        # session's business, and an ownerless one stays readable.
+        owner = record.get("owner_session")
+        if owner and requester_session and owner != requester_session:
+            return None
+        await self._recorded.delete(process_id)
+        return {
+            "status": "success",
+            "process_id": process_id,
+            "stdout": record.get("stdout", ""),
+            "stderr": record.get("stderr", ""),
+            "is_running": False,
+            "exit_code": record.get("exit_code"),
+            "started_at": record.get("started_at"),
+            "finished_at": record.get("finished_at"),
+            "source": "recorded",
         }
 
     async def get_output(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -367,6 +494,14 @@ class TerminalServer(SchemaBasedToolServer):
             clear_buffer=clear_buffer,
             requester_session=params.get("_session_id")
         )
+
+        if result["status"] != "success":
+            # Not in THIS process's memory. A run woken for this process is a
+            # new one and never has it, so the outcome the old process recorded
+            # is the answer here.
+            recorded = await self._recall(process_id, params.get("_session_id"))
+            if recorded is not None:
+                result = recorded
 
         if result["status"] == "success":
             is_running = result.get("is_running", False)

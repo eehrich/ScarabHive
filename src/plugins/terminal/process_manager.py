@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +13,9 @@ class ProcessManager:
     """Manages background processes."""
 
     def __init__(self, max_buffer_lines: int = 1000):
+        # Held, not fired and forgotten: a task nobody references can be
+        # collected mid-flight, and cleanup has to be able to wait for it.
+        self._tasks: set[asyncio.Task] = set()
         """
         Initialize process manager.
 
@@ -45,7 +48,8 @@ class ProcessManager:
         command: str,
         cwd: Optional[str] = None,
         process_id: Optional[str] = None,
-        owner_session: Optional[str] = None
+        owner_session: Optional[str] = None,
+        on_finish: Optional[Callable[[str], Awaitable[None]]] = None
     ) -> str:
         """
         Register a background process.
@@ -56,6 +60,9 @@ class ProcessManager:
             cwd: Working directory
             process_id: Optional custom process ID
             owner_session: Session that owns this process (for isolation)
+            on_finish: Awaited once with the process id when the process has
+                ended and its output is captured. Its failure is logged and
+                dropped: the process is over either way.
 
         Returns:
             str: Process ID
@@ -72,11 +79,15 @@ class ProcessManager:
             "stdout_buffer": [],
             "stderr_buffer": [],
             "finished_at": None,
-            "exit_code": None
+            "exit_code": None,
+            "read_after_finish": False,
+            "on_finish": on_finish
         }
 
         # Start output capture task
-        asyncio.create_task(self._capture_output(process_id))
+        task = asyncio.create_task(self._capture_output(process_id))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
         logger.info(f"Registered background process {process_id}: {command}")
         return process_id
@@ -118,10 +129,23 @@ class ProcessManager:
             return_exceptions=True
         )
 
-        # Mark as finished
+        # Mark as finished. EOF on both pipes is NOT the process ending: the
+        # return code stays None until the child is reaped. Without this wait,
+        # get_output answered for a finished process with finished_at set AND
+        # is_running true, and the recorded exit_code stayed None for good --
+        # which is what a session woken by on_finish reads first.
+        await process.wait()
         proc_info["finished_at"] = datetime.now().isoformat()
         proc_info["exit_code"] = process.returncode
         logger.info(f"Background process {process_id} finished with exit code {process.returncode}")
+
+        # Whoever asked to hear about the end hears about it here -- also when
+        # the process failed: a caller waiting on it waits just the same.
+        if proc_info["on_finish"] is not None:
+            try:
+                await proc_info["on_finish"](process_id)
+            except Exception as e:
+                logger.warning(f"on_finish for {process_id} failed: {e}")
 
     async def get_output(
         self,
@@ -153,6 +177,11 @@ class ProcessManager:
             }
 
         process = proc_info["process"]
+        # Whoever asked for a wake stops being rung once the result has been
+        # read here: the session dealt with it by itself and starting a run of
+        # it would cost a turn for nothing.
+        if proc_info["finished_at"] is not None:
+            proc_info["read_after_finish"] = True
 
         # Get output based on stream parameter
         stdout = ""
@@ -280,6 +309,18 @@ class ProcessManager:
         return result
 
     async def cleanup(self):
-        """Clean up all background processes."""
+        """Stop the processes AND let go of the tasks watching them.
+
+        A capture task carries the wake that reports the end, and that can
+        take minutes. A server that is closing has nothing left to report
+        from, so the wait is short and what is left is cancelled.
+        """
         for process_id in list(self.processes.keys()):
             await self.kill_process(process_id, force=True)
+        if self._tasks:
+            done, pending = await asyncio.wait(set(self._tasks), timeout=5.0)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=5.0)
+                logger.info(f"Gave up waiting for {len(pending)} capture task(s)")
