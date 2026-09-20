@@ -47,18 +47,32 @@ BatchBackendFactory = Callable[..., Optional["BatchProviderClient"]]
 
 PLUGIN_PACKAGE = "plugins_llm"
 
+#: Every seam this registry dispatches: the manifest key a plugin declares it
+#: under, the dict its provider.py must export, and what a name collision is
+#: called in the log. The scan, the loader and the reset all read THIS -- a
+#: fifth seam is one row plus its own get_/build_/known_ trio, and no fourth
+#: place that can be forgotten. It used to be four places: the reset forgot the
+#: decisions seam for a day, and no test noticed.
+SEAMS: Dict[str, tuple] = {
+    "provides": ("PROVIDERS", "LLM provider"),
+    "provides_batch": ("BATCH_BACKENDS", "Batch backend"),
+    "provides_tts": ("TTS_PROVIDERS", "TTS provider"),
+    "provides_decisions": ("DECISION_PROVIDERS", "Decisions provider"),
+}
+
 _lock = threading.RLock()
-_provider_dirs: Optional[Dict[str, str]] = None  # provider name -> plugin dir name
-_batch_dirs: Optional[Dict[str, str]] = None  # batch provider name -> plugin dir name
-_tts_dirs: Optional[Dict[str, str]] = None  # tts provider name -> plugin dir name
-_decision_dirs: Optional[Dict[str, str]] = None  # decisions provider name -> plugin dir name
+#: manifest key -> {served name: plugin dir name}, and the same shape for the
+#: factories a loaded plugin exported. Both are filled IN PLACE and never
+#: rebound: whoever holds one of these dicts (the tests do, and a table of
+#: references would) must not end up reading a previous scan's state.
+_owners: Dict[str, Dict[str, str]] = {key: {} for key in SEAMS}
+_exports: Dict[str, Dict[str, Callable]] = {key: {} for key in SEAMS}
+#: Whether the scan has run. Was `_provider_dirs is not None` -- which tied
+#: "did we scan" to one particular seam's dict.
+_scanned = False
 #: provider name -> endpoint its factory defaults to (manifest
 #: `default_base_url`). Only providers that HAVE a default appear.
 _default_base_urls: Dict[str, str] = {}
-_factories: Dict[str, ProviderFactory] = {}
-_batch_backends: Dict[str, BatchBackendFactory] = {}
-_tts_factories: Dict[str, Callable] = {}
-_decision_factories: Dict[str, Callable] = {}
 
 
 class ProviderNotFoundError(ValueError):
@@ -121,17 +135,20 @@ def _read_manifest(plugin_dir: Path) -> Dict:
 
 def _scan_manifests() -> None:
     """Read every plugins_llm/*/plugin.toml once; imports nothing."""
-    global _provider_dirs, _batch_dirs, _tts_dirs, _decision_dirs, _default_base_urls
-    if _provider_dirs is not None:
+    global _scanned
+    if _scanned:
         return
 
-    providers: Dict[str, str] = {}
-    batches: Dict[str, str] = {}
-    tts: Dict[str, str] = {}
-    decisions: Dict[str, str] = {}
+    # Filled here, published at the end. The scan has to be ATOMIC: before
+    # this table existed the loop filled locals and rebound the globals in one
+    # step, so a manifest that threw mid-loop left nothing behind. Mutating the
+    # published dicts directly would keep half a scan — and the next attempt
+    # would then re-claim what the first one already claimed, warning about a
+    # plugin colliding with ITSELF for every manifest read before the failure.
+    owners: Dict[str, Dict[str, str]] = {key: {} for key in SEAMS}
     base_urls: Dict[str, str] = {}
 
-    def claim(owners: Dict[str, str], names, kind: str, plugin: str) -> None:
+    def claim(seam: Dict[str, str], names, kind: str, plugin: str) -> None:
         """First manifest wins a name — and says so.
 
         Silent first-wins on a collision makes the winner depend on directory
@@ -140,12 +157,12 @@ def _scan_manifests() -> None:
         kind, not just `provides` (batch/tts used to lose quietly).
         """
         for name in names or []:
-            if name in owners:
+            if name in seam:
                 logger.warning(
                     "%s '%s' declared by both %s and %s — keeping %s",
-                    kind, name, owners[name], plugin, owners[name])
+                    kind, name, seam[name], plugin, seam[name])
                 continue
-            owners[name] = plugin
+            seam[name] = plugin
 
     for plugin_dir in sorted(_plugins_root().iterdir()):
         if not plugin_dir.is_dir():
@@ -153,11 +170,8 @@ def _scan_manifests() -> None:
         meta = _read_manifest(plugin_dir)
         if "llm-provider" not in (meta.get("type") or []):
             continue
-        claim(providers, meta.get("provides"), "LLM provider", plugin_dir.name)
-        claim(batches, meta.get("provides_batch"), "Batch backend", plugin_dir.name)
-        claim(tts, meta.get("provides_tts"), "TTS provider", plugin_dir.name)
-        claim(decisions, meta.get("provides_decisions"), "Decisions provider",
-              plugin_dir.name)
+        for key, (_attr, label) in SEAMS.items():
+            claim(owners[key], meta.get(key), label, plugin_dir.name)
         mapping = meta.get("default_base_url")
         if isinstance(mapping, dict):
             base_urls.update({str(k): str(v) for k, v in mapping.items()})
@@ -165,13 +179,16 @@ def _scan_manifests() -> None:
             logger.warning(
                 "%s: default_base_url must be a table, got %s — ignored",
                 plugin_dir.name, type(mapping).__name__)
-    _default_base_urls = base_urls
-    _provider_dirs = providers
-    _batch_dirs = batches
-    _tts_dirs = tts
-    _decision_dirs = decisions
-    logger.debug("LLM provider manifests: %s (batch: %s, tts: %s, decisions: %s)",
-                 providers, batches, tts, decisions)
+    # Published in place, never rebound: a holder of one of these dicts (the
+    # tests hold them, and a table of references would) must not end up
+    # reading a previous scan's state.
+    for key in SEAMS:
+        _owners[key].clear()
+        _owners[key].update(owners[key])
+    _default_base_urls.clear()
+    _default_base_urls.update(base_urls)
+    _scanned = True
+    logger.debug("LLM provider manifests: %s", _owners)
 
 
 def _load_plugin(dir_name: str) -> None:
@@ -185,27 +202,22 @@ def _load_plugin(dir_name: str) -> None:
     manifest-agreement test names it.
     """
     module = importlib.import_module(f"{PLUGIN_PACKAGE}.{dir_name}.provider")
-    for attr, owners, target in (
-        ("PROVIDERS", _provider_dirs, _factories),
-        ("BATCH_BACKENDS", _batch_dirs, _batch_backends),
-        ("TTS_PROVIDERS", _tts_dirs, _tts_factories),
-        ("DECISION_PROVIDERS", _decision_dirs, _decision_factories),
-    ):
+    for key, (attr, _label) in SEAMS.items():
         for name, factory in (getattr(module, attr, None) or {}).items():
-            if (owners or {}).get(name) != dir_name:
+            if _owners[key].get(name) != dir_name:
                 continue
-            target.setdefault(name, factory)
+            _exports[key].setdefault(name, factory)
 
 
 def get_provider(provider: str) -> ProviderFactory:
     with _lock:
-        factory = _factories.get(provider)
+        factory = _exports["provides"].get(provider)
         if factory is not None:
             return factory
         _scan_manifests()
-        dir_name = (_provider_dirs or {}).get(provider)
+        dir_name = _owners["provides"].get(provider)
         if dir_name is None:
-            known = sorted(_provider_dirs or {})
+            known = sorted(_owners["provides"])
             raise ProviderNotFoundError(
                 f"Unknown LLM provider: {provider} (known: {', '.join(known)})")
         try:
@@ -215,7 +227,7 @@ def get_provider(provider: str) -> ProviderFactory:
                 f"LLM provider plugin '{dir_name}' failed to import for "
                 f"provider '{provider}' — are its plugin.toml dependencies "
                 f"installed? ({e})") from e
-        factory = _factories.get(provider)
+        factory = _exports["provides"].get(provider)
         if factory is None:
             raise ProviderNotFoundError(
                 f"Plugin '{dir_name}' declares provider '{provider}' in its "
@@ -226,11 +238,11 @@ def get_provider(provider: str) -> ProviderFactory:
 def get_batch_backend(batch_provider: str) -> Optional[BatchBackendFactory]:
     """Batch backend factory for one provider, or None if none is declared."""
     with _lock:
-        factory = _batch_backends.get(batch_provider)
+        factory = _exports["provides_batch"].get(batch_provider)
         if factory is not None:
             return factory
         _scan_manifests()
-        dir_name = (_batch_dirs or {}).get(batch_provider)
+        dir_name = _owners["provides_batch"].get(batch_provider)
         if dir_name is None:
             return None
         try:
@@ -240,7 +252,7 @@ def get_batch_backend(batch_provider: str) -> Optional[BatchBackendFactory]:
                 f"LLM provider plugin '{dir_name}' failed to import for "
                 f"batch provider '{batch_provider}' — are its plugin.toml "
                 f"dependencies installed? ({e})") from e
-        factory = _batch_backends.get(batch_provider)
+        factory = _exports["provides_batch"].get(batch_provider)
         if factory is None:
             # None means "nobody declares this" — but here somebody DID and
             # then failed to export it. Returning None made the caller report
@@ -256,13 +268,13 @@ def get_batch_backend(batch_provider: str) -> Optional[BatchBackendFactory]:
 def get_tts_provider(tts_provider: str) -> Callable:
     """TTS factory for one provider name (manifest key ``provides_tts``)."""
     with _lock:
-        factory = _tts_factories.get(tts_provider)
+        factory = _exports["provides_tts"].get(tts_provider)
         if factory is not None:
             return factory
         _scan_manifests()
-        dir_name = (_tts_dirs or {}).get(tts_provider)
+        dir_name = _owners["provides_tts"].get(tts_provider)
         if dir_name is None:
-            known = sorted(_tts_dirs or {})
+            known = sorted(_owners["provides_tts"])
             raise ProviderNotFoundError(
                 f"Unknown TTS provider: {tts_provider} (known: {', '.join(known)})")
         try:
@@ -272,7 +284,7 @@ def get_tts_provider(tts_provider: str) -> Callable:
                 f"LLM provider plugin '{dir_name}' failed to import for "
                 f"TTS provider '{tts_provider}' — are its plugin.toml "
                 f"dependencies installed? ({e})") from e
-        factory = _tts_factories.get(tts_provider)
+        factory = _exports["provides_tts"].get(tts_provider)
         if factory is None:
             raise ProviderNotFoundError(
                 f"Plugin '{dir_name}' declares TTS provider '{tts_provider}' "
@@ -290,7 +302,7 @@ def build_tts_client(cfg) -> "TTSClient":
     try:
         return factory(cfg)
     except ImportError as e:
-        dir_name = (_tts_dirs or {}).get(cfg.provider, "?")
+        dir_name = _owners["provides_tts"].get(cfg.provider, "?")
         raise ImportError(
             f"LLM provider plugin '{dir_name}' failed while building TTS "
             f"provider '{cfg.provider}' — are its plugin.toml dependencies "
@@ -301,19 +313,19 @@ def known_tts_providers() -> frozenset:
     """TTS provider names any plugin manifest declares — no imports happen."""
     with _lock:
         _scan_manifests()
-        return frozenset(_tts_dirs or {})
+        return frozenset(_owners["provides_tts"])
 
 
 def get_decisions_provider(decisions_provider: str) -> Callable:
     """Decisions factory for one provider (manifest key ``provides_decisions``)."""
     with _lock:
-        factory = _decision_factories.get(decisions_provider)
+        factory = _exports["provides_decisions"].get(decisions_provider)
         if factory is not None:
             return factory
         _scan_manifests()
-        dir_name = (_decision_dirs or {}).get(decisions_provider)
+        dir_name = _owners["provides_decisions"].get(decisions_provider)
         if dir_name is None:
-            known = sorted(_decision_dirs or {})
+            known = sorted(_owners["provides_decisions"])
             raise ProviderNotFoundError(
                 f"Unknown decisions provider: {decisions_provider} "
                 f"(known: {', '.join(known)})")
@@ -324,7 +336,7 @@ def get_decisions_provider(decisions_provider: str) -> Callable:
                 f"LLM provider plugin '{dir_name}' failed to import for "
                 f"decisions provider '{decisions_provider}' — are its "
                 f"plugin.toml dependencies installed? ({e})") from e
-        factory = _decision_factories.get(decisions_provider)
+        factory = _exports["provides_decisions"].get(decisions_provider)
         if factory is None:
             raise ProviderNotFoundError(
                 f"Plugin '{dir_name}' declares decisions provider "
@@ -344,7 +356,7 @@ def build_decisions_client(cfg):
     try:
         return factory(cfg)
     except ImportError as e:
-        dir_name = (_decision_dirs or {}).get(cfg.provider, "?")
+        dir_name = _owners["provides_decisions"].get(cfg.provider, "?")
         raise ImportError(
             f"LLM provider plugin '{dir_name}' failed while building "
             f"decisions provider '{cfg.provider}' — are its plugin.toml "
@@ -355,14 +367,14 @@ def known_decisions_providers() -> frozenset:
     """Decisions provider names any manifest declares — no imports happen."""
     with _lock:
         _scan_manifests()
-        return frozenset(_decision_dirs or {})
+        return frozenset(_owners["provides_decisions"])
 
 
 def known_batch_providers() -> frozenset:
     """Batch provider names any plugin manifest declares (``provides_batch``)."""
     with _lock:
         _scan_manifests()
-        return frozenset(_batch_dirs or {})
+        return frozenset(_owners["provides_batch"])
 
 
 def default_base_url(provider: str) -> Optional[str]:
@@ -397,8 +409,8 @@ def batch_client_provider(batch_provider: str) -> str:
     """
     with _lock:
         _scan_manifests()
-        if batch_provider not in (_batch_dirs or {}):
-            known = sorted(_batch_dirs or {})
+        if batch_provider not in _owners["provides_batch"]:
+            known = sorted(_owners["provides_batch"])
             raise ProviderNotFoundError(
                 f"Unknown batch_provider: {batch_provider} — no plugin under "
                 f"src/plugins_llm declares it via provides_batch "
@@ -415,7 +427,7 @@ def known_providers() -> frozenset:
     """
     with _lock:
         _scan_manifests()
-        return frozenset(_provider_dirs or {})
+        return frozenset(_owners["provides"])
 
 
 def build_client(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "LLMClient":
@@ -434,7 +446,7 @@ def build_client(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "L
         # ModuleNotFoundError subclass: a broken compiled extension or a DLL
         # that won't load raises the parent, and that is the case where
         # knowing which plugin was being built matters most.
-        dir_name = (_provider_dirs or {}).get(cfg.provider, "?")
+        dir_name = _owners["provides"].get(cfg.provider, "?")
         raise ImportError(
             f"LLM provider plugin '{dir_name}' failed while building "
             f"provider '{cfg.provider}' — are its plugin.toml dependencies "
@@ -443,14 +455,10 @@ def build_client(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "L
 
 def reset_for_tests() -> None:
     """Drop all cached scan/import state (test isolation)."""
-    global _provider_dirs, _batch_dirs, _tts_dirs, _decision_dirs, _default_base_urls
+    global _scanned
     with _lock:
-        _default_base_urls = {}
-        _provider_dirs = None
-        _batch_dirs = None
-        _tts_dirs = None
-        _decision_dirs = None
-        _factories.clear()
-        _batch_backends.clear()
-        _tts_factories.clear()
-        _decision_factories.clear()
+        _scanned = False
+        _default_base_urls.clear()
+        for key in SEAMS:
+            _owners[key].clear()
+            _exports[key].clear()

@@ -30,7 +30,7 @@ def test_sdk_import_is_deferred_to_the_first_call():
         import sys
         from agent_system.llm import registry
         registry._scan_manifests()
-        registry._load_plugin(registry._provider_dirs["gemini_sdk"])
+        registry._load_plugin(registry._owners["provides"]["gemini_sdk"])
         from plugins_llm.llm_gemini.gemini_sdk_client import GeminiSDKClient
         client = GeminiSDKClient(model="gemini-x", api_key="k")
         print("after_ctor", "google.genai" in sys.modules)
@@ -46,7 +46,7 @@ def test_missing_sdk_fails_at_construction():
         import importlib.util
         from agent_system.llm import registry
         registry._scan_manifests()
-        registry._load_plugin(registry._provider_dirs["gemini_sdk"])
+        registry._load_plugin(registry._owners["provides"]["gemini_sdk"])
         from plugins_llm.llm_gemini import gemini_sdk_client as m
         m.importlib.util.find_spec = lambda name: None if name == "google.genai" else importlib.util.find_spec(name)
         try:
@@ -70,7 +70,7 @@ def test_a_missing_key_fails_at_construction_too():
             os.environ.pop(name, None)
         from agent_system.llm import registry
         registry._scan_manifests()
-        registry._load_plugin(registry._provider_dirs["gemini_sdk"])
+        registry._load_plugin(registry._owners["provides"]["gemini_sdk"])
         from plugins_llm.llm_gemini.gemini_sdk_client import GeminiSDKClient
         try:
             GeminiSDKClient(model="gemini-x", api_key=None)

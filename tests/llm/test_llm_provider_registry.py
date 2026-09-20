@@ -3,8 +3,9 @@
 The registry replaced the make_llm if-chain (2026-08). Its contract:
 `plugins_llm/*/plugin.toml` declares which provider names a plugin serves
 (`provides` for chat, plus `provides_batch` / `provides_tts` /
-`provides_decisions` — the SEAMS table below is the full list), and the first
-build for a name imports exactly that plugin. Three failure modes matter:
+`provides_decisions` — `registry.SEAMS` is the full list, and these tests read
+it rather than keeping a copy), and the first build for a name imports exactly
+that plugin. Three failure modes matter:
 
 * a provider configured in llm.yaml that NO plugin declares (broken
   dispatch — every agent using it dies at build time),
@@ -100,34 +101,32 @@ class TestManifestScan:
         """The resolver maps batch_provider to gemini/openai/anthropic; each
         needs a provides_batch declaration or batch jobs lose their backend."""
         registry._scan_manifests()
-        declared = set(registry._batch_dirs or {})
+        declared = set(registry._owners["provides_batch"])
         assert {"gemini", "openai", "anthropic"} <= declared, (
             f"batch backends missing: only {sorted(declared)} declared")
-
-    #: The seams, one row each: where the registry keeps the owners, what the
-    #: entrypoint must export, what the manifest calls it. Held by NAME, not by
-    #: reference: _scan_manifests rebinds those globals, so a row holding the
-    #: dict itself would check the state of a previous scan.
-    SEAMS = (
-        ("_provider_dirs", "PROVIDERS", "provides"),
-        ("_batch_dirs", "BATCH_BACKENDS", "provides_batch"),
-        ("_tts_dirs", "TTS_PROVIDERS", "provides_tts"),
-        ("_decision_dirs", "DECISION_PROVIDERS", "provides_decisions"),
-    )
 
     def test_manifests_agree_with_the_provider_dicts(self):
         """A manifest may promise a name the entrypoint does not export —
         that surfaces only at first use in production, so the suite checks
-        every plugin's promise against the dicts in SEAMS here."""
+        every plugin's promise against registry.SEAMS here.
+
+        Reads the production table, not a copy of it: a copy is one more place
+        to forget the fifth seam in, and forgetting it there looks exactly
+        like a seam that passes.
+        """
         import importlib
         registry._scan_manifests()
-        for owners_attr, attr, key in self.SEAMS:
-            owners = getattr(registry, owners_attr)
-            for name, dir_name in sorted((owners or {}).items()):
+        checked = 0
+        for key, (attr, _label) in registry.SEAMS.items():
+            for name, dir_name in sorted(registry._owners[key].items()):
+                checked += 1
                 module = importlib.import_module(f"plugins_llm.{dir_name}.provider")
                 assert name in (getattr(module, attr, None) or {}), (
                     f"{dir_name}/plugin.toml declares {key} '{name}' but "
                     f"{attr} does not export it")
+        # An empty table would make every assertion above unreachable, and the
+        # test would report success for having looked at nothing.
+        assert checked, "no seam was checked — is registry.SEAMS empty?"
 
     def test_no_plugin_exports_a_name_its_manifest_never_declared(self):
         """The other direction: an undeclared export is invisible to config
@@ -136,16 +135,19 @@ class TestManifestScan:
         on load order, not on the manifest."""
         import importlib
         registry._scan_manifests()
-        for owners_attr, attr, _key in self.SEAMS:
-            owners = getattr(registry, owners_attr)
-            for dir_name in sorted(set((owners or {}).values())):
+        checked = 0
+        for key, (attr, _label) in registry.SEAMS.items():
+            owners = registry._owners[key]
+            for dir_name in sorted(set(owners.values())):
+                checked += 1
                 module = importlib.import_module(f"plugins_llm.{dir_name}.provider")
-                declared = {n for n, d in (owners or {}).items() if d == dir_name}
+                declared = {n for n, d in owners.items() if d == dir_name}
                 exported = set(getattr(module, attr, None) or {})
                 assert exported <= declared, (
                     f"{dir_name}/provider.py exports {sorted(exported - declared)} "
                     f"in {attr} without declaring it in plugin.toml — the "
                     f"loader ignores those, config validation never sees them")
+        assert checked, "no seam was checked — is registry.SEAMS empty?"
 
     @staticmethod
     def _manifests():
@@ -167,29 +169,102 @@ class TestManifestScan:
                 out.append((plugin_dir.name, tomllib.load(fh).get("plugin", {})))
         return out
 
-    def test_every_seam_a_manifest_declares_is_one_these_tests_check(self):
-        """A fifth seam that never reaches SEAMS is unchecked — and an
-        unchecked seam looks exactly like a checked one from the outside.
+    def test_a_rescan_fills_the_same_dicts_instead_of_new_ones(self):
+        """The state is filled IN PLACE, and that is not a style question.
+
+        Whoever holds one of these dicts across a rescan -- a test, or a table
+        of references like the one this file used to carry -- would otherwise
+        be reading the previous scan's state while everything looks fine. That
+        is exactly why the table lives in production now: rebinding is the
+        version of this bug that reads as correct in a diff.
+        """
+        registry.reset_for_tests()
+        registry._scan_manifests()
+        held = {key: registry._owners[key] for key in registry.SEAMS}
+
+        registry.reset_for_tests()
+        registry._scan_manifests()
+
+        for key in registry.SEAMS:
+            assert registry._owners[key] is held[key], f"{key}: rebound, not refilled"
+        assert held["provides"], "the held dict is empty after the rescan"
+
+    def test_a_manifest_that_throws_mid_scan_leaves_nothing_behind(self):
+        """The scan publishes at the END, so a failure leaves no half-scan.
+
+        It used to get that for free by rebinding the globals. Filling them in
+        place instead — which is what makes a table of references safe — would
+        have kept whatever was claimed before the failure, and the NEXT scan
+        would then re-claim those names and warn that each plugin collides
+        with itself. A self-collision warning reads like a real duplicate
+        manifest and sends the reader somewhere there is nothing to find.
+        """
+        registry.reset_for_tests()
+
+        seen = []
+
+        def _explode(plugin_dir):
+            # One good manifest first, so there IS something half-claimed and
+            # one half-read endpoint default to leave behind, then a manifest
+            # whose `provides` is not a list: _read_manifest hands that over
+            # unchecked and claim() iterates it.
+            seen.append(plugin_dir)
+            if len(seen) == 1:
+                return {"type": ["llm-provider"], "provides": ["ghost"],
+                        "default_base_url": {"ghost": "https://ghost.invalid"}}
+            return {"type": ["llm-provider"], "provides": 5}
+
+        with patch.object(registry, "_read_manifest", _explode):
+            with pytest.raises(TypeError):
+                registry._scan_manifests()
+
+        assert not registry._scanned
+        for key in registry.SEAMS:
+            assert registry._owners[key] == {}, f"{key}: a half-scan survived"
+        # Same rule for the endpoint defaults: they are read per manifest in
+        # the same loop, so publishing them early leaves the same half-state.
+        assert registry._default_base_urls == {}, "half the base urls survived"
+
+        # And the real scan afterwards is clean — no name claimed twice.
+        registry._scan_manifests()
+        assert registry._owners["provides"], "the scan after the failure found nothing"
+
+    def test_every_seam_a_manifest_declares_is_one_the_registry_dispatches(self):
+        """A provides_* key nothing dispatches is dead: the plugin looks
+        wired and serves nothing.
 
         Only the NAME of the key is measured here: whether the plugin that
         declares it is scanned at all is the test below.
         """
         declared = {k for _, meta in self._manifests()
                     for k in meta if k.startswith("provides")}
-        checked = {key for _, _, key in self.SEAMS}
-        assert declared <= checked, (
-            f"manifest seams no test checks: {sorted(declared - checked)} — "
-            f"add a row to {type(self).__name__}.SEAMS (and the registry has "
-            f"to claim and dispatch it, or nothing reads it at all)")
+        known = set(registry.SEAMS)
+        assert declared <= known, (
+            f"manifest seams the registry does not dispatch: "
+            f"{sorted(declared - known)} — add a row to registry.SEAMS (and "
+            f"its get_/build_/known_ trio), or drop the dead key")
 
-    def test_a_reset_drops_the_loaded_decision_factories(self):
-        """get_decisions_provider reads the factory cache BEFORE it rescans,
-        so an entry that survives a reset short-circuits every later scan —
-        and a test that thought it had a clean registry does not."""
+    def test_a_reset_drops_every_seam_it_knows_about(self):
+        """Each get_* reads its factory cache BEFORE it rescans, so an entry
+        that survives a reset short-circuits every later scan — and a test
+        that thought it had a clean registry does not.
+
+        Driven from SEAMS rather than naming one seam: the reset forgot the
+        decisions seam for a day and stayed green, because the only test was
+        about the seams that were already there.
+        """
         registry.get_decisions_provider("openrouter_decisions")
-        assert registry._decision_factories, "nothing was loaded to reset"
+        registry.get_provider("openai_httpx")
+        loaded = {key for key in registry.SEAMS if registry._exports[key]}
+        assert loaded, "nothing was loaded, so nothing is being reset"
+
         registry.reset_for_tests()
-        assert registry._decision_factories == {}
+
+        assert not registry._scanned, "the scan flag survived — a later scan is skipped"
+        for key in registry.SEAMS:
+            assert registry._owners[key] == {}, f"{key}: owners survived"
+            assert registry._exports[key] == {}, f"{key}: factories survived"
+        assert registry._default_base_urls == {}
 
     def test_a_manifest_that_declares_a_seam_is_scanned_at_all(self):
         """_scan_manifests skips every plugin without type = ["llm-provider"],
@@ -222,8 +297,9 @@ class TestManifestScan:
             registry._load_plugin("llm_openai_compat")
         # Anchor first: without it a _load_plugin that takes over NOTHING
         # passes this test, since it only asserts an absence.
-        assert registry._factories["openai_httpx"](None) == "declared"
-        assert "smuggled" not in registry._factories
+        chat = registry._exports["provides"]
+        assert chat["openai_httpx"](None) == "declared"
+        assert "smuggled" not in chat
 
 
 class TestDispatch:
