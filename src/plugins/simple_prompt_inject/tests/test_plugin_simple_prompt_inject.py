@@ -196,6 +196,39 @@ class TestInjectPrompt:
         assert msgs[2].content == "Hello"
 
     @pytest.mark.asyncio
+    async def test_inject_before_a_wake(self, plugin, make_context):
+        """A woken run opens its turn with a `developer` message, not a `user`
+        one. Anchored on the role alone the reminder lands in front of a
+        question from an EARLIER turn -- behind an assistant turn and the whole
+        exchange after it, which is the one thing "before_last_user" is for."""
+        ctx = make_context([
+            ChatMessage(role="user", content="analysiere X"),
+            ChatMessage(role="assistant", content="fertig"),
+            ChatMessage(role="developer", content="You were woken because input is waiting."),
+        ])
+
+        msgs = (await plugin.inject_prompt(ctx)).context.messages
+
+        assert [m.injected_by for m in msgs] == [None, None, "simple_prompt_inject", None]
+        assert msgs[3].role == "developer", "the reminder goes in front of the wake"
+
+    @pytest.mark.asyncio
+    async def test_a_note_inside_the_turn_is_not_the_anchor(self, plugin, make_context):
+        """The counter-proof, and why this asks for the marker and not for the
+        role: the loop's own notes are `developer` as well and stand INSIDE a
+        turn. Anchored on one, the reminder would drift backwards every step."""
+        ctx = make_context([
+            ChatMessage(role="user", content="analysiere X"),
+            ChatMessage(role="developer", content="2 steps left",
+                        injected_by="agent.step_budget"),
+        ])
+
+        msgs = (await plugin.inject_prompt(ctx)).context.messages
+
+        assert msgs[0].injected_by == "simple_prompt_inject"
+        assert msgs[1].content == "analysiere X", "the anchor is the task, not the note"
+
+    @pytest.mark.asyncio
     async def test_inject_at_end(self, make_plugin, make_context):
         """Position 'end' means the end -- the role does not move it to the head.
 

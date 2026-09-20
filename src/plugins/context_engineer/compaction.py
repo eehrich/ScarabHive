@@ -33,6 +33,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, fields
 from typing import Any, Iterator, NamedTuple
 
+from agent_system.llm.message_roles import opens_a_turn
 from agent_system.utils.multimodal_tool_content import extract_inline_media
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 from agent_system.llm.token_utils import (
@@ -442,12 +443,17 @@ def _arrival_indices(messages: list[dict[str, Any]]) -> range:
 
 
 def _opens_turn(msg: dict[str, Any]) -> bool:
-    """A user message nobody injected: a person, or a pipeline calling the agent,
-    opened a request. The marked user messages the agent loop and the hooks add
+    """A message nobody injected that opened a request: a person, a pipeline
+    calling the agent, or the wake of a woken run (a `developer` message,
+    cli_utils/agent_runner.wake_message — the run speaking, but the head of its
+    turn all the same). The marked messages the agent loop and the hooks add
     (step budget note, loop intervention, follow-ups, debate posts) belong to
     the request before them — counted as turns, every one of them aged that
-    request, and Layers 2 and 3 archived or dropped the task still being worked on."""
-    return msg.get("role") == "user" and msg.get("injected_by") is None
+    request, and Layers 2 and 3 archived or dropped the task still being worked
+    on. On the role alone a woken run started no turn at all: its own task was
+    outside the protected set, and a session woken again and again without
+    anybody typing kept the age of every message frozen at the last human turn."""
+    return opens_a_turn(msg)
 
 
 def _request_user_indices(messages: list[dict[str, Any]]) -> set[int]:

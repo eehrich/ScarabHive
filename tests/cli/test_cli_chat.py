@@ -5487,8 +5487,18 @@ class TestTheWokenTurnInTheLoop:
         assert watched == ["s1"]
 
     def test_a_wake_up_becomes_a_turn(self, monkeypatch):
+        """And it reaches the turn as the RUN speaking: the same sentence as a
+        `user` turn is indistinguishable from something the person typed, in
+        the stored history and for the model, which has to report which of the
+        two happened."""
+        from agent_system.llm.message_roles import DEVELOPER
+
         editor = _EditorThatIsWokenOnce(["/exit"])
-        assert self._tasks(monkeypatch, editor) == [WAKE_TASK]
+
+        task, = self._tasks(monkeypatch, editor)
+
+        assert task.content == WAKE_TASK
+        assert task.role == DEVELOPER
 
     def test_the_woken_turn_does_not_spend_the_queued_attachments(
             self, monkeypatch, tmp_path):
@@ -5507,8 +5517,23 @@ class TestTheWokenTurnInTheLoop:
 
         tasks = self._tasks(monkeypatch, editor, attachments=[str(png)])
 
-        assert tasks == [WAKE_TASK]
+        task, = tasks
+        assert task.content == WAKE_TASK
         assert merged == [], "the wake-up spent the person's queued files"
+
+    def test_the_same_sentence_typed_by_a_person_stays_theirs(self, monkeypatch):
+        """The conversion asks whether this turn began with a WAKE, not whether
+        the text looks like one. Without that, somebody quoting the sentence
+        back would have it recorded as something the run said."""
+        seen = []
+
+        def _turn(loop, ctx, task, renderer, editor=None):
+            seen.append(task)
+            return {}
+
+        drive_chat_repl(monkeypatch, [WAKE_TASK, "/exit"], turn_probe=_turn)
+
+        assert seen == [WAKE_TASK], "a typed line is a person talking"
 
     def test_a_typed_line_still_gets_them(self, monkeypatch, tmp_path):
         """The counter-proof: without it the test above would pass on a chat

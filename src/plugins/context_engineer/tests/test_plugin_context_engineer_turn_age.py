@@ -81,6 +81,31 @@ class TestLayerThree:
         assert _inline(result.modified_messages, "The task")
 
 
+    @pytest.mark.asyncio
+    async def test_a_wake_opens_a_turn_like_a_typed_line(self, tmp_path):
+        """A woken run's task is a `developer` message, nobody injected
+        (cli_utils/agent_runner.wake_message). Read as "no turn here", a
+        session woken again and again without anybody typing keeps every age
+        frozen at the last human turn -- the age layers stop firing at all --
+        and the wake itself, the only instruction that run has, stands outside
+        the protected set."""
+        config = dict(layer3_threshold=1, drop_after_turns=30)
+        messages = [{"role": "system", "content": "You are an agent."},
+                    {"role": "user", "content": "The task"}]
+        for n in range(35):
+            messages += _step(n)
+            messages.append({"role": "developer", "content": f"woken {n}"})
+
+        result = await _strategy(tmp_path, **config).compact(
+            messages, current_tokens=10, force=True)
+
+        assert 3 in result.layers_applied
+        assert not _inline(result.modified_messages, "The task"), (
+            "a wake is a turn: a task thirty-five of them back is old")
+        assert _inline(result.modified_messages, "woken 34"), (
+            "the woken run's own instruction, dropped out from under it")
+
+
 class TestLayerTwo:
 
     @pytest.mark.asyncio

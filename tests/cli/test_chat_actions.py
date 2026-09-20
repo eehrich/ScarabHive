@@ -20,15 +20,18 @@ from agent_system.chat_actions import (
 )
 
 
-def as_dict(role, content, tool_calls=None):
+def as_dict(role, content, tool_calls=None, injected_by=None):
     message = {"role": role, "content": content}
     if tool_calls:
         message["tool_calls"] = tool_calls
+    if injected_by:
+        message["injected_by"] = injected_by
     return message
 
 
-def as_object(role, content, tool_calls=None):
-    return SimpleNamespace(role=role, content=content, tool_calls=tool_calls)
+def as_object(role, content, tool_calls=None, injected_by=None):
+    return SimpleNamespace(role=role, content=content, tool_calls=tool_calls,
+                           injected_by=injected_by)
 
 
 #: Both shapes, every test. A test that only ran one of them would leave the
@@ -93,6 +96,41 @@ class TestCuttingTheLastExchange:
 
         assert not any(message_role(m) == "tool" for m in kept)
         assert len(kept) == 2
+
+    @SHAPES
+    def test_a_woken_exchange_is_an_exchange(self, build):
+        """The wake is a `developer` message: the run opened that turn, not a
+        person. Read as "no turn here", the cut walks past it to the person's
+        previous question and drops TWO exchanges -- the woken one without a
+        word, and one /retry then re-sends and re-bills."""
+        conversation = [
+            build("user", "erste frage"),
+            build("assistant", "erste antwort"),
+            build("developer", "You were woken because input is waiting."),
+            build("assistant", "woken -- der sub-agent ist fertig"),
+        ]
+
+        kept, dropped = split_off_last_exchange(conversation)
+
+        assert message_role(dropped) == "developer"
+        assert [message_text(m) for m in kept] == ["erste frage", "erste antwort"]
+
+    @SHAPES
+    def test_a_note_the_run_left_inside_a_turn_is_not_one(self, build):
+        """The counter-proof, and the reason this asks for the marker and not
+        for the role: the loop's own notes are `developer` as well, and they
+        stand in the middle of a turn. Cutting there would leave the question
+        that turn belongs to in the history without its answer."""
+        conversation = [
+            build("user", "schreib die routine"),
+            build("developer", "2 steps left", injected_by="agent.step_budget"),
+            build("assistant", "fertig"),
+        ]
+
+        kept, dropped = split_off_last_exchange(conversation)
+
+        assert message_text(dropped) == "schreib die routine"
+        assert kept == []
 
     @SHAPES
     def test_the_question_comes_back_whole(self, build):

@@ -44,6 +44,7 @@ from .attachments import sort_attachments
 from .session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 from .session_defaults import session_defaults
 from ..core.session_presence import WAKE_TASK, SessionBusy, presence_for
+from .agent_runner import wake_message
 
 logger = logging.getLogger(__name__)
 
@@ -3687,6 +3688,13 @@ def run_chat_loop(
                     task = _task_with_attachments(ctx, task, renderer)
                     if task is None:
                         continue
+
+                # Converted here and not where the wake is taken: as a string it
+                # goes through the echo and the command lookup above. The role
+                # is what says the run is speaking, not the person at the
+                # prompt (agent_runner.wake_message).
+                if woken and task == WAKE_TASK:
+                    task = wake_message()
 
                 started = time.monotonic()
                 result = _execute_turn(loop, ctx, task, renderer, editor)

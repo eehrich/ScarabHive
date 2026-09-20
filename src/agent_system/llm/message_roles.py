@@ -108,6 +108,28 @@ def is_injected_note(msg: object) -> bool:
     return role_of(msg) in _NOTE_ROLES and bool(_field(msg, "injected_by"))
 
 
+def opens_a_turn(msg: object) -> bool:
+    """Whether this message is the HEAD of a turn -- what a request stands on.
+
+    Two kinds qualify: what a person (or a pipeline) sent, and the wake of a
+    woken run. A woken run's task is a ``developer`` message
+    (``cli_utils/agent_runner.wake_message``), and it opens its turn exactly as
+    a typed line does -- it just is not a person talking.
+
+    NOT the notes the loop and the hooks add mid-turn (the step budget, a loop
+    intervention, a scripted follow-up, a debate post). Those carry
+    ``injected_by`` and belong to the request in FRONT of them; counting them
+    as turns aged that request and had compaction archive the very task still
+    being worked on.
+
+    The other question -- "what did a PERSON write" -- is not this one, and a
+    wake is not an answer to it: ``is_injected_note`` serves the searches that
+    ask it. The two are exact opposites over the same set of roles, which is
+    why they live next to each other.
+    """
+    return role_of(msg) in _NOTE_ROLES and not _field(msg, "injected_by")
+
+
 def leading_instructions(messages: list) -> list:
     """The instruction block at the head of a history.
 

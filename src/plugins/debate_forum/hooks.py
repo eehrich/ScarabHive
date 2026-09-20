@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
-from agent_system.llm.message_roles import DEVELOPER
+from agent_system.llm.message_roles import DEVELOPER, opens_a_turn
 
 if TYPE_CHECKING:
     from .database import DebateForumDB
@@ -345,10 +345,15 @@ class DebateForumHooks(SchemaBasedPluginHook):
 
     @staticmethod
     def _find_last_user_position(messages: list) -> int:
-        """Find position of the last user message (to insert new posts before it)."""
+        """Where the current turn begins -- new posts go in front of it.
+
+        The head of the turn, not the last `user` message: a woken run opens
+        its turn with a `developer` message (cli_utils/agent_runner), and on
+        the role alone the posts landed in front of a question from an earlier
+        turn instead of in front of the task being answered.
+        """
         for i in range(len(messages) - 1, -1, -1):
-            role = messages[i].role if hasattr(messages[i], "role") else messages[i].get("role", "")
-            if role == "user":
+            if opens_a_turn(messages[i]):
                 return i
         return len(messages)
 

@@ -22,6 +22,8 @@ import json
 import logging
 from typing import Any, Optional, Sequence
 
+from .llm.message_roles import opens_a_turn
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -103,13 +105,23 @@ def one_line(value: Any, limit: int = 60) -> str:
 
 
 def starts_a_turn(message: Any) -> bool:
-    """A user message with something in it.
+    """A message that OPENED a turn -- something a person sent, or a wake.
 
     Every stored user message went to the agent: one that opens with a command
     word was sent escaped ("//help me ..."), so hiding it left the answer in
     the history without its question.
+
+    A woken run's task is a `developer` message rather than a `user` one
+    (cli_utils/agent_runner.wake_message): the RUN is speaking, but it opened
+    its turn exactly as a typed line does, and /undo, /retry and the browser's
+    drop-last-exchange all cut HERE. On the role alone they would walk past the
+    woken exchange to the person's previous question and drop both.
+
+    The loop's own notes are `developer` too. They carry `injected_by` and
+    stand INSIDE a turn, not at its head -- and a session drops them on the way
+    to disk anyway (servers/agent/components/session_tracking).
     """
-    return message_role(message) == "user" and bool(message_text(message).strip())
+    return opens_a_turn(message) and bool(message_text(message).strip())
 
 
 def split_off_last_exchange(

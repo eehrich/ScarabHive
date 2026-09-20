@@ -505,3 +505,30 @@ class TestDebateForumHooksSchema:
         assert ctx_hook["enabled"] is False
 
 
+
+
+class TestWhereNewPostsGo:
+    """New posts are inserted in front of the task being answered. That place
+    is found by walking back for the head of the turn, and on the role alone a
+    woken turn has none -- the posts then land in front of a question from an
+    earlier turn, behind everything that already answered it."""
+
+    def test_a_wake_is_the_head_of_its_turn(self):
+        messages = [
+            ChatMessage(role="user", content="analysiere X"),
+            ChatMessage(role="assistant", content="fertig"),
+            ChatMessage(role="developer", content="You were woken because input is waiting."),
+        ]
+
+        assert DebateForumHooks._find_last_user_position(messages) == 2
+
+    def test_a_note_inside_the_turn_is_not(self):
+        """The counter-proof: the loop's own notes are `developer` too, and
+        they stand in the middle of a turn, not at its head."""
+        messages = [
+            ChatMessage(role="user", content="analysiere X"),
+            ChatMessage(role="developer", content="2 steps left",
+                        injected_by="agent.step_budget"),
+        ]
+
+        assert DebateForumHooks._find_last_user_position(messages) == 0

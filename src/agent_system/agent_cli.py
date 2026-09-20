@@ -50,6 +50,7 @@ from .cli_utils.session_defaults import (
     profile_for_record,
     usable_session_defaults,
 )
+from .cli_utils.agent_runner import wake_message
 from .cli_utils.attachments import greedy_attach_hint, sort_attachments
 from .cli_utils.session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 from .cli_utils.session_archive_cli import (
@@ -1378,7 +1379,10 @@ def main() -> None:
 
     # Process multimodal attachments -- the kind comes from the file, not from
     # which flag was typed (cli_utils.attachments), same as /attach in the chat.
-    task_input: Union[str, ChatMessage] = args.task
+    # A woken run says so in the ROLE, not only in the words: the sentence is
+    # the same, but a `user` turn claims a person typed it (agent_runner).
+    task_input: Union[str, ChatMessage] = (
+        wake_message() if getattr(args, "woken", False) else args.task)
     sorted_attachments, attachment_problems = sort_attachments(
         getattr(args, "attachments", None) or [])
     for problem in attachment_problems:

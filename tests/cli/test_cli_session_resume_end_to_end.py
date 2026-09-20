@@ -357,6 +357,51 @@ class TestSessionPresence:
 
         assert cli_env.saved == {}
 
+    @staticmethod
+    def _records_the_task(monkeypatch):
+        """What actually reaches the agent -- the one thing main() decides here
+        and nothing downstream can put back."""
+        seen = []
+        original = _DummyAgent.run_events
+
+        def recording(self, task, **kwargs):
+            seen.append(task)
+            return original(self, task, **kwargs)
+
+        monkeypatch.setattr(_DummyAgent, "run_events", recording)
+        return seen
+
+    def test_a_woken_run_speaks_as_the_run_not_as_a_person(
+            self, cli_env, monkeypatch, tmp_path):
+        """The wake is that run's whole input. As a `user` turn it claimed a
+        person had typed it -- in the stored transcript and in front of the
+        model, whose first job is to report which of the two happened."""
+        from agent_system.core import session_presence as sp
+        from agent_system.llm.message_roles import DEVELOPER
+
+        sessions = self._presence_on(cli_env, monkeypatch, tmp_path)
+        (sessions / "cli_user").mkdir(parents=True, exist_ok=True)
+        (sessions / "cli_user" / "s1.pending").touch()
+        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: (0, 0.0))
+        seen = self._records_the_task(monkeypatch)
+
+        self._wake(monkeypatch)
+
+        task, = seen
+        assert task.content == sp.WAKE_TASK
+        assert task.role == DEVELOPER
+
+    def test_a_typed_run_is_still_a_person_talking(
+            self, cli_env, monkeypatch, tmp_path):
+        """The counter-proof: without it the test above passes just as well on
+        a CLI that turns EVERY task into a note from the run."""
+        self._presence_on(cli_env, monkeypatch, tmp_path)
+        seen = self._records_the_task(monkeypatch)
+
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1"])
+
+        assert seen == ["weiter"]
+
     def test_a_woken_run_with_input_waiting_continues_the_session(
             self, cli_env, monkeypatch, tmp_path):
         from agent_system.core import session_presence as sp

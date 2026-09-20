@@ -16,7 +16,7 @@ from typing import Any
 from jinja2 import Environment, BaseLoader, TemplateSyntaxError, UndefinedError
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
-from agent_system.llm.message_roles import SYSTEM
+from agent_system.llm.message_roles import SYSTEM, opens_a_turn
 from agent_system.llm.models import ChatMessage
 from agent_system.utils.prompt_renderer import strip_prompt_comments
 
@@ -225,8 +225,17 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
 
     @staticmethod
     def _find_last_user_index(messages: list[ChatMessage]) -> int | None:
-        """Return index of the last user message, or None."""
+        """Index of the head of the current turn, or None.
+
+        The head, not the last `user` message: a woken run's task is a
+        `developer` message (cli_utils/agent_runner.wake_message), and asking
+        for the role alone put the reminder in front of a question from an
+        EARLIER turn -- behind an assistant turn and the whole exchange after
+        it. That loses the only thing "before_last_user" is for, the distance
+        to the end, and it rewrites the history at an old index, which costs
+        the cached prefix from there on, on every call.
+        """
         for i in range(len(messages) - 1, -1, -1):
-            if messages[i].role == "user":
+            if opens_a_turn(messages[i]):
                 return i
         return None
