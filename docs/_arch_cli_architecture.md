@@ -100,8 +100,21 @@ In dieser Reihenfolge, alles in `main`:
    übergeht einen verwaisten Halt, `--woken` (vom Weck-Befehl gesetzt) tritt
    still zurück.
 
-   `chat` hält seine Session über den **ganzen** REPL, und genau darum muss er
-   den Weckruf selbst abholen: die Marke (`<session>.pending`) wird sonst nur
+   Zwei Dinge musste `chat` dafür lernen. Erstens: **der Prompt wartet auf dem
+   Event-Loop, nicht daneben.** `PromptSession.prompt()` ist synchron — es
+   startet einen eigenen Loop und blockiert den Thread bis Enter, und alles,
+   was auf dem Loop des REPL liegt, steht so lange still. Gemessen am
+   20.09.2026: der Ein-Schritt-LLM-Call eines Sub-Agenten lag **vier Minuten**
+   ungelesen da und wurde 0,3 s nach der ersten Nutzereingabe fertig — Tippen
+   war das, was den Loop wieder drehte. Damit konnte `wake_when_done` im Chat
+   gar nicht tragen: der Job, der die Marke setzt, war eingefroren, also
+   erschien die Marke nie. `_PromptEditor._ask` fährt deshalb
+   `prompt_async` unter `run_until_complete` (`cli_utils/chat.py`). Nicht
+   betroffen und weiterhin blockierend ist der Fallback-Leser `input()` — der
+   umgeleitete Fall, in dem niemand vor dem Prompt sitzt.
+
+   Zweitens: `chat` hält seine Session über den **ganzen** REPL, und darum muss
+   er den Weckruf selbst abholen: die Marke (`<session>.pending`) wird sonst nur
    *innerhalb* eines Requests genommen (`_presence_step` bei jedem LLM-Call),
    und am Prompt läuft kein Call — ein mit `wake_when_done` fertig gewordener
    Sub-Agent läge da, bis der Nutzer zufällig etwas tippt. Solange der Prompt

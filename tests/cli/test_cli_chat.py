@@ -1108,7 +1108,7 @@ def drive_chat_repl(monkeypatch, lines, initial_task=None, turn_probe=None,
     agent = SimpleNamespace(_session_tracker=tracker, agent_config=None,
                             llm=SimpleNamespace(model="m"))
 
-    def _editor(seed, suggest=None):
+    def _editor(seed, suggest=None, loop=None):
         # What the REPL would have handed prompt_toolkit: the tests read
         # it off the editor instead of driving a console.
         editor.suggest = suggest
@@ -1210,7 +1210,7 @@ class TestReplKeepsTheHistoryOnTheLiveSession:
 
         built = []
         monkeypatch.setattr(chat, "_build_prompt_editor",
-                            lambda seed: built.append(seed))
+                            lambda seed, **kw: built.append(seed))
         monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
         monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True, raising=False)
         monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: False, raising=False)
@@ -5066,6 +5066,20 @@ def _mark_input_waiting(ctx, presence):
         "fixture set no mark -- the watcher would have nothing to find"
 
 
+@pytest.fixture
+def repl_loop():
+    """The loop the REPL would hand the editor.
+
+    Since the prompt runs ON it (_PromptEditor._ask), a test that leaves it
+    out exercises the fallback and not what the chat does.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        yield loop
+    finally:
+        loop.close()
+
+
 class TestWakingTheWaitingPrompt:
     """A wake-up has to reach a chat that is sitting at the prompt.
 
@@ -5090,10 +5104,10 @@ class TestWakingTheWaitingPrompt:
         return editor.read("> ")
 
     def test_it_cuts_into_the_waiting_prompt(self, pt_prompt, tmp_path,
-                                             monkeypatch):
+                                             monkeypatch, repl_loop):
         ctx, presence = _presence_ctx(tmp_path, monkeypatch)
         _mark_input_waiting(ctx, presence)
-        editor = _build_prompt_editor([])
+        editor = _build_prompt_editor([], loop=repl_loop)
         assert editor is not None, "no editor -- nothing to cut into"
 
         with _watch_for_wake(ctx, editor):
@@ -5101,13 +5115,13 @@ class TestWakingTheWaitingPrompt:
                 self._read_with_deadline(editor, pt_prompt)
 
     def test_it_leaves_a_half_typed_line_alone(self, pt_prompt, tmp_path,
-                                               monkeypatch):
+                                               monkeypatch, repl_loop):
         """exit() throws the buffer away, so a wake-up must not take a message
         being written out of someone's hands. It waits for the next tick -- by
         which time their own line has started a turn that takes the mark."""
         ctx, presence = _presence_ctx(tmp_path, monkeypatch)
         _mark_input_waiting(ctx, presence)
-        editor = _build_prompt_editor([])
+        editor = _build_prompt_editor([], loop=repl_loop)
 
         def _type_then_send():
             deadline = time.monotonic() + 8.0
@@ -5126,7 +5140,7 @@ class TestWakingTheWaitingPrompt:
             assert editor.read("> ") == "halb getippt"
 
     def test_a_line_survives_a_focus_change_too(self, pt_prompt, tmp_path,
-                                                monkeypatch):
+                                                monkeypatch, repl_loop):
         """Ctrl-R moves the FOCUS to the search buffer, and prompt_toolkit's
         Application.current_buffer follows the focus -- it even hands out an
         empty dummy buffer when nothing focusable has it. Asking that one
@@ -5135,7 +5149,7 @@ class TestWakingTheWaitingPrompt:
         """
         ctx, presence = _presence_ctx(tmp_path, monkeypatch)
         _mark_input_waiting(ctx, presence)
-        editor = _build_prompt_editor([])
+        editor = _build_prompt_editor([], loop=repl_loop)
 
         def _type_search_and_send():
             deadline = time.monotonic() + 8.0
@@ -5548,3 +5562,110 @@ class TestEditAndCopyAreDispatched:
 
         assert seen == []
         assert "Empty" not in capsys.readouterr().out
+
+class TestTheLoopKeepsTurningAtThePrompt:
+    """A background job must make progress while the prompt waits.
+
+    `PromptSession.prompt()` is synchronous: it starts a loop of its own and
+    blocks the REPL's thread until Enter, so everything on the REPL's loop --
+    a sub-agent started with blocking=false, for one -- stood still between
+    two turns. Measured on 20.09.2026: a one-step LLM call of a sub-agent sat
+    unread for four minutes and completed 0.3 s after somebody typed, because
+    typing is what turned the loop again. `wake_when_done` could not work in
+    the chat at all that way: the job that sets the wake mark was frozen, so
+    the mark the prompt watches for never appeared.
+    """
+
+    def _send_after(self, pipe, editor, text, delay=0.6):
+        def _run():
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                if getattr(editor.app(), "is_running", False):
+                    break
+                time.sleep(0.01)
+            time.sleep(delay)
+            pipe.send_text(text)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def test_a_task_on_the_loop_runs_while_the_prompt_waits(self, pt_prompt):
+        loop = asyncio.new_event_loop()
+        ticks = []
+
+        async def background():
+            while True:
+                ticks.append(len(ticks))
+                await asyncio.sleep(0.02)
+
+        try:
+            editor = _build_prompt_editor([], loop=loop)
+            assert editor is not None
+            job = loop.create_task(background())
+            self._send_after(pt_prompt, editor, "fertig\n")
+
+            assert editor.read("> ") == "fertig"
+            # The prompt waited ~0.6 s; a loop that never turned leaves none.
+            assert len(ticks) > 5, f"the loop stood still: {len(ticks)} ticks"
+
+            job.cancel()
+        finally:
+            loop.close()
+
+    def test_the_repl_hands_its_own_loop_to_the_editor(self, monkeypatch):
+        """Not the editor's business to find a loop -- the REPL owns the one
+        the sub-agent jobs live on, and that is the one that must turn."""
+        import agent_system.cli_utils.chat as chat
+
+        seen = {}
+
+        def _factory(seed, suggest=None, loop=None):
+            seen["loop"] = loop
+            return _RecordingEditor(["/exit"])
+
+        monkeypatch.setattr(chat, "_build_prompt_editor", _factory)
+        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
+        monkeypatch.setattr(chat, "_available_skills", lambda ctx: [])
+        monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: True, raising=False)
+
+        loop = asyncio.new_event_loop()
+        try:
+            chat.run_chat_loop(
+                agent=SimpleNamespace(_session_tracker=None, agent_config=None,
+                                      llm=SimpleNamespace(model="m")),
+                entry_name="a", session_service=None, session_user="u",
+                session_id="s1", was_new_session=False, llm_profile="p",
+                show_status=False, loop=loop)
+        finally:
+            loop.close()
+
+        assert seen["loop"] is loop
+
+    def test_ctrl_c_still_reaches_the_repl(self, pt_prompt, repl_loop):
+        """Running the prompt as a coroutine must not change what the keys
+        mean: the REPL counts KeyboardInterrupt at the prompt (twice exits)
+        and leaves on EOFError, and both used to come out of a loop of
+        prompt_toolkit's own."""
+        editor = _build_prompt_editor([], loop=repl_loop)
+        self._send_after(pt_prompt, editor, "", delay=0.1)
+
+        with pytest.raises(KeyboardInterrupt):
+            editor.read("> ")
+
+    def test_end_of_input_still_reaches_the_repl(self, pt_prompt, repl_loop):
+        editor = _build_prompt_editor([], loop=repl_loop)
+        # Ctrl-D on an empty line; on Windows Ctrl-Z is bound to the same
+        # meaning (_prompt_key_bindings), which is what the REPL leaves on.
+        key = "" if os.name == "nt" else ""
+        self._send_after(pt_prompt, editor, key, delay=0.1)
+
+        with pytest.raises(EOFError):
+            editor.read("> ")
+
+    def test_without_a_loop_it_still_reads(self, pt_prompt):
+        """The fallback for a _PromptEditor built outside the REPL. It is the
+        old behaviour, loop and all -- which is why the REPL passes one."""
+        editor = _build_prompt_editor([])
+        self._send_after(pt_prompt, editor, "auch fertig\n", delay=0.1)
+
+        assert editor.read("> ") == "auch fertig"

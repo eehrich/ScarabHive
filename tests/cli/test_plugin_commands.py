@@ -461,7 +461,7 @@ def _drive_repl(monkeypatch, lines, agent, loop=None, seen_loops=None):
     # under `pytest -s`. Force the input() path so the driver means the same
     # thing wherever it runs.
     monkeypatch.setattr("agent_system.cli_utils.chat._build_prompt_editor",
-                        lambda seed: None)
+                        lambda seed, **kw: None)
     agent.llm = SimpleNamespace(model="m")
     run_chat_loop(
         agent=agent, entry_name="a", session_service=None, session_user="u",

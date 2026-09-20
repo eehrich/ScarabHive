@@ -936,11 +936,14 @@ class _PromptEditor:
 
     def __init__(self, prompt_session_cls: Any, history_cls: Any,
                  seed: Sequence[str], key_bindings: Any = None,
-                 completer: Any = None) -> None:
+                 completer: Any = None,
+                 loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         self._prompt_session_cls = prompt_session_cls
         self._history_cls = history_cls
         self._key_bindings = key_bindings
         self._completer = completer
+        #: The REPL's loop, so waiting for a line RUNS it -- see _ask.
+        self._loop = loop
         # Same bindings as the main prompt: Ctrl-Z has to mean end-of-input at
         # the "... " prompt too, which is exactly where a person reaches for it
         # to get out of a fence they opened by accident.
@@ -983,10 +986,32 @@ class _PromptEditor:
             self._commands.append(stripped)
 
     def read(self, prompt: str) -> str:
-        return self._session.prompt(prompt)
+        return self._ask(self._session, prompt)
 
     def read_continuation(self, prompt: str) -> str:
-        return self._continuation.prompt(prompt)
+        return self._ask(self._continuation, prompt)
+
+    def _ask(self, session: Any, prompt: str) -> str:
+        """Wait for a line ON the REPL's event loop.
+
+        ``PromptSession.prompt()`` is synchronous: it starts a loop of its own
+        and blocks this thread until Enter. Everything already running on the
+        REPL's loop then stands still between two turns -- measured on
+        20.09.2026, a sub-agent's one-step LLM call sat unread for four
+        minutes and finished 0.3 s after somebody typed, because typing is
+        what turned the loop again. `wake_when_done` could not work in the
+        chat at all that way: the job that sets the wake mark was frozen, so
+        the mark the prompt watches for never appeared.
+
+        ``prompt_async`` is the same prompt as a coroutine, so waiting for a
+        line drives the loop that the background work lives on.
+
+        Without a loop it falls back to the synchronous call -- that is for a
+        _PromptEditor built outside the REPL; the REPL always passes one.
+        """
+        if self._loop is None:
+            return session.prompt(prompt)
+        return self._loop.run_until_complete(session.prompt_async(prompt))
 
     def typed_text(self) -> str:
         """What stands in the line being written -- wherever the focus is.
@@ -1161,6 +1186,7 @@ def _build_completer(suggest: Callable[[str], list[tuple[str, str]]]) -> Any:
 def _build_prompt_editor(
     seed: Sequence[str],
     suggest: Optional[Callable[[str], list[tuple[str, str]]]] = None,
+    loop: Optional[asyncio.AbstractEventLoop] = None,
 ) -> Optional[_PromptEditor]:
     """Line editing with an arrow-up history, or None to stay on input().
 
@@ -1182,7 +1208,8 @@ def _build_prompt_editor(
     try:
         return _PromptEditor(PromptSession, InMemoryHistory, seed,
                              key_bindings=_prompt_key_bindings(),
-                             completer=_build_completer(suggest) if suggest else None)
+                             completer=_build_completer(suggest) if suggest else None,
+                             loop=loop)
     except Exception:
         # No console to drive (MSYS, a stray pipe) is no reason to lose the
         # prompt -- input() still reads lines, just without the arrow keys.
@@ -3372,6 +3399,10 @@ def run_chat_loop(
         editor = _build_prompt_editor(
             _history_seed(ctx),
             suggest=lambda line: _completions_for(ctx, _available_skills(ctx), line),
+            # Waiting for a line has to RUN this loop: a sub-agent started
+            # with blocking=false lives on it, and between two turns nobody
+            # else turns it (see _PromptEditor._ask).
+            loop=loop,
         ) if interactive else None
         read_line = editor.read if editor else None
         read_cont = editor.read_continuation if editor else None
@@ -3423,11 +3454,13 @@ def run_chat_loop(
                                            echo=not interactive,
                                            read_line=read_line,
                                            read_cont=read_cont)
-                    # The editor runs its own asyncio.run() per prompt, and
-                    # that leaves the thread with NO current event loop --
-                    # measured: asyncio.get_event_loop() then raises. The REPL
-                    # itself always names the loop, but a library called
-                    # during the turn need not, and it used to find one.
+                    # Kept for the fallback readers: input() leaves the
+                    # thread alone, but a _PromptEditor without a loop runs
+                    # its own asyncio.run() per prompt, and that leaves the
+                    # thread with NO current event loop -- measured:
+                    # asyncio.get_event_loop() then raises. The REPL names
+                    # its loop everywhere, a library called during the turn
+                    # need not, and it used to find one.
                     asyncio.set_event_loop(loop)
                 except EOFError:
                     print()

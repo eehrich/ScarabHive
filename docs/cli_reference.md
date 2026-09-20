@@ -192,7 +192,9 @@ Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
 | Tab | Vervollständigt, was zur Zeile passt: am `/` die Kommandos, Plugin-Kommandos und Skills, hinter `/model` die Profile, hinter `/agent` die Agenten, hinter `/vars` die Variablen dieser Session, hinter `/attach` Pfade (auch mit Backslash). Hinter `/resume` die Sessions, die der Prozess schon gesehen hat — `/sessions` oder ein leeres `/resume` füllen die Liste. In einer Nachricht wird nichts angeboten |
 | Ctrl-C | Cancel the **running turn**; twice at the prompt exits. Bricht auch ein laufendes Kommando ab (`/sessions`, `/resume`, `/vars`, `/tools`, ein Plugin-Kommando), ohne den Chat zu beenden; ein laufendes Speichern wird erst zu Ende gebracht, ein zweites Ctrl-C lässt es fallen. Nach Ctrl-C laufen vorgemerkte Zeilen nie als neue Turns — auch dann nicht, wenn die Antwort schneller war |
 
-**Der Chat wacht von selbst auf.** Wartet er am Prompt und trifft Eingabe für
+**Der Chat wacht von selbst auf.** Während er am Prompt wartet, läuft sein
+Event-Loop weiter — ein im Hintergrund gestarteter Sub-Agent (`blocking=false`)
+arbeitet also auch dann, wenn gerade niemand tippt. Trifft Eingabe für
 seine Session ein — ein Sub-Agent, der mit `wake_when_done` fertig geworden ist —,
 dann bricht er das Warten ab und startet den Zug selbst, statt darauf zu warten,
 dass jemand zufällig etwas tippt. Was schon getippt ist, bleibt unangetastet;
