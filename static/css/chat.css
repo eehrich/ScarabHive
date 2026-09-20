@@ -58,7 +58,7 @@
 .type-icon { display: inline-flex; color: var(--text-muted); }
 .container-label { font-weight: 500; }
 .container-body { padding: var(--space-1) 0 0 var(--space-5); }
-.container-body > pre, .think-section {
+.container-body > pre {
   margin: 0; padding: var(--space-3); max-height: 360px; overflow: auto; white-space: pre-wrap;
   font: 400 var(--text-xs)/1.6 var(--font-mono); color: var(--text-secondary);
   background: var(--surface-1); border-left: 2px solid var(--border-default); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;

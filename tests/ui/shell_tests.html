@@ -1084,6 +1084,38 @@
     }
   });
 
+  await check('the thinking box carries the reasoning, and not the answer a second time', async () => {
+    // For a year the box labelled Thinking held the one thing that is not thinking:
+    // the step's answer, which Response already shows, and past the format_output
+    // hook -- so a `<pre>` printed it as literal `<p>` markup next to the rendered
+    // copy. The reasoning the model really does arrives as `reasoning_delta` and had
+    // no handler at all: 32 of them in a one-step run, all dropped.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'reasons');
+      $('#task').value = 'Why?';
+      $('#f').requestSubmit();
+      // Wait for THIS run, by its id and then by its end: the session already holds an
+      // answer from an earlier one, so waiting for the text "Done" would match that and
+      // measure the empty block before a single event of this run had arrived.
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-reasons', 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
+      // Reassembled in order: the deltas are split mid-word, so a box that re-rendered
+      // per delta instead of appending would hold a fragment.
+      const box = $$('#chat pre').find((pre) => pre.textContent.includes('No datetime tool here, so I say so.'));
+      if (!box) return false;
+      // and it is shown, not left behind a section nobody reveals
+      if (box.closest('.container-section').style.display === 'none') return false;
+      // the answer's markup and the tool call Status already names stay out
+      return !box.textContent.includes('<p>') && !box.textContent.includes('datetime_now');
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
   await check('Stop leaves the end of a run to its stream and holds the messages sent meanwhile; a late answer leaves the next run alone', async () => {
     const stopShown = () => $('#stopBtn').style.display !== 'none';
     const stored = () => sessionStorage.getItem('activeRequestId');

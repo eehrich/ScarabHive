@@ -1122,8 +1122,8 @@
           <span class="type-icon">${kitIcon('brain')}</span>
           <span class="container-label">Thinking</span>
         </div>
-        <div class="container-body" id="thinking" style="display: none;">
-          <pre id="thinkingContent"></pre>
+        <div class="container-body" style="display: none;">
+          <pre class="thinking-content"></pre>
         </div>
       </div>
       <div class="container-section" style="display: none;">
@@ -1132,7 +1132,7 @@
           <span class="type-icon">${kitIcon('activity')}</span>
           <span class="container-label">Status</span>
         </div>
-        <div class="container-body" id="statusBody" style="display: block;"></div>
+        <div class="container-body status-body" style="display: block;"></div>
       </div>
       <div class="container-section" style="display: none;">
         <div class="container-header" data-toggle="response">
@@ -1140,7 +1140,7 @@
           <span class="type-icon">${kitIcon('message-square')}</span>
           <span class="container-label">Response</span>
         </div>
-        <div class="container-body" id="assistantText" style="display: block;"></div>
+        <div class="container-body assistant-text" style="display: block;"></div>
       </div>
     `;
     row.appendChild(box);
@@ -1162,9 +1162,9 @@
     return {
       row,
       box,
-      t: box.querySelector('#assistantText'),
-      think: box.querySelector('#thinkingContent'),
-      status: box.querySelector('#statusBody'),
+      t: box.querySelector('.assistant-text'),
+      think: box.querySelector('.thinking-content'),
+      status: box.querySelector('.status-body'),
       thinkingSection: box.querySelector('[data-toggle="thinking"]').parentElement,
       statusSection: box.querySelector('[data-toggle="status"]').parentElement,
       responseSection: box.querySelector('[data-toggle="response"]').parentElement
@@ -1571,6 +1571,11 @@
   let currentStreamingContent = '';
   let currentStreamingStep = null;
 
+  // Which step the Thinking box is currently collecting reasoning for. Only to
+  // decide when a new "Step N" header is due -- the text itself is appended to
+  // the DOM, never held here.
+  let currentReasoningStep = null;
+
   // Set when a user message was appended to the RUNNING request. The stream's
   // block is rebound to a fresh one only when the NEXT step actually starts —
   // rebinding at append time would hijack the still-streaming current step
@@ -1805,6 +1810,9 @@
         run.requestId = data.request_id;
         run.sessionId = data.session_id;
         currentSessionId = data.session_id;
+        // Steps count from 1 again, so a leftover from the previous run would
+        // swallow the first header of this one.
+        currentReasoningStep = null;
 
         // Notify session manager about new/updated session
         if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
@@ -1848,6 +1856,25 @@
           console.log('Heartbeat received (step', data.step, ')');
         }
         break;
+      case 'reasoning_delta':
+        // The model's actual reasoning, and the only place it is shown at all:
+        // neither the Response box nor Status carries a word of it. Mind the
+        // names -- `thinking_delta` below is the ANSWER stream; this one is the
+        // thinking, and it went unhandled here, so every token of it was dropped.
+        //
+        // Appended as a text node rather than `textContent +=`, which re-reads
+        // and rewrites the whole box per delta -- a run reasons in hundreds of
+        // them.
+        if (blk.think) {
+          if (data.step !== currentReasoningStep) {
+            currentReasoningStep = data.step;
+            blk.think.appendChild(document.createTextNode(
+              `${blk.think.textContent ? '\n\n' : ''}Step ${data.step}\n`));
+          }
+          blk.think.appendChild(document.createTextNode(data.delta || ''));
+          showSection(blk.think);
+        }
+        break;
       case 'thinking_delta':
         // Real-time token streaming from LLM - stream directly to response box
         if (data.step !== currentStreamingStep) {
@@ -1888,7 +1915,7 @@
           }
         }
         
-        // Note: Tool calls display is handled by the 'thinking' event to avoid duplicates
+        // Tool calls are not listed here: Status carries every one of them.
         break;
       case 'thinking':
         // Complete thinking event (also handles backward compatibility)
@@ -1897,32 +1924,12 @@
           // Final thinking event with content - clear streaming state
           currentStreamingContent = '';
           currentStreamingStep = null;
-          if (blk.think) {
-            blk.think.classList.remove('streaming');
-            // Remove typing cursor if present
-            const cursor = blk.think.querySelector('.typing-cursor');
-            if (cursor) cursor.remove();
-          }
-          
-          // Create think section if not exists
-          if (!blk.think) {
-            blk.think = document.createElement('pre');
-            blk.think.className = 'think-section';
-            blk.r.appendChild(blk.think);
-          }
-          
-          if (data.assistant.content) {
-            blk.think.textContent += `Step ${data.step}: ${data.assistant.content}\n\n`;
-          }
-          if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
-            blk.think.textContent += `Step ${data.step}: planning ${data.assistant.tool_calls.length} tool call(s):\n`;
-            data.assistant.tool_calls.forEach((tc, i) => {
-              const func = tc.function || {};
-              blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
-            });
-            blk.think.textContent += '\n';
-          }
-          showSection(blk.think);
+          // Its `assistant.content` is NOT written to the Thinking box. It is the
+          // step's answer, which the Response box already shows -- and it arrives
+          // here past the format_output hook, so a `<pre>` rendered it as literal
+          // `<p>…</p>` markup beside the rendered copy. Its `tool_calls` are not
+          // listed either: Status names every call as `plugin.method()` from
+          // call_with_status, with the arguments this listing dropped.
         } else {
           // Step marker event (before LLM call) - don't interfere with streaming
           // Next step starting: apply a deferred mid-run-append rebind so the
@@ -1934,12 +1941,6 @@
           if (pendingAppendRebind && !data.content) {
             pendingAppendRebind = false;
             rebindLiveBlock(blk);
-          }
-          // Just ensure think section exists
-          if (!blk.think) {
-            blk.think = document.createElement('pre');
-            blk.think.className = 'think-section';
-            blk.r.appendChild(blk.think);
           }
         }
         break;

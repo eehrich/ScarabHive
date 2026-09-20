@@ -44,7 +44,9 @@ off after its final answer or its cancel (1.5 s in), cut off after 3 or 1.5 s, c
 and end after a second, brings its final answer after half a second and its end 3 s later, or is cut off a
 second after it has started; with
 ``stub_stream=refused`` the server refuses the run, with ``refused-late`` after a
-second, with its error and then its end. One
+second, with its error and then its end. With ``reasons`` a run ``r-reasons``
+sends a step the way a reasoning model does -- its reasoning in three deltas
+split mid-word, then the step's answer as markup and a tool call -- and ends. One
 with files starts half a second later, names ``r-files-ended`` and brings its
 final answer and end -- with ``stub_stream=stale``, ``r-files-stale`` in
 ``s-files-new``, and it goes on; with ``final-drops``, ``r-files-final-dropped``,
@@ -84,17 +86,23 @@ to catch up on: ``catch-up:<request_id>`` is ``"<catch_up>/<seen>"``.
 ``seen``; ``r-live-over`` reports a finished run in its reconnect and closes at
 once. A session added through /__stub/sessions may carry ``live_events_seen``,
 which is what the chat hands back as ``seen``.
+
+A mutation probe replaces a served script through the environment variable
+``SHELL_MUTANTS`` rather than by writing to ``static/`` -- see
+:func:`_serve_mutated_sources`.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_system.ui.catalog import Panel, build_catalog, core_panels
@@ -127,6 +135,42 @@ def plugin_panels() -> list[Panel]:
         Panel("context_usage_tracker", "Context & Cost Usage", "/plugins/context_usage_tracker/", "chart-column",
               "context", "Token usage"),
     ]
+
+
+SHELL_MUTANTS_ENV = "SHELL_MUTANTS"
+
+
+def _serve_mutated_sources(app: FastAPI) -> None:
+    """Let a mutation probe replace a served file WITHOUT writing it to disk.
+
+    ``SHELL_MUTANTS`` names a JSON file, ``{"/static/js/x.js": "<file holding the
+    mutated source>"}``; those paths are then answered from that source instead of
+    from the tree. A probe that swaps the real file for a few minutes instead is
+    served live by whatever runs against this working tree -- the user's own shell
+    reload, and any browser suite a parallel session happens to be running. That has
+    cost another session half an hour of unexplained red checks once, and made this
+    session's own probe look to a peer like a restore that never happened. The file
+    on disk is never touched here, so an abort cannot leave a mutant behind either --
+    which a ``finally`` cannot promise: it only protects what it reaches.
+    """
+    listed = os.environ.get(SHELL_MUTANTS_ENV)
+    if not listed:
+        return
+    served = {path: Path(source).read_text(encoding="utf-8")
+              for path, source in json.loads(Path(listed).read_text(encoding="utf-8")).items()}
+
+    @app.middleware("http")
+    async def from_memory(request: Request, call_next):
+        source = served.get(request.url.path)
+        if source is None:
+            return await call_next(request)
+        # The type comes from the path, not from a guess: served as JavaScript, a
+        # mutated stylesheet is dropped by the browser without a word, and the probe
+        # then measures a page with no styling at all.
+        # no-store: the page is reloaded within one run, and a cached copy would
+        # quietly measure the previous mutant.
+        return Response(source, media_type=mimetypes.guess_type(request.url.path)[0] or "text/plain",
+                        headers={"Cache-Control": "no-store"})
 
 
 def stub_app() -> FastAPI:
@@ -354,6 +398,21 @@ def stub_app() -> FastAPI:
                 await asyncio.sleep(1)
                 yield ": saving\n\n"
                 await asyncio.sleep(1)
+            if ending == "reasons":
+                # What a reasoning model's step really sends. The deltas arrive split
+                # mid-word, as providers send them, so a box that re-rendered instead of
+                # appending would show the last fragment only. The `thinking` event after
+                # them carries the step's ANSWER -- already through the format_output
+                # hook, hence the markup -- and the tool call Status names anyway.
+                for delta in ("No datetime t", "ool here, so I say ", "so."):
+                    yield event({"type": "reasoning_delta", "step": 1, "delta": delta})
+                yield event({"type": "thinking", "step": 1,
+                             "assistant": {"content": "<p>There is no <code>datetime</code> tool.</p>",
+                                           "tool_calls": [{"function": {"name": "datetime_now"}}],
+                                           "content_format": "html"}})
+                yield event({"type": "final", "content": "Done"})
+                yield event({"type": "end"})
+                return
             if ending in ("closes", "stale", "ending", "answered", "saving"):
                 return
             if ending in ("final-drops", "cancelled-drops"):
@@ -454,7 +513,7 @@ def stub_app() -> FastAPI:
         started = {"drops": "r-dropped", "final-drops": "r-final-dropped", "cancelled-drops": "r-cancelled-dropped",
                    "late-drops": "r-late-dropped", "question-drops": "r-question-dropped", "closes": "r-closed",
                    "ending": "r-ending", "late-start-drops": "r-late-started", "answered": "r-answered",
-                   "saving": "r-saving", "saving-drops": "r-saving-dropped"}
+                   "saving": "r-saving", "saving-drops": "r-saving-dropped", "reasons": "r-reasons"}
         if ending in started:
             return started_stream(started[ending], body.get("session_id", ""), ending,
                                   start_after=1.5 if ending == "late-start-drops" else 0)
@@ -714,6 +773,7 @@ def stub_app() -> FastAPI:
         sessions[:] = [s for s in sessions if s["session_id"] != session_id]
         return {}
 
+    _serve_mutated_sources(app)
     app.include_router(router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.mount("/tests/ui", StaticFiles(directory=UI_TESTS), name="ui-tests")
@@ -808,6 +868,7 @@ EXPECTED = [
     'in the palette a name stays whole beside a long description, and a long name leaves its hint room',
     'a session offers the panels that open on a session',
     'the session panel is the one that asks for the sub-session tree',
+    'the thinking box carries the reasoning, and not the answer a second time',
     'a session panel pinned from a link can follow the chat again',
     'a request id in the chat offers the panels that take a request',
     'a panel with unsaved input is only closed or reloaded once the viewer agrees',
