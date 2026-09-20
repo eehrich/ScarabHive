@@ -745,9 +745,13 @@ every step.
 
 - Nothing ticking (clock, step counter) in the system prompt or at the front of
   the history — the prompt is re-rendered every step.
-- Don't rewrite earlier messages; append new content at the end.
-- Find your own insert by `ChatMessage.injected_by` and replace it instead of
-  adding a duplicate.
+- Don't rewrite earlier messages; append new content at the end. That holds
+  for your own previous block too: find it by `ChatMessage.injected_by`,
+  compare its text, and if it says the same thing write nothing at all. If it
+  differs, append the new state behind it and leave the old one standing --
+  replacing it changes the prefix the provider has already cached.
+- A state block is `developer`, not `system`: Anthropic and Gemini have no
+  system role inside a history and hoist such a message into the prompt head.
 - **Every `role: user` message a hook or the loop inserts carries
   `injected_by`.** `None` means "written by a person"; context_engineer, OKF,
   tool_preload and agent_continuation rely on it to find the last human

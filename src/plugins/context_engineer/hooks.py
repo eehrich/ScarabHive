@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
-from agent_system.llm.message_roles import is_injected_note
+from agent_system.llm.message_roles import DEVELOPER, is_injected_note
 from agent_system.llm.models import ChatMessage
 from agent_system.tools.status import StatusScope, status_bus
 
@@ -1181,9 +1181,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # persistierten Historie -- ohne ihn blieben die dort stehen.
             for i in range(len(new_messages) - 1, -1, -1):
                 msg = new_messages[i]
-                if getattr(msg, "injected_by", None) == _RESTORATION_MARKER:
-                    new_messages.pop(i)
-                    continue
                 # The legacy copies were system messages, and only those match
                 # by content. Matching every role deleted whatever merely
                 # CONTAINED the header — a tool result of an agent reading this
@@ -1194,23 +1191,37 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                         and _RESTORATION_HEADER in content):
                     new_messages.pop(i)
 
-            if restoration_context:
-                # Find position after last system message to insert restoration context
-                # This preserves the agent's system prompt while adding our context
-                insert_pos = 0
-                for i, msg in enumerate(new_messages):
-                    msg_role = msg.role if hasattr(msg, 'role') else msg.get('role')
-                    if msg_role == 'system':
-                        insert_pos = i + 1
-                    else:
-                        break  # Stop at first non-system message
-
-                restoration_msg = ChatMessage(
-                    role="system",
+            previous_block = next(
+                (m for m in reversed(new_messages)
+                 if getattr(m, "injected_by", None) == _RESTORATION_MARKER), None)
+            # NOT "fresh_block when nothing of ours stands here": the block is
+            # not persisted, so across requests there never is a previous one,
+            # and taking the fresh text there would switch the hysteresis off
+            # entirely. What it holds back is deliberate and measured (see the
+            # paragraph above), and the reason it gives -- do not rewrite the
+            # front for a fact that is still readable in its store_fact call --
+            # is weaker now that the block sits at the end, but it is not mine
+            # to overrule as a side effect of moving it.
+            if restoration_context and (previous_block is None
+                                        or previous_block.content != restoration_context):
+                # Appended, not inserted behind the system prompt: there a
+                # provider hoists it into the prompt head, and rebuilding it
+                # per call invalidated the cache for everything behind it.
+                # An earlier block keeps its place -- what it said was true
+                # when it was written -- and an unchanged one is not written
+                # again at all. It is not persisted with the conversation
+                # either, and the reason is worth naming exactly: what
+                # drops it is `is_volatile_note` in SessionTracker
+                # (session_tracking.py), which needs BOTH the developer role
+                # and `injected_by` -- a marked `user` turn, like debate_forum's
+                # posts, is deliberately kept. The two filters on THIS path
+                # throw away nothing but `role == 'system'`, so they are not
+                # what keeps the copies from piling up.
+                new_messages.append(ChatMessage(
+                    role=DEVELOPER,
                     content=restoration_context,
                     injected_by=_RESTORATION_MARKER,
-                )
-                new_messages.insert(insert_pos, restoration_msg)
+                ))
             
             # Build modified context with all fields
             modified_context = HookContext(
@@ -1243,11 +1254,19 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 + (f", media_event: {result.media_compacted_after_event}" if result.media_compacted_after_event > 0 else "")
             )
             
-            # NOTE: Session persistence is now handled automatically by HookIntegrationManager
-            # when we return HookResult with modified=True. The _auto_sync_session_messages()
-            # method filters system messages correctly (keeping archived_ref types).
-            # The explicit set_compacted_messages() call below is kept for backwards compatibility
-            # and as a safety net, but is no longer strictly required.
+            # NOTE: what persists this compaction is the auto-sync in the
+            # HookIntegrationManager, which writes the same slot after we return
+            # with modified=True and filters system messages correctly (keeping
+            # archived_ref types). The explicit set_compacted_messages() call
+            # below is NOT a safety net for that: on this path the loop clears
+            # the marker right after the hook chain (server.py), so no reader
+            # ever sees what we stage here. It is written for the one case the
+            # auto-sync cannot cover -- a hook that changes context.messages IN
+            # PLACE instead of returning a new list; then the auto-sync has
+            # nothing to notice and this call is the only thing that persists.
+            # No hook does that today. Note that the compact TOOL sets the same
+            # marker on its own path (server.py), and THAT one is read -- do not
+            # let this comment talk you out of that one.
             # Only when something changed. The compact tool reaches this with the
             # agent attached, and a staged history makes the agent rebuild its
             # list after the tool as [system prompt] + staged + tool messages —

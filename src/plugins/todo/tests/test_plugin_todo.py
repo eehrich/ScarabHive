@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Dict, Any
 from unittest.mock import MagicMock
 
+from agent_system.llm.message_roles import DEVELOPER
+
 from plugins.todo.server import (
     TodoServer,
     Task,
@@ -1118,11 +1120,11 @@ async def test_hook_inject_tasks_into_prompt(server: TodoServer, mock_context: D
     
     assert result.success is True
     assert result.modified is True
-    assert len(result.context.messages) == 3  # system + injected + user
-    
-    # Check injected message
-    injected_msg = result.context.messages[1]
-    assert injected_msg.role == "system"
+    assert len(result.context.messages) == 3  # system + user + appended state
+
+    # The state is the last turn, not a block behind the system prompt
+    injected_msg = result.context.messages[-1]
+    assert injected_msg.role == DEVELOPER
     assert "TODO Tool Available" in injected_msg.content
     assert "Task 1: Implement feature" in injected_msg.content
     assert "Task 2: Write tests" in injected_msg.content
@@ -1153,10 +1155,11 @@ async def test_hook_no_tasks_injects_reminder(server: TodoServer, mock_context: 
     # Now we ALWAYS inject a reminder, even when no tasks exist
     assert result.success is True
     assert result.modified is True  # Changed: now injects TODO tool reminder
-    assert len(result.context.messages) == 3  # Changed: system + reminder + user
+    assert len(result.context.messages) == 3  # system + user + appended reminder
     
     # Verify reminder was injected
-    injected_msg = result.context.messages[1]
+    injected_msg = result.context.messages[-1]
+    assert injected_msg.role == DEVELOPER
     assert "TODO Tool Available" in injected_msg.content
     assert "todo()" in injected_msg.content
 

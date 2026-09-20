@@ -12,7 +12,7 @@ The Memory Plugin provides long-term memory capabilities for AI agents, allowing
 - **Hybrid Storage**: ChromaDB for embeddings + JSON for metadata (access tracking, timestamps, importance)
 - **Access Tracking**: Automatic tracking of memory access counts and timestamps
 - **Keyword Extraction**: Auto-extract keywords from memory content (frequency-based)
-- **System Prompt Injection**: Optionally inject relevant memories into LLM context (via hook)
+- **Context Injection**: Optionally append the relevant memories to the history as a `developer` turn (via hook)
 - **Panel**: browse, search and delete the memories of a session in the shell
 - **Session Isolation**: Memories are scoped to sessions (multi-user support)
 
@@ -229,9 +229,9 @@ await agent.call_tool("memory", {
 
 **Note:** When you update the `content` field, the memory is automatically re-indexed in ChromaDB for semantic search.
 
-## Hook: System Prompt Injection
+## Hook: Memory Injection
 
-When enabled, the `inject_memory_context` hook automatically injects relevant memories into the system prompt before each LLM call.
+When enabled, the `inject_memory_context` hook appends the relevant memories as a `developer` turn at the end of the history before each LLM call, and only when the list changed. The memories are selected by the last message a PERSON wrote, not by the last message in the list.
 
 **Two injection modes:**
 
@@ -241,10 +241,13 @@ When enabled, the `inject_memory_context` hook automatically injects relevant me
 **Example injection:**
 
 ```
-AVAILABLE MEMORIES (use 'memory' tool with operation='recall' to access):
-- [mem_20240129_143022_a1b2c3] Python Best Practices
-- [mem_20240130_091015_d4e5f6] Code Style Guide
-- [mem_20240131_120030_g7h8i9] Testing Patterns
+## AVAILABLE MEMORIES
+
+Use `memory(operation='recall', memory_id='...')` to access full content:
+
+- `mem_20240129_143022_a1b2c3`: Python Best Practices
+- `mem_20240130_091015_d4e5f6`: Code Style Guide
+- `mem_20240131_120030_g7h8i9`: Testing Patterns
 ```
 
 ## The panel

@@ -165,6 +165,8 @@ class PluginHook(ABC):
     - Use request_id from context for status messages
     
     Example:
+        from agent_system.llm.message_roles import DEVELOPER
+
         class MyHook(PluginHook):
             def __init__(self, name: str, config: dict):
                 super().__init__(name, config)
@@ -173,7 +175,11 @@ class PluginHook(ABC):
                 # Modify messages before LLM call
                 if context.messages:
                     # Add custom message
-                    context.messages.append(ChatMessage(role="system", content="Custom prompt"))
+                    # A developer turn keeps the place it is given; a `system`
+                    # message is hoisted into the prompt head by Anthropic and
+                    # Gemini, where a text rebuilt per call breaks the cache.
+                    context.messages.append(ChatMessage(
+                        role=DEVELOPER, content="Custom prompt", injected_by=self.name))
                     return HookResult(success=True, modified=True, context=context)
                 return HookResult(success=True, modified=False, context=context)
     """

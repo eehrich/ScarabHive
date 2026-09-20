@@ -50,7 +50,7 @@ hooks:
     type: pre_llm_call
     enabled: false  # default is disabled
     timeout: 5.0
-    description: "Inject relevant memory titles into system prompt before LLM calls"
+    description: "Append the relevant memory titles to the history before an LLM call"
     category: "prompt_injection"
     order:
       before: ["message_validation"]
@@ -64,7 +64,7 @@ config:
   max_memories:
     type: integer
     default: 10
-    description: "Maximum number of memories to inject into system prompt"
+    description: "Maximum number of memories listed in the injected block"
     minimum: 1
     maximum: 50
 

@@ -1,11 +1,14 @@
 """Debate Forum Plugin - Hook for injecting debate context into sub-agents.
 
 Two-tier injection strategy:
-- **Pinned messages + channel metadata** → ``role="system"`` (re-injected fresh
-  on every LLM call). System role guarantees compaction-safety
-  (context_engineer's ``keep_system_messages=True`` never archives system
-  messages). Pinned-set changes rarely (only on explicit pin_message events),
-  so prompt-cache stays warm between turns.
+- **Pinned messages + channel metadata** → ``role="developer"``, appended
+  when they change. They used to be re-inserted behind the system prompt on
+  every call, where a provider hoists them into the prompt head: the pinned
+  set changes rarely, but the block was rebuilt every call and every
+  difference invalidated the cache for everything behind it. Appended, it
+  leaves the whole history before it byte-identical. Its role no longer makes
+  it compaction-safe, and it need not be: a block that is no longer in the
+  history is simply appended again, the same branch as the first one.
 - **Unpinned forum posts** → ``role="user"`` (permanent, persisted in session).
   Only NEW messages since the last hook call are added (diff-based).
   Context optimiser plugins (context_engineer, context_summarizer) can compress
@@ -32,6 +35,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
+from agent_system.llm.message_roles import DEVELOPER
 
 if TYPE_CHECKING:
     from .database import DebateForumDB
@@ -64,8 +68,9 @@ class DebateForumHooks(SchemaBasedPluginHook):
         """Inject debate forum context before LLM call.
 
         Two-tier injection:
-        1. Pinned messages + channel metadata → system message
-           (compaction-safe; cache stays warm between unchanged pin-sets)
+        1. Pinned messages + channel metadata: appended as a developer turn,
+           and only when they changed. Not compaction-safe by its role any
+           more, and it need not be -- a block that is gone is appended again.
         2. New forum posts since last call → user message (permanent)
         """
         logger.debug(
@@ -89,27 +94,38 @@ class DebateForumHooks(SchemaBasedPluginHook):
 
             modified = False
 
-            # ── 1. Pinned + metadata → system injection (compaction-safe) ─────
-            # Remove previous injection (matched by injected_by marker)
-            for i in range(len(context.messages) - 1, -1, -1):
-                if getattr(context.messages[i], "injected_by", None) == INJECTION_MARKER:
-                    context.messages.pop(i)
+            # 1. Pinned + metadata: appended when they change. Never
+            # rewritten -- an earlier pinned block was true when it was
+            # written, and deleting it would change the prefix the provider
+            # has already cached.
+            #
+            # This DROPS an invariant the old code kept by searching for an
+            # insert position: pinned context used to sit in front of the
+            # debate posts, because the agent should know topic and rules
+            # before it reads the debate. The posts still go before the last
+            # user message (step 2), so pinned now comes AFTER them. The trade
+            # is deliberate: an insert position that moves with the turn is
+            # exactly what has to be rewritten on every call, and the pinned
+            # block loses nothing by being last -- it is the closest thing to
+            # the answer, and both are in the same prompt anyway.
+            previous_pinned = next(
+                (msg for msg in reversed(context.messages)
+                 if getattr(msg, "injected_by", None) == INJECTION_MARKER), None)
 
             has_metadata = channel and (channel.get("topic") or channel.get("context"))
             if pinned_messages or has_metadata:
                 pinned_text = self._format_pinned_context(
                     pinned_messages, channel_id, channel
                 )
-                insert_pos = self._find_pinned_insert_position(context.messages)
-                context.messages.insert(
-                    insert_pos,
-                    ChatMessage(
-                        role="system",
-                        content=pinned_text,
-                        injected_by=INJECTION_MARKER,
-                    ),
-                )
-                modified = True
+                if previous_pinned is None or previous_pinned.content != pinned_text:
+                    context.messages.append(
+                        ChatMessage(
+                            role=DEVELOPER,
+                            content=pinned_text,
+                            injected_by=INJECTION_MARKER,
+                        ),
+                    )
+                    modified = True
 
             # ── 2. New posts → user injection (permanent, diff-based) ─────
             # The counter ``debate_last_injected_msg_id`` is a per-session
@@ -314,21 +330,6 @@ class DebateForumHooks(SchemaBasedPluginHook):
             )
 
         return "\n".join(parts)
-
-    @staticmethod
-    def _find_pinned_insert_position(messages: list) -> int:
-        """Find position for pinned context: after system messages but before
-        the first user task message, so the agent always sees pinned context
-        before any debate posts."""
-        after_system = 0
-        for i, msg in enumerate(messages):
-            role = msg.role if hasattr(msg, "role") else msg.get("role", "")
-            if role != "system":
-                after_system = i
-                break
-        else:
-            after_system = len(messages)
-        return after_system
 
     def _format_direct(self, messages: list[dict[str, Any]]) -> str:
         """The messages as the session sees them, with the tool that answers."""

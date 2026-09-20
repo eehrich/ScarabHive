@@ -1,8 +1,10 @@
-"""The injected sub-agent block sits right behind the system prompt.
+"""The injected sub-agent block is appended, and only when it says something new.
 
-Every change to it invalidates the provider cache for the whole history, so it
-may only change when a sub-agent is added, removed or changes status -- and it
-must replace exactly its own message, nothing that merely quotes its header.
+It used to sit right behind the system prompt, where a provider hoists it into
+the prompt head and every change invalidated the cache for the whole history.
+It is a developer turn at the end now: written when a sub-agent is added,
+removed or changes status, never rewritten, and never confused with a message
+that merely quotes its header.
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -54,16 +56,33 @@ async def test_the_block_does_not_change_when_a_sub_agent_is_continued(fmt):
     assert len(_blocks(second.messages)) == 1
 
 
-async def test_a_status_change_changes_the_block():
+async def test_a_status_change_appends_a_new_block():
     injector, manager = _injector([_sub_agent(1)])
     context = _context([ChatMessage(role="user", content="go")])
     await injector.inject_sub_agent_context(context)
-    before = _blocks(context.messages)[0].content
+    first = _blocks(context.messages)[0]
 
     manager.list_sub_sessions.return_value = [_sub_agent(1, status="interrupted")]
-    await injector.inject_sub_agent_context(context)
+    result = await injector.inject_sub_agent_context(context)
 
-    assert _blocks(context.messages)[0].content != before
+    assert result.modified is True
+    blocks = _blocks(context.messages)
+    assert len(blocks) == 2, "the new state is appended, the old one keeps its place"
+    assert blocks[0] is first and blocks[0].content == first.content
+    assert blocks[-1].content != first.content
+    assert context.messages[-1] is blocks[-1]
+
+
+async def test_an_unchanged_list_is_not_written_again():
+    """The whole point: no write, no new prefix, the cache survives."""
+    injector, _ = _injector([_sub_agent(1)])
+    context = _context([ChatMessage(role="user", content="go")])
+    assert (await injector.inject_sub_agent_context(context)).modified is True
+
+    second = await injector.inject_sub_agent_context(context)
+
+    assert second.modified is False
+    assert len(_blocks(context.messages)) == 1
 
 
 async def test_a_tool_result_quoting_the_header_survives():
@@ -81,7 +100,7 @@ async def test_a_tool_result_quoting_the_header_survives():
     assert tool_result in context.messages
 
 
-async def test_an_emptied_list_removes_the_block():
+async def test_an_emptied_list_is_superseded_not_deleted():
     injector, manager = _injector([_sub_agent(1)])
     context = _context([ChatMessage(role="user", content="go")])
     await injector.inject_sub_agent_context(context)
@@ -91,19 +110,66 @@ async def test_an_emptied_list_removes_the_block():
     result = await injector.inject_sub_agent_context(context)
 
     assert result.modified is True
-    assert not _blocks(context.messages)
+    blocks = _blocks(context.messages)
+    assert len(blocks) == 2, "the old list stays; what is gone is said, not erased"
+    assert "None" in blocks[-1].content
+
+    # and it is said once, not on every call afterwards
+    assert (await injector.inject_sub_agent_context(context)).modified is False
+    assert len(_blocks(context.messages)) == 2
 
 
-async def test_a_block_persisted_without_a_marker_is_replaced():
+async def test_a_block_persisted_without_a_marker_counts_as_the_previous_one():
+    """An old unmarked block is mine: it decides whether anything is new.
+
+    Blocks written before the marker existed were persisted as plain system
+    messages. Not recognising one means the first call of a resumed session
+    appends the very same list a second time.
+    """
     injector, _ = _injector([_sub_agent(1)])
-    context = _context([ChatMessage(role="system", content="prompt"),
-                        ChatMessage(role="system", content="## Active Sub-Agents\n\nstale"),
+    rendered = _context([ChatMessage(role="user", content="go")])
+    await injector.inject_sub_agent_context(rendered)
+    same_text = _blocks(rendered.messages)[-1].content
+
+    unmarked = ChatMessage(role="system", content=same_text)
+    context = _context([ChatMessage(role="system", content="prompt"), unmarked,
+                        ChatMessage(role="user", content="go")])
+    result = await injector.inject_sub_agent_context(context)
+
+    assert result.modified is False, (
+        "the unmarked block was not recognised as the previous one")
+    assert not _blocks(context.messages), "nothing new to say, so nothing is written"
+    assert unmarked in context.messages
+
+
+async def test_a_stale_unmarked_block_is_superseded_not_rewritten():
+    """Recognising it is not keeping it: a list that says something new lands."""
+    injector, _ = _injector([_sub_agent(1)])
+    stale = ChatMessage(role="system", content="## Active Sub-Agents\n\nstale")
+    context = _context([ChatMessage(role="system", content="prompt"), stale,
                         ChatMessage(role="user", content="go")])
 
-    await injector.inject_sub_agent_context(context)
+    result = await injector.inject_sub_agent_context(context)
 
-    assert [m.content for m in context.messages if "Active Sub-Agents" in (m.content or "")] \
-        == [_blocks(context.messages)[0].content]
+    assert result.modified is True
+    assert stale in context.messages, "history is not rewritten, not even an old block"
+    assert context.messages[-1] is _blocks(context.messages)[-1]
+
+
+def test_a_reload_lets_the_hook_config_follow():
+    """The lazily built hook config is cached -- a reload has to drop it.
+
+    Otherwise the reloaded server answers the same question twice: freshly
+    from its own fields, and from a config built before the reload.
+    """
+    server = SubAgentManagerServer("work_sam", MagicMock(), ToolServerConfig(
+        enabled=True, hook_config={"max_sub_agents_shown": 3}))
+    assert server.config["max_sub_agents_shown"] == 3, "fixture: builds and caches it"
+
+    server.reload_config(ToolServerConfig(
+        enabled=True, hook_config={"max_sub_agents_shown": 1}))
+
+    assert server.config["max_sub_agents_shown"] == 1
 
 
 async def test_the_hint_names_the_instance_tool():
@@ -112,7 +178,7 @@ async def test_the_hint_names_the_instance_tool():
 
     await injector.inject_sub_agent_context(context)
 
-    assert "work_sam_manage_sub_agent(" in _blocks(context.messages)[0].content
+    assert "work_sam_manage_sub_agent(" in _blocks(context.messages)[-1].content
 
 
 async def test_the_injector_reads_its_options_from_hook_config():

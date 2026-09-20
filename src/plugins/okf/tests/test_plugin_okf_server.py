@@ -6,6 +6,8 @@ boundary, the write conformance gate, and the pre_llm_call context injection.
 from types import SimpleNamespace
 
 import pytest
+
+from agent_system.llm.message_roles import DEVELOPER
 from unittest.mock import MagicMock
 
 from agent_system.config.models import ToolServerConfig
@@ -697,9 +699,65 @@ class TestContextHook:
             messages=[SimpleNamespace(role="user", content="customers")],
             session_id="s1", hook_config={})
         await srv.on_pre_llm_call(ctx)
-        await srv.on_pre_llm_call(ctx)  # second step
+        second = await srv.on_pre_llm_call(ctx)  # second step
         okf_blocks = [m for m in ctx.messages if getattr(m, "injected_by", None) == "okf"]
         assert len(okf_blocks) == 1  # no stacking
+        assert second.modified is False, "an unchanged block is not written again"
+
+    @pytest.mark.asyncio
+    async def test_another_question_appends_the_concepts_it_selects(
+        self, mock_system_config, tmp_path, bundle,
+    ):
+        """A guard on mere EXISTENCE would freeze the first selection forever."""
+        # A concept the customers/orders pair does not link to: the two-file
+        # bundle answers every question with the same subgraph, so it cannot
+        # show a selection changing.
+        (bundle / "tables" / "warehouses.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Warehouses\n"
+            "description: One row per warehouse.\n---\n\n# Schema\nid, city.\n",
+            encoding="utf-8")
+        srv = self._server_with_hook(mock_system_config, tmp_path, bundle)
+        ctx = SimpleNamespace(
+            messages=[SimpleNamespace(role="user", content="tell me about customers",
+                                      injected_by=None)],
+            session_id="s1", hook_config={})
+        await srv.on_pre_llm_call(ctx)
+        first = self._injected(ctx)
+        assert first is not None, "fixture: nothing was injected"
+        assert "Warehouses" not in first, "fixture: the first answer already had it"
+
+        ctx.messages.append(SimpleNamespace(role="assistant", content="here you are",
+                                            injected_by=None))
+        ctx.messages.append(SimpleNamespace(role="user", content="and the warehouses",
+                                            injected_by=None))
+        result = await srv.on_pre_llm_call(ctx)
+
+        blocks = [m for m in ctx.messages if getattr(m, "injected_by", None) == "okf"]
+        assert result.modified is True, (
+            "a question about warehouses selects another concept than one "
+            "about customers -- if this is False the guard stopped reading the text")
+        assert len(blocks) == 2, "the new selection is appended, the old block stays"
+        assert blocks[0].content == first
+        assert blocks[-1].content != first
+        assert ctx.messages[-1] is blocks[-1]
+
+    @pytest.mark.asyncio
+    async def test_the_block_is_appended_not_pushed_in_at_the_head(
+        self, mock_system_config, tmp_path, bundle,
+    ):
+        """Position is the point: at the head the block is hoisted into the
+        prompt by Anthropic and Gemini, and every rebuild invalidates the
+        cached prefix behind it."""
+        srv = self._server_with_hook(mock_system_config, tmp_path, bundle)
+        before = [SimpleNamespace(role="system", content="you are an agent"),
+                  SimpleNamespace(role="user", content="tell me about customers")]
+        ctx = SimpleNamespace(messages=list(before), session_id="s1", hook_config={})
+
+        await srv.on_pre_llm_call(ctx)
+
+        assert getattr(ctx.messages[-1], "injected_by", None) == "okf"
+        assert ctx.messages[-1].role == DEVELOPER
+        assert [m.content for m in ctx.messages[:2]] == [m.content for m in before],             "everything that was there before must stay byte-identical"
 
     @pytest.mark.asyncio
     async def test_disabled_without_bundle(self, mock_system_config, tmp_path, bundle):

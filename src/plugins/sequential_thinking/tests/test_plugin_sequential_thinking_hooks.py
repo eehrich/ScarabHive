@@ -4,6 +4,8 @@ Tests the on_pre_llm_call hook that injects active sessions into system prompt.
 """
 
 import pytest
+
+from agent_system.llm.message_roles import DEVELOPER
 from unittest.mock import AsyncMock
 
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
@@ -109,8 +111,8 @@ async def test_hook_inject_reminder_no_active_session(server):
     assert len(context.messages) == 3  # Original 2 + 1 injection
     
     # Check injection content
-    injected = context.messages[1]  # After first system message
-    assert injected.role == "system"
+    injected = context.messages[-1]  # appended as the last turn
+    assert injected.role == DEVELOPER
     assert "Sequential Thinking Tool Available" in injected.content
     assert "sequential_thinking()" in injected.content
 
@@ -163,8 +165,8 @@ async def test_hook_inject_active_session(server, mock_status):
     assert len(context.messages) == 3
     
     # Check injection content
-    injected = context.messages[1]
-    assert injected.role == "system"
+    injected = context.messages[-1]
+    assert injected.role == DEVELOPER
     assert "Active Sequential Thinking Session" in injected.content
     assert "Thought #1" in injected.content
     assert "Thought #2" in injected.content
@@ -220,15 +222,15 @@ async def test_hook_with_branches(server, mock_status):
     assert result.success is True
     assert result.modified is True
     
-    injected = context.messages[1]
+    injected = context.messages[-1]
     assert "Current branch" in injected.content
     assert "alternative" in injected.content
     assert "Available branches" in injected.content
 
 
 @pytest.mark.asyncio
-async def test_hook_removes_old_injection(server, mock_status):
-    """Test hook removes old injection before adding new one."""
+async def test_hook_appends_the_new_state_behind_the_old_one(server, mock_status):
+    """The earlier block stays put -- rewriting it is what broke the cache."""
     agent_session_id = "test-agent-session"
     
     params = {
@@ -263,17 +265,18 @@ async def test_hook_removes_old_injection(server, mock_status):
     
     original_count = len(context.messages)
     result = await server.on_pre_llm_call(context)
-    
+
     assert result.success is True
     assert result.modified is True
-    # Should still be same count (removed old, added new)
-    assert len(context.messages) == original_count
-    
-    # Check that old injection was replaced with new one
-    system_messages = [msg for msg in context.messages if msg.role == "system"]
-    injections = [msg for msg in system_messages if "Sequential Thinking" in msg.content]
-    assert len(injections) == 1  # Only one injection
-    assert "Active Sequential Thinking Session" in injections[0].content  # New injection
+    # The new state is appended; nothing that was there is moved or dropped
+    assert len(context.messages) == original_count + 1
+    assert context.messages[1] is old_injection
+
+    injections = [msg for msg in context.messages
+                  if getattr(msg, "injected_by", None) == "sequential_thinking"]
+    assert len(injections) == 2
+    assert "Active Sequential Thinking Session" in injections[-1].content
+    assert context.messages[-1] is injections[-1], "the newest state is the last word"
 
 
 @pytest.mark.asyncio
@@ -314,7 +317,7 @@ async def test_hook_max_thoughts_limit(server, mock_status):
     assert result.success is True
     assert result.modified is True
     
-    injected = context.messages[1]
+    injected = context.messages[-1]
     # Should show thoughts 6-10 (last 5)
     assert "Thought #6" in injected.content
     assert "Thought #10" in injected.content
@@ -357,7 +360,7 @@ async def test_hook_truncates_long_thoughts(server, mock_status):
     assert result.success is True
     assert result.modified is True
     
-    injected = context.messages[1]
+    injected = context.messages[-1]
     # Should contain truncated version with "..."
     assert "..." in injected.content
     # Full thought should NOT be in injection
@@ -412,7 +415,7 @@ async def test_hook_with_revision(server, mock_status):
     assert result.success is True
     assert result.modified is True
     
-    injected = context.messages[1]
+    injected = context.messages[-1]
     # Should show revision indicator
     assert "(revises #1)" in injected.content
 

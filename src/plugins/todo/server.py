@@ -28,8 +28,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_serializer
 
-from agent_system.tools.schema_based import SchemaBasedToolServer
-from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
+from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
+from agent_system.hooks.plugin_hook import HookContext, HookResult
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -151,7 +151,7 @@ class StorageError(TodoError):
 # TODO Management Server
 # =============================================================================
 
-class TodoServer(SchemaBasedToolServer, PluginHook):
+class TodoServer(SchemaBasedHookToolServer):
     """
     TODO Management Tool Server with Hook Integration
 
@@ -173,13 +173,9 @@ class TodoServer(SchemaBasedToolServer, PluginHook):
                 - enable_dependencies: Whether to enforce dependencies
                 - auto_save: Auto-save on modifications
         """
-        # Initialize tool server (loads schema.yaml for tools)
-        SchemaBasedToolServer.__init__(self, name, system_config, server_config)
-
-        # Initialize PluginHook with hook config from schema.yaml
-        # Extract hook config defaults from loaded schema
-        hook_config = self._extract_hook_config_from_schema()
-        PluginHook.__init__(self, name, config=hook_config)
+        # Tool server and hook in one: the base class initialises both
+        # halves and builds the hook config (schema defaults, plugins.yaml on top).
+        super().__init__(name, system_config, server_config)
 
         # Configuration (using getattr like sequential_thinking)
         self._storage_path = Path(
@@ -217,34 +213,6 @@ class TodoServer(SchemaBasedToolServer, PluginHook):
             f"TodoServer initialized (storage={self._storage_path}, "
             f"max_tasks={self._max_tasks})"
         )
-
-    def _extract_hook_config_from_schema(self) -> Dict[str, Any]:
-        """
-        Extract hook configuration defaults from schema.yaml.
-
-        SchemaBasedToolServer already loaded schema.yaml via SchemaBaseMixin.
-        This method extracts the config section and converts it to runtime values.
-
-        Returns:
-            Dict with hook config values (defaults from schema.yaml)
-        """
-        schema_data = self.get_schema_data()
-        schema_config = schema_data.get("config", {})
-        hook_config = {}
-
-        for key, value in schema_config.items():
-            if isinstance(value, dict) and 'default' in value:
-                # Schema format: {key: {type: ..., default: value}}
-                hook_config[key] = value['default']
-            else:
-                # Already a simple value
-                hook_config[key] = value
-
-        return hook_config
-
-    # =========================================================================
-    # Session Management
-    # =========================================================================
 
     def _get_session_id(self, context: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -1949,7 +1917,9 @@ class TodoServer(SchemaBasedToolServer, PluginHook):
         adds active tasks from the current session to the agent's context,
         providing task awareness without explicit tool calls.
 
-        Configuration is loaded from schema.yaml config section.
+        Configuration: the schema.yaml ``config`` defaults, the server
+        entry's ``hook_config:`` on top, and the calling agent's own
+        ``hooks.overrides`` on top of that.
 
         Args:
             context: Hook context with messages, session_id, agent
@@ -1966,13 +1936,18 @@ class TodoServer(SchemaBasedToolServer, PluginHook):
             return HookResult(success=True, modified=False, context=context)
 
         try:
-            # Get hook config from PluginHook (loaded from schema.yaml via _extract_hook_config_from_schema)
-            max_tasks = self.config.get("max_tasks", 20)
-            filter_status = self.config.get("filter_status", [
+            # `self.config` is schema.yaml plus the server entry's
+            # `hook_config:`; `context.hook_config` is what THIS agent put in
+            # its own `hooks.overrides`, and the README has been offering that
+            # since before the hook existed -- without it, every key an agent
+            # sets there was read by nobody.
+            settings = {**self.config, **(context.hook_config or {})}
+            max_tasks = settings.get("max_tasks", 20)
+            filter_status = settings.get("filter_status", [
                 "not-started", "in-progress", "blocked"
             ])
-            include_completed = self.config.get("include_completed", False)
-            format_type = self.config.get("format", "markdown")
+            include_completed = settings.get("include_completed", False)
+            format_type = settings.get("format", "markdown")
 
             # Query tasks from current session
             result = await self.list_todos(
@@ -1982,14 +1957,10 @@ class TodoServer(SchemaBasedToolServer, PluginHook):
             )
 
             # Always inject TODO tool reminder, with or without tasks
+            from agent_system.llm.message_roles import DEVELOPER
             from agent_system.llm.models import ChatMessage
 
             tasks_list = result.get("tasks", []) if result else []
-
-            # Remove old injection (identified by injected_by attribute)
-            for i in range(len(context.messages) - 1, -1, -1):
-                if getattr(context.messages[i], 'injected_by', None) == "todo":
-                    context.messages.pop(i)
 
             if tasks_list and len(tasks_list) > 0:
                 # Format existing tasks with reminder
@@ -1998,10 +1969,24 @@ class TodoServer(SchemaBasedToolServer, PluginHook):
                 # No tasks yet - inject reminder about todo tool
                 task_prompt = self._format_todo_reminder()
 
-            # Insert after first system message
-            insert_pos = self._find_system_message_position(context.messages)
-            context.messages.insert(insert_pos, ChatMessage(
-                role="system",
+            # Append-only: the list is a turn in the history, not a block at
+            # the head rebuilt on every call. Rebuilt at the head it changed
+            # the prompt prefix every step and the whole history was paid for
+            # again; appended at the end, everything before it stays
+            # byte-identical. The previous block stays where it is and is
+            # superseded by this one, which is the last of them; and a block
+            # compaction has taken away simply comes back, which is the same
+            # branch as a first one. An emptied list is not silence either --
+            # the reminder below takes its place and says there is nothing
+            # open, which an older list would otherwise keep claiming.
+            previous = next(
+                (msg for msg in reversed(context.messages)
+                 if getattr(msg, 'injected_by', None) == "todo"), None)
+            if previous is not None and previous.content == task_prompt:
+                return HookResult(success=True, modified=False, context=context)
+
+            context.messages.append(ChatMessage(
+                role=DEVELOPER,
                 content=task_prompt,
                 injected_by="todo",
             ))
@@ -2077,14 +2062,3 @@ Example: `todo(operation="create", title="Analyze data and create report", prior
             "low": "🟢 LOW"
         }
         return labels.get(priority, priority.upper())
-
-    def _find_system_message_position(self, messages: list) -> int:
-        """Find position to insert task list (after all consecutive system messages at start)."""
-        # Find the end of consecutive system messages at the beginning
-        position = 0
-        for i, msg in enumerate(messages):
-            if msg.role == "system":
-                position = i + 1  # Keep moving past system messages
-            else:
-                break  # Stop at first non-system message
-        return position

@@ -119,7 +119,7 @@ tools:
       description: |
         Store an important fact or decision in core memory for persistent context.
         
-        Core memory facts are always included in the system prompt, ensuring
+        Core memory facts are always part of the conversation, ensuring
         important information is never lost during context compaction.
         
         Use this for:

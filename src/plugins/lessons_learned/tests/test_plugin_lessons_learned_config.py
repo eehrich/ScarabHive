@@ -13,6 +13,7 @@ mind and could not have shown the gap.
 """
 from __future__ import annotations
 
+import tempfile
 import types
 from pathlib import Path
 
@@ -32,8 +33,33 @@ def _shipped() -> dict:
     return data["plugins"]["servers"]["lessons_learned"]
 
 
-def _server(overrides: dict | None = None) -> LessonsLearnedServer:
+#: The one shipped value that must NOT be used as shipped. Building the server
+#: opens the database and creates a vector store next to it, and the shipped
+#: path is the real `data/lessons_learned/lessons.db` -- a test run would open
+#: the live store of every agent that ever learned anything. The profiles this
+#: file is about are unaffected by where the database lives.
+_STORAGE_KEYS = ("database_path",)
+
+
+#: Set per test by the fixture below, so pytest owns the cleanup. A store is
+#: built for every server, and one of them is a ChromaDB directory.
+_STORE: Path | None = None
+
+
+@pytest.fixture(autouse=True)
+def _storage_of_this_test(tmp_path):
+    global _STORE
+    _STORE = tmp_path
+    yield
+    _STORE = None
+
+
+def _server(overrides: dict | None = None,
+            storage: Path | None = None) -> LessonsLearnedServer:
     cfg = {k: v for k, v in _shipped().items() if k not in FRAMEWORK_KEYS}
+    store = storage or _STORE or Path(tempfile.mkdtemp(prefix="lessons_cfg_test_"))
+    for key in _STORAGE_KEYS:
+        cfg[key] = str(store / "lessons.db")
     cfg.update(overrides or {})
     return LessonsLearnedServer(
         "lessons_learned", types.SimpleNamespace(),

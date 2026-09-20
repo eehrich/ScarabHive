@@ -127,7 +127,7 @@ Progressive compression strategy that applies increasingly aggressive techniques
 **Pre-Layer T (on arrival):**
 - A new tool result larger than `tool_result_max_window_share` (default 0.25) of the model's context window is stored right away, below every threshold and hysteresis. The agent reads it back with `read` (paged, or `find=` for the matching parts).
 - The bound is a share of the window, not a token count: a 1M model keeps a 100k chapter inline (the read tool pages 5000 characters at a time). Lower the share per agent for a tighter cap.
-- Only the current round (after the last assistant message the model wrote) is touched: messages a request already carried and their reasoning artifacts stay as they were sent. The one front change is the restoration block behind the system prompt, which explains how to read a stored result: it gains its "Tool Results" section when a session stores its first one, and for an agent whose calls normally skip the hook (no always-on media compaction) it is inserted whenever the hook runs — the same as on a Layer 1 run.
+- Only the current round (after the last assistant message the model wrote) is touched: messages a request already carried and their reasoning artifacts stay as they were sent. The one block of our own is the restoration section, appended as a `developer` turn at the END (it used to sit behind the system prompt, where rebuilding it invalidated the cached prefix behind it); it explains how to read a stored result: it gains its "Tool Results" section when a session stores its first one, and for an agent whose calls normally skip the hook (no always-on media compaction) it is inserted whenever the hook runs — the same as on a Layer 1 run.
 
 **Pre-Layer P (message count, off by default):**
 - Past `max_messages`, the oldest messages are archived and removed until `max_messages_prune_to` remain (0 = half the limit). No LLM call; the agent finds them again through the retrieval tools.
@@ -273,7 +273,7 @@ The plugin registers a `pre_llm_call` hook that:
 
 1. Checks current token usage against thresholds
 2. Applies layered compaction if needed
-3. Adds core memory to system prompt
+3. Appends the restoration block as a `developer` turn at the end -- only when it differs from the block written last
 4. Returns optimized messages to LLM
 
 ## Configuration

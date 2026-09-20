@@ -881,9 +881,11 @@ class OkfServer(SchemaBasedToolServer):
         ``hook_bundle`` (required to do anything), ``hook_max_concepts``,
         ``hook_graph_depth``, ``hook_seed_count``, ``hook_seed_concept``.
 
-        Fires on EVERY step, so a prior OKF block (marked ``injected_by='okf'``)
-        is removed before re-injecting, and the block is placed right after the
-        leading system messages (providers expect system content up front)."""
+        Fires on EVERY step, so the block is written only when the selected
+        concepts actually changed: it is appended at the END as a developer
+        turn and left alone afterwards. A prior block keeps its place -- what
+        the seeds selected then was true then -- and rewriting it would change
+        the prefix the provider has already cached."""
         from agent_system.hooks import HookResult
         try:
             hc = getattr(context, "hook_config", None) or {}
@@ -935,33 +937,30 @@ class OkfServer(SchemaBasedToolServer):
             if not injection:
                 return HookResult(success=True, modified=False)
 
+            # Append-only: the concept block is a turn in the history, not a
+            # text at the head rebuilt on every step. At the head it changed
+            # the prompt prefix on every call, so the whole history was paid
+            # for again; appended at the end, everything before it stays
+            # byte-identical. An earlier block keeps its place -- what the
+            # seeds selected then was true then -- and one that compaction
+            # took away simply comes back.
+            from agent_system.llm.message_roles import DEVELOPER
             from agent_system.llm.models import ChatMessage
-            # Drop any prior OKF injection (this hook re-runs every step).
-            msgs = [m for m in messages
-                    if getattr(m, "injected_by", None) != "okf"]
-            insert_pos = self._leading_system_end(msgs)
-            msgs.insert(insert_pos, ChatMessage(
-                role="system", content=injection, injected_by="okf"))
-            context.messages = msgs
+            previous = next(
+                (m for m in reversed(messages)
+                 if getattr(m, "injected_by", None) == "okf"), None)
+            if previous is not None and previous.content == injection:
+                return HookResult(success=True, modified=False, context=context)
+
+            messages.append(ChatMessage(
+                role=DEVELOPER, content=injection, injected_by="okf"))
+            context.messages = messages
             return HookResult(success=True, modified=True, context=context,
                               metadata={"okf_concepts": len(paths)})
         except Exception as e:  # don't break the LLM call, but make it visible
             logger.warning("okf context hook failed: %s", e, exc_info=True)
             return HookResult(success=False, modified=False,
                               metadata={"error": str(e)})
-
-    @staticmethod
-    def _leading_system_end(messages: List[Any]) -> int:
-        """Index just after the leading run of system messages (where injected
-        context belongs — after the agent's base prompt, before the convo)."""
-        i = 0
-        for m in messages:
-            role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
-            if role == "system":
-                i += 1
-            else:
-                break
-        return i
 
     @staticmethod
     def _render_context_block(bundle: core.Bundle, paths: List[str]) -> str:

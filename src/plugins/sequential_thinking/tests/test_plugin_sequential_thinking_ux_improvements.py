@@ -288,7 +288,7 @@ async def test_hook_limits_sessions_displayed(plugin_server):
     result = await plugin_server.on_pre_llm_call(context)
     
     # Should show single session format (not multi-session)
-    injected_msg = result.context.messages[1]
+    injected_msg = result.context.messages[-1]
     assert "## Active Sequential Thinking Session\n" in injected_msg.content
     assert "## Active Sequential Thinking Sessions" not in injected_msg.content
     

@@ -1,5 +1,7 @@
 """Integration tests for hook in SubAgentManagerServer."""
 import pytest
+
+from agent_system.llm.message_roles import DEVELOPER
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, UTC
 
@@ -121,8 +123,8 @@ async def test_on_pre_llm_call_injects_context(system_config, server_config):
         assert len(context.messages) == 3  # system + injected + user
 
         # Verify injected content
-        injected = context.messages[1]
-        assert injected.role == "system"
+        injected = context.messages[-1]
+        assert injected.role == DEVELOPER
         assert "Active Sub-Agents" in injected.content
         assert "web_research_agent" in injected.content
 

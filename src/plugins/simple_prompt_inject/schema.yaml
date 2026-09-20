@@ -33,16 +33,24 @@ config:
     enum: ["before_last_user", "end"]
     default: "before_last_user"
     description: >
-      Where to inject the prompt:
-      - before_last_user: Insert as system message right before the last user message
-      - end: Append as last message
+      Where to inject the prompt, for every role alike:
+      - before_last_user: right before the last user message. The text moves
+        with the turn, so it is rewritten on every call -- that is the point
+        for a reminder that must be read just before the answer, and it costs
+        the cache of the last message, not of the history.
+      - end: appended once and then left alone. Written again only when the
+        rendered text changes.
 
   role:
     type: string
     enum: ["system", "developer", "user"]
-    default: "system"
+    default: "developer"
     description: >-
       The role of the injected message. "developer" is for what the RUN tells
       the model rather than what the agent IS — a budget, a deadline, a state
       the run just reached. Each LLM client sends it on the best rung its wire
       format has (see agent_system/llm/message_roles.py), so it never errors.
+      Prefer it over "system": Anthropic and Gemini have no system role inside
+      a history and hoist such a message into the prompt head, where it reads
+      as if it had held since the first turn and where a text rendered per
+      call invalidates the cached prefix behind it.

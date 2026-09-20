@@ -111,7 +111,9 @@ class TestSchemaLoading:
         p = SimplePromptInjectPlugin(plugin_dir)  # no server_config → uses schema defaults
         assert p.prompt_template == ""
         assert p.injection_position == "before_last_user"
-        assert p.role == "system"
+        # Not "system": Anthropic and Gemini have no system role inside a
+        # history and hoist such a message into the prompt head.
+        assert p.role == "developer"
 
     def test_config_override_via_server_config(self, make_plugin):
         p = make_plugin("custom text", "end", "user")
@@ -195,17 +197,37 @@ class TestInjectPrompt:
 
     @pytest.mark.asyncio
     async def test_inject_at_end(self, make_plugin, make_context):
-        """Position 'end' with role=system should still go after system messages."""
+        """Position 'end' means the end -- the role does not move it to the head.
+
+        It used to: a system role was forced in behind the system prompt, where
+        Anthropic and Gemini hoist it into the prompt itself and a text that is
+        rendered per call invalidated the cached prefix behind it.
+        """
         p = make_plugin("Appended text.", position="end")
         ctx = make_context()
+        before = [m.content for m in ctx.messages]
         result = await p.inject_prompt(ctx)
 
         msgs = result.context.messages
         assert len(msgs) == 3
-        # System role forces injection after system messages, not at end
-        assert msgs[1].injected_by == "simple_prompt_inject"
-        assert msgs[1].content == "Appended text."
-        assert msgs[1].role == "system"
+        assert msgs[-1].injected_by == "simple_prompt_inject"
+        assert msgs[-1].content == "Appended text."
+        assert [m.content for m in msgs[:len(before)]] == before
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_text_at_the_end_is_not_written_again(
+            self, make_plugin, make_context):
+        """Two identical writes move the end of the prompt for nothing."""
+        p = make_plugin("Appended text.", position="end")
+        ctx = make_context()
+        first = await p.inject_prompt(ctx)
+
+        second = await p.inject_prompt(first.context)
+
+        assert second.modified is False
+        blocks = [m for m in second.context.messages
+                  if m.injected_by == "simple_prompt_inject"]
+        assert len(blocks) == 1
 
     @pytest.mark.asyncio
     async def test_inject_at_end_with_user_role(self, make_plugin, make_context):
@@ -219,6 +241,33 @@ class TestInjectPrompt:
         assert msgs[-1].injected_by == "simple_prompt_inject"
         assert msgs[-1].content == "Appended text."
         assert msgs[-1].role == "user"
+
+    @pytest.mark.asyncio
+    async def test_a_changed_rendering_is_appended_behind_the_old_one(
+            self, make_plugin, make_context):
+        """The text is Jinja-rendered, so it can change between calls.
+
+        A guard on mere EXISTENCE would freeze the first rendering forever.
+        """
+        p = make_plugin("Phase: {{ phase }}.", position="end", role="developer")
+        agent = MagicMock()
+        agent._session_tracker.get_session_template_vars.return_value = {"phase": "draft"}
+        ctx = make_context(agent=agent)
+        first = await p.inject_prompt(ctx)
+        assert first.modified is True
+        first_block = [m for m in first.context.messages
+                       if m.injected_by == "simple_prompt_inject"][0]
+        assert first_block.content == "Phase: draft."
+
+        agent._session_tracker.get_session_template_vars.return_value = {"phase": "review"}
+        second = await p.inject_prompt(first.context)
+
+        assert second.modified is True
+        blocks = [m for m in second.context.messages
+                  if m.injected_by == "simple_prompt_inject"]
+        assert len(blocks) == 2, "the new rendering is appended, the old one stays"
+        assert blocks[0].content == "Phase: draft."
+        assert blocks[-1].content == "Phase: review."
 
     @pytest.mark.asyncio
     async def test_inject_with_user_role(self, make_plugin, make_context):
@@ -276,7 +325,7 @@ class TestInjectPrompt:
 
     @pytest.mark.asyncio
     async def test_multiple_user_messages_system_role(self, plugin):
-        """With role=system, injects after system messages (not mid-conversation)."""
+        """The configured position holds for every role -- see test_inject_at_end."""
         ctx = HookContext(
             hook_type=HookType.PRE_LLM_CALL,
             request_id="r1",
@@ -292,10 +341,12 @@ class TestInjectPrompt:
         msgs = result.context.messages
 
         assert len(msgs) == 5
-        # System role: injected after system messages at the beginning
-        assert msgs[1].injected_by == "simple_prompt_inject"
-        assert msgs[1].role == "system"
-        assert msgs[2].content == "first user"
+        # Default position is before_last_user: a reminder to be read just
+        # before the model answers, wherever the head of the prompt is.
+        assert msgs[3].injected_by == "simple_prompt_inject"
+        assert msgs[3].role == "system"
+        assert msgs[1].content == "first user"
+        assert msgs[4].content == "second user"
 
     @pytest.mark.asyncio
     async def test_multiple_user_messages_user_role(self, make_plugin):

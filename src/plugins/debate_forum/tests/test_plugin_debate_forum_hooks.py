@@ -7,6 +7,8 @@ Tests cover:
 - Edge cases (no channel, empty thread, missing vars)
 """
 import pytest
+
+from agent_system.llm.message_roles import DEVELOPER
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -121,8 +123,8 @@ class TestInjectDebateContext:
         assert not result.modified
 
     @pytest.mark.asyncio
-    async def test_channel_with_topic_injects_system(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Channel with topic but no messages should inject metadata as system message."""
+    async def test_channel_with_topic_appends_metadata(self, hooks: DebateForumHooks, db: DebateForumDB):
+        """Channel metadata is appended as a developer turn, not pushed to the head."""
         ch = db.create_channel(name="test", topic="Test debate")
         msgs = [_sys("system"), _user("hi")]
         ctx = _make_context(msgs, context_vars={"debate_channel_id": ch["channel_id"]})
@@ -131,15 +133,16 @@ class TestInjectDebateContext:
         assert result.success
         assert result.modified
         assert len(result.context.messages) == 3
-        injected = result.context.messages[1]
-        assert injected.role == "system"
+        injected = result.context.messages[-1]
+        assert injected.role == DEVELOPER
         assert injected.injected_by == INJECTION_MARKER
         assert "Test debate" in injected.content
+        assert [m.content for m in result.context.messages[:2]] == ["system", "hi"],             "everything that was there before stays byte-identical"
 
     @pytest.mark.asyncio
     async def test_unpinned_messages_injected_as_user(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Unpinned forum posts should be injected as role=user (permanent),
-        pinned-context/metadata as role=system (compaction-safe)."""
+        """Unpinned forum posts stay role=user (permanent); pinned context is a
+        developer turn at the end, so the prefix in front of it survives."""
         ch = db.create_channel(name="test", topic="Test debate")
         cid = ch["channel_id"]
         db.post_message(cid, "Mira", "advocate", 1, "I argue for X")
@@ -151,17 +154,17 @@ class TestInjectDebateContext:
 
         assert result.success
         assert result.modified
-        # system, system(metadata), user(posts), user(original)
+        # system, user(posts), user(original), developer(metadata)
         assert len(result.context.messages) == 4
 
-        # System injection (metadata / pinned)
-        sys_injected = result.context.messages[1]
-        assert sys_injected.role == "system"
-        assert sys_injected.injected_by == INJECTION_MARKER
-        assert "Test debate" in sys_injected.content
+        # Pinned context / metadata: appended at the end
+        pinned_injected = result.context.messages[-1]
+        assert pinned_injected.role == DEVELOPER
+        assert pinned_injected.injected_by == INJECTION_MARKER
+        assert "Test debate" in pinned_injected.content
 
         # User injection (posts)
-        user_injected = result.context.messages[2]
+        user_injected = result.context.messages[1]
         assert user_injected.role == "user"
         assert user_injected.injected_by == INJECTION_MARKER_POSTS
         assert "Mira" in user_injected.content
@@ -237,15 +240,16 @@ class TestInjectDebateContext:
 
         assert result.modified
         messages = result.context.messages
-        # system, user(metadata), user1, assistant1, user(injected), user2
+        # system, user1, assistant1, user(posts), user2, developer(metadata)
         assert len(messages) == 6
         assert messages[0].role == "system"
-        assert messages[1].injected_by == INJECTION_MARKER  # metadata
-        assert messages[2].content == "Message 1"
-        assert messages[3].content == "Response 1"
-        assert messages[4].injected_by == INJECTION_MARKER_POSTS  # posts
-        assert messages[4].role == "user"
-        assert messages[5].content == "Message 2"
+        assert messages[1].content == "Message 1"
+        assert messages[2].content == "Response 1"
+        assert messages[3].injected_by == INJECTION_MARKER_POSTS  # posts
+        assert messages[3].role == "user"
+        assert messages[4].content == "Message 2"
+        assert messages[5].injected_by == INJECTION_MARKER  # metadata, appended
+        assert messages[5].role == DEVELOPER
 
     @pytest.mark.asyncio
     async def test_formats_round_headers(self, hooks: DebateForumHooks, db: DebateForumDB):
@@ -275,7 +279,7 @@ class TestInjectDebateContext:
         assert not result.modified
 
     @pytest.mark.asyncio
-    async def test_pinned_as_system_unpinned_as_user(self, hooks: DebateForumHooks, db: DebateForumDB):
+    async def test_pinned_as_developer_unpinned_as_user(self, hooks: DebateForumHooks, db: DebateForumDB):
         """Pinned messages → system injection (compaction-safe); unpinned → user injection (permanent)."""
         ch = db.create_channel(name="test", topic="Mixed test")
         cid = ch["channel_id"]
@@ -296,7 +300,7 @@ class TestInjectDebateContext:
         assert len(sys_injected) == 1
         assert len(user_injected) == 1
         assert "Pinned summary" in sys_injected[0].content
-        assert sys_injected[0].role == "system"
+        assert sys_injected[0].role == DEVELOPER
         assert "Normal argument" in user_injected[0].content
         assert user_injected[0].role == "user"
         # Pinned should NOT appear in user injection
@@ -323,8 +327,34 @@ class TestInjectDebateContext:
         assert stored_id == r2["message_id"]
 
     @pytest.mark.asyncio
+    async def test_a_newly_pinned_message_is_appended_behind_the_old_block(
+            self, hooks: DebateForumHooks, db: DebateForumDB):
+        """A guard on mere EXISTENCE would freeze the first pinned set forever."""
+        ch = db.create_channel(name="test", topic="Pin test")
+        cid = ch["channel_id"]
+        r1 = db.post_message(cid, "Mod", "moderator", 0, "First pin")
+        db.pin_message(r1["message_id"])
+        ctx = _make_context([_sys("system"), _user("go")],
+                            context_vars={"debate_channel_id": cid})
+        await hooks.inject_debate_context(ctx)
+        first = [m for m in ctx.messages
+                 if getattr(m, "injected_by", None) == INJECTION_MARKER][0]
+
+        r2 = db.post_message(cid, "Mod", "moderator", 1, "Second pin")
+        db.pin_message(r2["message_id"])
+        result = await hooks.inject_debate_context(ctx)
+
+        assert result.modified
+        blocks = [m for m in ctx.messages
+                  if getattr(m, "injected_by", None) == INJECTION_MARKER]
+        assert len(blocks) == 2, "the new pinned set is appended, the old block stays"
+        assert "Second pin" not in blocks[0].content
+        assert "Second pin" in blocks[-1].content
+        assert blocks[0] is first
+
+    @pytest.mark.asyncio
     async def test_system_injection_is_idempotent(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """System injection (pinned/metadata) should be replaced, not duplicated."""
+        """An unchanged pinned set is not written again -- that keeps the prefix."""
         ch = db.create_channel(name="test", topic="Idempotent test")
         cid = ch["channel_id"]
         r1 = db.post_message(cid, "Mod", "moderator", 0, "Pinned info")
@@ -333,15 +363,19 @@ class TestInjectDebateContext:
         msgs = [_sys("system"), _user("go")]
         ctx = _make_context(msgs, context_vars={"debate_channel_id": cid})
 
-        # First call
         await hooks.inject_debate_context(ctx)
-        sys_count_1 = sum(1 for m in ctx.messages if getattr(m, "injected_by", None) == INJECTION_MARKER)
-        assert sys_count_1 == 1
+        blocks = [m for m in ctx.messages if getattr(m, "injected_by", None) == INJECTION_MARKER]
+        assert len(blocks) == 1
+        written_first = blocks[0]
 
-        # Second call: should replace, not duplicate
-        await hooks.inject_debate_context(ctx)
-        sys_count_2 = sum(1 for m in ctx.messages if getattr(m, "injected_by", None) == INJECTION_MARKER)
-        assert sys_count_2 == 1
+        result = await hooks.inject_debate_context(ctx)
+
+        # Counting is not enough: deleting the block and writing the same text
+        # again keeps the count at one and breaks the prefix all the same.
+        assert result.modified is False, "an unchanged pinned set must not be written again"
+        blocks = [m for m in ctx.messages if getattr(m, "injected_by", None) == INJECTION_MARKER]
+        assert len(blocks) == 1
+        assert blocks[0] is written_first, "the block was replaced by an equal one"
 
     @pytest.mark.asyncio
     async def test_no_new_messages_skips_user_injection(self, hooks: DebateForumHooks, db: DebateForumDB):

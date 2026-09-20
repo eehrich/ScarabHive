@@ -858,13 +858,8 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                         f"showing {len(active_sessions)} most recent"
                     )
 
+            from agent_system.llm.message_roles import DEVELOPER
             from agent_system.llm.models import ChatMessage
-
-            # Remove old injection (identified by injected_by attribute)
-            for i in range(len(context.messages) - 1, -1, -1):
-                if getattr(context.messages[i], 'injected_by', None) == "sequential_thinking":
-                    context.messages.pop(i)
-                    logger.debug(f"Removed old Sequential Thinking injection at position {i}")
 
             if active_sessions:
                 # Format active sessions (one or multiple)
@@ -888,10 +883,20 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                 session_prompt = self._format_thinking_reminder()
                 logger.info("[SequentialThinkingHook] No active session - injecting tool reminder")
 
-            # Insert after first system message
-            insert_pos = self._find_system_message_position(context.messages)
-            context.messages.insert(insert_pos, ChatMessage(
-                role="system",
+            # Append-only: the block is a turn in the history, not a text
+            # at the head rebuilt on every call. At the head it changed the
+            # prompt prefix every step, so the whole history was paid for
+            # again; appended at the end, everything before it stays
+            # byte-identical. The previous block stays where it is, and one
+            # that compaction took away simply comes back.
+            previous = next(
+                (msg for msg in reversed(context.messages)
+                 if getattr(msg, 'injected_by', None) == "sequential_thinking"), None)
+            if previous is not None and previous.content == session_prompt:
+                return HookResult(success=True, modified=False, context=context)
+
+            context.messages.append(ChatMessage(
+                role=DEVELOPER,
                 content=session_prompt,
                 injected_by="sequential_thinking",
             ))
@@ -1064,15 +1069,3 @@ sequential_thinking(
                     lines.append("")
 
             return "\n".join(lines)
-
-    def _find_system_message_position(self, messages: list) -> int:
-        """Find position to insert system message (after all consecutive system messages at start)."""
-        # Find the end of consecutive system messages at the beginning
-        position = 0
-        for i, msg in enumerate(messages):
-            role = msg.role if hasattr(msg, 'role') else msg.get('role')
-            if role == 'system':
-                position = i + 1  # Keep moving past system messages
-            else:
-                break  # Stop at first non-system message
-        return position

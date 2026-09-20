@@ -90,7 +90,7 @@ hooks:
     type: pre_llm_call
     enabled: false  # Default disabled - enable per-agent in config
     timeout: 5.0
-    description: "Inject active lessons into system prompt before LLM calls"
+    description: "Append the active lessons to the history before an LLM call"
     category: "prompt_injection"
     order:
       before: ["message_validation"]
@@ -146,7 +146,7 @@ tools:
       description: |
         Manage persistent lessons learned across sessions.
         Store insights, search by topic, teach other agents, and confirm lesson effectiveness.
-        Lessons are injected into system prompts automatically when the inject_lessons hook is enabled.
+        Active lessons are added to the conversation automatically when the inject_lessons hook is enabled.
       parameters:
         type: object
         properties:

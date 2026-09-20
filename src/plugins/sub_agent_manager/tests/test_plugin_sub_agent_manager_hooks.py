@@ -1,5 +1,7 @@
 """Tests for sub-agent context injection hook."""
 import pytest
+
+from agent_system.llm.message_roles import DEVELOPER
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime, timedelta, UTC
 
@@ -108,8 +110,8 @@ async def test_inject_context_with_sub_agents(injector, mock_manager):
     assert len(context.messages) == 3  # system + injected + user
     
     # Verify injected message is system role
-    injected_msg = context.messages[1]
-    assert injected_msg.role == "system"
+    injected_msg = context.messages[-1]
+    assert injected_msg.role == DEVELOPER
     assert "Active Sub-Agents" in injected_msg.content
     assert "web_research_agent" in injected_msg.content
     assert "financial_analyst_agent" in injected_msg.content
@@ -169,7 +171,7 @@ async def test_inject_context_limits_max_shown(mock_manager):
     assert result.modified is True
     assert result.metadata.get("sub_agents_count") == 2
     
-    injected_content = context.messages[0].content  # Inserted before user message
+    injected_content = context.messages[-1].content  # Inserted before user message
     # Should contain the 2 most recent (indices 4 and 3)
     assert "parent_sub_agent_004" in injected_content
     assert "parent_sub_agent_003" in injected_content
@@ -251,7 +253,7 @@ async def test_markdown_context_format(injector, mock_manager):
     
     await injector.inject_sub_agent_context(context)
     
-    injected_content = context.messages[0].content
+    injected_content = context.messages[-1].content
     
     # Check Markdown table formatting (minimal: Type, Instance ID, Status)
     assert "## Active Sub-Agents" in injected_content
@@ -296,7 +298,7 @@ async def test_text_context_format(mock_manager):
     
     await injector.inject_sub_agent_context(context)
     
-    injected_content = context.messages[0].content
+    injected_content = context.messages[-1].content
     
     # Check text formatting (no Markdown)
     assert "ACTIVE SUB-AGENTS:" in injected_content

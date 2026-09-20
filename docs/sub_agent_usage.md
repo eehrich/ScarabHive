@@ -443,9 +443,9 @@ The "Available" list applies the same `allowed_agents`/`blocked_agents` check as
 
 ### Hook Configuration
 
-The `inject_sub_agent_context` hook inserts a system message with this SAM instance's active sub-agents before each LLM call (after all leading system messages). The hook is registered with `enabled: false`; an agent turns it on with `hooks.overrides: {<sam instance>.inject_sub_agent_context: {enabled: true}}`. The `enabled` option below is the injector's own switch, not the registration. The options are read from `hook_config.inject_sub_agent_context` on the SAM server entry.
+The `inject_sub_agent_context` hook appends this SAM instance's active sub-agents as a `developer` turn at the end of the history before each LLM call. The hook is registered with `enabled: false`; an agent turns it on with `hooks.overrides: {<sam instance>.inject_sub_agent_context: {enabled: true}}`. The `enabled` option below is the injector's own switch, not the registration. The options are read from `hook_config.inject_sub_agent_context` on the SAM server entry.
 
-The block is marked with `injected_by: sub_agent_manager:<instance>` and replaced in place on every call. Because it sits right behind the system prompt, it only changes when a sub-agent is added, removed or changes status: rows are ordered newest created first and carry no usage counters or times.
+The block is marked with `injected_by: sub_agent_manager:<instance>` and written only when it says something new -- a sub-agent added, removed or changed status; rows are ordered newest created first and carry no usage counters or times. An earlier block keeps its place and is superseded by the newer one: deleting it would rewrite the prefix the provider has already cached. When the last sub-agent has finished, that is news too and is said once.
 
 **Options:**
 - `enabled`: Enable/disable context injection (default: true)

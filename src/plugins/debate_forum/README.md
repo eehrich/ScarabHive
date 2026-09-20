@@ -37,10 +37,12 @@ forcing a new one.
 
 Two tiers, and the split is what keeps this affordable:
 
-* **Pinned messages + channel metadata → `role="system"`.** Re-injected fresh
-  on every call. System messages are compaction-safe (`context_engineer`'s
-  `keep_system_messages=True` never archives them), and the pinned set changes
-  rarely, so the prompt cache stays warm between turns.
+* **Pinned messages + channel metadata → `role="developer"`.** Appended when
+  they change, never rewritten. They are no longer compaction-safe by their
+  role (`keep_system_messages` protects system messages, and deliberately not
+  developer notes) -- and they need not be: a block that is gone from the
+  history is simply appended again. The pinned set changes rarely, so this is
+  written seldom, and everything in front of it stays byte-identical.
 * **Unpinned posts → `role="user"`, once.** Only messages newer than
   `debate_last_injected_msg_id` are appended, so nothing is injected twice. The
   marker lives in the session template vars, outside the message list, and

@@ -15,7 +15,7 @@ The Lessons Learned plugin enables agents to learn from experience across sessio
 - **Semantic Search**: ChromaDB-powered vector search finds relevant lessons by meaning
 - **Automatic Extraction**: LLM analyzes conversations at session end to extract new lessons
 - **Deduplication**: Automatic detection and merging of duplicate lessons (similarity-based)
-- **Prompt Injection Hook**: Injects relevant active lessons into system prompts automatically
+- **Prompt Injection Hook**: appends relevant active lessons as a `developer` turn, only when the set changed
 - **Cross-Agent Teaching**: Share lessons between agents with lineage tracking
 - **Panel**: browse, search, edit, consolidate and clean up lessons (see [The panel](#the-panel))
 - **Categories**: Organize lessons by type (style, workflow, error_pattern, domain_knowledge, tool_usage, etc.)
@@ -90,7 +90,7 @@ The plugin provides two hooks:
 
 #### 1. Inject Lessons Hook (pre_llm_call)
 
-Injects active lessons into system prompts before LLM calls. **Disabled by default** — enable per-agent:
+Appends active lessons to the history before LLM calls. **Disabled by default** — enable per-agent:
 
 ```yaml
 agents:
@@ -340,14 +340,14 @@ await agent.call_tool("lessons_learned", {
 **Priority:** After context optimization, before message validation  
 **Default:** Disabled (enable per-agent)
 
-Automatically injects relevant active lessons into system prompts before LLM calls.
+Automatically appends relevant active lessons to the history before LLM calls.
 
 **How it works:**
 1. Fetches all active lessons for the current agent
 2. Sorts by priority (high), confidence (high), evidence count (high)
 3. Builds a formatted prompt section with lesson titles + content
-4. Injects as a system message with `injected_by="lessons_learned"` attribute
-5. Removes old injection (if present) to avoid duplication
+4. Appends a `developer` message with `injected_by="lessons_learned"` at the end -- only when the text differs from the block written last; the earlier block stays where it is
+5. Writes nothing at all when the text is unchanged -- and never removes an earlier block: deleting it would rewrite the prefix the provider has already cached
 
 **Injected Format:**
 ```markdown

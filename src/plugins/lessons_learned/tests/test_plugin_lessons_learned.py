@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent_system.llm.message_roles import DEVELOPER
+
 from plugins.lessons_learned.models import (
     DEFAULT_CATEGORIES,
     DeduplicationResult,
@@ -624,11 +626,96 @@ class TestInjectHook:
         assert result.success
         assert result.modified
 
-        # Should have inserted a message after system message
+        # Appended as the last turn, not pushed in behind the system prompt
         assert len(context.messages) == 3
-        injected = context.messages[1]
+        injected = context.messages[-1]
+        assert injected.role == DEVELOPER
         assert "LESSONS LEARNED" in injected.content
         assert "Rule 1" in injected.content
+
+    @pytest.mark.asyncio
+    async def test_unchanged_lessons_are_not_written_again(self, server: LessonsLearnedServer):
+        """The second call writes nothing -- that is what keeps the prefix cached."""
+        await server.store_lesson(
+            agent_name="test_agent", title="Rule 1", content="Do X",
+            status="active", confidence=0.9, priority=9,
+        )
+
+        from agent_system.llm.models import ChatMessage
+        context = MagicMock()
+        context.agent_name = "test_agent"
+        context.session_id = "s1"
+        context.messages = [ChatMessage(role="system", content="You are a helpful agent."),
+                            ChatMessage(role="user", content="Hello")]
+        context.hook_config = {"max_lessons": 10, "min_confidence": 0.3}
+
+        assert (await server.on_pre_llm_call(context)).modified
+
+        second = await server.on_pre_llm_call(context)
+
+        assert second.modified is False
+        blocks = [m for m in context.messages
+                  if getattr(m, "injected_by", None) == "lessons_learned"]
+        assert len(blocks) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_new_lesson_is_appended_behind_the_old_block(
+            self, server: LessonsLearnedServer):
+        """Without this, a guard on mere EXISTENCE would never update again."""
+        await server.store_lesson(
+            agent_name="test_agent", title="Rule 1", content="Do X",
+            status="active", confidence=0.9, priority=9,
+        )
+        from agent_system.llm.models import ChatMessage
+        context = MagicMock()
+        context.agent_name = "test_agent"
+        context.session_id = "s1"
+        context.messages = [ChatMessage(role="system", content="You are a helpful agent."),
+                            ChatMessage(role="user", content="Hello")]
+        context.hook_config = {"max_lessons": 10, "min_confidence": 0.3}
+        assert (await server.on_pre_llm_call(context)).modified
+
+        await server.store_lesson(
+            agent_name="test_agent", title="Rule 2", content="Do Y",
+            status="active", confidence=0.9, priority=8,
+        )
+        result = await server.on_pre_llm_call(context)
+
+        assert result.modified is True
+        blocks = [m for m in context.messages
+                  if getattr(m, "injected_by", None) == "lessons_learned"]
+        assert len(blocks) == 2, "the new state is appended, the old one keeps its place"
+        assert "Rule 2" not in blocks[0].content and "Rule 2" in blocks[-1].content
+        assert context.messages[-1] is blocks[-1]
+
+    @pytest.mark.asyncio
+    async def test_a_lesson_counts_as_applied_even_when_nothing_was_written(
+            self, server: LessonsLearnedServer):
+        """The block from the call before still stands in this conversation.
+
+        Counting only the calls that rewrote it would turn "applied" into
+        "changed" -- and the confidence machinery reads that number.
+        """
+        stored = await server.store_lesson(
+            agent_name="test_agent", title="Rule 1", content="Do X",
+            status="active", confidence=0.9, priority=9,
+        )
+        lesson_id = stored["lesson_id"]
+        from agent_system.llm.models import ChatMessage
+        context = MagicMock()
+        context.agent_name = "test_agent"
+        context.session_id = "s1"
+        context.messages = [ChatMessage(role="system", content="You are a helpful agent."),
+                            ChatMessage(role="user", content="Hello")]
+        context.hook_config = {"max_lessons": 10, "min_confidence": 0.3}
+
+        await server.on_pre_llm_call(context)
+        after_first = (await server.get_lesson(lesson_id))["application_count"]
+        second = await server.on_pre_llm_call(context)
+        after_second = (await server.get_lesson(lesson_id))["application_count"]
+
+        assert second.modified is False, "fixture: the block was rewritten"
+        assert after_second == after_first + 1
 
     @pytest.mark.asyncio
     async def test_inject_no_agent_name(self, server: LessonsLearnedServer):

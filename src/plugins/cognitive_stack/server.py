@@ -594,13 +594,8 @@ class CognitiveStackServer(SchemaBasedToolServer):
             agent_session_id = context.session_id
             stack_id = self._agent_session_mapping.get(agent_session_id)
 
+            from agent_system.llm.message_roles import DEVELOPER
             from agent_system.llm.models import ChatMessage
-
-            # Remove old injection(s) (identified by injected_by attribute)
-            for i in range(len(context.messages) - 1, -1, -1):
-                if getattr(context.messages[i], 'injected_by', None) == "cognitive_stack":
-                    context.messages.pop(i)
-                    logger.debug(f"Removed old cognitive stack injection at index {i}")
 
             if stack_id and stack_id in self._stacks:
                 stack = self._stacks[stack_id]
@@ -620,10 +615,20 @@ class CognitiveStackServer(SchemaBasedToolServer):
                 stack_prompt = self._format_stack_reminder()
                 logger.info("[CognitiveStackHook] No active stack - injecting tool reminder")
 
-            # Insert after first system message
-            insert_pos = self._find_system_message_position(context.messages)
-            context.messages.insert(insert_pos, ChatMessage(
-                role="system",
+            # Append-only: the block is a turn in the history, not a text
+            # at the head rebuilt on every call. At the head it changed the
+            # prompt prefix every step, so the whole history was paid for
+            # again; appended at the end, everything before it stays
+            # byte-identical. The previous block stays where it is, and one
+            # that compaction took away simply comes back.
+            previous = next(
+                (msg for msg in reversed(context.messages)
+                 if getattr(msg, 'injected_by', None) == "cognitive_stack"), None)
+            if previous is not None and previous.content == stack_prompt:
+                return HookResult(success=True, modified=False, context=context)
+
+            context.messages.append(ChatMessage(
+                role=DEVELOPER,
                 content=stack_prompt,
                 injected_by="cognitive_stack",
             ))
@@ -679,15 +684,3 @@ You have no active stack. Use `{self.name}(operation="push_batch", items=[...])`
                 lines.append(f"- **Frame #{position}**{data_info}: {context}")
 
         return "\n".join(lines)
-
-    def _find_system_message_position(self, messages: list) -> int:
-        """Find position to insert system message (after all consecutive system messages at start)."""
-        # Find the end of consecutive system messages at the beginning
-        position = 0
-        for i, msg in enumerate(messages):
-            role = msg.role if hasattr(msg, 'role') else msg.get('role')
-            if role == 'system':
-                position = i + 1  # Keep moving past system messages
-            else:
-                break  # Stop at first non-system message
-        return position

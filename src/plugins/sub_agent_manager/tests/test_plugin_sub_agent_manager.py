@@ -52,8 +52,8 @@ def injector(mock_manager):
 
 
 @pytest.mark.asyncio
-async def test_hook_injects_sub_agents_once(injector):
-    """Test that sub-agent list is injected only once."""
+async def test_hook_writes_an_unchanged_list_only_once(injector):
+    """The second call writes nothing -- that is what keeps the prefix cached."""
     context = HookContext(
         hook_type="inject_sub_agent_context",
         request_id="test_req_001",
@@ -70,25 +70,24 @@ async def test_hook_injects_sub_agents_once(injector):
     assert result1.success is True
     assert result1.modified is True
     
-    # Count system messages with sub-agent marker
     sub_agent_messages = [
         msg for msg in context.messages
-        if msg.role == "system" and "## Active Sub-Agents" in msg.content
+        if "## Active Sub-Agents" in (msg.content or "")
     ]
-    assert len(sub_agent_messages) == 1, "Should have exactly one sub-agent injection"
-    
+    assert len(sub_agent_messages) == 1
+    assert context.messages[-1] is sub_agent_messages[0], "appended, not pushed to the head"
+
     # Second call (simulate multiple LLM calls)
     result2 = await injector.inject_sub_agent_context(context)
-    
+
     assert result2.success is True
-    assert result2.modified is True
-    
-    # Should still have exactly one sub-agent injection
+    assert result2.modified is False, "nothing changed, so nothing may be written"
+
     sub_agent_messages = [
         msg for msg in context.messages
-        if msg.role == "system" and "## Active Sub-Agents" in msg.content
+        if "## Active Sub-Agents" in (msg.content or "")
     ]
-    assert len(sub_agent_messages) == 1, "Should still have exactly one sub-agent injection after second call"
+    assert len(sub_agent_messages) == 1
 
 
 @pytest.mark.asyncio
@@ -108,22 +107,21 @@ async def test_hook_prevents_multiple_injections_across_calls(injector):
         context.messages.append(ChatMessage(role="user", content=f"Question {i}"))
         result = await injector.inject_sub_agent_context(context)
         assert result.success is True
-        assert result.modified is True
-        
-        # Count all sub-agent injections after each call
+        assert result.modified is (i == 0), "an unchanged list is written once"
+
         sub_agent_messages = [
             msg for msg in context.messages
-            if msg.role == "system" and "## Active Sub-Agents" in msg.content
+            if "## Active Sub-Agents" in (msg.content or "")
         ]
-        
+
         assert len(sub_agent_messages) == 1, (
-            f"After call {i+1}: Expected 1 sub-agent injection, found {len(sub_agent_messages)}"
+            f"After call {i+1}: Expected 1 sub-agent block, found {len(sub_agent_messages)}"
         )
 
 
 @pytest.mark.asyncio
-async def test_hook_no_duplication_with_manual_injection(injector):
-    """Test that hook removes manually injected old sub-agent lists."""
+async def test_hook_supersedes_an_older_unmarked_list(injector):
+    """The old block keeps its place; the current list follows it."""
     # Manually inject old-style sub-agent list
     context = HookContext(
         hook_type="inject_sub_agent_context",
@@ -136,23 +134,22 @@ async def test_hook_no_duplication_with_manual_injection(injector):
         ]
     )
     
-    # Hook should remove old injection and add new one
     result = await injector.inject_sub_agent_context(context)
     assert result.success is True
-    
-    # Should have exactly one sub-agent injection
+
     sub_agent_messages = [
         msg for msg in context.messages
-        if msg.role == "system" and "## Active Sub-Agents" in msg.content
+        if "## Active Sub-Agents" in (msg.content or "")
     ]
-    assert len(sub_agent_messages) == 1, "Should replace old manual injection"
-    assert "outdated info" not in sub_agent_messages[0].content, "Old content should be removed"
-    assert "research_agent" in sub_agent_messages[0].content, "New content should be present"
+    assert len(sub_agent_messages) == 2, "the stale block stays, the new one is appended"
+    assert "outdated info" in sub_agent_messages[0].content, "history is not rewritten"
+    assert "research_agent" in sub_agent_messages[-1].content, "the last word is current"
+    assert context.messages[-1] is sub_agent_messages[-1]
 
 
 @pytest.mark.asyncio
-async def test_hook_insertion_position_after_system_prompt(injector):
-    """Test that sub-agent injection is inserted after first system message."""
+async def test_hook_appends_instead_of_inserting_at_the_head(injector):
+    """Position is the whole point: at the head it invalidates the cache."""
     context = HookContext(
         hook_type="inject_sub_agent_context",
         request_id="test_req_004",
@@ -167,18 +164,9 @@ async def test_hook_insertion_position_after_system_prompt(injector):
     result = await injector.inject_sub_agent_context(context)
     assert result.success is True
     
-    # Find sub-agent injection position
-    sub_agent_index = None
-    for i, msg in enumerate(context.messages):
-        if msg.role == "system" and "## Active Sub-Agents" in msg.content:
-            sub_agent_index = i
-            break
-    
-    assert sub_agent_index is not None, "Sub-agent injection should be present"
-    assert sub_agent_index == 1, f"Sub-agent injection should be at index 1 (after main system prompt), found at {sub_agent_index}"
-    
-    # Verify main system prompt is still first
-    assert context.messages[0].content == "Main system prompt."
+    assert "## Active Sub-Agents" in (context.messages[-1].content or ""),         "the block is the last turn"
+    assert [m.content for m in context.messages[:3]] == [
+        "Main system prompt.", "Hello", "Hi there!"],         "everything that was there before must stay byte-identical"
 
 
 @pytest.mark.asyncio
@@ -257,13 +245,13 @@ async def test_hook_updates_when_sub_agents_change(mock_manager, injector):
     assert result2.success is True
     
     # Should still have exactly one injection
-    injections = [m for m in context.messages if "## Active Sub-Agents" in m.content]
-    assert len(injections) == 1, "Should still have exactly one injection"
-    
-    # Verify updated content
-    updated_injection = injections[0]
+    injections = [m for m in context.messages if "## Active Sub-Agents" in (m.content or "")]
+    assert len(injections) == 2, "the new state is appended behind the old one"
+
+    updated_injection = injections[-1]
     assert "research_agent" in updated_injection.content
     assert "code_agent" not in updated_injection.content, "Removed sub-agent should not appear"
+    assert "code_agent" in injections[0].content, "what was true then stays as it was"
 
 
 @pytest.mark.asyncio

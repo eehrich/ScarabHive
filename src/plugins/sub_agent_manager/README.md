@@ -176,7 +176,8 @@ sub_agent_manager:
 The hook is off by default and enabled per coordinator; its options sit in the
 server entry's `hook_config.inject_sub_agent_context` block, and
 `max_sub_agents_shown` bounds how much of the list reaches the request on every
-call. The block sits right after the system prompt, so it only changes when a
+call. The block is appended as a `developer` turn at the end and written only
+when a
 sub-agent is added, removed or changes status (newest created first, no usage
 counters or times) -- every change costs the provider cache behind it.
 

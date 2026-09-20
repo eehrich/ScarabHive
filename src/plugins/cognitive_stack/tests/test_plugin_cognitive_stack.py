@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent_system.llm.message_roles import DEVELOPER
+
 from agent_system.config import AgentSystemConfig, ToolServerConfig
 from agent_system.hooks.plugin_hook import HookContext
 from agent_system.llm.models import ChatMessage
@@ -591,7 +593,7 @@ async def test_hook_with_active_stack(server, mock_status):
 
 @pytest.mark.asyncio
 async def test_hook_removes_old_injection(server, mock_status):
-    """Test hook removes previous injection before adding new one."""
+    """The earlier block stays put -- rewriting it is what broke the cache."""
     # Create stack
     result = await server.push_batch({
         "items": [{"context": "Task 1"}],
@@ -614,9 +616,15 @@ async def test_hook_removes_old_injection(server, mock_status):
 
     result = await server.on_pre_llm_call(context)
 
-    # Should have only ONE injection (old removed, new added)
-    injections = [m for m in result.context.messages if "Cognitive Stack" in m.content]
-    assert len(injections) == 1
+    # The new state is appended, the old block keeps its place
+    injections = [m for m in result.context.messages
+                  if getattr(m, "injected_by", None) == "cognitive_stack"]
+    assert len(injections) == 2
+    assert injections[-1].role == DEVELOPER, (
+        "a system role in the history is hoisted into the prompt head by "
+        "Anthropic and Gemini -- the move to the end would buy nothing")
+    assert injections[0].content.endswith("Old injection")
+    assert result.context.messages[-1] is injections[-1]
 
 
 @pytest.mark.asyncio
@@ -645,37 +653,30 @@ async def test_hook_prevents_duplicate_injections_across_multiple_calls(server, 
     )
 
     # Simulate 5 consecutive LLM calls (like in a real conversation)
-    # Each call should inject stack info, but only ONE injection should exist at a time
+    # The stack does not change over these calls, so after the first one the
+    # hook must write nothing at all -- that is what keeps the prefix cached.
     for i in range(5):
         result = await server.on_pre_llm_call(context)
         assert result.success is True
-        assert result.modified is True
+        assert result.modified is (i == 0)
 
-        # Count all stack-related injections
         stack_injections = [
             msg for msg in context.messages
-            if msg.role == "system" and (
-                "## Cognitive Stack" in msg.content or
-                "## Active Cognitive Stack" in msg.content
-            )
+            if getattr(msg, "injected_by", None) == "cognitive_stack"
         ]
-
-        # CRITICAL: Should have exactly ONE injection, not accumulating
         assert len(stack_injections) == 1, (
-            f"After call {i+1}: Expected 1 stack injection, found {len(stack_injections)}. "
-            f"Messages: {[msg.content[:50] for msg in context.messages if msg.role == 'system']}"
+            f"After call {i+1}: expected 1 stack block, found {len(stack_injections)}"
         )
 
         # Add user message for next iteration (simulate conversation flow)
         context.messages.append(ChatMessage(role="assistant", content=f"Response {i}"))
         context.messages.append(ChatMessage(role="user", content=f"Question {i+1}"))
 
-    # Final verification: Should still have exactly one injection
     final_stack_injections = [
         msg for msg in context.messages
-        if msg.role == "system" and "Cognitive Stack" in msg.content
+        if getattr(msg, "injected_by", None) == "cognitive_stack"
     ]
-    assert len(final_stack_injections) == 1, "Should have exactly 1 injection after all calls"
+    assert len(final_stack_injections) == 1, "an unchanged stack is written once"
 
 
 @pytest.mark.asyncio

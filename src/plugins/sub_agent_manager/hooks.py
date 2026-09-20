@@ -3,6 +3,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.llm.message_roles import DEVELOPER
 from agent_system.llm.models import ChatMessage
 
 from .manager import SubAgentManager
@@ -14,9 +15,20 @@ logger = logging.getLogger(__name__)
 # blocks persisted before the block carried an injected_by marker.
 _LEGACY_HEADERS = ("## Active Sub-Agents", "ACTIVE SUB-AGENTS:")
 
+#: What supersedes the list once the last sub-agent is gone. Saying it
+#: costs one turn; deleting the old block instead would rewrite history
+#: that the provider has already cached.
+_EMPTY_BLOCK = ("## Active Sub-Agents\n\n"
+                "None -- every sub-agent of this run has finished.")
+
 
 class SubAgentContextInjector:
-    """Injects active sub-agent information into system prompt before LLM calls."""
+    """Appends the active sub-agents to the history before an LLM call.
+
+    A `developer` turn at the end, written only when the list says
+    something new. Never at the head: there a provider hoists it into the
+    prompt and every change invalidates the cached prefix behind it.
+    """
 
     def __init__(
         self, 
@@ -45,8 +57,9 @@ class SubAgentContextInjector:
         self.max_sub_agents_shown = self.config.get("max_sub_agents_shown", 10)
         self.show_completed = self.config.get("show_completed", False)
         self.format = self.config.get("format", "markdown")
-        # Marks the injected message so this instance replaces exactly its own
-        # block -- never a tool result or user text that quotes the header.
+        # Marks the injected message so this instance recognises exactly its
+        # own previous block -- never a tool result or user text that quotes
+        # the header. Recognises, not replaces: the old block stays.
         self.marker = f"sub_agent_manager:{server_name}"
         
         # Phase-based agent filtering (from server's top-level config)
@@ -65,10 +78,11 @@ class SubAgentContextInjector:
     async def inject_sub_agent_context(self, context: HookContext) -> HookResult:
         """Inject sub-agent context into messages before LLM call.
 
-        Keeps one system message with this instance's sub-agents right after the
-        leading system messages. The block sits early in the request, so it must
-        only change when a sub-agent is added, removed or changes status --
-        every change invalidates the provider cache for everything behind it.
+        Appends this instance's sub-agents as a developer turn, and only when
+        that list says something new. The block used to sit behind the leading
+        system messages, where a provider hoists it into the prompt head: from
+        there every change invalidated the cache for the whole history. As a
+        turn at the end it changes nothing that came before it.
 
         Args:
             context: Hook context with session_id and messages
@@ -112,16 +126,19 @@ class SubAgentContextInjector:
                     logger.warning(f"[SubAgentContext] Unexpected error listing sub-agents: {e}")
                 return HookResult(success=True, modified=False, context=context)
 
-            # Remove the previous block first, so a list that has become empty
-            # does not leave a stale one behind.
-            messages = [m for m in context.messages if not self._is_own_block(m)]
-            removed = len(messages) != len(context.messages)
+            messages = context.messages
+            previous = next((m for m in reversed(messages)
+                             if self._is_own_block(m)), None)
 
             if not sub_agents:
                 logger.debug(f"[SubAgentContext] No sub-agents for session {context.session_id}")
-                if removed:
-                    context.messages = messages
-                return HookResult(success=True, modified=removed, context=context)
+                # A list that has become empty is news too, but only once: the
+                # old block stays where it is and is superseded, never deleted.
+                if previous is None or previous.content == _EMPTY_BLOCK:
+                    return HookResult(success=True, modified=False, context=context)
+                messages.append(ChatMessage(role=DEVELOPER, content=_EMPTY_BLOCK,
+                                            injected_by=self.marker))
+                return HookResult(success=True, modified=True, context=context)
 
             # Newest first by creation time: unlike last_used, it does not move
             # when a sub-agent is continued, so the block stays byte-identical.
@@ -136,8 +153,11 @@ class SubAgentContextInjector:
             # Build context message with phase-aware allowed agents
             context_content = self._build_context_message(sub_agents, phase_allowed_agents, current_phase)
 
-            messages.insert(self._find_system_message_position(messages), ChatMessage(
-                role="system",
+            if previous is not None and previous.content == context_content:
+                return HookResult(success=True, modified=False, context=context)
+
+            messages.append(ChatMessage(
+                role=DEVELOPER,
                 content=context_content,
                 injected_by=self.marker,
             ))
@@ -298,15 +318,3 @@ class SubAgentContextInjector:
         lines.append(f"Use the {self.server_name}_manage_sub_agent tool with operation='continue' to resume conversations.")
 
         return "\n".join(lines)
-
-    def _find_system_message_position(self, messages: list) -> int:
-        """Find position to insert system message (after all consecutive system messages at start)."""
-        # Find the end of consecutive system messages at the beginning
-        position = 0
-        for i, msg in enumerate(messages):
-            role = msg.role if hasattr(msg, 'role') else msg.get('role')
-            if role == 'system':
-                position = i + 1  # Keep moving past system messages
-            else:
-                break  # Stop at first non-system message
-        return position

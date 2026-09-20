@@ -4,7 +4,7 @@ Minimal hooks-only plugin that injects configurable text into conversations befo
 
 ## Overview
 
-Use this plugin to add persistent reminders, instructions, or context to LLM conversations without editing agent system prompts. The injected message is automatically replaced on each call (no duplicates).
+Use this plugin to add persistent reminders, instructions, or context to LLM conversations without editing agent system prompts. With `injection_position: before_last_user` the reminder moves with the turn (it is meant to be read just before the answer); with `end` it is appended once and written again only when the rendered text changes.
 
 Prompts can be defined inline (`prompt_text`) or loaded from a Markdown file (`prompt_file`). Both support **Jinja2 template rendering** with the agent's `template_vars`.
 
@@ -25,7 +25,7 @@ plugins:
       config:
         prompt_text: "Remember: always respond in {{ lang }}."
         injection_position: "before_last_user"  # or "end"
-        role: "system"                           # or "user"
+        role: "developer"                        # or "user"
 ```
 
 ### Using a Markdown file
@@ -39,7 +39,7 @@ plugins:
       config:
         prompt_file: "prompts/my_instructions.md"  # relative to config/
         injection_position: "before_last_user"
-        role: "system"
+        role: "developer"
 ```
 
 The file path is resolved relative to `config/` or can be absolute. When `prompt_file` is set, it takes precedence over `prompt_text`.
@@ -50,8 +50,8 @@ The file path is resolved relative to `config/` or can be absolute. When `prompt
 |-----|------|---------|-------------|
 | `prompt_text` | string | `""` | Text to inject. Empty = no-op. Supports Jinja2. |
 | `prompt_file` | string | `""` | Path to `.md` file (relative to `config/` or absolute). Takes precedence over `prompt_text`. |
-| `injection_position` | string | `"before_last_user"` | `before_last_user` inserts before the last user message; `end` appends. |
-| `role` | string | `"system"` | Role of the injected message (`system` or `user`). |
+| `injection_position` | string | `"before_last_user"` | `before_last_user` inserts before the last user message and moves the text with the turn (the previous copy goes); `end` appends it once and writes again only when the rendered text changed. |
+| `role` | string | `"developer"` | Role of the injected message (`developer`, `system` or `user`). `developer` is what the RUN tells the model and keeps the position configured above; `system` is hoisted into the prompt head by Anthropic and Gemini and breaks the cache -- the plugin logs a warning when it is set. |
 
 ### Jinja2 Template Variables
 

@@ -16,8 +16,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from agent_system.hooks.plugin_hook import HookContext, HookResult, PluginHook
-from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.utils.json_utils import repair_json
 from agent_system.utils.vector_store import VectorStore
 
@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS extraction_log (
 """
 
 
-class LessonsLearnedServer(SchemaBasedToolServer, PluginHook):
+class LessonsLearnedServer(SchemaBasedHookToolServer):
     """
     Lessons Learned Tool Server with semantic search.
 
@@ -1689,7 +1689,15 @@ class LessonsLearnedServer(SchemaBasedToolServer, PluginHook):
     # ==========================================================================
 
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
-        """Inject active lessons into system prompt."""
+        """Append the active lessons to the history when they changed.
+
+        A `developer` turn at the end, not a block at the head: there a
+        provider hoists it into the prompt and a text rebuilt per call
+        invalidates the cached prefix behind it. Configuration comes from
+        the calling agent's ``hooks.overrides`` (``context.hook_config``);
+        the schema `config:` block of this plugin is its SERVER config and
+        deliberately not merged in here.
+        """
         try:
             agent_name = context.agent_name
             if not agent_name:
@@ -1719,22 +1727,29 @@ class LessonsLearnedServer(SchemaBasedToolServer, PluginHook):
             if not injection:
                 return HookResult(success=True, modified=False)
 
+            # Append-only: the lessons are a turn in the history, not a block
+            # at the head rebuilt on every call. At the head they changed the
+            # prompt prefix every step, so the whole history was paid for
+            # again; appended at the end, everything before them stays
+            # byte-identical. An earlier block keeps its place, and one that
+            # compaction took away simply comes back.
+            from agent_system.llm.message_roles import DEVELOPER
             from agent_system.llm.models import ChatMessage
-            if context.messages:
-                # Remove old injection (identified by injected_by attribute)
-                for i in range(len(context.messages) - 1, -1, -1):
-                    if getattr(context.messages[i], 'injected_by', None) == "lessons_learned":
-                        context.messages.pop(i)
-
-                # Insert after system messages
-                insert_pos = self._find_system_message_position(context.messages)
-                context.messages.insert(insert_pos, ChatMessage(
-                    role="system",
+            previous = next(
+                (msg for msg in reversed(context.messages or [])
+                 if getattr(msg, 'injected_by', None) == "lessons_learned"), None)
+            written = previous is None or previous.content != injection
+            if written and context.messages is not None:
+                context.messages.append(ChatMessage(
+                    role=DEVELOPER,
                     content=injection,
                     injected_by="lessons_learned",
                 ))
 
-            # Record applications
+            # Record applications. Also when nothing was written: the block
+            # from an earlier call still stands in this conversation, so these
+            # lessons ARE in front of the model. Counting only the rewrites
+            # would turn "applied" into "changed".
             session_id = context.session_id
             for lesson in lessons:
                 try:
@@ -1742,9 +1757,10 @@ class LessonsLearnedServer(SchemaBasedToolServer, PluginHook):
                 except Exception:
                     pass
 
-            logger.info(f"Injected {len(lessons)} lessons for agent '{agent_name}'")
+            if written:
+                logger.info(f"Injected {len(lessons)} lessons for agent '{agent_name}'")
             return HookResult(
-                success=True, modified=True, context=context,
+                success=True, modified=written, context=context,
                 metadata={"injected_lessons": len(lessons)},
             )
         except Exception as e:
@@ -1805,15 +1821,3 @@ class LessonsLearnedServer(SchemaBasedToolServer, PluginHook):
         except Exception as e:
             logger.error(f"extract_lessons hook failed: {e}", exc_info=True)
             return HookResult(success=False, modified=False, metadata={"error": str(e)})
-
-    @staticmethod
-    def _find_system_message_position(messages: list) -> int:
-        """Find position after consecutive system messages at start."""
-        position = 0
-        for i, msg in enumerate(messages):
-            role = msg.role if hasattr(msg, 'role') else msg.get('role')
-            if role == 'system':
-                position = i + 1
-            else:
-                break
-        return position

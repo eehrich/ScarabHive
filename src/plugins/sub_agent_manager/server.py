@@ -8,8 +8,8 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, List, Optional
 
-from agent_system.tools.schema_based import SchemaBasedToolServer
-from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
+from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
+from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.core.session_presence import presence_for
 from agent_system.services.session_manager import SessionNotFoundError
 from agent_system.utils.id import short_id
@@ -84,7 +84,7 @@ def _injector_options(server_config: Any) -> dict:
     return dict(hook_config.get("inject_sub_agent_context") or {})
 
 
-class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
+class SubAgentManagerServer(SchemaBasedHookToolServer):
     """tool server for sub-agent management with hook support.
 
     Provides a unified tool `manage_sub_agent` with 5 operations:
@@ -105,12 +105,9 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
             system_config: System-wide configuration
             server_config: Plugin-specific configuration
         """
-        # Initialize tool server
-        SchemaBasedToolServer.__init__(self, name, system_config, server_config)
-
-        # Initialize hook
-        hook_config = getattr(server_config, 'hook_config', {})
-        PluginHook.__init__(self, name, config=hook_config)
+        # Tool server and hook in one: the base class initialises both
+        # halves and builds the hook config (schema defaults, plugins.yaml on top).
+        super().__init__(name, system_config, server_config)
 
         # Configuration
         self.max_sub_agents = int(getattr(server_config, 'max_sub_agents_per_session', 10))
@@ -209,6 +206,18 @@ class SubAgentManagerServer(SchemaBasedToolServer, PluginHook):
         so the caller can report exactly what the reload updated.
         """
         changes: dict[str, dict] = {}
+
+        # The hook half reads its config lazily off server_config and caches
+        # it (SchemaBasedHookToolServer), so both have to point at the new one.
+        # Nothing in THIS plugin reads `self.config` today -- the injector gets
+        # `_injector_config`, refreshed below -- but the base class hands
+        # `self.config` to every hook author as the hook's configuration, and
+        # it must not be the one answer in this object that a reload missed.
+        # Note that re-pointing `server_config` also refreshes what is read
+        # lazily from it elsewhere (custom tool descriptions); the report below
+        # lists changed FIELDS, not that.
+        self.server_config = server_config
+        self._hook_config = None
 
         def _upd(attr: str, new_value: Any) -> None:
             old_value = getattr(self, attr, None)

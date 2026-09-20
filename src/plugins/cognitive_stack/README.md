@@ -3,7 +3,7 @@
 Working memory as a stack. An agent pushes what it is about to interrupt,
 works on the interruption, and pops back — instead of holding the nesting in
 prose and losing it three turns later. A `pre_llm_call` hook re-injects the top
-frames into the system prompt, so the stack stays visible even after the
+frames as a turn at the end of the history, so the stack stays visible even after the
 conversation has been compacted.
 
 ## What it provides
@@ -13,7 +13,7 @@ conversation has been compacted.
 | Surface | Name | Purpose |
 |---|---|---|
 | Tool | `cognitive_stack` | one tool, five operations |
-| Hook | `inject_stack_context` (`pre_llm_call`, off by default) | top N frames into the system prompt |
+| Hook | `inject_stack_context` (`pre_llm_call`, off by default) | top N frames appended as a `developer` turn, only when they changed |
 
 The tool is named after the **instance**, not after an action:
 `SchemaBasedToolMixin` routes a tool whose name equals the server name to

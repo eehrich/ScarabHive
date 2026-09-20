@@ -22,8 +22,8 @@ import re
 
 from pydantic import BaseModel, Field, field_serializer
 
-from agent_system.tools.schema_based import SchemaBasedToolServer
-from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
+from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
+from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.utils.vector_store import VectorStore
 from agent_system.utils.suggest import suggest_path
 
@@ -113,7 +113,7 @@ class ChromaDBError(MemoryError):
 # Memory Management Server
 # =============================================================================
 
-class MemoryServer(SchemaBasedToolServer, PluginHook):
+class MemoryServer(SchemaBasedHookToolServer):
     """
     Memory Management Server with ChromaDB vector search.
 
@@ -1047,12 +1047,20 @@ class MemoryServer(SchemaBasedToolServer, PluginHook):
             max_memories = self.max_memories
             use_semantic = self.use_semantic_injection
 
-            # Get user's current message for semantic search
+            # Get user's current message for semantic search.
+            # The LAST message is not it: notes the run or a hook appended sit
+            # there -- since the state blocks moved to the end of the history,
+            # the newest one is usually this hook's own injection from the step
+            # before, and the memories would then be selected by the list of
+            # memories. What a PERSON wrote is the query.
             user_message = None
-            if context.messages and len(context.messages) > 0:
-                last_msg = context.messages[-1]
-                if hasattr(last_msg, 'content'):
-                    user_message = last_msg.content
+            for msg in reversed(context.messages or []):
+                get = msg.get if isinstance(msg, dict) else (
+                    lambda key, m=msg: getattr(m, key, None))
+                if (get('role') == 'user' and get('injected_by') is None
+                        and isinstance(get('content'), str) and get('content').strip()):
+                    user_message = get('content')
+                    break
 
             # Select memories to inject
             if use_semantic and user_message:
@@ -1090,16 +1098,22 @@ class MemoryServer(SchemaBasedToolServer, PluginHook):
 
             injection = "\n".join(lines)
 
-            # Remove old injection (identified by injected_by attribute)
+            # Append-only: the list is a turn in the history, not a block at
+            # the head rebuilt on every call. At the head it changed the prompt
+            # prefix every step, so the whole history was paid for again;
+            # appended at the end, everything before it stays byte-identical.
+            # The previous block keeps its place, and one that compaction took
+            # away simply comes back.
+            from agent_system.llm.message_roles import DEVELOPER
             from agent_system.llm.models import ChatMessage
-            for i in range(len(context.messages) - 1, -1, -1):
-                if getattr(context.messages[i], 'injected_by', None) == "memory":
-                    context.messages.pop(i)
+            previous = next(
+                (msg for msg in reversed(context.messages)
+                 if getattr(msg, 'injected_by', None) == "memory"), None)
+            if previous is not None and previous.content == injection:
+                return HookResult(success=True, modified=False, context=context)
 
-            # Insert after first system message
-            insert_pos = self._find_system_message_position(context.messages)
-            context.messages.insert(insert_pos, ChatMessage(
-                role="system",
+            context.messages.append(ChatMessage(
+                role=DEVELOPER,
                 content=injection,
                 injected_by="memory",
             ))
@@ -1116,15 +1130,3 @@ class MemoryServer(SchemaBasedToolServer, PluginHook):
         except Exception as e:
             logger.error(f"Hook execution failed: {e}", exc_info=True)
             return HookResult(success=False, modified=False, metadata={"error": str(e)})
-
-    def _find_system_message_position(self, messages: list) -> int:
-        """Find position to insert system message (after all consecutive system messages at start)."""
-        # Find the end of consecutive system messages at the beginning
-        position = 0
-        for i, msg in enumerate(messages):
-            role = msg.role if hasattr(msg, 'role') else msg.get('role')
-            if role == 'system':
-                position = i + 1  # Keep moving past system messages
-            else:
-                break  # Stop at first non-system message
-        return position

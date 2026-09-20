@@ -15,8 +15,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agent_system.hooks.plugin_hook import HookContext, HookResult, PluginHook
-from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 
 from .atomic_json import write_json_atomically
 from .compaction import RETRIEVAL_MARKER
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class ContextEngineerServer(SchemaBasedToolServer, PluginHook):
+class ContextEngineerServer(SchemaBasedHookToolServer):
     """Unified tool server and hook for context engineering.
 
     Provides tools for manual context management:
@@ -52,12 +52,9 @@ class ContextEngineerServer(SchemaBasedToolServer, PluginHook):
             system_config: System-wide configuration
             server_config: Plugin-specific configuration
         """
-        # Initialize tool server
-        SchemaBasedToolServer.__init__(self, name, system_config, server_config)
-        
-        # Initialize hook
-        hook_config = getattr(server_config, "hook_config", {})
-        PluginHook.__init__(self, name, config=hook_config)
+        # Tool server and hook in one: the base class initialises both
+        # halves and builds the hook config (schema defaults, plugins.yaml on top).
+        super().__init__(name, system_config, server_config)
         
         # Load configuration. ONE mapping, handed over whole — the plugin maps
         # it onto CompactionConfig by field name and warns about keys that

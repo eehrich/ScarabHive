@@ -1035,7 +1035,10 @@ plugins:
           If you start to repeat yourself, try a different approach.
 
         injection_position: "before_last_user"  # or "end"
-        role: "system"
+        # Not "system": Anthropic and Gemini hoist a system message out of the
+        # history into the prompt head, which is both a lie about when it
+        # started to hold and a cache break on every call.
+        role: "developer"
 
     # Fuehrt die vorhersagbaren Eroeffnungs-Tool-Calls (Dokument laden,
     # Context-Var setzen) direkt nach dem User-Turn aus, VOR dem ersten

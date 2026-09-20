@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent_system.llm.message_roles import DEVELOPER
+
 from agent_system.hooks import HookContext, HookType
 from agent_system.llm.models import ChatMessage
 from plugins.context_engineer import hooks as hooks_mod
@@ -489,6 +491,80 @@ class TestTheBlockBehindTheSystemPrompt:
 
         assert pruned.metadata["messages_pruned"] > 0, "fixture: nothing was pruned"
         assert "books.db" in self._block(pruned)
+
+    @pytest.mark.asyncio
+    async def test_the_block_is_the_last_turn_and_leaves_the_prefix_alone(
+            self, plugin, monkeypatch):
+        """Appended, not inserted at the head: there a provider hoists it into
+        the prompt and every rebuild invalidates the cache behind it."""
+        await plugin._handle_store_fact("the deploy target is api1", session_id="facts")
+        messages = self._chat(20)
+        before = [m.content for m in messages]
+
+        result = await self._call(plugin, 50_000, monkeypatch, messages)
+
+        kept = result.context.messages
+        assert getattr(kept[-1], "injected_by", None) == hooks_mod._RESTORATION_MARKER
+        assert kept[-1].role == DEVELOPER
+        assert [m.content for m in kept[:len(before)]] == before,             "the conversation in front of the block must stay byte-identical"
+
+    @pytest.mark.asyncio
+    async def test_a_changed_block_is_appended_behind_the_old_one(self, plugin, monkeypatch):
+        """A guard on mere EXISTENCE would freeze the first block forever."""
+        await plugin._handle_store_fact("the deploy target is api1", session_id="facts")
+        first = await self._call(plugin, 50_000, monkeypatch, self._chat(20))
+        carried = list(first.context.messages)
+        old_block = next(m for m in carried
+                         if getattr(m, "injected_by", None) == hooks_mod._RESTORATION_MARKER)
+
+        # a fact arrives, and the front is rewritten anyway -- the two
+        # conditions under which the block is allowed to say something new
+        await plugin._handle_store_fact("the database is books.db", session_id="facts")
+        rewritten = [ChatMessage(role="user", content="summary of the first half"),
+                     *carried[1:]]
+        second = await self._call(plugin, 50_000, monkeypatch, rewritten)
+
+        blocks = [m for m in second.context.messages
+                  if getattr(m, "injected_by", None) == hooks_mod._RESTORATION_MARKER]
+        assert len(blocks) == 2, "the new state is appended, the old block keeps its place"
+        # by content, not by identity: the hook rebuilds messages that reach it
+        # as dicts, so the carried block is an equal object, not the same one
+        assert blocks[0].content == old_block.content
+        assert "books.db" not in blocks[0].content
+        assert "books.db" in blocks[-1].content
+        assert second.context.messages[-1] is blocks[-1]
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_block_is_not_written_again(self, plugin, monkeypatch):
+        """Writing the same text twice is what the whole rebuild is about."""
+        await plugin._handle_store_fact("the deploy target is api1", session_id="facts")
+        first = await self._call(plugin, 50_000, monkeypatch, self._chat(20))
+        carried = list(first.context.messages)
+        assert any(getattr(m, "injected_by", None) == hooks_mod._RESTORATION_MARKER
+                   for m in carried), "fixture: no block was written"
+
+        # A later note of someone else's makes a rewrite visible. Counting
+        # cannot: deleting the block and appending the same text again keeps
+        # the count at one -- and that IS the rewrite this change is about,
+        # because everything from the old position onwards has to be paid for
+        # again. Identity cannot be used here (the hook rebuilds the messages
+        # it is handed), but order survives a rebuild.
+        carried.append(ChatMessage(role=DEVELOPER, content="Step 4 of 8.",
+                                   injected_by="agent.step_budget"))
+
+        second = await self._call(plugin, 50_000, monkeypatch, carried)
+
+        out = second.context.messages
+        blocks = [i for i, m in enumerate(out)
+                  if getattr(m, "injected_by", None) == hooks_mod._RESTORATION_MARKER]
+        assert len(blocks) == 1, "the same block was written a second time"
+        later = [i for i, m in enumerate(out)
+                 if getattr(m, "injected_by", None) == "agent.step_budget"]
+        assert later and blocks[0] < later[0], (
+            "the block moved behind a note that was written after it: it was rewritten")
+        assert [getattr(m, "content", None) for m in out] == \
+               [getattr(m, "content", None) for m in carried], \
+               "an unchanged run must leave the history byte-identical"
 
     @pytest.mark.asyncio
     async def test_it_keeps_no_copy_of_the_first_message(self, plugin, monkeypatch):

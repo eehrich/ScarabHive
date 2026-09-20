@@ -499,34 +499,43 @@ for task in orchestrator_tasks["tasks"].values():
 
 ## Automatic Task Injection (Hook)
 
-The TODO plugin automatically injects active tasks into the agent's system prompt before every LLM call, providing seamless task awareness without explicit tool calls.
+The TODO plugin keeps the active tasks in front of the model: before every LLM call the hook appends the list as a `developer` turn at the END of the history, and only when it says something new. It used to insert the list behind the system prompt on every call, where a text that is rebuilt every step invalidates the cached prefix behind it.
 
 ### How It Works
 
 **Pre-LLM Hook:**
 - Executes before each LLM call
 - Queries active tasks from current session
-- Formats as markdown and injects into system messages
+- Formats as markdown and appends it as a `developer` turn; the previous block stays where it is and is superseded by the newer one
 - Agent sees tasks automatically in context
 
 **Configuration:**
 
+For the whole instance, in `config/plugins.yaml`:
+
 ```yaml
-# In config/plugins.yaml
 todo:
   type: todo
   enabled: true
-  
+
+  hook_config:
+    max_tasks: 20
+    filter_status: ["not-started", "in-progress", "blocked"]
+    include_completed: false
+    format: "markdown"
+```
+
+For one agent, in its `config/agents/*.yaml` — these win over the instance:
+
+```yaml
   agent_config:
     hooks:
       enabled: true
       overrides:
         todo.inject_todo_tasks:
           enabled: true
-          max_tasks: 20
-          filter_status: ["not-started", "in-progress", "blocked"]
-          include_completed: false
-          format: "markdown"
+          max_tasks: 5
+          format: "text"
 ```
 
 **Default Behavior:**

@@ -1,207 +1,160 @@
-"""Tests for Sequential Thinking plugin hook duplicate injection prevention."""
+"""The thinking state is appended when it changes, and never rewritten.
+
+Until 18.09.2026 the hook deleted its previous block and inserted a fresh one
+behind the system prompt on every call. A text that is rebuilt every step then
+sits in the prompt HEAD, and the cached prefix behind it is invalid on every
+call. The state is a turn now: appended at the end, left alone afterwards, and
+written again only when it says something new.
+"""
 import pytest
 from agent_system.hooks.plugin_hook import HookContext
+from agent_system.llm.message_roles import DEVELOPER
 from agent_system.llm.models import ChatMessage
 from plugins.sequential_thinking.server import SequentialThinkingServer
+
+MARKER = "sequential_thinking"
 
 
 @pytest.fixture
 def server(tmp_path):
     """Create SequentialThinkingServer instance for testing."""
     from agent_system.config import AgentSystemConfig, ToolServerConfig
-    
+
     config = AgentSystemConfig(data_dir=tmp_path)
+    # Flat, not under plugin_config: the server reads these off the config
+    # object itself (ToolServerConfig allows extra fields), so nested they
+    # were read by nobody and the fixture pinned nothing.
     server_config = ToolServerConfig(
         name="sequential_thinking",
-        plugin_config={
-            "max_history_size": 100,
-            "session_ttl_seconds": 3600
-        }
+        max_history_size=100,
+        session_ttl_seconds=3600,
     )
-    
+
     return SequentialThinkingServer("sequential_thinking", config, server_config)
 
 
+def blocks(context):
+    return [msg for msg in context.messages
+            if getattr(msg, "injected_by", None) == MARKER]
+
+
 @pytest.mark.asyncio
-async def test_hook_injects_reminder_once(server):
-    """Test that thinking reminder is injected only once."""
+async def test_an_unchanged_state_is_not_written_again(server):
+    """The second call adds nothing -- that is what keeps the prefix cached."""
     context = HookContext(
         hook_type="inject_active_sessions",
         request_id="test_req_001",
-        session_id="test_session_123",
+        session_id="test_agent_session_1",
         messages=[
             ChatMessage(role="system", content="You are a helpful assistant."),
             ChatMessage(role="user", content="Hello")
         ]
     )
-    
-    # First injection - no active session
-    result1 = await server.on_pre_llm_call(context)
-    
-    assert result1.success is True
-    assert result1.modified is True
-    
-    # Count system messages with Sequential Thinking marker
-    thinking_messages = [
-        msg for msg in context.messages
-        if msg.role == "system" and "## Sequential Thinking Tool Available" in msg.content
-    ]
-    assert len(thinking_messages) == 1, "Should have exactly one Sequential Thinking injection"
-    
-    # Second call (simulate multiple LLM calls)
-    result2 = await server.on_pre_llm_call(context)
-    
-    assert result2.success is True
-    assert result2.modified is True
-    
-    # Should still have exactly one injection
-    thinking_messages = [
-        msg for msg in context.messages
-        if msg.role == "system" and "## Sequential Thinking Tool Available" in msg.content
-    ]
-    assert len(thinking_messages) == 1, "Should still have exactly one injection after second call"
+
+    first = await server.on_pre_llm_call(context)
+    assert first.modified is True
+    assert len(blocks(context)) == 1
+    assert context.messages[-1].role == DEVELOPER
+
+    second = await server.on_pre_llm_call(context)
+
+    assert second.modified is False, "nothing changed, so nothing may be written"
+    assert len(blocks(context)) == 1
 
 
 @pytest.mark.asyncio
-async def test_hook_replaces_reminder_with_active_session(server):
-    """Test that reminder is replaced when a thinking session becomes active."""
+async def test_a_started_session_is_appended_behind_the_reminder(server):
+    """The reminder stays where it is; the session state follows it."""
     context = HookContext(
         hook_type="inject_active_sessions",
         request_id="test_req_002",
-        session_id="test_agent_session",
+        session_id="test_agent_session_2",
         messages=[
             ChatMessage(role="system", content="You are a helpful assistant."),
             ChatMessage(role="user", content="Let's think about this")
         ]
     )
-    
-    # First call - no active session, injects reminder
-    result1 = await server.on_pre_llm_call(context)
-    assert result1.success is True
-    
-    # Verify reminder was injected
-    reminder_found = any(
-        msg.role == "system" and "## Sequential Thinking Tool Available" in msg.content
-        for msg in context.messages
-    )
-    assert reminder_found, "Should have reminder when no active session"
-    
-    # Create a thinking session
-    session_result = await server.execute({
+
+    await server.on_pre_llm_call(context)
+    reminder = blocks(context)[0]
+    assert "## Sequential Thinking Tool Available" in reminder.content
+
+    result = await server.execute({
         "thought": "First thought about the problem",
         "thought_number": 1,
         "total_thoughts": 3,
         "next_thought_needed": True,
-        "_session_id": "test_agent_session"
+        "_session_id": "test_agent_session_2"
     })
-    assert session_result["status"] == "success"
-    
-    # Second call - with active session, should replace reminder with session info
-    result2 = await server.on_pre_llm_call(context)
-    assert result2.success is True
-    
-    # Should have exactly one injection
-    thinking_injections = [
-        msg for msg in context.messages
-        if msg.role == "system" and (
-            "## Sequential Thinking Tool Available" in msg.content or
-            "## Active Sequential Thinking Session" in msg.content
-        )
-    ]
-    assert len(thinking_injections) == 1, "Should have exactly one Sequential Thinking injection"
-    
-    # Verify it now shows active session
-    active_session_found = any(
-        msg.role == "system" and "## Active Sequential Thinking Session" in msg.content
-        for msg in context.messages
-    )
-    assert active_session_found, "Should show active session info when session exists"
+    assert result["status"] == "success"
+
+    second = await server.on_pre_llm_call(context)
+
+    assert second.modified is True
+    current = blocks(context)
+    assert len(current) == 2
+    assert current[0] is reminder and current[0].content == reminder.content
+    assert "## Active Sequential Thinking Session" in current[-1].content
+    assert context.messages[-1] is current[-1], "the newest state is the last word"
 
 
 @pytest.mark.asyncio
-async def test_hook_prevents_multiple_injections_across_calls(server):
-    """Test that multiple sequential hook calls don't accumulate injections."""
+async def test_a_block_that_compaction_removed_comes_back(server):
+    """Gone is the same case as never written."""
     context = HookContext(
         hook_type="inject_active_sessions",
         request_id="test_req_003",
-        session_id="test_session_multi",
-        messages=[
-            ChatMessage(role="system", content="You are a helpful assistant.")
-        ]
+        session_id="test_agent_session_3",
+        messages=[ChatMessage(role="system", content="You are a helpful assistant.")]
     )
-    
-    # Simulate 5 consecutive LLM calls
-    for i in range(5):
-        context.messages.append(ChatMessage(role="user", content=f"Thought {i}"))
-        result = await server.on_pre_llm_call(context)
-        assert result.success is True
-    
-    # Count all thinking-related injections
-    thinking_messages = [
-        msg for msg in context.messages
-        if msg.role == "system" and (
-            "## Sequential Thinking Tool Available" in msg.content or
-            "## Active Sequential Thinking Session" in msg.content
-        )
-    ]
-    
-    assert len(thinking_messages) == 1, f"Should have exactly 1 injection after 5 calls, found {len(thinking_messages)}"
+
+    await server.on_pre_llm_call(context)
+    assert len(blocks(context)) == 1
+
+    context.messages = [msg for msg in context.messages
+                        if getattr(msg, "injected_by", None) != MARKER]
+    context.messages.append(ChatMessage(role="user", content="still there?"))
+    result = await server.on_pre_llm_call(context)
+
+    assert result.modified is True
+    assert len(blocks(context)) == 1
 
 
 @pytest.mark.asyncio
-async def test_hook_handles_both_reminder_markers(server):
-    """Test that hook correctly removes old injections with either marker format."""
-    # Create context with old injection (tagged with injected_by)
+async def test_five_calls_with_nothing_happening_write_one_block(server):
+    """A hook that runs every step must not grow the history by itself."""
     context = HookContext(
         hook_type="inject_active_sessions",
         request_id="test_req_004",
-        session_id="test_session_markers",
+        session_id="test_agent_session_4",
+        messages=[ChatMessage(role="system", content="You are a helpful assistant.")]
+    )
+
+    for i in range(5):
+        context.messages.append(ChatMessage(role="user", content=f"Message {i}"))
+        result = await server.on_pre_llm_call(context)
+        assert result.success is True
+
+    assert len(blocks(context)) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_block_goes_to_the_end_not_behind_the_system_prompt(server):
+    """Position is the whole point: at the head it invalidates the cache."""
+    context = HookContext(
+        hook_type="inject_active_sessions",
+        request_id="test_req_005",
+        session_id="test_agent_session_5",
         messages=[
-            ChatMessage(role="system", content="You are a helpful assistant."),
-            ChatMessage(role="system", content="## Sequential Thinking Tool Available\n\nOld injection", injected_by="sequential_thinking"),
-            ChatMessage(role="user", content="Hello")
+            ChatMessage(role="system", content="Main system prompt."),
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(role="assistant", content="Hi there!")
         ]
     )
-    
-    # Hook should remove the old injection
-    result = await server.on_pre_llm_call(context)
-    assert result.success is True
-    
-    # Should have exactly one injection (old removed, new added)
-    thinking_messages = [
-        msg for msg in context.messages
-        if msg.role == "system" and (
-            "## Sequential Thinking Tool Available" in msg.content or
-            "## Active Sequential Thinking Session" in msg.content
-        )
-    ]
-    assert len(thinking_messages) == 1, "Should replace old injection"
-    
-    # Now test with active session marker
-    await server.execute({
-        "thought": "Testing marker replacement",
-        "thought_number": 1,
-        "total_thoughts": 2,
-        "next_thought_needed": True,
-        "_session_id": "test_session_markers"
-    })
-    
-    # Manually inject old active session marker (tagged with injected_by)
-    context.messages.insert(1, ChatMessage(
-        role="system",
-        content="## Active Sequential Thinking Session\n\nOld session info",
-        injected_by="sequential_thinking"
-    ))
-    
-    result2 = await server.on_pre_llm_call(context)
-    assert result2.success is True
-    
-    # Should still have exactly one injection
-    thinking_messages = [
-        msg for msg in context.messages
-        if msg.role == "system" and (
-            "## Sequential Thinking Tool Available" in msg.content or
-            "## Active Sequential Thinking Session" in msg.content
-        )
-    ]
-    assert len(thinking_messages) == 1, "Should handle both marker formats"
+
+    await server.on_pre_llm_call(context)
+
+    assert context.messages[-1] is blocks(context)[-1]
+    assert [msg.content for msg in context.messages[:3]] == [
+        "Main system prompt.", "Hello", "Hi there!"], \
+        "everything that was there before must stay byte-identical"
