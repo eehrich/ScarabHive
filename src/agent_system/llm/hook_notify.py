@@ -23,8 +23,16 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-#: ``provider:phase`` markers whose dispatch already failed. A broken dispatch
-#: is a permanent condition, not a per-call event: warn once, then stay quiet.
+#: ``provider:phase`` markers whose dispatch already failed: warn once, then
+#: stay quiet for the rest of the process — nothing clears this.
+#:
+#: What it was built for IS permanent (a wrong import path: every call fails
+#: the same way, and one warning per provider and phase says everything). It
+#: does not only catch that, though. A consumer that raises once — a locked
+#: database, a full disk — comes through the same except, so the FIRST such
+#: failure is the only one at WARNING and every later one is a DEBUG line.
+#: That is the price of not flooding the log, and it is worth naming: a
+#: repeated hiccup here looks quieter than it is.
 _reported_failures: set = set()
 
 
