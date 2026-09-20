@@ -2022,7 +2022,8 @@ def _editor_needs_a_terminal() -> bool:
         return True
 
 
-def _compose_in_editor(seed: str = "") -> Optional[str]:
+def _compose_in_editor(seed: str = "",
+                       loop: Optional[asyncio.AbstractEventLoop] = None) -> Optional[str]:
     """Write the next message in $EDITOR.
 
     Returns the text, "" for an empty file, and None when the editor could not
@@ -2045,7 +2046,19 @@ def _compose_in_editor(seed: str = "") -> Optional[str]:
         try:
             # No capture: the editor IS the terminal now, and a console editor
             # with its output piped away draws into the pipe and hangs.
-            subprocess.run(argv, check=True)
+            #
+            # On the loop, for the same reason the prompt is (_PromptEditor.
+            # _ask): writing a message in vim takes minutes, and a plain
+            # subprocess.run blocks this thread for all of them -- a sub-agent
+            # running in the background would freeze exactly while somebody
+            # composes, which is when it has the most time to finish. The
+            # executor keeps subprocess.run's semantics (inherited terminal,
+            # check=True) and lets run_until_complete turn the loop meanwhile.
+            if loop is None:
+                subprocess.run(argv, check=True)
+            else:
+                loop.run_until_complete(loop.run_in_executor(
+                    None, lambda: subprocess.run(argv, check=True)))
         except FileNotFoundError:
             print(f"No editor: {argv[0]!r} was not found. "
                   "Set $EDITOR to the one you use.")
@@ -3639,7 +3652,7 @@ def run_chat_loop(
                               "editor would draw its screen into the "
                               "redirect. Use \"\"\" for a multi-line message.")
                         continue
-                    composed = _compose_in_editor(payload)
+                    composed = _compose_in_editor(payload, loop=loop)
                     if composed is None:
                         continue            # _compose_in_editor said why
                     if not composed:

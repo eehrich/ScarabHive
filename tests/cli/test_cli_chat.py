@@ -5208,9 +5208,46 @@ class TestComposeInEditor:
             "    fh.write('\\nzweite zeile mit \u00e4\u00f6\u00fc\\n')\n",
             encoding="utf-8")
         self._editor(monkeypatch, f"{sys.executable} {script}")
+        expected = "vorgabe\nzweite zeile mit \u00e4\u00f6\u00fc"
 
-        assert _compose_in_editor("vorgabe") == (
-            "vorgabe\nzweite zeile mit \u00e4\u00f6\u00fc")
+        # Both ways round: the REPL runs the editor through the loop now,
+        # so a test only on the fallback would stop watching what the
+        # chat actually does.
+        assert _compose_in_editor("vorgabe") == expected
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert _compose_in_editor("vorgabe", loop=loop) == expected
+        finally:
+            loop.close()
+
+    def test_the_loop_keeps_turning_while_the_editor_is_open(self, tmp_path,
+                                                            monkeypatch):
+        """Writing a message in vim takes minutes. A plain subprocess.run
+        blocks the REPL's thread for all of them -- the same parked loop that
+        kept a sub-agent from ever finishing at the prompt, just with a longer
+        window: composing is exactly when a background job has time to run."""
+        script = tmp_path / "slow_editor.py"
+        script.write_text("import time\ntime.sleep(0.5)\n",
+                          encoding="utf-8")
+        self._editor(monkeypatch, f"{sys.executable} {script}")
+
+        loop = asyncio.new_event_loop()
+        ticks = []
+
+        async def background():
+            while True:
+                ticks.append(len(ticks))
+                await asyncio.sleep(0.02)
+
+        try:
+            job = loop.create_task(background())
+            _compose_in_editor("", loop=loop)
+            job.cancel()
+        finally:
+            loop.close()
+
+        assert len(ticks) > 5, f"the loop stood still: {len(ticks)} ticks"
 
     def test_an_empty_file_is_not_a_message(self, monkeypatch):
         self._editor(monkeypatch, f"{sys.executable} -c pass")
@@ -5250,7 +5287,7 @@ class TestComposeInEditor:
         started = []
         monkeypatch.setattr(chat, "_editor_needs_a_terminal", lambda: True)
         monkeypatch.setattr(chat, "_compose_in_editor",
-                            lambda seed: started.append(seed))
+                            lambda seed, loop=None: started.append(seed))
         seen = []
 
         drive_chat_repl(
@@ -5515,7 +5552,7 @@ class TestEditAndCopyAreDispatched:
 
         asked = []
 
-        def _compose(seed):
+        def _compose(seed, loop=None):
             asked.append(seed)
             return "die lange nachricht"
 
@@ -5535,7 +5572,8 @@ class TestEditAndCopyAreDispatched:
     def test_an_empty_edit_sends_nothing(self, monkeypatch):
         import agent_system.cli_utils.chat as chat
 
-        monkeypatch.setattr(chat, "_compose_in_editor", lambda seed: "")
+        monkeypatch.setattr(chat, "_compose_in_editor",
+                            lambda seed, loop=None: "")
         seen = []
 
         drive_chat_repl(
@@ -5552,7 +5590,8 @@ class TestEditAndCopyAreDispatched:
         which is why it answers None there and "" for an empty file."""
         import agent_system.cli_utils.chat as chat
 
-        monkeypatch.setattr(chat, "_compose_in_editor", lambda seed: None)
+        monkeypatch.setattr(chat, "_compose_in_editor",
+                            lambda seed, loop=None: None)
         seen = []
 
         drive_chat_repl(

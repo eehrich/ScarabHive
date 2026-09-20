@@ -109,9 +109,13 @@ In dieser Reihenfolge, alles in `main`:
    war das, was den Loop wieder drehte. Damit konnte `wake_when_done` im Chat
    gar nicht tragen: der Job, der die Marke setzt, war eingefroren, also
    erschien die Marke nie. `_PromptEditor._ask` fährt deshalb
-   `prompt_async` unter `run_until_complete` (`cli_utils/chat.py`). Nicht
-   betroffen und weiterhin blockierend ist der Fallback-Leser `input()` — der
-   umgeleitete Fall, in dem niemand vor dem Prompt sitzt.
+   `prompt_async` unter `run_until_complete` (`cli_utils/chat.py`). Dasselbe
+   gilt für `/edit`: der Editor läuft über `run_in_executor`, denn eine
+   Nachricht in vim zu schreiben dauert Minuten, und genau dann hätte ein
+   Hintergrund-Job am meisten Zeit. Nicht betroffen und weiterhin blockierend
+   ist der Fallback-Leser `input()` — der umgeleitete Fall, in dem niemand vor
+   dem Prompt sitzt; und `/copy`, wo `clip`/`xclip` Millisekunden brauchen und
+   der Riegel teurer wäre als der Schaden.
 
    Zweitens: `chat` hält seine Session über den **ganzen** REPL, und darum muss
    er den Weckruf selbst abholen: die Marke (`<session>.pending`) wird sonst nur
