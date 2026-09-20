@@ -6,7 +6,7 @@ stopping prematurely with intermediate status reports.
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock, patch
 
 from plugins.agent_continuation.hooks import AgentContinuationPlugin
 from agent_system.hooks import HookContext, HookType
@@ -56,6 +56,7 @@ def _make_plugin(
     max_continuations: int = 10,
     agent_rules: dict | None = None,
     default_continue_message: str = "Continue with your task.",
+    **extra,
 ) -> AgentContinuationPlugin:
     """Construct a plugin with custom config (bypassing plugins.yaml).
 
@@ -70,6 +71,7 @@ def _make_plugin(
         "max_continuations": max_continuations,
         "agent_rules": agent_rules or {},
         "default_continue_message": default_continue_message,
+        **extra,
     }
     return AgentContinuationPlugin(PLUGIN_DIR, server_config)
 
@@ -1587,3 +1589,499 @@ class TestFollowups:
         plugin = _make_plugin()
         await plugin.evaluate_completion(_followup_context(_history()))
         assert plugin._continuation_counts["req-1"] == 1
+
+
+# --------------------------------------------------------------------------
+# strategy: "decision" — a decision model answers one named question
+# --------------------------------------------------------------------------
+
+
+class _FakeAnswer:
+    """What the caller reads off an answer. The real shape (Answer /
+    DecisionsResult) is pinned by src/plugins_llm/llm_decisions/tests; here
+    only the two members this hook touches are needed."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+class _FakeDecision:
+    def __init__(self, value, cost=1.5e-05, model="typesafe/jev-1.13"):
+        self._answers = {"final_answer": _FakeAnswer(value)}
+        self.cost = cost
+        self.model = model
+
+    def __getitem__(self, name):
+        return self._answers[name]
+
+
+class _FakeClient:
+    """Records what it was asked, answers what it was told to."""
+
+    def __init__(self, value=0.9, raises=None, model="typesafe/jev-1.13"):
+        self.value = value
+        self.raises = raises
+        self.model = model
+        self.calls = []
+
+    async def decide(self, state, questions, *, cancellation_token=None, session_id=None):
+        # The REAL client checks the questionnaire before it sends anything,
+        # and raises ValueError on a shape the endpoint would 400. Running
+        # that same static check here is what turns the assertions below from
+        # "the hook built the dict the test watched it build" into "the hook
+        # built a dict the endpoint accepts".
+        from plugins_llm.llm_decisions.openrouter import DecisionsClient
+        DecisionsClient.check_questions(questions)
+        self.calls.append({"state": state, "questions": questions,
+                           "session_id": session_id})
+        if self.raises is not None:
+            raise self.raises
+        return _FakeDecision(self.value, model=self.model)
+
+
+def _decision_plugin(client, **config):
+    """A plugin whose decision client is the given fake."""
+    plugin = _make_plugin(strategy=config.pop("strategy", "decision"), **config)
+    plugin._decision_clients[config.get("decision_profile", "") or ""] = client
+    return plugin
+
+
+def _agent_context(**kwargs):
+    """A context carrying an agent with a system_config, as the real one does."""
+    agent = MagicMock()
+    agent.system_config = MagicMock()
+    return _make_context(agent=agent, **kwargs)
+
+
+class TestDecisionStrategy:
+    @pytest.mark.asyncio
+    async def test_a_low_probability_of_final_continues(self):
+        """The whole point: the model says this is not the final answer."""
+        client = _FakeClient(value=0.02)
+        plugin = _decision_plugin(client)
+        result = await plugin.evaluate_completion(
+            _agent_context(content="I will now search the codebase."))
+        assert result.metadata.get("continue") is True
+        assert "p(final)=0.02" in result.metadata.get("continuation_reason", "")
+
+    @pytest.mark.asyncio
+    async def test_a_high_probability_of_final_stops(self):
+        client = _FakeClient(value=0.83)
+        plugin = _decision_plugin(client)
+        result = await plugin.evaluate_completion(
+            _agent_context(content="Fixed; all 42 tests pass."))
+        assert result.metadata.get("continue") is not True
+
+    @pytest.mark.asyncio
+    async def test_the_threshold_decides_where_the_line_sits(self):
+        """0.6 is final at the default 0.5 and not final at 0.7 — the same
+        answer, a different run's idea of how sure is sure enough."""
+        for threshold, expected_continue in ((0.5, False), (0.7, True)):
+            client = _FakeClient(value=0.6)
+            plugin = _decision_plugin(client, decision_threshold=threshold)
+            result = await plugin.evaluate_completion(_agent_context())
+            assert (result.metadata.get("continue") is True) is expected_continue, (
+                f"threshold={threshold}")
+
+    @pytest.mark.asyncio
+    async def test_an_agent_may_set_its_own_threshold(self):
+        client = _FakeClient(value=0.6)
+        plugin = _decision_plugin(client, decision_threshold=0.5)
+        result = await plugin.evaluate_completion(
+            _agent_context(hook_config={"strategy": "decision",
+                                        "decision_threshold": 0.7}))
+        assert result.metadata.get("continue") is True
+
+    @pytest.mark.asyncio
+    async def test_a_threshold_that_is_not_a_number_falls_back(self):
+        """Config comes from YAML written by hand. A bad value must not take
+        the whole judgement down with it."""
+        client = _FakeClient(value=0.9)
+        plugin = _decision_plugin(client, decision_threshold=0.5)
+        result = await plugin.evaluate_completion(
+            _agent_context(hook_config={"strategy": "decision",
+                                        "decision_threshold": "sehr sicher"}))
+        assert result.metadata.get("continue") is not True
+        assert client.calls, "the bad threshold must not stop the call"
+
+    @pytest.mark.asyncio
+    async def test_the_model_is_told_which_part_is_the_answer(self):
+        client = _FakeClient(value=0.9)
+        plugin = _decision_plugin(client)
+        await plugin.evaluate_completion(
+            _agent_context(agent_name="coder", content="done"))
+        state = client.calls[0]["state"]
+        assert state == {"agent": "coder", "response": "done"}
+        assert client.calls[0]["session_id"] == "sess-1"
+
+    @pytest.mark.asyncio
+    async def test_a_long_answer_is_cut_before_it_is_sent(self):
+        """Tokens are money, and the judgement does not get better past a few
+        thousand characters of status report."""
+        client = _FakeClient(value=0.9)
+        plugin = _decision_plugin(client)
+        await plugin.evaluate_completion(_agent_context(content="x" * 9000))
+        assert len(client.calls[0]["state"]["response"]) == 3000
+
+    @pytest.mark.asyncio
+    async def test_the_question_and_both_criteria_are_sent(self):
+        client = _FakeClient(value=0.9)
+        plugin = _decision_plugin(
+            client, decision_question="Fertig?",
+            decision_final_means="Ergebnis liegt vor.",
+            decision_continue_means="Nur ein Zwischenstand.")
+        await plugin.evaluate_completion(_agent_context())
+        question = client.calls[0]["questions"]["final_answer"]
+        assert question["type"] == "noul"
+        assert question["instructions"] == "Fertig?"
+        assert question["criteria"] == {"true": "Ergebnis liegt vor.",
+                                        "false": "Nur ein Zwischenstand."}
+
+    @pytest.mark.asyncio
+    async def test_half_a_criteria_pair_is_sent_as_none(self):
+        """Sending only one side tells the model the other case means nothing
+        — worse than letting it judge on the question alone."""
+        client = _FakeClient(value=0.9)
+        plugin = _decision_plugin(client, decision_question="Fertig?",
+                                  decision_final_means="Ergebnis liegt vor.",
+                                  decision_continue_means="")
+        await plugin.evaluate_completion(_agent_context())
+        assert "criteria" not in client.calls[0]["questions"]["final_answer"]
+
+    @pytest.mark.asyncio
+    async def test_without_a_question_nothing_is_asked_and_nothing_continues(self):
+        client = _FakeClient(value=0.02)
+        plugin = _decision_plugin(client, decision_question="")
+        result = await plugin.evaluate_completion(_agent_context())
+        assert result.metadata.get("continue") is not True
+        assert client.calls == [], "no question, no paid call"
+
+    @pytest.mark.asyncio
+    async def test_a_failing_judge_stops_the_loop(self):
+        """The plugin's contract for every evaluator: an error means FINAL.
+        Continuing on a broken judge burns tokens in a loop."""
+        client = _FakeClient(raises=RuntimeError("endpoint down"))
+        plugin = _decision_plugin(client)
+        result = await plugin.evaluate_completion(_agent_context())
+        assert result.metadata.get("continue") is not True
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value, why", [
+        (None, "the model sent the field but left it empty"),
+        ("sehr wahrscheinlich", "the model answered in words"),
+    ])
+    async def test_an_answer_that_is_no_number_stops_the_loop(self, value, why):
+        """The remaining half of "every failure ends on FINAL": not the call
+        failing, but the ANSWER being unusable. Untested, this is the exit
+        that rots first, because it needs a misbehaving endpoint to show up."""
+        client = _FakeClient(value=value)
+        plugin = _decision_plugin(client)
+        result = await plugin.evaluate_completion(_agent_context())
+        assert result.metadata.get("continue") is not True, why
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_an_answer_to_a_different_question_stops_the_loop(self):
+        """The client guarantees every question is answered, but this hook
+        must not fall over if that ever stops being true."""
+        client = _FakeClient(value=0.02)
+        plugin = _decision_plugin(client)
+        # The answer comes back under a name this hook never asked about.
+        original = _FakeDecision.__getitem__
+
+        def _wrong_key(self, name):
+            return original(self, "not_the_question")
+
+        with patch.object(_FakeDecision, "__getitem__", _wrong_key):
+            result = await plugin.evaluate_completion(_agent_context())
+        assert result.metadata.get("continue") is not True
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_is_not_turned_into_a_continuation(self):
+        """CancelledError must travel on: swallowing it would answer the
+        user's stop with another turn."""
+        import asyncio
+        client = _FakeClient(raises=asyncio.CancelledError())
+        plugin = _decision_plugin(client)
+        with pytest.raises(asyncio.CancelledError):
+            await plugin.evaluate_completion(_agent_context())
+
+    @pytest.mark.asyncio
+    async def test_no_client_means_final_not_continue(self):
+        plugin = _make_plugin(strategy="decision")
+        with patch("agent_system.llm.decisions.create_decisions_from_profile",
+                   side_effect=ValueError("no such profile")):
+            result = await plugin.evaluate_completion(_agent_context())
+        assert result.metadata.get("continue") is not True
+
+    @pytest.mark.asyncio
+    async def test_the_default_profile_is_used_when_none_is_named(self):
+        """Passing "" instead of None would look for a profile literally
+        called "" and never reach default_decision_profile."""
+        plugin = _make_plugin(strategy="decision")
+        with patch("agent_system.llm.decisions.create_decisions_from_profile",
+                   return_value=_FakeClient(value=0.9)) as create:
+            await plugin.evaluate_completion(_agent_context())
+        assert create.call_args[0][1] is None
+
+    @pytest.mark.asyncio
+    async def test_an_agent_can_name_its_own_judge(self):
+        plugin = _make_plugin(strategy="decision")
+        with patch("agent_system.llm.decisions.create_decisions_from_profile",
+                   return_value=_FakeClient(value=0.9)) as create:
+            await plugin.evaluate_completion(
+                _agent_context(hook_config={"strategy": "decision",
+                                            "decision_profile": "strict"}))
+        assert create.call_args[0][1] == "strict"
+
+    @pytest.mark.asyncio
+    async def test_two_agents_with_different_judges_do_not_share_one(self):
+        """One cache slot would hand the first agent's judge to everyone."""
+        plugin = _make_plugin(strategy="decision")
+        clients = [_FakeClient(value=0.9, model="a"), _FakeClient(value=0.9, model="b")]
+        with patch("agent_system.llm.decisions.create_decisions_from_profile",
+                   side_effect=clients):
+            await plugin.evaluate_completion(
+                _agent_context(hook_config={"strategy": "decision",
+                                            "decision_profile": "one"}))
+            await plugin.evaluate_completion(
+                _agent_context(hook_config={"strategy": "decision",
+                                            "decision_profile": "two"}))
+        assert clients[0].calls and clients[1].calls
+
+    @pytest.mark.asyncio
+    async def test_the_same_judge_is_built_once(self):
+        """Under the NAME it was built for -- cached under any other key the
+        cache never hits again and every response rebuilds a client."""
+        plugin = _make_plugin(strategy="decision", decision_profile="strict")
+        with patch("agent_system.llm.decisions.create_decisions_from_profile",
+                   return_value=_FakeClient(value=0.9)) as create:
+            await plugin.evaluate_completion(_agent_context())
+            await plugin.evaluate_completion(_agent_context(request_id="req-2"))
+        assert create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_the_default_judge_is_built_once_too(self):
+        plugin = _make_plugin(strategy="decision")
+        with patch("agent_system.llm.decisions.create_decisions_from_profile",
+                   return_value=_FakeClient(value=0.9)) as create:
+            await plugin.evaluate_completion(_agent_context())
+            await plugin.evaluate_completion(_agent_context(request_id="req-2"))
+        assert create.call_count == 1
+
+
+class TestThresholdIsAProbability:
+    """F1/F9: the one input where a plausible wrong value spends money."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", [70, -1, 1.5, True])
+    async def test_a_value_outside_zero_to_one_is_refused(self, bad):
+        """`decision_threshold: 70` is a valid float, so a type check lets it
+        through -- and then EVERY probability is below it: every answer
+        continues, and every continuation pays for another decision until the
+        budget runs out."""
+        client = _FakeClient(value=0.83)
+        plugin = _decision_plugin(client, decision_threshold=0.5)
+        result = await plugin.evaluate_completion(
+            _agent_context(hook_config={"strategy": "decision",
+                                        "decision_threshold": bad}))
+        assert result.metadata.get("continue") is not True, (
+            f"threshold={bad!r} turned a p(final)=0.83 answer into a continuation")
+
+    @pytest.mark.asyncio
+    async def test_a_plugin_level_value_outside_the_range_is_refused_too(self):
+        client = _FakeClient(value=0.83)
+        plugin = _decision_plugin(client, decision_threshold=70)
+        result = await plugin.evaluate_completion(_agent_context())
+        assert result.metadata.get("continue") is not True
+
+    def test_a_plugin_level_value_that_is_no_number_does_not_kill_the_plugin(self):
+        """It is built once, at registration. An exception there takes
+        continuation away from every agent, not just this one, and nothing
+        says why."""
+        plugin = _make_plugin(strategy="decision", decision_threshold="hoch")
+        assert plugin._decision_threshold == 0.5
+
+    @pytest.mark.asyncio
+    async def test_a_usable_threshold_still_gets_through(self):
+        """The guard must not eat the values it exists to protect."""
+        client = _FakeClient(value=0.6)
+        plugin = _decision_plugin(client, decision_threshold=0.5)
+        result = await plugin.evaluate_completion(
+            _agent_context(hook_config={"strategy": "decision",
+                                        "decision_threshold": 0.7}))
+        assert result.metadata.get("continue") is True
+
+
+class TestPerAgentKeys:
+    """F5: schema.yaml offers all six keys per agent and the README's example
+    IS a per-agent block -- so the documented path deserves the coverage."""
+
+    @pytest.mark.asyncio
+    async def test_an_agent_asks_its_own_question(self):
+        client = _FakeClient(value=0.9)
+        plugin = _decision_plugin(client, decision_question="Plugin-Frage?")
+        await plugin.evaluate_completion(
+            _agent_context(hook_config={"strategy": "decision",
+                                        "decision_question": "Agent-Frage?"}))
+        assert client.calls[0]["questions"]["final_answer"]["instructions"] == "Agent-Frage?"
+
+    @pytest.mark.asyncio
+    async def test_an_agent_brings_its_own_criteria(self):
+        client = _FakeClient(value=0.9)
+        plugin = _decision_plugin(client, decision_final_means="global fertig",
+                                  decision_continue_means="global weiter")
+        await plugin.evaluate_completion(
+            _agent_context(hook_config={
+                "strategy": "decision",
+                "decision_final_means": "agent fertig",
+                "decision_continue_means": "agent weiter"}))
+        assert client.calls[0]["questions"]["final_answer"]["criteria"] == {
+            "true": "agent fertig", "false": "agent weiter"}
+
+    @pytest.mark.asyncio
+    async def test_an_agent_can_drop_a_criterion_it_does_not_want(self):
+        """F7: an explicitly empty value is an answer. Inheriting the global
+        text there would hand the agent exactly what it wrote down to remove,
+        and the same "" DOES work one level up."""
+        client = _FakeClient(value=0.9)
+        plugin = _decision_plugin(client, decision_final_means="global fertig",
+                                  decision_continue_means="global weiter")
+        await plugin.evaluate_completion(
+            _agent_context(hook_config={"strategy": "decision",
+                                        "decision_continue_means": ""}))
+        assert "criteria" not in client.calls[0]["questions"]["final_answer"]
+
+    @pytest.mark.asyncio
+    async def test_a_key_written_with_no_value_still_inherits(self):
+        """`decision_question:` in YAML is None -- a slip, not a decision."""
+        client = _FakeClient(value=0.9)
+        plugin = _decision_plugin(client, decision_question="Plugin-Frage?")
+        await plugin.evaluate_completion(
+            _agent_context(hook_config={"strategy": "decision",
+                                        "decision_question": None}))
+        assert client.calls[0]["questions"]["final_answer"]["instructions"] == "Plugin-Frage?"
+
+    @pytest.mark.asyncio
+    async def test_one_agent_may_use_the_decision_model_while_the_rest_do_not(self):
+        """The likeliest real arrangement: rules everywhere, one agent paying
+        for a judge."""
+        client = _FakeClient(value=0.02)
+        plugin = _decision_plugin(client, strategy="rules")
+        result = await plugin.evaluate_completion(
+            _agent_context(hook_config={"strategy": "decision"}))
+        assert result.metadata.get("continue") is True
+        assert len(client.calls) == 1
+
+
+class TestAnUnknownStrategySaysSo:
+    @pytest.mark.asyncio
+    async def test_a_misspelled_strategy_is_named_instead_of_ignored(self, caplog):
+        """There are four names now, and "decision" is one letter from the
+        config key, the plugin directory and the plural. An unknown one has
+        always been inert -- which is indistinguishable from a hook that is
+        simply switched off."""
+        import logging as _logging
+        client = _FakeClient(value=0.02)
+        plugin = _decision_plugin(client, strategy="decisions")
+        with caplog.at_level(_logging.WARNING, logger="plugins.agent_continuation.hooks"):
+            result = await plugin.evaluate_completion(_agent_context())
+        assert result.metadata.get("continue") is not True
+        assert client.calls == [], "an unknown strategy must not pay for anything"
+        assert any("unknown strategy" in r.message and "decisions" in r.message
+                   for r in caplog.records), "the typo passed without a word"
+
+
+class TestNoCallIsPaidForTwice:
+    @pytest.mark.asyncio
+    async def test_an_exhausted_budget_does_not_pay_for_a_verdict(self):
+        """The central cost claim: the budget check runs BEFORE the judge is
+        asked. Reversed, every request past its ceiling would still buy one
+        decision per response."""
+        client = _FakeClient(value=0.02)
+        plugin = _decision_plugin(client, max_continuations=1)
+        first = await plugin.evaluate_completion(_agent_context())
+        assert first.metadata.get("continue") is True
+        second = await plugin.evaluate_completion(_agent_context())
+        assert second.metadata.get("continue") is not True
+        assert len(client.calls) == 1, "the exhausted request paid again"
+
+    @pytest.mark.asyncio
+    async def test_a_response_with_tool_calls_is_never_judged(self):
+        """The loop continues on its own there — asking would be a paid
+        answer to a question nobody has."""
+        client = _FakeClient(value=0.02)
+        plugin = _decision_plugin(client)
+        await plugin.evaluate_completion(
+            _agent_context(content="", tool_calls=[{"id": "1"}]))
+        assert client.calls == []
+
+
+class TestHybridFallback:
+    @pytest.mark.asyncio
+    async def test_hybrid_reaches_the_decision_model_only_when_no_rule_matched(self):
+        """Rules are free, the model is billed per call — that ordering IS
+        the reason hybrid exists."""
+        client = _FakeClient(value=0.02)
+        plugin = _decision_plugin(
+            client, strategy="hybrid", hybrid_fallback="decision",
+            agent_rules={"test_agent": {"rules": [
+                {"type": "keyword_final", "keywords": ["FERTIG"]}]}})
+        matched = await plugin.evaluate_completion(
+            _agent_context(content="FERTIG, alles erledigt."))
+        assert matched.metadata.get("continue") is not True
+        assert client.calls == [], "a matched rule must not pay for a decision"
+
+        unmatched = await plugin.evaluate_completion(
+            _agent_context(content="Ich sehe mir das jetzt an."))
+        assert unmatched.metadata.get("continue") is True
+        assert len(client.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_fallback_name_does_not_silently_route(self, caplog):
+        """"decisions" is one letter from the strategy, the config key and the
+        plugin directory. Nothing enforces the schema's enum, so the value
+        reaches the chat model -- and the log line, printed before the branch,
+        used to announce the other one. What changes here is what the operator
+        is told, so that is what this measures: the request is billed to a
+        model, and the log has to name the one that got it."""
+        import logging as _logging
+        client = _FakeClient(value=0.02)
+        plugin = _decision_plugin(client, strategy="hybrid",
+                                  hybrid_fallback="decisions")
+        with caplog.at_level(_logging.INFO, logger="plugins.agent_continuation.hooks"):
+            with patch.object(plugin, "_evaluate_llm",
+                              new=AsyncMock(return_value=(False, "LLM: FINAL"))) as llm:
+                await plugin.evaluate_completion(
+                    _agent_context(content="Ich sehe mir das jetzt an."))
+        assert llm.await_count == 1
+        assert client.calls == []
+        warnings = [r.message for r in caplog.records if r.levelno >= _logging.WARNING]
+        assert any("hybrid_fallback" in m and "decisions" in m for m in warnings), (
+            f"the unknown value was accepted without a word: {warnings}")
+        assert not any("falling back to decisions" in r.message for r in caplog.records), (
+            "the log named a judge that was never asked")
+
+    @pytest.mark.asyncio
+    async def test_an_agent_may_choose_the_fallback_for_itself(self):
+        client = _FakeClient(value=0.02)
+        plugin = _decision_plugin(client, strategy="hybrid")
+        result = await plugin.evaluate_completion(
+            _agent_context(content="Ich sehe mir das jetzt an.",
+                           hook_config={"strategy": "hybrid",
+                                        "hybrid_fallback": "decision"}))
+        assert result.metadata.get("continue") is True
+        assert len(client.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_hybrid_still_falls_back_to_the_chat_model_by_default(self):
+        """Nobody who did not ask for it starts paying per call."""
+        client = _FakeClient(value=0.02)
+        plugin = _decision_plugin(client, strategy="hybrid")
+        with patch.object(plugin, "_evaluate_llm",
+                          new=AsyncMock(return_value=(False, "LLM evaluation: FINAL"))) as llm:
+            await plugin.evaluate_completion(
+                _agent_context(content="Ich sehe mir das jetzt an."))
+        assert llm.await_count == 1
+        assert client.calls == []

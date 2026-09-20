@@ -33,6 +33,16 @@ from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
+#: Fallback when nothing configures a threshold: "whichever the model thinks
+#: is more likely", which is the only value that needs no justification.
+_DEFAULT_THRESHOLD = 0.5
+#: Every strategy this hook knows. Mirrors the enum in schema.yaml, which
+#: nothing enforces at load time.
+_STRATEGIES = frozenset({"rules", "llm", "decision", "hybrid"})
+#: Judges `hybrid` may hand over to. Mirrors the enum in schema.yaml, which
+#: nothing enforces at load time.
+_HYBRID_FALLBACKS = frozenset({"llm", "decision"})
+
 #: injected_by of a scripted follow-up message — how the plugin counts them.
 FOLLOWUP_MARKER = "agent_continuation.followup"
 
@@ -64,11 +74,25 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         self._llm_prompt_template: str = str(config.get("llm_prompt", ""))
         self._agent_rules: Dict[str, Any] = dict(config.get("agent_rules", {}))
 
+        # Decision-model evaluator. Empty profile = whatever
+        # llm_system.default_decision_profile names.
+        self._decision_profile: str = str(config.get("decision_profile", "") or "")
+        self._decision_question: str = str(config.get("decision_question", ""))
+        self._decision_final_means: str = str(config.get("decision_final_means", ""))
+        self._decision_continue_means: str = str(config.get("decision_continue_means", ""))
+        self._decision_threshold: float = self._parse_threshold(
+            config.get("decision_threshold"), _DEFAULT_THRESHOLD, "plugin config")
+        self._hybrid_fallback: str = str(config.get("hybrid_fallback", "llm"))
+
         # Per-request continuation counter  request_id → count
         self._continuation_counts: Dict[str, int] = {}
 
         # Cached evaluator LLM instance (lazy)
         self._evaluator_llm: Any = None
+        # Cached decision-model client (lazy), keyed by the profile that built
+        # it: an agent may override the profile, and one cache slot would hand
+        # the first agent's judge to every other agent.
+        self._decision_clients: Dict[str, Any] = {}
 
         logger.info(
             f"[AgentContinuation] Initialized: strategy={self._strategy}, "
@@ -153,6 +177,61 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         return value
 
     @staticmethod
+    def _parse_threshold(raw: Any, fallback: float, where: str) -> float:
+        """A probability, or the value one level up.
+
+        Guarded the way max_continuations above is guarded, and for a sharper
+        reason. ``decision_threshold: 70`` -- meant as a percentage, and
+        invited by a description that says "raise it" -- is a perfectly good
+        float, so a type check alone lets it through. Every probability is
+        then below it, every response "continues", and each one pays for a
+        decision call until the budget runs out. A config typo that spends
+        money in a loop has to be refused, not rounded.
+
+        The schema declares minimum/maximum, but nothing enforces those at
+        load time (config_defaults_from_schema reads only `default`), so this
+        is the only place the range is real.
+        """
+        if raw is None:
+            return fallback
+        # bool before float(): YAML turns `yes` into True and float(True) is
+        # 1.0, a threshold that continues on everything but a certain answer.
+        if isinstance(raw, bool):
+            logger.warning(
+                "[AgentContinuation] %s: decision_threshold=%r is a boolean — "
+                "using %s", where, raw, fallback)
+            return fallback
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[AgentContinuation] %s: decision_threshold=%r is not a "
+                "number — using %s", where, raw, fallback)
+            return fallback
+        if not 0.0 <= value <= 1.0:
+            logger.warning(
+                "[AgentContinuation] %s: decision_threshold=%s is not a "
+                "probability (0.0-1.0) — using %s. A percentage does not "
+                "belong here: 70 would continue on every answer.",
+                where, value, fallback)
+            return fallback
+        return value
+
+    @staticmethod
+    def _text(cfg: Dict[str, Any], key: str, fallback: str) -> str:
+        """A configured text, where an EMPTY one is an answer, not a gap.
+
+        `.get(key, fallback)` rather than `cfg.get(key) or fallback`: an agent
+        writing `decision_continue_means: ""` to drop that criterion means it,
+        and the `or` form would hand it the plugin-wide text instead -- while
+        the same "" at plugin level does work. A key written with no value at
+        all (`decision_question:` -> None) is a slip, not a choice, and still
+        inherits.
+        """
+        raw = cfg.get(key, fallback)
+        return str(fallback if raw is None else raw)
+
+    @staticmethod
     def _followups_on_continue(agent_cfg: Dict[str, Any], agent_name: str) -> bool:
         """``followups_on_continue``: only a real boolean counts.
 
@@ -219,6 +298,20 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         # Pick strategy (per-agent overrides global)
         strategy = agent_cfg.get("strategy") or self._strategy
 
+        if strategy not in _STRATEGIES:
+            # Silently inert since the plugin was written -- no branch below
+            # matches, so the hook answers FINAL forever and looks switched
+            # off. Worth a word now that there are four names and one of them,
+            # "decision", is a letter away from the config key, the plugin
+            # directory and the plural somebody will type. The BEHAVIOUR stays
+            # inert on purpose: quietly running the rules instead would let a
+            # keyword continue a loop nobody configured.
+            logger.warning(
+                f"[AgentContinuation] '{agent_name}': unknown strategy="
+                f"{strategy!r} (known: {sorted(_STRATEGIES)}) — nothing is "
+                f"evaluated, every response counts as final"
+            )
+
         logger.debug(
             f"[AgentContinuation] Evaluating '{agent_name}' step {context.step}, "
             f"strategy={strategy}, content_len={len(content)}, "
@@ -236,19 +329,45 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             should_continue, reason = await self._evaluate_llm(
                 content, agent_name, context, agent_cfg
             )
+        elif strategy == "decision":
+            should_continue, reason = await self._evaluate_decision(
+                content, agent_name, context, agent_cfg
+            )
         elif strategy == "hybrid":
             should_continue, reason, matched = self._evaluate_rules(
                 content, agent_name, context
             )
             if not matched:
-                # No keyword matched — let LLM decide
+                # No keyword matched — let the configured judge decide. Which
+                # one matters more here than it looks: the decision model is
+                # billed per call, so running the free rules first is the
+                # point of hybrid, not a detail of it.
+                fallback = str(
+                    (agent_cfg or {}).get("hybrid_fallback") or self._hybrid_fallback
+                ).strip()
+                if fallback not in _HYBRID_FALLBACKS:
+                    # Nothing enforces the schema's enum, and the plural
+                    # "decisions" is one letter from the strategy name, the
+                    # config key and the plugin directory. Silently routing to
+                    # the other judge would bill a model the log did not name.
+                    logger.warning(
+                        f"[AgentContinuation] '{agent_name}': unknown "
+                        f"hybrid_fallback={fallback!r} (known: "
+                        f"{sorted(_HYBRID_FALLBACKS)}) — using 'llm'"
+                    )
+                    fallback = "llm"
                 logger.info(
                     f"[AgentContinuation] No keyword matched for '{agent_name}' "
-                    f"— falling back to LLM evaluation"
+                    f"— falling back to {fallback} evaluation"
                 )
-                should_continue, reason = await self._evaluate_llm(
-                    content, agent_name, context, agent_cfg
-                )
+                if fallback == "decision":
+                    should_continue, reason = await self._evaluate_decision(
+                        content, agent_name, context, agent_cfg
+                    )
+                else:
+                    should_continue, reason = await self._evaluate_llm(
+                        content, agent_name, context, agent_cfg
+                    )
 
         logger.debug(
             f"[AgentContinuation] Decision for '{agent_name}': "
@@ -537,6 +656,128 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         except Exception as e:
             logger.warning(f"[AgentContinuation] LLM evaluation failed: {e}")
             return False, f"LLM evaluation error: {e}"
+
+    async def _evaluate_decision(
+        self,
+        content: str,
+        agent_name: str,
+        context: HookContext,
+        agent_cfg: Dict[str, Any] | None = None,
+    ) -> Tuple[bool, str]:
+        """Ask a decision model the one question that decides this.
+
+        Different from the LLM evaluator in the thing that matters: the answer
+        is a PROBABILITY, not a word. "FINAL" from a chat model says nothing
+        about how close the call was; 0.83 and 0.51 are both "final" and only
+        one of them deserves to be trusted. The number is logged for that
+        reason, and `decision_threshold` is where a run says how sure it wants
+        to be before it stops -- 0.5 means "whichever the model thinks is more
+        likely", which is the honest default.
+
+        Every failure resolves to FINAL, like the LLM path: a judge that
+        cannot answer must not put the loop into another turn.
+        """
+        cfg = agent_cfg or {}
+        question = self._text(cfg, "decision_question", self._decision_question).strip()
+        if not question:
+            logger.warning(
+                f"[AgentContinuation] No decision_question configured for "
+                f"'{agent_name}' — defaulting to FINAL"
+            )
+            return False, "no decision_question configured"
+
+        client = self._get_decisions_client(context, cfg)
+        if client is None:
+            return False, "no decisions client available"
+
+        # .strip(): a folded YAML scalar ends in a newline, and every one of
+        # those is a token paid for on every call.
+        criteria = {
+            "true": self._text(cfg, "decision_final_means",
+                               self._decision_final_means).strip(),
+            "false": self._text(cfg, "decision_continue_means",
+                                self._decision_continue_means).strip(),
+        }
+        # An empty half is worse than none: it would tell the model that this
+        # case means nothing. Send the pair only when both sides say something.
+        if not (criteria["true"] and criteria["false"]):
+            criteria = None
+        threshold = self._parse_threshold(
+            cfg.get("decision_threshold"), self._decision_threshold,
+            f"agent {agent_name!r}")
+
+        question_body: Dict[str, Any] = {"type": "noul", "instructions": question}
+        if criteria:
+            question_body["criteria"] = criteria
+
+        try:
+            result = await client.decide(
+                # A mapping, not one glued string: the model is told which part
+                # is the agent and which is its answer. Measured to be accepted.
+                {"agent": agent_name, "response": content[:3000]},
+                {"final_answer": question_body},
+                cancellation_token=context.cancellation_token,
+                session_id=context.session_id,
+            )
+            probability = float(result["final_answer"].value)
+        except Exception as e:
+            # A user cancel is NOT caught here: CancelledError is a
+            # BaseException, so it travels on rather than being turned into a
+            # verdict of any kind. (Swallowed, it would read as FINAL -- and
+            # on the follow-up path below, FINAL is what still injects the
+            # next scripted message.) Today the token is None for
+            # POST_LLM_CALL anyway: execute_post_llm_hooks does not take one,
+            # so a cancel arriving DURING the call cannot happen yet. Passed
+            # on regardless, so this path is right when it does.
+
+            logger.warning(f"[AgentContinuation] Decision evaluation failed: {e}")
+            return False, f"decision error: {e}"
+
+        should_continue = probability < threshold
+        logger.info(
+            f"[AgentContinuation] Decision model says "
+            f"{'CONTINUE' if should_continue else 'FINAL'} for '{agent_name}' "
+            f"(p(final)={probability}, threshold={threshold}, "
+            f"cost={result.cost}, model={result.model})"
+        )
+        return should_continue, (
+            f"decision model: p(final)={probability} < {threshold}"
+            if should_continue
+            else f"decision model: p(final)={probability} >= {threshold}"
+        )
+
+    def _get_decisions_client(
+        self, context: HookContext, agent_cfg: Dict[str, Any]
+    ) -> Any:
+        """Lazily build the decision-model client for this agent's profile."""
+        profile = str(agent_cfg.get("decision_profile")
+                      or self._decision_profile or "")
+        if profile in self._decision_clients:
+            return self._decision_clients[profile]
+
+        if not context.agent or not hasattr(context.agent, "system_config"):
+            logger.warning(
+                "[AgentContinuation] No system_config — cannot create decisions client"
+            )
+            return None
+        try:
+            from agent_system.llm.decisions import create_decisions_from_profile
+
+            # No profile name = llm_system.default_decision_profile decides.
+            client = create_decisions_from_profile(
+                context.agent.system_config, profile or None)
+        except Exception as e:
+            logger.error(
+                f"[AgentContinuation] Failed to create decisions client "
+                f"(profile={profile or 'default'}): {e}"
+            )
+            return None
+        self._decision_clients[profile] = client
+        logger.info(
+            f"[AgentContinuation] Created decisions client "
+            f"(profile='{profile or 'default'}', model={client.model})"
+        )
+        return client
 
     def _get_evaluator_llm(self, context: HookContext) -> Any:
         """Lazily create a lightweight LLM for evaluation."""

@@ -24,16 +24,128 @@ and risk a double continuation. Only a text-only answer is a candidate for
 The hook never modifies the response content: `HookResult(modified=False)` even
 when it decides to continue. It communicates purely through `metadata`.
 
-## Three strategies
+## Four strategies
 
 * **`rules`** — deterministic, no LLM cost. The default.
 * **`llm`** — a lightweight profile classifies the answer as `FINAL` or
   `CONTINUE`.
-* **`hybrid`** — rules first; the LLM decides only when no rule matched.
+* **`decision`** — a decision model answers ONE named question with a
+  probability. See below.
+* **`hybrid`** — rules first; `hybrid_fallback` (`llm` by default) decides only
+  when no rule matched.
 
-Every LLM failure path resolves to FINAL: no evaluator LLM, no `llm_prompt`, an
+Every failure path resolves to FINAL: no evaluator, no prompt or question, an
 exception during the call. Stopping is the safe error, continuing costs tokens
-in a loop.
+in a loop. The one exception is a user cancel — `CancelledError` is a
+`BaseException` and travels on, so a stop stays a stop.
+
+## `decision`: ask one question, get a probability
+
+A decision model (`llm_system.decision_models`, see
+`src/plugins_llm/llm_decisions`) does not write prose. It takes the answer plus
+one named question and returns how likely it is that the answer is *final* —
+which is exactly the judgement this hook needs, and the reason it is worth a
+second kind of model here.
+
+What that buys over `llm`: **the number**. `FINAL` from a chat model says
+nothing about how close the call was; `0.83` and `0.51` are both "final" and
+only one of them deserves to be trusted. The probability is in the log line and
+in `metadata["continuation_reason"]`, so a run that continues too eagerly can
+be tuned instead of guessed at.
+
+```yaml
+hooks:
+  overrides:
+    agent_continuation.evaluate_completion:
+      enabled: true
+      strategy: decision
+      # every key below is optional — these are the defaults
+      decision_profile: ""            # "" = llm_system.default_decision_profile
+      decision_question: "Is this the agent's FINAL answer to its task?"
+      decision_final_means: "A finished result: the work is done and this reports the outcome."
+      decision_continue_means: "An intermediate status report, a plan, or an announcement of what the agent is about to do next."
+      decision_threshold: 0.5         # continue while p(final) is BELOW this
+```
+
+`decision_threshold` is where a run says how sure it wants to be. `0.5` means
+"whichever the model thinks is more likely" — the honest default. Raise it to
+keep working unless the model is quite sure; lower it to stop more easily. It
+is a **probability**, not a percentage: anything outside 0.0–1.0 is refused
+with a warning and the level above decides, because `70` would put every
+answer below the line and pay for a continuation on each one until the budget
+runs out.
+
+One divergence from `strategy: llm` worth knowing: `network.ssl_verify: false`
+does not reach this client. The seam that builds it takes the model entry
+alone, so a decision call always verifies — like the TTS and batch clients,
+and unlike the chat evaluator next to it. Behind a MITM proxy this strategy
+therefore fails every call (and, per the contract above, answers FINAL every
+time).
+
+**Measured** against `~typesafe/jev-latest` on 2026-09-20, with exactly the
+defaults above:
+
+| agent response | p(final) | at 0.5 |
+|---|---|---|
+| "I will now search the codebase for the failing test." | 0.02 | continue |
+| "Here is my plan: 1) read the config, 2) patch the loader…" | 0.03 | continue |
+| "Which of the two databases should I migrate first?" | 0.05 | continue |
+| "The answer is 42." | 0.77 | final |
+| "Fixed. All 42 tests pass and I committed as a1b2c3d." | 0.83 | final |
+
+Two things to take from that table. The separation is wide — no run needs to
+sit near the threshold. And the third row is a policy question, not a bug: an
+agent that asks the user something is not delivering a finished result, so with
+these criteria it gets continued. If a run should stop and let the human
+answer, say so in `decision_final_means` ("…or a question the agent cannot
+resolve on its own").
+
+### Where that cost does NOT show up
+
+Measured, and worth knowing before switching this on: the live per-agent cost
+sum in `context_usage_tracker` will **not** include these calls. That plugin
+hooks `post_llm_call` (its `schema.yaml`), which the agent loop fires; the
+decisions client fires `PRE_LLM_REQUEST` / `POST_LLM_RESPONSE` instead, the
+same pair the TTS clients use. So the spend is recorded by `message_debugger`
+— which prunes by retention and can be switched off — and nowhere else.
+
+The gap is older than this strategy (TTS has it too) and closing it belongs to
+the tracker, not here: attributing a call that carries a session but no agent
+is a real question, and counting naively where both hooks fire would double
+the bill. Named here because this hook is the first caller that makes it cost
+money per agent step.
+
+### What it costs and how long it takes
+
+Measured with this hook's own payload — one question, the criteria above,
+`~typesafe/jev-latest`, 2026-09-20:
+
+| judged response | input tokens | cost | round trip |
+|---|---|---|---|
+| one line | 349 | 1.5e-05 $ | 0.56 s |
+| 2900 characters | 1070 | 4.5e-05 $ | 0.33 s |
+
+The question and its criteria are ~350 tokens before the answer is even added,
+so a short response is mostly question — and a long one is mostly response,
+three times the price. That is what the 3000-character cut in the code is for.
+
+The round trip is well inside the hook's 30 s ceiling (`schema.yaml`), but the
+client's own retry budget is not: `request_timeout: 60` with `max_retries: 2`
+can reach ~186 s, and the registry cancels the hook at 30. So against a
+sick endpoint the first attempt is what counts, the retries configured on the
+decision model never run from here, and the result is FINAL — the safe
+direction, but do not expect the retries to fire.
+
+`hybrid` with `hybrid_fallback: decision` is the cheap arrangement — free rules
+first, the paid judge only when they do not match:
+
+```yaml
+      strategy: hybrid
+      hybrid_fallback: decision
+      rules:
+        - type: keyword_continue
+          keywords: ["I will now", "next I"]
+```
 
 ## The rule engine
 
