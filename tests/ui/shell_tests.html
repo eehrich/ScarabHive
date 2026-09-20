@@ -427,6 +427,56 @@
       && sessionButton('s-1', 'expand').getAttribute('aria-expanded') === 'true';
   });
 
+  await check('collapse all closes every open branch and keeps the focus it was pressed with', async () => {
+    // TWO branches open, not one: with a single branch "close every open branch" and
+    // "close the one branch I happened to find" are the same measurement.
+    const open = async (id) => {
+      // Only if it is closed: a check before this one leaves a branch open, and a blind
+      // click would CLOSE it -- then this waits for a row it just removed itself.
+      if (sessionButton(id, 'expand').getAttribute('aria-expanded') !== 'true') {
+        sessionButton(id, 'expand').click();
+      }
+      await until(`${id} to be open`, () => win().sessionManager.expanded.has(id), 4000);
+    };
+    await open('s-1');
+    await until('the sub-session', () => $('.session-item[data-id="s-1-sub"]'));
+    await open('s-1-sub');
+    if (win().sessionManager.expanded.size !== 2) return false;
+    const collapse = $('.sessions-head [data-act="collapse-all"]');
+    collapse.focus();
+    collapse.click();
+    await until('the branch to close', () => !$('.session-item[data-id="s-1-sub"]'));
+    if (sessionButton('s-1', 'expand').getAttribute('aria-expanded') !== 'false') return false;
+    // EVERY branch: the nested one is gone from the DOM with its parent, so the count is
+    // what says it was closed too, rather than merely hidden under a closed parent.
+    if (win().sessionManager.expanded.size !== 0) return false;
+    // It lives in the pane's head, which render() does not touch -- so pressing it by
+    // keyboard leaves the focus on it. A version that HID itself once nothing was open
+    // would take the focus of whoever just pressed it down to the body.
+    if (doc().activeElement !== collapse) return false;
+    // Disabling it instead does NOT lose the focus -- measured, a mutant that disabled
+    // it survived this check until this line. It still may not: a disabled button
+    // leaves the tab order, so the header's keyboard path would change as a side
+    // effect of pressing it.
+    if (collapse.disabled) return false;
+    // And with nothing open it is a no-op: not an error, and not a re-render either.
+    // Counting the renders is the only way to see that guard at all -- a list rebuilt
+    // from the same data looks exactly like a list left alone.
+    const manager = win().sessionManager;
+    const realRender = manager.render.bind(manager);
+    let renders = 0;
+    manager.render = () => { renders += 1; realRender(); };
+    try {
+      collapse.click();
+    } finally {
+      // delete, not assign: assigning back would leave an own property shadowing the
+      // class method for every check after this one.
+      delete manager.render;
+    }
+    return renders === 0 && doc().activeElement === collapse
+      && $('.session-item[data-id="s-1-sub"]') === null;
+  });
+
   await check('a session started from the chat is named once the server has named it', async () => {
     await stub('/__stub/sessions', { session_id: 's-2', title: 'Fresh session', has_children: false });
     win().sessionManager.onSessionUpdated('s-2');  // what the chat calls on the stream's start event

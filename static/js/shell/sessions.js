@@ -84,12 +84,15 @@ export class SessionManager {
     render(this.pane, html`
       <div class="sessions-head">
         <h2 class="pk-grow">Sessions</h2>
+        <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="collapse-all"
+                title="Collapse all sub-sessions">${icon('chevrons-down-up', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--sm" data-act="new" title="New session">${icon('plus', { size: 'sm' })} New</button>
       </div>
       <div class="sessions-filter pk-search">${icon('search')}<input class="pk-input pk-input--sm" type="search" placeholder="Filter" aria-label="Filter sessions"></div>
       <div class="sessions-list"></div>`);
     this.list = this.pane.querySelector('.sessions-list');
     this.pane.querySelector('[data-act="new"]').addEventListener('click', () => this.newConversation());
+    this.pane.querySelector('[data-act="collapse-all"]').addEventListener('click', () => this.collapseAll());
     this.pane.querySelector('input[type="search"]').addEventListener('input', (event) => {
       this.filter = event.target.value.trim().toLowerCase();
       this.render();
@@ -303,6 +306,26 @@ export class SessionManager {
       if (!children) return;  // api() has shown the failure; the node stays closed
       this.expanded.set(id, children);
     }
+    this.render();
+  }
+
+  /**
+   * Close every open branch at once. A deep tree is otherwise closed one chevron at a
+   * time, and each of those is a click on a row that scrolls away as the list shortens.
+   *
+   * Offered whether or not anything is open, the way a file tree's is -- and enabled,
+   * not merely present. Hiding it once nothing is open takes the focus of whoever just
+   * pressed it, measured; DISABLING it does not, also measured, but a disabled button
+   * leaves the tab order, so the header's keyboard path would change under the viewer
+   * as a side effect of pressing something. Both are pinned by the test. With nothing
+   * open it does nothing, and the button stays where the eye last found it.
+   *
+   * Only the branches are closed. `children()` keeps no cache, so reopening reloads --
+   * which is what keeps a branch honest after a run has added sub-sessions to it.
+   */
+  collapseAll() {
+    if (!this.expanded.size) return;
+    this.expanded.clear();
     this.render();
   }
 

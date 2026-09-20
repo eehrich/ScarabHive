@@ -869,6 +869,7 @@ EXPECTED = [
     'a session offers the panels that open on a session',
     'the session panel is the one that asks for the sub-session tree',
     'the thinking box carries the reasoning, and not the answer a second time',
+    'collapse all closes every open branch and keeps the focus it was pressed with',
     'a session panel pinned from a link can follow the chat again',
     'a request id in the chat offers the panels that take a request',
     'a panel with unsaved input is only closed or reloaded once the viewer agrees',
