@@ -407,29 +407,6 @@ class LLMSystemConfig(BaseModel):
                     f"declares it via provides_batch "
                     f"(known: {sorted(known_batch_providers())})")
 
-        unknown_tts = sorted(
-            f"{name} (provider={m.provider})"
-            for name, m in self.tts_models.items()
-            if m.provider not in known_tts
-        )
-        if unknown_tts:
-            raise ValueError(
-                f"llm_system.tts_models: unknown TTS provider on {unknown_tts} "
-                f"— no plugin under src/plugins_llm declares it via "
-                f"provides_tts (known: {sorted(known_tts)})")
-
-        unknown_decisions = sorted(
-            f"{name} (provider={m.provider})"
-            for name, m in self.decision_models.items()
-            if m.provider not in known_decisions
-        )
-        if unknown_decisions:
-            raise ValueError(
-                f"llm_system.decision_models: unknown decisions provider on "
-                f"{unknown_decisions} — no plugin under src/plugins_llm "
-                f"declares it via provides_decisions "
-                f"(known: {sorted(known_decisions)})")
-
         # A profile pointing at no model fails at the first USE of it: a decision
         # inside an agent loop (agent_continuation asks one per step), a synthesis for
         # TTS. Both are loud and both are late, and a typo in a config file is cheapest
@@ -444,10 +421,27 @@ class LLMSystemConfig(BaseModel):
         # test_a_swallowed_llm_error_names_the_agent). Refusing the config instead
         # would take the whole API down over one typo in one of 83 profiles, mid book
         # run — that is a trade to be decided, not to be slipped in here.
-        for section, profiles, models in (
-            ("tts_profiles", self.tts_profiles, self.tts_models),
-            ("decision_profiles", self.decision_profiles, self.decision_models),
+        # Both checks walk the same two sections, so they walk them together.
+        # A fifth non-chat seam is one row here rather than two more blocks —
+        # which is how the decisions seam got a provider check and no profile
+        # check on its first day.
+        for kind, label, models, profiles, known_names, manifest_key in (
+            ("tts", "TTS", self.tts_models, self.tts_profiles,
+             known_tts, "provides_tts"),
+            ("decision", "decisions", self.decision_models, self.decision_profiles,
+             known_decisions, "provides_decisions"),
         ):
+            unknown = sorted(
+                f"{name} (provider={m.provider})"
+                for name, m in (models or {}).items()
+                if m.provider not in known_names
+            )
+            if unknown:
+                raise ValueError(
+                    f"llm_system.{kind}_models: unknown {label} provider on "
+                    f"{unknown} — no plugin under src/plugins_llm declares it "
+                    f"via {manifest_key} (known: {sorted(known_names)})")
+
             dangling = sorted(
                 f"{name} -> {profile.model_ref}"
                 for name, profile in (profiles or {}).items()
@@ -455,9 +449,8 @@ class LLMSystemConfig(BaseModel):
             )
             if dangling:
                 raise ValueError(
-                    f"llm_system.{section}: {dangling} name no entry in "
-                    f"{section.replace('profiles', 'models')} "
-                    f"(have: {sorted(models or {})})")
+                    f"llm_system.{kind}_profiles: {dangling} name no entry in "
+                    f"{kind}_models (have: {sorted(models or {})})")
 
         default_profile = self.default_decision_profile
         if default_profile and default_profile not in self.decision_profiles:
@@ -1147,6 +1140,21 @@ class SessionPresenceConfig(BaseModel):
     max_wake_depth: int = 3  # A run woken this deep in a chain wakes nobody; 0 = never wake
 
 
+class SessionArchiveConfig(BaseModel):
+    """Old conversations move out of data/sessions into zips (services/session_archive.py).
+
+    The unit is a whole tree -- a root session and its sub-agent sessions -- and
+    it moves only when every session in it is older than ``retention_days`` and
+    none of them is running. Changing these values needs a restart.
+    """
+    enabled: bool = True
+    retention_days: int = Field(default=30, ge=1)  # below 1 would archive live work
+    sweep_interval_hours: float = Field(default=24.0, gt=0)
+    first_sweep_delay_seconds: float = Field(default=300.0, ge=0)  # let the app finish starting
+    max_trees_per_sweep: int = Field(default=200, ge=1)  # one pass stays bounded
+    archive_path: Optional[str] = None  # default: <sessions>/../session_archive
+
+
 class VisionConfig(BaseModel):
     """Vision/image processing configuration"""
     image_warn_size_mb: float = 10.0  # Warn when images exceed this size (MB)
@@ -1407,6 +1415,7 @@ class AgentSystemConfig(BaseModel):
     status: StatusConfig = Field(default_factory=StatusConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     session_presence: SessionPresenceConfig = Field(default_factory=SessionPresenceConfig)
+    session_archive: SessionArchiveConfig = Field(default_factory=SessionArchiveConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     default_agent: str = "basic_agent"
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
