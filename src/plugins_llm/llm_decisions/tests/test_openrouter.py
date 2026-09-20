@@ -242,6 +242,27 @@ async def test_a_broken_connection_is_tried_again(monkeypatch):
     assert len(sent) == 2 and result["safe_to_run"].value == 0.05
 
 
+async def test_the_failed_attempt_is_grouped_with_the_run_as_well(monkeypatch):
+    """The tracker skips error rows on purpose, so the debugger is the only
+    place a failed attempt shows up -- and an ungrouped row there is a cost
+    that looks like it happened somewhere else."""
+    from agent_system.tools.status import current_request_id
+
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda delay: real_sleep(0))
+    registry, watching = _watching_hooks()
+    token = current_request_id.set("req-retry-9")
+    try:
+        with watching, _respond(httpx.ConnectError("connection reset"), _response()):
+            await _client(max_retries=1).decide(STATE, SAFE_TO_RUN)
+    finally:
+        current_request_id.reset(token)
+
+    failed = [c for kind, c in registry.seen
+              if kind == "post_llm_response" and c.llm_error]
+    assert failed and all(c.request_id == "req-retry-9" for c in failed)
+
+
 class _Registry:
     """Stands in for the global hook registry and keeps what it was told."""
 
@@ -276,6 +297,42 @@ async def test_the_call_reaches_the_hooks_with_what_this_api_has():
     assert answer.llm_usage == {"input_tokens": 384, "output_tokens": 22, "cost": 0.000016128}
     assert answer.metadata["served_by"] == "typesafe/jev-1.13-20260917"
     assert answer.llm_error is None and answer.llm_finish_reason == "stop"
+
+
+async def test_the_dispatched_call_carries_the_request_it_belongs_to():
+    """Load-bearing since context_usage_tracker counts agent-less calls
+    (b9222431). Its queries filter on session_id first and fall back to a
+    request_id PREFIX, so the id is what carries a decision made under one
+    session into the sum of another -- the sub-agent case. Dropped here, the
+    spend still reaches the live total and belongs to no run.
+
+    An agent-less client has no context to inherit it from, so it reads the
+    same contextvar the tool servers set.
+    """
+    from agent_system.tools.status import current_request_id
+
+    registry, watching = _watching_hooks()
+    token = current_request_id.set("req-abc-123")
+    try:
+        with watching, _respond(_response()):
+            await _client().decide(STATE, SAFE_TO_RUN, session_id="s-8")
+    finally:
+        current_request_id.reset(token)
+
+    assert [c.request_id for _, c in registry.seen] == ["req-abc-123", "req-abc-123"]
+
+
+async def test_no_request_in_flight_is_an_empty_id_not_none():
+    """A decision from a script has no run around it, and the contextvar then
+    reads None -- it is declared with default=None, so nothing raises here and
+    nothing warns either. None in a field typed `str` travels all the way into
+    the tracker's row, where it is NULL rather than "belongs to no run"."""
+    registry, watching = _watching_hooks()
+    with watching, _respond(_response()):
+        await _client().decide(STATE, SAFE_TO_RUN)
+
+    ids = [c.request_id for _, c in registry.seen]
+    assert ids == ["", ""] and all(i is not None for i in ids)
 
 
 @pytest.mark.parametrize("fail, says", [

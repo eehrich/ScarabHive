@@ -383,9 +383,15 @@ async def _dispatch(hook_name: str, *, model: str, url: str, request_data: Optio
 
 
 def _current_request_id() -> str:
-    """The run this call belongs to, so the debugger can group it; empty outside one."""
+    """The run this call belongs to, so the debugger can group it; empty outside one.
+
+    ``or ""`` is the whole guard: the contextvar is declared with
+    ``default=None`` (tools/status.py), so a call made outside a run reads None
+    rather than raising -- and None in a field typed ``str`` is what reaches
+    the database as NULL instead of "belongs to no run".
+    """
     try:
         from agent_system.tools.status import current_request_id
-        return current_request_id.get("") or ""
+        return current_request_id.get() or ""
     except Exception:
         return ""

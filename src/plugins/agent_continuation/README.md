@@ -100,20 +100,28 @@ these criteria it gets continued. If a run should stop and let the human
 answer, say so in `decision_final_means` ("…or a question the agent cannot
 resolve on its own").
 
-### Where that cost does NOT show up
+### Where that cost shows up
 
-Measured, and worth knowing before switching this on: the live per-agent cost
-sum in `context_usage_tracker` will **not** include these calls. That plugin
-hooks `post_llm_call` (its `schema.yaml`), which the agent loop fires; the
-decisions client fires `PRE_LLM_REQUEST` / `POST_LLM_RESPONSE` instead, the
-same pair the TTS clients use. So the spend is recorded by `message_debugger`
-— which prunes by retention and can be switched off — and nowhere else.
+In the live total, since `b9222431`. It did not at first: `context_usage_tracker`
+hooks `post_llm_call`, which the agent loop fires, while the decisions client
+fires `PRE_LLM_REQUEST` / `POST_LLM_RESPONSE` — so the spend reached only the
+message debugger, whose rows a retention setting prunes and a switch can turn
+off. This hook was the first caller that made that cost money per agent step,
+and the tracker now carries a second hook for calls that belong to no agent.
 
-The gap is older than this strategy (TTS has it too) and closing it belongs to
-the tracker, not here: attributing a call that carries a session but no agent
-is a real question, and counting naively where both hooks fire would double
-the bill. Named here because this hook is the first caller that makes it cost
-money per agent step.
+Its guard is worth knowing if you ever read that code: `post_llm_response`
+fires for chat as well, so anything counted there without checking
+`context.agent is None` would book every chat call at least twice — it is a
+transport-level hook, so a retried or failed-over call fires it more than once
+per agent step.
+
+**TTS spend is still outside the table**, and for a reason rather than an
+oversight: `notify_tts_response` reports audio seconds and bytes, not tokens,
+so there is nothing to normalise into a row. A row that pretended otherwise
+would be worse than the gap. Note which guard actually keeps it out, because
+it is not the obvious one: TTS sets `agent=None` too, so it passes the agent
+check and is stopped by the empty-usage check one line further down. Tighten
+that check and audio starts being booked as tokens.
 
 ### What it costs and how long it takes
 
