@@ -88,9 +88,13 @@ def test_ssh_control_get_tools(mock_system_config, empty_server_config):
     assert 'ssh_control_test_check_connection' in tool_names
     assert 'ssh_control_test_add_machine' in tool_names
     assert 'ssh_control_test_remove_machine' in tool_names
-    
-    # Verify we have exactly 7 tools (simplified schema)
-    assert len(tools) == 7
+    assert 'ssh_control_test_get_output' in tool_names
+    assert 'ssh_control_test_kill_process' in tool_names
+
+    # The count guards against a tool nobody named above quietly appearing --
+    # every tool here is one more line in every prompt this plugin reaches.
+    assert sorted(tool_names) == sorted(set(tool_names)), tool_names
+    assert len(tools) == 9
 
 
 @pytest.mark.asyncio

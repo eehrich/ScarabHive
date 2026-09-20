@@ -278,6 +278,11 @@ class SSHConnectionManager:
         
         return self.pools[machine_name]
     
+    async def pool_for(self, machine_name: str) -> ConnectionPool:
+        """The machine's connection pool, for callers that hold a connection
+        themselves -- a background command holds one for its whole life."""
+        return await self._get_pool(machine_name)
+
     async def execute_command(
         self,
         machine_name: str,

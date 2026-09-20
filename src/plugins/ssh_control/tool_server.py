@@ -10,15 +10,29 @@ import logging
 from collections import deque
 from typing import Any, TYPE_CHECKING
 
+from agent_system.core.session_presence import wake_blocked, wake_session
+from agent_system.plugins.cache import PluginCache
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from . import machine_store
+from .background import RemoteProcessManager
 from .connection_manager import SSHConnectionManager
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
+
+
+#: What a recorded result may carry per stream -- enough for the tail of a
+#: build, not the whole log.
+_RECORDED_STREAM_CAP = 30_000
+
+
+def _short(command: str, limit: int = 60) -> str:
+    """One status row has to stay readable; a full pipeline does not fit."""
+    one_line = " ".join(command.split())
+    return one_line if len(one_line) <= limit else one_line[:limit - 3] + "..."
 
 
 class SSHControlToolServer(SchemaBasedToolServer):
@@ -68,6 +82,10 @@ class SSHControlToolServer(SchemaBasedToolServer):
                            name, config_dict.get('machines') or [])}
 
         self.connection_manager = SSHConnectionManager(config_dict, command_history=self.command_history)
+        self.processes = RemoteProcessManager(self.connection_manager)
+        # Where a finished command's outcome survives THIS process: a run
+        # woken for it is a new one and has none of these in memory.
+        self._recorded = PluginCache(name)
 
         stranded = machine_store.legacy_machine_count()
         if stranded:
@@ -126,6 +144,199 @@ class SSHControlToolServer(SchemaBasedToolServer):
             'count': len(machines)
         }
 
+    def _wake_callback(self, params: dict[str, Any]):
+        """What runs when a background command ends -- or why nothing will.
+
+        Returns (callback, note); exactly one of them is set. The note is what
+        the caller is told INSTEAD of a wake, and it is asked before the
+        command starts: a caller that asked to be woken and silently was not
+        would end its turn and wait for a message that never comes.
+        """
+        session_id = params.get("_session_id") or ""
+        user_id = params.get("_user_id") or ""
+        blocked = wake_blocked(self.system_config, session_id, user_id)
+        if blocked:
+            return None, blocked
+
+        started = [""]   # filled in below; the callback outlives this call
+
+        def still_needed() -> bool:
+            info = self.processes.processes.get(started[0])
+            return info is not None and not info["read_after_finish"]
+
+        async def on_finish(process_id: str) -> None:
+            started[0] = process_id
+            info = self.processes.processes.get(process_id, {})
+            await self._record(process_id, info)
+            await wake_session(
+                self.system_config, session_id, user_id,
+                what=f"background command {process_id} on "
+                     f"{info.get('machine')} (exit {info.get('exit_code')})",
+                still_needed=still_needed)
+
+        return on_finish, ""
+
+    async def _execute_background(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Start a long command and return once it RUNS.
+
+        One machine only. A background command holds a connection out of that
+        machine's pool for its whole life, so fanning one out over a list would
+        take every pool at once -- and the answer carries one process id, which
+        a list has no room for.
+        """
+        machine = params.get("machine")
+        command = params.get("command")
+        status = params.get("_status")
+
+        if not machine:
+            raise ValueError("Missing required parameter: machine")
+        if not command:
+            raise ValueError("Missing required parameter: command")
+        if not isinstance(machine, str):
+            message = ("background=true runs on one machine, not a list; "
+                       "start one command per machine")
+            if status:
+                await status.error(message)
+            return {"status": "error", "error": message,
+                    "error_type": "InvalidParameter"}
+
+        on_finish, wake_note = (self._wake_callback(params) if params.get("wake")
+                                else (None, ""))
+
+        if status:
+            await status.progress(f"Starting on {machine}: {_short(command)}")
+
+        try:
+            result = await self.processes.start(
+                machine, command,
+                process_id=params.get("process_id"),
+                owner_session=params.get("_session_id"),
+                on_finish=on_finish)
+        except Exception as e:
+            message = f"Could not start on {machine}: {e}"
+            if status:
+                await status.error(message[:140])
+            return {"status": "error", "error": message, "machine": machine,
+                    "error_type": type(e).__name__}
+
+        if result["status"] != "success":
+            if status:
+                await status.error(f"{machine}: {result['error']}"[:140])
+            return result
+
+        # Outcome first -- the WebUI cuts the row at the right edge, and the
+        # command is the part that may be cut.
+        wake_tag = " (wakes this session)" if on_finish is not None else ""
+        if status:
+            # Every part that the CALLER sizes gets its own budget: a blind
+            # cut of the whole row would, with a long machine name, leave the
+            # machine name and nothing else -- no process id, no outcome. The
+            # command is last and is the part that may lose characters.
+            head = (f"{_short(str(machine), 40)}: "
+                    f"{_short(str(result['process_id']), 30)} started{wake_tag}")
+            await status.end(f"{head} -- {_short(command, 136 - len(head))}")
+
+        if params.get("wake"):
+            result["wake"] = on_finish is not None
+            if wake_note:
+                result["wake_note"] = wake_note
+        return result
+
+    async def _record(self, process_id: str, info: dict[str, Any]) -> None:
+        """Put the outcome where another process can read it. Only for a
+        wake: without one the caller polls from here and never needs it. A
+        failure costs the recording, not the command, which is over."""
+        if not info:
+            return
+        try:
+            await self._recorded.set(process_id, {
+                "process_id": process_id,
+                "machine": info.get("machine"),
+                "command": info.get("command"),
+                "exit_code": info.get("exit_code"),
+                "error": info.get("error"),
+                "started_at": info.get("started_at"),
+                "finished_at": info.get("finished_at"),
+                "owner_session": info.get("owner_session"),
+                "stdout": "".join(info.get("stdout_buffer", []))[-_RECORDED_STREAM_CAP:],
+                "stderr": "".join(info.get("stderr_buffer", []))[-_RECORDED_STREAM_CAP:],
+            })
+        except Exception as e:  # noqa: BLE001 - reporting must not break the command
+            logger.warning(f"Could not record the result of {process_id}: {e}")
+
+    async def _recall(self, process_id: str, requester_session) -> dict | None:
+        """A result recorded by the process that ran it, for the run woken
+        for it. Read once: it is handed over, not kept."""
+        try:
+            record = await self._recorded.get(process_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not read the recorded result of {process_id}: {e}")
+            return None
+        if not record:
+            return None
+        # Same rule as the live registry: a foreign-owned command is not this
+        # session's business, an ownerless one stays readable.
+        owner = record.get("owner_session")
+        if owner and requester_session and owner != requester_session:
+            return None
+        await self._recorded.delete(process_id)
+        return {
+            "status": "success",
+            "process_id": process_id,
+            "machine": record.get("machine"),
+            "command": record.get("command"),
+            "stdout": record.get("stdout", ""),
+            "stderr": record.get("stderr", ""),
+            "is_running": False,
+            "exit_code": record.get("exit_code"),
+            "started_at": record.get("started_at"),
+            "finished_at": record.get("finished_at"),
+            "error": record.get("error"),
+            "source": "recorded",
+        }
+
+    async def get_output(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Read what a background command has written so far."""
+        status = params.get("_status")
+        process_id = params["process_id"]
+        result = await self.processes.get_output(
+            process_id=process_id,
+            stream=params.get("stream", "both"),
+            clear_buffer=params.get("clear_buffer", False),
+            requester_session=params.get("_session_id"))
+        if result["status"] != "success":
+            # Not in THIS process's memory. A run woken for this command is
+            # a new one and never has it, so what the old process recorded is
+            # the answer here.
+            recorded = await self._recall(process_id, params.get("_session_id"))
+            if recorded is not None:
+                result = recorded
+        if status:
+            if result["status"] != "success":
+                await status.error(f"No process {process_id} for this session")
+            else:
+                state = ("running" if result["is_running"]
+                         else f"exit {result['exit_code']}")
+                size = len(result["stdout"]) + len(result["stderr"])
+                await status.end(f"{process_id} on {result['machine']}: "
+                                 f"{state}, {size} chars")
+        return result
+
+    async def kill_process(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Stop a background command."""
+        status = params.get("_status")
+        process_id = params["process_id"]
+        result = await self.processes.kill_process(
+            process_id=process_id,
+            force=params.get("force", False),
+            requester_session=params.get("_session_id"))
+        if status:
+            if result["status"] != "success":
+                await status.error(f"Could not stop {process_id}: {result['error']}"[:140])
+            else:
+                await status.end(f"{process_id} signalled with {result['signal']}")
+        return result
+
     async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         """Execute command on one or more remote machines.
 
@@ -135,6 +346,9 @@ class SSHControlToolServer(SchemaBasedToolServer):
         Returns:
             Dict with command results for each machine
         """
+        if params.get('background'):
+            return await self._execute_background(params)
+
         machine = params.get('machine')
         command = params.get('command')
         timeout = params.get('timeout')
@@ -260,12 +474,20 @@ class SSHControlToolServer(SchemaBasedToolServer):
                     }
                 )
 
-        return {
+        answer = {
             'results': responses,
             'total_machines': len(machines),
             'successful': sum(1 for r in responses if r.get('success', False)),
             'failed': sum(1 for r in responses if not r.get('success', False))
         }
+        if params.get('wake'):
+            # Asking for a wake here used to be answered with nothing at
+            # all. There is nothing to wake for: the results are here.
+            answer['wake'] = False
+            answer['wake_note'] = ("wake applies to background=true only; these "
+                                   "ran in the foreground and their results are "
+                                   "in this answer")
+        return answer
 
     async def upload_file(self, params: dict[str, Any]) -> dict[str, Any]:
         """Upload file to remote machine(s).
@@ -853,4 +1075,7 @@ class SSHControlToolServer(SchemaBasedToolServer):
     async def close(self) -> None:
         """Clean up resources."""
         logger.info(f"Closing SSH Control Tool Server '{self.name}'")
+        # Background commands first: each holds a connection, and close_all()
+        # would pull it out from under a capture task still reading from it.
+        await self.processes.cleanup()
         await self.connection_manager.close_all()

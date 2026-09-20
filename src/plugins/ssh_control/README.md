@@ -87,6 +87,17 @@ servers:
 }
 ```
 
+#### Background Command
+```json
+{
+  "tool": "ssh_control_execute",
+  "machine": "production-web",
+  "command": "make -C /srv/app build",
+  "background": true,
+  "wake": true
+}
+```
+
 #### Upload File
 ```json
 {
@@ -151,6 +162,107 @@ yet or idle, red when unreachable.
 
 The panel never receives a password or a key path. Anyone who may open it may run commands on every machine:
 restrict `/plugins/<instance>/*` in `auth.plugin_security` if that is not everyone.
+
+## Background commands and waking
+
+`execute(background=true)` starts a long command and returns at once with a
+`process_id`. `get_output` reads what it has written so far and whether it still
+runs; `kill_process` stops it. One machine per call — the answer carries one
+process id, and how many may run at once is what the pool allows (see below).
+
+**What a background command costs:** it holds one connection out of that
+machine's pool for its whole life. `max_connections` is 3 by default, and one
+connection always stays free for ordinary commands — so two background commands
+per machine, and the third is refused with `BackgroundLimitReached` naming the
+setting. With `max_connections: 1` there is nothing to spare and background
+commands are refused outright; raise it for that machine if you want them.
+
+`wake: true` lets the caller end its turn over the command. When it ends —
+finished, failed or stopped, there is no second ending — the plugin tells the
+core that input is waiting for the calling session (`core/session_presence.py`,
+`wake_session`): a session another process holds reads that at its next step,
+a session nobody holds is continued in a run of its own. The woken run reads the
+result with `get_output` on the `process_id` from its own history.
+
+**The answer says whether the wake is armed**, because a caller that asked for
+one and silently did not get it would end its turn over work it never hears
+about again. Both reasons are known before the command starts:
+
+| `wake` | `wake_note` | What to do |
+|---|---|---|
+| `true` | — | End the turn. `get_output` when woken. |
+| `false` | `session presence is off (config: session_presence.enabled)` | Poll `get_output`. |
+| `false` | `this call belongs to no session, so there is nobody to wake` | Poll `get_output`. |
+
+A call that did not ask is told nothing about a wake — both fields are absent.
+
+**An armed wake is best effort, not a promise.** What cannot be checked up front
+is whether the process holding the command is still there when it ends. A caller
+that is not woken should poll `get_output`.
+
+**A woken run is a different process, so the outcome is recorded.** Waking a
+session nobody holds starts a fresh `agent-cli run`, which builds its own tool
+servers — its process registry is empty, and `get_output` on an id from the old
+process would find nothing. When a wake is armed, the outcome (exit code and
+the tail of both streams) is therefore written to the plugin's cache
+(`data/cache/<instance>/`, one hour, at most 30 000 characters per stream).
+`get_output` answers from it when the process is not in this process's memory,
+marks the answer `"source": "recorded"`, and drops the record — it is handed
+over, not kept. A call without `wake` writes nothing: its caller polls from the
+process that holds the result anyway.
+
+**A wake is rung more than once.** The core only leaves a marker, and a session
+that is in the middle of a turn takes that marker at its next step expecting a
+hook to hand the waiting input over — nothing hands over "your command
+finished". So the ringing repeats while the session stays busy (10 s apart, up
+to five minutes) and stops early once `get_output` has read the finished
+result: a session that dealt with it itself is not started again for it.
+
+Three further cases end with no wake, and only the first is refused up front:
+
+| Case | What happens |
+|---|---|
+| `session_presence.max_wake_depth` reached, or `0` | refused before the start, with the setting named |
+| A sub-agent's session | armed, but never woken — the run that spawned it hands its result over. Reading this up front means parsing the whole session file on the event loop for every armed wake, so it is not checked |
+| A one-shot `agent-cli run` | armed, but the run ends and takes the work with it |
+
+`wake: true` without `background: true` is answered too: the results are already
+in that answer, so there is nothing to wake for.
+
+### Model Experience
+
+**What the model sees.** The same vocabulary as the `terminal` plugin —
+`background`, `wake`, `process_id`, `get_output`, `kill_process` — so one tool
+does not have to be learned twice. A refusal names what to change:
+`BackgroundLimitReached` carries the machine's `max_connections`,
+`InvalidParameter` says that a list of machines is not a background command,
+`ProcessIdInUse` that an id you chose is taken (the command behind it keeps
+running, untouched), `StoppedBeforeStart` that the command was stopped while
+its channel was still opening,
+`ProcessNotFound` covers both a wrong id and another session's process.
+
+**Token and cache effect.** Append-only: two more tool definitions, and three
+more parameters on `execute`. Output is capped at 1000 lines per stream and
+older lines are dropped, so a long build cannot grow the answer without bound.
+
+**Known gaps.**
+
+- **A recorded result lives one hour and is read once.** A woken run that never
+  calls `get_output` leaves it to expire; a second reader finds nothing.
+- **Only the last 50 finished commands stay readable.** Each entry holds two
+  line buffers, so they cannot be kept for the life of the process. What is
+  still running is never dropped, and neither is the one that just ended.
+- **Nothing survives a restart.** The registry is in memory. A restarted
+  process loses every `process_id`, and the remote command keeps running with
+  nobody reading it.
+- **A wake needs the process that started the command.** The API and
+  `agent-cli chat` (whose prompt waits on the same loop) can wake; a one-shot
+  `agent-cli run` ends its turn and takes its background commands with it.
+- **Output is read, not streamed.** `get_output` returns what has arrived; a
+  command that writes nothing for an hour looks the same as one that hangs.
+- **The connection is the lifeline.** If it drops, the capture ends and the
+  command is recorded as finished with whatever status arrived — the remote
+  process itself may well run on.
 
 ## Security Best Practices
 

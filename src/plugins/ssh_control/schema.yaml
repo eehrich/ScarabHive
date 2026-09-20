@@ -32,9 +32,61 @@ tools:
           check_exit_code:
             type: boolean
             description: "Fail if exit code is not 0 (default: true)"
+          background:
+            type: boolean
+            default: false
+            description: "Run the command in the background and return at once with a process_id. Read it with get_output, stop it with kill_process. Holds one connection of the machine's pool for the whole run."
+          wake:
+            type: boolean
+            default: false
+            description: "Only with background=true: wake this session when the command ends, so you can end your turn instead of polling. When woken, call get_output with the process_id. The answer says whether the wake is armed; if it is not, poll instead. A wake is best effort even when armed - if you are not woken, fall back to polling."
+          process_id:
+            type: string
+            description: "Custom id for a background command (auto-generated if omitted, only used when background=true)"
         required:
           - machine
           - command
+
+  - type: function
+    function:
+      name: "{{ name }}_get_output"
+      description: "Read what a background SSH command has written so far, and whether it still runs."
+      parameters:
+        type: object
+        properties:
+          process_id:
+            type: string
+            description: "Process ID from execute with background=true"
+          stream:
+            type: string
+            enum: ["stdout", "stderr", "both"]
+            default: "both"
+            description: "Which output stream to read"
+          clear_buffer:
+            type: boolean
+            default: false
+            description: "Drop what was read from the buffer (default: false)"
+        required:
+          - process_id
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_kill_process"
+      description: "Stop a background SSH command."
+      parameters:
+        type: object
+        properties:
+          process_id:
+            type: string
+            description: "Process ID from execute with background=true"
+          force:
+            type: boolean
+            default: false
+            description: "Send SIGKILL instead of SIGTERM (default: false)"
+        required:
+          - process_id
+        additionalProperties: false
 
   - type: function
     function:
