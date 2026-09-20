@@ -1533,7 +1533,13 @@
     
     // Get tree hierarchy metadata from backend (already calculated correctly)
     const treeInfo = ev.tree || { parent_id: null, depth_level: 0, child_count: 0, is_leaf: true };
-    const depthLevel = treeInfo.depth_level || 0;
+    // One level off what the server counts, because the server counts from the RUN and
+    // every operation of a run is a child of it: taken literally, the coordinator, the
+    // worker and every tool scope would be indented by one and wear a connector, which
+    // says "this ran under something else" about every line in the chat. Shifted down,
+    // the indent means what it looks like it means -- the run's own work sits flat, and
+    // only what a sub-agent does sits under the call that spawned it.
+    const depthLevel = Math.max(0, (treeInfo.depth_level || 0) - 1);
     const parentId = treeInfo.parent_id || null;
     
     // Auto-create virtual parent if needed (parent_id given but not yet in tree)

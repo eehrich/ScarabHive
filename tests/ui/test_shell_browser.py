@@ -454,9 +454,30 @@ def stub_app() -> FastAPI:
                 # A sub-agent spawned by the SECOND call, reporting ITS first step. Its
                 # `meta.step` is a step of the sub-run -- taken at face value it would
                 # file these lines under the parent's call 1.
+                #
+                # These two carry `tree`, which the run's own stream does NOT today
+                # (DirectStatusHandler leaves it out, so the page's nesting machinery
+                # never runs). Sent here to measure what that machinery does with the
+                # shape the server would send, BEFORE anything starts sending it:
+                # registerNode hides a child whose parent it does not know yet.
+                # Depths and parents as utils/tree_hierarchy computes them.
+                yield event({"type": "status", "server": "sub_agent_manager.spawn()", "phase": "start",
+                             "request_id": f"{request_id}_sub_001", "message": "spawning", "meta": {},
+                             "tree": {"parent_id": request_id, "depth_level": 1,
+                                      "child_count": 1, "is_leaf": False}})
                 yield event({"type": "status", "server": "sub_agent.coordinator", "phase": "start",
                              "request_id": f"{request_id}_sub_001_001",
-                             "message": "sub-agent at work", "meta": {"step": 1}})
+                             "message": "sub-agent at work", "meta": {"step": 1},
+                             "tree": {"parent_id": f"{request_id}_sub_001", "depth_level": 2,
+                                      "child_count": 0, "is_leaf": True}})
+                # An ORPHAN: its parent is never sent at all. This is the case that
+                # decides whether a tree can be forwarded safely, because registerNode
+                # hides a child whose parent it does not know and waits for it.
+                yield event({"type": "status", "server": "orphan.worker()", "phase": "start",
+                             "request_id": f"{request_id}_sub_002_001", "message": "no parent sent",
+                             "meta": {},
+                             "tree": {"parent_id": f"{request_id}_sub_002", "depth_level": 2,
+                                      "child_count": 0, "is_leaf": True}})
                 for delta in ("now I can ", "answer."):
                     yield event({"type": "reasoning_delta", "step": 2, "delta": delta})
                 yield event({"type": "thinking", "step": 2, "assistant": {"content": "", "tool_calls": []}})
@@ -932,6 +953,7 @@ EXPECTED = [
     'the thinking box carries the reasoning, and not the answer a second time',
     'collapse all closes every open branch and keeps the focus it was pressed with',
     'each LLM call keeps its own reasoning, its own tool lines, and folds when the next one starts',
+    'a sub-agents lines nest under the call that spawned it, and none of them go missing',
     'a tool call carries its arguments and its result on its own row, folded and capped',
     'a session panel pinned from a link can follow the chat again',
     'a request id in the chat offers the panels that take a request',

@@ -37,7 +37,18 @@ class DirectStatusHandler(StatusHandler):
             "phase": event.phase.value,
             "level": event.level,
             "timestamp": event.timestamp.isoformat(),
-            "meta": event.meta or {}
+            "meta": event.meta or {},
+            # The same tree SSEStatusHandler sends. Without it the page never learns
+            # that one operation ran under another: a sub-agent's lines sat flat
+            # between the parent's own, and the whole nesting half of the status
+            # display (depth, connectors, collapsing a sub-tree) was inert, because
+            # this is the handler the run's own stream goes through.
+            "tree": {
+                "parent_id": event.parent_id,
+                "depth_level": event.depth_level,
+                "child_count": event.child_count,
+                "is_leaf": event.is_leaf,
+            },
         }
         self.events_list.append(status_sse_event)
 

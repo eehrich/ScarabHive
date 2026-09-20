@@ -1213,6 +1213,49 @@
     }
   });
 
+  await check('a sub-agents lines nest under the call that spawned it, and none of them go missing', async () => {
+    // The run's stream carries no `tree` today, so the page's nesting machinery has
+    // never run on it. Before anything starts sending one, measure what it DOES with
+    // that shape: registerNode hides a child whose parent it has not seen, so a tree
+    // forwarded carelessly would make status lines vanish rather than indent.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'steps');
+      $('#task').value = 'Spawn something';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-steps', 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
+      const box = $$('#chat .msg.assistant').at(-1);
+      const row = (suffix) => box.querySelector(`.operation-progress[data-request-id$="${suffix}"]`);
+      const parent = row('_sub_001');
+      const child = row('_sub_001_001');
+      if (!parent || !child) return false;
+      // neither is hidden -- the failure mode this check exists for
+      if (!parent.getClientRects().length || !child.getClientRects().length) return false;
+      // The child is one level deeper. The numbers are one below what the server sends
+      // (1 and 2): it counts from the run, and every line of a run is a child of it, so
+      // taken literally every row in the chat would be indented and connectored. Here
+      // the spawn scope sits flat like any other tool call of this run, and only what
+      // the sub-agent itself does sits under it.
+      if (parent.getAttribute('data-depth') !== '0' || child.getAttribute('data-depth') !== '1') return false;
+      // A row whose parent NEVER arrives is still shown. addStatusEvent stands a
+      // virtual parent up before registering the child, so registerNode's "queue it
+      // and hide it until the parent comes" cannot strand a line that has no parent
+      // coming. Without this the tree could not be forwarded at all: an orphan would
+      // not indent, it would disappear.
+      const orphan = row('_sub_002_001');
+      if (!orphan || !orphan.getClientRects().length) return false;
+      // both belong to the call that spawned them, not to the run and not to call 1
+      const inStep2 = box.querySelector('.step-section[data-step="2"]');
+      return inStep2.contains(parent) && inStep2.contains(child);
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
   await check('a tool call carries its arguments and its result on its own row, folded and capped', async () => {
     // `tool_call` and `tool_result` had no branch in the event switch at all: the
     // status lines said what a tool did, and what it was asked and what it answered
