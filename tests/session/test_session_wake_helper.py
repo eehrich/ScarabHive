@@ -274,11 +274,18 @@ async def test_the_rings_are_spaced_out(config, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_an_answer_the_loop_does_not_know_stops_it(config, monkeypatch, instant_retry):
-    """notify answers "delivered_next_step" both for a session somebody HOLDS
-    and for one a wake run is already on its way to. When those two are told
-    apart, the new answer has to stop the ringing without this loop being
-    touched -- so anything outside RING_AGAIN ends it."""
+async def test_an_answer_the_loop_does_not_know_stops_it(config, monkeypatch, instant_retry,
+                                                         caplog):
+    """notify answered "delivered_next_step" both for a session somebody HOLDS
+    and for one a wake run was already on its way to. Since 20.09.2026 the
+    second is "being_woken", and it stops the ringing without this loop being
+    touched -- anything outside RING_AGAIN ends it.
+
+    It is also the best outcome there is, not a failure: a run is on its way and
+    the marker is waiting for it. Reported as a warning it would read like the
+    exits that wake nobody.
+    """
+    caplog.set_level("INFO")
     rung = []
 
     def being_woken(self, session_id, user_id):
@@ -287,8 +294,12 @@ async def test_an_answer_the_loop_does_not_know_stops_it(config, monkeypatch, in
 
     monkeypatch.setattr(SessionPresence, "notify", being_woken)
 
-    assert await wake_session(config, "sess-1", "someone") == "being_woken"
+    assert await wake_session(config, "sess-1", "someone", what="a job") == "being_woken"
     assert len(rung) == 1, rung
+    said = [r for r in caplog.records if "a job" in r.getMessage()]
+    assert said, caplog.text
+    assert said[0].levelname == "INFO", (said[0].levelname, said[0].getMessage())
+    assert "did not wake" not in said[0].getMessage().lower(), said[0].getMessage()
 
 
 @pytest.mark.asyncio

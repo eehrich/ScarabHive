@@ -405,7 +405,14 @@ class SessionPresence:
 
     def notify(self, session_id: str, user_id: str) -> tuple[str, str]:
         """Input is waiting for the session. Returns (status, note), status one
-        of delivered_next_step, woke_session, queued (the note says why), unknown."""
+        of delivered_next_step, being_woken, woke_session, queued (the note says
+        why), unknown.
+
+        delivered_next_step and being_woken both mean "a run will read this", and
+        they are NOT the same answer: the first is a session somebody holds, which
+        lets go at some point and can be rung again; the second is a run already on
+        its way, and ringing it again would start a second run for news that is
+        being read. Whoever repeats a ring has to stop on the second."""
         path = self._lock_path(session_id, user_id)
         stored_path = path.with_suffix(".json") if path is not None else None
         if path is None or not (path.exists() or stored_path.exists()):
@@ -425,7 +432,10 @@ class SessionPresence:
                 content = _read(fd)
                 if alive(content.get("wake_pid"), content.get("wake_started")):
                     keep = True
-                    return "delivered_next_step", ""  # woken a moment ago; that run reads it
+                    # Woken a moment ago; that run reads it. Its own answer, not
+                    # the held one: a caller that rings a held session again must
+                    # not ring this one, and only the answer can tell it apart.
+                    return "being_woken", "a wake run is already on its way"
                 stored = _stored_session(stored_path)
                 if stored and stored["sub_agent"]:
                     waiting = False
@@ -542,11 +552,11 @@ WAKE_RETRY_SECONDS = 10.0
 WAKE_RETRIES = 30
 
 #: The answers from notify() that mean "the session is busy, ring again". Every
-#: other answer ends the ringing, which is deliberate: notify() today gives the
-#: same "delivered_next_step" for a session somebody HOLDS and for one a wake
-#: run is ALREADY on its way to, and ringing on through the second starts a
-#: second wake run for news that is being read. When those two are told apart,
-#: the new answer stops this loop by not being in here.
+#: other answer ends the ringing, which is deliberate: a session somebody HOLDS
+#: lets go at some point, and one a wake run is ALREADY on its way to is being
+#: read right now -- ringing on through the second starts a second wake run for
+#: news somebody is reading. notify() gave both the same answer until 20.09.2026;
+#: "being_woken" ends the ringing here by not being in this set.
 RING_AGAIN = frozenset({"delivered_next_step"})
 
 
@@ -625,11 +635,14 @@ async def wake_session(system_config: Any, session_id: str, user_id: str,
         # chain at its limit, a session that is not on disk. Reporting those as
         # "woke" made the only operator-visible signal read like success.
         # delivered_next_step counts as woken only once it is the LAST word:
-        # the session let go, and release() wakes it on the marker.
+        # the session let go, and release() wakes it on the marker. being_woken
+        # is a run already on its way, which is the same good outcome as having
+        # started one -- reported as a failure it would make the one signal an
+        # operator has read like an error for the case that worked best.
         # ONE decision, used twice. `report is logger.info` was never true --
         # every attribute access on a logger builds a fresh bound method -- so
         # the line said "Did NOT wake" for a wake that worked.
-        woke = state in ("woke_session", "delivered_next_step")
+        woke = state in ("woke_session", "delivered_next_step", "being_woken")
         report = logger.info if woke else logger.warning
         report("%s %s for %s: %s%s", "Woke" if woke else "Did NOT wake",
                session_id, what or "finished work", state, f" ({note})" if note else "")

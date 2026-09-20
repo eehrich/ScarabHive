@@ -163,8 +163,11 @@ class TestNotify:
     def test_a_stored_session_nobody_holds_is_woken_once(self, store, spawned, tmp_path):
         _stored(tmp_path, "sb")
 
+        # The second answer is not the one a HELD session gives: that one lets go
+        # and can be rung again, this one is being read right now, and a caller
+        # that rings on would start a second run for it.
         assert [store.notify("sb", USER)[0], store.notify("sb", USER)[0]] == [
-            "woke_session", "delivered_next_step"]
+            "woke_session", "being_woken"]
         assert spawned == [("sb", USER, 1)]
         # The woken run asks for this before it starts: gone means somebody
         # else took the input, and waking for nothing costs an LLM call.
