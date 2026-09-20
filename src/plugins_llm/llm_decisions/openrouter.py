@@ -107,9 +107,13 @@ class DecisionsClient:
         max_retries: int = 2,
     ) -> None:
         # The key follows the ENDPOINT, not the provider name (api_keys.py): it is
-        # matched against the host of the url actually called. Pointing this client
-        # at a proxy therefore does NOT send the OpenRouter secret there -- an
-        # unknown host has no environment variable and must carry its own key.
+        # matched against the host of the url actually called, so pointing this
+        # client at a proxy does NOT send the OpenRouter secret there. One gap,
+        # and it is api_keys.py's deliberate one, not this client's: a host
+        # WITHOUT A DOT counts as local (`_is_local`), and a local host gets
+        # OPENAI_API_KEY. So `http://decisions-proxy:9000/...` -- a compose
+        # service name -- travels with that key. Give such an endpoint its own
+        # api_key in the config rather than relying on the fallback.
         self.api_key, _ = resolve_api_key(api_key, url, default_base_url=DECISIONS_URL,
                                           provider="openrouter_decisions")
         self.model = model
@@ -127,9 +131,10 @@ class DecisionsClient:
         ``instructions`` and (for choice and score) ``criteria`` are required by
         its schema, and the SHAPE of criteria differs per type. The minimum of
         two options is this client's own -- a choice or a scale with one answer
-        is a configuration mistake, not a question. Nothing here has been tried
-        against the live endpoint; a rule that turns out to be ours alone
-        belongs in this one place, where it can be dropped in one line.
+        is a configuration mistake, not a question. Measured live: all three
+        types answer, and criteria really is optional for noul. NOT measured:
+        whether the endpoint itself would refuse a one-option choice, so that
+        rule stays ours, in this one place, where it can be dropped in a line.
 
         Called by ``decide`` before the request, and available on its own for a
         caller that wants its configuration checked once at startup rather than

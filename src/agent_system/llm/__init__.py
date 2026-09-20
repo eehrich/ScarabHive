@@ -8,6 +8,7 @@ from .tts import (
     TTSSpeaker,
     create_tts_from_profile,
 )
+from .decisions import create_decisions_from_profile
 from .capabilities import (
     ModelCapability,
     ModelCapabilities,
@@ -25,6 +26,8 @@ __all__ = [
     "TTSVoice",
     "TTSSpeaker",
     "create_tts_from_profile",
+    # Decisions (profile lookup; clients live in plugins_llm via provides_decisions)
+    "create_decisions_from_profile",
     # Capabilities
     "ModelCapability",
     "ModelCapabilities",

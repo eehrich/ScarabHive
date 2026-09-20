@@ -3,9 +3,11 @@
 A decision model ("System One" in TypeSafe's words, and Jev is the first of
 them) takes a piece of content plus NAMED QUESTIONS and answers each one with a
 typed value and a probability. There is no message list, no prose and no tool
-call, so nothing here is an ``LLMClient``: the registry skips this package, and
-a caller imports the client it wants, the way the audio plugins import a TTS
-client.
+call, so nothing here is an ``LLMClient``: this package declares no ``provides``
+at all and cannot be reached through ``chat()``. It is reached through its own
+seam instead — ``provides_decisions`` in the manifest, an entry under
+``llm_system.decision_models``, and ``create_decisions_from_profile`` — which
+is the way the audio plugins are reached.
 
 One host today — ``openrouter`` — and the shape is OpenRouter's own
 (``POST /api/alpha/decisions``, the single ``/api/`` path in their whole

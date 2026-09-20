@@ -2,8 +2,9 @@
 
 The registry replaced the make_llm if-chain (2026-08). Its contract:
 `plugins_llm/*/plugin.toml` declares which provider names a plugin serves
-(`provides` / `provides_batch`), and the first build for a name imports
-exactly that plugin. Three failure modes matter:
+(`provides` for chat, plus `provides_batch` / `provides_tts` /
+`provides_decisions` — the SEAMS table below is the full list), and the first
+build for a name imports exactly that plugin. Three failure modes matter:
 
 * a provider configured in llm.yaml that NO plugin declares (broken
   dispatch — every agent using it dies at build time),
@@ -103,18 +104,25 @@ class TestManifestScan:
         assert {"gemini", "openai", "anthropic"} <= declared, (
             f"batch backends missing: only {sorted(declared)} declared")
 
+    #: The seams, one row each: where the registry keeps the owners, what the
+    #: entrypoint must export, what the manifest calls it. Held by NAME, not by
+    #: reference: _scan_manifests rebinds those globals, so a row holding the
+    #: dict itself would check the state of a previous scan.
+    SEAMS = (
+        ("_provider_dirs", "PROVIDERS", "provides"),
+        ("_batch_dirs", "BATCH_BACKENDS", "provides_batch"),
+        ("_tts_dirs", "TTS_PROVIDERS", "provides_tts"),
+        ("_decision_dirs", "DECISION_PROVIDERS", "provides_decisions"),
+    )
+
     def test_manifests_agree_with_the_provider_dicts(self):
         """A manifest may promise a name the entrypoint does not export —
         that surfaces only at first use in production, so the suite checks
-        every plugin's promise against its PROVIDERS/BATCH_BACKENDS/
-        TTS_PROVIDERS here."""
+        every plugin's promise against the dicts in SEAMS here."""
         import importlib
         registry._scan_manifests()
-        for owners, attr, key in (
-            (registry._provider_dirs, "PROVIDERS", "provides"),
-            (registry._batch_dirs, "BATCH_BACKENDS", "provides_batch"),
-            (registry._tts_dirs, "TTS_PROVIDERS", "provides_tts"),
-        ):
+        for owners_attr, attr, key in self.SEAMS:
+            owners = getattr(registry, owners_attr)
             for name, dir_name in sorted((owners or {}).items()):
                 module = importlib.import_module(f"plugins_llm.{dir_name}.provider")
                 assert name in (getattr(module, attr, None) or {}), (
@@ -128,11 +136,8 @@ class TestManifestScan:
         on load order, not on the manifest."""
         import importlib
         registry._scan_manifests()
-        for owners, attr in (
-            (registry._provider_dirs, "PROVIDERS"),
-            (registry._batch_dirs, "BATCH_BACKENDS"),
-            (registry._tts_dirs, "TTS_PROVIDERS"),
-        ):
+        for owners_attr, attr, _key in self.SEAMS:
+            owners = getattr(registry, owners_attr)
             for dir_name in sorted(set((owners or {}).values())):
                 module = importlib.import_module(f"plugins_llm.{dir_name}.provider")
                 declared = {n for n, d in (owners or {}).items() if d == dir_name}
@@ -141,6 +146,69 @@ class TestManifestScan:
                     f"{dir_name}/provider.py exports {sorted(exported - declared)} "
                     f"in {attr} without declaring it in plugin.toml — the "
                     f"loader ignores those, config validation never sees them")
+
+    @staticmethod
+    def _manifests():
+        """Every plugins_llm manifest as (dir name, [plugin] table).
+
+        Read here instead of taken from the registry's scan: the scan keeps
+        only what it claims, and both tests below are about what a manifest
+        SAYS — including the manifests the scan skips. A plugin.toml that
+        does not parse raises out of here on purpose: production only warns
+        (registry._read_manifest), which makes such a plugin vanish quietly.
+        """
+        import tomllib
+        out = []
+        for plugin_dir in sorted(registry._plugins_root().iterdir()):
+            toml_path = plugin_dir / "plugin.toml"
+            if not toml_path.is_file():
+                continue
+            with toml_path.open("rb") as fh:
+                out.append((plugin_dir.name, tomllib.load(fh).get("plugin", {})))
+        return out
+
+    def test_every_seam_a_manifest_declares_is_one_these_tests_check(self):
+        """A fifth seam that never reaches SEAMS is unchecked — and an
+        unchecked seam looks exactly like a checked one from the outside.
+
+        Only the NAME of the key is measured here: whether the plugin that
+        declares it is scanned at all is the test below.
+        """
+        declared = {k for _, meta in self._manifests()
+                    for k in meta if k.startswith("provides")}
+        checked = {key for _, _, key in self.SEAMS}
+        assert declared <= checked, (
+            f"manifest seams no test checks: {sorted(declared - checked)} — "
+            f"add a row to {type(self).__name__}.SEAMS (and the registry has "
+            f"to claim and dispatch it, or nothing reads it at all)")
+
+    def test_a_reset_drops_the_loaded_decision_factories(self):
+        """get_decisions_provider reads the factory cache BEFORE it rescans,
+        so an entry that survives a reset short-circuits every later scan —
+        and a test that thought it had a clean registry does not."""
+        registry.get_decisions_provider("openrouter_decisions")
+        assert registry._decision_factories, "nothing was loaded to reset"
+        registry.reset_for_tests()
+        assert registry._decision_factories == {}
+
+    def test_a_manifest_that_declares_a_seam_is_scanned_at_all(self):
+        """_scan_manifests skips every plugin without type = ["llm-provider"],
+        so a provides_* key on any other manifest is dead: nothing claims the
+        name, and config load then fails with "unknown provider ... no plugin
+        declares it" — which sends the reader to the config file, where the
+        mistake is not.
+
+        Written after nearly making it: llm_decisions declared
+        provides_decisions while its type still said ["library"].
+        """
+        wrong = sorted(
+            f"{name} (type={meta.get('type')})"
+            for name, meta in self._manifests()
+            if any(k.startswith("provides") for k in meta)
+            and "llm-provider" not in (meta.get("type") or []))
+        assert not wrong, (
+            f"manifests declaring a seam the registry never scans: {wrong} — "
+            f"add \"llm-provider\" to their type, or drop the dead key")
 
     def test_the_loader_ignores_an_undeclared_export(self):
         """Mechanism behind the test above, measured directly: a factory the

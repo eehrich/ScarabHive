@@ -624,6 +624,88 @@
       "type": "object",
       "additionalProperties": false
     },
+    "DecisionModelConfig": {
+      "additionalProperties": false,
+      "description": "Individual decision model configuration.\n\nA decision model answers NAMED QUESTIONS about a piece of content with a\ntyped value and a probability — no message list, no prose, no tool calls\n(TypeSafe's Jev behind OpenRouter's ``/api/alpha/decisions`` is the first).\nIt therefore does not belong in ``models``: nothing here can serve\n``chat()``, and an entry there would be offered to every agent as a chat\nmodel and checked for a per-token price it does not have — the answer\nreports its own cost.\n\nThe shape of ``TTSModelConfig`` minus its voice, for the same reason: a\nnon-chat client needs a connection and nothing from the chat knobs.",
+      "properties": {
+        "provider": {
+          "default": "openrouter_decisions",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "request_timeout": {
+          "default": 60,
+          "title": "Request Timeout",
+          "type": "integer"
+        },
+        "max_retries": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "DecisionModelConfig",
+      "type": "object"
+    },
+    "DecisionProfile": {
+      "additionalProperties": false,
+      "description": "Named decision profile that references a decision model.",
+      "properties": {
+        "model_ref": {
+          "title": "Model Ref",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "model_ref"
+      ],
+      "title": "DecisionProfile",
+      "type": "object"
+    },
     "EndpointSecurityConfig": {
       "description": "Endpoint-level security configuration.\n\nWhen auth.enabled=true, this config controls which endpoints\nrequire authentication and what role is needed.",
       "properties": {
@@ -1521,6 +1603,34 @@
           ],
           "default": null,
           "title": "Default Tts Profile"
+        },
+        "decision_models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DecisionModelConfig"
+          },
+          "default": {},
+          "title": "Decision Models",
+          "type": "object"
+        },
+        "decision_profiles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DecisionProfile"
+          },
+          "default": {},
+          "title": "Decision Profiles",
+          "type": "object"
+        },
+        "default_decision_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Decision Profile"
         }
       },
       "title": "LLMSystemConfig",

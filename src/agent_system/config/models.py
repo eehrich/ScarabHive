@@ -227,6 +227,54 @@ class TTSProfile(BaseModel):
     description: Optional[str] = None
 
 
+# ===========================
+# Decision Model Configuration
+# ===========================
+
+class DecisionModelConfig(BaseModel):
+    """Individual decision model configuration.
+
+    A decision model answers NAMED QUESTIONS about a piece of content with a
+    typed value and a probability — no message list, no prose, no tool calls
+    (TypeSafe's Jev behind OpenRouter's ``/api/alpha/decisions`` is the first).
+    It therefore does not belong in ``models``: nothing here can serve
+    ``chat()``, and an entry there would be offered to every agent as a chat
+    model and checked for a per-token price it does not have — the answer
+    reports its own cost.
+
+    The shape of ``TTSModelConfig`` minus its voice, for the same reason: a
+    non-chat client needs a connection and nothing from the chat knobs.
+    """
+    # extra="forbid", like LLMModelConfig and unlike the TTS twin. This
+    # section is the one whose endpoint key is NOT called base_url, so the
+    # habit from two sections up writes a key this model does not know — and
+    # dropping it silently would send the request to OpenRouter, carrying the
+    # OpenRouter key, instead of to the proxy the operator meant. The profile
+    # that used to live under `profiles:` also carried `max_steps: 500`, so
+    # copying the old entry over hits this too.
+    model_config = ConfigDict(extra="forbid")
+    # Free string like TTSModelConfig.provider: the plugins under
+    # src/plugins_llm/ own the vocabulary via `provides_decisions` in their
+    # manifests; a typo fails at config load through the same
+    # LLMSystemConfig validator that guards LLM and TTS providers.
+    provider: str = "openrouter_decisions"
+    model: str  # e.g. "~typesafe/jev-latest"
+    api_key: Optional[str] = None  # the client falls back to the env var of the endpoint's host
+    # NOT called base_url like its neighbours, because it is not one: nothing
+    # appends a path to it. The whole endpoint goes here, and the API key is
+    # resolved against ITS host. None = the provider's own default.
+    url: Optional[str] = None
+    request_timeout: int = 60  # a decision is one short call, not a generation
+    max_retries: int = Field(2, ge=0)  # negative would silently skip every attempt
+
+
+class DecisionProfile(BaseModel):
+    """Named decision profile that references a decision model."""
+    model_config = ConfigDict(extra="forbid")  # same reason as above
+    model_ref: str  # Reference to key in decision_models dict
+    description: Optional[str] = None
+
+
 class LLMSystemConfig(BaseModel):
     """Complete LLM system configuration"""
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # Default HTTPX timeouts for all models
@@ -290,18 +338,20 @@ class LLMSystemConfig(BaseModel):
         """
         try:
             from agent_system.llm.registry import (
-                batch_client_provider, known_batch_providers, known_providers,
+                batch_client_provider, known_batch_providers,
+                known_decisions_providers, known_providers,
                 known_tts_providers)
             known = known_providers()
             known_tts = known_tts_providers()
+            known_decisions = known_decisions_providers()
         except Exception as e:
             # Lenient, but never silent: without this line an unreadable
             # plugin root turns the typo guard off with no trace, and every
-            # agent dies individually at build time instead. Names BOTH
-            # checks — the TTS half used to be skipped without mention.
+            # agent dies individually at build time instead. Names EVERY
+            # check — the TTS half used to be skipped without mention.
             logging.getLogger(__name__).warning(
-                "LLM and TTS provider validation skipped (manifest scan "
-                "failed): %s", e)
+                "LLM, TTS and decision provider validation skipped (manifest "
+                "scan failed): %s", e)
             return self
         unknown = sorted(
             f"{name} (provider={m.provider})"
@@ -367,12 +417,54 @@ class LLMSystemConfig(BaseModel):
                 f"llm_system.tts_models: unknown TTS provider on {unknown_tts} "
                 f"— no plugin under src/plugins_llm declares it via "
                 f"provides_tts (known: {sorted(known_tts)})")
+
+        unknown_decisions = sorted(
+            f"{name} (provider={m.provider})"
+            for name, m in self.decision_models.items()
+            if m.provider not in known_decisions
+        )
+        if unknown_decisions:
+            raise ValueError(
+                f"llm_system.decision_models: unknown decisions provider on "
+                f"{unknown_decisions} — no plugin under src/plugins_llm "
+                f"declares it via provides_decisions "
+                f"(known: {sorted(known_decisions)})")
+
+        # A profile pointing at no model used to fail at the first decision.
+        # That moment is now inside an agent loop (agent_continuation asks one
+        # per step), where a config typo is the most expensive thing to learn.
+        dangling = sorted(
+            f"{name} -> {profile.model_ref}"
+            for name, profile in self.decision_profiles.items()
+            if profile.model_ref not in self.decision_models
+        )
+        if dangling:
+            raise ValueError(
+                f"llm_system.decision_profiles: {dangling} name no entry in "
+                f"decision_models (have: {sorted(self.decision_models)})")
+
+        default_profile = self.default_decision_profile
+        if default_profile and default_profile not in self.decision_profiles:
+            raise ValueError(
+                f"llm_system.default_decision_profile is {default_profile!r}, "
+                f"which is no decision profile "
+                f"(have: {sorted(self.decision_profiles)})")
         return self
 
     # TTS (Text-to-Speech) configuration
     tts_models: Dict[str, TTSModelConfig] = {}
     tts_profiles: Dict[str, TTSProfile] = {}
     default_tts_profile: Optional[str] = None
+
+    # Decision models — see DecisionModelConfig: a questionnaire, not a chat.
+    decision_models: Dict[str, DecisionModelConfig] = {}
+    decision_profiles: Dict[str, DecisionProfile] = {}
+    #: Which profile a caller gets when it names none. UNLIKE its neighbour
+    #: default_tts_profile, which is set in llm.yaml and read by nobody, this
+    #: one has a reader from the start: create_decisions_from_profile falls
+    #: back to it. A default nothing reads is not configuration, it is
+    #: decoration — so if this ever loses its reader, it should go with it.
+    default_decision_profile: Optional[str] = None
 
 
 # ===========================

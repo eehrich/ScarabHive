@@ -327,23 +327,10 @@ llm_system:
       capabilities:
         image_input: true
 
-    #
-    # Special Purpose Models
-    #
-
-    # Structured Answer Model
-    openrouter-jev:
-      # TODO: needs /api/alpha/decisions endpoint
-      extends: openrouter-base
-      model: ~typesafe/jev-latest
-      capabilities:
-        tools: false
-        function_calling: false
-        streaming: false
-        json_mode: false
-        image_input: false
-        audio_input: false
-        video_input: false
+    # Special Purpose Models: jev is NOT here -- it answers questions instead
+    # of chatting (POST /api/alpha/decisions, "chat completions SDKs will not
+    # work with it"), so it lives under decision_models: at the end of this
+    # file, the way tts_models: sits next to models: in llm.yaml.
 
   # =============================================================================
   # PROFILES for easy access
@@ -499,8 +486,26 @@ llm_system:
       description: "OpenRouter Kimi K3"
       max_steps: 500
 
-    or-jev:
-      model_ref: openrouter-jev
-      description: "OpenRouter JEV - Structured Answer Model"
-      max_steps: 500
+  # =============================================================================
+  # DECISION MODELS - a questionnaire, not a conversation
+  # =============================================================================
+  # Named questions in, a typed answer with a probability out. No messages, no
+  # prose, no tools -- and no entry in llm_pricing.yaml: the answer reports its
+  # own cost. Client: src/plugins_llm/llm_decisions (provides_decisions).
 
+  decision_models:
+    jev:
+      provider: openrouter_decisions
+      model: ~typesafe/jev-latest   # router alias, follows the newest version;
+                                    # OpenRouter's own example pins typesafe/jev-1.13
+      # url: the WHOLE endpoint (nothing is appended), default
+      #      https://openrouter.ai/api/alpha/decisions
+      # api_key: defaults to the env var of that url's host (OPENROUTER_API_KEY)
+
+  decision_profiles:
+    jev:
+      model_ref: jev
+      description: "TypeSafe Jev - decides, does not write"
+
+  # Who judges when a caller names no profile.
+  default_decision_profile: jev

@@ -136,7 +136,7 @@ patterns and skills, actually renders the prompt).
 ```toml
 [plugin]
 type = ["llm-provider"]            # required — the LLM registry skips anything else
-provides = ["myprovider"]          # optional provides_batch, provides_tts
+provides = ["myprovider"]          # optional provides_batch, provides_tts, provides_decisions
 default_base_url = { myprovider = "https://..." }
 dependencies = ["my-sdk>=1.0"]
 ```

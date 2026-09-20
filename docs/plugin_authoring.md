@@ -381,10 +381,12 @@ Other single-capability examples: `type = ["web"]` (web UI/endpoints only),
 - `library`: Config only — agents, skills, prompts, no code. Such a plugin has
   **no `entrypoint` and no `plugin.py`** (`coder`, `amiga`, `research`,
   `writer_publish`)
-- `llm-provider`: An LLM/TTS/batch backend under `src/plugins_llm/`. Found by
-  `agent_system.llm.registry` through its `provides` / `provides_batch` /
-  `provides_tts` manifest keys and its `provider.py`, which exports `PROVIDERS`
-  — also **without an `entrypoint`**
+- `llm-provider`: An LLM/TTS/batch/decisions backend under `src/plugins_llm/`.
+  Found by `agent_system.llm.registry` through its `provides` /
+  `provides_batch` / `provides_tts` / `provides_decisions` manifest keys and
+  its `provider.py`, which exports the matching dict (`PROVIDERS`,
+  `DECISION_PROVIDERS`, …) — also **without an `entrypoint`**. A plugin may
+  serve only the non-chat seams: `llm_decisions` declares no `provides` at all
 - `custom`: allowed by the schema, used by no plugin
 
 Combine multiple types by listing them (e.g., `["tool-server", "web"]` for hybrid plugins).
