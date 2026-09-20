@@ -10,8 +10,8 @@ import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Dict, List
 
-from agent_system.tools.schema_based import SchemaBasedToolServer
-from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
+from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
+from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count, estimate_tools_token_count
 
 if TYPE_CHECKING:
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class ContextSummarizerServer(SchemaBasedToolServer, PluginHook):
+class ContextSummarizerServer(SchemaBasedHookToolServer):
     """Unified tool server and hook for context summarization.
 
     Provides tools:
@@ -39,12 +39,9 @@ class ContextSummarizerServer(SchemaBasedToolServer, PluginHook):
             system_config: System-wide configuration
             server_config: Plugin-specific configuration
         """
-        # Initialize tool server
-        SchemaBasedToolServer.__init__(self, name, system_config, server_config)
-
-        # Initialize hook
-        hook_config = getattr(server_config, 'hook_config', {})
-        PluginHook.__init__(self, name, config=hook_config)
+        # Tool server and hook in one: the base class initialises both
+        # halves and builds the hook config (schema defaults, plugins.yaml on top).
+        super().__init__(name, system_config, server_config)
 
         # Load configuration. ONE mapping, handed over whole — the hook merges
         # it over the schema defaults and owns every key from there.

@@ -43,6 +43,7 @@ config:
 ```python
 # hooks.py
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
+from agent_system.llm.message_roles import DEVELOPER
 from agent_system.llm.models import ChatMessage
 
 MARK = "my_hook"
@@ -59,10 +60,13 @@ class MyHook(SchemaBasedPluginHook):
         note = context.hook_config.get("note", self.note)   # per-agent keys
         if not note or context.messages is None:
             return HookResult(success=True, modified=False, context=context)
-        msgs = [m for m in context.messages if m.injected_by != MARK]   # drop our previous insert
-        i = next((k for k, m in enumerate(msgs) if m.role != "system"), len(msgs))
-        msgs.insert(i, ChatMessage(role="system", content=note, injected_by=MARK))
-        context.messages = msgs
+        previous = next((m for m in reversed(context.messages)
+                         if getattr(m, "injected_by", None) == MARK), None)
+        if previous is not None and previous.content == note:
+            return HookResult(success=True, modified=False, context=context)   # nothing new
+        # appended, never replaced: at the head it would be rebuilt every call
+        # and invalidate the cached prefix behind it
+        context.messages.append(ChatMessage(role=DEVELOPER, content=note, injected_by=MARK))
         return HookResult(success=True, modified=True, context=context)
 ```
 

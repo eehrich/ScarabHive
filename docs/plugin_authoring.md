@@ -828,6 +828,18 @@ The server is the core of your plugin. It handles tool routing, validation, and 
 
 Use `SchemaBasedToolServer` for automatic schema loading and generic dispatching.
 
+**A plugin that is a tool server AND a hook inherits
+`SchemaBasedHookToolServer`** (`agent_system/tools/hook_tool_server.py`) and
+calls `super().__init__(name, system_config, server_config)` once. Do not call
+the two base initialisers by hand: their signatures disagree, so
+`ToolServer.__init__` does not call up the chain, and the six plugins that
+wired it themselves ended up with four spellings and three behaviours -- two of
+them never ran `PluginHook.__init__` at all, so they had no `self.config` and
+`get_order_spec()` raised. The base builds the hook config from the schema's
+`config:` block with the plugins.yaml `hook_config` block on top, and builds it
+lazily: a schema whose template reads the subclass's own attributes cannot be
+rendered while the base initialiser is still running.
+
 **Note:** `SchemaBasedToolServer` inherits from `SchemaBasedToolMixin` (`agent_system/tools/schema_mixin.py`) which provides:
 - Automatic `schema.yaml` loading and caching
 - Generic `call()` dispatcher (routes tool calls to methods automatically)
@@ -2916,25 +2928,46 @@ async def validate_messages(self, context: HookContext) -> HookResult:
     return HookResult(success=True, modified=False, context=context)
 ```
 
-**Transformation Hook** (inserts a note once and replaces its own earlier insert,
-so the request prefix stays stable for the prompt cache):
+**Transformation Hook** (appends the state as a turn and writes again only when
+it changed, so the request prefix stays stable for the prompt cache):
 ```python
+from agent_system.llm.message_roles import DEVELOPER
 from agent_system.llm.models import ChatMessage
 
 MARK = "my_hook_plugin"
 
 async def inject_note(self, context: HookContext) -> HookResult:
-    """Insert a system note after the leading system messages."""
+    """Append the state as a turn, and only when it says something new."""
     if context.messages is None:
         return HookResult(success=True, modified=False, context=context)
 
-    msgs = [m for m in context.messages if m.injected_by != MARK]   # drop our previous insert
-    i = next((k for k, m in enumerate(msgs) if m.role != "system"), len(msgs))
-    msgs.insert(i, ChatMessage(role="system", content="Note text", injected_by=MARK))
-    context.messages = msgs
+    text = self._render()
+    previous = next((m for m in reversed(context.messages)
+                     if getattr(m, "injected_by", None) == MARK), None)
+    if previous is not None and previous.content == text:
+        return HookResult(success=True, modified=False, context=context)
 
+    context.messages.append(ChatMessage(role=DEVELOPER, content=text, injected_by=MARK))
     return HookResult(success=True, modified=True, context=context)
 ```
+
+**Why not behind the system prompt, and why not `system`.** A block at the head
+is rebuilt on every call, so the cached prefix behind it is invalid every time;
+and Anthropic and Gemini have no system role inside a history, so they hoist
+such a message into the prompt itself, where it reads as if it had held since
+the first turn. Appended as a `developer` turn it keeps its place and leaves
+everything before it byte-identical. The old block is never deleted -- deleting
+it is the same rewrite -- it is superseded by the newer one, which is simply
+the last of them in the history. A block that compaction took away is simply
+appended again; that is the same branch as the first one.
+
+The price is paid in the history: a state that changes on every step leaves one
+block per step, all of them in the present tense. Two things follow. Render
+only what actually changes -- a counter, a timestamp or an unstable sort order
+in the text makes every call a change, and that is the difference between one
+block and thirty. And when the state can become *empty*, say that in a block of
+its own instead of writing nothing: an older block that says "three sub-agents
+are running" is otherwise the last word on the subject.
 
 Every `role: user` message a hook inserts carries `injected_by`; `injected_by is None`
 means "written by a person".

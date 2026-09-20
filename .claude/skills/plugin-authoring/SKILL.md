@@ -24,7 +24,7 @@ is silently not registered). Set it correctly anyway.
 |---|---|---|---|
 | to give the model functions | `tool-server` | `SchemaBasedToolServer` | [tools.md](references/tools.md) |
 | to intercept LLM calls / history | `hooks` | `SchemaBasedPluginHook` | [hooks.md](references/hooks.md) |
-| both | `["tool-server","hooks"]` | server + `on_<hooktype>` or `hooks_plugin` | both |
+| both | `["tool-server","hooks"]` | `SchemaBasedHookToolServer` + `on_<hooktype>`, or a separate `hooks_plugin` | both |
 | a panel / endpoints | `web` | `get_web_router` | skill `panel-authoring` |
 | an agent without Python | `library` | just `agents/*.yaml` + `prompts/` + `skills/` | [agents.md](references/agents.md) |
 | an agent with its own code | `tool-server` | `SchemaBasedAgent` + `make_agent_plugin_factory` | [agents.md](references/agents.md) |

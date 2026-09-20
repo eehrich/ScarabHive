@@ -42,6 +42,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from agent_system.core.schema_base_mixin import config_defaults_from_schema
 from agent_system.utils import yaml_io
 
 from .plugin_hook import PluginHook, HookContext, HookResult
@@ -87,21 +88,18 @@ class SchemaBasedPluginHook(PluginHook):
     def _extract_config_defaults(self, schema_config: dict[str, Any]) -> dict[str, Any]:
         """Extract default values from schema config structure.
 
+        The same rule applies to a plugin that is a tool server as well as a
+        hook, so the two share one implementation -- a second copy of it had
+        already grown in the todo plugin and drifted into ignoring the
+        plugins.yaml block entirely.
+
         Args:
             schema_config: Config section from schema.yaml with type/default/description
 
         Returns:
             Dict with just the config values (defaults)
         """
-        config_values = {}
-        for key, value in schema_config.items():
-            if isinstance(value, dict) and 'default' in value:
-                # Schema format: {key: {type: ..., default: value}}
-                config_values[key] = value['default']
-            else:
-                # Already a simple value
-                config_values[key] = value
-        return config_values
+        return config_defaults_from_schema(schema_config)
 
     def _load_schema(self) -> dict[str, Any]:
         """Load schema.yaml from plugin directory.

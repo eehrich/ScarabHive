@@ -3,7 +3,8 @@
 The package holds two layers that only look like one:
 
 * the **plugin base** -- ``base``, ``status``, ``schema_mixin``,
-  ``schema_based`` -- which every plugin is written against, and
+  ``schema_based``, ``hook_tool_server`` -- which every plugin is written
+  against, and
 * the **integration layer** -- ``tool_cache``, ``integration`` -- which
   bootstraps plugins and finds whoever federates external tools.
 
@@ -32,6 +33,7 @@ PLUGIN_BASE_MODULES = [
     "agent_system.tools.base",
     "agent_system.tools.status",
     "agent_system.tools.schema_mixin",
+    "agent_system.tools.hook_tool_server",  # the base for a plugin that is also a hook
 ]
 
 #: The integration layer. None of it may be dragged in by the modules above.

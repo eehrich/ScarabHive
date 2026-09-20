@@ -35,6 +35,7 @@ if TYPE_CHECKING:  # for type checkers and IDEs only -- never executed
     from .integration import ToolServerIntegration  # noqa: F401
     from .base import ToolDef, ToolServer, ToolServerCapability, ToolServerRegistry  # noqa: F401
     from .schema_based import SchemaBasedToolServer  # noqa: F401
+    from .hook_tool_server import SchemaBasedHookToolServer  # noqa: F401
 
 #: Exported name -> submodule that defines it.
 _LAZY_EXPORTS = {
@@ -44,6 +45,7 @@ _LAZY_EXPORTS = {
     "ToolServerCapability": "base",
     "ToolServerRegistry": "base",
     "SchemaBasedToolServer": "schema_based",
+    "SchemaBasedHookToolServer": "hook_tool_server",
 }
 
 __all__ = list(_LAZY_EXPORTS)
