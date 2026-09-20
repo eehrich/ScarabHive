@@ -1,0 +1,12 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Session Archive{% endblock %}
+{% block toolbar %}
+<button type="button" class="pk-btn pk-btn--sm" id="sweep">{{ icon('history', size='sm') }} Archive now</button>
+<pk-refresh interval="60"></pk-refresh>
+{% endblock %}
+{% block content %}
+<div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
+<div id="archived"></div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}

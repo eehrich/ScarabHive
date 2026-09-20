@@ -2261,6 +2261,55 @@
       "type": "object",
       "additionalProperties": false
     },
+    "SessionArchiveConfig": {
+      "description": "Old conversations move out of data/sessions into zips (services/session_archive.py).\n\nThe unit is a whole tree -- a root session and its sub-agent sessions -- and\nit moves only when every session in it is older than ``retention_days`` and\nnone of them is running. Changing these values needs a restart.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "retention_days": {
+          "default": 30,
+          "minimum": 1,
+          "title": "Retention Days",
+          "type": "integer"
+        },
+        "sweep_interval_hours": {
+          "default": 24.0,
+          "exclusiveMinimum": 0,
+          "title": "Sweep Interval Hours",
+          "type": "number"
+        },
+        "first_sweep_delay_seconds": {
+          "default": 300.0,
+          "minimum": 0,
+          "title": "First Sweep Delay Seconds",
+          "type": "number"
+        },
+        "max_trees_per_sweep": {
+          "default": 200,
+          "minimum": 1,
+          "title": "Max Trees Per Sweep",
+          "type": "integer"
+        },
+        "archive_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Archive Path"
+        }
+      },
+      "title": "SessionArchiveConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
     "SessionPresenceConfig": {
       "description": "Which sessions run right now, and waking idle ones (core/session_presence.py).",
       "properties": {

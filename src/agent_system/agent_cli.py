@@ -52,6 +52,9 @@ from .cli_utils.session_defaults import (
 )
 from .cli_utils.attachments import greedy_attach_hint, sort_attachments
 from .cli_utils.session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
+from .cli_utils.session_archive_cli import (
+    build_archive, print_archived, run_restore, run_sweep,
+)
 
 
 def _literal_strings(annotation: Any) -> frozenset:
@@ -651,6 +654,20 @@ def main() -> None:
                        const="", default=None, metavar="COUNT",
                        help=f"List this user's sessions, one line each (default {DEFAULT_LIMIT}, 0 = all). "
                             "Sub-agent sessions are not listed.")
+        # Same nargs="?" reasoning as --list-sessions above: argparse fills an
+        # optional's slot from the next token before converting it.
+        p.add_argument("--list-archived", dest="list_archived", nargs="?",
+                       const="", default=None, metavar="COUNT",
+                       help=f"List this user's archived conversations (default {DEFAULT_LIMIT}, 0 = all).")
+        p.add_argument("--restore-session", dest="restore_session", metavar="ID",
+                       help="Restore an archived conversation and its sub-agent sessions.")
+        p.add_argument("--archive-sessions", dest="archive_sessions", nargs="?",
+                       const="", default=None, metavar="DAYS",
+                       help="Archive this user's conversations that are older than DAYS "
+                            "(default: config session_archive.retention_days). "
+                            "Add --dry-run to see what it would take.")
+        p.add_argument("--dry-run", dest="archive_dry_run", action="store_true",
+                       help="With --archive-sessions: report, change nothing.")
         p.add_argument("--vars", "--template-vars", dest="template_vars", nargs="+", metavar="KEY=VALUE",
                        help="Template variables for prompt rendering (e.g. --vars lang=German user_name=Alice)")
 
@@ -779,11 +796,17 @@ def main() -> None:
     vprint(f"[cli] loading config: {cfg_arg or os.environ.get('AGENT_CONFIG_PATH') or 'config/config.yaml'}")
     config = load_settings(cfg_arg)
     # A mistyped --llm needs only the config to be recognised -- behind the
-    # bootstrap it cost the whole plugin start before the error. Not with
-    # --list-sessions: the listing needs no profile and must not be hidden
-    # by a broken one.
+    # bootstrap it cost the whole plugin start before the error. Not for the
+    # commands that only read or move the session store: they need no profile
+    # and must not be hidden by a broken one.
+    store_only = (
+        getattr(args, "list_sessions", None) is not None
+        or getattr(args, "list_archived", None) is not None
+        or getattr(args, "archive_sessions", None) is not None
+        or bool(getattr(args, "restore_session", None))
+    )
     if (getattr(args, "llm_profile_override", None)
-            and getattr(args, "list_sessions", None) is None
+            and not store_only
             and config.llm_system and config.llm_system.profiles):
         _exit_on_unknown_profile(config, args.llm_profile_override)
     # If user requested plugin listing, handle and exit early (no heavy bootstrap)
@@ -1268,6 +1291,32 @@ def main() -> None:
             more_hint="--list-sessions <count>, --list-sessions 0 for all",
             footer="Continue one with: --session <id>",
         ))
+        return
+
+    # The archive commands read and write the session store and leave, for the
+    # same reason as the listing above: none of them needs an LLM profile.
+    list_archived = getattr(args, "list_archived", None)
+    restore_session = getattr(args, "restore_session", None)
+    archive_sessions = getattr(args, "archive_sessions", None)
+    if list_archived is not None or restore_session or archive_sessions is not None:
+        session_user = getattr(args, "session_user", "cli_user")
+        archive = build_archive(session_manager, config)
+        if list_archived is not None:
+            limit, complaint = parse_limit(list_archived)
+            if complaint:
+                print(f"Ignoring '{complaint}': --list-archived takes a count.")
+            run_async(print_archived(archive, session_user, limit=limit))
+        if restore_session:
+            run_async(run_restore(archive, session_user, restore_session))
+        if archive_sessions is not None:
+            days, complaint = parse_limit(archive_sessions, default=0)
+            if complaint:
+                print(f"Ignoring '{complaint}': --archive-sessions takes a number of days.")
+            run_async(run_sweep(
+                archive, session_user,
+                retention_days=days or None,
+                dry_run=getattr(args, "archive_dry_run", False),
+            ))
         return
 
     # The LLM override (--llm and/or --llm-params) is built before the

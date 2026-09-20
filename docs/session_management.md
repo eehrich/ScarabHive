@@ -12,11 +12,15 @@ The AgentSystem now supports persistent conversation sessions with multi-user su
 data/sessions/
   ├── {user_id}/
   │   ├── {session_id}.json
-  │   ├── {session_id}.json
+  │   ├── index.json                             (top-level sessions)
+  │   ├── .subs.{parent_id}.index.json           (one partition per parent)
   │   └── .backup_{session_id}_{timestamp}.json  (deleted sessions)
   └── anonymous/
       └── {session_id}.json
 ```
+
+Old conversation trees move out of here into `data/session_archive/` and can be
+restored from there — see `docs/session_archive.md` (German).
 
 ### Session Schema
 

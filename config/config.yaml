@@ -39,6 +39,17 @@ vision: # type VisionConfig
 session_presence: # type SessionPresenceConfig
   enabled: true
 
+# Old conversations move out of data/sessions into zips, whole trees at a time
+# (root session + its sub-agent sessions). Restore in the "Session Archive"
+# panel or with agent-cli --restore-session. Changes need a restart.
+session_archive: # type SessionArchiveConfig
+  enabled: true
+  retention_days: 30            # a tree moves when EVERY session in it is older
+  sweep_interval_hours: 24.0
+  first_sweep_delay_seconds: 300.0  # let the app finish starting before the first sweep
+  max_trees_per_sweep: 200      # keeps one pass bounded; the rest goes next time
+  # archive_path: null          # default: data/session_archive
+
 # Network settings
 network:
   ssl_verify: true

@@ -882,6 +882,11 @@ plugins:
       type: user_management
       enabled: true
 
+    # Browse and restore what the archive sweep put away (config.yaml: session_archive)
+    session_archive:
+      type: session_archive
+      enabled: true
+
     agent_editor:
       type: agent_editor
       enabled: true

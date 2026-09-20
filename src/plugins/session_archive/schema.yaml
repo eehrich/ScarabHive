@@ -1,0 +1,51 @@
+# Session Archive Plugin Schema
+# This plugin provides no tools - it is the web face of
+# agent_system.services.session_archive, which the app owns and sweeps.
+
+tools: []
+
+web_ui:
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
+  panel:
+    endpoint: "/plugins/{{ name }}/"
+    title: "Session Archive"
+    description: "Conversations the sweep put away, and the way back"
+    icon: history
+    category: session
+    keywords: [archive, restore, retention, old sessions, cleanup]
+    window: {width: 900, height: 640}
+
+  # Every endpoint answers about the REQUESTING user's archive only; the
+  # handlers resolve that themselves (endpoints.py), on top of the route rules
+  # in config.yaml.
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "render_panel"
+      response_type: "html"
+      description: "The Session Archive panel"
+
+    - path: "/archived"
+      method: "GET"
+      handler: "list_archived"
+      response_type: "json"
+      description: "Every archived conversation of the requesting user, newest first"
+
+    - path: "/archived/{root_session_id}/restore"
+      method: "POST"
+      handler: "restore_archived"
+      response_type: "json"
+      description: "Put an archived conversation and its sub-agent sessions back"
+
+    - path: "/archived/{root_session_id}"
+      method: "DELETE"
+      handler: "forget_archived"
+      response_type: "json"
+      description: "Delete an archived conversation for good"
+
+    - path: "/sweep"
+      method: "POST"
+      handler: "sweep_now"
+      response_type: "json"
+      description: "Run the archive sweep for the requesting user now"

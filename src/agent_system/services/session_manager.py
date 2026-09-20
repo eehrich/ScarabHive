@@ -587,6 +587,29 @@ class SessionManager:
 
         return index_data
 
+    @staticmethod
+    def _index_metadata(session_data: Dict[str, Any]) -> Dict[str, Any]:
+        """The row a session gets in its index partition.
+
+        One shape for create, save and reinstate: an index whose rows differ by
+        which method wrote them is an index nobody can read.
+        """
+        metadata = session_data.get("metadata", {})
+        return {
+            "session_id": session_data["session_id"],
+            "user_id": session_data["user_id"],
+            "title": session_data["title"],
+            "created_at": session_data["created_at"],
+            "updated_at": session_data["updated_at"],
+            "agent_name": session_data["agent_name"],
+            "llm_profile": session_data["llm_profile"],
+            "message_count": metadata.get("message_count", 0),
+            "last_agent_response": metadata.get("last_agent_response", ""),
+            "tags": metadata.get("tags", []),
+            "parent_session": session_data.get("parent_session"),
+            "depth": session_data.get("depth", 1),
+        }
+
     async def _update_index_entry(
         self,
         user_id: str,
@@ -606,7 +629,17 @@ class SessionManager:
         try:
             index_data = await self._read_index_async(user_id, parent_session_id)
         except FileNotFoundError:
-            index_data = await self._rebuild_index(user_id, parent_session_id)
+            if parent_session_id is not None:
+                # A missing sub-index partition means "no children", not "index
+                # lost": create_session writes the parent link BEFORE the first
+                # index write, so every child lands in the partition, and
+                # _remove_index_entry deletes the file exactly when the last one
+                # goes. Rebuilding it would read every session file of the user
+                # to find what cannot be there -- measured 20.09.2026: 7 min 31 s
+                # for 60k files, holding self._lock, to produce one entry.
+                index_data = {}
+            else:
+                index_data = await self._rebuild_index(user_id, parent_session_id)
 
         index_data[session_id] = metadata
         await self._write_index_async(user_id, index_data, parent_session_id)
@@ -749,21 +782,9 @@ class SessionManager:
             self._cache[sid] = (session_data, time.time())
             
             # Update index
-            metadata = {
-                "session_id": session_data["session_id"],
-                "user_id": session_data["user_id"],
-                "title": session_data["title"],
-                "created_at": session_data["created_at"],
-                "updated_at": session_data["updated_at"],
-                "agent_name": session_data["agent_name"],
-                "llm_profile": session_data["llm_profile"],
-                "message_count": 0,
-                "last_agent_response": "",
-                "tags": session_data["metadata"].get("tags", []),
-                "parent_session": session_data.get("parent_session"),
-                "depth": session_data.get("depth", 1)
-            }
-            await self._update_index_entry(safe_user_id, sid, metadata)
+            await self._update_index_entry(
+                safe_user_id, sid, self._index_metadata(session_data),
+            )
             
             logger.info("Created session %s for user %s", sid, safe_user_id)
             return session_data
@@ -928,21 +949,9 @@ class SessionManager:
             
             # Update index (use global lock for index file)
             async with self._lock:
-                metadata = {
-                    "session_id": session_data["session_id"],
-                    "user_id": session_data["user_id"],
-                    "title": session_data["title"],
-                    "created_at": session_data["created_at"],
-                    "updated_at": session_data["updated_at"],
-                    "agent_name": session_data["agent_name"],
-                    "llm_profile": session_data["llm_profile"],
-                    "message_count": session_data["metadata"].get("message_count", 0),
-                    "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
-                    "tags": session_data["metadata"].get("tags", []),
-                    "parent_session": session_data.get("parent_session"),
-                    "depth": session_data.get("depth", 1)
-                }
-                await self._update_index_entry(user_id, session_id, metadata)
+                await self._update_index_entry(
+                    user_id, session_id, self._index_metadata(session_data),
+                )
             
             logger.debug("Saved session %s", session_id)
 
@@ -1121,6 +1130,46 @@ class SessionManager:
             )
             
             logger.info("Deleted session %s for user %s", session_id, user_id)
+
+    async def reinstate_session(self, session_data: Dict[str, Any]) -> None:
+        """Put a session back on disk exactly as it was -- the inverse of ``delete_session``.
+
+        Used by the session archive to restore a tree. What sets it apart from
+        ``save_session``: it does NOT touch ``updated_at`` or recount the
+        messages. A conversation that comes back out of the archive is the
+        conversation it was, not one that was written today -- and its age is
+        what decides whether the sweep takes it again.
+
+        The tombstone in ``_deleted`` is deliberately NOT lifted here. It does
+        not have to be: this writes through ``_atomic_write_async``, which does
+        not consult it, and ``is_deleted`` drops the entry by itself as soon as
+        the file is back. Lifting it before the write would open the hole the
+        tombstone exists to close -- a save still in flight from the run that
+        owned the session could recreate what was archived.
+
+        Refuses to overwrite a session that is live again: two sessions under
+        one id is corruption, and the caller has to see it rather than lose
+        whichever copy loses the race.
+
+        Raises:
+            ValueError: If the session data is invalid or the session is live.
+        """
+        self._validate_session_data(session_data)
+        session_id = session_data["session_id"]
+        user_id = session_data["user_id"]
+
+        session_lock = await self._get_session_lock(session_id)
+        async with session_lock, self._lock:
+            path = self._get_session_path(user_id, session_id)
+            if path.exists():
+                raise ValueError(f"Session {session_id} is live -- refusing to overwrite it")
+
+            await self._atomic_write_async(path, session_data)
+            self._cache[session_id] = (session_data, time.time())
+            await self._update_index_entry(
+                user_id, session_id, self._index_metadata(session_data),
+            )
+            logger.info("Reinstated session %s for user %s", session_id, user_id)
 
     async def list_sessions(self, user_id: str) -> List[Dict[str, Any]]:
         """List all sessions for a user using fast index lookup.

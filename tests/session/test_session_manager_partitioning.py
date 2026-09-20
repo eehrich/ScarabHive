@@ -331,3 +331,58 @@ def test_get_index_path_validates_parent_id(sm):
     so it can't escape the user dir via path traversal."""
     with pytest.raises(ValueError):
         sm._get_index_path("u1", parent_session_id="../escape")
+
+
+# ---------------------------------------------------------------------------
+# Cost of the first child — the partition is empty, opening it must be free
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_first_sub_agent_does_not_read_the_users_other_sessions(sm, monkeypatch):
+    """Creating a parent's FIRST child must not cost one file read per session.
+
+    Measured 20.09.2026 before the fix: 7 min 31 s for 60k session files,
+    inside SessionManager's global lock, to produce a partition with one
+    entry. A missing ``.subs.<parent>.index.json`` means the parent has no
+    children yet -- the scan can only ever find what was just written.
+    """
+    await sm.create_session(user_id="u1", title="Parent", session_id="p_cost")
+    for i in range(15):
+        await sm.create_session(user_id="u1", title=f"Other {i}", session_id=f"other_{i}")
+
+    reads: list[Path] = []
+    original = sm._read_session_file_async
+
+    async def counting(path):
+        reads.append(Path(path))
+        return await original(path)
+
+    monkeypatch.setattr(sm, "_read_session_file_async", counting)
+
+    await sm.create_session(
+        user_id="u1", title="Child", session_id="c_cost", parent_session_id="p_cost",
+    )
+
+    assert reads == [], (
+        f"read {len(reads)} session files to open an empty partition: "
+        f"{[p.name for p in reads[:5]]}"
+    )
+
+    # ...and the entry still lands where it belongs.
+    sub_idx = _read_index(_user_dir(sm, "u1") / ".subs.p_cost.index.json")
+    assert list(sub_idx) == ["c_cost"]
+
+
+@pytest.mark.asyncio
+async def test_second_sub_agent_keeps_the_first_one(sm):
+    """Skipping the rebuild must not make the partition forget earlier children."""
+    await sm.create_session(user_id="u1", title="Parent", session_id="p_two")
+    await sm.create_session(
+        user_id="u1", title="A", session_id="c_one", parent_session_id="p_two",
+    )
+    await sm.create_session(
+        user_id="u1", title="B", session_id="c_two", parent_session_id="p_two",
+    )
+
+    sub_idx = _read_index(_user_dir(sm, "u1") / ".subs.p_two.index.json")
+    assert sorted(sub_idx) == ["c_one", "c_two"]

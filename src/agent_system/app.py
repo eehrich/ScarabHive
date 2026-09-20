@@ -62,6 +62,7 @@ _agent_service: Optional[AgentService] = None
 _initialization_service: Optional[Any] = None  # InitializationService
 _session_manager: Optional[SessionManager] = None
 _session_service: Optional[Any] = None  # SessionService, imported at runtime to avoid circular import
+_session_archive: Optional[Any] = None  # SessionArchive, see services/session_archive.py
 
 
 # Security: Track request_id -> user_id mapping for status stream authorization.
@@ -418,7 +419,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Initialize centralized initialization service
     # This handles SessionManager, SessionService, and dependency injection
     from .services.initialization_service import InitializationService
-    global _initialization_service, _session_manager, _session_service
+    global _initialization_service, _session_manager, _session_service, _session_archive
     _initialization_service = InitializationService(config)
     _session_manager = _initialization_service.session_manager
     _session_service = _initialization_service.session_service
@@ -454,6 +455,35 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Store session manager in app state for dependency injection (after initialization)
             app.state.session_manager = _session_manager
             logger.info("SessionManager stored in app.state for dependency injection")
+
+            # Session archive: old conversation trees move to data/session_archive
+            # (services/session_archive.py). Built here so the panel can reach it
+            # whether or not the periodic sweep is enabled; the sweep itself needs
+            # a running loop and starts in custom_lifespan below.
+            from .core.session_presence import presence_for
+            from .services.session_archive import SessionArchive
+
+            async def _busy_sessions() -> set[str]:
+                """Sessions this process runs right now -- never archive one of those."""
+                return set(await get_background_job_manager().active_sessions())
+
+            archive_config = config.session_archive
+            _session_archive = SessionArchive(
+                _session_manager,
+                archive_path=archive_config.archive_path,
+                retention_days=archive_config.retention_days,
+                sweep_interval_hours=archive_config.sweep_interval_hours,
+                first_sweep_delay_seconds=archive_config.first_sweep_delay_seconds,
+                max_trees_per_sweep=archive_config.max_trees_per_sweep,
+                presence=presence_for(config),
+                busy_sessions=_busy_sessions,
+            )
+            app.state.session_archive = _session_archive
+            logger.info(
+                "SessionArchive initialized (retention %d days, sweep %s)",
+                archive_config.retention_days,
+                "enabled" if archive_config.enabled else "disabled",
+            )
 
             # Agent will be initialized later when needed
             # (requires agent instance from bootstrap_servers)
@@ -501,6 +531,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger.info("Lifespan startup: Initializing tool integration...")
         await _init_mcp_for_app(app)
         logger.info("tool integration initialized during lifespan startup")
+
+        # The archive sweep, now that there is a loop to run it in.
+        archive = getattr(app.state, "session_archive", None)
+        if archive is not None and config.session_archive.enabled:
+            _asyncio.create_task(archive.sweep_loop())
+            logger.info(
+                "SessionArchive sweep loop started: every %.1f h, first in %.0f s",
+                archive.sweep_interval_hours, archive.first_sweep_delay_seconds,
+            )
         
         # Log startup complete marker
         logger.info("═" * 80)
