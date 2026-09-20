@@ -424,12 +424,16 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
         # Create manager with injected dependencies
         return SubAgentManager(
-            session_service, 
-            registry, 
+            session_service,
+            registry,
             self.max_nesting_depth,
             self.max_sub_agents_per_type,
             self.max_sub_agents,
-            auto_archive_on_limit=self.auto_archive_on_limit
+            auto_archive_on_limit=self.auto_archive_on_limit,
+            # The manager archives the oldest sub-agent by itself when a limit is reached, and
+            # the id never reaches this server otherwise -- its background job would keep its
+            # result for the life of the process.
+            on_archived=self._archive_job,
         )
 
     def _extract_registry(self, params: dict[str, Any]):
@@ -1388,25 +1392,25 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     agent_type = sub_session_data.get("agent_name", "unknown")
 
                     # Update parent metadata (mark as archived)
-                    await manager.update_sub_session_metadata(
+                    written = await manager.update_sub_session_metadata(
                         parent_session_id=parent_session_id,
                         sub_session_id=sub_id,
                         status="archived",
                         archived_at=datetime.now(UTC).isoformat()
                     )
+                    if not written:
+                        # It gives up quietly (parent unreadable, no sub_agents metadata, id not
+                        # among them) and raises nothing, so without this the caller is told
+                        # "archived" about an instance that is still active, still counted and
+                        # still pollable -- and its result has been dropped underneath it.
+                        results.append({
+                            "instance_id": sub_id,
+                            "status": "error",
+                            "error": f"Sub-agent '{sub_id}' could not be archived",
+                        })
+                        continue
 
-                    # An archived instance has no reader left for its background job: a poll or
-                    # wait on it answers from the transcript now. A running one keeps its job --
-                    # that is the task handle a cancel needs -- and is marked instead, so its
-                    # ending drops it rather than leaving the result behind for good.
-                    async with self._async_jobs_lock:
-                        job = self._async_jobs.get(sub_id)
-                        if job is None:
-                            pass
-                        elif job.get("status") in ("completed", "failed", "cancelled"):
-                            del self._async_jobs[sub_id]
-                        else:
-                            job["_archived"] = True
+                    await self._archive_job(sub_id)
 
                     results.append({
                         "instance_id": sub_id,
@@ -1668,6 +1672,67 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
     # ========== Async Job Management Handlers ==========
 
+    async def _stored_result(self, manager: SubAgentManager, user_id: str,
+                             instance_id: str) -> Optional[str]:
+        """The answer a finished run left behind, read from its own transcript.
+
+        The job in memory holds that text only until somebody reads it, and there are three ways
+        to arrive here without one: after a restart, after an archiving, and after this process
+        handed the job to whoever polled first. Saying "execution completed (session persisted)"
+        in those cases is not an answer -- a model reads it AS the sub-agent's answer, and the
+        real one sits one `info` call away that nobody knows to make.
+        """
+        try:
+            data = await manager._session_service.session_manager.load_session(user_id, instance_id)
+        except Exception as e:
+            # Every reason to fail here ends the same way: the caller keeps the answer it would
+            # have had without this, so a missing transcript must not turn a poll into an error.
+            logger.debug("No stored result for %s: %s", instance_id, e)
+            return None
+
+        messages = data.get("messages") if isinstance(data, dict) else None
+        if not isinstance(messages, list):
+            return None
+
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            # The LAST thing the run said, and only that. Looking further up when it says
+            # nothing reads an earlier step as the answer: measured in this repo's own sessions,
+            # a run that ended inside a tool call then hands its mid-run self-check to the
+            # coordinator as the sub-agent's result. A run cut off there has no answer.
+            content = message.get("content")
+            if isinstance(content, str):
+                return content.strip() or None
+            if isinstance(content, list):
+                # Parts: a raw session file gives dicts, pydantic gives ContentItem objects.
+                return "".join((part.get("text") if isinstance(part, dict)
+                                else getattr(part, "text", None)) or "" for part in content).strip() or None
+            return None
+        return None
+
+    async def _archive_job(self, instance_id: str) -> None:
+        """What an archived instance leaves behind in memory -- for every way of archiving one.
+
+        An archived instance has no reader left for its background job -- and none is coming:
+        `list_sub_sessions` keeps only active and interrupted ones, so once the entry is gone a
+        poll answers "not found" and the text is in the transcript only (`info`). A running one
+        keeps its job -- that is the task handle a cancel needs -- and is marked instead, so its
+        ending drops it rather than leaving the result behind for good.
+
+        The tool's `delete` is one way here. The other is the manager archiving the oldest
+        sub-agent by itself to make room (`auto_archive_on_limit`), which never passes through
+        this server at all: it is handed this method as `on_archived` when the manager is built.
+        """
+        async with self._async_jobs_lock:
+            job = self._async_jobs.get(instance_id)
+            if job is None:
+                return
+            if job.get("status") in ("completed", "failed", "cancelled"):
+                del self._async_jobs[instance_id]
+            else:
+                job["_archived"] = True
+
     async def _finish_job(
         self,
         instance_id: str,
@@ -1698,12 +1763,14 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         # The cost is a window: between here and the stored write below, a poll reads the ending
         # and takes the job away, and a second one in the same window falls back to metadata that
         # still says active and reads as completed. It closes itself when the write lands.
+        was_archived = False
         async with self._async_jobs_lock:
             job = self._async_jobs.get(instance_id)
             if job is not None:
                 if job.get("_archived"):
                     # archived while it ran: nobody polls an archived instance, and the entry
                     # would keep its result for the life of the process
+                    was_archived = True
                     del self._async_jobs[instance_id]
                     job = None
             if job is not None:
@@ -1712,6 +1779,15 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 if drop_task:
                     # a task ended by CancelledError keeps it, and with it every frame of the run
                     job["task_handle"] = None
+
+        if was_archived and job_status == "completed":
+            # It was archived while it ran, and a clean ending must not undo that: the success
+            # path stores "active", which would put the instance back into the listing AND back
+            # into the count the limit reads -- the room the archiving made would be gone again.
+            # Only the clean ending. "failed" and "cancelled" are the run's verdict and they say
+            # themselves that it is over; overwriting them with "archived" would hide an aborted
+            # fan-out behind a status that reads as an orderly end.
+            stored = {**stored, "status": "archived"}
 
         parent_session_id = params.get("_session_id")
         try:
@@ -1959,9 +2035,42 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 # Support both dict and Pydantic object access
                 matching = [s for s in sub_agents if (s.get("instance_id") if isinstance(s, dict) else s.instance_id) == instance_id]
                 
+                if not matching:
+                    # An archived instance drops out of that listing -- `list_sub_sessions` keeps
+                    # active and interrupted ones. It is still a run of ours with an answer, and
+                    # the caller may not even know it was archived: making room at a limit happens
+                    # behind its back, to the oldest instance, running or not.
+                    archived = [
+                        s for s in await manager.list_sub_sessions(
+                            parent_session_id, include_completed=True, creator_plugin=self.name)
+                        if (s.get("instance_id") if isinstance(s, dict) else s.instance_id) == instance_id
+                        and (s.get("status") if isinstance(s, dict) else s.status) == "archived"
+                    ]
+                    if archived:
+                        # "Archived" says nothing about whether it still runs, and there are two
+                        # ways to be running with no job here: a blocking run never has one, and
+                        # a job lives in the process that started it. Answering "completed" then
+                        # ends a wait on an answer that is not written yet. The lock a run holds
+                        # next to its session answers the same in every process -- what `list`
+                        # asks before it calls a sub-agent dead.
+                        user_id = manager._extract_user_id(parent_session_id, params)
+                        if await self._runs_in_another_process(instance_id, user_id):
+                            if status:
+                                await status.end(f"Poll: {instance_id} running")
+                            return {
+                                "instance_id": instance_id,
+                                "status": "running",
+                                "agent_type": (archived[0].get("agent_type") if isinstance(archived[0], dict)
+                                               else archived[0].agent_type),
+                                "message": "Archived while it runs; its ending is still to come",
+                            }
+                    matching = archived
+
                 if matching:
                     # Sub-agent exists but not in async tracking - it's completed
                     sub_agent = matching[0]
+                    user_id = manager._extract_user_id(parent_session_id, params)
+                    result = await self._stored_result(manager, user_id, instance_id)
                     if status:
                         await status.end(f"Poll: {instance_id} completed")
                     return {
@@ -1970,7 +2079,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         "agent_type": sub_agent.get("agent_type") if isinstance(sub_agent, dict) else sub_agent.agent_type,
                         "started_at": sub_agent.get("created_at") if isinstance(sub_agent, dict) else (sub_agent.created_at.isoformat() if sub_agent.created_at else None),
                         "completed_at": sub_agent.get("last_used") if isinstance(sub_agent, dict) else sub_agent.last_used,
-                        "result": "Sub-agent execution completed (session persisted)",
+                        "result": result or "Sub-agent execution completed (session persisted)",
                         "message": "Use 'info' operation to see conversation history"
                     }
 
@@ -2056,12 +2165,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 poll_result = await self._handle_poll(_without_status(params))
                 if poll_result.get("status") == "completed":
                     if status_ctx:
-                        # No result size here: on this branch `_handle_poll`
-                        # reaches the DB path, whose `result` is the fixed
-                        # string "Sub-agent execution completed (session
-                        # persisted)". Measuring it reported 51 chars for
-                        # every sub-agent, whatever it had produced -- a
-                        # fabricated number is worse than none.
+                        # No result size here: on this branch `_handle_poll` reaches the stored
+                        # path, whose `result` is the run's own words when its transcript had
+                        # any and the fixed "…(session persisted)" sentence when it had none.
+                        # A size would therefore measure the answer sometimes and a constant
+                        # the rest of the time, and the two are not told apart here.
                         await status_ctx.end(
                             f"Instance {instance_id} already completed "
                             f"({poll_result.get('agent_type', 'unknown type')})")

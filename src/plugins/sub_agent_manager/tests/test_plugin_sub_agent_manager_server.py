@@ -3,6 +3,7 @@
 Tests the manage_sub_agent tool with all 5 operations.
 """
 
+import logging
 import pytest
 from unittest.mock import Mock, AsyncMock
 from plugins.sub_agent_manager.server import SubAgentManagerServer
@@ -2253,6 +2254,28 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         assert told == []
 
     @pytest.mark.asyncio
+    async def test_with_presence_off_nothing_is_woken_and_nothing_breaks(self, server, monkeypatch, caplog):
+        """What the README promises for a host that switched session_presence off: the caller
+        polls, exactly as every job did before. Found by a mutation that came back green --
+        `presence is None` was the one branch of the wake nothing measured. Without the return
+        the wake runs into a presence that is not there and leaves a warning about a setting the
+        host chose itself; the job's own ending is unaffected either way.
+        """
+        monkeypatch.setattr(sam_server, "presence_for", lambda config: None)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        with caplog.at_level(logging.WARNING, logger=sam_server.logger.name):
+            await self.start(server, wake_when_done=True)
+            await self.run_to_end(server, agent)
+
+        job = server._async_jobs["sub_slow"]
+        assert job["status"] == "completed" and job["result"] == "done", \
+            "the ending is the job's own, not the wake's"
+        # Nothing is ATTEMPTED either: without the guard the wake runs into a presence that is
+        # not there, and the caller reads a warning about a host setting it chose itself.
+        assert [r.message for r in caplog.records if "wake" in r.message.lower()] == []
+
+    @pytest.mark.asyncio
     async def test_a_job_that_fails_wakes_it_too(self, server, monkeypatch):
         """Whoever sleeps on a job must not sleep through its failure -- there is no second ending."""
         told = self.presence(monkeypatch)
@@ -2477,6 +2500,187 @@ class TestAFinishedJobDoesNotStayInMemory:
                                  result="an answer nobody will ever ask for")
 
         assert "sub_busy" not in server._async_jobs
+
+    @staticmethod
+    def stored(server, listing, messages):
+        """A poll with no job in memory: the manager answers from the parent's metadata, and the
+        sub-session on disk holds `messages`."""
+        manager = AsyncMock()
+        manager.list_sub_sessions = AsyncMock(return_value=listing)
+        manager._extract_user_id = Mock(return_value="u1")
+        manager._session_service.session_manager.load_session = AsyncMock(
+            return_value={"messages": messages})
+        server._extract_registry = Mock(return_value=Mock())
+        server._extract_session_service = Mock(return_value=Mock())
+        server._get_manager = Mock(return_value=manager)
+        return manager
+
+    ACTIVE = [{"instance_id": "sub_done", "agent_type": "worker", "status": "active"}]
+    ARCHIVED = [{"instance_id": "sub_done", "agent_type": "worker", "status": "archived"}]
+
+    @pytest.mark.asyncio
+    async def test_a_poll_with_no_job_left_answers_in_the_run_s_own_words(self, server):
+        """Whoever reads a job takes it, and a restart leaves none at all -- so this path is the
+        normal one, not the exception. It used to answer with a sentence about a persisted
+        session, which a model reads AS the sub-agent's answer."""
+        self.stored(server, self.ACTIVE, [
+            {"role": "user", "content": "do it"},
+            {"role": "assistant", "content": "a first pass, asked again afterwards"},
+            {"role": "user", "content": "again, with the numbers"},
+            {"role": "assistant", "content": "the answer nobody could read before"},
+            {"role": "tool", "content": "42"}])
+
+        result = await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+
+        assert result["status"] == "completed"
+        # the LAST thing the run said, and something the run said: a transcript ends in whatever
+        # the last step produced, and an earlier pass is not the answer
+        assert result["result"] == "the answer nobody could read before"
+
+    @pytest.mark.asyncio
+    async def test_an_archived_instance_is_not_a_stranger_to_poll(self, server):
+        """Archiving to make room happens behind the caller's back, and `list_sub_sessions` keeps
+        only active and interrupted ones -- so its poll used to answer "not found" about a run it
+        started itself."""
+        manager = self.stored(server, [], [{"role": "assistant", "content": "archived, but finished"}])
+        manager.list_sub_sessions = AsyncMock(side_effect=[[], self.ARCHIVED])
+        server._runs_in_another_process = AsyncMock(return_value=False)
+
+        result = await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+
+        assert result["status"] == "completed"
+        assert result["result"] == "archived, but finished"
+        # what is asked, not just that something was: archived ones are only in the full listing,
+        # and only this instance's sub-agents are ours to answer about
+        assert manager.list_sub_sessions.await_args_list[1].kwargs == {
+            "include_completed": True, "creator_plugin": server.name}
+
+    @pytest.mark.asyncio
+    async def test_an_archived_instance_that_still_runs_is_not_finished(self, server):
+        """Archiving to make room takes the OLDEST, running or not, and "archived" says nothing
+        about whether the run is over. Two ways to still be running with no job here: a blocking
+        run never has one, and a job lives in the process that started it -- a woken coordinator
+        asks from another. Answering "completed" there ends a wait on an answer not yet written.
+        """
+        manager = self.stored(server, [], [{"role": "assistant", "content": "half a thought"}])
+        manager.list_sub_sessions = AsyncMock(side_effect=[[], self.ARCHIVED])
+        server._runs_in_another_process = AsyncMock(return_value=True)
+
+        result = await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+
+        assert result["status"] == "running"
+        assert "result" not in result, "nothing to hand over yet"
+        assert server._runs_in_another_process.await_args.args == ("sub_done", "u1")
+
+    @pytest.mark.asyncio
+    async def test_a_run_cut_off_in_a_tool_call_has_no_answer_to_give(self, server):
+        """The dangerous near-miss: its last word is a tool call, so there IS an earlier answer
+        in the transcript -- and it is not the result. Measured in this repo's own sessions, a
+        run that ended there hands its mid-run self-check to the coordinator as the sub-agent's
+        result. Better the sentence that says nothing than a paragraph that says the wrong thing.
+        """
+        self.stored(server, self.ACTIVE, [
+            {"role": "assistant", "content": "a self-check from the middle of the run"},
+            {"role": "tool", "content": "42"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]}])
+
+        result = await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+
+        assert result["status"] == "completed"
+        assert result["result"] == "Sub-agent execution completed (session persisted)"
+
+    @pytest.mark.asyncio
+    async def test_a_transcript_that_cannot_be_read_is_not_an_error(self, server):
+        """The session file may be gone, unreadable or half-written. None of that is worth
+        turning a poll into a failure: the caller keeps the answer it had before this existed."""
+        self.stored(server, self.ACTIVE, [])
+        server._get_manager.return_value._session_service.session_manager.load_session = AsyncMock(
+            side_effect=OSError("the sessions directory is gone"))
+
+        result = await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+
+        assert result["status"] == "completed"
+        assert result["result"] == "Sub-agent execution completed (session persisted)"
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_ending_stays_active(self, server):
+        """The counterpart: only an instance that WAS archived is stored as archived. A normal
+        run keeps the status its success path writes, or every finished sub-agent would vanish
+        from the listing."""
+        stored_kwargs = {}
+        manager = AsyncMock()
+        manager.update_sub_session_metadata = AsyncMock(
+            side_effect=lambda **kw: stored_kwargs.update(kw))
+        self.job(server, "sub_plain", "running")
+
+        await server._finish_job("sub_plain", {"_session_id": "parent1"}, "completed",
+                                 stored={"status": "active", "last_used": "now"}, manager=manager,
+                                 result="done")
+
+        assert stored_kwargs["status"] == "active", stored_kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("job_status", ["failed", "cancelled"])
+    async def test_an_archived_run_that_ended_badly_keeps_its_verdict(self, server, job_status):
+        """The other half of the rule above, and the one that hides a dead fan-out if it is
+        wrong: "failed" and "cancelled" are the run's verdict and they say themselves that it is
+        over. Stored as "archived" they read as an orderly end -- poll would answer "completed"
+        for a sub-agent that never finished, and wait_all would count it among the good ones."""
+        stored_kwargs = {}
+        manager = AsyncMock()
+        manager.update_sub_session_metadata = AsyncMock(
+            side_effect=lambda **kw: stored_kwargs.update(kw))
+        self.job(server, "sub_bad", "running", _archived=True)
+
+        await server._finish_job("sub_bad", {"_session_id": "parent1"}, job_status,
+                                 stored={"status": job_status, "error": "it broke"},
+                                 manager=manager)
+
+        assert stored_kwargs["status"] == job_status, stored_kwargs
+
+    @pytest.mark.asyncio
+    async def test_the_ending_of_an_archived_run_leaves_it_archived(self, server):
+        """The success path stores "active". For an instance archived while it ran that undoes
+        the archiving -- it is back in the listing and back in the count the limit reads, so the
+        room that was made is gone again."""
+        stored_kwargs = {}
+        manager = AsyncMock()
+        manager.update_sub_session_metadata = AsyncMock(
+            side_effect=lambda **kw: stored_kwargs.update(kw))
+        self.job(server, "sub_busy", "running", _archived=True)
+
+        await server._finish_job("sub_busy", {"_session_id": "parent1"}, "completed",
+                                 stored={"status": "active", "last_used": "now"}, manager=manager,
+                                 result="done")
+
+        assert stored_kwargs["status"] == "archived", stored_kwargs
+
+    @pytest.mark.asyncio
+    async def test_an_archiving_that_wrote_nothing_is_not_reported_as_done(self, server):
+        """The metadata write gives up quietly -- parent unreadable, no sub_agents metadata, id
+        not among them -- and raises nothing. Told "archived" anyway, the caller believes an
+        instance is gone that is still active, still counted and still pollable, and the result
+        it could have read has been dropped underneath it."""
+        TestCancelReachesABlockingRun.wire(server, SlowAgent())
+        self.job(server, "sub_done", "completed")
+        manager = server._get_manager()
+        manager.update_sub_session_metadata = AsyncMock(return_value=False)
+
+        answer = await self.archive(server, "sub_done")
+
+        assert answer["status"] == "error", answer
+        assert "sub_done" in server._async_jobs, "its result is still the caller's to read"
+
+    def test_the_manager_it_builds_reports_what_it_archived_itself(self, server):
+        """The second way to archive, and the one that skips this server: at the limit the
+        manager archives the oldest sub-agent to make room, down where the id never surfaces
+        here. Its job would keep the whole result text for the life of the process.
+
+        The real factory, not the one a fixture stubs -- what is asserted is the wiring.
+        """
+        manager = SubAgentManagerServer._get_manager(server, Mock())
+
+        assert manager._on_archived == server._archive_job
 
     @pytest.mark.asyncio
     async def test_wait_all_waits_once_per_instance(self, server):

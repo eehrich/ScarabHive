@@ -94,6 +94,17 @@ job: the run's ending is recorded before anyone is told about it.
 | `default_wait_timeout` | 3600 s | a `wait_all` that never returns |
 | `auto_archive_on_limit` | false | — when true, the oldest is archived instead of refusing |
 
+`auto_archive_on_limit` picks the **oldest by creation**, running or not, and
+the caller is not told. So it can archive a sub-agent somebody is still waiting
+for. That run is not disturbed: while it goes on, a `poll` says *running*; a
+clean ending stays archived (rather than putting the instance back into the
+count and undoing the room that was made), while *failed* and *cancelled* keep
+their own verdict; and its answer is read from the transcript afterwards. What
+changes is that the instance is out of `list` from then on. If the archiving
+cannot be written, no room was made and the spawn is refused rather than
+quietly taking the session over its own limit. With the flag off, the limit
+refuses the spawn in the first place.
+
 `max_nesting_depth` counts **levels below the session that calls this
 manager**, not absolute depth in the session tree: `1` lets a coordinator
 spawn workers that cannot spawn anything themselves, `5` allows five levels
@@ -111,6 +122,13 @@ Two more that are not limits but guards:
   class-level (shared by every manager instance) behind a class lock, and
   seeded from the time of day rather than zero, so a restart does not re-issue
   the ids of the session still on disk.
+* **A finished run answers with its own words, job or no job.** The background
+  job holds the result text only until somebody reads it, and after a restart
+  or an archiving there is none at all. `poll` then reads the last thing the
+  run said from its transcript, instead of a fixed sentence about a persisted
+  session that a model reads as the answer. An archived instance is found too:
+  making room at a limit happens behind the caller's back, and its poll used to
+  answer "not found" about a run it started itself.
 * **A run that ended without saying so is healed by `list`.** A sub-agent that
   still looks like it runs but that nobody has in hand is marked `interrupted`
   and its stale activity cleared — otherwise a crash leaves it *running* for
