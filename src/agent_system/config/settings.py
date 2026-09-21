@@ -499,11 +499,43 @@ def _warn_stale_llm_params(name: str, raw: Any, agent_cfg: Any) -> None:
 
 
 def _report_dropped_llm_params(data: dict, cfg: AgentSystemConfig) -> None:
-    """Whole-config pass over the raw server dicts (load_settings)."""
+    """Whole-config pass over the raw server dicts (load_settings).
+
+    Except where the load could not judge. An entry that inherits -- its
+    ``type`` names another server -- and does not set both chains itself was
+    validated against chains that are not its own: the model default stands
+    where the parent's chain will be once _resolve_server_inheritance has run.
+    Its profile-keyed params were dropped for a mismatch that does not exist,
+    and the merge after that had nothing left to keep. Measured on
+    v4_beat_scorer: `llm_writer_simple: {max_tokens: 120000}` in the child,
+    the chain inherited, and the key gone from get_tool_server_config with
+    "in none of its LLM chains ['normal']".
+
+    So those keys go back, and the judgement happens where the chain is known:
+    get_tool_server_config validates the merged config the same way, and drops
+    and names what is still stale there.
+    """
     raw_servers = ((data.get("plugins") or {}).get("servers") or {})
     for name, server in (getattr(cfg.plugins, "servers", None) or {}).items():
-        raw = ((raw_servers.get(name) or {}).get("agent_config") or {}).get("llm_params")
-        _warn_stale_llm_params(name, raw, getattr(server, "agent_config", None))
+        raw_server = raw_servers.get(name) or {}
+        raw_agent = raw_server.get("agent_config") or {}
+        raw = raw_agent.get("llm_params")
+        agent_cfg = getattr(server, "agent_config", None)
+        inherits = raw_server.get("type") in raw_servers
+        if inherits and not {"llm_profile", "llm_profile_advanced"} <= set(raw_agent):
+            _restore_llm_params(raw, agent_cfg)
+            continue
+        _warn_stale_llm_params(name, raw, agent_cfg)
+
+
+def _restore_llm_params(raw: Any, agent_cfg: Any) -> None:
+    """Put back the keys the load dropped. In place: assigning the field would
+    run the validator again, without the context that makes it tolerant."""
+    kept = getattr(agent_cfg, "llm_params", None)
+    if not isinstance(raw, dict) or not isinstance(kept, dict):
+        return
+    for key in set(raw) - set(kept):
+        kept[key] = copy.deepcopy(raw[key])
 
 
 def _report_unknown_llm_profiles(cfg: AgentSystemConfig) -> None:

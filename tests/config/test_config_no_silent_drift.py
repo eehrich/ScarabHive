@@ -294,6 +294,76 @@ class TestStaleLlmParamKeysAreDroppedLoudly:
         assert any("child_agent" in r.getMessage() for r in caplog.records), \
             "dropped without a word at the very place the message warns about"
 
+    INHERITING = ("plugins:\n"
+                  "  servers:\n"
+                  "    parent_agent:\n"
+                  "      type: agent\n"
+                  "      enabled: true\n"
+                  "      agent_config:\n"
+                  "        llm_profile: [a, b]\n"
+                  "    child_agent:\n"
+                  "      type: parent_agent\n"
+                  "      enabled: true\n"
+                  "      agent_config:\n"
+                  "        llm_params:\n"
+                  "          \"*\":\n"
+                  "            thinking_level: high\n"
+                  "          \"a\":\n"
+                  "            max_tokens: 120000\n"
+                  "          \"{extra}\":\n"
+                  "            max_tokens: 7\n")
+
+    def test_a_child_that_inherits_its_chain_keeps_its_keyed_params(self, tmp_path, caplog):
+        """The other direction of inheritance, and the one that went silent.
+
+        The child sets no chain and keys its params to a profile of the chain
+        it inherits. The load validated it against the model default instead,
+        dropped the key as stale, and the merge afterwards had nothing to keep:
+        v4_beat_scorer's output cap was gone from get_tool_server_config, with
+        a warning naming the wrong chain. Here `b` is a profile of the parent's
+        chain too, so the child's third key is valid as well.
+        """
+        from agent_system.config.settings import (
+            _reported_stale_llm_params,
+            get_tool_server_config,
+            load_settings,
+        )
+
+        (tmp_path / "config.yaml").write_text(self.INHERITING.format(extra="b"), encoding="utf-8")
+        _reported_stale_llm_params.clear()
+        with caplog.at_level(logging.ERROR):
+            cfg = load_settings(str(tmp_path / "config.yaml"))
+            merged = get_tool_server_config("child_agent", cfg)
+
+        assert merged.agent_config.available_llm_profiles[:2] == ["a", "b"], (
+            "fixture is vacuous: the child did not inherit the parent's chain")
+        assert merged.agent_config.llm_params.get("a") == {"max_tokens": 120000}, (
+            f"the key for the inherited chain was dropped: {merged.agent_config.llm_params}")
+        assert not any("child_agent" in r.getMessage() for r in caplog.records), (
+            "a valid key was reported as stale -- against a chain that is not the child's")
+
+    def test_a_child_that_inherits_its_chain_still_loses_a_stale_key_loudly(self, tmp_path, caplog):
+        """Deferring the judgement must not drop it: a key in none of the
+        inherited chains is still stale, and still named -- only now where
+        the chain is known."""
+        from agent_system.config.settings import (
+            _reported_stale_llm_params,
+            get_tool_server_config,
+            load_settings,
+        )
+
+        (tmp_path / "config.yaml").write_text(self.INHERITING.format(extra="zzz"), encoding="utf-8")
+        _reported_stale_llm_params.clear()
+        with caplog.at_level(logging.ERROR):
+            cfg = load_settings(str(tmp_path / "config.yaml"))
+            merged = get_tool_server_config("child_agent", cfg)
+
+        assert "zzz" not in merged.agent_config.llm_params, "a stale key survived the merge"
+        assert merged.agent_config.llm_params.get("a") == {"max_tokens": 120000}, (
+            "the valid keys went down with the stale one")
+        assert any("child_agent" in r.getMessage() and "zzz" in r.getMessage()
+                   for r in caplog.records), "the stale key was dropped without a word"
+
     def test_it_reaches_the_logfile_even_though_the_config_loads_first(self, tmp_path):
         """Every entry point loads the config BEFORE configuring logging, so an
         error raised during the load has no handler to go to and never reaches
