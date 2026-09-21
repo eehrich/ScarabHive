@@ -119,20 +119,55 @@ def wake_command(session_id: str, user_id: str) -> list[str]:
             "--session", session_id, "--session-user", user_id, "--woken"]
 
 
+def _wake_log() -> Any:
+    """Where a woken run's stderr goes, or DEVNULL when that cannot be opened.
+
+    It used to go to DEVNULL together with stdout, and that is how a failed
+    wake became unfalsifiable: the process starts, ``notify`` answers
+    ``woke_session``, and whatever the run says on its way down -- a traceback
+    at import, a tool server that will not build, "5 consecutive empty
+    responses" -- is written to a handle that discards it. Somebody looking for
+    a wake that did not work had nowhere to look.
+
+    Appended to, never truncated: two wakes can overlap. stdout stays
+    discarded -- that is the run's ANSWER, it belongs in the session file, and
+    a ``--raw`` run writes a great deal of it.
+    """
+    try:
+        path = REPO_ROOT / "logs" / "agent-wake.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return open(path, "ab")
+    except OSError as exc:
+        # A wake nobody can log is still a wake worth starting.
+        logger.warning("Session presence: no wake log (%s); stderr is discarded", exc)
+        return subprocess.DEVNULL
+
+
 def spawn_wake(session_id: str, user_id: str, depth: int) -> tuple[int, float]:
     """Start the woken run on its own, out of sight; returns its (pid, create_time).
 
     CREATE_NO_WINDOW, not DETACHED_PROCESS: a detached process has no console,
     and Windows gives every console program it starts a window of its own --
     a woken run would open one per stdio tool server, in the user's face.
+
+    Out of sight is not the same as unobservable: its stderr goes to a file
+    (see :func:`_wake_log`), because a wake that fails silently cannot be told
+    from one that never happened.
     """
     detach = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
               if os.name == "nt" else {"start_new_session": True})
-    process = subprocess.Popen(
-        wake_command(session_id, user_id), cwd=REPO_ROOT,
-        env={**os.environ, WAKE_DEPTH_ENV: str(depth)},
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        **detach)
+    errors = _wake_log()
+    try:
+        process = subprocess.Popen(
+            wake_command(session_id, user_id), cwd=REPO_ROOT,
+            env={**os.environ, WAKE_DEPTH_ENV: str(depth)},
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,
+            **detach)
+    finally:
+        # The child has its own handle by now; this one would otherwise be held
+        # for the life of the API process, one per wake.
+        if errors is not subprocess.DEVNULL:
+            errors.close()
     try:
         return process.pid, psutil.Process(process.pid).create_time()
     except psutil.Error:  # gone already
