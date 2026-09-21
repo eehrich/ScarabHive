@@ -253,7 +253,7 @@ class TestSomethingAlreadyDealtWithIsNotReportedAgain:
                 "stdout_buffer": ["hi"], "stderr_buffer": [],
                 "started_at": "t0", "finished_at": "t1", "owner_session": "sess-1",
             }
-            await on_finish("done")
+            await on_finish("done", server.process_manager.processes["done"])
 
             assert no_real_wake == [], no_real_wake
             assert await server._recorded.get("done") is None
@@ -313,3 +313,156 @@ class TestARecalledResultHonoursStream:
             assert out["stdout"] == "", out
         finally:
             await server.cleanup()
+
+
+def _finished_entry(owner="sess-1", read=False):
+    return {
+        "process": SimpleNamespace(returncode=0),
+        "command": "echo hi", "exit_code": 0, "read_after_finish": read,
+        "stdout_buffer": ["hi"], "stderr_buffer": [],
+        "started_at": "t0", "finished_at": "t1", "owner_session": owner,
+    }
+
+
+class TestTheRingAnswersForItsOwnEntry:
+    @pytest.mark.asyncio
+    async def test_a_later_run_under_the_same_id_does_not_answer_for_it(
+            self, presence_on, no_real_wake):
+        """The id was reused while the capture task was still draining: the
+        old entry is disarmed, the new one is armed. A lookup by id rang for
+        the NEW run's entry."""
+        server = TerminalServer("test", presence_on, {})
+        try:
+            on_finish, note = server._wake_callback(
+                {"_session_id": "sess-1", "_user_id": "someone"})
+            assert on_finish is not None, note
+            old = _finished_entry(read=True)
+            server.process_manager.processes["build"] = _finished_entry(read=False)
+
+            await on_finish("build", old)
+
+            assert no_real_wake == [], no_real_wake
+            assert await server._recorded.get("build") is None
+        finally:
+            await server.cleanup()
+
+
+class TestAnotherSessionsIdStaysTheirs:
+    @pytest.mark.asyncio
+    async def test_reusing_it_is_refused_and_leaves_their_wake_and_record(
+            self, presence_on):
+        server = TerminalServer("test", presence_on, {})
+        try:
+            theirs = _finished_entry(owner="sess-1", read=False)
+            server.process_manager.processes["build"] = theirs
+            await server._recorded.set("build", {"process_id": "build", "stdout": "theirs"})
+            status = Quiet()
+
+            result = await _start(server, status, process_id="build",
+                                  _session_id="sess-2")
+
+            assert result["error_type"] == "ProcessIdInUse", result
+            assert server.process_manager.processes["build"] is theirs
+            assert theirs["read_after_finish"] is False
+            assert (await server._recorded.get("build"))["stdout"] == "theirs"
+        finally:
+            await server.cleanup()
+
+
+class TestTheirRecordCountsAsMuchAsTheirEntry:
+    @pytest.mark.asyncio
+    async def test_a_record_with_no_live_entry_still_belongs_to_them(self, presence_on):
+        """The entry lives in another process (or is gone after a restart);
+        the record is what their woken run reads, and a new run here would
+        overwrite it."""
+        server = TerminalServer("test", presence_on, {})
+        try:
+            await server._recorded.set("build", {"process_id": "build", "stdout": "theirs",
+                                                 "owner_session": "sess-1"})
+
+            result = await _start(server, Quiet(), process_id="build", _session_id="sess-2")
+
+            assert result.get("error_type") == "ProcessIdInUse", result
+            assert "build" not in server.process_manager.processes
+            assert (await server._recorded.get("build"))["stdout"] == "theirs"
+        finally:
+            await server.cleanup()
+
+
+class _Pipe:
+    async def readline(self):
+        return b""
+
+
+class _HeldChild:
+    def __init__(self):
+        self.stdout, self.stderr = _Pipe(), _Pipe()
+        self.returncode = None
+        self.release = asyncio.Event()
+
+    async def wait(self):
+        await self.release.wait()
+        self.returncode = 0
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_the_capture_task_reports_the_entry_it_was_started_for():
+    """The id is handed to a later run while the first one is still being
+    captured: its end must be told with ITS entry, not the later one's."""
+    from plugins.terminal.process_manager import ProcessManager
+
+    manager = ProcessManager()
+    told = []
+
+    async def on_finish(process_id, info):
+        told.append(info)
+
+    child = _HeldChild()
+    await manager.register_process(child, "echo one", process_id="build",
+                                   on_finish=on_finish)
+    first = manager.processes["build"]
+    manager.processes["build"] = {"command": "echo two", "process": _HeldChild()}
+    child.release.set()
+    for _ in range(100):
+        if told:
+            break
+        await asyncio.sleep(0.01)
+
+    assert told and told[0] is first
+    assert first["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_two_calls_with_one_id_start_one_process(presence_on):
+    """Both used to pass the check -- awaits lie between it and the
+    registration -- and the second registration replaced the entry of the
+    first process, which ran on with nobody able to read or kill it."""
+    server = TerminalServer("test", presence_on, {})
+    try:
+        results = await asyncio.gather(
+            _start(server, Quiet(), process_id="build"),
+            _start(server, Quiet(), process_id="build"))
+
+        assert sorted(r["status"] for r in results) == ["error", "success"], results
+        assert [r.get("error_type") for r in results if r["status"] == "error"] == ["ProcessIdInUse"]
+    finally:
+        await server.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_cannot_be_read_is_not_taken_over(presence_on, monkeypatch):
+    server = TerminalServer("test", presence_on, {})
+    try:
+        async def broken(key):
+            raise OSError("disk says no")
+
+        monkeypatch.setattr(server._recorded, "get", broken)
+
+        result = await _start(server, Quiet(), process_id="build")
+
+        assert result.get("error_type") == "ProcessIdInUse", result
+        assert "leave process_id out" in result["error"], result
+        assert "build" not in server.process_manager.processes
+    finally:
+        await server.cleanup()

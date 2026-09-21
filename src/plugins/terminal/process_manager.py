@@ -49,7 +49,7 @@ class ProcessManager:
         cwd: Optional[str] = None,
         process_id: Optional[str] = None,
         owner_session: Optional[str] = None,
-        on_finish: Optional[Callable[[str], Awaitable[None]]] = None
+        on_finish: Optional[Callable[[str, Dict], Awaitable[None]]] = None
     ) -> str:
         """
         Register a background process.
@@ -60,7 +60,7 @@ class ProcessManager:
             cwd: Working directory
             process_id: Optional custom process ID
             owner_session: Session that owns this process (for isolation)
-            on_finish: Awaited once with the process id when the process has
+            on_finish: Awaited once with the process id and its entry when the process has
                 ended and its output is captured. Its failure is logged and
                 dropped: the process is over either way.
 
@@ -85,24 +85,23 @@ class ProcessManager:
         }
 
         # Start output capture task
-        task = asyncio.create_task(self._capture_output(process_id))
+        task = asyncio.create_task(
+            self._capture_output(process_id, self.processes[process_id]))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
         logger.info(f"Registered background process {process_id}: {command}")
         return process_id
 
-    async def _capture_output(self, process_id: str):
+    async def _capture_output(self, process_id: str, proc_info: Dict):
         """
         Capture output from background process.
 
         Args:
             process_id: Process ID to capture output from
+            proc_info: Its entry -- held, not looked up: once the process is
+                over its id may be handed to a later run.
         """
-        if process_id not in self.processes:
-            return
-
-        proc_info = self.processes[process_id]
         process = proc_info["process"]
 
         async def read_stream(stream, buffer: List[str]):
@@ -143,7 +142,9 @@ class ProcessManager:
         # the process failed: a caller waiting on it waits just the same.
         if proc_info["on_finish"] is not None:
             try:
-                await proc_info["on_finish"](process_id)
+                # The entry this task holds, not a lookup by id: the id may
+                # already name a later run (a finished id can be reused).
+                await proc_info["on_finish"](process_id, proc_info)
             except Exception as e:
                 logger.warning(f"on_finish for {process_id} failed: {e}")
 

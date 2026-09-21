@@ -158,9 +158,8 @@ class SSHControlToolServer(SchemaBasedToolServer):
         if blocked:
             return None, blocked
 
-        async def on_finish(process_id: str) -> None:
-            info = self.processes.processes.get(process_id)
-            if info is None or info["read_after_finish"]:
+        async def on_finish(process_id: str, info: dict) -> None:
+            if info["read_after_finish"]:
                 # Read, killed or its id handed to a later command while the
                 # capture task was still draining the channel: nothing left to
                 # hand over and nobody to ring. Recording it anyway would
@@ -209,6 +208,17 @@ class SSHControlToolServer(SchemaBasedToolServer):
             await status.progress(f"Starting on {machine}: {_short(command)}")
 
         reused = params.get("process_id")
+        taken = self.processes.processes.get(reused) if reused else None
+        # Another session's id stays theirs, finished or not: taking it over
+        # would disarm THEIR wake and delete THEIR recorded result.
+        refusal = reused and await self._held_by_another_session(
+            taken, reused, params.get("_session_id"))
+        if refusal:
+            message = refusal
+            if status:
+                await status.error(message[:140])
+            return {"status": "error", "error": message,
+                    "error_type": "ProcessIdInUse"}
         if reused:
             # Same reason as the terminal plugin: a record left under a reused
             # id would answer a woken run with the PREVIOUS command's output.
@@ -252,6 +262,32 @@ class SSHControlToolServer(SchemaBasedToolServer):
             if wake_note:
                 result["wake_note"] = wake_note
         return result
+
+    async def _held_by_another_session(self, taken: Any, process_id: str,
+                                       session_id: Any) -> str | None:
+        """Why *process_id* may not be taken over, or None when it may.
+
+        Another session's id stays theirs, live or recorded. The record counts
+        as much as the entry: it outlives it (another process, a restart, an
+        entry reclaimed after enough later runs) and it is what that session's
+        woken run reads.
+        """
+        theirs = (f"process_id {process_id} belongs to another session; "
+                  f"choose another one or leave it out")
+        if taken is not None and self.processes._owner_mismatch(taken, session_id):
+            return theirs
+        try:
+            recorded = await self._recorded.get(process_id)
+        except Exception as e:  # noqa: BLE001 - unreadable is not "nobody's"
+            # Taking it over would delete a record we could not look at. Every
+            # id hits the same read, so "choose another one" would not help.
+            logger.warning(f"Could not read the record of {process_id}, "
+                           f"so it is not taken over: {e}")
+            return (f"could not check who holds process_id {process_id} "
+                    f"(its record is unreadable); leave process_id out")
+        if isinstance(recorded, dict) and self.processes._owner_mismatch(recorded, session_id):
+            return theirs
+        return None
 
     async def _record(self, process_id: str, info: dict[str, Any]) -> None:
         """Put the outcome where another process can read it. Only for a

@@ -183,6 +183,9 @@ class TerminalServer(SchemaBasedToolServer):
         # Where a finished process's outcome survives THIS process: a woken
         # run is a new one and has none of these in memory.
         self._recorded = PluginCache(name)
+        # process_ids between their check and their registration, see
+        # execute_background.
+        self._starting: set[str] = set()
 
         # Initialize process manager for background processes
         self.process_manager = ProcessManager(max_buffer_lines=1000)
@@ -318,9 +321,8 @@ class TerminalServer(SchemaBasedToolServer):
         if blocked:
             return None, blocked
 
-        async def on_finish(process_id: str) -> None:
-            info = self.process_manager.processes.get(process_id)
-            if info is None or info["read_after_finish"]:
+        async def on_finish(process_id: str, info: dict) -> None:
+            if info["read_after_finish"]:
                 # Read, killed or its id handed to a later run while the
                 # capture task was still draining the pipes: nothing left to
                 # hand over and nobody to ring. Recording it anyway would
@@ -348,6 +350,26 @@ class TerminalServer(SchemaBasedToolServer):
         Returns:
             dict: Process information with process_id, pid, command
         """
+        process_id = params.get("process_id")
+        if not process_id:
+            return await self._start_background(params)
+        # Reserved from the check to the registration: several awaits lie
+        # between them (the record, the spawn), so two calls with the same id
+        # both passed the check -- and the second registration replaced the
+        # entry of a process that then ran on, unreadable and unkillable.
+        if process_id in self._starting:
+            message = (f"process_id {process_id} is being started by another call; "
+                       f"choose another one or leave it out")
+            await params["_status"].error(message[:140])
+            return {"status": "error", "error": message,
+                    "error_type": "ProcessIdInUse"}
+        self._starting.add(process_id)
+        try:
+            return await self._start_background(params)
+        finally:
+            self._starting.discard(process_id)
+
+    async def _start_background(self, params: dict[str, Any]) -> dict[str, Any]:
         command = params["command"]
         cwd = params.get("cwd")
         env_vars = params.get("env_vars")
@@ -360,6 +382,15 @@ class TerminalServer(SchemaBasedToolServer):
         # that invitation a trap -- for the rest of the process's life.
         taken = (self.process_manager.processes.get(custom_process_id)
                  if custom_process_id else None)
+        # Another session's id stays theirs, finished or not: taking it over
+        # would disarm THEIR wake and delete THEIR recorded result.
+        refusal = custom_process_id and await self._held_by_another_session(
+            taken, custom_process_id, params.get("_session_id"))
+        if refusal:
+            message = refusal
+            await params["_status"].error(message[:140])
+            return {"status": "error", "error": message,
+                    "error_type": "ProcessIdInUse"}
         if taken is not None and taken["process"].returncode is None:
             message = (f"process_id {custom_process_id} is in use by a running process; "
                        f"choose another one or leave it out")
@@ -437,6 +468,32 @@ class TerminalServer(SchemaBasedToolServer):
             if wake_note:
                 result["wake_note"] = wake_note
         return result
+
+    async def _held_by_another_session(self, taken: Any, process_id: str,
+                                       session_id: Any) -> str | None:
+        """Why *process_id* may not be taken over, or None when it may.
+
+        Another session's id stays theirs, live or recorded. The record counts
+        as much as the entry: it outlives it (another process, a restart, an
+        entry reclaimed after enough later runs) and it is what that session's
+        woken run reads.
+        """
+        theirs = (f"process_id {process_id} belongs to another session; "
+                  f"choose another one or leave it out")
+        if taken is not None and self.process_manager._owner_mismatch(taken, session_id):
+            return theirs
+        try:
+            recorded = await self._recorded.get(process_id)
+        except Exception as e:  # noqa: BLE001 - unreadable is not "nobody's"
+            # Taking it over would delete a record we could not look at. Every
+            # id hits the same read, so "choose another one" would not help.
+            logger.warning(f"Could not read the record of {process_id}, "
+                           f"so it is not taken over: {e}")
+            return (f"could not check who holds process_id {process_id} "
+                    f"(its record is unreadable); leave process_id out")
+        if isinstance(recorded, dict) and self.process_manager._owner_mismatch(recorded, session_id):
+            return theirs
+        return None
 
     async def _record(self, process_id: str, info: dict[str, Any]) -> None:
         """Put the outcome where another process can read it.

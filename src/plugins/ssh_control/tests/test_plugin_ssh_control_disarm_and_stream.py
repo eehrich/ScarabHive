@@ -257,7 +257,7 @@ class TestSomethingAlreadyDealtWithIsNotReportedAgain:
                 "stdout_buffer": ["hi"], "stderr_buffer": [],
                 "started_at": "t0", "finished_at": "t1", "owner_session": "sess-1",
             }
-            await on_finish("done")
+            await on_finish("done", server.processes.processes["done"])
 
             assert woken == [], woken
             assert await server._recorded.get("done") is None
@@ -333,3 +333,126 @@ class TestAnIdIsFreeAgainOnceItsCommandIsOver:
             assert ring() is False
         finally:
             await server.close()
+
+
+def _finished_entry(owner="sess-1", read=False):
+    return {
+        "machine": "m", "command": "make all", "exit_code": 0,
+        "error": None, "read_after_finish": read,
+        "stdout_buffer": ["hi"], "stderr_buffer": [],
+        "started_at": "t0", "finished_at": "t1", "owner_session": owner,
+    }
+
+
+async def test_a_later_command_under_the_same_id_does_not_answer_for_the_ring(
+        monkeypatch, woken):
+    """The id was reused while the capture task was still draining: the old
+    entry is disarmed, the new one is armed. A lookup by id rang for the NEW
+    command's entry."""
+    server = build(monkeypatch, lambda cmd: Process()).tool_server
+    try:
+        on_finish, note = server._wake_callback(
+            {"_session_id": "sess-1", "_user_id": "someone"})
+        assert on_finish is not None, note
+        old = _finished_entry(read=True)
+        server.processes.processes["build"] = _finished_entry(read=False)
+
+        await on_finish("build", old)
+
+        assert woken == [], woken
+        assert await server._recorded.get("build") is None
+    finally:
+        await server.close()
+
+
+async def test_another_sessions_id_stays_theirs(monkeypatch):
+    server = build(monkeypatch, lambda cmd: Process()).tool_server
+    try:
+        theirs = _finished_entry(owner="sess-1", read=False)
+        server.processes.processes["build"] = theirs
+        await server._recorded.set("build", {"process_id": "build", "stdout": "theirs"})
+
+        result = await server.execute(_call(process_id="build", _session_id="sess-2"))
+
+        assert result["error_type"] == "ProcessIdInUse", result
+        assert server.processes.processes["build"] is theirs
+        assert theirs["read_after_finish"] is False
+        assert (await server._recorded.get("build"))["stdout"] == "theirs"
+    finally:
+        await server.close()
+
+
+async def test_a_record_with_no_live_entry_still_belongs_to_them(monkeypatch):
+    """The entry lives in another process, or was reclaimed after fifty later
+    commands; the record is what their woken run reads."""
+    server = build(monkeypatch, lambda cmd: Process()).tool_server
+    try:
+        await server._recorded.set("build", {"process_id": "build", "stdout": "theirs",
+                                             "owner_session": "sess-1"})
+
+        result = await server.execute(_call(process_id="build", _session_id="sess-2"))
+
+        assert result.get("error_type") == "ProcessIdInUse", result
+        assert (await server._recorded.get("build"))["stdout"] == "theirs"
+    finally:
+        await server.close()
+
+
+async def test_a_record_that_cannot_be_read_is_not_taken_over(monkeypatch):
+    server = build(monkeypatch, lambda cmd: Process()).tool_server
+    try:
+        async def broken(key):
+            raise OSError("disk says no")
+
+        monkeypatch.setattr(server._recorded, "get", broken)
+
+        result = await server.execute(_call(process_id="build"))
+
+        assert result.get("error_type") == "ProcessIdInUse", result
+        assert "leave process_id out" in result["error"], result
+        assert "build" not in server.processes.processes
+    finally:
+        await server.close()
+
+
+async def test_start_itself_refuses_another_sessions_id(monkeypatch):
+    """The rule sits inside start's no-await section too, where every decision
+    about whether a command may run is taken."""
+    server = build(monkeypatch, lambda cmd: Process()).tool_server
+    try:
+        theirs = _finished_entry(owner="sess-1", read=False)
+        server.processes.processes["build"] = theirs
+
+        result = await server.processes.start("m", "make all", process_id="build",
+                                              owner_session="sess-2")
+
+        assert result.get("error_type") == "ProcessIdInUse", result
+        assert server.processes.processes["build"] is theirs
+        assert theirs["read_after_finish"] is False
+    finally:
+        await server.close()
+
+
+async def test_the_capture_task_reports_the_entry_it_was_started_for(monkeypatch):
+    """The id is handed to a later command while the first is still being
+    captured: its end must be told with ITS entry, not the later one's."""
+    hold = asyncio.Event()
+    server = build(monkeypatch, lambda cmd: Process(hold=hold)).tool_server
+    told = []
+
+    async def on_finish(process_id, info):
+        told.append(info)
+
+    try:
+        started = await server.processes.start("m", "make all", process_id="build",
+                                               owner_session="sess-1", on_finish=on_finish)
+        assert started["status"] == "success", started
+        first = server.processes.processes["build"]
+        server.processes.processes["build"] = _finished_entry()
+        hold.set()
+        assert await _until(lambda: told)
+
+        assert told[0] is first
+    finally:
+        hold.set()
+        await server.close()

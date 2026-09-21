@@ -76,7 +76,7 @@ class RemoteProcessManager:
         command: str,
         process_id: Optional[str] = None,
         owner_session: Optional[str] = None,
-        on_finish: Optional[Callable[[str], Awaitable[None]]] = None
+        on_finish: Optional[Callable[[str, Dict], Awaitable[None]]] = None
     ) -> Dict[str, Any]:
         """Start a command and return once it RUNS, not once it is done.
 
@@ -88,6 +88,13 @@ class RemoteProcessManager:
         # followed by an await and only then by the registration is read by
         # every simultaneous call as "nothing is running yet".
         taken = self.processes.get(process_id) if process_id else None
+        if taken is not None and self._owner_mismatch(taken, owner_session):
+            return {
+                "status": "error",
+                "error": f"process_id {process_id} belongs to another session; "
+                         f"choose another one or leave it out",
+                "error_type": "ProcessIdInUse"
+            }
         if taken is not None and taken["finished_at"] is None:
             return {
                 "status": "error",
@@ -164,7 +171,8 @@ class RemoteProcessManager:
                     "error_type": "StoppedBeforeStart"}
 
         self.processes[process_id]["process"] = process
-        task = asyncio.create_task(self._capture_output(process_id, pool, conn))
+        task = asyncio.create_task(
+            self._capture_output(process_id, self.processes[process_id], pool, conn))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         logger.info(f"Started background command {process_id} on {machine_name}: {command}")
@@ -183,10 +191,11 @@ class RemoteProcessManager:
                 logger.debug(f"Stream ended for {process_id}: {e}")
                 break
 
-    async def _capture_output(self, process_id: str, pool, conn) -> None:
+    async def _capture_output(self, process_id: str, proc_info: Dict, pool, conn) -> None:
         """Read both streams to their end, record the outcome, hand the
-        connection back -- and only then tell whoever asked to hear about it."""
-        proc_info = self.processes[process_id]
+        connection back -- and only then tell whoever asked to hear about it.
+        The entry is held, not looked up: once the command is over its id may
+        be handed to a later one."""
         process = proc_info["process"]
         try:
             await asyncio.gather(
@@ -214,7 +223,9 @@ class RemoteProcessManager:
 
         if proc_info["on_finish"] is not None:
             try:
-                await proc_info["on_finish"](process_id)
+                # The entry this task holds, not a lookup by id: the id may
+                # already name a later run (a finished id can be reused).
+                await proc_info["on_finish"](process_id, proc_info)
             except Exception as e:
                 logger.warning(f"on_finish for {process_id} failed: {e}")
 
