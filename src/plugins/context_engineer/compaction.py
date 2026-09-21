@@ -638,6 +638,38 @@ class LayeredCompactionStrategy:
             return True
         return _is_prune_notice(msg)
 
+    def _protected_positions(self, messages: list[dict[str, Any]]) -> set[int]:
+        """Positions no removing layer may take -- Pre-Layer P and both passes
+        of Layer 3.
+
+        `_is_protected` answers by what a message IS; this adds where it STANDS:
+        the first input (the task everything refers to -- in a continued
+        session it sits at the front and was the first thing to go), what the
+        current request stands on (`_request_user_indices`), and the round the
+        model has not seen yet. A cut deep enough reaches that round -- Pre-Layer
+        P ranks the pointer Pre-Layer T just left there cheapest of all, Layer
+        3's cut walks up to it from the front -- and then the call went out and
+        the model never saw what came back. The pairs tool_preload adds to a
+        new user message belong to it, and alone they could fill Layer 3's
+        working tail.
+
+        Pre-Layer P and Layer 3 used to build their own copies, and Layer 3
+        built one only for its cut to a target: its age pass, which runs first,
+        dropped the task and a woken run's last human message that the cut
+        would have kept. So a first input too big for the target now stays
+        there for good, as it always did in a run, and before turn
+        drop_after_turns of a chat.
+
+        `is_input`, not the bare role: a run woken at a fresh prompt has no
+        `user` message at all, and a gate on one left the wake, that run's only
+        instruction, an ordinary candidate.
+        """
+        inputs = [i for i, msg in enumerate(messages) if is_input(msg)]
+        return ({i for i, msg in enumerate(messages) if self._is_protected(msg)}
+                | set(inputs[:1])
+                | _request_user_indices(messages)
+                | set(_arrival_indices(messages)))
+
     async def compact(
         self,
         messages: list[dict[str, Any]],
@@ -1882,18 +1914,19 @@ class LayeredCompactionStrategy:
 
         messages = result.modified_messages
 
-        # Tool calls and their results leave together
+        # Tool calls and their results leave together -- and stay together: a
+        # unit with one protected message in it stays whole.
         groups = self._tool_call_groups(messages)
+        protected = self._protected_positions(messages)
 
         # Find turn boundaries (user messages nobody injected)
         turn_starts = [i for i, msg in enumerate(messages) if _opens_turn(msg)]
         current_turn = len(turn_starts)
 
-        # Collect indices to remove (including tool_call pairs)
         indices_to_remove = set()
-
-        for i, msg in enumerate(messages):
-            if self._is_protected(msg):
+        for i in range(len(messages)):
+            unit = groups.get(i, (i,))
+            if not protected.isdisjoint(unit):
                 continue
 
             # Calculate message age
@@ -1901,9 +1934,10 @@ class LayeredCompactionStrategy:
             turns_old = current_turn - message_turn
 
             if turns_old >= self.config.drop_after_turns:
-                indices_to_remove.update(groups.get(i, (i,)))
+                indices_to_remove.update(unit)
 
-        indices_to_remove |= self._select_down_to_target(messages, groups, indices_to_remove)
+        indices_to_remove |= self._select_down_to_target(
+            messages, groups, protected, indices_to_remove)
 
         result.messages_dropped = await self._archive_then_remove(
             result, indices_to_remove, "Layer 3"
@@ -1932,6 +1966,7 @@ class LayeredCompactionStrategy:
         self,
         messages: list[dict[str, Any]],
         groups: dict[int, frozenset[int]],
+        protected: set[int],
         selected: set[int],
     ) -> set[int]:
         """More of the oldest messages, until what stays is at target_tokens.
@@ -1944,10 +1979,10 @@ class LayeredCompactionStrategy:
         and every such run rewrote the front of the conversation and re-billed
         the whole prompt, a few calls apart (measured: 225k tokens every 9 calls).
 
-        What stays: system messages and anything else _is_protected keeps, the
-        first user message (the task) and the last one (the API needs it), and
+        What stays: everything `protected` holds (_protected_positions), and
         the working tail — the newest tool_result_keep_last tool-call units or
-        messages, the same window Layer 1 leaves inline. Units leave whole.
+        messages outside it, about the window Layer 1 leaves inline. Units
+        leave whole.
 
         The estimate counts inline media by what it costs (estimate_media_tokens): at
         0.25 tokens per base64 character an uploaded image in the protected
@@ -1960,15 +1995,6 @@ class LayeredCompactionStrategy:
             excess -= estimate([messages[i] for i in sorted(selected)])
         if excess <= 0:
             return set()
-
-        protected = {i for i, msg in enumerate(messages) if self._is_protected(msg)}
-        # `is_input`, not the bare role: a run woken at a fresh prompt has no
-        # `user` message at all, and the gate then skipped the whole block --
-        # leaving the wake, that run's only instruction, an ordinary candidate.
-        user_indices = [i for i, msg in enumerate(messages) if is_input(msg)]
-        if user_indices:
-            protected.add(user_indices[0])
-            protected.update(_request_user_indices(messages))
 
         tail_start = len(messages)
         units = 0
@@ -2007,8 +2033,9 @@ class LayeredCompactionStrategy:
         find it again through the retrieval tools; before that, this was the one
         place in the system that destroyed content outright.
 
-        System messages are kept if keep_system_messages is True. The first AND
-        last user messages are protected. Tool call/result pairs move together.
+        What stays is `_protected_positions`: system messages if
+        keep_system_messages is True, the first input, what the current request
+        stands on, the unsent round. Tool call/result pairs move together.
         """
         messages = result.modified_messages
         max_msgs = self.config.max_messages
@@ -2050,27 +2077,7 @@ class LayeredCompactionStrategy:
         )
         self._take_baseline(result)
 
-        protected = {i for i, msg in enumerate(messages)
-                     if self._is_protected(msg)}
-
-        # `is_input`, not the bare role -- see the same gate in Layer 3.
-        user_indices = [
-            i for i, msg in enumerate(messages) if is_input(msg)
-        ]
-        if user_indices:
-            # The LAST user message must survive or the API call is invalid.
-            # The FIRST one is the task everything else refers to: in a single
-            # agent run they are the same message, but in a continued session
-            # the task sits at the front and was the very first thing to go.
-            protected.update(_request_user_indices(messages))
-            protected.add(user_indices[0])
-        # The round the model has not seen yet. When a prune needs every
-        # candidate, or all but one or two, the window reaches it: the pointer
-        # Pre-Layer T just left ranks cheapest of all, or the call before it is
-        # needed and takes it along as one unit. Either way the call went out
-        # and the model never saw what came back.
-        protected.update(_arrival_indices(messages))
-
+        protected = self._protected_positions(messages)
         indices_to_remove = self._select_prune_candidates(
             messages, protected, excess
         )

@@ -68,21 +68,21 @@ class TestLayerThree:
         return messages
 
     @pytest.mark.asyncio
-    async def test_injected_user_messages_do_not_age_the_task(self, tmp_path):
+    async def test_injected_user_messages_do_not_age_the_request(self, tmp_path):
         config = dict(layer3_threshold=1, drop_after_turns=30)
 
         unmarked = await _strategy(tmp_path / "a", **config).compact(
             _unmarked(self._history()), current_tokens=10, force=True)
         assert 3 in unmarked.layers_applied
-        assert not _inline(unmarked.modified_messages, "The task"), (
-            "fixture: counted as person turns, the notes must age the task out")
+        assert not _inline(unmarked.modified_messages, "result 0"), (
+            "fixture: counted as person turns, the notes must age the first steps out")
 
         result = await _strategy(tmp_path / "b", **config).compact(
             self._history(), current_tokens=10, force=True)
 
         assert 3 in result.layers_applied
         assert result.messages_dropped == 0
-        assert _inline(result.modified_messages, "The task")
+        assert _inline(result.modified_messages, "result 0")
 
 
     @pytest.mark.asyncio
@@ -104,10 +104,90 @@ class TestLayerThree:
             messages, current_tokens=10, force=True)
 
         assert 3 in result.layers_applied
-        assert not _inline(result.modified_messages, "The task"), (
-            "a wake is a turn: a task thirty-five of them back is old")
+        assert not _inline(result.modified_messages, "result 0"), (
+            "a wake is a turn: a step thirty-five of them back is old")
         assert _inline(result.modified_messages, "woken 34"), (
             "the woken run's own instruction, dropped out from under it")
+
+
+class TestLayerThreeKeepsWhatItsCutKeeps:
+    """Layer 3 has two passes, and only the second -- the cut to a target --
+    asked what must stay. The age pass runs first and asked only what a message
+    IS, so it dropped what the cut, two lines later, protects by where it
+    STANDS: the task, a woken run's last human message. And the cut itself
+    missed the round the model has not seen yet, which Pre-Layer P protects."""
+
+    @staticmethod
+    def _aged(tmp_path, **config):
+        return _strategy(tmp_path, **dict(dict(layer3_threshold=1, drop_after_turns=2), **config))
+
+    @pytest.mark.asyncio
+    async def test_the_age_pass_keeps_the_task(self, tmp_path):
+        messages = [{"role": "system", "content": "You are an agent."},
+                    {"role": "user", "content": "The task"}]
+        for n in range(5):
+            messages += [{"role": "assistant", "content": f"answer {n}"},
+                         {"role": "user", "content": f"question {n}"}]
+
+        result = await self._aged(tmp_path).compact(messages, current_tokens=10, force=True)
+
+        assert not _inline(result.modified_messages, "answer 0"), "fixture: nothing aged out"
+        assert _inline(result.modified_messages, "The task")
+
+    @pytest.mark.asyncio
+    async def test_the_age_pass_keeps_a_woken_runs_last_human_message(self, tmp_path):
+        """Woken again and again, the session ages with every wake; what a
+        person last sent -- and the media Layer 1 keeps for it -- went with the
+        turns around it."""
+        messages = [{"role": "system", "content": "You are an agent."},
+                    {"role": "user", "content": "The task"},
+                    {"role": "assistant", "content": "on it"},
+                    {"role": "user", "content": "here is the screenshot"}]
+        for n in range(4):
+            messages += [{"role": "assistant", "content": f"answer {n}"},
+                         {"role": "developer", "content": f"woken {n}"}]
+
+        result = await self._aged(tmp_path).compact(messages, current_tokens=10, force=True)
+
+        assert not _inline(result.modified_messages, "on it"), "fixture: nothing aged out"
+        assert _inline(result.modified_messages, "here is the screenshot")
+
+    @pytest.mark.asyncio
+    async def test_the_age_pass_does_not_take_the_unseen_round_along_with_its_call(self, tmp_path):
+        """A person writes while the tools run: the call is a turn old now, and
+        its unit took the results the model has not seen yet with it."""
+        messages = [{"role": "system", "content": "You are an agent."},
+                    {"role": "user", "content": "The task"},
+                    *_step(0),
+                    {"role": "user", "content": "how far are you?"}]
+
+        result = await self._aged(tmp_path, drop_after_turns=1).compact(
+            messages, current_tokens=10, force=True)
+
+        assert _inline(result.modified_messages, "result 0")
+
+    @pytest.mark.asyncio
+    async def test_the_cut_keeps_the_round_the_model_has_not_seen(self, tmp_path):
+        """tool_preload answers a new user message with pairs of its own, in the
+        same pass (tool_preload/hooks.py). Counted as the working tail, they
+        filled it, and the first preloaded result -- one the model has not seen
+        yet -- lay in front of it, in reach of the cut."""
+        messages = [{"role": "system", "content": "You are an agent."},
+                    {"role": "user", "content": "The task"}]
+        for n in range(6):
+            messages += _step(n)
+        messages += [{"role": "assistant", "content": "Done."},
+                     {"role": "user", "content": "And now the next one."}]
+        for n in range(3):
+            call, reply = _step(100 + n)
+            messages += [dict(call, injected_by="tool_preload"), reply]
+
+        result = await self._aged(tmp_path, drop_after_turns=10**9, target_tokens=1,
+                                  tool_result_keep_last=2).compact(
+            messages, current_tokens=10**6, force=True)
+
+        assert not _inline(result.modified_messages, "result 0"), "fixture: the cut took nothing"
+        assert _inline(result.modified_messages, "result 100")
 
 
 class TestLayerTwo:

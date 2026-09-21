@@ -71,6 +71,8 @@ class TestTheArchiveKeepsWhatLeaves:
         strategy, archival = _strategy(tmp_path, layer3_threshold=1, drop_after_turns=1)
         payload = base64.b64encode(b"PNGDATA" * 4000).decode()
         messages = [
+            {"role": "user", "content": "the task"},
+            {"role": "assistant", "content": "on it"},
             {"role": "user", "content": [
                 {"type": "text", "text": "old picture"},
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": payload}},
