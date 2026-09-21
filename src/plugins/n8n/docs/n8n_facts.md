@@ -18,7 +18,9 @@ Stand: 21.09.2026, nach dem Umbau auf den Instanz-MCP und Review-Runde 2. Dieses
   - `work/rv/m1.py`–`m3.py`, `rv_lic.py`: Review-Runde 1,
   - `mcp_probe.py`, `validate_cases.py`: Instanz-MCP (Hauptsession),
   - `work2/t1*.py`–`t9b.py`: Instanz-MCP-Messung,
-  - `work2/r1_*`–`r6.py`: Review-Runde 2.
+  - `work2/r1_*`–`r6.py`: Review-Runde 2,
+  - `smoke.py`, `m7_m9.py`, `newcred.py`: Bau Phase 1a,
+  - `review/*.py`: Review-Runde 3 (großes Review), `fix/*.py`: Nachmessungen dazu.
 - `openapi.yml` ist die Spec der Instanz (info.version 1.1.1).
 - `work/paths.txt` ist die `/discover`-Ausgabe (Endpunkt → Scope).
 - Die Markierungen:
@@ -318,7 +320,7 @@ Knotenwissen kommt jetzt aus `search_nodes` und `get_node_types` des Instanz-MCP
   - meldet sich als `{"name":"n8n MCP Server","version":"1.1.0"}`,
   - nutzt Protokoll 2025-06-18.
 
-  Antworten kommen als JSON oder SSE, die Session-ID im Header `mcp-session-id` [gemessen: `work2/lib.py`].
+  Antworten kommen als JSON oder SSE. **Korrigiert → M-MCP-54:** Eine Session-ID im Header `mcp-session-id` sendet 2.39.9 nicht; der Server ist zustandslos.
 - **M-MCP-H4 [gemessen, Hauptsession]** Der Server hat 35 Tools:
   - search_workflows, execute_workflow, get_workflow_execution, search_workflow_executions, get_workflow_details,
   - get_workflow_history, get_workflow_version, get_workflow_versions_diff,
@@ -537,11 +539,42 @@ Knotenwissen kommt jetzt aus `search_nodes` und `get_node_types` des Instanz-MCP
   Quelle: r2.py.
 - **M-MCP-39 [gemessen, Review 2]** pinData auf einem **HTTP-Request-Knoten** wird befolgt: `PinnedHttp` mit URL `http://localhost:1/never` lieferte den gepinnten Wert `{pinned:'HTTP_PINNED'}`, Status success; ein Live-Aufruf auf Port 1 wäre gescheitert (Execution 115). Quelle: r2.py.
 - **M-MCP-40 [gemessen, Review 2]** `n8n-nodes-base.executeWorkflow` v1.2 mit `source: 'parameter'` führt ein **Inline-Workflow-JSON** aus: Knoten `Inline` mit `workflowJson` = executeWorkflowTrigger→Set lieferte `{inline:'INLINE_RAN'}` (Execution 115). Laut `get_node_types(executeWorkflow)` kennt `source` auch `localFile` (Text enthält `workflowJson`, `localFile`). Die Knoten im Inline-JSON stehen nicht in `nodes[]` des äußeren Workflows. Quelle: r2.py.
-- **M-MCP-41 [gemessen, Review 2]** `update_workflow setWorkflowSettings {saveManualExecutions:false, saveDataSuccessExecution:'none'}` wird angenommen. Danach liefert `test_workflow` `{executionId:'117', status:'success'}`, aber Public `GET /executions/117?includeData=true` ergibt **404**: Die Execution ist nicht gespeichert. Quelle: r2.py; die Schlüssel stehen im Schema von `update_workflow` (r1_tools.json).
+- **M-MCP-41 [gemessen, Review 2; eingegrenzt → M-MCP-55]** `update_workflow setWorkflowSettings {saveManualExecutions:false, saveDataSuccessExecution:'none'}` wird angenommen. Danach liefert `test_workflow` `{executionId:'117', status:'success'}`, aber Public `GET /executions/117?includeData=true` ergibt **404**: Die Execution ist nicht gespeichert. Quelle: r2.py; die Schlüssel stehen im Schema von `update_workflow` (r1_tools.json). Welche der beiden Einstellungen es war, trennt erst M-MCP-55.
 - **M-MCP-42 [gemessen, Review 2]** Agent-Tool-Varianten: `search_nodes(usage:'agentTool')` liefert u. a. `n8n-nodes-base.httpRequestTool`, `graphqlTool`, `gitTool`, `rssFeedReadTool`, `s3Tool`, `gmailTool`, `googleSheetsTool`, `githubTool`, `gitlabTool`, `npmTool`, `@n8n/n8n-nodes-langchain.toolCode`, `toolVectorStore`, `toolSerpApi` und `@n8n/n8n-nodes-langchain.mcpRegistryClientTool`. Das Muster ist `<basistyp>Tool` bei `n8n-nodes-base`, Präfix `tool…` bei den langchain-Knoten. Quelle: r3.py, r4.py (am 21.09. erneut ausgeführt, gleiche Namen).
 - **M-MCP-43 [gemessen, Review 2]** `get_node_types(sort)` zeigt `type` mit den Werten `simple`, `random` und `code`; `merge` hat den Modus `combineBySql`. Ein Sort-Knoten mit `type:'code'` lief ungepinnt live und veränderte die Items (Execution 119). Im Sort-Code sind `typeof process` und `typeof require` `'undefined'`; Umgebungsvariablen waren nicht sichtbar. Netzzugang aus Sort-Code und Dateifunktionen in `combineBySql` sind **ungemessen**. Quelle: r5.py, r6.py.
 - **M-MCP-44 [gemessen, Review 2]** Ein `get_node_types`-Aufruf mit einem gültigen und einem ungültigen Knoten (Version `'99'`) liefert **ohne isError** einen Text, der mit `# TypeScript Type Definitions` beginnt; der Abschnitt `# Errors` mit `Version '99' not found …` steht erst ab Zeichen 6.423. Ein Einzelaufruf mit ungültiger Version beginnt dagegen direkt mit `# Errors` [M-MCP-32]. Quelle: r2.py.
 - **M-MCP-45 [gemessen]** Stand nach Review-Runde 2: Public `GET /workflows?limit=250` liefert 0 Workflows, `GET /tags` 0 Tags (21.09., lesend geprüft). Mit den Workflows sind die Executions 115–119 gelöscht [F-LIFE1].
+
+## Instanz-MCP — Bau Phase 1a (Hauptsession, 21.09.)
+- **M-MCP-46 [gemessen, Hauptsession]** `newCredential('Slack Bot')` im SDK-Code, ohne dass ein solches Credential existiert: Der gespeicherte Knoten hat **kein** `credentials`-Feld; `autoAssignedCredentials` ist leer. Die Prüfung `CREDENTIAL_UNKNOWN_ID` greift darauf nicht, das fehlende Credential ist eine Aufgabe für den Nutzer. Quelle: newcred.py.
+- **M-MCP-47 [gemessen, Hauptsession]** Beantwortet M7, Teil 1: Ein **gepinnter AI-Agent-Knoten ruft seine Subnodes nicht auf**. Manual → Agent mit `lmChatOpenAi`-Subnode ohne Credential; nur Trigger und Agent gepinnt: `success`, der Agent liefert den gepinnten Wert (Execution 121). Ein Aufruf des Modells wäre ohne Credential gescheitert. Quelle: m7_m9.py.
+- **M-MCP-48 [gemessen, Hauptsession]** Beantwortet M7, Teil 2: Ein **gepinnter Subnode ersetzt das Modell nicht**. Nur der `Model`-Subnode gepinnt, der Agent nicht: `status: error`, „Error in sub-node Model“ (Execution 122). Gepinnt wird deshalb immer die Wurzel, nie ein einzelner Subnode (design §3.3). Quelle: m7_m9.py.
+- **M-MCP-49 [gemessen, Hauptsession]** Beantwortet M9: `test_workflow` mit `timeout: 5` auf einem Wait von 25 s antwortet nach 6,3 s mit `{executionId:'123', status:'error', error:'Workflow execution timed out after 5 seconds'}`. Die Execution steht danach auf `canceled` („The execution was cancelled manually“) und bleibt dort. Quelle: m7_m9.py.
+- **M-MCP-50 [gemessen, Hauptsession]** `validate_workflow` auf Code, den n8n nicht parsen kann (unbekannter Knotentyp), antwortet mit `isError: true` **und** dem Urteil `{"valid": false, "errors": ["Failed to parse … Unrecognized node type: …"]}`. Wer nur `isError` liest, meldet einen Befund als kaputtes Tool. Quelle: smoke.py.
+- **M-MCP-51 [gemessen, Hauptsession]** Ohne `/rest` verrät n8n seine Version nicht: Weder `/healthz`, `/healthz/readiness` noch `/api/v1/…` senden einen Versions-Header, und `serverInfo` des MCP ist `1.1.0` (die MCP-Server-Version). Eine Versionswarnung zur Laufzeit hat damit keine Quelle; `tested_n8n_version` bleibt als Vermerk für Upgrades. Quelle: curl -D.
+- **M-MCP-52 [gemessen, Hauptsession]** Das Plugin gegen die Instanz, einmal durch alle Tools: anlegen, taggen und nachprüfen (0 Befunde), Testlauf Execution 120 `success` mit gepinntem Webhook-Trigger und live gelaufenem Set/Respond („Hello Ada“), `removeTags` des eigenen Tags abgelehnt, ein per `setNodeParameter` geleerter Webhook-Pfad sofort als `WEBHOOK_PATH_EMPTY` gemeldet; jeder Aufruf mit genau einer Status-Zeile; danach 0 Workflows. Quelle: smoke.py.
+
+## Instanz-MCP — großes Review Phase 1a (21.09.)
+- **M-MCP-53 [gemessen, Hauptsession + Review 3]** Sub-Workflows im Test. B = executeWorkflowTrigger → httpRequest (`/healthz`), A = manualTrigger → executeWorkflow (`source: database`, B):
+  - Nur A's Trigger gepinnt: Execution 135 startet B als eigene Execution 136, und B's HTTP-Knoten läuft **live** (Antwort `{"status":"ok"}`). B's Knoten stehen außerhalb von A's Pin-Plan; keine Prüfung am Aufrufer kann sie begrenzen.
+  - Trigger **und** Aufrufknoten gepinnt: Execution 138 `success`, der Aufrufknoten liefert den gepinnten Wert, B hat danach **keine** Execution.
+
+  Quelle: review/subwf_probe.py, fix/subwf_pinned.py.
+- **M-MCP-54 [gemessen, Hauptsession + Review 3]** Der Instanz-MCP von 2.39.9 ist **zustandslos**: `initialize` sendet keinen Header `mcp-session-id`, und `tools/call` mit falscher oder fehlender Session-ID wird mit 200 beantwortet. Ein Client, der das Handshake an der Session-ID festmacht, schickt es vor jedem Aufruf neu: 3 statt 1 der 100 Requests je 5 Minuten. Ein 429 trifft dann zuerst das `initialize` (retry-after 26 gemessen). Quelle: fix/sess.py, review/p1.py, p2.py, p9.py.
+- **M-MCP-55 [gemessen, Hauptsession + Review 3]** Die Speichereinstellungen einzeln, je ein Testlauf:
+  - nur `saveManualExecutions: false` → Execution 140, Public GET **404**,
+  - nur `saveDataSuccessExecution: 'none'` → Execution 139, gespeichert (Modus `manual`),
+  - nur `saveDataErrorExecution: 'none'`, Lauf mit Fehler → Execution 137, gespeichert.
+
+  Einen Testlauf ungespeichert lässt also nur `saveManualExecutions: false`. Quelle: fix/save_manual.py, review/save_probe.py, save_probe_err.py.
+- **M-MCP-56 [gemessen, Review 3]** Eine `ai_tool`-Kante von einem **deaktivierten** `toolCalculator` in einen HTTP-Request-Knoten nimmt `update_workflow` an (3 Operationen angewendet). Eine `ai_tool`-Kante von einem NoOp lehnt n8n ab („does not produce an ai_tool output“). Der alte Pin-Plan hielt den HTTP-Knoten deshalb für eine Wurzel mit lauter erlaubten Subnodes und ließ ihn live laufen (Execution 131). Quelle: review/p8.py, p8b.py.
+- **M-MCP-57 [gemessen, Review 3]** `get_workflow_details` mit `detailLevel: 'execution'` liefert Metadaten, `versionId`, `nodeCount`, `settings`, `tags` und `triggerInfo`, aber **keine** `nodes` und `connections`. Die liefert nur `'full'`, n8ns eigener Vorgabewert. Quelle: Review 3, Probe auf zz-probe-rv-ops.
+- **M-MCP-58 [gemessen, Review 3]** Ein IF, dessen Item in den false-Zweig geht, steht in runData als `main: [[], [{json: …}]]`: Ausgang 0 leer, Ausgang 1 mit dem Item (Execution 129). Quelle: review/p6.py.
+- **M-MCP-59 [gemessen, Review 3]** `search_nodes(['mcp client'])` liefert `@n8n/n8n-nodes-langchain.mcpClient` (v1.1, „Standalone MCP Client“), `mcpClientTool` (v1.4, „Connect tools from an MCP Server“) und `mcpRegistryClientTool` („(internal)“). Die ersten beiden rufen eine beliebige MCP-Endpunkt-URL auf; M-MCP-42 kannte nur den dritten. Quelle: Review 3.
+- **M-MCP-60 [gemessen, Hauptsession]** `mcpTrigger` v2: `authentication?: 'none' | 'n8nOAuth2' | 'bearerAuth' | 'headerAuth'`, Vorgabe `none` mit dem builderHint „Only select an authentication method when the user explicitly asks“; Credentials `httpBearerAuth` oder `httpHeaderAuth`. Ohne Auth ist ein veröffentlichter MCP-Trigger für jeden offen, der n8n erreicht. Quelle: fix/mcptrigger.py.
+- **M-MCP-61 [gemessen, Hauptsession]** `get_workflow_execution` auf eine **fehlgeschlagene** Execution (Code wirft, Execution 147 `error`) antwortet ohne `isError` und ohne `error` auf oberster Ebene: `{execution: {…, status: 'error'}}`, mit `includeData` zusätzlich `data.resultData.error`. Das Lesen eines Fehlschlags ist damit kein Tool-Fehler. Quelle: fix/failed_exec.py.
+- **M-MCP-62 [gemessen, lokal: Python gegen Node]** `http://evil.test\@allowed.example.org/x`: Pythons `urlparse(...).hostname` ist `allowed.example.org`, Nodes `new URL()` und `url.parse()` lesen `evil.test`. Die httpRequest-Definition hat dazu `options.proxy` und `options.pagination.pagination.nextURL` (v3–v4.5). Dass n8n die URL so an axios weitergibt, ist geschlossen, nicht live gemessen; die Live-Prüfung lehnt solche URLs deshalb ab. Quelle: Fix-Review, fixreview/u.py, u.js, work/nodes.json. Nachgeprüft im zweiten Fix-Review mit einem Fuzz über 306.880 URL-Formen gegen `new URL` und `url.parse`: Mit Backslash und Steuerzeichen überall, Nicht-ASCII, Leerzeichen, `@` und `%` nur im Host abgelehnt, liefert die Prüfung nie einen erlaubten Host, wo Node einen anderen erreicht. Quelle: fixreview2/fuzz2.py, fuzz2.js.
+- **M-MCP-63 [aus dem Knoten-Dump]** Unter den 990 Knotentypen trägt nur `n8n-nodes-base.emailReadImap` die Gruppe `trigger`, ohne auf `Trigger` zu enden (neben webhook, cron, interval). Ohne `triggerNodeName` startet n8n den ersten aktivierten Trigger in Knotenreihenfolge (`findEnabledEligibleTrigger`). Quelle: work/nodes.json, n8n-Quelle `mcp.utils.js`, Fix-Review 2.
 
 ## Einbetten, CORS und Beobachtung
 - **F-EMB1 [gemessen/dokumentiert]** Einbetten und Transport:
@@ -590,13 +623,13 @@ Knotenwissen kommt jetzt aus `search_nodes` und `get_node_types` des Instanz-MCP
 - „Verhalten der Instanz-MCP-Tools“: [M-MCP-H1]–[M-MCP-44].
 - „Ist die Code-Sandbox netzlos?“: nein [M-MCP-38].
 - M12 „Sieht der Lese-Key die Tags?“: ja [F-AUTH8].
+- M7 „Wirkt pinData auf AI-Subnodes?“: Der gepinnte Wurzelknoten ruft sie nicht auf [M-MCP-47]; ein gepinnter Subnode ersetzt nichts [M-MCP-48].
+- M9 „Was liefert `test_workflow` nach dem Timeout?“: `status: error` mit Timeout-Meldung, Execution `canceled` [M-MCP-49].
+- M8 „Wann läuft eine MCP-Session ab?“: entfällt, 2.39.9 vergibt keine Session [M-MCP-54].
 
 **Offen:**
 - **M4:** Wie verhält sich der MCP-Key eines Member-Users [M-MCP-29]? Das braucht einen zweiten Nutzer auf der Instanz und damit das OK des Betreibers.
 - **M5:** Wie verhält sich `test_workflow` mit Schedule- oder Polling-Trigger (gepinnt)?
-- **M7:** Wirkt pinData auf AI-Subnodes (`ai_*`-Verbindungen)? Ruft ein gepinnter Agent-Wurzelknoten seine Subnodes noch auf?
-- **M8:** Wann läuft eine MCP-Session im Leerlauf ab, und wie antwortet der Server auf eine abgelaufene Session-ID?
-- **M9:** Was liefert `test_workflow`, wenn `timeout` überschritten wird: Status und Zustand der Execution?
 - **M10:** Wie reagiert unser `mcp_client` auf einen nicht erreichbaren Remote-Server beim Start?
 - **M11:** Lehnt `publish_workflow` ab, was der Publish der Public API ablehnt (fehlender Pflichtparameter, 409-Pfadkollision), und in welcher Form?
 - **M13:** Liefert `prepare_workflow_pin_data` nach einer ersten Execution Schemas [M-MCP-2]?

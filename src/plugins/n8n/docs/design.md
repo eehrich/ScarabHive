@@ -1,6 +1,6 @@
 # Design: n8n-Plugin `src/plugins/n8n/`
 
-Stand: 21.09.2026, Umbau auf den Instanz-MCP, Review-Runde 2 eingearbeitet. Gemessen an der Test-Instanz n8n 2.39.9 (Community, Docker, SQLite). Das Plugin ist für jede ScarabHive-Installation gedacht; Beispiel-URLs verwenden `http://localhost:5678`.
+Stand: 21.09.2026, Phase 1a gebaut (Tools §3.1–§3.3, Agent, Skills, Tests); Abweichungen vom Entwurf stehen an Ort und Stelle. Gemessen an der Test-Instanz n8n 2.39.9 (Community, Docker, SQLite). Das Plugin ist für jede ScarabHive-Installation gedacht; Beispiel-URLs verwenden `http://localhost:5678`.
 
 **Wie dieses Dokument zu lesen ist**
 - Die Fakten stehen in `docs/n8n_facts.md`. Das Design verweist nur per ID darauf, z. B. **[M-MCP-3]**. Wer baut, prüft den Fakt dort und nicht die Kurzfassung hier.
@@ -74,16 +74,18 @@ src/plugins/n8n/
   plugin.toml            requires agent_system; dependencies = []            [F-OUR6]
   plugin.py              PLUGIN_FACTORY -> N8nServer
   server.py              N8nServer(SchemaBasedToolServer): Tool-Handler, _require_managed(), Deckel, Status, stop_plugin()
-  client.py              N8nClient: EIN httpx.AsyncClient; mcp_call() (Session, SSE, 429, Fehlernormalisierung pro Tool)
+  client.py              N8nClient: EIN httpx.AsyncClient; mcp_call() (Handshake, SSE, 429, Fehlernormalisierung pro Tool)
                          + api_get() (Public API, nur GET)
   validate.py            Policy + Lückenprüfungen + Pin-Plan (§3.3, §5.3), reine Funktionen auf Workflow-JSON
   watch.py               Execution-Poller -> PluginCache -> wake_session   (Muster terminal)
   schema.yaml            {% if not configured %} [] {% else %} …   (Muster tavily_search)  [F-OUR8]
-  agents/n8n.yaml        Tool-Instanz n8n (enabled: false) + n8n_agent
+  agents/n8n.yaml        Tool-Instanz n8n (enabled: true, ohne Keys keine Tools) + n8n_agent
   agents/prompts/n8n_agent.md
-  skills/n8n-building/SKILL.md   Rezepte on_demand (Webhook+Respond, Wait/resumeUrl, Error-Workflow,
-                                 Sub-Workflow, AI Agent mit Subnodes, MCP-Trigger als Tool)
-  README.md              Model Experience, MCP-Trigger-Rezept (§6.1), Deploy-Verweis
+  skills/n8n-building/SKILL.md   Code-Form, Versionen, Credentials, Befund-Codes   (on_demand)
+  skills/n8n-testing/SKILL.md    Pinning, Testdaten, Antwort lesen                 (on_demand)
+  skills/n8n-recipes/SKILL.md    Webhook+Respond, Schedule, Sub-Workflow, AI Agent,
+                                 Error-Workflow, MCP-Trigger als Tool               (on_demand)
+  README.md              Model Experience, Deploy-Verweis (das MCP-Trigger-Rezept §6.1 steht im Skill n8n-recipes)
   docs/deploy/           docker-compose.yml, .env.example, setup_owner.sh, .gitignore, README.md   [F-DEP5][F-DEP6]
   tests/test_plugin_n8n_*.py
 ```
@@ -96,7 +98,7 @@ src/plugins/n8n/
 | `server.py` | Tool-Oberfläche, `_require_managed()`, Deckel, Hülle, Status-Zeilen; dieselben Methoden für Tools und Panel | – |
 
 **Aufgaben von `client.py`:**
-- **Eine** MCP-Session pro Prozess, lazy und unter einem Lock wiederverwendet. Eine frische Session pro Aufruf kostet dreifach [M-MCP-24].
+- **Ein** MCP-Handshake pro Prozess, lazy und unter einem Lock. Ein Handshake pro Aufruf kostet dreifach [M-MCP-24]. 2.39.9 vergibt keine Session-ID [M-MCP-54]; „initialisiert“ ist deshalb ein eigenes Flag, und eine Session-ID wird nur mitgeschickt, wenn der Server eine vergeben hat. Ein 429 wird auch beim Handshake nach §9 behandelt.
 - Antworten als JSON oder SSE parsen [M-MCP-H3].
 - 429 mit `retry-after` behandeln (§9).
 - MCP-Fehler **pro Tool** normalisieren (§3): Ein Fehler hat nicht immer `isError` [M-MCP-6][M-MCP-31], und nicht jedes `status:error` oder `# Errors` ist ein Tool-Fehler [M-MCP-6][M-MCP-44].
@@ -120,7 +122,7 @@ src/plugins/n8n/
 - Erfolg ist `{"status":"success",…}`, Fehler `{"status":"error","error":"<was tun>"}`, niemals `failed`.
 - Pro Aufruf gibt es genau eine Status-Zeile `end` oder `error` mit höchstens 140 Zeichen.
 - Jedes Tool deckelt seine Ausgabe selbst; gekürzt wird mit `truncated: true`.
-- Alles, was aus n8n-Inhalten stammt, steht in `data` mit `untrusted: true` (§8.5). Gemeint sind Execution-Daten, Workflow- und Knotennamen, Notizen und n8n-Meldungstexte.
+- Alles, was aus n8n-Inhalten stammt, ist als `{"untrusted": true, "content": …}` markiert (§8.5). Gemeint sind Knotenbeschreibungen, Execution-Daten, Workflow- und Knotennamen, Notizen und n8n-Meldungstexte. Der Prompt benennt die Markierung, nicht einen Schlüssel.
 - **Jedes Tool, das eine `workflow_id` nimmt und handelt**, läuft durch **einen** Riegel `_require_managed(workflow_id)` in `server.py`. Der Riegel liest per Public API `GET /workflows/{id}` und kostet damit kein MCP-Budget [F-AUTH6][F-AUTH7]. Er verlangt:
   - den Tag `managed_tag`,
   - `isArchived: false`,
@@ -133,6 +135,7 @@ src/plugins/n8n/
   - **`publish_workflow`, `unpublish_workflow`:** `success: false` oder ein Feld `error` ist ein Fehler [M-MCP-6][M-MCP-7].
   - **`update_workflow`, `create_workflow_from_code`:** ein Feld `error` ohne `workflowId` ist ein Fehler (z. B. `Invalid operations …` ohne `isError` [M-MCP-31]).
   - **`get_node_types`:** wird nie aus dem Text heraus zum Fehler. `# Errors`-Abschnitte können irgendwo im Text stehen, auch hinter gültigen Definitionen [M-MCP-44]; `validate.py` und `n8n_get_node_types` werten sie pro Knoten aus (§3.1, §5.3).
+  - **`validate_workflow`, `validate_node_config`:** Enthält die Antwort `valid`, ist sie ein Urteil und kein Tool-Fehler, auch mit `isError: true` -- so antwortet n8n auf Code, den es nicht parsen kann [M-MCP-50].
   - **Übrige Tools:** `isError` oder ein Feld `error` auf oberster Ebene.
 
   Wer nur `isError` liest, meldet solche Fehler als Erfolg; wer `status:error` pauschal als Fehler liest, verliert das Testergebnis.
@@ -189,16 +192,18 @@ src/plugins/n8n/
    - `setNodeCredential` nur mit einer ID, die `list_credentials` kennt, und nur, wenn deren Typ zum Slot-Schlüssel passt. n8n speichert Geister-IDs ungeprüft [M-MCP-10][M-MCP-11].
    - `setWorkflowSettings`:
      - erlaubt für `errorWorkflow` (n8n prüft selbst streng [M-MCP-15]), `timezone`, `executionTimeout`, `callerPolicy`, `callerIds` und die übrigen Schlüssel aus [M-MCP-13],
-     - **abgelehnt**, sobald ein `save*`-Schlüssel darin steht. Mit `saveManualExecutions:false` bzw. `saveData*Execution:'none'` liefert `test_workflow` weiter eine `executionId` mit `success`, aber die Execution ist nicht gespeichert (404), und kein Nachweis ist mehr möglich [M-MCP-41].
+     - **abgelehnt** mit `saveManualExecutions: false`: `test_workflow` liefert dann weiter eine `executionId` mit `success`, aber die Execution ist nicht gespeichert (404), und kein Nachweis ist mehr möglich [M-MCP-41]. `saveData*Execution: 'none'` speichert einen Testlauf trotzdem [M-MCP-55] und ist erlaubt, ebenso `saveManualExecutions: true` als Reparatur.
      - `availableInMCP` ist darüber gar nicht setzbar [M-MCP-13].
-3. `update_workflow` weiterleiten. Die `validationWarnings` des Ergebnisses gehen in `findings` [M-MCP-13].
+3. `update_workflow` weiterleiten. Die `validationWarnings` des Ergebnisses gehen als `n8n_warnings` mit [M-MCP-13].
 4. Nachlesen und nachprüfen wie beim Anlegen, Schritt 5.
+
+**Scheitert die Prüfung nach dem Schreiben** (Anlegen: nach dem Taggen; Ändern: nach dem Weiterleiten), etwa am Rate-Limit, sagt der Fehler, dass geschrieben wurde, und trägt `workflow_id` und `editor_url`: „… was created and tagged, but the check afterwards failed …; do not repeat it“. Sonst legt das Modell denselben Workflow zweimal an oder wendet dieselben Operationen doppelt an. `test_workflow` prüft den gespeicherten Stand ohnehin neu.
 
 ### 3.3 Testen und Executions
 
 | Tool | Weg | Parameter | Rückgabe |
 |---|---|---|---|
-| `n8n_test_workflow` | MCP `test_workflow` + Public `GET /executions/{id}` | `workflow_id`, `trigger_node?`, `trigger_input?` (Items), `mocks?` `{node:[items]}`, `live_nodes?` (Default leer), `timeout_s` (≤300, Default 60) | `{execution_id, status, error?, nodes:[{name, run:"live\|pinned\|not_reached", status, items_out, sample≤1KB, pin_reason?}], warnings[], known_blind_spots[]}` |
+| `n8n_test_workflow` | MCP `test_workflow` + Public `GET /executions/{id}` | `workflow_id`, `trigger_node?`, `trigger_input?` (Items), `mocks?` `{node:[items]}`, `live_nodes?` (Default leer), `timeout_s` (≤300, Default 60) | `{tested, execution_id, execution_status, error?, nodes:[{name, run:"live\|pinned\|not_reached", reason, node_status, items_out, items_per_output?, sample≤1KB}], warnings[]}` |
 | `n8n_get_execution` | MCP `get_workflow_execution` | `workflow_id`, `execution_id`, `nodes?`, `include_data` (Default false) | über `nodeNames`/`truncateData` [M-MCP-4]; Deckel 12.000 Zeichen, in `data` |
 | `n8n_list_executions` | Public `GET /executions` | `workflow_id?`, `status?` (Enum [F-EXE2]), `limit≤20` | `[{id, status, mode, started_at, stopped_at}]` |
 
@@ -206,7 +211,7 @@ src/plugins/n8n/
 
 **Grundtatsachen:**
 - `test_workflow` führt den aktuellen **Entwurf** aus, auch wenn eine andere Version veröffentlicht ist [M-MCP-5].
-- Pins des Aufrufers wirken; gemessen auf Set, Code und HTTP Request [M-MCP-3][M-MCP-39]. Für executeWorkflow und AI-Knoten ist es ungemessen (§10.3, M7).
+- Pins des Aufrufers wirken; gemessen auf Set, Code und HTTP Request [M-MCP-3][M-MCP-39]. Ein gepinnter AI-Agent-Knoten ruft seine Subnodes nicht auf [M-MCP-47]; ein gepinnter Subnode ersetzt dagegen nichts [M-MCP-48]. Ein gepinnter executeWorkflow-Knoten startet den Sub-Workflow nicht [M-MCP-53].
 - **Der Server pinnt nichts von sich aus:** Ein ungepinnter HTTP-Request-Knoten lief live, entgegen der Tool-Beschreibung [M-MCP-30][M-MCP-H6]. Die Pinning-Policy des Plugins ist also die **einzige** Linie, die einen Test davon abhält, nach außen zu wirken.
 - Es gibt keinen pinData-PUT, keine Versionsänderung und kein Zurücksetzen.
 
@@ -214,7 +219,7 @@ src/plugins/n8n/
 1. `_require_managed()`.
 2. **Vorbedingungen am gespeicherten Workflow** (aus demselben Public GET):
    - Knotentyp-Policy und Lückenprüfungen (§5.3); bei `errors` gibt es **keinen** Testlauf.
-   - `settings.saveManualExecutions === false` oder `settings.saveDataSuccessExecution`/`saveDataErrorExecution === 'none'` → kein Testlauf, Fehler „Einstellung verhindert Nachweis: <Schlüssel>“ [M-MCP-41]. Das Plugin setzt die Einstellung nicht zurück; das tut der Mensch im Editor.
+   - `settings.saveManualExecutions === false` → kein Testlauf, Fehler „a setting prevents a stored execution: saveManualExecutions“ [M-MCP-41][M-MCP-55]. Der Builder darf sie per `setWorkflowSettings` auf `true` setzen.
 3. **Pin-Plan (`validate.py`, Whitelist statt Blacklist):**
    - **Typ-Normalisierung:** Vor jedem Vergleich mit einer Typliste (Sperr-, Prüf-, `LOCAL_NODE_TYPES`, `HTTP_LIKE_TYPES`, `CODE_TYPES`, `live_node_types`) wird ein angehängtes `Tool` abgeschnitten: `n8n-nodes-base.gitTool` → `n8n-nodes-base.git`. Viele Knoten gibt es als Agent-Tool-Variante [M-MCP-42]. Die langchain-Typen mit Präfix `tool…` (`toolCode`, `toolWorkflow`, `toolHttpRequest`) stehen ausdrücklich in den Listen.
    - **Trigger immer gepinnt:** mit `trigger_input`, sonst `[{"json":{}}]` plus Warnung. Das gilt auch für Webhook-Trigger; die sind gepinnt testbar [M-MCP-34].
@@ -228,27 +233,30 @@ src/plugins/n8n/
 
      Der Pin-Wert ist `mocks[node]`, sonst `[{"json":{}}]` plus Warnung. Items stehen immer in `{"json":…}` [M-MCP-H6]. Damit sind auch Knoten mit Außenwirkung ohne Credential erfasst [F-NOD13].
    - **Live-Prüfung für `live_nodes`** (Whitelist; §8.4). Ein Knoten läuft nur live, wenn **eine** dieser Regeln greift:
-     - **HTTP-artig:** Typ in `HTTP_LIKE_TYPES` (im Code: `n8n-nodes-base.httpRequest`, `graphql`, `rssFeedRead`, über die Normalisierung auch deren `*Tool`-Varianten) **und** statische URL **und** Host in `allowed_hosts`.
-     - **Sub-Workflow:** executeWorkflow oder toolWorkflow mit `source: database`, statischer `workflowId` **und** managed Ziel-Workflow (Public GET mit denselben Bedingungen wie `_require_managed`). Andere Quellen sind schon durch §5.3 (`EXECUTE_WORKFLOW_SOURCE`) ausgeschlossen [M-MCP-40].
+     - **HTTP-artig:** Typ in `HTTP_LIKE_TYPES` (im Code: `n8n-nodes-base.httpRequest`, `graphql`, `rssFeedRead`, über die Normalisierung auch deren `*Tool`-Varianten) **und** statische, schlichte `http(s)`-URL **und** Host in `allowed_hosts` **und** weder `options.proxy` noch `options.pagination` noch `options.sendCredentialsOnCrossOriginRedirect` **und**, trägt der Knoten ein Credential, zusätzlich sein Typ in `live_node_types` (das Credential reist mit der Anfrage; §8.3). `allowed_hosts` vergleicht Hostnamen: klein geschrieben, ohne Schlusspunkt und IPv6-Klammern, jeder Port. Schlicht heißt: nirgends ein Backslash oder Steuerzeichen, im Host-Teil nur ASCII, kein Leerzeichen, keine Nutzerangabe und kein `%`; Pfad und Query dürfen Umlaute und Leerzeichen tragen. Bei `http://evil\@allowed/` liest Pythons `urlparse` `allowed`, der WHATWG-Parser in Node `evil` [M-MCP-62]; Proxy und Pagination führen zu anderen Hosts. Eine Umleitung durch den erlaubten Host folgt n8n; dem Host wird damit vertraut.
      - **Vom Betreiber freigegeben:** Typ in `live_node_types` (Config, Default leer, §4). Beispiele: ein Slack- oder Postgres-Knoten, ein `lmChat*`-Modell. Weitere Bedingungen prüft das Plugin dafür nicht; die Entscheidung liegt beim Betreiber, nicht beim Builder.
      - **Nie live:** Typen in `CODE_TYPES` (`n8n-nodes-base.code`, `@n8n/n8n-nodes-langchain.toolCode`), auch nicht über `live_node_types`. Code hat über `this.helpers.httpRequest` Netzzugang und umgeht damit `allowed_hosts` [M-MCP-38]. Eine Suche nach `helpers.httpRequest` im `jsCode` wäre nur ein Hinweis, kein Schutz. **Folge:** Code-Logik ist im Testlauf nie live bewiesen; die Übergabe sagt das (§5.6), und der Builder liefert realistische `mocks` für den Code-Knoten.
-     - Greift keine Regel, bleibt der Knoten gepinnt, und `pin_reason` sagt, warum.
-   - **AI Agent und andere Knoten mit Subnodes:** Der Wurzelknoten wird gepinnt, außer **jeder** über `ai_*` verbundene Subnode (Modell, Tools, Memory, Vector Store …) ist lokal oder steht in `live_nodes` und besteht die Live-Prüfung. Ein `httpRequestTool` mit `$fromAI`-URL ist nicht statisch und hält den Agent damit gepinnt. Ob pinData auf Subnodes wirkt, ist M7; deshalb wird nie ein einzelner Subnode gepinnt, sondern nur die Wurzel.
+     - **Nie live:** Sub-Workflows (executeWorkflow, toolWorkflow), auch nicht über `live_node_types`. Die Knoten des Sub-Workflows laufen außerhalb des Pin-Plans des Aufrufers; ein HTTP-Knoten darin erreichte live jeden Host [M-MCP-53]. Die frühere Regel „managed Ziel darf live“ prüfte nur den Aufrufer und ist gestrichen. Gepinnt startet der Aufrufknoten den Sub-Workflow gar nicht [M-MCP-53]; der Sub-Workflow wird für sich getestet.
+     - Greift keine Regel, bleibt der Knoten gepinnt, und `reason` sagt, warum.
+   - **AI Agent und andere Knoten mit Subnodes:** Der Wurzelknoten wird gepinnt, außer er selbst **und jeder** Knoten darunter (Modell, Tools, Memory, Vector Store …, rekursiv auch die Tools eines Tools) ist lokal oder steht in `live_nodes` und besteht die Live-Prüfung. Die Wurzel zählt selbst mit: Eine verirrte `ai_*`-Kante von einem deaktivierten Tool machte sonst einen HTTP-Knoten zur „Wurzel“ und ließ ihn live laufen [M-MCP-56], und ein Vector Store im Insert-Modus wirkt selbst nach außen. Ein Subnode, der zugleich im Hauptpfad hängt, wird dort wie jeder Knoten geplant. Ein `httpRequestTool` mit `$fromAI`-URL ist nicht statisch und hält den Agent damit gepinnt. Deshalb wird nie ein einzelner Subnode gepinnt, sondern nur die Wurzel: Ein gepinnter Subnode läuft trotzdem [M-MCP-48], eine gepinnte Wurzel ruft ihn nicht auf [M-MCP-47].
 4. `test_workflow(workflowId, pinData, triggerNodeName?, timeout)`. Der HTTP-Timeout des Clients liegt über `timeout_s`. Die Antwort ist nur `{executionId, status, error?}` [M-MCP-4].
 5. **Ergebnis zusammensetzen.** Das Plugin holt Public `GET /executions/{id}?includeData=true`; das kostet kein MCP-Budget [M-MCP-4][F-AUTH5]. Pro Knoten entsteht dann:
    - `pinned`, wenn wir ihn gepinnt haben,
    - `live`, wenn er runData hat und nicht gepinnt war,
    - `not_reached`, wenn er keine runData hat.
 
+   Ein Subnode zählt als `live`, wenn er in seiner Wurzel lief (er hat dann runData), sonst als `not_reached`; ein Mock auf einem Subnode wird mit Warnung ignoriert. Die Tools eines MCP-Triggers laufen im Test deshalb nie. `triggerNodeName` geht immer mit, gesetzt auf den Trigger, dem der Plan `trigger_input` gegeben hat; ein Trigger bleibt gepinnt, auch wenn er zugleich an einer `ai_*`-Kante hängt.
+
+   `items_out` zählt die Items über **alle** Ausgänge; bei mehreren Ausgängen (IF, Switch, Fehlerausgang) steht zusätzlich `items_per_output` da. Ein IF-Item im false-Zweig liegt in Ausgang 1 [M-MCP-58]. `sample` ist das erste Item des ersten nicht leeren Ausgangs; bei Respond to Webhook ist das dessen Eingang, nicht der Antwortkörper.
+
    Die Fehlermeldung von n8n nennt keinen Knoten [M-MCP-6]; der Fehlerknoten kommt aus `runData[*].executionStatus` bzw. `lastNodeExecuted` [F-EXE1]. Liefert der GET 404, obwohl Schritt 2 bestanden war, meldet das Tool „Execution nicht gespeichert“ und nie `GETESTET` [M-MCP-41].
-6. `known_blind_spots` nennt Befunde, die auch ein grüner Test nicht ausschließt. Heute ist das `RESPOND_NODE_MISSING` [M-MCP-34], falls die Lückenprüfung als Warnung durchgelassen wurde. Normalfall ist: Sie blockiert (§5.3).
+6. Ein Feld für blinde Flecken des Tests gibt es nicht: Der einzige bekannte Fall, `RESPOND_NODE_MISSING` [M-MCP-34], blockiert den Test schon vorher (§5.3).
 
 **Fehlerfälle von `n8n_test_workflow`:**
-- `status:error` mit `executionId` → `status: success` des Tools, `execution.status: "error"`, dazu Meldung und Fehlerknoten. Ein fehlgeschlagener Test ist ein **Ergebnis**, kein Tool-Fehler; der Agent repariert (§3, Normalisierung).
+- `status:error` mit `executionId` → `status: success` des Tools, `execution_status: "error"`, dazu Meldung und Fehlerknoten. Ein fehlgeschlagener Test ist ein **Ergebnis**, kein Tool-Fehler; der Agent repariert (§3, Normalisierung).
 - Nicht freigegeben oder nicht managed → Tool-Fehler (§3, Riegel).
-- Timeout: Laut Beschreibung unterbricht n8n die Execution [M-MCP-H6]. Was dann zurückkommt, ist M9. Bis dahin meldet das Tool `status` wörtlich und nie „fertig“.
+- Timeout: n8n bricht die Execution ab und antwortet mit `status: error` und „timed out after N seconds“; die Execution steht dann auf `canceled` [M-MCP-49]. Das Tool meldet `tested: false`.
 - 429 → §9.
-- Weicht die Instanz-Version von `tested_n8n_version` ab, hängt das Tool einen Hinweis an (§4).
 
 ### 3.4 Veröffentlichen und Auslösen (nicht für den Builder)
 
@@ -307,35 +315,20 @@ plugins:
   servers:
     n8n:
       type: n8n
-      enabled: false                 # Framework-Default; der Betreiber schaltet es scharf [F-OUR7]
-      base_url: ${N8N_BASE_URL}
-      api_key: ${N8N_API_KEY}
-      mcp_key: ${N8N_MCP_KEY}
+      enabled: true                  # ohne Keys keine Tools (tavily-Muster) [F-OUR8]
       managed_tag: scarabhive
-      allow_publish: false
       allowed_hosts: []              # Live-Ziele für HTTP-artige Knoten im Test (§3.3, §8.4)
       live_node_types: []            # Typen, die im Test live laufen dürfen, wenn der Builder sie nennt (§3.3)
-      blocked_node_types: [n8n-nodes-base.executeCommand, n8n-nodes-base.ssh,
-                           n8n-nodes-base.localFileTrigger, n8n-nodes-base.readWriteFile,
-                           n8n-nodes-base.readBinaryFile, n8n-nodes-base.readBinaryFiles,
-                           n8n-nodes-base.writeBinaryFile, n8n-nodes-base.function,
-                           n8n-nodes-base.functionItem, n8n-nodes-base.git, n8n-nodes-base.n8n,
-                           "@n8n/n8n-nodes-langchain.code", "@n8n/n8n-nodes-langchain.toolHttpRequest"]
-      review_node_types: [n8n-nodes-base.code, "@n8n/n8n-nodes-langchain.toolCode",
-                          n8n-nodes-base.httpRequest, n8n-nodes-base.graphql, n8n-nodes-base.rssFeedRead,
-                          n8n-nodes-base.ftp, n8n-nodes-base.executeWorkflow,
-                          "@n8n/n8n-nodes-langchain.toolWorkflow",
-                          "@n8n/n8n-nodes-langchain.mcpRegistryClientTool"]
-      watch_max_hours: 24
       tested_n8n_version: "2.39.9"
 ```
 
 (Der `n8n_agent`-Eintrag steht in derselben Datei unter `servers:`, siehe §5.1.)
 
 - **Alle Typlisten werden normalisiert verglichen** (§3.3): `n8n-nodes-base.git` sperrt damit auch `n8n-nodes-base.gitTool`, `httpRequest` erfasst `httpRequestTool` [M-MCP-42].
-- **Defaults stehen im Code.** Das Framework validiert keine Plugin-Config [F-OUR7].
+- **Die drei Werte kommen aus der Umgebung,** die `config/secrets.env` beim Laden füllt [F-OUR4]. Ein `${VAR}` in der YAML würde bei jedem Start jeder Installation ohne n8n eine WARNING schreiben; deshalb liest das Plugin `N8N_BASE_URL`, `N8N_API_KEY` und `N8N_MCP_KEY` selbst (ein Wert in der YAML gewinnt). `enabled: true` ist damit gefahrlos: ohne Werte keine Tools, nur eine INFO-Zeile.
+- **Defaults stehen im Code** (`validate.py`: `blocked_node_types`, `review_node_types`). Eine konfigurierte Liste **ersetzt** den Default, sie ergänzt ihn nicht: Nur so kann der Betreiber einen Typ auch freigeben. Wer ergänzen will, kopiert den Default. Das Framework validiert keine Plugin-Config [F-OUR7]. `allow_publish` und `watch_max_hours` kommen mit Phase 1b.
 - **Ohne `mcp_key` gibt es keine Tools**; das ist das tavily-Muster [F-OUR8]. Ohne `api_key` fallen der Riegel und damit alle handelnden Tools weg. Das Plugin stellt dann nur §3.1 bereit und schreibt eine WARNING, die die fehlende Variable nennt.
-- **Versionsprüfung:** Beim ersten MCP-`initialize` liest das Plugin die Instanz-Version. Weicht sie von `tested_n8n_version` ab, schreibt es eine WARNING. [angenommen: Die Version steht in `serverInfo` nicht (dort nur `1.1.0` [M-MCP-H3]). Fallback ist `GET /healthz` bzw. der `X-N8N-Version`-Header; das ist beim Bau zu messen. Ohne Quelle entfällt der Hinweis mit einer WARNING „Version unbekannt“.]
+- **Keine Versionsprüfung zur Laufzeit:** Ohne `/rest` gibt n8n seine Version nirgends preis [M-MCP-51]. `tested_n8n_version` ist ein Vermerk für Upgrades; geprüft wird nach einem Upgrade mit den Live-Tests (§10.3, docs/deploy/README.md).
 - **Transport:** Beginnt `base_url` mit `http://` und ist der Host nicht localhost, schreibt das Plugin beim Start eine WARNING (§8.1).
 - **Keine `.env` im Plugin-Code.** Die Deploy-Dateien `.env` und `CREDENTIALS` sind in `docs/deploy/` git-ignored [F-DEP5]; zur Laufzeit liest das Plugin sie nie.
 
@@ -348,8 +341,8 @@ plugins:
 - `system_template: "./prompts/n8n_agent.md"`.
 - `tools.allowed` als **explizite Liste** mit `+` [F-OUR10][F-OUR20]: `+n8n/n8n_search_nodes`, `+n8n/n8n_get_node_types`, `+n8n/n8n_explore_node_resources`, `+n8n/n8n_get_best_practices`, `+n8n/n8n_get_sdk_reference`, `+n8n/n8n_list_credentials`, `+n8n/n8n_validate_node_config`, `+n8n/n8n_validate_workflow`, `+n8n/n8n_create_workflow`, `+n8n/n8n_update_workflow`, `+n8n/n8n_get_workflow`, `+n8n/n8n_list_workflows`, `+n8n/n8n_test_workflow`, `+n8n/n8n_get_execution`, `+n8n/n8n_list_executions`.
 - **Nicht dabei:** publish, unpublish, archive und trigger. Damit bleibt §8.5 wahr, auch wenn jemand `allow_publish` einschaltet.
-- Skill `n8n-building` on_demand.
-- **Modell:** Standardprofil **mit** Denken. Die Stufe entscheidet die Builder-Messung (§10.4, E5). Die Profile in `config/llm*.yaml` gehören dem Betreiber.
+- Skills `n8n-building`, `n8n-testing`, `n8n-recipes` on_demand. Der Prompt bleibt kurz (Rolle, Schleife, Regeln, Übergabe); das Wissen lädt der Agent, wenn er es braucht.
+- **Modell:** gebaut mit der Kette `[or-claude-sonnet, or-gemini-pro, or-gpt-full]`: Workflows sind SDK-Code (TypeScript-artig), also führen Code-Modelle, und die Kette fällt auf eine andere Route über. Ob das reicht, entscheidet die Builder-Messung (§10.4, E5). Die Profile in `config/llm*.yaml` gehören dem Betreiber.
 
 ### 5.2 Schleife
 ```
@@ -417,11 +410,11 @@ Damit ist die Zuordnung in §3.4 exakt. Einen Befund für GET gibt es nicht, den
 ```
 workflow_id, name, editor_url (neuer Tab)
 Status: GETESTET (Execution <id>) | NICHT GETESTET (Grund)
-Live bewiesen: […]   Gepinnt: […] (mit pin_reason)   Nicht erreicht: […]
+Live bewiesen: […]   Gepinnt: […] (mit reason)   Nicht erreicht: […]
 Nicht live bewiesen, weil Code: […]  (Code läuft im Test nie live, §3.3)
 Automatisch zugeordnete Credentials: […]  (von n8n gesetzt [M-MCP-1])
 todo_for_user: Credentials anlegen (Typ, Knoten), dynamische Parameter, Veröffentlichen (Panel)
-Prüf-Hinweise: REVIEW_NODE mit Begründung; known_blind_spots
+Prüf-Hinweise: REVIEW_NODE mit Begründung
 mcp_servers.yaml-Schnipsel, falls als MCP-Tool gebaut (§6.1)
 ```
 
@@ -523,7 +516,7 @@ mcp_servers.yaml-Schnipsel, falls als MCP-Tool gebaut (§6.1)
   - die Instanzverwaltung (`n8n-nodes-base.n8n`).
 
   Die versteckten Typen stehen **ausdrücklich** in der Liste, weil sie im JSON benutzbar sind [F-NOD11] und `catalog.py` mit seinem `hidden`-Flag entfällt. Agent-Tool-Varianten (`gitTool` …) fängt die Typ-Normalisierung [M-MCP-42].
-  `# ponytail: explicit list; hidden types added by a later n8n are not caught — tested_n8n_version warning prompts a re-check.`
+  `# ponytail: explicit list; hidden types added by a later n8n are not caught — the upgrade checklist (docs/deploy/README.md) re-checks it.`
   executeCommand und localFileTrigger schließt `excludeNodes` auf der Test-Instanz ohnehin aus [F-INST4][F-NOD10]. Der Riegel bleibt trotzdem, weil andere Instanzen andere Einstellungen haben.
 - **Inline-Sub-Workflows** sind gesperrt (`EXECUTE_WORKFLOW_SOURCE`, §5.3): Mit `source: parameter` läuft ein Workflow-JSON, dessen Knoten keine Typprüfung sieht [M-MCP-40]; `localFile` liest vom Dateisystem.
 - **Wo gesperrt wird:**
@@ -535,7 +528,7 @@ mcp_servers.yaml-Schnipsel, falls als MCP-Tool gebaut (§6.1)
   - Code und toolCode: Der builderHint behauptet eine Sandbox ohne Netz [F-NOD4]; gemessen hat Code über `this.helpers.httpRequest` Netzzugang [M-MCP-38]. Deshalb laufen sie im Test nie live (§3.3).
   - HTTP Request, GraphQL, RSS und FTP.
   - executeWorkflow und toolWorkflow: Sie starten andere Workflows, auch fremde [F-NOD13].
-  - `mcpRegistryClientTool`: ruft fremde MCP-Server [M-MCP-42].
+  - `mcpClient`, `mcpClientTool` und `mcpRegistryClientTool`: rufen fremde MCP-Server [M-MCP-42][M-MCP-59].
 - **Grenze:** Die Listen verhindern nur, dass *unser Agent* solche Knoten baut oder testet. Im Editor kann ein Mensch weiterhin alles bauen.
 
 ### 8.3 Credentials
@@ -548,15 +541,15 @@ mcp_servers.yaml-Schnipsel, falls als MCP-Tool gebaut (§6.1)
 ### 8.4 SSRF und Außenwirkung im Test
 - **Befund:** n8n erreicht andere Hosts in seinem Netz [F-BR1], auch aus Code-Knoten heraus [M-MCP-38].
 - **Im Testlauf** ist Pinnen der Normalfall (§3.3). Der Server pinnt nichts selbst [M-MCP-30], also ist das Plugin die Linie. Live läuft nur, was die Live-Prüfung aus §3.3 besteht:
-  - HTTP-artige Knoten: in `live_nodes`, statische URL, Host in `allowed_hosts`;
-  - Sub-Workflows: aus der Datenbank, managed;
+  - HTTP-artige Knoten: in `live_nodes`, statische schlichte URL, Host in `allowed_hosts`, kein Proxy, keine Pagination;
+  - Sub-Workflows: nie [M-MCP-53];
   - andere Knoten mit Außenwirkung: nur, wenn der **Betreiber** ihren Typ in `live_node_types` freigegeben hat;
   - Code: nie.
 - **Veröffentlicht** kann das Plugin nichts mehr kontrollieren. Deshalb ist `allow_publish` per Default aus (E4), und der Builder hat kein Publish-Tool (§5.1).
 - **Das Plugin selbst** ruft nur `base_url` auf.
 
 ### 8.5 Prompt-Injection
-- Execution-Daten, Webhook-Antworten, Workflow-Namen, Knotennotizen und n8n-Meldungstexte stehen nur in `data`, gekürzt und mit `untrusted: true`. Die Texte der SDK-Referenz und der Best Practices kommen aus n8n selbst und nicht aus Nutzerdaten [angenommen]; sie laufen ohne Hülle, aber gedeckelt.
+- Knotenbeschreibungen (`search_nodes`, `get_node_types`; bei Community-Knoten schreibt sie deren Autor), Execution-Daten, Webhook-Antworten, Workflow-Namen, Knotennotizen und n8n-Meldungstexte kommen gekürzt und als `{"untrusted": true, "content": …}`. Der Prompt nennt diese Markierung und jeden Namen oder Wert aus einem Workflow Daten, nie Anweisung. Die Texte der SDK-Referenz und der Best Practices kommen aus n8n selbst und nicht aus Nutzerdaten [angenommen]; sie laufen ohne Hülle, aber gedeckelt.
 - **Die Grenze ist strukturell.** Der Builder hat genau die 15 Tools aus §5.1:
   - Er kann nicht veröffentlichen, zurücknehmen, archivieren, auslösen, löschen oder ausführen.
   - Er kann keine Credentials anlegen.
@@ -582,7 +575,7 @@ Ein fremder Workflow ist nur dann in Reichweite, wenn ein Mensch ihn freigibt **
 | n8n nicht erreichbar (normaler Fall: Container aus, Host weg) | Fehler mit URL und dem Hinweis, `/healthz` zur Diagnose zu nutzen [F-INST2]; kein Retry-Sturm |
 | n8n nicht erreichbar während eines Watch | weiter mit Backoff; nach `watch_max_hours` einmal wecken mit `unknown` (§6.2) |
 | MCP 429 [M-MCP-24] | Bei `retry-after` ≤ 10 s einmal warten und wiederholen, sonst Fehler „n8n-MCP-Limit erreicht, in N s erneut“. Das Limit gilt pro IP, also für alle ScarabHive-Prozesse hinter derselben Adresse zusammen. |
-| MCP-Session abgelaufen (M8) | Ein neues `initialize`, danach einmal wiederholen. Scheitert auch das, kommt ein Fehler. |
+| MCP-Session abgelaufen | Nur bei einem Server, der eine Session-ID vergibt (2.39.9 tut es nicht [M-MCP-54]): Ein neues `initialize`, danach einmal wiederholen. Verworfen wird die Session nur, wenn sie noch dieselbe ist, die der gescheiterte Aufruf trug. Scheitert auch das, kommt ein Fehler. |
 | MCP 401/403 | Fehler, der `N8N_MCP_KEY` nennt. Der Key könnte rotiert sein [M-MCP-H2]. Kein Retry. |
 | MCP aus (404 „MCP access is disabled“ [F-MCP4]) | Fehler mit dem Hinweis auf die Deploy-Variablen [M-MCP-22] |
 | MCP-Fehler ohne `isError` [M-MCP-6][M-MCP-31] | per Normalisierung pro Tool (§3) als Fehler erkannt, nie als Erfolg |
@@ -595,12 +588,12 @@ Ein fremder Workflow ist nur dann in Reichweite, wenn ein Mensch ihn freigibt **
 | Public API 403 Scope | „Scope fehlt: <Operation>“ [F-AUTH3]. Bei den Minimal-Scopes ist das ein Programmierfehler, denn wir haben einen Schreibweg über die Public API gebaut. |
 | 500 mit HTML-Body | „n8n Serverfehler (kein JSON)“ [F-ERR3] |
 | Versionskonflikt bei Update | Abbruch über `expected_version_id` (§3.2) |
-| Testlauf-Timeout (M9) | `status` wörtlich, nie „fertig“ |
+| Testlauf-Timeout | `tested: false`, `execution_status: error`, Execution `canceled` [M-MCP-49] |
 | Archiviert | „erst wiederherstellen“ [F-LIFE2]; wiederherstellen tut der Mensch im Editor |
 | Poller-Prozess tot | `wake` bleibt aus; die Tool-Antwort hat das vorher angekündigt |
 | Execution 404 im Watch | „nicht (mehr) vorhanden: Pruning oder Speichereinstellung“ [F-EXE4][M-MCP-41] |
 | Parallele Webhook-Aufrufe | `execution_id: null` plus Kandidaten |
-| MCP-Antwortform geändert (n8n-Update) | Die Normalisierung scheitert laut, nicht still. Die Live-Tests (§10.3) und `tested_n8n_version` zeigen es an. |
+| MCP-Antwortform geändert (n8n-Update) | Die Normalisierung scheitert laut, nicht still. Die Live-Tests (§10.3) und die Upgrade-Checkliste in `docs/deploy/README.md` zeigen es an. |
 
 ---
 
@@ -609,9 +602,10 @@ Ein fremder Workflow ist nur dann in Reichweite, wenn ein Mensch ihn freigibt **
 ### 10.1 Unit, offline
 - **`client.py` über `httpx.MockTransport`:**
   - JSON- und SSE-Antworten,
-  - Wiederverwendung von `mcp-session-id` (ein `initialize` für n Aufrufe),
-  - 429 mit kurzem und mit langem `retry-after`,
-  - Neuaufbau einer abgelaufenen Session,
+  - ein `initialize` für n Aufrufe, mit und ohne Session-ID des Servers,
+  - 429 mit kurzem und mit langem `retry-after`, auch beim Handshake,
+  - Neuaufbau einer abgelaufenen Session, und kein Verwerfen einer schon ersetzten,
+  - eine Antwort, die kein JSON ist (Proxy- oder Login-Seite),
   - Fehlernormalisierung pro Tool für jede Form aus [M-MCP-6][M-MCP-31][M-MCP-32][M-MCP-44]:
     - `isError`, `success:false`, `error`-Feld ohne `workflowId` → Fehler;
     - `test_workflow {executionId, status:'error'}` → **kein** Fehler, sondern Ergebnis;
@@ -633,17 +627,17 @@ Ein fremder Workflow ist nur dann in Reichweite, wenn ein Mensch ihn freigibt **
 - **Pin-Plan:**
   - Der Trigger ist immer gepinnt.
   - Code und toolCode bleiben gepinnt, auch in `live_nodes` und auch in `live_node_types`.
-  - executeWorkflow ohne managed-Ziel bleibt trotz `live_nodes` gepinnt.
+  - executeWorkflow bleibt trotz `live_nodes` und `live_node_types` gepinnt.
   - HTTP mit Expression-URL oder mit Host außerhalb `allowed_hosts` bleibt trotz `live_nodes` gepinnt; `httpRequestTool` genauso.
   - Ein Slack-Knoten in `live_nodes` bleibt gepinnt, solange sein Typ nicht in `live_node_types` steht.
   - Sort mit `type:'code'` und Merge mit `combineBySql` werden gepinnt, Sort `simple` nicht.
-  - AI Agent: gepinnt, sobald ein `ai_*`-Subnode die Live-Prüfung nicht besteht.
+  - AI Agent: gepinnt, sobald die Wurzel selbst oder ein Knoten darunter (rekursiv) die Live-Prüfung nicht besteht; eine `ai_*`-Kante von einem deaktivierten Tool macht keinen Knoten live.
   - Items stehen in `{"json":…}`.
 - **Test-Zusammenfassung:** `pinned`, `live` und `not_reached` aus einer echten runData-Fixture (Execution 105/106); 404 auf die Execution → nie `GETESTET`.
 - **`server.py`:**
   - `_require_managed()` greift bei update, test, publish, unpublish, archive und trigger.
   - `removeTags(managed_tag)` und `addNode(blocked)` (auch als `*Tool`-Variante) werden abgelehnt.
-  - `setWorkflowSettings` mit einem `save*`-Schlüssel wird abgelehnt.
+  - `setWorkflowSettings` mit `saveManualExecutions: false` wird abgelehnt, `true` und `saveData*Execution` gehen durch.
   - Test auf einem Workflow mit `saveManualExecutions:false` wird verweigert.
   - `setNodeCredential` mit unbekannter ID wird abgelehnt.
   - unpublish ohne `allow_publish` wird verweigert.
@@ -674,9 +668,9 @@ Pflicht je Test. Mutiert wird nur im Speicher, danach muss `git diff` leer sein;
 - Die Normalisierung vereinheitlichen (`status:error` immer Fehler): Der Test „fehlgeschlagener Testlauf ist Ergebnis“ muss rot werden.
 - `# Errors` im `get_node_types`-Text nur am Anfang suchen: Der Test mit gemischter Antwort muss rot werden.
 - Die Typ-Normalisierung entfernen: Der `gitTool`-Test muss rot werden.
-- Die Session-Wiederverwendung entfernen: Der Zähl-Test (ein `initialize`) muss rot werden.
+- Den Handshake an die Session-ID statt an das eigene Flag binden: Der Zähl-Test ohne Session-ID muss rot werden.
 - `_require_managed()` in einem Tool entfernen.
-- Den `removeTags`-, `addNode`- oder `save*`-Filter entfernen.
+- Den `removeTags`-, `addNode`- oder `saveManualExecutions`-Filter entfernen.
 - Den Pin-Plan durch „nur Credential-Knoten“ ersetzen: Die Tests zu executeWorkflow und Code müssen rot werden.
 - `CODE_TYPES` aus der Nie-live-Regel nehmen: Der Code-in-`live_nodes`-Test muss rot werden.
 - `live_node_types` ignorieren (jeder `live_nodes`-Eintrag gilt): Der Slack-Test muss rot werden.
@@ -690,17 +684,16 @@ Pflicht je Test. Mutiert wird nur im Speicher, danach muss `git diff` leer sein;
 Rahmen: `N8N_LIVE=1`; Workflows heißen `zz-probe-*` und werden im `finally` per Public DELETE gelöscht. Danach wird geprüft, dass 0 übrig sind. Der Test-Key braucht dafür `workflow:delete`; das ist ein **eigener** Test-Key und nie der Laufzeit-Key.
 
 **Regression** (auch nach jedem n8n-Upgrade):
-- Pins des Aufrufers wirken auf Set, Code und HTTP Request [M-MCP-3][M-MCP-39], dazu neu auf einem executeWorkflow-Knoten.
+- Pins des Aufrufers wirken auf Set, Code und HTTP Request [M-MCP-3][M-MCP-39], und ein gepinnter executeWorkflow-Knoten startet den Sub-Workflow nicht [M-MCP-53].
 - Ein ungepinnter HTTP-Knoten läuft live [M-MCP-30]. Kippt das, prüfen wir die Pin-Policy neu, statt sie zu lockern.
 - Code hat Netz über `this.helpers.httpRequest` [M-MCP-38]. Kippt das, bleibt die Nie-live-Regel trotzdem, bis eine eigene Entscheidung fällt.
 - Der Test läuft auf dem Entwurf [M-MCP-5].
 - Jede Lücke aus §5.3 ist auf n8n-Seite noch offen. Fängt n8n einen Fall inzwischen selbst, wird unsere Prüfung gestrichen.
 
+**Gebaut sind davon** (Stand Phase 1a) der ganze Durchlauf, die Pins samt ungepinntem HTTP, der gepinnte executeWorkflow-Knoten, Code mit Netz und die Lücken H9 (Version 99, leerer Pfad) gegen `validate_workflow`. Die übrigen Punkte prüft der Betreiber nach einem Upgrade von Hand nach der Tabelle in `docs/deploy/README.md`; dort steht auch, wie der Test-Key `N8N_TEST_API_KEY` entsteht und wie die Live-Tests laufen.
+
 **Offene Messpunkte:**
 - M5: Schedule-Trigger im Testlauf.
-- M7: pinData auf `lmChat*`-Subnodes; ruft ein gepinnter Agent-Knoten seine Subnodes noch auf?
-- M8: Leerlauf-Ablauf der MCP-Session.
-- M9: `test_workflow`-Timeout.
 - M10: `mcp_client` mit gestopptem Container.
 - M11: `publish_workflow` gegen die Ablehnungen der Public API und das 409-Format.
 - M13: Liefert `prepare_workflow_pin_data` nach einem ersten Testlauf Schemas? Nur dann kommt das Tool zurück (§3.5).
@@ -738,14 +731,14 @@ Rahmen: `N8N_LIVE=1`; Workflows heißen `zz-probe-*` und werden im `finally` per
 **Phase 1a, Ziel 1:**
 - Anatomie, `client.py`, `validate.py` und die Tools §3.1–§3.3 (ohne `prepare_pin_data`, §3.5).
 - `n8n_agent`, Prompt, Skill und Allowlist-Eintrag.
-- Tests §10.1/§10.2 sowie live die Regressionen und M7, M9.
+- Tests §10.1/§10.2 sowie live die Regressionen, soweit §10.3 sie als gebaut nennt. M7 und M9 sind gemessen [M-MCP-47][M-MCP-48][M-MCP-49]. Das große Review (21.09.) hat den Pin-Plan (Wurzel, Sub-Workflows), den Handshake und die Speichereinstellung korrigiert [M-MCP-53]–[M-MCP-56].
 - **Beifang nach Regel 1:** `validate_plugin.py` endet ohne `plugin.toml` mit Exit 1, gibt aber keinen Grund aus [F-OUR19]. Das wird mitrepariert.
-- **Abnahme:** M7 und M9 sind gemessen, und ein Ende-zu-Ende-Lauf endet mit `success`.
+- **Abnahme:** M7 und M9 gemessen; die Tools einmal durch alle Schritte gegen die Instanz [M-MCP-52]; ein Ende-zu-Ende-Lauf des Agenten endet mit `success`.
 
 **Phase 1b, Ziel 2 Grundbrücke:**
 - `trigger_workflow` mit `watch.py`.
 - `publish`, `unpublish` und `archive` hinter `allow_publish` bzw. managed.
-- README mit MCP-Trigger-Rezept (§6.1) und M10.
+- M10 (das MCP-Trigger-Rezept §6.1 steht schon im Skill `n8n-recipes`).
 
 **Phase 2:**
 - Routen `/runs` und `/hooks/execution-finished`, Bind oder Proxy mit TLS (E8).
@@ -768,7 +761,7 @@ Rahmen: `N8N_LIVE=1`; Workflows heißen `zz-probe-*` und werden im `finally` per
 | E2 | ~~Instanz-MCP einschalten?~~ | **Entschieden:** ja, er ist der Kern (§2). Eingeschaltet wird per Env (§11). |
 | E3 | ~~Node-Sidecar?~~ | **Entfallen:** n8n's eigene Validatoren laufen über den MCP. |
 | E4 | Darf veröffentlicht werden, und von wem? | `allow_publish: false` per Default; Veröffentlichen gehört dem Menschen (Panel). Der Builder bekommt das Tool nie (§5.1). |
-| E5 | Modellstufe | Standard mit Denken; Advanced nur, wenn §10.4 im Schnitt mehr als 2 Runden zeigt. |
+| E5 | Modellstufe | Gebaut mit der Code-Modell-Kette aus §5.1; eine stärkere Stufe nur, wenn §10.4 im Schnitt mehr als 2 Runden zeigt. |
 | E6 | Wer ruft `n8n_agent` auf? | `n8n_agent/*` in die Allowlist des Chat-Agenten, mit dem der Betreiber arbeitet; `n8n/n8n_trigger_workflow` nur dort, wenn gewünscht. Kein neuer SAM, nicht der Root-SAM. |
 | E7 | Soll der Wake einen Neustart überleben? | Phase 2 |
 | E8 | Wo erreicht n8n unsere API, und wie wird der Verkehr verschlüsselt? | Server-Instanz bzw. Reverse-Proxy mit TLS, nicht `0.0.0.0` auf dem Dev-Rechner |

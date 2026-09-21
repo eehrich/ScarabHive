@@ -90,12 +90,11 @@ class PluginValidator:
         """
         logger.info(f"Validating plugin: {self.plugin_path.name}")
 
-        # Check basic file structure
-        if not self._check_file_structure():
-            return False
-
-        # Load configuration files
-        if not self._load_configs():
+        # Check basic file structure, then load the configuration files. Either
+        # failing ends the run -- but with the report: the errors are already
+        # collected, and an exit 1 with nothing printed tells nobody why.
+        if not self._check_file_structure() or not self._load_configs():
+            self._report_results()
             return False
 
         # Validate the manifest against its JSON schema

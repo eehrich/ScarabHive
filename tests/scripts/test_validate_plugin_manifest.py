@@ -95,6 +95,20 @@ def test_a_plugin_without_any_manifest_is_still_refused(plugin_copy):
     assert [e for e in validator.errors if "Missing required file" in e], validator.errors
 
 
+def test_a_refused_plugin_says_why(plugin_copy):
+    """The error above was collected but never printed: validate() returned
+    before the report, so the CLI exited 1 showing nothing but its INFO line.
+    Collecting a reason nobody sees is the same as having none."""
+    (plugin_copy / "plugin.toml").unlink()
+    validator = PluginValidator(plugin_copy, SCHEMAS)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        passed = validator.validate()
+
+    assert passed is False
+    assert "Missing required file" in out.getvalue(), out.getvalue()
+
+
 class TestTheShapesTheRuntimeSupports:
     """The validator refused three shapes the runtime has always run."""
 
