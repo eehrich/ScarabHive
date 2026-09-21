@@ -30,7 +30,7 @@ def make_plugin(plugin_dir):
     from plugins.simple_prompt_inject.hooks import SimplePromptInjectPlugin
 
     def _make(prompt_text: str = "Injected.", position: str = "before_last_user",
-              role: str = "system", prompt_file: str = ""):
+              role: str = "developer", prompt_file: str = ""):
         server_config = MagicMock()
         server_config.config = {
             "prompt_text": prompt_text,
@@ -190,7 +190,7 @@ class TestInjectPrompt:
         assert len(msgs) == 3
         assert msgs[0].role == "system"
         assert msgs[1].injected_by == "simple_prompt_inject"
-        assert msgs[1].role == "system"
+        assert msgs[1].role == "developer"
         assert msgs[1].content == "Remember: always be concise."
         assert msgs[2].role == "user"
         assert msgs[2].content == "Hello"
@@ -251,12 +251,7 @@ class TestInjectPrompt:
 
     @pytest.mark.asyncio
     async def test_inject_at_end(self, make_plugin, make_context):
-        """Position 'end' means the end -- the role does not move it to the head.
-
-        It used to: a system role was forced in behind the system prompt, where
-        Anthropic and Gemini hoist it into the prompt itself and a text that is
-        rendered per call invalidated the cached prefix behind it.
-        """
+        """Position 'end' means the end for a developer note."""
         p = make_plugin("Appended text.", position="end")
         ctx = make_context()
         before = [m.content for m in ctx.messages]
@@ -378,8 +373,8 @@ class TestInjectPrompt:
         assert len(original_messages) == original_len
 
     @pytest.mark.asyncio
-    async def test_multiple_user_messages_system_role(self, plugin):
-        """The configured position holds for every role -- see test_inject_at_end."""
+    async def test_multiple_user_messages_developer_role(self, plugin):
+        """before_last_user with the default role: in front of the LAST user message."""
         ctx = HookContext(
             hook_type=HookType.PRE_LLM_CALL,
             request_id="r1",
@@ -398,7 +393,7 @@ class TestInjectPrompt:
         # Default position is before_last_user: a reminder to be read just
         # before the model answers, wherever the head of the prompt is.
         assert msgs[3].injected_by == "simple_prompt_inject"
-        assert msgs[3].role == "system"
+        assert msgs[3].role == "developer"
         assert msgs[1].content == "first user"
         assert msgs[4].content == "second user"
 
@@ -656,3 +651,95 @@ class TestTemplateRendering:
 
         injected = [m for m in result.context.messages if m.injected_by == "simple_prompt_inject"]
         assert injected[0].content == "Remember: always be concise."
+
+
+# ============================================================================
+# after_system: part of the instructions, and it does not move
+# ============================================================================
+
+def _conversation():
+    return [
+        ChatMessage(role="system", content="sys"),
+        ChatMessage(role="user", content="first user"),
+        ChatMessage(role="assistant", content="response"),
+        ChatMessage(role="user", content="second user"),
+    ]
+
+
+def _ctx(messages):
+    return HookContext(hook_type=HookType.PRE_LLM_CALL, request_id="r1",
+                       session_id="s1", messages=messages)
+
+
+class TestAfterSystem:
+
+    @pytest.mark.asyncio
+    async def test_it_stands_right_behind_the_system_prompt(self, make_plugin):
+        p = make_plugin("Rules.", position="after_system", role="system")
+        msgs = (await p.inject_prompt(_ctx(_conversation()))).context.messages
+
+        assert [m.content for m in msgs] == [
+            "sys", "Rules.", "first user", "response", "second user"]
+        assert msgs[1].role == "system"
+        assert msgs[1].injected_by == "simple_prompt_inject"
+
+    @pytest.mark.asyncio
+    async def test_it_does_not_move_with_the_turn(self, make_plugin):
+        """The point of the position: a new turn leaves the head alone, so the
+        cached prefix behind it survives."""
+        p = make_plugin("Rules.", position="after_system", role="system")
+        first = (await p.inject_prompt(_ctx(_conversation()))).context.messages
+        later = first + [ChatMessage(role="assistant", content="answer"),
+                         ChatMessage(role="user", content="third user")]
+
+        result = await p.inject_prompt(_ctx(later))
+
+        assert result.modified is False
+        assert result.context.messages is later
+        assert [m.injected_by for m in later].count("simple_prompt_inject") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_changed_text_replaces_the_copy_in_place(self, make_plugin):
+        p = make_plugin("Rules v1.", position="after_system", role="system")
+        first = (await p.inject_prompt(_ctx(_conversation()))).context.messages
+        p.prompt_template = "Rules v2."
+
+        msgs = (await p.inject_prompt(_ctx(first))).context.messages
+
+        assert [m.content for m in msgs] == [
+            "sys", "Rules v2.", "first user", "response", "second user"]
+
+    @pytest.mark.asyncio
+    async def test_behind_every_leading_system_message(self, make_plugin):
+        p = make_plugin("Rules.", position="after_system", role="system")
+        msgs = (await p.inject_prompt(_ctx(
+            [ChatMessage(role="system", content="sys")] + _conversation()))).context.messages
+
+        assert [m.content for m in msgs][:3] == ["sys", "sys", "Rules."]
+
+    @pytest.mark.asyncio
+    async def test_without_a_system_prompt_it_opens_the_history(self, make_plugin):
+        p = make_plugin("Rules.", position="after_system", role="system")
+        msgs = (await p.inject_prompt(_ctx(_conversation()[1:]))).context.messages
+
+        assert msgs[0].content == "Rules."
+
+    @pytest.mark.asyncio
+    async def test_a_system_role_never_lands_inside_the_history(self, make_plugin, caplog):
+        """role system with a mid-history position is a config mistake: it is
+        placed at the head, and the log names the setting to fix."""
+        with caplog.at_level("ERROR"):
+            p = make_plugin("Rules.", position="before_last_user", role="system")
+        msgs = (await p.inject_prompt(_ctx(_conversation()))).context.messages
+
+        assert msgs[1].content == "Rules."
+        assert "after_system" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_system_message_at_the_head_is_legitimate(self, make_plugin, caplog):
+        with caplog.at_level("WARNING"):
+            p = make_plugin("Rules.", position="after_system", role="system")
+        msgs = (await p.inject_prompt(_ctx(_conversation()))).context.messages
+
+        assert msgs[1].role == "system" and msgs[1].content == "Rules."
+        assert caplog.text == "", "a legitimate configuration logs nothing"

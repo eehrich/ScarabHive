@@ -16,7 +16,7 @@ from typing import Any
 from jinja2 import Environment, BaseLoader, TemplateSyntaxError, UndefinedError
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
-from agent_system.llm.message_roles import SYSTEM, is_input
+from agent_system.llm.message_roles import SYSTEM, is_input, role_of
 from agent_system.llm.models import ChatMessage
 from agent_system.utils.prompt_renderer import strip_prompt_comments
 
@@ -36,7 +36,9 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
     configured position, marked with ``injected_by``. What repeated calls do
     depends on the position: ``before_last_user`` moves the text with the turn
     and therefore replaces the previous copy, ``end`` appends it once and
-    writes again only when the rendered text changed.
+    writes again only when the rendered text changed, ``after_system`` keeps
+    it right behind the system prompt and rewrites it there only when the
+    rendered text changed.
 
     Both ``prompt_text`` and ``prompt_file`` content support Jinja2 template
     syntax rendered with the agent's ``template_vars``.
@@ -44,10 +46,11 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
     Configuration (via plugins.yaml):
         prompt_text: Text to inject (empty = no-op)
         prompt_file: Path to .md file (relative to config/ or absolute)
-        injection_position: 'before_last_user' or 'end'
+        injection_position: 'before_last_user', 'end' or 'after_system'
         role: 'system', 'developer' or 'user'. A 'developer' message is what
             the RUN tells the model, and it keeps the position configured
-            here — that placement is the whole point of it.
+            here. A 'system' message is part of the instructions and always
+            stands behind the system prompt ('after_system').
     """
 
     def __init__(self, plugin_dir: Path | str, server_config: Any = None) -> None:
@@ -60,16 +63,16 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
 
         self.injection_position: str = str(config.get("injection_position", "before_last_user"))
         self.role: str = str(config.get("role", "developer"))
-        if self.role == SYSTEM:
-            # Still allowed -- an OpenAI-only setup may want it -- but it is no
-            # longer placed for it: the head special case is gone, so on
-            # Anthropic and Gemini this message is hoisted out of the history
-            # into the prompt head, where a text rendered per call invalidates
-            # the cached prefix behind it. Say so once, at startup.
-            logger.warning(
-                "simple_prompt_inject: role 'system' inside a history is hoisted "
-                "into the prompt head by Anthropic and Gemini and breaks the "
-                "prompt cache -- 'developer' keeps the position it is given.")
+        if self.role == SYSTEM and self.injection_position != "after_system":
+            # A system message belongs to the instructions at the head. Inside
+            # the history Anthropic and Gemini hoist it there anyway, where it
+            # reads as if it had held from the first turn -- so it is placed
+            # there, and the contradicting position is a config mistake.
+            logger.error(
+                "simple_prompt_inject: role 'system' stands behind the system "
+                "prompt; injection_position %r is ignored -- set 'after_system'",
+                self.injection_position)
+            self.injection_position = "after_system"
 
         # Resolve prompt source: prompt_file takes precedence over prompt_text
         prompt_file = str(config.get("prompt_file", "")).strip()
@@ -144,7 +147,18 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         previous = next((m for m in reversed(messages)
                          if m.injected_by == INJECTED_BY), None)
 
-        if self.injection_position == "end":
+        if self.injection_position == "after_system":
+            # Part of the instructions: behind the system prompt, and it stays
+            # there. Rewritten only when the rendered text changed -- a head
+            # that changes invalidates the cached prefix of the whole history.
+            rest = [m for m in messages if m.injected_by != INJECTED_BY]
+            idx = self._after_system_prompt_index(rest)
+            if (len(rest) == len(messages) - 1 and messages[idx].injected_by == INJECTED_BY
+                    and messages[idx].role == self.role and messages[idx].content == rendered):
+                return HookResult(success=True, modified=False, context=context)
+            messages = rest
+            messages.insert(idx, new_msg)
+        elif self.injection_position == "end":
             # Appended and then left alone: an unchanged text written again
             # would move the end of the prompt for nothing, and everything
             # before it has to be paid for a second time.
@@ -222,6 +236,14 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
                 exc,
             )
             return template_str
+
+    @staticmethod
+    def _after_system_prompt_index(messages: list[ChatMessage]) -> int:
+        """Index right behind the leading system message(s)."""
+        idx = 0
+        while idx < len(messages) and role_of(messages[idx]) == SYSTEM:
+            idx += 1
+        return idx
 
     @staticmethod
     def _find_last_user_index(messages: list[ChatMessage]) -> int | None:
