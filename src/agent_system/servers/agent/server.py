@@ -40,7 +40,7 @@ from ...tools.status import (
 )
 from .components.tool_integration import ToolIntegrationManager
 from .components.tool_execution import ToolExecutionManager
-from .components.status_forwarding import StatusEventForwarder
+from .components.status_forwarding import StatusEventForwarder, relay_run_event
 from .components.session_tracking import SessionTracker
 from .components.request_manager import AgentRequestManager
 from .components.server_resolution import resolve_registry_server, resolve_longest_prefix
@@ -1494,6 +1494,10 @@ class Agent(ToolServer):
                 status_forwarder=status_forwarder,
                 use_advanced_model=use_advanced_model,
             ):
+                # Before the yield: the consumer of a sub-run can stop reading at its
+                # end, error or cancel (sub_agent_manager does), and the event it
+                # stops at would never be relayed.
+                relay_run_event(status_forwarder, event, self.name)
                 yield event
         except GeneratorExit:
             # Generator is being closed early - clean exit without error
@@ -2598,8 +2602,9 @@ class Agent(ToolServer):
                         elif event_type == "thinking_delta":
                             # Yield real-time token deltas to WebUI
                             yield event
-                        elif event_type == "status":
-                            # Yield interleaved status events
+                        elif event_type in ("status", "sub_run"):
+                            # What the forwarder collected meanwhile: status lines, and
+                            # the events of sub-agents working while this call waits.
                             yield event
                         elif event_type == "thinking_complete":
                             # CRITICAL: Make a deep copy of assistant dict to prevent

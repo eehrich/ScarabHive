@@ -37,6 +37,7 @@ from .llm.batch.initialization import init_batch_system, shutdown_batch_system, 
 # Import services
 from .services import ConfigService, ToolServerService, ToolService, AgentService
 from .services.session_manager import SessionManager, SessionPermissionError
+from .servers.agent.components.status_forwarding import in_line_with_a_live_run
 from .core.session_presence import SessionBusy, presence_for
 from .services.background_job_manager import (
     BackgroundJob,
@@ -278,13 +279,25 @@ async def _validate_client_request_id(client_request_id: str) -> str:
       - 409 when the id is already live ANYWHERE (BackgroundJob, any
         registry agent, default agent) — the duplicate-dispatch guard: a
         caller retry that fires while the original run is still grinding
-        gets a clean 409 instead of silently starting a second run.
+        gets a clean 409 instead of silently starting a second run;
+      - 409 when the id and a live run's id are in line, one being the other
+        followed by `_…`: that is how the server names a run's sub-runs, and
+        every stream above a run takes what starts with its id and `_`. Such
+        an id would read as a live run's sub-run and be handed its events, or
+        make a live run's sub-runs read as its own. (A job dispatched again
+        under its id while a sub-agent of its last attempt still works waits
+        for that one, as it waits for a run of its own id.)
     """
     rid = str(client_request_id)
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", rid):
         raise HTTPException(
             status_code=400,
             detail="invalid request_id: expected 8-64 chars [A-Za-z0-9_-]",
+        )
+    if in_line_with_a_live_run(rid):
+        raise HTTPException(
+            status_code=409,
+            detail=f"request_id {rid} is in line with a run in flight (one extends the other by _)",
         )
     if await get_background_job_manager().is_request_active_anywhere(rid):
         raise HTTPException(
@@ -1181,35 +1194,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         else:
             payload = ev
 
-        # Format output for final event and thinking_complete event
         if selected_agent._hook_manager:
-            # Format final event summary to HTML
-            if ev.get("type") == "final" and ev.get("summary"):
-                try:
-                    formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                        output=payload["summary"],
-                        request_id=request_id,
-                        session_id=session_id,
-                        output_format='html'
-                    )
-                    payload["summary"] = formatted_summary
-                    payload["content_format"] = content_format
-                except Exception as e:
-                    logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
-
-            # Also format thinking_complete content to HTML (for streaming)
-            elif ev.get("type") == "thinking_complete" and ev.get("assistant", {}).get("content"):
-                try:
-                    formatted_content, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                        output=payload["assistant"]["content"],
-                        request_id=request_id,
-                        session_id=session_id,
-                        output_format='html'
-                    )
-                    payload["assistant"]["content"] = formatted_content
-                    payload["content_format"] = content_format
-                except Exception as e:
-                    logger.error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
+            await _format_answer_fields(payload, selected_agent, request_id, session_id)
+            # A sub-agent's answer is the same text and is shown the same way.
+            if payload.get("type") == "sub_run" and isinstance(payload.get("event"), dict):
+                await _format_answer_fields(payload["event"], selected_agent, request_id, session_id)
 
         try:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -1217,6 +1206,36 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.error("Failed to serialize event %s: %s", ev, e)
             error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
             return f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+
+    async def _format_answer_fields(payload: dict, selected_agent, request_id: str, session_id: str) -> None:
+        """Render the answer an event carries to HTML, in place: a final's summary, a finished step's content."""
+        kind = payload.get("type")
+        if kind == "final" and payload.get("summary"):
+            try:
+                formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                    output=payload["summary"],
+                    request_id=request_id,
+                    session_id=session_id,
+                    output_format='html'
+                )
+                payload["summary"] = formatted_summary
+                payload["content_format"] = content_format
+            except Exception as e:
+                logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
+
+        # Also format thinking_complete content to HTML (for streaming)
+        elif kind == "thinking_complete" and payload.get("assistant", {}).get("content"):
+            try:
+                formatted_content, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                    output=payload["assistant"]["content"],
+                    request_id=request_id,
+                    session_id=session_id,
+                    output_format='html'
+                )
+                payload["assistant"]["content"] = formatted_content
+                payload["content_format"] = content_format
+            except Exception as e:
+                logger.error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
 
     def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None):
         """Get agent instance with optional overrides.
@@ -1746,8 +1765,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # and cancel propagation no-opped while the agent kept burning
         # tokens.
         #
-        # Guards (format whitelist → 400, already-active id → 409):
-        # see _validate_client_request_id, shared with /events.
+        # Guards (400 format; 409 already active, or in line with a live run's
+        # id): see _validate_client_request_id, shared with /events.
         if client_request_id:
             request_id = await _validate_client_request_id(client_request_id)
 
@@ -2097,8 +2116,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # an ID they know; mint one only when the client sent none. Before
         # 2026-08 a client-supplied ID was silently discarded here, which
         # made every /events-dispatched run uncancellable by its caller.
-        # Same guards as /run: format whitelist → 400, id already active
-        # elsewhere (non-BackgroundJob, so not reconnectable) → 409.
+        # Same guards as /run (_validate_client_request_id): format → 400; id
+        # already active elsewhere (non-BackgroundJob, so not reconnectable), or
+        # in line with a live run's id → 409.
         if not existing_job:
             if request_id:
                 request_id = await _validate_client_request_id(request_id)
@@ -2465,7 +2485,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - llm_profile: Optional LLM profile override
         - request_id: Optional request ID — reconnects if it matches a
           running job, otherwise the new run is keyed under it (parity
-          with POST /run; format/active-elsewhere guards apply)
+          with POST /run; the guards of _validate_client_request_id apply)
 
         Note: For long task texts, prefer POST /events to avoid URL length limits.
         """
@@ -2492,7 +2512,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - llm_profile: Optional LLM profile override
         - request_id: Optional request ID — reconnects if it matches a
           running job, otherwise the new run is keyed under it (parity
-          with POST /run; format/active-elsewhere guards apply)
+          with POST /run; the guards of _validate_client_request_id apply)
 
         This endpoint avoids URL length limits that affect GET /events
         when sending long task texts.

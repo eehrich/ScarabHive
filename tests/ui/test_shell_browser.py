@@ -50,7 +50,14 @@ split mid-word, then the step's answer as markup and a tool call -- and ends;
 with ``steps`` a run ``r-steps`` sends TWO calls, a tool scope that carries no
 step of its own, the run's own start and end, which carry none either, a
 sub-agent counting ITS steps, a row whose parent is never sent, and two calls to
-one tool that open no scope at all. Every status
+one tool that open no scope at all; with ``subrun`` a run ``r-subrun`` starts an
+async sub-agent in its first call whose run -- relayed as ``sub_run`` -- reports
+mostly while the third call waits for it, starts a grandchild, and pauses 1.5 s
+in the second call. GET/PUT /auth/me/preferences keep the account's display
+preferences, checked by the real model (PUTs at /__stub/preference-puts, POST
+/__stub/preferences/reset); with the cookie ``stub_preferences=fails`` every PUT
+fails, ``slow`` answers after 0.4 s, and ``fails-once`` does too and refuses the
+first. Every status
 event of it carries a ``tree``, as the run's stream does since 6b6a1348. One
 with files starts half a second later, names ``r-files-ended`` and brings its
 final answer and end -- with ``stub_stream=stale``, ``r-files-stale`` in
@@ -111,10 +118,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from agent_system.auth.models import UserPreferences
 from agent_system.ui.catalog import Panel, build_catalog, core_panels
 from agent_system.ui.resources import STATIC_DIR, ui_templates
 from agent_system.ui.routes import router
@@ -198,6 +207,9 @@ def stub_app() -> FastAPI:
     children = {"s-1": [{**sessions[0], "session_id": "s-1-sub", "title": "Research the icons", "depth": 1}]}
     patches: list[dict] = []
     posted: list[dict] = []
+    # What the account keeps (GET/PUT /auth/me/preferences), and every PUT as sent.
+    preferences = {"stored": UserPreferences().model_dump()}
+    preference_puts: list[dict] = []
     deletes: list[str] = []
     hits: dict[str, int] = {}
     streams: dict[str, str] = {}  # request id -> "read" (to its end) or "cut" (by the browser)
@@ -296,7 +308,8 @@ def stub_app() -> FastAPI:
         hits[f"sam_writer:{session_id}"] = hits.get(f"sam_writer:{session_id}", 0) + 1
         await asyncio.sleep(lag(session_id))
         count = marker(session_id)
-        return {"instances": [{"instance_id": f"agent-{session_id}", "agent_type": "writer", "status": "active"}],
+        return {"instances": [{"instance_id": f"agent-{session_id}", "agent_type": "writer", "status": "active",
+                               "state": "idle"}],  # state: read by the server, shown by the panel
                 "phase": {"variable": "workflow_phase", "current": f"phase-{count}", "agents": [], "allowed_agents": []}}
 
     @app.get("/plugins/context_engineer/history")
@@ -524,6 +537,10 @@ def stub_app() -> FastAPI:
                              "request_id": request_id, "message": "completed (2 steps)", "meta": {}})
                 yield event({"type": "end"})
                 return
+            if ending == "subrun":
+                async for chunk in subrun_stream(request_id):
+                    yield chunk
+                return
             if ending in ("closes", "stale", "ending", "answered", "saving"):
                 return
             if ending in ("final-drops", "cancelled-drops"):
@@ -532,6 +549,128 @@ def stub_app() -> FastAPI:
                 await asyncio.sleep(0.2)
             raise ConnectionAbortedError("the connection is cut off")  # the browser's reader fails mid-stream
         return recorded(request_id, stream())
+
+    async def subrun_stream(rid: str):
+        """A run whose first call starts an async sub-agent that reports only while the
+        run's THIRD call waits for it -- the shape of the run the viewer reported.
+
+        The sub-agent's own events come as the server relays them since the relay was
+        built: `sub_run`, with the id of its run and of the call that started it. Its
+        status lines come as they always have, over the status bus, with the tree
+        utils/tree_hierarchy computes. The sub-agent starts a grandchild in its step 2.
+        The run pauses 1.5 s in its second call, while the sub-agent is still at work.
+        """
+        sub = f"{rid}_003_async_x1"
+        grand = f"{sub}_009_sub_g1"
+        # A second one, never waited for: it is still at work when its caller ends.
+        stray = f"{rid}_004_async_x2"
+        # A third, started in call 1 too, that says its first word only in call 3.
+        late = f"{rid}_005_async_x3"
+        # A grandchild whose call's status line never comes.
+        rowless = f"{sub}_010_sub_g2"
+        # An agent called as a tool: its run id IS its call's, its lines hang from that id.
+        called = f"{rid}_006"
+        # One that fails, one that is cancelled.
+        failing, cancelled = f"{rid}_007_async_x4", f"{rid}_008_async_x5"
+
+        def status(server, request_id, phase, message, parent, depth):
+            return event({"type": "status", "server": server, "phase": phase, "request_id": request_id,
+                          "message": message, "meta": {},
+                          "tree": {"parent_id": parent, "depth_level": depth, "child_count": 0, "is_leaf": True}})
+
+        def relayed(run_id, spawned_by, depth, agent, inner):
+            return event({"type": "sub_run", "run_id": run_id, "spawned_by": spawned_by, "depth_level": depth,
+                          "agent": agent, "event": inner})
+
+        def of_sub(inner):
+            return relayed(sub, f"{rid}_003", 2, "skills_agent", inner)
+
+        yield status("coordinator", f"{rid}_001", "start", "started", rid, 1)
+        yield event({"type": "thinking", "step": 1})
+        yield event({"type": "reasoning_delta", "step": 1, "delta": "the caller plans a helper."})
+        yield event({"type": "thinking", "step": 1, "assistant": {
+            "content": "", "tool_calls": [{"function": {"name": "skills_sam_manage_sub_agent"}}]}})
+        yield status("skills_sam.manage_sub_agent()", f"{rid}_003", "start", "starting", rid, 1)
+        yield of_sub({"type": "start", "task": "Research the icons", "request_id": sub, "session_id": "sub-1"})
+        yield of_sub({"type": "thinking", "step": 1})
+        yield status("coordinator", f"{sub}_006", "start", "sub coordinator", sub, 3)
+        yield of_sub({"type": "reasoning_delta", "step": 1, "delta": "the helper thinks first."})
+        yield of_sub({"type": "thinking", "step": 1, "assistant": {
+            "content": "", "tool_calls": [{"function": {"name": "tavily_search_web_search"}}]}})
+        yield status("tavily_search.web_search()", f"{sub}_008", "start", "Searching icons", sub, 3)
+        yield of_sub({"type": "tool_call", "step": 1, "server": "tavily_search", "action": "web_search",
+                      "request_id": f"{sub}_008", "params": {"query": "icons"}})
+        yield status("skills_sam.manage_sub_agent()", f"{rid}_003", "end", "Async execution started", rid, 1)
+        yield status("skills_sam.manage_sub_agent()", f"{rid}_004", "start", "starting", rid, 1)
+        yield relayed(stray, f"{rid}_004", 2, "skills_agent",
+                      {"type": "start", "task": "Take your time", "request_id": stray, "session_id": "sub-3"})
+        yield relayed(stray, f"{rid}_004", 2, "skills_agent", {"type": "thinking", "step": 1})
+        # its step 2 opens BEFORE its caller's does -- a step section of the caller's is
+        # looked for among the caller's own, not among everything inside them
+        yield relayed(stray, f"{rid}_004", 2, "skills_agent", {"type": "thinking", "step": 2})
+        yield status("skills_sam.manage_sub_agent()", f"{rid}_004", "end", "Async execution started", rid, 1)
+        yield status("skills_sam.manage_sub_agent()", f"{rid}_005", "start", "starting", rid, 1)
+        yield status("skills_sam.manage_sub_agent()", f"{rid}_005", "end", "Async execution started", rid, 1)
+        yield status("helper_agent.call()", called, "start", "asking the helper agent", rid, 1)
+        yield relayed(called, rid, 1, "helper_agent", {"type": "start", "task": "Called as a tool", "request_id": called})
+        yield status("coordinator", f"{called}_001", "start", "the helper's own work", called, 2)
+        yield relayed(called, rid, 1, "helper_agent", {"type": "final", "summary": "Helped."})
+        yield status("coordinator", f"{called}_001", "end", "completed (1 steps)", called, 2)
+        yield relayed(called, rid, 1, "helper_agent", {"type": "end"})
+        yield status("helper_agent.call()", called, "end", "the helper agent answered", rid, 1)
+        # sub_agent_manager stops reading a run at its error or cancel: no "end" follows
+        for run_id, ending in ((failing, {"type": "error", "message": "the helper's model is down"}),
+                               (cancelled, {"type": "cancelled"})):
+            spawned_by = run_id.rsplit("_async_", 1)[0]
+            yield status("skills_sam.manage_sub_agent()", spawned_by, "start", "starting", rid, 1)
+            yield relayed(run_id, spawned_by, 2, "skills_agent", {"type": "start", "task": "Doomed", "request_id": run_id})
+            yield relayed(run_id, spawned_by, 2, "skills_agent", {"type": "thinking", "step": 1})
+            yield relayed(run_id, spawned_by, 2, "skills_agent", ending)
+            yield status("skills_sam.manage_sub_agent()", spawned_by, "end", "Async execution started", rid, 1)
+        yield event({"type": "thinking", "step": 2})
+        yield event({"type": "reasoning_delta", "step": 2, "delta": "the caller waits."})
+        await asyncio.sleep(1.5)
+        yield event({"type": "thinking", "step": 3})
+        yield status("skills_sam.manage_sub_agent()", f"{rid}_012", "start", "waiting for all", rid, 1)
+        yield relayed(late, f"{rid}_005", 2, "skills_agent",
+                      {"type": "start", "task": "Late to speak", "request_id": late, "session_id": "sub-4"})
+        yield relayed(late, f"{rid}_005", 2, "skills_agent", {"type": "final", "summary": "Spoke late."})
+        yield relayed(late, f"{rid}_005", 2, "skills_agent", {"type": "end"})
+        # Everything below arrives while call 3 is the one in flight.
+        yield status("tavily_search.web_search()", f"{sub}_008", "end", "Search completed", sub, 3)
+        yield of_sub({"type": "tool_result", "step": 1, "server": "tavily_search", "action": "web_search",
+                      "request_id": f"{sub}_008", "result": {"status": "success", "hits": 5}})
+        yield of_sub({"type": "thinking", "step": 2})
+        yield of_sub({"type": "reasoning_delta", "step": 2, "delta": "the helper thinks again."})
+        yield status("skills_sam.manage_sub_agent()", f"{sub}_009", "start", "the helper's helper", sub, 3)
+        yield relayed(grand, f"{sub}_009", 4, "grand_agent",
+                      {"type": "start", "task": "Count them", "request_id": grand, "session_id": "sub-2"})
+        yield relayed(grand, f"{sub}_009", 4, "grand_agent", {"type": "thinking", "step": 1})
+        yield relayed(grand, f"{sub}_009", 4, "grand_agent", {"type": "final", "summary": "Five."})
+        yield relayed(grand, f"{sub}_009", 4, "grand_agent", {"type": "end"})
+        yield status("skills_sam.manage_sub_agent()", f"{sub}_009", "end", "the helper's helper is done", sub, 3)
+        yield relayed(rowless, f"{sub}_010", 4, "grand_agent",
+                      {"type": "start", "task": "No line of its own", "request_id": rowless, "session_id": "sub-5"})
+        yield relayed(rowless, f"{sub}_010", 4, "grand_agent", {"type": "end"})
+        yield of_sub({"type": "thinking_delta", "step": 2, "delta": "Icons", "accumulated": "Icons found."})
+        # A streamed answer ends with thinking_complete, rendered by the API as the
+        # caller's is; the final that follows carries the same text again.
+        yield of_sub({"type": "thinking_complete", "step": 2, "content_format": "html",
+                      "assistant": {"role": "assistant", "content": "<p>Icons <b>found</b>.</p>"}})
+        yield of_sub({"type": "final", "summary": "<p>Icons <b>found</b>.</p>", "content_format": "html"})
+        yield status("coordinator", f"{sub}_006", "end", "completed (2 steps)", sub, 3)
+        yield of_sub({"type": "end"})
+        # A retry of the sub-run (sub_agent_manager's short-result retry): its id extends
+        # the run it retries, which has no row of its own to hang from.
+        retry = f"{sub}_minlen_1"
+        yield relayed(retry, sub, 3, "skills_agent", {"type": "start", "task": "Once more", "request_id": retry})
+        yield relayed(retry, sub, 3, "skills_agent", {"type": "final", "summary": "Icons found, longer."})
+        yield relayed(retry, sub, 3, "skills_agent", {"type": "end"})
+        yield status("skills_sam.manage_sub_agent()", f"{rid}_012", "end", "Completed: 1", rid, 1)
+        yield event({"type": "thinking", "step": 3, "assistant": {"content": "", "tool_calls": []}})
+        yield event({"type": "final", "content": "Done"})
+        yield status("coordinator", f"{rid}_001", "end", "completed (3 steps)", rid, 1)
+        yield event({"type": "end"})
 
     def refused_stream(after: float = 0):
         async def stream():  # a refusal the way app.py's event streams send one: `error`, and the stream closes
@@ -625,7 +764,7 @@ def stub_app() -> FastAPI:
                    "late-drops": "r-late-dropped", "question-drops": "r-question-dropped", "closes": "r-closed",
                    "ending": "r-ending", "late-start-drops": "r-late-started", "answered": "r-answered",
                    "saving": "r-saving", "saving-drops": "r-saving-dropped", "reasons": "r-reasons",
-                   "steps": "r-steps"}
+                   "steps": "r-steps", "subrun": "r-subrun"}
         if ending in started:
             return started_stream(started[ending], body.get("session_id", ""), ending,
                                   start_after=1.5 if ending == "late-start-drops" else 0)
@@ -732,6 +871,41 @@ def stub_app() -> FastAPI:
     @app.get("/__stub/patches")
     async def recorded_patches():
         return patches
+
+    @app.get("/auth/me/preferences")
+    async def my_preferences(request: Request):
+        account(request)
+        return preferences["stored"]
+
+    @app.put("/auth/me/preferences")
+    async def put_my_preferences(request: Request):
+        account(request)
+        mode = request.cookies.get("stub_preferences")
+        if mode == "fails":
+            raise HTTPException(status_code=500, detail="database is locked")
+        if mode in ("slow", "fails-once"):  # a second click lands before the first is answered
+            await asyncio.sleep(0.4)
+        if mode == "fails-once" and not preferences.get("failed_once"):
+            preferences["failed_once"] = True
+            raise HTTPException(status_code=500, detail="database is locked")
+        body = await request.json()
+        try:
+            chosen = UserPreferences.model_validate(body)  # the real model: what it refuses, the stub refuses
+        except ValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        preferences["stored"] = chosen.model_dump()
+        preference_puts.append(body)
+        return preferences["stored"]
+
+    @app.get("/__stub/preference-puts")
+    async def recorded_preference_puts():
+        return preference_puts
+
+    @app.post("/__stub/preferences/reset")
+    async def reset_preferences():
+        preferences["stored"] = UserPreferences().model_dump()
+        preferences.pop("failed_once", None)
+        return preferences["stored"]
 
     @app.post("/__stub/sessions")
     async def add_session(request: Request):
@@ -884,6 +1058,8 @@ def stub_app() -> FastAPI:
                  "content": '{"status": "success", "note": "<b>not markup</b>"}'},
                 {"role": "assistant", "content": "Done", "content_format": "text"},
             ]
+            if found["run"] == "mid":  # read back while the run still works: no answer yet
+                messages = messages[:-1]
         else:
             messages = [user_message,
                         {"role": "assistant", "content": "Done", "content_format": "text"}]
@@ -1015,6 +1191,11 @@ EXPECTED = [
     'a sub-agents lines nest under the call that spawned it, none go missing, and what was still running when the run ended says so',
     'clicking a tool status line unfolds what it was asked and what it answered, as one block per call',
     'a session read back from disk brings its run with it, not just the answer',
+    'steps stay open while the run works and fold once it has answered; one opened by hand stays open',
+    "a sub-agent's run stays in the step that started it and shows its own steps, one level in",
+    'a message appended mid-run moves the run on to a new block, and its answer folds the steps of both',
+    'a session read back while its run still works keeps that run open',
+    'thinking sits folded under its own header, opens by it, and a changed setting reaches every box not opened by hand',
     'a session panel pinned from a link can follow the chat again',
     'a request id in the chat offers the panels that take a request',
     'a panel with unsaved input is only closed or reloaded once the viewer agrees',
@@ -1053,6 +1234,7 @@ EXPECTED = [
     'a mangled stored layout does not stop the shell',
     'a failing catalogue leaves the chat working',
     'a signed-in user sees their account and can save the profile',
+    'the chat settings are kept on the account and apply to the chat at once',
     'logging out forgets the layout of the user who left',
     'an expired or deactivated sign-in goes to the login page and comes back',
     'a server failure at start is shown, not a dead page',

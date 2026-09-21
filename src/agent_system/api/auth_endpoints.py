@@ -20,6 +20,7 @@ from agent_system.auth.models import (
     UserCreate,
     UserRegister,
     UserRole,
+    UserPreferences,
     UserSelfUpdate,
     UserUpdate,
     Token,
@@ -312,6 +313,25 @@ async def get_current_user_info(
         Current user data
     """
     return current_user
+
+
+@router.get("/me/preferences", response_model=UserPreferences)
+async def get_my_preferences(
+    current_user: User = Depends(get_current_active_user),
+    db: UserDatabase = Depends(get_db),
+):
+    """The signed-in user's display preferences, every key filled in."""
+    return db.get_preferences(current_user.id)
+
+
+@router.put("/me/preferences", response_model=UserPreferences)
+async def put_my_preferences(
+    preferences: UserPreferences,
+    current_user: User = Depends(get_current_active_user),
+    db: UserDatabase = Depends(get_db),
+):
+    """Replace the signed-in user's display preferences (the whole object: what is left out is the default)."""
+    return db.set_preferences(current_user.id, preferences)
 
 
 @router.patch("/me", response_model=User)

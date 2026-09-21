@@ -614,6 +614,9 @@ export function setTheme(theme) {
   tell('pk:set-theme', { theme });
 }
 
+/** Tell the shell the viewer's preferences changed (saved already): the chat shows things their way at once. */
+export function announcePreferences(preferences) { tell('pk:preferences', { preferences }); }
+
 export function currentTheme() {
   const theme = document.documentElement.dataset.theme;
   return THEMES.includes(theme) ? theme : 'system';

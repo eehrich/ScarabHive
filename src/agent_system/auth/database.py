@@ -14,7 +14,9 @@ from typing import Optional, List
 from contextlib import contextmanager
 import logging
 
-from agent_system.auth.models import UserInDB, UserCreate, UserUpdate, UserRole
+from pydantic import ValidationError
+
+from agent_system.auth.models import UserInDB, UserCreate, UserUpdate, UserRole, UserPreferences
 from agent_system.auth.security import get_password_hash, generate_api_key, hash_api_key
 
 
@@ -65,6 +67,16 @@ class UserDatabase:
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_api_key ON users(api_key)
+            """)
+            # A table of its own rather than a column of `users`: an existing database
+            # gets it here without a migration, and the account's own columns -- read
+            # and rebuilt field by field in many places -- stay as they are.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    user_id INTEGER PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
             """)
             conn.commit()
             logger.info(f"User database initialized at {self.db_path}")
@@ -238,13 +250,45 @@ class UserDatabase:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            deleted = cursor.rowcount > 0  # read before the next statement resets it
+            cursor.execute("DELETE FROM user_preferences WHERE user_id = ?", (user_id,))
             conn.commit()
-            deleted = cursor.rowcount > 0
         
         if deleted:
             logger.info(f"Deleted user ID {user_id}")
         return deleted
     
+    def get_preferences(self, user_id: int) -> UserPreferences:
+        """A user's preferences, every key filled in; the defaults where they chose nothing."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT data FROM user_preferences WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        if row is None:
+            return UserPreferences()
+        try:
+            return UserPreferences.model_validate_json(row["data"])
+        except ValidationError as e:
+            # Only a stored choice this code no longer knows gets here -- a value
+            # renamed since it was saved. Showing things the default way is all that
+            # is lost; refusing would take the whole chat's display with it.
+            logger.warning("Stored preferences of user ID %s no longer fit, using the defaults: %s",
+                           user_id, e)
+            return UserPreferences()
+
+    def set_preferences(self, user_id: int, preferences: UserPreferences) -> UserPreferences:
+        """Replace a user's preferences with `preferences`."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_preferences (user_id, data, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at
+                """,
+                (user_id, preferences.model_dump_json(), datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        return preferences
+
     def update_last_login(self, user_id: int) -> None:
         """Update user's last login timestamp."""
         with self._get_connection() as conn:

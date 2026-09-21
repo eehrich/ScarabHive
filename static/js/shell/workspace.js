@@ -543,6 +543,10 @@ export class Workspace {
       case 'pk:set-theme':
         this.onSetTheme(String(message.theme));
         break;
+      case 'pk:preferences':
+        // Saved on the account by the panel; the chat lives in this document.
+        window.dispatchEvent(new CustomEvent('preferences:changed', { detail: message.preferences }));
+        break;
     }
   }
 }

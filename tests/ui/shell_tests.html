@@ -42,6 +42,19 @@
     document.cookie = value ? `${name}=${value}; path=/` : `${name}=; path=/; max-age=0`;
   };
   const account = (state) => cookie('stub_account', state);
+  // A condition a check needs, failing with the condition itself as the reason -- a bare
+  // `return false` reports 'failed' and leaves the reader to guess which line it was.
+  const need = (ok, why) => { if (!ok) throw new Error(why); return true; };
+  // The chat's display preferences, as the shell hands them on from the Settings panel.
+  const CHAT_DEFAULTS = { fold_steps: 'at_end', thinking: 'collapsed', sub_agents: 'expanded' };
+  const choose = (chat) => win().dispatchEvent(new (win().CustomEvent)('preferences:changed',
+    { detail: { chat: { ...CHAT_DEFAULTS, ...chat } } }));
+  // A step section opened, if it is folded -- by its header, as a viewer does.
+  const unfold = (section) => {
+    const body = section.querySelector(':scope > .container-body');
+    if (body.getClientRects().length === 0) section.querySelector(':scope > .container-header').click();
+    return body.getClientRects().length > 0;
+  };
   const stub = (path, json) => fetch(path, json === undefined ? {} : {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(json) });
   const withWidth = async (width, fn) => {
@@ -1155,11 +1168,17 @@
       // per delta instead of appending would hold a fragment.
       const box = $$('#chat pre').find((pre) => pre.textContent.includes('No datetime tool here, so I say so.'));
       if (!box) return false;
-      // and the viewer can SEE it. textContent reads a hidden box just as happily, so
-      // the box being in the DOM says nothing -- a mutant that wrote the reasoning and
-      // left it invisible survived this check until this line. Rects rather than the
-      // computed display: that one reports the box's OWN display and would still say
-      // "block" inside a section someone had hidden.
+      // and the viewer can SEE it -- once it is unfolded: the run has answered, so its
+      // step is folded, and the thinking sits folded under its own header. textContent
+      // reads a hidden box just as happily, so the box being in the DOM says nothing --
+      // a mutant that wrote the reasoning and left it invisible survived this check
+      // until this line. Rects rather than the computed display: that one reports the
+      // box's OWN display and would still say "block" inside a section someone had hidden.
+      if (!unfold(box.closest('.step-section'))) return false;
+      const header = box.parentElement.querySelector('.thinking-toggle');
+      if (!header || header.getClientRects().length === 0) return false;
+      if (box.getClientRects().length > 0) header.click();  // folded by default, but that is another check's
+      header.click();
       if (box.getClientRects().length === 0) return false;
       // the answer's markup and the tool call Status already names stay out
       return !box.textContent.includes('<p>') && !box.textContent.includes('datetime_now');
@@ -1174,7 +1193,11 @@
     // One Thinking box and one Status box per MESSAGE said nothing about which of a
     // run's calls a line came from. A tool scope carries no step at all, so its place
     // can only come from the order of the stream -- which is what this measures.
+    //
+    // Folding at the next step is a setting now (by default a run's steps fold once it
+    // has answered): chosen here, as the Settings panel would.
     try {
+      choose({ fold_steps: 'at_next_step' });
       sessionButton('s-1', 'open').click();
       await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
       cookie('stub_stream', 'steps');
@@ -1207,6 +1230,7 @@
       if (step('1').querySelector('.container-body').style.display !== 'none') return false;
       return step('2').querySelector('.container-body').style.display !== 'none';
     } finally {
+      choose({});
       cookie('stub_stream', null);
       forgetRun();
       await loadShell();
@@ -1227,6 +1251,8 @@
       await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-steps', 3000);
       await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
       const box = $$('#chat .msg.assistant').at(-1);
+      // the run has answered, so its steps are folded; the rows are read in step 2 open
+      if (!unfold(box.querySelector('.step-section[data-step="2"]'))) return false;
       const row = (suffix) => box.querySelector(`.operation-progress[data-request-id$="${suffix}"]`);
       const parent = row('_sub_001');
       const child = row('_sub_001_001');
@@ -1287,7 +1313,7 @@
       await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
       const box = $$('#chat .msg.assistant').at(-1);
       const step = (n) => box.querySelector(`.step-section[data-step="${n}"]`);
-      // call 1 folded itself away when call 2 opened. Open it again, or every
+      // call 1 is folded once the run has answered. Open it again, or every
       // visibility check below would pass for the wrong reason.
       const body1 = step('1').querySelector('.container-body');
       if (body1.getClientRects().length === 0) step('1').querySelector('.container-header').click();
@@ -1337,8 +1363,8 @@
       // naming the tool. Two such calls to the SAME tool are two things to read --
       // grouped by the tool's name they would land in one block, although the request
       // id that separates them is right there.
-      // step 1 was opened above, which folds step 2 -- without this every visibility
-      // check below would fail for a reason that has nothing to do with the block.
+      // step 2 is folded too -- without this every visibility check below would fail
+      // for a reason that has nothing to do with the block.
       const body2 = step('2').querySelector('.container-body');
       if (body2.getClientRects().length === 0) step('2').querySelector('.container-header').click();
       if (body2.getClientRects().length === 0) return false;
@@ -1376,8 +1402,12 @@
       const step = box.querySelector('.step-section[data-step="1"]');
       if (!step) return false;
       const thinking = step.querySelector('.thinking-content');
-      if (!thinking || thinking.style.display === 'none') return false;
+      // the call reasoned, so its thinking has a header -- a call that did not shows none
+      if (!thinking || thinking.closest('.step-thinking').hidden) return false;
       if (!thinking.textContent.includes('weighing the first move.')) return false;
+      // read back, the run has answered: its step is folded like a live one's at its answer
+      if (step.querySelector(':scope > .container-body').style.display !== 'none') return false;
+      if (!unfold(step)) return false;
       // the call has no status line of its own here -- the session does not carry one --
       // so it brings a line naming the tool, the same shape a live scope-less call gets
       const detail = step.querySelector('.status-body > .tool-detail');
@@ -1400,6 +1430,254 @@
       if (!box.querySelector('.response-text').textContent.includes('Done')) return false;
       return box.querySelectorAll('.step-section').length === 1;
     } finally {
+      await loadShell();
+    }
+  });
+
+  await check('steps stay open while the run works and fold once it has answered; one opened by hand stays open', async () => {
+    // Folding the finished call as the next one started took away what the viewer was
+    // reading while the next call was still thinking -- the run could not be followed.
+    // By default the steps now stay open while the run works and fold at its answer.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'subrun');
+      $('#task').value = 'Get help';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-subrun', 3000);
+      const box = $$('#chat .msg.assistant').at(-1);
+      const step = (n) => box.querySelector(`:scope > .steps > .step-section[data-step="${n}"]`);
+      const shown = (n) => step(n).querySelector(':scope > .container-body').style.display !== 'none';
+      // call 2 is in flight (the stub pauses there): call 1 is still open to read
+      await until('call 2', () => step('2'), 3000);
+      need(!(!shown('1') || !shown('2')), "!shown('1') || !shown('2')");
+      // taken in hand: closed and opened again by the viewer -- it is theirs now
+      step('1').querySelector(':scope > .container-header').click();
+      step('1').querySelector(':scope > .container-header').click();
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 8000);
+      // answered: the steps fold, the one taken in hand does not
+      need(shown('1') && !shown('2') && !shown('3') && !shown('run'), 'the answered run did not fold as chosen');
+      // a setting changed afterwards reaches the finished run: "never" opens its steps again
+      choose({ fold_steps: 'never' });
+      need(shown('2') && shown('3'), 'never did not open the finished run');
+      choose({});
+      need(!shown('2') && shown('1'), 'back to the default did not fold it again');
+      // every step folds at the answer: its header opens it again by keyboard too
+      const header = step('2').querySelector(':scope > .container-header');
+      need(header.getAttribute('role') === 'button' && header.tabIndex === 0
+        && header.getAttribute('aria-expanded') === 'false', 'a folded step header is no control');
+      header.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      return need(shown('2') && header.getAttribute('aria-expanded') === 'true', 'the keyboard did not open a folded step');
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check("a sub-agent's run stays in the step that started it and shows its own steps, one level in", async () => {
+    // Its lines were filed under whichever call was open when they ARRIVED -- an async
+    // sub-agent is waited for steps later, so its work turned up in the waiting call.
+    // And of its run only the status lines came through: no steps, no thinking.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'subrun');
+      $('#task').value = 'Get help';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-subrun', 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 8000);
+      const box = $$('#chat .msg.assistant').at(-1);
+      const step = (n) => box.querySelector(`:scope > .steps > .step-section[data-step="${n}"]`);
+      const sub = box.querySelector('.sub-run[data-run-id="r-subrun_003_async_x1"]');
+      const spawn = box.querySelector('.operation-progress[data-request-id="r-subrun_003"]');
+      need(!(!sub || !spawn), "!sub || !spawn");
+      // under the call that started it, in the step that call belongs to -- although
+      // most of it arrived while call 3 was waiting
+      need(!(!spawn.contains(sub) || !step('1').contains(spawn)), "!spawn.contains(sub) || !step('1').contains(spawn)");
+      const late = box.querySelector('.operation-progress[data-request-id="r-subrun_003_async_x1_008"]');
+      need(!(!late || !sub.contains(late) || !late.textContent.includes('Search completed')), "!late || !sub.contains(late) || !late.textContent.includes('Search completed')");
+      need(!(step('3').querySelector('[data-request-id^="r-subrun_003_"]')), "step('3').querySelector('[data-request-id^=\"r-subrun_003_\"]')");
+      // its own steps, each with its own thinking, and none of it in the caller's
+      const subStep = (n) => sub.querySelector(`:scope > .sub-run-body > .steps > .step-section[data-step="${n}"]`);
+      need(!(!subStep('1') || !subStep('2')), "!subStep('1') || !subStep('2')");
+      need(!(!subStep('1').querySelector('.thinking-content').textContent.includes('the helper thinks first.')), "!subStep('1').querySelector('.thinking-content').textContent.includes('the helper thinks first.')");
+      need(!(!subStep('2').querySelector('.thinking-content').textContent.includes('the helper thinks again.')), "!subStep('2').querySelector('.thinking-content').textContent.includes('the helper thinks again.')");
+      need(!(step('1').querySelector(':scope > .container-body > .step-thinking').textContent.includes('helper thinks')), "step('1').querySelector(':scope > .container-body > .step-thinking').textContent.includes('helper thinks')");
+      // its lines sit flat inside it: indented once, by where the run hangs, not again per line
+      need(!(late.getAttribute('data-depth') !== '0'), "late.getAttribute('data-depth') !== '0'");
+      // what its tool was asked hangs on its tool's row, as in the caller's steps
+      need(!(!late.classList.contains('has-detail') || !late.textContent.includes('"icons"')), "!late.classList.contains('has-detail') || !late.textContent.includes('\"icons\"')");
+      // its answer is its own, rendered as the server formatted it; the caller's stays the caller's
+      const answer = sub.querySelector(':scope > .sub-run-body > .container-section .response-text');
+      need(!(!answer || answer.textContent !== 'Icons found.' || !answer.querySelector('b')), "!answer || answer.textContent !== 'Icons found.' || !answer.querySelector('b')");
+      const own = box.querySelector(':scope > .container-section .response-text');
+      need(!(!own || !own.textContent.includes('Done') || own.textContent.includes('Icons')), "!own || !own.textContent.includes('Done') || own.textContent.includes('Icons')");
+      // its header names it and says how it ended
+      const header = sub.querySelector(':scope > .sub-run-header');
+      need(!(!header.textContent.includes('skills_agent') || !header.textContent.includes('Research the icons')), "!header.textContent.includes('skills_agent') || !header.textContent.includes('Research the icons')");
+      need(!(!header.querySelector('.checkmark') || sub.dataset.state !== 'done'), "!header.querySelector('.checkmark') || sub.dataset.state !== 'done'");
+      // a run the sub-agent started hangs from ITS call, inside it
+      const grand = sub.querySelector('.operation-progress[data-request-id="r-subrun_003_async_x1_009"] > .sub-run');
+      need(!(!grand || !grand.textContent.includes('Five.') || grand.dataset.state !== 'done'), "!grand || !grand.textContent.includes('Five.') || grand.dataset.state !== 'done'");
+      // one level in: the sub-agent's run is indented from the call that started it
+      const indent = (el) => el.getBoundingClientRect().left;
+      need(!(!unfold(step('1'))), "!unfold(step('1'))");
+      need(!(!(indent(header) > indent(spawn.querySelector('.progress-line')))), "!(indent(header) > indent(spawn.querySelector('.progress-line')))");
+      // one that says its first word only in call 3 still hangs from its call in step 1
+      const quiet = box.querySelector('.sub-run[data-run-id="r-subrun_005_async_x3"]');
+      need(quiet && step('1').querySelector('.operation-progress[data-request-id="r-subrun_005"]').contains(quiet),
+        'a sub-run heard from late does not hang from its call');
+      // one whose call's line never came goes into the step of the run that started it
+      const rowless = box.querySelector('.sub-run[data-run-id="r-subrun_003_async_x1_010_sub_g2"]');
+      need(rowless && subStep('2').contains(rowless), 'a sub-run without its call\'s row left its caller\'s step');
+      // a retry of it goes beside it, under the same call -- it has no row of its own
+      const retry = box.querySelector('.sub-run[data-run-id="r-subrun_003_async_x1_minlen_1"]');
+      need(retry && retry.parentElement === spawn, 'the retry does not sit beside the run it retries');
+      // an agent called as a tool runs under its call's own id: it sits in that row, and its
+      // own lines are its own -- no arrow on the call's row hides them and leaves the rest
+      const calledRow = step('1').querySelector('.operation-progress[data-request-id="r-subrun_006"]');
+      const called = calledRow && calledRow.querySelector(':scope > .sub-run[data-run-id="r-subrun_006"]');
+      need(called && called.querySelector('.operation-progress[data-request-id="r-subrun_006_001"]'),
+        'an agent called as a tool does not sit in its call with its own lines');
+      const arrow = calledRow.querySelector(':scope > .progress-line .tree-expand-btn');
+      need(!arrow || arrow.getClientRects().length === 0, "the call's row folds the agent's lines on their own");
+      // one that failed says so, with what went wrong; one that was stopped too
+      const failed = box.querySelector('.sub-run[data-run-id="r-subrun_007_async_x4"]');
+      need(failed && failed.dataset.state === 'error' && failed.querySelector(':scope > .sub-run-header .error-mark')
+        && failed.textContent.includes("the helper's model is down"), 'a failed sub-run does not say so');
+      const stopped = box.querySelector('.sub-run[data-run-id="r-subrun_008_async_x5"]');
+      need(stopped && stopped.dataset.state === 'error', 'a cancelled sub-run does not say so');
+      // open by default (chat.sub_agents); its header folds and opens it, and so takes it in hand
+      const bodyShown = (run) => run.querySelector(':scope > .sub-run-body').getClientRects().length > 0;
+      need(bodyShown(sub) && header.getAttribute('aria-expanded') === 'true', 'a sub-run does not start open');
+      header.click();
+      need(!bodyShown(sub) && sub.dataset.touched === 'true', 'its header did not fold it, or left it untouched');
+      header.click();
+      // "folded" chosen: the ones nobody touched fold, the one opened by hand stays open
+      choose({ sub_agents: 'collapsed' });
+      need(!bodyShown(called) && bodyShown(sub), 'the setting did not reach the sub-runs as chosen');
+      // opened by keyboard alone, it is the viewer's as well
+      called.querySelector(':scope > .sub-run-header').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      choose({});
+      choose({ sub_agents: 'collapsed' });
+      need(bodyShown(called), 'a sub-run opened by keyboard was folded by the setting');
+      choose({});
+      // one its caller never waited for is still at work when the caller ends: nothing
+      // of it reaches the page any more, and its header says so instead of spinning on
+      const stray = box.querySelector('.sub-run[data-run-id="r-subrun_004_async_x2"]');
+      need(stray && stray.dataset.state === 'unfinished', 'the stray sub-run is not marked unfinished');
+      need(stray.querySelector('.open-mark') && !stray.querySelector('.spinner'), 'the stray sub-run still spins');
+      // and it has answered too, so its steps fold like its caller's -- by its OWN answer
+      return subStep('1').querySelector(':scope > .container-body').style.display === 'none';
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('thinking sits folded under its own header, opens by it, and a changed setting reaches every box not opened by hand', async () => {
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'steps');
+      $('#task').value = 'Two calls please';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-steps', 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
+      const box = $$('#chat .msg.assistant').at(-1);
+      const step = (n) => box.querySelector(`:scope > .steps > .step-section[data-step="${n}"]`);
+      need(!(!unfold(step('1')) || !unfold(step('2'))), "!unfold(step('1')) || !unfold(step('2'))");
+      const thinking = (n) => step(n).querySelector('.step-thinking');
+      const text = (n) => thinking(n).querySelector('.thinking-content');
+      const toggle = (n) => thinking(n).querySelector('.thinking-toggle');
+      // folded: the header shows, the text does not
+      need(!(toggle('1').getClientRects().length === 0 || text('1').getClientRects().length > 0), "toggle('1').getClientRects().length === 0 || text('1').getClientRects().length > 0");
+      need(!(toggle('1').getAttribute('aria-expanded') !== 'false'), "toggle('1').getAttribute('aria-expanded') !== 'false'");
+      // the header opens it, by mouse and by keyboard
+      toggle('1').click();
+      need(!(text('1').getClientRects().length === 0 || toggle('1').getAttribute('aria-expanded') !== 'true'), "text('1').getClientRects().length === 0 || toggle('1').getAttribute('aria-expanded') !== 'true'");
+      toggle('1').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      need(!(text('1').getClientRects().length > 0), "text('1').getClientRects().length > 0");
+      // "open" chosen: the box nobody touched opens; the one closed by hand stays closed
+      choose({ thinking: 'expanded' });
+      need(!(text('2').getClientRects().length === 0), "text('2').getClientRects().length === 0");
+      need(!(text('1').getClientRects().length > 0), "text('1').getClientRects().length > 0");
+      // closed by keyboard alone, a box is the viewer's too: "open" chosen again leaves it closed
+      toggle('2').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      choose({ thinking: 'expanded' });
+      need(text('2').getClientRects().length === 0, 'a box closed by keyboard was opened by the setting');
+      // and a call that did not reason shows no thinking header at all
+      return step('run').querySelector('.step-thinking').hidden;
+    } finally {
+      choose({});
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a message appended mid-run moves the run on to a new block, and its answer folds the steps of both', async () => {
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'subrun');
+      $('#task').value = 'Get help';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-subrun', 3000);
+      const first = $$('#chat .msg.assistant').at(-1);
+      await until('call 2', () => first.querySelector(':scope > .steps > .step-section[data-step="2"]'), 3000);
+      const before = (await (await stub('/__stub/hits')).json())['append:r-subrun'] || 0;
+      $('#task').value = 'Also this';
+      $('#f').requestSubmit();
+      await until('the append', async () => ((await (await stub('/__stub/hits')).json())['append:r-subrun'] || 0) > before, 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 8000);
+      const next = $$('#chat .msg.assistant').at(-1);
+      need(next !== first && next.querySelector('.step-section[data-step="3"]'), 'the run did not move on to a new block');
+      // a sub-agent started before the message, heard from only after it, hangs from its call
+      const late = first.querySelector('.operation-progress[data-request-id="r-subrun_005"] > .sub-run');
+      need(late && late.dataset.runId === 'r-subrun_005_async_x3', 'a sub-run heard from after the move left its call');
+      const folded = (box) => [...box.querySelectorAll(':scope > .steps > .step-section')]
+        .every((s) => s.querySelector(':scope > .container-body').style.display === 'none');
+      return need(folded(first), 'the steps before the appended message stayed open')
+        && need(folded(next), `the steps after it stayed open: ${$$('#chat .msg.assistant').map((box) =>
+          [...box.querySelectorAll(':scope > .steps > .step-section')].map((s) =>
+            `${s.dataset.step}:${s.querySelector(':scope > .container-body').style.display || 'open'}`).join(',')).join(' | ')}`);
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a session read back while its run still works keeps that run open', async () => {
+    // Replaying folds a run as its answer would -- but the last run of a session read
+    // back mid-run has not answered, and folded it would look finished.
+    try {
+      await stub('/__stub/sessions', { session_id: 's-mid', title: 'A run under way', run: 'mid' });
+      await loadShell();
+      sessionButton('s-mid', 'open').click();
+      await until('the run under way', () => $('#headerSessionId').textContent === 'A run under way');
+      const step = await until('its step', () => $('#chat .msg.assistant .step-section[data-step="1"]'));
+      need(step.querySelector(':scope > .container-body').style.display !== 'none', 'the unanswered run was folded');
+      // a run of this page answering in the same session: the run read back is over now too
+      cookie('stub_stream', 'ending');
+      $('#task').value = 'Go on';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-ending', 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
+      cookie('stub_stream', null);
+      need(step.querySelector(':scope > .container-body').style.display === 'none',
+        'the run read back stayed open after the next answer');
+      forgetRun();
+      sessionButton('s-run', 'open').click();
+      await until('the run read back', () => $('#headerSessionId').textContent === 'A run read back');
+      const done = await until('its step', () => $('#chat .msg.assistant .step-section[data-step="1"]'));
+      return need(done.querySelector(':scope > .container-body').style.display === 'none', 'the answered run stayed open');
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
       await loadShell();
     }
   });
@@ -2441,6 +2719,8 @@
   await check('an open settings panel shows the theme chosen in the header', async () => {
     const panel = panelFrame('/ui/panels/settings').contentDocument;
     await until('the light radio', () => panel.querySelector('input[name="theme"][value="light"]').checked);
+    // without accounts there is nowhere to keep the chat settings, so none are offered
+    await until('no chat settings', () => panel.getElementById('chatPreferences').hidden);
     return !panel.querySelector('input[name="theme"][value="system"]').checked;
   });
 
@@ -3354,6 +3634,65 @@
     await until('the saved toast', () => $$('.pk-toast--ok').some((t) => t.textContent.includes('Profile saved')));
     const patches = await (await stub('/__stub/patches')).json();
     return shown && patches.at(-1).full_name === 'Ada Lovelace' && panel.getElementById('noAccounts').hidden;
+  });
+
+  await check('the chat settings are kept on the account and apply to the chat at once', async () => {
+    // The Settings panel saves each choice as it is clicked; the shell hands the saved
+    // preferences to the chat, which shows what is on the page their way at once --
+    // and a reload reads them back from the account, not from this browser.
+    const panel = panelFrame('/ui/panels/settings').contentDocument;
+    const radio = (name, value) => panel.querySelector(`#chatPreferences input[name="${name}"][value="${value}"]`);
+    const thinkingShown = () => {
+      const pre = $('#chat .step-thinking .thinking-content');
+      return !!pre && !pre.hidden;
+    };
+    try {
+      await until('the chat settings', () => !panel.getElementById('chatPreferences').hidden
+        && radio('thinking', 'collapsed').checked, 3000);
+      // a run read back, with a call that reasoned
+      sessionButton('s-run', 'open').click();
+      await until('the run session', () => $('#headerSessionId').textContent === 'A run read back');
+      need(!(thinkingShown()), "thinkingShown()");
+      radio('thinking', 'expanded').click();
+      await until('the saved choice', async () => (await (await stub('/__stub/preference-puts')).json()).length === 1, 3000);
+      const put = (await (await stub('/__stub/preference-puts')).json())[0];
+      need(!(put.chat.thinking !== 'expanded' || put.chat.fold_steps !== 'at_end'), "put.chat.thinking !== 'expanded' || put.chat.fold_steps !== 'at_end'");
+      await until('the chat following it', () => thinkingShown(), 2000);
+      // read back from the account after a reload
+      await loadShell();
+      sessionButton('s-run', 'open').click();
+      await until('the run session again', () => $('#headerSessionId').textContent === 'A run read back');
+      await until('the kept choice', () => thinkingShown(), 3000);
+      const again = panelFrame('/ui/panels/settings').contentDocument;
+      const choice = (name, value) => again.querySelector(`#chatPreferences input[name="${name}"][value="${value}"]`);
+      const pick = (value) => choice('sub_agents', value);
+      await until('the settings again', () => pick('expanded').checked, 3000);
+      // two choices inside one round trip: the second is kept with the first, not over it
+      cookie('stub_preferences', 'slow');
+      choice('fold_steps', 'never').click();
+      choice('thinking', 'collapsed').click();
+      await until('both saved', async () => (await (await stub('/__stub/preference-puts')).json()).length === 3, 4000);
+      const kept = (await (await stub('/__stub/preference-puts')).json()).at(-1).chat;
+      need(kept.fold_steps === 'never' && kept.thinking === 'collapsed', `the second choice undid the first: ${JSON.stringify(kept)}`);
+      // a choice the account did not take is not shown as taken
+      cookie('stub_preferences', 'fails');
+      pick('collapsed').click();
+      await until('the refusal', () => $$('.pk-toast').some((t) => t.textContent.includes('database is locked')), 3000);
+      need(pick('expanded').checked && !pick('collapsed').checked, 'the refused choice still shows as chosen');
+      // refused while the next click waits its turn: that one's save carries both, and the
+      // radios are not put back under it
+      cookie('stub_preferences', 'fails-once');
+      choice('fold_steps', 'at_end').click();
+      choice('thinking', 'expanded').click();
+      await until('the save after the refusal', async () => (await (await stub('/__stub/preference-puts')).json()).length === 4, 4000);
+      const after = (await (await stub('/__stub/preference-puts')).json()).at(-1).chat;
+      return need(after.fold_steps === 'at_end' && after.thinking === 'expanded'
+        && choice('fold_steps', 'at_end').checked && choice('thinking', 'expanded').checked,
+      `a refused click undid the one after it: ${JSON.stringify(after)}`);
+    } finally {
+      cookie('stub_preferences', null);
+      await stub('/__stub/preferences/reset', {});
+    }
   });
 
   await check('logging out forgets the layout of the user who left', async () => {

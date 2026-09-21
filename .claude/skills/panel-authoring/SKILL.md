@@ -161,6 +161,7 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 | `setTitle(text)`, `navigate(path)` | Titel im Tab, Pfad im Panel merken (wird beim Wiederherstellen geöffnet und gilt als eigener Pfad: anders als ein Kontext-Link setzt der Starter ihn nicht zurück; ohne Argument der Pfad, den die Seite gerade zeigt). |
 | `setDirty(bool)` | ungespeicherte Eingaben melden: solange `true`, fragt die Shell vor Schließen, Ab- oder Andocken oder einem Link, der das Panel neu lädt, und der eigene Browser-Tab vor dem Verlassen. Nach dem Speichern oder Verwerfen `setDirty(false)`. |
 | `setTheme(theme)`, `currentTheme()`, `onThemeChange(fn)`, `THEMES` | Theme-Wahl und -Wechsel (Einstellungen, Kit-Seite); `onThemeChange` meldet auch einen Wechsel aus der Shell und, bei `system`, einen Wechsel der Systemfarben. |
+| `announcePreferences(preferences)` | der Shell melden, dass Einstellungen am Konto gespeichert sind (nach dem PUT auf `/auth/me/preferences`); der Chat zeigt sofort danach an. |
 
 **Das Muster eines Laders** — neueste Antwort gewinnt, Unverändertes bleibt
 stehen, ein Fehler behält das Gezeigte und sagt es:
@@ -295,6 +296,7 @@ Funktionen oben.
 | Panel → Shell | `pk:toast` | `message`, `kind` |
 | Panel → Shell | `pk:title` / `pk:navigate` / `pk:set-theme` | `text` / `path` / `theme` |
 | Panel → Shell | `pk:dirty` | `dirty` (ungespeicherte Eingaben; eine neue Seite im Panel gilt als sauber) |
+| Panel → Shell | `pk:preferences` | `preferences` (schon gespeichert; die Shell feuert `preferences:changed` für den Chat) |
 
 Was ein Panel vor `pk:init` sagt (Titel, Pfad), hält das Kit zurück und
 schickt es nach dem Handschlag. Ohne Shell (eigener Browser-Tab, fremder

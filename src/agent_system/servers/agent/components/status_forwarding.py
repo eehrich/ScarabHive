@@ -3,13 +3,66 @@ Status Event Forwarding for Agent Server
 
 Simplified architecture: Direct synchronous handler without background task.
 Events are pushed directly to the list by the StatusBus handler - no queue, no task, no race conditions.
+The run events of runs started under this one are appended to the same list, as `sub_run`
+envelopes, by relay_run_event (called from Agent.run_events).
 """
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 
 from ....tools.status import status_bus, StatusHandler, StatusEvent
+from ....utils.tree_hierarchy import parse_request_id_hierarchy
 
 logger = logging.getLogger(__name__)
+
+# Every forwarder that is streaming a run right now, for the run events of the runs
+# started under it (see relay_run_event).
+_live_forwarders: Set["StatusEventForwarder"] = set()
+
+# Not relayed: status lines reach every ancestor over the status bus already, a
+# sub_run envelope was relayed by the run that produced it, and a heartbeat only
+# keeps ONE connection alive.
+_NOT_RELAYED = frozenset({"status", "sub_run", "heartbeat"})
+
+
+def relay_run_event(forwarder: "StatusEventForwarder", event: Dict[str, Any], agent_name: str) -> None:
+    """Hand one event of a run to the runs streaming above it (the run's `forwarder.listeners`).
+
+    A sub-agent's run is consumed by whoever started it (sub_agent_manager reads it
+    for its activity line and its answer), so its thinking, its steps and its tool
+    calls never reached the stream of the run the viewer watches -- only its status
+    lines did, because those travel over the process-wide status bus. This is the
+    same path for the rest: the prefix a sub-run's id carries is the one the status
+    handler already filters by.
+
+    Said by the run itself rather than by the plugin that started it, so it holds for
+    whatever starts runs under a run, and at any depth. Who is above was settled when
+    the run started (StatusEventForwarder.start_forwarding), so it still holds for the
+    run's last events, which come after its forwarder has stopped.
+    """
+    if not forwarder.request_id or event.get("type") in _NOT_RELAYED:
+        return
+    listeners = [f for f in forwarder.listeners if f in _live_forwarders]
+    if not listeners:
+        return
+    hierarchy = parse_request_id_hierarchy(forwarder.request_id)
+    for listener in listeners:
+        listener.add_sub_run_event(forwarder.request_id, hierarchy, agent_name, event)
+
+
+def in_line_with_a_live_run(request_id: str) -> bool:
+    """Whether `request_id` extends the id of a run streaming now by `_…`, or one extends it.
+
+    Either way the two would be taken for a run and its sub-run: the status handler
+    and the relay both go by that prefix. The server names sub-runs so; an id a
+    caller chooses must stay out of line with every live run.
+    """
+    return any(_is_above(f, request_id) or f.request_id.startswith(f"{request_id}_")
+               for f in _live_forwarders if f.request_id)
+
+
+def _is_above(forwarder: "StatusEventForwarder", request_id: str) -> bool:
+    """Whether `request_id` reads as a run started under the one `forwarder` streams."""
+    return bool(forwarder.request_id) and request_id.startswith(f"{forwarder.request_id}_")
 
 
 class DirectStatusHandler(StatusHandler):
@@ -61,25 +114,94 @@ class StatusEventForwarder:
 
     def __init__(self):
         self.request_id: Optional[str] = None
+        # The streams this run's events are relayed to, settled when it starts.
+        self.listeners: List["StatusEventForwarder"] = []
         self.status_events_to_forward: List[Dict[str, Any]] = []
         self._handler: Optional[DirectStatusHandler] = None
+        # run id -> that run's token-delta envelope still in the queue, the one the
+        # next delta of the same call is folded into (see add_sub_run_event).
+        self._open_deltas: Dict[str, Dict[str, Any]] = {}
 
     async def start_forwarding(self, request_id: str) -> None:
         """Start forwarding status events for a specific request."""
         self.request_id = request_id
+        # Above this run: the nearest run streaming now whose id it extends, and the
+        # runs above that one. Settled now, not per event, because "above" is a
+        # question of when as much as of ids: a stream begun later under an id this
+        # one extends is another run -- the writer dispatches a job again under its
+        # old id while a sub-agent of the old run is still at work, and neither that
+        # sub-agent nor anything it starts afterwards is the new run's.
+        nearest = max((f for f in _live_forwarders if _is_above(f, request_id)),
+                      key=lambda f: len(f.request_id), default=None)
+        self.listeners = [*nearest.listeners, nearest] if nearest else []
         self.status_events_to_forward.clear()
+        self._open_deltas.clear()
         
         # Create and register direct handler
         self._handler = DirectStatusHandler(request_id, self.status_events_to_forward)
         status_bus.add_handler(self._handler)
+        _live_forwarders.add(self)
         logger.debug("Request %s registered direct status handler", request_id)
 
     async def stop_forwarding(self) -> None:
         """Stop forwarding and cleanup."""
+        _live_forwarders.discard(self)
         if self._handler:
             status_bus.remove_handler(self._handler)
             logger.debug("Request %s removed direct status handler", self.request_id)
             self._handler = None
+
+    def add_sub_run_event(self, run_id: str, hierarchy: Dict[str, Any], agent_name: str,
+                          event: Dict[str, Any]) -> None:
+        """Queue one event of a run started under this one, wrapped as `sub_run`.
+
+        `spawned_by` is the id the run hangs from (the parent in its id): the tool call
+        that started it for a sub_agent_manager run (`<call>_sub_`, `_async_`,
+        `_sub_cont_`), the caller's run for an agent called as a tool (whose run id is
+        the call's own), the run it retries for a `_minlen_` retry. The page puts the
+        run where it was started, not where its events happen to arrive: an async
+        sub-agent's lines are delivered while the parent waits for it, steps later.
+
+        Token streams are folded into the run's own delta still in the queue: three
+        sub-agents reasoning at once would otherwise put one queued event per token
+        into the stream. Per run, not "the last entry": sub-agents running side by side
+        take turns token by token, and with a single last entry nothing would ever
+        fold. A reasoning delta extends the previous one of the same call; an answer
+        delta carries the whole answer so far, so the newest replaces the one before.
+        Anything else the run says closes its delta, so nothing it says later is moved
+        in front of what it said in between.
+        """
+        kind = event.get("type")
+        open_delta = self._open_deltas.get(run_id)
+        if (open_delta is not None and kind in ("reasoning_delta", "thinking_delta")
+                and open_delta["event"].get("type") == kind
+                and open_delta["event"].get("step") == event.get("step")):
+            if kind == "reasoning_delta":
+                open_delta["event"]["delta"] = (open_delta["event"].get("delta") or "") + (event.get("delta") or "")
+            else:
+                open_delta["event"] = dict(event)
+            return
+        copied = dict(event)
+        if isinstance(copied.get("assistant"), dict):
+            # The API renders the answer in it to HTML, in place, when this is
+            # delivered -- which can be long after the run yielded it, and the run
+            # goes on using that dict (thinking_complete's is the one it keeps).
+            copied["assistant"] = dict(copied["assistant"])
+        envelope = {
+            "type": "sub_run",
+            "run_id": run_id,
+            "spawned_by": hierarchy.get("parent_id"),
+            "depth_level": hierarchy.get("depth", 0),
+            "agent": agent_name,
+            # A copy: the delta above is extended in place, and the dict the run
+            # yielded is its consumer's.
+            "event": copied,
+        }
+        self.status_events_to_forward.append(envelope)
+        if kind in ("reasoning_delta", "thinking_delta"):
+            self._open_deltas[run_id] = envelope
+        else:
+            self._open_deltas.pop(run_id, None)
 
     def get_pending_events(self) -> List[Dict[str, Any]]:
         """Get and clear all pending status events.
@@ -89,6 +211,7 @@ class StatusEventForwarder:
         """
         events = self.status_events_to_forward.copy()
         self.status_events_to_forward.clear()
+        self._open_deltas.clear()  # handed on: what follows is folded into nothing sent already
         return events
 
     async def drain_pending_events(self, max_wait_ms: float = 100) -> List[Dict[str, Any]]:

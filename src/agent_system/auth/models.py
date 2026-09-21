@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 from pydantic import AfterValidator, BaseModel, EmailStr, Field, ConfigDict
 from pydantic_core import PydanticCustomError
 
@@ -81,6 +81,30 @@ class UserSelfUpdate(BaseModel):
     full_name: Optional[str] = None
     password: Optional[Password] = None
     current_password: Optional[str] = None
+
+
+class ChatPreferences(BaseModel):
+    """How the web chat shows a run (Settings -> Chat)."""
+    model_config = {"extra": "forbid"}
+
+    # When a run's step sections fold away: once it has answered, as soon as the next
+    # step starts, or never.
+    fold_steps: Literal["at_end", "at_next_step", "never"] = "at_end"
+    # Whether a step's thinking is shown folded.
+    thinking: Literal["collapsed", "expanded"] = "collapsed"
+    # Whether a sub-agent's run, shown inside the call that started it, starts open.
+    sub_agents: Literal["expanded", "collapsed"] = "expanded"
+
+
+class UserPreferences(BaseModel):
+    """What a user chose about how things are shown, kept with their account.
+
+    Unknown keys are rejected rather than stored: a client that sends a name nobody
+    reads would believe it changed something.
+    """
+    model_config = {"extra": "forbid"}
+
+    chat: ChatPreferences = Field(default_factory=ChatPreferences)
 
 
 class User(UserBase):

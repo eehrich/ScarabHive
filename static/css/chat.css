@@ -58,7 +58,7 @@
 .type-icon { display: inline-flex; color: var(--text-muted); }
 .container-label { font-weight: 500; }
 .container-body { padding: var(--space-1) 0 0 var(--space-5); }
-.container-body > pre {
+.container-body > pre, .step-thinking > pre {
   margin: 0; padding: var(--space-3); max-height: 360px; overflow: auto; white-space: pre-wrap;
   font: 400 var(--text-xs)/1.6 var(--font-mono); color: var(--text-secondary);
   background: var(--surface-1); border-left: 2px solid var(--border-default); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
@@ -71,6 +71,41 @@
    keep it in view: folded, a thirty-step run is thirty lines rather than thirty walls. */
 .steps:not(:empty) { margin-bottom: var(--space-2); }
 .step-note { margin-left: var(--space-1); font-size: var(--text-xs); }
+
+/* A call's thinking: a header of its own, the text folded or not as the viewer chose. */
+.step-thinking { margin-bottom: var(--space-1); }
+.step-thinking > pre { margin-top: 2px; }
+.thinking-toggle {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  padding: 1px var(--space-2) 1px var(--space-1); border-radius: var(--radius-sm);
+  font-size: var(--text-xs); color: var(--text-muted); cursor: pointer; user-select: none;
+}
+.thinking-toggle:hover { color: var(--text-secondary); background: var(--surface-3); }
+.thinking-toggle .pk-icon, .sub-run-header .toggle-arrow .pk-icon { transition: transform var(--duration-fast); }
+.thinking-toggle[aria-expanded="true"] .pk-icon,
+.sub-run-header[aria-expanded="true"] .toggle-arrow .pk-icon { transform: rotate(90deg); }
+.thinking-toggle:focus-visible, .sub-run-header:focus-visible, .step-section > .container-header:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+/* A run started from a call: its own steps and answer, one level in, under the row of
+   the call that started it -- in the step that started it, however late it reports.
+   It sits inside a status row, so it takes back the chat's own type. */
+.sub-run {
+  margin: var(--space-1) 0 var(--space-2) var(--space-5); padding-left: var(--space-3);
+  border-left: 2px solid var(--border-default);
+  font: 400 var(--text-sm)/1.5 var(--font-ui);
+}
+.sub-run-header {
+  display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%;
+  padding: 2px var(--space-2) 2px var(--space-1); border-radius: var(--radius-sm);
+  font-size: var(--text-xs); color: var(--text-secondary); cursor: pointer; user-select: none;
+}
+.sub-run-header:hover { background: var(--surface-3); }
+.sub-run-icon { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.sub-run-agent { font-weight: 500; color: var(--accent-text); flex: none; }
+.sub-run-task { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-run-body { padding-top: var(--space-1); }
 
 /* What a tool was asked and what it answered: ONE folded block under its status line,
    opened by clicking the status text itself. No control of its own — a line of status

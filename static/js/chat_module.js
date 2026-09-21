@@ -1120,9 +1120,28 @@
     const box = document.createElement('div');
     box.className = 'msg assistant';
     box.style.position = 'relative'; // Enable absolute positioning for request ID
-    // One section per LLM call is built as the run goes (see stepOf); an answer with no
-    // run behind it -- a session read back from disk -- has none and shows its text only.
-    box.innerHTML = `
+    row.appendChild(box);
+    chatContainer.appendChild(row);
+    const blk = runView(box);
+    blk.row = row;
+    scrollBottom();
+    return blk;
+  }
+
+  /**
+   * The parts one run is shown in, built into `host`: a section per LLM call, and its answer.
+   *
+   * The same for the run the chat follows and for every run started under it. A
+   * sub-agent's steps are read the way its caller's are, one level in -- and what a
+   * run is in the middle of (the call in flight, the answer streaming) belongs to that
+   * run: kept in one place for the whole page, a sub-agent's first step would close
+   * its caller's.
+   *
+   * One section per LLM call is built as the run goes (see stepOf); an answer with no
+   * run behind it -- a session read back from disk -- has none and shows its text only.
+   */
+  function runView(host, runId = null, depthLevel = 0) {
+    host.insertAdjacentHTML('beforeend', `
       <div class="steps"></div>
       <div class="container-section" style="display: none;">
         <div class="container-header" data-toggle="response">
@@ -1131,35 +1150,66 @@
           <span class="container-label">Response</span>
         </div>
         <div class="container-body assistant-text" style="display: block;"></div>
-      </div>
-    `;
-    row.appendChild(box);
-    chatContainer.appendChild(row);
-    scrollBottom();
-    foldOnClick(box.querySelector('[data-toggle="response"]'));
-
+      </div>`);
+    const response = host.querySelector(':scope > .container-section');
+    foldOnClick(response.querySelector('[data-toggle="response"]'));
     return {
-      row,
-      box,
-      t: box.querySelector('.assistant-text'),
-      steps: box.querySelector('.steps'),
+      box: host,
+      t: response.querySelector('.assistant-text'),
+      steps: host.querySelector(':scope > .steps'),
+      // The step containers this run filled before a message appended mid-run moved
+      // it on to a fresh block (rebindLiveBlock): the rows of its earlier calls are
+      // there (rowOf), and the answer folds them with the rest.
+      pastSteps: [],
+      runId,
+      // The server's depth of this run's id; its rows are indented from here.
+      depthLevel,
+      // The call in flight, for the status events that carry no step of their own
+      // (every tool scope, which knows its tool and not the loop around it). Null
+      // between the run's answer and its end, so the run's own closing lines do not
+      // land in the last call that happened to be open.
+      openStep: null,
+      // The step whose answer is streaming.
+      streamStep: null,
+      // run id -> view, for the runs started under this one (see subRunView).
+      subRuns: new Map(),
     };
   }
 
-  /** A container-section header that folds its body away, and says so to chat.css. */
+  /**
+   * A container-section header that folds its body away, by mouse and by keyboard.
+   *
+   * The header is a div: it is given what a button brings along (see foldOnActivate).
+   * A run's steps all fold at its answer, and a step that only a mouse could open
+   * again would take everything inside it out of reach of the keyboard.
+   */
   function foldOnClick(header) {
     const body = header.nextElementSibling;
     const section = header.parentElement;
-    // data-open drives the arrow (chat.css); the body's display stays the state
-    section.dataset.open = String(body.style.display !== 'none');
-    header.addEventListener('click', () => {
-      const hidden = body.style.display === 'none';
-      body.style.display = hidden ? 'block' : 'none';
-      section.dataset.open = String(hidden);
+    header.setAttribute('role', 'button');
+    header.setAttribute('tabindex', '0');
+    // the body's display stays the state
+    markOpen(section, body.style.display !== 'none');
+    const flip = () => {
+      const open = body.style.display === 'none';
+      body.style.display = open ? 'block' : 'none';
+      markOpen(section, open);
       // Touched by hand: from here on this section is the viewer's, and the next step
       // starting must not fold it away under them.
       section.dataset.touched = 'true';
+    };
+    header.addEventListener('click', flip);
+    header.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();  // Space scrolls the chat away otherwise
+      flip();
     });
+  }
+
+  /** Say whether a section is open: data-open to chat.css (the arrow), aria-expanded to assistive technology. */
+  function markOpen(section, open) {
+    section.dataset.open = String(open);
+    section.querySelector(':scope > .container-header').setAttribute('aria-expanded', String(open));
   }
 
   /** The section that belongs to no single call: the run's own start and end. */
@@ -1177,10 +1227,12 @@
    * status_scope, which knows the tool and not the loop) -- they are placed by the call
    * that is open when they arrive, which is what the ORDER of the stream says.
    */
-  function stepOf(blk, step) {
-    if (!blk || !blk.steps) return null;
+  function stepOf(view, step) {
+    if (!view || !view.steps) return null;
     const key = String(step);
-    const existing = blk.steps.querySelector(`[data-step="${CSS.escape(key)}"]`);
+    // Direct children only: a sub-agent's run sits INSIDE one of these sections, and
+    // its step 1 is not this run's.
+    const existing = view.steps.querySelector(`:scope > [data-step="${CSS.escape(key)}"]`);
     if (existing) return existing;
     const section = document.createElement('div');
     section.className = 'container-section step-section';
@@ -1193,30 +1245,87 @@
         <span class="step-note pk-muted"></span>
       </div>
       <div class="container-body">
-        <pre class="thinking-content" style="display: none;"></pre>
+        <div class="step-thinking" hidden>
+          <span class="thinking-toggle">${kitIcon('chevron-right')}<span>Thinking</span></span>
+          <pre class="thinking-content"></pre>
+        </div>
         <div class="status-body"></div>
       </div>`;
-    blk.steps.appendChild(section);
+    view.steps.appendChild(section);
     foldOnClick(section.querySelector('.container-header'));
+    const thinking = section.querySelector('.step-thinking');
+    const toggle = thinking.querySelector('.thinking-toggle');
+    const text = thinking.querySelector('.thinking-content');
+    foldOnActivate(toggle, text);
+    setFolded(toggle, text, chatPrefs.thinking === 'collapsed');
+    // Opened or closed by hand, it is the viewer's: a changed setting leaves it alone.
+    const touch = () => { thinking.dataset.touched = 'true'; };
+    toggle.addEventListener('click', touch);
+    toggle.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') touch(); });
     return section;
   }
 
+  /** Fold or unfold what foldOnActivate made foldable, saying so to assistive technology. */
+  function setFolded(trigger, body, folded) {
+    body.hidden = folded;
+    trigger.setAttribute('aria-expanded', folded ? 'false' : 'true');
+  }
+
   /**
-   * Open the section for a call and fold the one before it away.
+   * The box a call's thinking goes into, shown from its first word on.
    *
-   * Without the folding a long run is a wall: every step of it open at once, the answer
-   * pushed off the screen. Folded, the live step is the one you are reading. A section
-   * the viewer opened or closed by hand is left alone -- it is theirs from that moment.
+   * A call that does not reason shows no box at all; one that does shows its header,
+   * and the text itself folded or not as the viewer chose (chatPrefs.thinking).
    */
-  function openStep(blk, step) {
-    const section = stepOf(blk, step);
+  function thinkingOf(section) {
+    const wrapper = section.querySelector(':scope > .container-body > .step-thinking');
+    wrapper.hidden = false;
+    return wrapper.querySelector('.thinking-content');
+  }
+
+  /** Fold a step section away or open it, unless the viewer took it in hand. */
+  function setStepFolded(section, folded) {
+    if (section.dataset.touched === 'true') return;
+    section.querySelector(':scope > .container-body').style.display = folded ? 'none' : '';
+    markOpen(section, !folded);
+  }
+
+  /**
+   * Open the section for a call -- and, if the viewer asked for it, fold the one before.
+   *
+   * Folding as the run goes keeps a long run from being a wall, but it takes away what
+   * was just read while the next call is still thinking; which of the two a viewer
+   * wants is theirs to say (chatPrefs.fold_steps). By default the steps stay open while
+   * the run works and fold when it has answered (settleView). A section the viewer
+   * opened or closed by hand is left alone either way -- it is theirs from that moment.
+   */
+  function openStep(view, step) {
+    const section = stepOf(view, step);
     if (!section) return null;
-    for (const other of blk.steps.querySelectorAll('.step-section')) {
-      if (other === section || other.dataset.touched === 'true') continue;
-      other.querySelector('.container-body').style.display = 'none';
-      other.dataset.open = 'false';
+    if (chatPrefs.fold_steps === 'at_next_step') {
+      for (const other of view.steps.querySelectorAll(':scope > .step-section')) {
+        if (other !== section) setStepFolded(other, true);
+      }
     }
     return section;
+  }
+
+  /** A run has answered: its steps are done, and shown the way the viewer wants a finished run's. */
+  function settleView(view) {
+    if (!view || !view.steps) return;
+    view.steps.dataset.settled = 'true';
+    foldSettled(view.steps);
+  }
+
+  /**
+   * The steps of a run that has answered, as the viewer wants them now: folded
+   * (at_end), open (never), or all but the last folded (at_next_step -- where such a
+   * run leaves them). Marked, so a setting changed later is applied to them again.
+   */
+  function foldSettled(steps) {
+    const sections = [...steps.querySelectorAll(':scope > .step-section')];
+    sections.forEach((section, index) => setStepFolded(section, chatPrefs.fold_steps === 'at_end'
+      || (chatPrefs.fold_steps === 'at_next_step' && index < sections.length - 1)));
   }
 
   /**
@@ -1233,10 +1342,57 @@
    * number is a step of the SUB-run. Taken at face value it files a sub-agent working
    * for call 5 under call 1. So the only case the field would ever have decided is the
    * one case where it lies, and the call in flight is the right answer for all of them.
+   *
+   * "The call in flight" of the run the line is FROM, though: a sub-agent's lines go
+   * into its own steps (statusViewFor), not into whatever call its caller is on when
+   * they arrive -- an async sub-agent's are delivered while the caller waits for it,
+   * steps later.
    */
-  function statusBodyFor(blk) {
-    const section = stepOf(blk, currentStatusStep || RUN_SECTION);
-    return section ? section.querySelector('.status-body') : null;
+  function statusBodyFor(view) {
+    const section = stepOf(view, (view && view.openStep) || RUN_SECTION);
+    return section ? section.querySelector(':scope > .container-body > .status-body') : null;
+  }
+
+  /**
+   * The run a status line is from: the deepest run started under `blk` whose id it
+   * carries, or `blk` itself.
+   *
+   * By id, not by arrival: a sub-agent's id starts with the id of the call that started
+   * it, and so does every line it produces (`…_003_async_r2a527_013`).
+   */
+  function statusViewFor(blk, requestId) {
+    let found = blk;
+    let length = -1;
+    for (const view of allSubRuns(blk)) {
+      const id = view.runId;
+      if ((requestId === id || requestId.startsWith(`${id}_`)) && id.length > length) {
+        found = view;
+        length = id.length;
+      }
+    }
+    return found;
+  }
+
+  /**
+   * A status line of the followed run or of a run under it, into the run it is from.
+   *
+   * A line for an operation already shown updates its row where that row is, so no
+   * section is made for it: after a message appended mid-run the run's closing lines
+   * update rows of the block before, and asking for the section to put them in stood
+   * up an empty "Run" section in the new one.
+   */
+  function placeStatus(blk, ev) {
+    const view = statusViewFor(blk, ev.request_id || '');
+    const existing = activeOperations.get(ev.request_id && ev.request_id !== 'default' ? ev.request_id : ev.server);
+    addStatusEvent(existing ? existing.parentElement : statusBodyFor(view), ev, view);
+  }
+
+  /** Every run started under `blk`, at any depth. */
+  function* allSubRuns(blk) {
+    for (const view of blk.subRuns.values()) {
+      yield view;
+      yield* allSubRuns(view);
+    }
   }
 
   // How much of one tool's arguments or result is put into the page. A read of a big
@@ -1393,16 +1549,12 @@
     if (!calls.length && !thinking) return;   // a plain answer needs no step of its own
     const section = stepOf(blk, stepNo);
     if (!section) return;
-    if (thinking) {
-      const pre = section.querySelector('.thinking-content');
-      pre.style.display = 'block';
-      pre.appendChild(document.createTextNode(thinking));
-    }
+    if (thinking) thinkingOf(section).appendChild(document.createTextNode(thinking));
     // toolDetail files its block under the step the run is ON. Set here and put
     // back, because replaying is the one case where that is not "now" -- the
     // loop around this is synchronous, so nothing else reads it meanwhile.
-    const was = currentStatusStep;
-    currentStatusStep = stepNo;
+    const was = blk.openStep;
+    blk.openStep = stepNo;
     try {
       calls.forEach((tc) => {
         const fn = tc.function || {};
@@ -1412,7 +1564,7 @@
         if (answer) toolDetail(blk, data, 'result', maybeJson(answer.content));
       });
     } finally {
-      currentStatusStep = was;
+      blk.openStep = was;
     }
   }
 
@@ -1579,7 +1731,7 @@
       // things happened. It would also sort by a segment that carries nothing to sort
       // by -- since the tree is forwarded (6b6a1348) the only rows reaching this branch
       // are the ones with no parent at all, such as the connection notice, whose id
-      // ends in `_connection`.
+      // ends in `_connection`, and a sub-run's own lines, whose run is their container.
       container.appendChild(operationDiv);
       return;
     }
@@ -1637,7 +1789,7 @@
     }
   }
 
-  function addStatusEvent(container, ev) {
+  function addStatusEvent(container, ev, view = null) {
     if (!container || !ev) return;
     
     const statusSection = container.closest('.container-section');
@@ -1657,8 +1809,16 @@
     // says "this ran under something else" about every line in the chat. Shifted down,
     // the indent means what it looks like it means -- the run's own work sits flat, and
     // only what a sub-agent does sits under the call that spawned it.
-    const depthLevel = Math.max(0, (treeInfo.depth_level || 0) - 1);
-    const parentId = treeInfo.parent_id || null;
+    //
+    // Counted from the run whose view the line is shown in: a sub-agent's run is
+    // already indented where it hangs, and its own work sits flat inside it.
+    const base = view ? view.depthLevel : 0;
+    const depthLevel = Math.max(0, (treeInfo.depth_level || 0) - 1 - base);
+    // A line whose tree parent is the run it is shown in is one of that run's own: the
+    // run's view is its container. Registered under the run's id instead, it would be a
+    // child of the CALL's row where the run's id is the call's (an agent called as a
+    // tool), and that row's arrow would hide the run's lines and leave the rest of it.
+    const parentId = view && view.runId && treeInfo.parent_id === view.runId ? null : (treeInfo.parent_id || null);
     
     // Auto-create virtual parent if needed (parent_id given but not yet in tree)
     if (parentId && !treeNodes.has(parentId)) {
@@ -1947,15 +2107,48 @@
   // The session shown is a sub-agent's the selector cannot pick: the composer stays off.
   let readOnlyShown = false;
 
-  // Streaming state tracking
-  let currentStreamingContent = '';
-  let currentStreamingStep = null;
+  // How the viewer wants runs shown (Settings -> Chat), kept on their account and read
+  // from GET /auth/me/preferences, which always answers with every key. These are what
+  // the page does without an answer: a server without accounts has nowhere to keep them.
+  const CHAT_PREFS_DEFAULTS = Object.freeze({
+    fold_steps: 'at_end',     // at_end | at_next_step | never
+    thinking: 'collapsed',    // collapsed | expanded
+    sub_agents: 'expanded',   // expanded | collapsed
+  });
+  let chatPrefs = { ...CHAT_PREFS_DEFAULTS };
 
-  // The call that is in flight, for the status events that carry no step of their own
-  // (every tool scope, which knows its tool and not the loop around it). Null between
-  // the run's answer and its end, so the run's own closing lines do not land in the
-  // last call that happened to be open.
-  let currentStatusStep = null;
+  /**
+   * Take the viewer's preferences, and show what is on the page their way.
+   *
+   * What the viewer opened or closed by hand stays as it is. A run still working
+   * goes on by the new rule from its next step.
+   */
+  function usePreferences(preferences) {
+    chatPrefs = { ...CHAT_PREFS_DEFAULTS, ...((preferences && preferences.chat) || {}) };
+    if (!chatContainer) return;
+    // Finished runs, read back or live: the answer the preferences arrive after -- a
+    // session restored before they were loaded -- must not keep the default's folding.
+    chatContainer.querySelectorAll('.steps[data-settled]').forEach(foldSettled);
+    chatContainer.querySelectorAll('.step-thinking:not([data-touched])').forEach((thinking) => {
+      setFolded(thinking.querySelector('.thinking-toggle'), thinking.querySelector('.thinking-content'),
+        chatPrefs.thinking === 'collapsed');
+    });
+    chatContainer.querySelectorAll('.sub-run:not([data-touched])').forEach((element) => {
+      setFolded(element.querySelector(':scope > .sub-run-header'), element.querySelector(':scope > .sub-run-body'),
+        chatPrefs.sub_agents === 'collapsed');
+    });
+  }
+
+  /** The viewer's preferences from their account; without one the defaults stand. */
+  async function loadPreferences() {
+    try {
+      const response = await fetch('/auth/me/preferences', { credentials: 'include' });
+      // 404: a server without accounts; 401: nobody signed in. Neither is an error here.
+      if (response.ok) usePreferences(await response.json());
+    } catch (error) {
+      console.warn('[chat_module] Could not load the display preferences:', error);
+    }
+  }
 
   // Set when a user message was appended to the RUNNING request. The stream's
   // block is rebound to a fresh one only when the NEXT step actually starts —
@@ -1971,6 +2164,7 @@
   // rebind work (see the 'continuation' handler and the mid-run append flow).
   function rebindLiveBlock(blk) {
     const newBlk = addAssistantBlock(chatContainer);
+    blk.pastSteps.push(blk.steps);
     blk.row = newBlk.row;
     blk.box = newBlk.box;
     blk.t = newBlk.t;
@@ -2182,6 +2376,223 @@
     element.title = `Request ID: ${run.requestId} -- click to open it in a panel`;
   }
 
+  /**
+   * What a run says about its own work, drawn into its own view.
+   *
+   * One renderer for the run the chat follows and for every run started under it:
+   * a second one beside it would drift, and the page would then tell two different
+   * stories about the same kind of step. What only the followed run has -- the
+   * controls, the request id, a message appended mid-run -- stays in handleSSEEvent.
+   */
+  function renderRunEvent(view, data) {
+    switch (data.type) {
+      case 'reasoning_delta': {
+        // The model's actual reasoning, and the only place it is shown at all:
+        // neither the Response box nor Status carries a word of it. Mind the
+        // names -- `thinking_delta` below is the ANSWER stream; this one is the
+        // thinking, and it went unhandled here, so every token of it was dropped.
+        //
+        // Appended as a text node rather than `textContent +=`, which re-reads
+        // and rewrites the whole box per delta -- a run reasons in hundreds of
+        // them.
+        const section = stepOf(view, data.step);
+        if (section) thinkingOf(section).appendChild(document.createTextNode(data.delta || ''));
+        break;
+      }
+      case 'thinking_delta':
+        // The answer, streaming: the whole of it so far, with a cursor.
+        view.streamStep = data.step;
+        showSection(view.t);
+        view.t.innerHTML = `<div class="response-text streaming">${formatTextWithLineBreaks(data.accumulated || '')}<span class="typing-cursor">|</span></div>`;
+        break;
+      case 'thinking_complete':
+        // Final thinking event from streaming - remove cursor, keep content
+        view.streamStep = null;
+        if (data.assistant && data.assistant.content) {
+          // Content was already displayed via thinking_delta
+          // Now show final formatted content (HTML from format_output hook)
+          showAnswer(view, data.assistant.content, data.content_format || 'text');
+        }
+        // Tool calls are not listed here: Status carries every one of them.
+        break;
+      case 'thinking':
+        if (data.assistant) {
+          // The step's result. Its `assistant.content` is NOT written into the call's
+          // section: it is the step's answer, which the Response box already shows --
+          // and it arrives here past the format_output hook, so a `<pre>` rendered it
+          // as literal `<p>…</p>` markup beside the rendered copy.
+          //
+          // Its tool_calls only NAME the call in the header. The lines themselves are
+          // Status's, with the arguments and the outcome this listing dropped.
+          view.streamStep = null;
+          const chose = (data.assistant.tool_calls || [])
+            .map((tc) => (tc.function || {}).name).filter(Boolean);
+          const section = data.step ? stepOf(view, data.step) : null;
+          if (section && chose.length) {
+            section.querySelector('.step-note').textContent =
+              `· ${chose.slice(0, 3).join(', ')}${chose.length > 3 ? ` +${chose.length - 3}` : ''}`;
+          }
+        } else if (data.step && !data.content) {
+          // This marker, and only this one, opens a call's section: it is sent before
+          // the LLM call. The simplified event at the END of a text-only step carries
+          // `content` and NO step -- opening on that one would add an empty section
+          // after the answer.
+          view.openStep = data.step;
+          openStep(view, data.step);
+        }
+        break;
+      case 'tool_call':
+        toolDetail(view, data, 'arguments', data.params);
+        break;
+      case 'tool_result':
+        toolDetail(view, data, 'result', data.result);
+        break;
+      case 'final': {
+        // The answer is here, so no call is in flight any more: what the run says while
+        // it saves and runs its end hooks belongs to the run, not to its last call.
+        view.openStep = null;
+        // Only when nothing streamed: a streamed answer is already in the box, and
+        // this is the same text.
+        if (!view.t.innerHTML || view.t.innerHTML.trim() === '') {
+          showAnswer(view, data.summary || data.content || '', data.content_format || 'text');
+        }
+        settleView(view);
+        break;
+      }
+    }
+  }
+
+  /** A run's answer in its Response box, rendered as the server formatted it. */
+  function showAnswer(view, content, contentFormat) {
+    showSection(view.t);
+    view.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
+    // Apply Prism.js syntax highlighting if available and content is HTML
+    if (contentFormat === 'html' && typeof Prism !== 'undefined') {
+      Prism.highlightAllUnder(view.t);
+    }
+  }
+
+  /**
+   * The row of an operation anywhere in this block, by its request id.
+   *
+   * Not a virtual parent: addStatusEvent stands one up, empty and unseen, for a parent id
+   * no line has come from -- a sub-run's id, for lines of it that arrive before the run's
+   * first event. Hung there, a run would sit inside the step of its predecessor instead
+   * of beside it.
+   */
+  function rowOf(blk, requestId) {
+    if (!requestId || !blk.box) return null;
+    const selector = `.operation-progress:not(.virtual-parent)[data-request-id="${CSS.escape(requestId)}"]`;
+    // A message appended mid-run moved the run on to a new block; the calls of its
+    // earlier steps are in the steps it left behind (rebindLiveBlock).
+    for (const within of [blk.box, ...blk.pastSteps]) {
+      const row = within.querySelector(selector);
+      if (row) return row;
+    }
+    return null;
+  }
+
+  /**
+   * The view of a run started under the one the chat follows, made on its first event.
+   *
+   * Hung from the row of the call that started it (`spawned_by`), so it stays in the
+   * step it was started from however late its events arrive: an async sub-agent is
+   * waited for steps later, and its work used to be filed under whichever call was
+   * open when it came in. A run whose id IS its call's (an agent called as a tool)
+   * hangs from that call's own row; a retry of a sub-run, whose id extends the run it
+   * retries, goes beside it.
+   */
+  function subRunView(blk, envelope) {
+    for (const view of allSubRuns(blk)) {
+      if (view.runId === envelope.run_id) return view;
+    }
+    const owner = statusViewFor(blk, envelope.spawned_by || envelope.run_id);
+    const retried = [...allSubRuns(blk)].find((view) => view.runId === envelope.spawned_by);
+    // No row of its call to hang from (its status line never came): the step of the
+    // run that started it, not whichever step the followed run is on.
+    const anchor = rowOf(blk, envelope.run_id) || rowOf(blk, envelope.spawned_by)
+      || (retried && retried.element.parentElement) || statusBodyFor(owner);
+    if (!anchor) return null;
+
+    const element = document.createElement('div');
+    element.className = 'sub-run';
+    element.dataset.runId = envelope.run_id;
+    element.dataset.state = 'running';
+    element.innerHTML = `
+      <div class="sub-run-header">
+        <span class="toggle-arrow">${kitIcon('chevron-right')}</span>
+        <span class="sub-run-icon"><div class="spinner"></div></span>
+        <span class="sub-run-agent"></span>
+        <span class="sub-run-task pk-muted"></span>
+      </div>
+      <div class="sub-run-body"></div>`;
+    element.querySelector('.sub-run-agent').textContent = envelope.agent || 'sub-agent';
+    anchor.appendChild(element);
+
+    const header = element.querySelector('.sub-run-header');
+    const body = element.querySelector('.sub-run-body');
+    foldOnActivate(header, body);
+    setFolded(header, body, chatPrefs.sub_agents === 'collapsed');
+    // Opened or closed by hand, it is the viewer's: a changed setting leaves it alone.
+    const touch = () => { element.dataset.touched = 'true'; };
+    header.addEventListener('click', touch);
+    header.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') touch(); });
+
+    const view = runView(body, envelope.run_id, envelope.depth_level || 0);
+    view.element = element;
+    owner.subRuns.set(envelope.run_id, view);
+    return view;
+  }
+
+  /** Say on a sub-run's header how it ended. */
+  function markSubRun(view, state) {
+    if (view.element.dataset.state !== 'running') return;   // the first ending wins
+    view.element.dataset.state = state;
+    const marks = { done: '<div class="checkmark">✓</div>', error: '<div class="error-mark">✕</div>',
+      unfinished: '<div class="open-mark">⋯</div>' };
+    view.element.querySelector('.sub-run-icon').innerHTML = marks[state] || '';
+  }
+
+  /**
+   * One event of a run started under the followed one (`sub_run`, relayed by the server).
+   *
+   * The envelope says which run and which call started it; the event inside is exactly
+   * what that run would have streamed had the chat followed it directly.
+   */
+  function handleSubRunEvent(blk, envelope) {
+    const ev = envelope.event || {};
+    const view = subRunView(blk, envelope);
+    if (!view) return;
+    switch (ev.type) {
+      case 'start': {
+        const task = view.element.querySelector('.sub-run-task');
+        const text = String(ev.task || '');
+        task.textContent = text.length > 120 ? `${text.slice(0, 120)}…` : text;
+        task.title = text;
+        break;
+      }
+      case 'final':
+        renderRunEvent(view, ev);
+        markSubRun(view, 'done');
+        break;
+      case 'error':
+        showSection(view.t);
+        view.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(ev.message || ev.error || 'Error')}</div>`;
+        markSubRun(view, 'error');
+        break;
+      case 'cancelled':
+        markSubRun(view, 'error');
+        break;
+      case 'end':
+        // Its stream is over. Without an answer before it, it did not finish its work.
+        view.openStep = null;
+        markSubRun(view, 'unfinished');
+        break;
+      default:
+        renderRunEvent(view, ev);
+    }
+  }
+
   // Shared SSE event handler for both EventSource and manual fetch() parsing
   // Module-level so it can be used by both normal requests and a run reattached after a reload
   function handleSSEEvent(data, blk) {
@@ -2192,7 +2603,7 @@
         currentSessionId = data.session_id;
         // Steps count from 1 again, so a leftover from the previous run would put this
         // one's first tool lines into the last one's call.
-        currentStatusStep = null;
+        blk.openStep = null;
 
         // Notify session manager about new/updated session
         if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
@@ -2237,113 +2648,41 @@
         }
         break;
       case 'reasoning_delta':
-        // The model's actual reasoning, and the only place it is shown at all:
-        // neither the Response box nor Status carries a word of it. Mind the
-        // names -- `thinking_delta` below is the ANSWER stream; this one is the
-        // thinking, and it went unhandled here, so every token of it was dropped.
-        //
-        // Appended as a text node rather than `textContent +=`, which re-reads
-        // and rewrites the whole box per delta -- a run reasons in hundreds of
-        // them.
-        {
-          const section = stepOf(blk, data.step);
-          if (section) {
-            const pre = section.querySelector('.thinking-content');
-            pre.style.display = 'block';  // a call that does not reason shows no box
-            pre.appendChild(document.createTextNode(data.delta || ''));
-          }
-        }
+      case 'tool_call':
+      case 'tool_result':
+        renderRunEvent(blk, data);
         break;
       case 'thinking_delta':
-        // Real-time token streaming from LLM - stream directly to response box
-        if (data.step !== currentStreamingStep) {
-          // New step - reset accumulator
-          currentStreamingContent = '';
-          currentStreamingStep = data.step;
-          // A message was appended mid-run: THIS step is the agent's reaction
-          // to it — stream it into a fresh block below the injected message.
-          if (pendingAppendRebind) {
-            pendingAppendRebind = false;
-            rebindLiveBlock(blk);
-          }
+        // A message was appended mid-run: the step AFTER it is the agent's reaction
+        // to it -- stream that into a fresh block below the injected message.
+        if (data.step !== blk.streamStep && pendingAppendRebind) {
+          pendingAppendRebind = false;
+          rebindLiveBlock(blk);
         }
-        
-        // Update with accumulated content + cursor directly in response box
-        currentStreamingContent = data.accumulated || '';
-        showSection(blk.t);
-        blk.t.innerHTML = `<div class="response-text streaming">${formatTextWithLineBreaks(currentStreamingContent)}<span class="typing-cursor">|</span></div>`;
-        
+        renderRunEvent(blk, data);
         // Auto-scroll to keep cursor visible
         blk.t.scrollIntoView({ behavior: 'smooth', block: 'end' });
         break;
       case 'thinking_complete':
-        // Final thinking event from streaming - remove cursor, keep content
-        currentStreamingContent = '';
-        currentStreamingStep = null;
-        
-        if (data.assistant && data.assistant.content) {
-          // Content was already displayed via thinking_delta
-          // Now show final formatted content (HTML from format_output hook)
-          const contentFormat = data.content_format || 'text';
-          showSection(blk.t);
-          blk.t.innerHTML = `<div class="response-text">${formatContent(data.assistant.content, contentFormat)}</div>`;
-          
-          // Apply Prism.js syntax highlighting if available and content is HTML
-          if (contentFormat === 'html' && typeof Prism !== 'undefined') {
-            Prism.highlightAllUnder(blk.t);
-          }
-        }
-        
-        // Tool calls are not listed here: Status carries every one of them.
+        renderRunEvent(blk, data);
         break;
       case 'thinking':
-        // Complete thinking event (also handles backward compatibility)
-        // Only clear streaming state if this has actual content (final thinking event)
-        if (data.assistant) {
-          // Final thinking event with content - clear streaming state
-          currentStreamingContent = '';
-          currentStreamingStep = null;
-          // Its `assistant.content` is NOT written into the call's section. It is the
-          // step's answer, which the Response box already shows -- and it arrives
-          // here past the format_output hook, so a `<pre>` rendered it as literal
-          // `<p>…</p>` markup beside the rendered copy.
-          //
-          // Its tool_calls only NAME the call in the header. The lines themselves are
-          // Status's, with the arguments and the outcome this listing dropped.
-          const chose = (data.assistant.tool_calls || [])
-            .map((tc) => (tc.function || {}).name).filter(Boolean);
-          const section = data.step ? stepOf(blk, data.step) : null;
-          if (section && chose.length) {
-            section.querySelector('.step-note').textContent =
-              `· ${chose.slice(0, 3).join(', ')}${chose.length > 3 ? ` +${chose.length - 3}` : ''}`;
-          }
-        } else {
-          // Step marker event (before LLM call) - don't interfere with streaming
-          // Next step starting: apply a deferred mid-run-append rebind so the
-          // step renders below the injected user message. Guard on !content:
-          // the pure pre-LLM marker is {type, step}, while the "simplified
-          // thinking" event emitted at the END of a text-only step carries
-          // `content` — rebinding on that one would strand an empty block
-          // when a continuation hook fires right after.
-          if (pendingAppendRebind && !data.content) {
-            pendingAppendRebind = false;
-            rebindLiveBlock(blk);
-          }
-          // This marker, and only this one, opens a call's section: it is sent before
-          // the LLM call. The simplified event at the END of a text-only step carries
-          // `content` and NO step -- opening on that one would add an empty section
-          // after the answer.
-          if (data.step && !data.content) {
-            currentStatusStep = data.step;
-            openStep(blk, data.step);
-          }
+        // Step marker event (before LLM call): apply a deferred mid-run-append rebind
+        // so the step renders below the injected user message. Guard on !content:
+        // the pure pre-LLM marker is {type, step}, while the "simplified thinking"
+        // event emitted at the END of a text-only step carries `content` --
+        // rebinding on that one would strand an empty block when a continuation
+        // hook fires right after.
+        if (!data.assistant && pendingAppendRebind && !data.content) {
+          pendingAppendRebind = false;
+          rebindLiveBlock(blk);
         }
+        renderRunEvent(blk, data);
         break;
-      case 'tool_call':
-        toolDetail(blk, data, 'arguments', data.params);
-        break;
-      case 'tool_result':
-        toolDetail(blk, data, 'result', data.result);
+      case 'sub_run':
+        // A run started under this one, relayed by the server with the call that
+        // started it (see handleSubRunEvent). Only this run's own come on its stream.
+        if (blk && blk.box && data.run_id) handleSubRunEvent(blk, data);
         break;
       case 'status':
         // Status events are now delivered through /events stream
@@ -2356,9 +2695,7 @@
           const matches = eventRequestId === run.requestId ||
               (eventRequestId && run.requestId && eventRequestId.startsWith(run.requestId + '_'));
 
-          if (matches) {
-            addStatusEvent(statusBodyFor(blk), data);
-          }
+          if (matches) placeStatus(blk, data);
           // Otherwise silently ignore status from other requests/sessions
         }
         break;
@@ -2370,9 +2707,7 @@
             const matches = eventRequestId === run.requestId ||
                 (eventRequestId && run.requestId && eventRequestId.startsWith(run.requestId + '_'));
 
-            if (matches) {
-              addStatusEvent(statusBodyFor(blk), statusEvent);
-            }
+            if (matches) placeStatus(blk, statusEvent);
           });
         }
         break;
@@ -2395,9 +2730,6 @@
         break;
       case 'final':
         run.over = true;
-        // The answer is here, so no call is in flight any more: what the run says while
-        // it saves and runs its end hooks belongs to the run, not to its last call.
-        currentStatusStep = null;
         if (pendingAppendRebind) {
           // Edge (e.g. max-steps): the run finalizes without another step. The
           // final would be suppressed against the old block's non-empty content
@@ -2409,23 +2741,13 @@
         // sub-agents along -- and a reload shows the answer from the session the run saves, following the run no more.
         idleControls();
         forgetRun();
-
-        // Only show final if content box is still empty (no streaming happened)
-        // or if it's a different format
-        const finalContent = data.summary || data.content || '';
-        const finalContentFormat = data.content_format || 'text';
-        
-        if (!blk.t.innerHTML || blk.t.innerHTML.trim() === '') {
-          // No streaming happened, show final content
-          showSection(blk.t);
-          blk.t.innerHTML = `<div class="response-text">${formatContent(finalContent, finalContentFormat)}</div>`;
-          
-          // Apply Prism.js syntax highlighting if available and content is HTML
-          if (finalContentFormat === 'html' && typeof Prism !== 'undefined') {
-            Prism.highlightAllUnder(blk.t);
-          }
-        }
-        // If streaming already filled the content, skip this (content already there)
+        renderRunEvent(blk, data);
+        // A reload mid-run read the run's first steps back into a block of their own
+        // and followed the rest in this one: they are the same run, done now.
+        chatContainer.querySelectorAll('.msg.assistant > .steps:not([data-settled])').forEach((steps) => {
+          steps.dataset.settled = 'true';
+          foldSettled(steps);
+        });
         break;
       case 'end':
         run.over = true;
@@ -2433,6 +2755,9 @@
         // Before the stream goes: whatever is still open stops being updated
         // the moment it closes, so the row has to say so rather than freeze.
         markOpenScopesUnfinished();
+        // A sub-agent's run can outlive its caller's (an async one it never waited
+        // for): nothing of it reaches this page any more, and its header says so.
+        for (const view of allSubRuns(blk)) markSubRun(view, 'unfinished');
         // ... and the session may work on without this run. Watch for that.
         watchForASuccessorRun();
         // a reload no longer follows it -- a refused run's end leaves another one's alone
@@ -2490,6 +2815,10 @@
       console.warn('Chat form elements not found');
       return;
     }
+
+    loadPreferences();
+    // Changed in the Settings panel: the shell passes them on, and they apply at once.
+    window.addEventListener('preferences:changed', (event) => usePreferences(event.detail));
 
     // Slash commands + skills: catalogue and parsing come from the server, so
     // the browser offers exactly what the terminal offers.
@@ -3238,7 +3567,11 @@
       // before it, so the next assistant message starts a new block.
       let runBlk = null;
       let stepNo = 0;
-      const endRun = () => { runBlk = null; stepNo = 0; };
+      // A run followed by a new turn is over, and its steps fold as a live run's do at
+      // its answer. The LAST run may still be working -- a session read back while its
+      // run goes on (live_events_seen) -- and stays open unless it has answered.
+      let answered = false;
+      const endRun = () => { settleView(runBlk); runBlk = null; stepNo = 0; };
 
       session.messages.forEach((msg, index) => {
         // Skip system messages and tool-related messages
@@ -3297,6 +3630,7 @@
         } else if (msg.role === 'assistant') {
           if (!runBlk) runBlk = addAssistantBlock(chatEl);
           replayStep(runBlk, msg, ++stepNo, resultFor);
+          answered = !!msg.content && !(msg.tool_calls && msg.tool_calls.length);
           if (msg.content) {
             showSection(runBlk.t);
             // Use formatContent to detect HTML vs plain text
@@ -3324,7 +3658,8 @@
           if (!msg.injected_by) endRun();
         }
       });
-      
+      if (answered) settleView(runBlk);
+
       // Session just loaded - always scroll to the latest content.
       scrollBottom(true);
 

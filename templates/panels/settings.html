@@ -15,6 +15,26 @@
   <div>This server runs without authentication, so there is no profile or password to change.</div></div>
 
 <div id="account" class="pk-stack">
+<section class="pk-card pk-stack" id="chatPreferences">
+  <div class="pk-card-head"><h3 class="pk-card-title">Chat</h3></div>
+  <div class="pk-field"><span class="pk-label">Fold a run's steps</span>
+    <div class="pk-row" role="radiogroup" aria-label="Fold a run's steps">
+      <label class="pk-radio"><input type="radio" name="fold_steps" value="at_end"> When it has answered</label>
+      <label class="pk-radio"><input type="radio" name="fold_steps" value="at_next_step"> When the next step starts</label>
+      <label class="pk-radio"><input type="radio" name="fold_steps" value="never"> Never</label>
+    </div></div>
+  <div class="pk-field"><span class="pk-label">Thinking</span>
+    <div class="pk-row" role="radiogroup" aria-label="Thinking">
+      <label class="pk-radio"><input type="radio" name="thinking" value="collapsed"> Folded</label>
+      <label class="pk-radio"><input type="radio" name="thinking" value="expanded"> Open</label>
+    </div></div>
+  <div class="pk-field"><span class="pk-label">Sub-agents</span>
+    <div class="pk-row" role="radiogroup" aria-label="Sub-agents">
+      <label class="pk-radio"><input type="radio" name="sub_agents" value="expanded"> Open</label>
+      <label class="pk-radio"><input type="radio" name="sub_agents" value="collapsed"> Folded</label>
+    </div></div>
+</section>
+
 <section class="pk-card">
   <div class="pk-card-head"><h3 class="pk-card-title">Profile</h3><span class="pk-grow"></span><span id="role" class="pk-badge"></span></div>
   <form id="profileForm" class="pk-form">

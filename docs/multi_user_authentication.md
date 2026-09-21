@@ -319,6 +319,23 @@ curl -X PATCH http://localhost:8000/auth/me \
   -d '{"email": "newemail@example.com", "password": "newsecurepassword"}'
 ```
 
+#### GET/PUT /auth/me/preferences
+Anzeige-Einstellungen des angemeldeten Kontos (heute: der Chat). `GET` antwortet
+immer mit allen Schlüsseln, nicht Gewähltes mit dem Default; `PUT` ersetzt das
+ganze Objekt, Weggelassenes wird zum Default. Unbekannte Schlüssel und Werte
+werden mit 422 abgelehnt statt still gespeichert. Gespeichert in der Tabelle
+`user_preferences` von `users.db` (legt der Start selbst an), gelöscht mit dem
+Konto. Ohne Anmeldung 401, ohne Authentifizierung gibt es den Endpunkt nicht.
+
+```json
+{"chat": {"fold_steps": "at_end", "thinking": "collapsed", "sub_agents": "expanded"}}
+```
+
+- `fold_steps`: `at_end` (Steps klappen mit der Antwort zu), `at_next_step`
+  (sobald der nächste beginnt), `never`
+- `thinking`: `collapsed` | `expanded`
+- `sub_agents`: `expanded` | `collapsed` (Sub-Agent-Läufe im Chat)
+
 #### POST /auth/api-key
 Generate a new API key for the current user.
 
@@ -577,7 +594,8 @@ To implement full session isolation:
 
 ## Database Schema
 
-The user database (`data/users.db`) contains a single `users` table:
+The user database (`data/users.db`) contains two tables, `users` and
+`user_preferences`:
 
 ```sql
 CREATE TABLE users (
@@ -593,7 +611,17 @@ CREATE TABLE users (
     updated_at TEXT,
     last_login TEXT
 )
+
+CREATE TABLE user_preferences (
+    user_id INTEGER PRIMARY KEY,
+    data TEXT NOT NULL,        -- UserPreferences als JSON
+    updated_at TEXT NOT NULL
+)
 ```
+
+`user_preferences` legt die Datenbank beim Start selbst an (auch in einer
+bestehenden `users.db`); gelöscht wird eine Zeile mit ihrem Konto. Eine Zeile gibt
+es erst, wenn jemand etwas gewählt hat — ohne sie gelten die Defaults.
 
 ### PostgreSQL Migration
 
@@ -602,7 +630,7 @@ To migrate to PostgreSQL:
 1. Install psycopg2: `pip install psycopg2-binary`
 2. Update database connection in `auth/database.py`
 3. Convert SQLite schema to PostgreSQL (adjust types as needed)
-4. Migrate user data
+4. Migrate user data (`users` and `user_preferences`)
 
 Example PostgreSQL schema:
 ```sql
@@ -618,6 +646,12 @@ CREATE TABLE users (
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP,
     last_login TIMESTAMP
+);
+
+CREATE TABLE user_preferences (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    data JSONB NOT NULL,
+    updated_at TIMESTAMP NOT NULL
 );
 ```
 
