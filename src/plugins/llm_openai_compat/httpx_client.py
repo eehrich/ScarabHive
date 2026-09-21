@@ -628,8 +628,10 @@ class HTTPXOpenAIClient(LLMClient):
     # survive _sanitize_message_for_api so _postprocess_messages_for_provider
     # (which runs after serialization in both request paths) can honor it —
     # postprocess unconditionally pops it before the payload is built, so it
-    # never reaches a provider.
-    _API_MESSAGE_FIELDS = {"role", "content", "name", "tool_call_id", "tool_calls", "reasoning_details", "rd_orphaned"}
+    # never reaches a provider. injected_by likewise: _apply_developer_rung tells
+    # a wake from a note by it (message_roles.conversation_opener), then pops it.
+    _API_MESSAGE_FIELDS = {"role", "content", "name", "tool_call_id", "tool_calls", "reasoning_details",
+                           "rd_orphaned", "injected_by"}
 
     @staticmethod
     def _sanitize_tool_calls(tool_calls: list) -> list:
@@ -864,6 +866,7 @@ class HTTPXOpenAIClient(LLMClient):
         last = message_dicts[-1] if message_dicts else None
         opener = conversation_opener(message_dicts)
         for msg in message_dicts:
+            msg.pop("injected_by", None)  # read by conversation_opener, never sent
             if msg.get("role") != DEVELOPER:
                 continue
             content = msg.get("content")
@@ -1146,11 +1149,11 @@ class HTTPXOpenAIClient(LLMClient):
         
         message_dicts = await asyncio.to_thread(_serialize_messages)
         self._postprocess_messages_for_provider(message_dicts)
-        # Key VOR dem Block-Split aufloesen: die Segment-Leiter braucht den
-        # aufgeloesten Key fuer die Registry (docs/prompt_cache_design.md).
-        # Aus den ORIGINAL-Messages, nicht aus message_dicts: die Sanitize-
-        # Whitelist oben wirft `injected_by` weg, und ohne den Marker haelt die
-        # Ableitung einen pro Call neu gebauten Plugin-Block fuer Prompt.
+        # The key is resolved BEFORE the block split: the segment ladder needs it
+        # for the registry (docs/prompt_cache_design.md). From the ORIGINAL
+        # messages, not message_dicts: the rung step in the postprocess above has
+        # dropped `injected_by` from them, and without the marker the derivation
+        # takes a plugin block rebuilt on every call for prompt.
         resolved_cache_key = (
             derive_prompt_cache_key(self.prompt_cache_key, messages)
             if self.prompt_cache_key else None
@@ -1676,11 +1679,11 @@ class HTTPXOpenAIClient(LLMClient):
         
         message_dicts = await asyncio.to_thread(_serialize_messages)
         self._postprocess_messages_for_provider(message_dicts)
-        # Key VOR dem Block-Split aufloesen: die Segment-Leiter braucht den
-        # aufgeloesten Key fuer die Registry (docs/prompt_cache_design.md).
-        # Aus den ORIGINAL-Messages, nicht aus message_dicts: die Sanitize-
-        # Whitelist oben wirft `injected_by` weg, und ohne den Marker haelt die
-        # Ableitung einen pro Call neu gebauten Plugin-Block fuer Prompt.
+        # The key is resolved BEFORE the block split: the segment ladder needs it
+        # for the registry (docs/prompt_cache_design.md). From the ORIGINAL
+        # messages, not message_dicts: the rung step in the postprocess above has
+        # dropped `injected_by` from them, and without the marker the derivation
+        # takes a plugin block rebuilt on every call for prompt.
         resolved_cache_key = (
             derive_prompt_cache_key(self.prompt_cache_key, messages)
             if self.prompt_cache_key else None

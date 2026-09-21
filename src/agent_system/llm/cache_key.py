@@ -278,13 +278,13 @@ def plan_cache_blocks(
 
 
 def _key_field(msg: Any, name: str) -> Any:
-    """Ein Feld einer Message, ob Dict oder ChatMessage.
+    """A field of a message, dict or ChatMessage.
 
-    Der Key wird aus den ORIGINAL-Messages abgeleitet, nicht aus dem fertigen
-    Payload: dort ist ``injected_by`` laengst weg (httpx whitelistet die
-    API-Felder, der Responses-Client baut neue Items), und ohne den Marker
-    kann die Ableitung einen pro Call neu gebauten Block nicht von einem
-    Prompt unterscheiden.
+    The key is derived from the ORIGINAL messages, not from the finished
+    payload: a system block carries no ``injected_by`` there (httpx drops it at
+    its rung step, the Responses client builds new items and keeps it on
+    developer items only), and without the marker the derivation cannot tell a
+    block rebuilt on every call from a prompt.
     """
     if isinstance(msg, dict):
         return msg.get(name)

@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from agent_system.config.models import ModelCapabilitiesConfig  # noqa: E402
 from agent_system.llm.message_roles import (  # noqa: E402
     DEVELOPER, NOTE_CLOSE, NOTE_OPEN, RUNGS, SYSTEM, USER,
-    as_note, is_injected_note, leading_instructions, resolve_rung,
+    as_note, conversation_opener, is_injected_note, leading_instructions, resolve_rung,
 )
 from agent_system.llm.models import ChatMessage  # noqa: E402
 
@@ -111,7 +111,9 @@ def _chat_completions(caps=None) -> list[tuple[str, str]]:
     client = HTTPXOpenAIClient(model="openai/gpt-5.1", api_key="k",
                                base_url="https://openrouter.ai/api/v1",
                                capabilities=caps)
-    dicts = [m.model_dump(exclude_none=True, mode="json") for m in history()]
+    # through the whitelist, as the request paths do: what it drops, the route never sees
+    dicts = [client._sanitize_message_for_api(m.model_dump(exclude_none=True, mode="json"))
+             for m in history()]
     client._postprocess_messages_for_provider(dicts)
     return [(d.get("role", "?"), _text_of(d.get("content"))) for d in dicts]
 
@@ -839,6 +841,171 @@ def test_a_conversation_without_a_user_turn_opens_on_the_wake(route, monkeypatch
     assert NOTE in text, f"{route}: the conversation does not open on the wake -- {wire}"
     assert role == USER, (
         f"{route}: the conversation opens on a {role!r} wake, which is no turn -- {wire}")
+
+
+WAKE = "Your sub-agent finished; read its answer and go on."
+RESTORED = "Restored from before the trim: the plan so far."
+
+
+def _wake_then_a_note() -> list[ChatMessage]:
+    """A woken run without a user turn, and a hook's note appended behind the
+    wake (the sub-agent list does that on the first call)."""
+    return [
+        ChatMessage(role=SYSTEM, content="You are a careful assistant."),
+        ChatMessage(role=DEVELOPER, content=WAKE),
+        ChatMessage(role=DEVELOPER, content=NOTE, injected_by="test.hook"),
+        ChatMessage(role="assistant", content=ANSWER),
+        ChatMessage(role=USER, content=QUESTION),
+    ]
+
+
+def _wake_between_notes() -> list[ChatMessage]:
+    """The same, with a note in FRONT of the wake too (a hook's restored block).
+    Only here the marker decides: without it, every developer message opens a
+    turn, and the first of them -- the note -- is taken."""
+    history = _wake_then_a_note()
+    return [history[0], ChatMessage(role=DEVELOPER, content=RESTORED, injected_by="test.restore"),
+            *history[1:]]
+
+
+def test_the_wake_opens_and_not_the_note_behind_it():
+    history = _wake_then_a_note()
+    system, wake, note, answer, question = history
+    assert conversation_opener(history) is wake
+    assert conversation_opener([system, wake, ChatMessage(role=DEVELOPER, content=WAKE), answer]) is wake, \
+        "the first wake, the input compaction and the validator keep"
+    assert conversation_opener([system, wake, note]) is wake, "the sub-agent list on a first call"
+    assert conversation_opener([system, note, wake, answer]) is wake
+    assert conversation_opener([system, note, answer]) is note, "no wake: the last note opens, as before"
+    assert conversation_opener([system, wake, note, question]) is None, "a user turn: nothing moves"
+
+
+def _sent_on(path: str) -> list | None:
+    """What the request on ``path`` puts on the wire for ``_wake_between_notes``:
+    the real request method, with only the transport replaced."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
+
+    if path == "responses":
+        from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
+        client = OpenAIResponsesClient(model="m", api_key="k", base_url="https://openrouter.ai/api/v1")
+        return client._build_payload(_wake_between_notes(), None)["input"]
+
+    if path.startswith("httpx"):
+        from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient
+        seen: dict = {}
+
+        class _Resp:
+            status_code = 200
+            text = "{}"
+            headers: dict = {}
+
+            @staticmethod
+            def json():
+                return {"choices": [{"message": {"role": "assistant", "content": "ok"}}], "usage": {}}
+
+        class _Stream:
+            status_code = 200
+            headers: dict = {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def aiter_lines(self):
+                yield "data: [DONE]"
+
+            async def aiter_bytes(self, chunk_size=None):
+                yield b"data: [DONE]\n\n"
+
+            async def aread(self):
+                return b"{}"
+
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def aclose(self):
+                return None
+
+            async def post(self, url=None, headers=None, json=None, **kw):
+                seen["payload"] = json
+                return _Resp()
+
+            def stream(self, method=None, url=None, headers=None, json=None, **kw):
+                seen["payload"] = json
+                return _Stream()
+
+        async def request():
+            client = HTTPXOpenAIClient(api_key="k", model="openai/gpt-5.1",
+                                       base_url="https://openrouter.ai/api/v1")
+            if path == "httpx_streaming":
+                async for _ in client._make_request_streaming(_wake_between_notes(), None):
+                    pass
+            else:
+                await client._make_request_non_streaming(_wake_between_notes(), None)
+
+        with mock_patch("httpx.AsyncClient", lambda **kw: _Client()):
+            asyncio.run(request())
+        return seen.get("payload", {}).get("messages")
+
+    from plugins.llm_openai.openai_client import OpenAIAsyncClient
+    sdk = MagicMock()
+    create = sdk.return_value.chat.completions.create = AsyncMock(side_effect=RuntimeError("stop after capture"))
+    tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+
+    async def request():
+        client = OpenAIAsyncClient(model="gpt-5.1", api_key="k")
+        call = {"openai_chat": lambda: client.chat(_wake_between_notes()),
+                "openai_chat_tools": lambda: client.chat_tools(_wake_between_notes(), tools),
+                "openai_chat_tools_streaming": lambda: client.chat_tools_streaming(_wake_between_notes(), tools),
+                }[path]()
+        try:
+            if hasattr(call, "__anext__"):
+                async for _ in call:
+                    pass
+            else:
+                await call
+        except Exception:
+            pass  # the mock stops the call right after the request was built
+
+    with mock_patch("openai.AsyncOpenAI", sdk):
+        asyncio.run(request())
+    return create.call_args.kwargs["messages"] if create.call_args else None
+
+
+@pytest.mark.parametrize("path", ["httpx", "httpx_streaming", "openai_chat", "openai_chat_tools",
+                                  "openai_chat_tools_streaming", "responses"])
+def test_every_request_path_opens_on_the_wake_and_sends_no_marker(path):
+    """These routes carry ``injected_by`` to their rung step now -- the opener
+    cannot tell the wake from a note without it -- and drop it there. So every
+    request path has to reach that step: through the real request methods,
+    streaming included, not the step called by hand."""
+    sent = _sent_on(path)
+
+    assert sent, f"{path}: nothing reached the wire -- the test measures nothing"
+    assert not [m for m in sent if "injected_by" in m], f"{path}: the marker went out -- {sent}"
+    first_turn = next(m for m in sent if m.get("role") == USER)
+    assert WAKE in _text_of(first_turn.get("content")), f"{path}: the first user turn is not the wake -- {sent}"
+
+
+@pytest.mark.parametrize("route", sorted(r for r, (_, rung) in ROUTES.items() if rung != USER))
+def test_a_note_does_not_open_the_conversation_in_place_of_the_wake(route, monkeypatch):
+    """The last developer message opened the conversation: the note behind the
+    wake, which then played the user, while the run's task stayed on the
+    instruction rung -- hoisted into the system prompt on the routes that do
+    that. Not on the two routes that send every note on the user rung: there no
+    single message opens."""
+    monkeypatch.setattr(sys.modules[__name__], "history", _wake_between_notes)
+    wire = ROUTES[route][0]()
+
+    first_turn = next(text for role, text in wire if role == USER)
+    assert WAKE in first_turn, f"{route}: the first user turn is not the wake -- {wire}"
 
 
 @pytest.mark.parametrize("route", sorted(r for r, (_, rung) in ROUTES.items() if rung != USER))

@@ -265,23 +265,36 @@ def conversation_opener(messages: list) -> object | None:
     """The developer message that has to open the conversation as a turn, or None.
 
     Only where NO user turn stands in front of the model's first message -- a
-    woken run whose request lost its user turn. Then the developer message
-    right in front of that first message is the one standing where a turn must
-    be, and it is returned. Otherwise None, and nothing moves: a developer note
-    ahead of a user turn is the leading block (``leading_instructions``), which
-    stays exactly as it is.
+    woken run whose request lost its user turn. Then the first developer message
+    that opens a turn (``opens_a_turn``: the wake -- the first input, as
+    compaction and the message validator take it) is the one standing where a
+    turn must be, and it is returned; where none does, the last developer
+    message in front of that first message. Otherwise None, and nothing moves:
+    a developer note ahead of a user turn is the leading block
+    (``leading_instructions``), which stays exactly as it is.
+
+    The wake and not a note behind it: a hook appends its note (the sub-agent
+    list, the step budget) behind the wake, and taken as the last developer
+    message the note played the user while the run's task stayed on the
+    instruction rung -- in the system prompt on a route that hoists them.
 
     Compared by identity (``msg is opener``), so each route passes the list it
-    actually sends.
+    actually sends -- with ``injected_by`` still on it: a route that strips it
+    before asking cannot tell the wake from a note.
     """
-    candidate = None
+    wake = note = None
     for msg in messages:
         role = role_of(msg)
         if role == DEVELOPER:
-            candidate = msg
+            if not opens_a_turn(msg):
+                note = msg
+            elif wake is None:
+                wake = msg
+        elif role == USER:
+            return None
         elif role != SYSTEM:
-            return None if role == USER else candidate
-    return candidate
+            break
+    return wake if wake is not None else note
 
 
 def developer_turn(text: str, rung: str) -> tuple[str, str]:

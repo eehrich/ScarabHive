@@ -118,6 +118,10 @@ class OpenAIAsyncClient(LLMClient):
         last = message_dicts[-1] if message_dicts else None
         opener = conversation_opener(message_dicts)
         for d in message_dicts:
+            # Internal hook metadata, dropped here for all three serialisers: the
+            # opener above tells a wake from a note by it. The tool-calling path
+            # once sent it to the API.
+            d.pop('injected_by', None)
             if d.get("role") != DEVELOPER:
                 continue
             content = d.get("content")
@@ -168,7 +172,6 @@ class OpenAIAsyncClient(LLMClient):
                 result = []
                 for m in messages:
                     d = m.model_dump(exclude_none=True, mode='json')
-                    d.pop('injected_by', None)  # Internal hook metadata
                     d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
                     d.pop('served_by', None)  # OpenRouter backend provenance, never sent
                     d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent
@@ -402,9 +405,6 @@ class OpenAIAsyncClient(LLMClient):
                 d = m.model_dump(exclude_none=True, mode='json')
                 # Remove multimodal_content from serialized dict - it's processed separately
                 d.pop('multimodal_content', None)
-                # Internal hook metadata. The other two serialisers here drop it;
-                # this one, the tool-calling path, sent it to the API.
-                d.pop('injected_by', None)
                 d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
                 d.pop('served_by', None)  # OpenRouter backend provenance, never sent
                 d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent
@@ -728,7 +728,6 @@ class OpenAIAsyncClient(LLMClient):
                 d = m.model_dump(exclude_none=True, mode='json')
                 # Remove internal metadata from serialized dict
                 d.pop('multimodal_content', None)
-                d.pop('injected_by', None)
                 d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
                 d.pop('served_by', None)  # OpenRouter backend provenance, never sent
                 d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent

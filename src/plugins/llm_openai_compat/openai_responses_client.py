@@ -421,6 +421,7 @@ class OpenAIResponsesClient(LLMClient):
         last = items[-1] if items else None
         opener = conversation_opener(items)
         for item in items:
+            item.pop("injected_by", None)  # read by conversation_opener, never sent
             if item.get("role") != DEVELOPER:
                 continue
             item["role"] = rung_for_position(rung, last=item is last, opens=item is opener)
@@ -492,11 +493,15 @@ class OpenAIResponsesClient(LLMClient):
                 # Cache-Breakpoint-Sentinels bleiben hier im String erhalten —
                 # der Split passiert in _build_payload NACH der Key-Ableitung
                 # (die Segment-Leiter braucht den aufgeloesten Key).
-                items.append({
+                item = {
                     "type": "message",
                     "role": role,
                     "content": self._content_to_parts(content, role),
-                })
+                }
+                if role == DEVELOPER and _get(msg, "injected_by"):
+                    # read and dropped by _lower_developer_items: it tells a wake from a note
+                    item["injected_by"] = _get(msg, "injected_by")
+                items.append(item)
 
             elif role == ASSISTANT:
                 # rd_orphaned (set by invalidate_reasoning_artifacts after a
@@ -766,10 +771,10 @@ class OpenAIResponsesClient(LLMClient):
         # (s. cache_key.py); kein Extended-Retention-Opt-in.
         resolved_key = None
         if self.prompt_cache_key:
-            # Aus den ORIGINAL-Messages, nicht aus payload["input"]: die Items
-            # dort sind frisch gebaut und tragen kein `injected_by` mehr, und
-            # ohne den Marker haelt die Ableitung einen pro Call neu gebauten
-            # Plugin-Block fuer einen Teil des Prompts.
+            # From the ORIGINAL messages, not payload["input"]: its items are
+            # built fresh, and only developer items keep `injected_by` (until
+            # _lower_developer_items). Without the marker the derivation takes a
+            # plugin block rebuilt on every call for part of the prompt.
             resolved_key = derive_prompt_cache_key(
                 self.prompt_cache_key, messages
             )

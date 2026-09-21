@@ -134,12 +134,12 @@ class TestInjectedBlocksDoNotMoveTheKey:
 
 
 class TestTheKeyTheRequestReallyCarries:
-    """Der Key im PAYLOAD, nicht der aus einer nachgebauten Liste.
+    """The key in the PAYLOAD, not one from a rebuilt list.
 
-    Die erste Fassung dieser Regel las `injected_by` aus dem fertigen Payload —
-    dort ist der Marker laengst weg (httpx whitelistet die API-Felder, der
-    Responses-Client baut neue Items). Isoliert gemessen war sie gruen und in
-    Produktion wirkungslos. Diese Tests fahren beide echten Payload-Bauten.
+    The first version of this rule read `injected_by` from the finished payload,
+    where a system block no longer carries it (httpx drops it at its rung step,
+    the Responses client builds new items). Measured in isolation it was green,
+    and in production it did nothing. These tests drive both real payload builds.
     """
 
     PROMPT = "Du bist der Agent, und das sind deine Regeln. " * 30
