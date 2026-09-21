@@ -8,6 +8,7 @@ the RESOLVED config (``get_tool_server_config``), the way an agent sees it.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ import yaml
 from agent_system.config.settings import get_tool_server_config, load_settings
 from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 from agent_system.skills.registry import SkillRegistry
+from agent_system.utils.prompt_renderer import render_prompts
 from plugins.n8n import server as server_module
 
 PLUGIN = Path(__file__).resolve().parent.parent
@@ -102,6 +104,21 @@ def test_prompt_and_skills_exist_and_name_only_real_tools(config):
     named -= {f"okf_{ref}" for ref in memory}
     assert named <= schema_tools(), f"prompt/skills name tools that do not exist: {named - schema_tools()}"
     assert memory and memory <= schema_tools(OKF_PLUGIN), f"no such n8n_okf tools: {memory - schema_tools(OKF_PLUGIN)}"
+
+
+def test_the_prompt_renders_the_bundle_and_todays_date(config):
+    """n8n_okf_append_log takes its date from the caller: without today's date
+    in the prompt the model made one up (2026-02-13 on 22.09.)."""
+    agent = resolved(config, "n8n_agent")
+    prompt = str(PLUGIN / "agents" / "prompts" / "n8n_agent.md")
+    rendered = render_prompts(prompt, dict(agent.agent_config.template_vars))["system_prompt"]
+    today = datetime.now(timezone.utc).date().isoformat()
+    assert "`data/okf/n8n` is your memory" in rendered and f"Today is {today}." in rendered
+
+
+def test_the_builder_can_search_the_web(config):
+    allowed = resolved(config, "n8n_agent").agent_config.tools.allowed
+    assert all(tool_matches_patterns(f"tavily_search_{t}", "tavily_search", allowed) for t in ("web_search", "extract"))
 
 
 def test_the_builder_remembers_in_a_bundle_of_its_own(config):

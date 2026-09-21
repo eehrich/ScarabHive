@@ -85,6 +85,7 @@ plugins:
             - "+n8n/n8n_trigger_workflow"
             - "+skills/*"
             - "+n8n_okf/*"
+            - "+tavily_search/*"            # the web: a service's API, an error message n8n does not explain
 
         hooks:
           enabled: true
