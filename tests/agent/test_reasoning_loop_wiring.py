@@ -83,9 +83,12 @@ class TestTheWatchdogReachesTheStream:
         with pytest.raises(ReasoningLoopError) as caught:
             await _drive(_stand_in(), llm)
         # The caller logs it and decides; both need the size of the damage.
-        # Exactly one window: the detector judges as soon as it has 20.000
-        # characters to judge, not a delta later.
-        assert caught.value.characters >= 20_000
+        # One window: the detector judges once it has 20.000 characters to
+        # judge. Both bounds, because the lower one alone let a much later first
+        # judgement through. Like the long window's bound below, this pins when
+        # it first judges, not the interval — an interval that divides the
+        # window (10k, 20k) fires at the same point.
+        assert 20_000 <= caught.value.characters < 30_000
         assert "repeats" in caught.value.reason
 
     async def test_a_healthy_stream_runs_to_the_end(self):
@@ -376,3 +379,61 @@ class TestTheRunLoopRetriesOnce:
         [event async for event in agent.run_events("do it", session_id="s3")]
 
         assert llm.calls == 1
+
+
+def long_period_text(unit_chars: int = 13_006, repeats: int = 34) -> str:
+    """A loop whose period the 20.000-character window cannot span.
+
+    Shaped after the real cases: the unit is varied prose with no periodicity
+    of its own, so the only repetition in the text is the loop itself. At a
+    period of ~13.000 the short window tops out at
+    (20.000 - 13.000) / 20.000 = 0.35, below every usable threshold. Why 13.006
+    and not a round number: see LONG_PERIOD in test_reasoning_loop.py — a round
+    period lets every stride see the loop alike and pins nothing.
+    """
+    words = ["Szene", "Absatz", "Figur", "Motiv", "Wendung", "Kapitel",
+             "Dialog", "Bild", "Satz", "Klang"]
+    unit, index = [], 0
+    while sum(len(part) for part in unit) < unit_chars:
+        unit.append(f"{words[index % len(words)]} {index}: geprueft, "
+                    f"Ergebnis {index * 17 % 997}. ")
+        index += 1
+    return "".join(unit)[:unit_chars] * repeats
+
+
+class TestTheLongWindowIsWiredUpToo:
+    """17 calls in 25 days ran into the output ceiling and delivered nothing;
+    the nine still stored repeat like this — a judge that returns nothing reads
+    downstream as "no findings"."""
+
+    async def test_a_long_period_loop_aborts_the_call(self):
+        llm = _ScriptedLLM(thinking(long_period_text()) + [FINAL])
+        with pytest.raises(ReasoningLoopError) as caught:
+            await _drive(_stand_in(), llm)
+        # Past 200.000: proof that the LONG window did it. The short one
+        # judges from 20.000 on, so a smaller number here would mean the
+        # short window fired and this test proves nothing about the long one.
+        assert caught.value.characters >= 200_000, (
+            f"aborted after {caught.value.characters} characters — that is the "
+            "short window, so the long one is not shown to be wired up")
+        # And not much later than its first full window. This pins WHEN it first
+        # judges, not the interval itself: the witness loops from character 0,
+        # so any interval that divides the window fires at the same point
+        # (measured: 50k/100k/200k all at 200.000, even behind a healthy
+        # lead-in). What it catches is the gross delay a lower bound alone let
+        # through — an interval of 400.000 or a window of 300.000, where the
+        # abort came when the damage was almost fully paid. The interval is a
+        # calibration knob and deliberately not pinned finer than that.
+        assert caught.value.characters < 260_000, (
+            f"the long window first judged at {caught.value.characters} "
+            "characters — it waits longer than its geometry says it should")
+
+    async def test_the_short_window_still_aborts_first_when_it_can(self):
+        """Both are fed every delta; the one that sees it first must win.
+        Otherwise a short-period loop would run ten times longer than before
+        this change, waiting for a window that does not need to fill."""
+        llm = _ScriptedLLM(thinking(LOOP_LINE * 900) + [FINAL])
+        with pytest.raises(ReasoningLoopError) as caught:
+            await _drive(_stand_in(), llm)
+        assert caught.value.characters < 200_000, (
+            "a short-period loop now waits for the long window")

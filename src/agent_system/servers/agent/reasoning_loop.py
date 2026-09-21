@@ -42,6 +42,73 @@ run came near that, but the threshold does not tolerate being lowered towards
 0.30, and a 60-character piece reacts to templates whose variable part is
 short.
 
+A SECOND, LONGER WINDOW — AND ITS OWN, THINNER GROUND
+=====================================================
+Everything above belongs to the 20.000-character window. It is blind to a loop
+whose period is longer than it can hold, and that blindness was measured, not
+feared: of 17 calls that ran into the 131.072-token output ceiling, nine still
+have their thinking stored, and this window fires on NONE of them. They repeat
+at periods of roughly 2.000 to 16.500 characters — a piece can only match one
+that far back if the window spans it, so the ceiling on the score is
+(window - period) / window, which for a period of 13.799 leaves 0.31 and no
+threshold can help. Their cost: 11,2 hours of wall clock in 25 days, and worse,
+a judge that returns NOTHING, which reads downstream as "no findings".
+
+Simply enlarging the window would trade one family for the other. Of the seven
+runs this detector HAS caught, the two whose record outlived the debugger's
+retention had thought 40.040 and 90.080 characters; for the other five only
+the floor is certain — 20.000, or the short window could not have judged at
+all. A 200.000-character window would have looked at neither of the two,
+because a window only judges once it is full. So a call is watched by TWO
+detectors, and the long one only ever catches what the short one lets through.
+
+Measured with this module, streamed as in production, at window 200.000 and
+threshold 0.5:
+
+    the 9 stored runaway loops   0.892 0.706 0.656 0.642 0.577
+                                 0.569 0.542 0.334 0.121   -> 7 caught
+    healthy runs it judged       0.043 worst of EIGHT
+    scored windows per runaway   6 at a 50.000 interval, ~3 ms each (the
+                                 checks at 50k/100k/150k find the window
+                                 not yet full and score nothing)
+
+THE EIGHT IS THE NUMBER THAT MATTERS, and it is not the 4.914 above: of 388
+healthy runs offered to the long window, 380 were never judged at all because
+it never filled. Its false-alarm side therefore rests on eight runs, and no
+threshold should be derived from it. All eight are writer scorers. This
+detector runs on every streaming agent, but outside those four only five calls
+in 25 days thought long enough to fill the window at all (~51.500 reasoning
+tokens at a measured 3,4..3,9 characters per token) — and none of the five
+kept its body, so for them the long window is unmeasured, not cleared.
+
+What that thin ground hides, measured rather than waved away: a template whose
+varying share is 23..38 % scores 0.45..0.49 in the short window and 0.91 in the
+long one. The long window CAN raise an alarm the short one would not — for an
+exact template the number of distinct pieces is bounded by its period while the
+window grows, so the score walks towards 1.0. Real runs are nowhere near: the
+worst of the eight it judged scores 0.043, a factor of ten below that band and
+of eleven below the threshold. That is the same argument the short
+window rests on, with more room, not less — but it is an argument about the
+corpus we have, not a property of the measure.
+
+Eight runs are enough ground here because the CONSEQUENCE is bounded, not
+because the evidence is strong. A template does not roll dice the way an
+unlucky sampling loop does: it would score the same on the retry, and a guard
+that kept watching would lock such an agent out for good. It does not — the run
+loop retries an aborted call on the same client with the watchdog off
+(``watch_reasoning=current_llm is not reasoning_loop_llm``, server.py). That
+exemption lasts one STEP, though: every step re-arms the watchdog, so a template
+that trips it pays one discarded call per client in each step of each run — at
+least twice per scorer run with its follow-up. What is bounded is the lock-out
+and the cost per step, at most a doubling; the total over many runs is not.
+That is bearable on eight runs a factor of eleven below the line; on a guard
+whose false alarm were common it would not be.
+
+The trade, stated rather than implied: the long window judges LATE, because it
+judges only once its buffer is full. A false alarm there throws away about ten
+times the thinking one in the short window does. Against 11,2 hours of wall
+clock in 25 days that is a good trade — but it is a trade, not a free win.
+
 What reaches this detector is every ``thinking_delta`` the client emits. For
 most models that is their raw thinking; for the OpenAI family it is the
 SUMMARY of their thinking, which the Responses client forwards under the same
@@ -237,3 +304,37 @@ class ReasoningLoopDetector:
         if not pieces:
             return 0.0
         return 1.0 - len(set(pieces)) / len(pieces)
+
+
+# The long window, for loops whose period the short one cannot span. Measured
+# in the module head. The window is ten times the short one and the interval
+# five times, because the score of the stored cases is the same at 6 checks as
+# at 27, and a check here shingles 20.000 pieces instead of 2.000 (~3 ms against
+# ~0,2 ms).
+LONG_WINDOW_CHARS = 200_000
+LONG_CHECK_EVERY_CHARS = 50_000
+
+
+def build_detectors(
+    *, enabled: bool = True, repetition_threshold: float = 0.5,
+) -> list[ReasoningLoopDetector]:
+    """The detectors ONE call is watched with — feed every delta to each.
+
+    Two windows, not one bigger one: the short window is the calibrated
+    instrument and catches short-period loops, and a longer window would stop
+    looking at exactly those, because a window only judges once it is full.
+    The long one therefore only ever sees what the short one let through.
+
+    The geometry stays here rather than in ``ReasoningLoopConfig`` for the
+    reason that config gives itself: window, interval, piece length and stride
+    were calibrated together with the threshold, and a knob on one of them
+    quietly changes what the threshold means.
+    """
+    return [
+        ReasoningLoopDetector(
+            enabled=enabled, repetition_threshold=repetition_threshold),
+        ReasoningLoopDetector(
+            enabled=enabled, repetition_threshold=repetition_threshold,
+            window_chars=LONG_WINDOW_CHARS,
+            check_every_chars=LONG_CHECK_EVERY_CHARS),
+    ]

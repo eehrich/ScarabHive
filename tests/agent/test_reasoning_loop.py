@@ -5,7 +5,10 @@ debugger DB (worst healthy window 0.19, the two stuck runs 0.90 and 0.95).
 The texts imitate what those runs actually contained.
 """
 
-from agent_system.servers.agent.reasoning_loop import ReasoningLoopDetector
+from agent_system.servers.agent.reasoning_loop import (
+    ReasoningLoopDetector,
+    build_detectors,
+)
 
 
 # The real thing, from run #943509: the model counted compounds forever.
@@ -203,3 +206,66 @@ class TestBookkeeping:
         detector = ReasoningLoopDetector()
         assert detector.record("") is None
         assert detector.characters_seen == 0
+
+
+# The witness for the long window. NOT a round number, and that is the point:
+# the stride only matters when the loop period and the stride share a small
+# factor. At 13.000 (divisible by 10, 20, 50, 100) every stride saw the loop
+# alike, so a change to the long window's stride stayed green — the trap
+# TestTheMeasureStaysCalibrated warns about. 13.006 is even but not divisible
+# by 4, 3 or 5: the long window sees it at stride 10 and at no stride of 15,
+# 20, 25, 30, 50 or 100 (measured), and the short window never does.
+LONG_PERIOD = 13_006
+
+
+class TestTheTwoWindows:
+    """A call is watched by two windows, and each has a family the other misses.
+
+    The long one exists because of 17 calls in 25 days that ran into the
+    131.072-token output ceiling and delivered nothing; the nine whose thinking
+    is still stored repeat at periods of 2.000 to 16.500 characters, and the
+    short window fires on none of them. The short one stays because of the
+    runs it caught: the two whose record survived had thought 40.040 and
+    90.080 characters (the other five at least 20.000) — a window only judges
+    once it is full, so a longer one would never have looked at them.
+    """
+
+    def test_the_long_window_catches_what_the_short_one_cannot_span(self):
+        """A period of ~13.000 characters caps the short window at
+        (20.000 - 13.000) / 20.000 = 0.35 — under every usable threshold, so
+        this is not a matter of tuning the number."""
+        text = long_period_loop(unit_chars=LONG_PERIOD, repeats=34)
+        short, long = build_detectors()
+        assert feed(short, text) == [], (
+            "vacuous: the short window already catches this, so the long one "
+            "proves nothing here")
+        assert feed(long, text), "the long window missed the loop only it can see"
+
+    def test_the_short_window_keeps_the_family_the_long_one_never_sees(self):
+        """The regression a single bigger window would have caused."""
+        text = cycling(20, 120)
+        short, long = build_detectors()
+        assert feed(short, text), "the short window lost a loop it used to catch"
+        assert feed(long, text) == [], (
+            "vacuous: the long window judges this too, so the short one is "
+            "not proven necessary")
+
+    def test_healthy_thinking_passes_both_windows(self):
+        """Without this, a pair that fires on everything would pass the two
+        tests above."""
+        for detector in build_detectors():
+            assert feed(detector, healthy(400_000)) == []
+
+    def test_switching_off_reaches_both_windows(self):
+        loop = long_period_loop(unit_chars=LONG_PERIOD, repeats=34)
+        for detector in build_detectors(enabled=False):
+            assert feed(detector, loop) == []
+
+    def test_the_threshold_reaches_both_windows(self):
+        """Behaviour, not the attribute: a threshold that is stored but never
+        applied would satisfy an attribute check."""
+        loop = long_period_loop(unit_chars=LONG_PERIOD, repeats=34)
+        cycle = cycling(20, 120)
+        for detector in build_detectors(repetition_threshold=0.999):
+            assert feed(detector, loop) == []
+            assert feed(detector, cycle) == []

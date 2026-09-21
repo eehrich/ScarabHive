@@ -46,7 +46,7 @@ from .components.request_manager import AgentRequestManager
 from .components.server_resolution import resolve_registry_server, resolve_longest_prefix
 from .prompt_strategies import PromptRenderer, PromptContext
 from .loop_detection import ToolCallLoopDetector
-from .reasoning_loop import ReasoningLoopDetector, ReasoningLoopError
+from .reasoning_loop import ReasoningLoopError, build_detectors
 from .escalation import StuckEscalator
 from .tool_discovery import ToolDiscoveryService
 from .tool_schema_builder import ToolSchemaBuilder, server_matches_patterns
@@ -1928,14 +1928,17 @@ class Agent(ToolServer):
             final_assistant = None
             final_usage = None  # Store usage data from final chunk
             final_finish_reason = None  # "length", "content_filter", ...
-            # One detector per CALL: it holds this call's thinking, and a
-            # retry must start from an empty window.
-            reasoning_detector = ReasoningLoopDetector(
-                **{**self._reasoning_loop_config,
-                   # Off for the retry the detector itself asked for: watching
-                   # the second attempt too would mean a second abort policy,
-                   # and there is nothing sensible left to do after it.
-                   "enabled": self._reasoning_loop_config["enabled"] and watch_reasoning})
+            # Detectors per CALL: they hold this call's thinking, and a retry
+            # must start from empty windows. Two of them — a short window for
+            # short-period loops and a long one for the periods the short
+            # window cannot span; see build_detectors.
+            reasoning_detectors = build_detectors(
+                # Off for the retry the detector itself asked for: watching
+                # the second attempt too would mean a second abort policy,
+                # and there is nothing sensible left to do after it.
+                enabled=bool(self._reasoning_loop_config["enabled"]) and watch_reasoning,
+                repetition_threshold=float(
+                    self._reasoning_loop_config["repetition_threshold"]))
             # Thinking of THIS call, for llm_progress hooks; a retry starts empty.
             reasoning_parts: List[str] = []
             reasoning_chars = 0
@@ -1958,16 +1961,17 @@ class Agent(ToolServer):
                     # SUMMARY of it — the threshold was calibrated on raw
                     # reasoning, so for those models this guards the
                     # degenerate case rather than measuring a known shape.
-                    loop_reason = reasoning_detector.record(chunk["delta"])
-                    if loop_reason:
-                        logger.warning(
-                            "[%s] Aborting the call: %s (model=%s, %d characters "
-                            "of thinking so far)",
-                            self.name, loop_reason, getattr(llm, "model", "?"),
-                            reasoning_detector.characters_seen)
-                        raise ReasoningLoopError(
-                            loop_reason,
-                            characters=reasoning_detector.characters_seen)
+                    for _detector in reasoning_detectors:
+                        loop_reason = _detector.record(chunk["delta"])
+                        if loop_reason:
+                            logger.warning(
+                                "[%s] Aborting the call: %s (model=%s, %d characters "
+                                "of thinking so far)",
+                                self.name, loop_reason, getattr(llm, "model", "?"),
+                                _detector.characters_seen)
+                            raise ReasoningLoopError(
+                                loop_reason,
+                                characters=_detector.characters_seen)
 
                     if on_reasoning_progress is not None:
                         reasoning_parts.append(chunk["delta"])
