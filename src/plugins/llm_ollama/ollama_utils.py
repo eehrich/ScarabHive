@@ -137,7 +137,17 @@ def normalize_message(message: dict[str, Any]) -> dict[str, Any]:
     # Copy name if present
     if "name" in message:
         result["name"] = message["name"]
-    
+        # /api/chat names a tool result's tool in `tool_name`; `name` is not
+        # a field it reads.
+        if message.get("role") == "tool":
+            result["tool_name"] = message["name"]
+
+    # A thinking model's reasoning goes back in the field it came out of.
+    # The chat template decides how much of it to render (typically only the
+    # current turn's, which is what a tool-calling model needs to continue).
+    if message.get("role") == "assistant" and message.get("reasoning_content"):
+        result["thinking"] = message["reasoning_content"]
+
     return result
 
 
