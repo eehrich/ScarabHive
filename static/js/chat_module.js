@@ -1364,6 +1364,58 @@
     return body;
   }
 
+  /** A stored JSON string as the object it is, or the string when it is not one. */
+  function maybeJson(text) {
+    if (typeof text !== 'string') return text;
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      return text;
+    }
+  }
+
+  /**
+   * One LLM call of a session read back from disk, in the containers the live
+   * run builds: its thinking and what it asked each tool, foldable as ever.
+   *
+   * Everything here was already on disk and simply never shown again -- which
+   * is why switching sessions looked like the run had been erased. NOT
+   * rebuilt, because the session does not carry it: the status LINE a plugin
+   * reported ("Read README.md"). A replayed call is named by its tool instead,
+   * which is the same shape a live call with no status scope gets.
+   *
+   * Goes through toolDetail, not past it: a second renderer beside the live one
+   * drifts, and then the page shows two different truths about one run.
+   */
+  function replayStep(blk, msg, stepNo, resultFor) {
+    const calls = msg.tool_calls || [];
+    const thinking = msg.reasoning_content || '';
+    if (!calls.length && !thinking) return;   // a plain answer needs no step of its own
+    const section = stepOf(blk, stepNo);
+    if (!section) return;
+    if (thinking) {
+      const pre = section.querySelector('.thinking-content');
+      pre.style.display = 'block';
+      pre.appendChild(document.createTextNode(thinking));
+    }
+    // toolDetail files its block under the step the run is ON. Set here and put
+    // back, because replaying is the one case where that is not "now" -- the
+    // loop around this is synchronous, so nothing else reads it meanwhile.
+    const was = currentStatusStep;
+    currentStatusStep = stepNo;
+    try {
+      calls.forEach((tc) => {
+        const fn = tc.function || {};
+        const data = {action: fn.name || 'tool', request_id: tc.id || ''};
+        toolDetail(blk, data, 'arguments', maybeJson(fn.arguments));
+        const answer = resultFor.get(tc.id);
+        if (answer) toolDetail(blk, data, 'result', maybeJson(answer.content));
+      });
+    } finally {
+      currentStatusStep = was;
+    }
+  }
+
   const activeOperations = new Map();
   const treeNodes = new Map(); // requestId -> { element, parentId, depth, children:Set }
   const pendingChildren = new Map(); // parentId -> [{elementInfo}]
@@ -1729,6 +1781,74 @@
     } catch (e) {
       return ts;
     }
+  }
+
+  //: How long a run that ends is watched for a successor, and how patiently.
+  //: A woken run is a process that has to come up first -- measured on a real
+  //: wake: its first tool result 23 s after the run that woke it ended. The
+  //: steps get further apart so the common case, no successor at all, costs
+  //: seven requests rather than thirty.
+  const SUCCESSOR_WAITS = [1000, 2000, 3000, 5000, 8000, 15000, 25000];
+  let successorWatch = 0;
+
+  /**
+   * A run ended; its SESSION may keep working. Watch for the run that follows.
+   *
+   * The page follows a RUN, not a session: one EventSource on one request_id.
+   * A wake starts a NEW run, in a process of its own, under an id this page
+   * never hears about -- so the turn lands in the session file and is seen
+   * only after a reload. Measured on session jrbqugnco7: 13 messages on disk,
+   * six of them on screen, including the whole final answer.
+   *
+   * followRunOfOpenSession already knows how to find and join the run a
+   * session has. It was simply never asked again once a run was over.
+   *
+   * ponytail: a bounded poll, not a subscription. The ceiling is honest -- a
+   * successor that takes longer than the waits above to register is missed,
+   * and its turn is then seen on the next load, as before. A push would mean
+   * the run's end carrying "a wake was started for this session", which is a
+   * change across app.py, the event payload and session_presence.
+   */
+  function watchForASuccessorRun() {
+    const session = currentSessionId;
+    if (!session) return;
+    const token = ++successorWatch;   // a newer watch, a new run or a new session wins
+    let step = 0;
+    const tick = () => {
+      if (token !== successorWatch || currentSessionId !== session) return;
+      if (chatModule.hasActiveRequest()) return;   // something is being followed again
+      chatModule.followRunOfOpenSession?.({ session_id: session }, {});
+      if (step < SUCCESSOR_WAITS.length) setTimeout(tick, SUCCESSOR_WAITS[step++]);
+    };
+    setTimeout(tick, SUCCESSOR_WAITS[step++]);
+  }
+
+  /**
+   * Every scope still open when the run ends, said so on its row.
+   *
+   * A scope is closed by its OWN `end` phase, and some never get one: a
+   * sub-agent spawned by this run keeps working in a process of its own, and
+   * the run that spawned it goes to sleep meanwhile. Its row then kept the
+   * last `progress` message forever, which reads exactly like a hang.
+   *
+   * NOT marked completed -- that would be a lie about work that may still be
+   * running, and the checkmark is the one thing on this line a reader trusts.
+   * The row says what it last said, plus that nobody is watching it any more.
+   */
+  function markOpenScopesUnfinished() {
+    activeOperations.forEach((operationDiv) => {
+      const iconSpan = operationDiv.querySelector('.progress-icon');
+      const line = operationDiv.querySelector('.progress-line');
+      if (iconSpan) iconSpan.innerHTML = '<div class="open-mark">⋯</div>';
+      operationDiv.classList.add('unfinished');
+      if (line && !line.querySelector('.progress-open-note')) {
+        const note = document.createElement('span');
+        note.className = 'progress-open-note';
+        note.textContent = 'still running when the run ended';
+        line.appendChild(note);
+      }
+    });
+    activeOperations.clear();
   }
 
   // The EventSource of a run the chat follows again after a reload (followRun)
@@ -2232,6 +2352,11 @@
       case 'end':
         run.over = true;
         pendingAppendRebind = false;
+        // Before the stream goes: whatever is still open stops being updated
+        // the moment it closes, so the row has to say so rather than freeze.
+        markOpenScopesUnfinished();
+        // ... and the session may work on without this run. Watch for that.
+        watchForASuccessorRun();
         // a reload no longer follows it -- a refused run's end leaves another one's alone
         forgetRun();
 
@@ -2910,7 +3035,7 @@
      * for what happens from here on -- `live_events_seen` is how far "from here on"
      * starts, the number of events the run had sent when that load was taken.
      */
-    async function attachRunOfOpenSession(session) {
+    async function attachRunOfOpenSession(session, join = null) {
       const sessionId = session && session.session_id;
       if (!sessionId || chatModule.hasActiveRequest()) return;
       let active = null;
@@ -2941,8 +3066,12 @@
       if (window.sessionManager.getCurrentSessionId() !== sessionId) return;
       if (window.sessionManager.requested !== sessionId) return;
       if (chatModule.hasActiveRequest()) return;
+      // `join` is how the caller says what it has already seen of that run. A
+      // session just loaded carries the run's live messages, so it skips; a run
+      // that started AFTER this page was watching has been seen by nobody, and
+      // replaying it is the only way its turn reaches the screen at all.
       attachRun({ requestId: active.request_id, sessionId },
-        { catchUp: 'skip', seen: session.live_events_seen });
+        join || { catchUp: 'skip', seen: session.live_events_seen });
     }
 
     chatModule.followRunOfOpenSession = attachRunOfOpenSession;
@@ -3011,21 +3140,27 @@
       }
       
       // Restore messages
-      // First pass: find the last assistant message to determine if we need a placeholder
-      let lastAssistantMsg = null;
-      for (let i = session.messages.length - 1; i >= 0; i--) {
-        if (session.messages[i].role === 'assistant') {
-          lastAssistantMsg = session.messages[i];
-          break;
-        }
-      }
-      
+      // What a tool answered, by the call it answered. The session has carried
+      // this all along -- measured over 58 sessions: tool_calls on 29 % of the
+      // messages, tool_call_id on 37 %, reasoning on 32 %. None of it was ever
+      // shown again, so switching sessions looked like the run had been erased.
+      const resultFor = new Map();
+      session.messages.forEach((m) => {
+        if (m.role === 'tool' && m.tool_call_id) resultFor.set(m.tool_call_id, m);
+      });
+      // One assistant block per RUN, with a step per LLM call inside it -- the
+      // shape the live view builds. A message that opens a turn ends the run
+      // before it, so the next assistant message starts a new block.
+      let runBlk = null;
+      let stepNo = 0;
+      const endRun = () => { runBlk = null; stepNo = 0; };
+
       session.messages.forEach((msg, index) => {
         // Skip system messages and tool-related messages
         if (msg.role === 'system' || msg.role === 'tool') {
           return;
         }
-        
+
         if (msg.role === 'user') {
           // Add user message
           const row = document.createElement('div');
@@ -3073,21 +3208,17 @@
 
           row.appendChild(msgDiv);
           chatEl.appendChild(row);
-        } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
-          // Only show placeholder for the LAST assistant message with tool_calls
-          if (msg === lastAssistantMsg && !msg.content) {
-            const blk = addAssistantBlock(chatEl);
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text pk-muted"><em>Tool calls in progress…</em></div>`;
-          }
-          // Skip all other tool-call-only messages (they're intermediate steps)
-        } else if (msg.role === 'assistant' && msg.content) {
-          const blk = addAssistantBlock(chatEl);
-          showSection(blk.t);
-          // Use formatContent to detect HTML vs plain text
-          blk.t.innerHTML = `<div class="response-text">${formatContent(msg.content, msg.content_format)}</div>`;
-          if (msg.content_format === 'html' && typeof Prism !== 'undefined') {
-            Prism.highlightAllUnder(blk.t);
+          endRun();  // what follows belongs to a new run, in a block of its own
+        } else if (msg.role === 'assistant') {
+          if (!runBlk) runBlk = addAssistantBlock(chatEl);
+          replayStep(runBlk, msg, ++stepNo, resultFor);
+          if (msg.content) {
+            showSection(runBlk.t);
+            // Use formatContent to detect HTML vs plain text
+            runBlk.t.innerHTML = `<div class="response-text">${formatContent(msg.content, msg.content_format)}</div>`;
+            if (msg.content_format === 'html' && typeof Prism !== 'undefined') {
+              Prism.highlightAllUnder(runBlk.t);
+            }
           }
         } else if (msg.role === 'developer') {
           // What the run told the model, at the point it told it. Without this
@@ -3103,6 +3234,9 @@
           note.appendChild(pre);
           row.appendChild(note);
           chatEl.appendChild(row);
+          // A wake opens a turn just as a typed line does (message_roles.
+          // opens_a_turn), so what follows is a run of its own.
+          if (!msg.injected_by) endRun();
         }
       });
       

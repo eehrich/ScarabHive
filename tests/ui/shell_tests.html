@@ -1213,7 +1213,7 @@
     }
   });
 
-  await check('a sub-agents lines nest under the call that spawned it, and none of them go missing', async () => {
+  await check('a sub-agents lines nest under the call that spawned it, none go missing, and what was still running when the run ended says so', async () => {
     // The run's stream carries no `tree` today, so the page's nesting machinery has
     // never run on it. Before anything starts sending one, measure what it DOES with
     // that shape: registerNode hides a child whose parent it has not seen, so a tree
@@ -1246,6 +1246,20 @@
       // not indent, it would disappear.
       const orphan = row('_sub_002_001');
       if (!orphan || !orphan.getClientRects().length) return false;
+      // A scope that never got its own `end` -- the spawn, whose sub-agent works on in
+      // a process of its own after this run has gone to sleep. Its row used to keep the
+      // last `progress` message for ever, which reads exactly like a hang.
+      if (!parent.classList.contains('unfinished')) return false;
+      if (parent.classList.contains('completed')) return false;  // never claim it finished
+      if (parent.querySelector('.checkmark')) return false;
+      if (!parent.querySelector('.progress-open-note')) return false;
+      // and the contrast, or the marking would just be indiscriminate: a scope that DID
+      // end keeps its checkmark and gets no note.
+      const ended = box.querySelector('.operation-progress[data-request-id$="_003"]');
+      if (!ended || !ended.classList.contains('completed')) return false;
+      if (ended.classList.contains('unfinished')) return false;
+      if (!ended.querySelector('.checkmark') || ended.querySelector('.progress-open-note'))
+        return false;
       // both belong to the call that spawned them, not to the run and not to call 1
       const inStep2 = box.querySelector('.step-section[data-step="2"]');
       return inStep2.contains(parent) && inStep2.contains(child);
@@ -1343,6 +1357,49 @@
     } finally {
       cookie('stub_stream', null);
       forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a session read back from disk brings its run with it, not just the answer', async () => {
+    // Everything below was in the session file all along and was thrown away on load:
+    // the tool messages were skipped outright and the assistant's tool_calls and
+    // reasoning ignored. Switching sessions therefore looked like the run had been
+    // erased -- and leaving a running agent and coming back lost its history.
+    try {
+      sessionButton('s-run', 'open').click();
+      await until('the run session', () => $('#headerSessionId').textContent === 'A run read back');
+      const box = $$('#chat .msg.assistant').at(-1);
+      if (!box) return false;
+      // ONE block for the run, with the LLM call that reasoned as its first step
+      if ($$('#chat .msg.assistant').length !== 1) return false;
+      const step = box.querySelector('.step-section[data-step="1"]');
+      if (!step) return false;
+      const thinking = step.querySelector('.thinking-content');
+      if (!thinking || thinking.style.display === 'none') return false;
+      if (!thinking.textContent.includes('weighing the first move.')) return false;
+      // the call has no status line of its own here -- the session does not carry one --
+      // so it brings a line naming the tool, the same shape a live scope-less call gets
+      const detail = step.querySelector('.status-body > .tool-detail');
+      if (!detail) return false;
+      if (detail.querySelector('.tool-detail-name').textContent !== 'file_ops_read_file') return false;
+      const body = detail.querySelector('.tool-detail-body');
+      const parts = [...body.querySelectorAll('.tool-detail-part')];
+      if (parts.map((p) => p.querySelector('.tool-detail-label').textContent).join()
+          !== 'arguments,result') return false;
+      if (body.getClientRects().length > 0) return false;   // folded, like everywhere else
+      detail.querySelector('.tool-detail-name').click();
+      if (body.getClientRects().length === 0) return false;
+      if (!parts[0].textContent.includes('README.md')) return false;
+      // stored as a JSON string and shown as the object it is, not as a quoted blob
+      if (!parts[1].textContent.includes('"status"')) return false;
+      // and still DATA: the tag is shown, not parsed
+      if (!parts[1].textContent.includes('<b>not markup</b>')) return false;
+      if (parts[1].querySelector('b')) return false;
+      // the answer is still there, and the call that answered adds no empty step
+      if (!box.querySelector('.response-text').textContent.includes('Done')) return false;
+      return box.querySelectorAll('.step-section').length === 1;
+    } finally {
       await loadShell();
     }
   });
@@ -1714,6 +1771,43 @@
       if (header() !== 'Refactor the kit') return false;  // the last click won
       return await cancels() === before;                  // and the run was never stopped
     } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a session that works on after its run ends is followed without a reload', async () => {
+    // The bug the user reported as "the agent never wakes up": the page follows a RUN,
+    // one EventSource on one request id. A wake starts a NEW run in a process of its
+    // own, under an id this page never hears about -- so its whole turn lands in the
+    // session file and is seen only after a reload. Measured on session jrbqugnco7:
+    // 13 messages on disk, six on screen, the final answer among the missing seven.
+    const header = () => $('#headerSessionId').textContent;
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => header() === 'Refactor the kit');
+      // the successor is registered while this run is still going, as a wake is:
+      // the run that ends is what STARTS it
+      await stub('/__stub/active-runs', { 's-1': 'r-live' });
+      cookie('stub_stream', 'ending');   // its final answer and end after a second
+      $('#task').value = 'Spawn something and sleep';
+      $('#f').requestSubmit();
+      await until('its own run', () => sessionStorage.getItem('activeRequestId') === 'r-ending', 3000);
+      cookie('stub_stream', null);
+      await until('that run over', () => !win().chatModule.hasActiveRequest(), 6000);
+      // and now, without anybody reloading, the session's next run is picked up
+      await until('the successor followed', () => win().chatModule.hasActiveRequest()
+        && sessionStorage.getItem('activeRequestId') === 'r-live', 12000);
+      // the successor's turn gets a block of its own rather than overwriting the last
+      if ($$('#chat .msg.assistant').length < 2) return false;
+      // and it is joined with a REPLAY: nobody has seen any of it. Joined the way a
+      // freshly loaded session joins -- skip, plus what that load had seen -- its
+      // events would be skipped as already shown, and the turn would stay invisible
+      // exactly as before.
+      return await hits('catch-up:r-live') === 'replay/-';
+    } finally {
+      await stub('/__stub/active-runs', {});
+      cookie('stub_stream', null);
       forgetRun();
       await loadShell();
     }

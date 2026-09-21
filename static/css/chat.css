@@ -123,6 +123,12 @@
 .progress-message { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
 .operation-progress.completed .progress-message { color: var(--text-secondary); }
 .operation-progress.error .progress-message { color: var(--danger); }
+/* Still open when the run ended -- deliberately neither of the two above. A
+   checkmark would claim work finished that may still be running, and the red
+   cross would call it a failure. It is simply nobody's business any more. */
+.open-mark { color: var(--text-muted); font-weight: 600; }
+.operation-progress.unfinished .progress-message { color: var(--text-muted); }
+.progress-open-note { color: var(--text-muted); font-style: italic; flex: none; }
 
 .tree-indicator { position: relative; display: inline-block; width: 16px; flex: none; }
 .tree-expand-btn {

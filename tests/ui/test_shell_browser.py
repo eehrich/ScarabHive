@@ -63,7 +63,10 @@ the list names the run -- and their end; the request of the message and of the
 one with files works on half a second after it; ``saving-drops`` names
 ``r-saving-dropped`` (with files ``r-files-saving-dropped``), brings its final
 answer and word a second later, and is cut off a second after that. /__stub/streams tells of each run's stream whether
-it was read to its end or cut off by the browser. A session added through
+it was read to its end or cut off by the browser. The session ``s-run`` is one
+whose RUN is still in its file: an LLM call that reasoned and called a tool,
+the tool's answer as the JSON string a session stores, and the call that
+answered; every other session carries two plain messages. A session added through
 /__stub/sessions may carry ``delay`` (seconds to answer), ``trickle`` (headers
 at once, the body after that many seconds), ``fails`` (its load fails),
 ``delete_delay`` and ``delete_fails`` (how many deletes of it fail);
@@ -183,7 +186,13 @@ def stub_app() -> FastAPI:
     templates = ui_templates()
     now = datetime.now(timezone.utc).isoformat()
     sessions = [{"session_id": "s-1", "title": "Refactor the kit", "agent_name": "assistant",
-                 "updated_at": now, "depth": 0, "has_children": True, "children": []}]
+                 "updated_at": now, "depth": 0, "has_children": True, "children": []},
+                # A session whose RUN is still in it: what the model thought, what it
+                # asked a tool and what came back. The shape a real file has -- measured
+                # over 58 of them on 21.09.2026 -- and what a reload used to throw away.
+                {"session_id": "s-run", "title": "A run read back", "agent_name": "assistant",
+                 "updated_at": now, "depth": 0, "has_children": False, "children": [],
+                 "run": True}]
     children = {"s-1": [{**sessions[0], "session_id": "s-1-sub", "title": "Research the icons", "depth": 1}]}
     patches: list[dict] = []
     posted: list[dict] = []
@@ -852,8 +861,25 @@ def stub_app() -> FastAPI:
             {"type": "image", "name": "sketch.png"},
             {"type": "audio", "name": "briefing.wav"},
         ]} if found.get("attachments") else {"role": "user", "content": "Build the kit"}
+        if found.get("run"):
+            # Two LLM calls: one that reasoned and called a tool, one that answered.
+            # The tool's answer is a JSON STRING, as a session file stores it, and it
+            # carries a tag so the page cannot be rendering it as markup.
+            messages = [
+                {"role": "user", "content": "Read the readme"},
+                {"role": "assistant", "content": "", "reasoning_content": "weighing the first move.",
+                 "tool_calls": [{"id": "call_1", "type": "function",
+                                 "function": {"name": "file_ops_read_file",
+                                              "arguments": '{"filePath": "README.md"}'}}]},
+                {"role": "tool", "tool_call_id": "call_1", "name": "file_ops_read_file",
+                 "content": '{"status": "success", "note": "<b>not markup</b>"}'},
+                {"role": "assistant", "content": "Done", "content_format": "text"},
+            ]
+        else:
+            messages = [user_message,
+                        {"role": "assistant", "content": "Done", "content_format": "text"}]
         stored = {**found, "llm_profile": "default", "created_at": now, "context_vars": {},
-                  "messages": [user_message, {"role": "assistant", "content": "Done", "content_format": "text"}]}
+                  "messages": messages}
         if not found.get("trickle"):
             return stored
 
@@ -942,6 +968,7 @@ EXPECTED = [
     'a run let go of past its answer is read to its end, and its save shows in the session list: a message, one with files beside a new run, and a run followed again after a reload',
     'a run let go of whose stream breaks while it saves leaves the session list alone: a message, and one with files',
     'picks while a run goes on: each takes the chat at once, the last wins, and none of them stops the run',
+    'a session that works on after its run ends is followed without a reload',
     'a run works on while another session is read, and the chat picks it up again on return',
     'leaving a session with a file run does not cut that run short',
     'a delete finds the run of a session that is running somewhere else',
@@ -972,8 +999,9 @@ EXPECTED = [
     'the thinking box carries the reasoning, and not the answer a second time',
     'collapse all closes every open branch and keeps the focus it was pressed with',
     'each LLM call keeps its own reasoning, its own tool lines, and folds when the next one starts',
-    'a sub-agents lines nest under the call that spawned it, and none of them go missing',
+    'a sub-agents lines nest under the call that spawned it, none go missing, and what was still running when the run ended says so',
     'clicking a tool status line unfolds what it was asked and what it answered, as one block per call',
+    'a session read back from disk brings its run with it, not just the answer',
     'a session panel pinned from a link can follow the chat again',
     'a request id in the chat offers the panels that take a request',
     'a panel with unsaved input is only closed or reloaded once the viewer agrees',
