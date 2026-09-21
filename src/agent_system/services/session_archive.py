@@ -45,6 +45,14 @@ logger = logging.getLogger(__name__)
 
 MANIFEST_NAME = "index.json"
 ZIP_MANIFEST_MEMBER = "_manifest.json"
+#: What an archive is called while it is being written. A pass that is
+#: killed leaves one behind; the next pass over that tree overwrites it,
+#: and a sweep clears the ones no tree will come back to.
+TMP_SUFFIX = ".tmp"
+#: How long a leftover has to lie still before a sweep drops it. A CLI
+#: sweep in another process writes the same names, and the in-process
+#: lock says nothing about that one.
+TMP_MIN_AGE_SECONDS = 3600.0
 _SUBS_PREFIX = ".subs."
 _SUBS_SUFFIX = ".index.json"
 
@@ -160,7 +168,7 @@ class SessionArchive:
         retention_days: int = 30,
         sweep_interval_hours: float = 24.0,
         first_sweep_delay_seconds: float = 300.0,
-        max_trees_per_sweep: int = 200,
+        max_trees_per_sweep: int = 0,
         presence: Any = None,
         busy_sessions: Optional[Callable[[], Awaitable[Set[str]]]] = None,
     ) -> None:
@@ -180,6 +188,15 @@ class SessionArchive:
         # One restore at a time: two of the same tree would both pass the
         # conflict check and then race on writing the same files.
         self._restore_lock = asyncio.Lock()
+        # One pass per user at a time. Two of them share every target file:
+        # they write the same "<root>.zip.tmp", and the second `os.replace`
+        # lands on top of the first. Nothing is lost -- a zip that cannot be
+        # read back is thrown away before anything is deleted -- but the tree
+        # fails for no reason, and the second pass then re-registers what the
+        # first already removed and reports a delete failure per session.
+        # Cheap before, likely now: a pass is minutes, not seconds, and the
+        # panel's "Archive now" sits next to a sweep that may be running.
+        self._sweep_locks: Dict[str, asyncio.Lock] = {}
         logger.info(
             "SessionArchive initialized: archive_path=%s retention_days=%d",
             self.archive_path, self.retention_days,
@@ -370,14 +387,49 @@ class SessionArchive:
         if not user_dir.is_dir():
             return report
 
+        lock = self._sweep_locks.setdefault(user_id, asyncio.Lock())
+        # Refused, not queued: the caller asked for a pass now, and waiting
+        # out the one already running would answer minutes later with a report
+        # about somebody else's work. No await between the question and the
+        # acquire, so nothing can slip in between.
+        if lock.locked():
+            raise ArchiveError(f"a sweep for {user_id} is already running")
+        async with lock:
+            return await self._archive_user(report, user_dir, days, dry_run=dry_run)
+
+    async def _archive_user(
+        self,
+        report: ArchiveReport,
+        user_dir: Path,
+        days: int,
+        *,
+        dry_run: bool,
+    ) -> ArchiveReport:
+        user_id = report.user_id
+        # Leftovers of a pass that was killed mid-write. `_write_zip` clears
+        # the one it is about to use, but a tree nobody archives again -- one
+        # whose conversation was resumed -- would keep its .tmp for good.
+        # Only the cold ones: the lock above holds THIS process, not a CLI
+        # sweep in another, and taking the file it is writing right now
+        # would turn a leftover into a broken pass.
+        cold = time.time() - TMP_MIN_AGE_SECONDS
+        for stale in self._user_archive_dir(user_id).glob(f"*/*{TMP_SUFFIX}"):
+            try:
+                if stale.stat().st_mtime > cold:
+                    continue
+                stale.unlink()
+                logger.info("session archive: dropped a leftover %s", stale.name)
+            except OSError as exc:
+                logger.debug("session archive: leftover %s (%s)", stale.name, exc)
+
         cutoff = time.time() - days * 86400
         trees = await asyncio.to_thread(self._collect_trees, user_dir)
-        # The lock files are read once -- a scandir over a 60k directory is not
-        # something to repeat 200 times. The RUNNING jobs are re-read for every
-        # tree instead: a first sweep takes ~18 minutes on this store, and a
-        # conversation somebody resumes in minute 12 must not be archived out
-        # from under its own run just because it was idle in minute 0.
-        held = await asyncio.to_thread(self._held_sessions, user_id)
+        # BOTH guards are asked per tree, right before it is taken. A pass
+        # runs for minutes, and a conversation somebody resumes in minute 12
+        # must not be archived out from under its own run because it was
+        # idle in minute 0 -- that holds for the running jobs and just as
+        # much for the lock files, which in a CLI process are the only
+        # guard there is, since no job manager answers there.
 
         # Counted over the WHOLE forest and before the loop, because the cap
         # below ends the pass early: raised inside the loop, this said how many
@@ -391,17 +443,28 @@ class SessionArchive:
         report.skipped_young = len(trees) - len(eligible)
 
         for tree in eligible:
-            # The cap bounds what one pass WRITES; a dry run writes nothing,
-            # and a report that stops counting at 200 would read as "that is
-            # all". It is asked FIRST, ahead of the busy check: behind it, a
-            # pass whose remaining trees are all in use skips every one of
-            # them and runs off the end without ever setting `capped` -- a
-            # pass that wrote its full quota with work left over, calling
-            # itself finished. Asking first also saves the job manager a
-            # question per tree whose answer cannot change anything.
-            if not dry_run and report.trees >= self.max_trees_per_sweep:
+            # A cap bounds what one pass WRITES, and it is off by default:
+            # the brief was "archive what is older than X", and a pass that
+            # stops at 200 leaves the rest lying for a day -- a cleanup
+            # turned into a drip. Nothing here needs bounding for the app's
+            # sake either, because the zip work is already off the event
+            # loop; what is left is contention on the session manager's lock
+            # while the sessions are deleted, and that is the price of the
+            # job. A positive value is for someone who wants a pass bounded
+            # anyway. A dry run is never capped -- a report that stopped
+            # counting would read as "that is all".
+            #
+            # Asked FIRST, ahead of the busy check: behind it, a pass whose
+            # remaining trees are all in use skips every one of them and runs
+            # off the end without ever setting `capped` -- a pass that wrote
+            # its full quota with work left over, calling itself finished.
+            # It also saves the job manager a question per tree whose answer
+            # cannot change anything.
+            if (not dry_run and self.max_trees_per_sweep
+                    and report.trees >= self.max_trees_per_sweep):
                 report.capped = True
                 break
+            held = await asyncio.to_thread(self._held_in, user_id, tree.sessions)
             if (held | await self._running()).intersection(tree.sessions):
                 report.skipped_busy += 1
                 continue
@@ -493,6 +556,38 @@ class SessionArchive:
                 held.add(session_id)
         return held
 
+    def _held_in(self, user_id: str, session_ids: List[str]) -> Set[str]:
+        """Which of THESE sessions a lock file speaks for, asked right now.
+
+        The snapshot this replaces was taken once, before the whole pass.
+        With no cap a pass runs for minutes, and in a CLI process -- which
+        has no job manager, so ``_running`` is always empty -- it was the
+        ONLY guard: a conversation opened in minute three could be
+        archived in minute twelve.
+
+        Per tree costs one ``exists`` per session instead of one scandir
+        per pass; over a whole sweep that is the same number of files
+        touched, and it is current. The rest is ``_held_sessions``, same
+        rules: presence off means no guard, and a presence that cannot
+        answer stops nothing.
+        """
+        presence = self._presence
+        if presence is None:
+            return set()
+        user_dir = self._user_dir(user_id)
+        held: Set[str] = set()
+        for session_id in session_ids:
+            if not (user_dir / f"{session_id}.lock").exists():
+                continue
+            try:
+                state = presence.get(session_id, user_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("session archive: presence check failed (%s)", exc)
+                return set()
+            if state and state.get("status") != "idle":
+                held.add(session_id)
+        return held
+
     async def _archive_tree(
         self, user_id: str, tree: _Tree, *, dry_run: bool,
     ) -> tuple[int, List[str]]:
@@ -503,8 +598,15 @@ class SessionArchive:
         if dry_run:
             return 0, []
 
-        month = datetime.fromtimestamp(tree.newest, timezone.utc).strftime("%Y-%m")
-        relative = f"{month}/{tree.root}.zip"
+        # The month comes from the ROOT, not from `tree.newest`: a retry
+        # after a partial delete sees a tree whose newest session is
+        # already gone, works out an older month and writes a SECOND zip,
+        # leaving the first one holding sessions nothing points at any
+        # more. The root is deleted last and is what the tree is named
+        # after, so its stamp is the one that does not move. And a tree
+        # the manifest already knows keeps the path it was filed under.
+        known = await self._entry_of(user_id, tree.root) or {}
+        relative = known.get("archive") or f"{self._root_month(tree)}/{tree.root}.zip"
         target = self._user_archive_dir(user_id) / relative
         entry = self._manifest_entry(user_id, tree, relative)
 
@@ -545,14 +647,41 @@ class SessionArchive:
                 (user_dir / f"{session_id}.lock").unlink(missing_ok=True)
             except OSError as exc:
                 logger.debug("session archive: stale lock %s (%s)", session_id, exc)
-
         if failures:
+            # The partitions went first, for the churn. With a session left
+            # behind, its row went with them and nothing lists it as a child
+            # any more -- it would show up as a root of its own. Rebuilding
+            # the partition is the repair path kept for exactly this; it is
+            # not cheap, and a failed delete is not common.
+            try:
+                await self._session_manager._rebuild_index(user_id, tree.root)
+            except Exception as exc:  # noqa: BLE001 - the archive is safe either way
+                logger.warning(
+                    "session archive: could not rebuild the index of %s (%s)",
+                    tree.root, exc)
             logger.warning(
                 "session archive: %s is archived, but %d of its files could not be "
                 "deleted -- the next pass will add whatever is left to the same "
                 "archive: %s", tree.root, len(failures), failures[:3],
             )
         return archived_bytes, failures
+
+    @staticmethod
+    def _root_month(tree: _Tree) -> str:
+        """The month a tree is filed under: the root's own timestamp."""
+        stamp = _parse_iso(tree.root_meta.get("updated_at"))
+        if stamp is None:
+            root_file = tree.files.get(tree.root)
+            stamp = (root_file.stat().st_mtime
+                     if root_file and root_file.exists() else tree.newest)
+        return datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m")
+
+    async def _entry_of(self, user_id: str, root: str) -> Optional[Dict[str, Any]]:
+        """What the manifest already holds for this tree, if anything."""
+        async with self._manifest_lock:
+            manifest = _read_json(self._manifest_path(user_id))
+        entry = manifest.get(root)
+        return entry if isinstance(entry, dict) else None
 
     async def _remember(self, user_id: str, root: str, entry: Dict[str, Any]) -> None:
         """Put one tree into the user's manifest."""
@@ -599,7 +728,7 @@ class SessionArchive:
         Returns ``(bytes, sessions)`` of the finished archive.
         """
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(target.name + ".tmp")
+        tmp = target.with_name(target.name + TMP_SUFFIX)
         try:
             already: Set[str] = set()
             if target.is_file():

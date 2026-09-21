@@ -180,6 +180,16 @@ def test_a_sweep_by_hand_is_for_the_caller_only(db):
     assert archive.calls == [("sweep", ("bob", False))]
 
 
+def test_a_sweep_while_one_runs_is_a_refusal_not_a_failure(db):
+    """The panel's button sits next to a sweep that may be running."""
+    archive = FakeArchive(ArchiveError("a sweep for ada is already running"))
+
+    response = client(archive).post(f"{BASE}/sweep", headers=as_user("ada", db))
+
+    assert response.status_code == 409
+    assert "already running" in response.json()["detail"]
+
+
 def test_a_dry_sweep_says_so(db):
     archive = FakeArchive()
     response = client(archive).post(

@@ -45,27 +45,34 @@ def archive(sm, tmp_path):
     )
 
 
-def _user_dir(sm: SessionManager) -> Path:
-    return sm.storage_path / USER
+def _user_dir(sm: SessionManager, user: str = USER) -> Path:
+    return sm.storage_path / user
 
 
-async def _make_tree(sm: SessionManager, root: str, children: list[str]) -> None:
+async def _make_tree(
+        sm: SessionManager, root: str, children: list[str], user: str = USER) -> None:
     """A root session with sub-agent sessions below it, each with one message."""
-    await sm.create_session(user_id=USER, title=f"Tree {root}", session_id=root)
+    await sm.create_session(user_id=user, title=f"Tree {root}", session_id=root)
     for child in children:
         await sm.create_session(
-            user_id=USER, title=f"Sub {child}", session_id=child, parent_session_id=root,
+            user_id=user, title=f"Sub {child}", session_id=child, parent_session_id=root,
         )
     for session_id in [root, *children]:
-        data = await sm.load_session(USER, session_id)
+        data = await sm.load_session(user, session_id)
         data["messages"] = [{"role": "user", "content": f"hello from {session_id}"}]
         await sm.save_session(data)
 
 
-def _age(sm: SessionManager, session_ids: list[str], days: float) -> str:
-    """Backdate sessions on disk and in their index rows. Returns the ISO stamp."""
+def _age(sm: SessionManager, session_ids: list[str], days: float,
+         user: str = USER) -> str:
+    """Backdate sessions on disk and in their index rows. Returns the ISO stamp.
+
+    Both halves matter: the index row beats the file date when the archive
+    works out how old a tree is, so a test that only touches the file leaves
+    the tree looking fresh.
+    """
     stamp = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    user_dir = _user_dir(sm)
+    user_dir = _user_dir(sm, user)
     for session_id in session_ids:
         path = user_dir / f"{session_id}.json"
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -194,6 +201,116 @@ async def test_a_running_session_holds_its_tree(sm, tmp_path):
     assert report.trees == 0
     assert report.skipped_busy == 1
     assert (_user_dir(sm) / "root_f.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_session_OPENED_during_the_sweep_is_spared(sm, tmp_path):
+    """The lock files are the only guard a CLI sweep has, so they must be current.
+
+    Read once before the pass, they were a snapshot: with no cap a pass runs
+    for minutes, and a conversation opened in minute three was archived in
+    minute twelve. The running-jobs check does not cover it -- a CLI process
+    has no job manager, and in the API a lock means "somebody has it open",
+    not "a job is running".
+    """
+    await _make_tree(sm, "root_open1", [])
+    await _make_tree(sm, "root_open2", ["kid_open2"])
+    _age(sm, ["root_open1", "root_open2", "kid_open2"], days=60)
+
+    presence = SessionPresence(root=sm.storage_path)
+    archive = SessionArchive(
+        sm, archive_path=str(tmp_path / "session_archive"), presence=presence)
+
+    real = archive._archive_tree
+    opened = False
+
+    async def open_the_other(user_id, tree, *, dry_run=False):
+        nonlocal opened
+        result = await real(user_id, tree, dry_run=dry_run)
+        if not opened:  # while the pass runs, somebody opens the second one
+            opened = presence.hold("kid_open2", USER, "chat") is True
+        return result
+
+    archive._archive_tree = open_the_other
+    try:
+        report = await archive.archive_user(USER)
+    finally:
+        presence.release("kid_open2", USER)
+
+    assert opened, "the test never opened the session it is about"
+    assert report.skipped_busy == 1, "the tree was taken while somebody had it open"
+    assert (_user_dir(sm) / "kid_open2.json").exists()
+    assert (_user_dir(sm) / "root_open2.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_writes_the_SAME_archive_not_a_second_one(sm, archive, tmp_path):
+    """The path may not move when the tree loses its newest session.
+
+    It was worked out from `tree.newest`, which on a retry is whatever is left
+    -- an older month, so a second zip under a second name, and the first one
+    holding sessions nothing points at any more.
+    """
+    await _make_tree(sm, "root_r", ["kid_r1"])
+    # The child is the newest and lands in a different month than the root.
+    _age(sm, ["root_r"], days=200)
+    _age(sm, ["kid_r1"], days=60)
+
+    real_delete = sm.delete_session
+    blocked = {"root_r"}
+
+    async def stubborn(user_id, session_id, create_backup=True):
+        if session_id in blocked:
+            raise OSError("file is open in another process")
+        return await real_delete(user_id, session_id, create_backup=create_backup)
+
+    sm.delete_session = stubborn
+    try:
+        await archive.archive_user(USER)       # kid_r1 goes, root_r stays
+        blocked.clear()
+        _age(sm, ["root_r"], days=200)
+        await archive.archive_user(USER)       # the retry, now without the newest
+    finally:
+        sm.delete_session = real_delete
+
+    zips = sorted(q.name for q in (tmp_path / "session_archive" / USER).rglob("*.zip"))
+    assert zips == ["root_r.zip"], f"a second archive was written: {zips}"
+    entries = await archive.list_archived(USER)
+    assert len(entries) == 1
+    with zipfile.ZipFile(
+            tmp_path / "session_archive" / USER / entries[0]["archive"]) as zf:
+        assert sorted(zf.namelist()) == ["_manifest.json", "kid_r1.json", "root_r.json"]
+
+
+@pytest.mark.asyncio
+async def test_a_session_left_behind_is_still_listed_as_a_child(sm, archive):
+    """The partitions go first for the churn -- a survivor must get its row back.
+
+    Without it the child is in no index at all: the sidebar shows it as a
+    conversation of its own, and `list_child_sessions` of its parent does not
+    have it.
+    """
+    await _make_tree(sm, "root_s", ["kid_s1", "kid_s2"])
+    _age(sm, ["root_s", "kid_s1", "kid_s2"], days=60)
+
+    real_delete = sm.delete_session
+
+    async def stubborn(user_id, session_id, create_backup=True):
+        if session_id == "kid_s1":
+            raise OSError("file is open in another process")
+        return await real_delete(user_id, session_id, create_backup=create_backup)
+
+    sm.delete_session = stubborn
+    try:
+        report = await archive.archive_user(USER)
+    finally:
+        sm.delete_session = real_delete
+
+    assert report.errors, "the delete was supposed to fail"
+    assert (_user_dir(sm) / "kid_s1.json").exists()
+    children = await sm.list_child_sessions(USER, "root_s")
+    assert [c["session_id"] for c in children] == ["kid_s1"], (
+        "the survivor lost its row when the partition went")
 
 
 @pytest.mark.asyncio
@@ -560,6 +677,135 @@ async def test_the_young_are_counted_whole_however_early_the_cap_stops(sm, tmp_p
     done = await archive.archive_user(USER)
     assert done.trees == 0 and done.capped is False
     assert done.skipped_young == 3 and done.remaining == 0
+
+
+@pytest.mark.asyncio
+async def test_a_second_pass_for_the_same_user_is_refused_not_queued(sm, archive):
+    """Two passes share every target file, so only one runs at a time.
+
+    They write the same "<root>.zip.tmp" and replace it over each other; the
+    second then re-registers what the first already deleted and reports a
+    failure per session. Waiting instead of refusing would be worse: the
+    caller asked for a pass NOW and would get an answer about somebody else's
+    work, minutes later.
+    """
+    await _make_tree(sm, "root_p1", [])
+    await _make_tree(sm, "root_p2", [])
+    _age(sm, ["root_p1", "root_p2"], days=60)
+
+    started, may_finish = asyncio.Event(), asyncio.Event()
+    real = archive._archive_tree
+
+    async def slow(user_id, tree, *, dry_run=False):
+        started.set()
+        await may_finish.wait()
+        return await real(user_id, tree, dry_run=dry_run)
+
+    archive._archive_tree = slow
+    first = asyncio.create_task(archive.archive_user(USER))
+    try:
+        # Both waits are bounded, so a guard that stops refusing FAILS this
+        # test instead of hanging it: the second pass would queue behind a
+        # first one this test deliberately never lets finish, and a hang is
+        # not a red test -- pytest-timeout kills the session, and a harness
+        # that counts FAILED lines then reads the silence as green.
+        await asyncio.wait_for(started.wait(), timeout=5)
+        with pytest.raises(ArchiveError, match="already running"):
+            await asyncio.wait_for(archive.archive_user(USER), timeout=5)
+    finally:
+        may_finish.set()
+        with contextlib.suppress(Exception):
+            await first
+
+    # And the lock is free again afterwards, so the next pass is not refused.
+    assert (await archive.archive_user(USER)).errors == []
+
+
+@pytest.mark.asyncio
+async def test_the_refusal_is_per_user_not_for_everybody(sm, archive):
+    """Two users share no file, so one waiting does not hold up the other.
+
+    Without this the lock could be a single one and every test above would
+    still pass -- `sweep()` walks the users one after another, so it never
+    blocks itself. What it would break is the panel: "Archive now" for one
+    user while the daily pass works through another would be refused for a
+    conflict that does not exist.
+    """
+    await _make_tree(sm, "root_o", [], user="other")
+    _age(sm, ["root_o"], days=60, user="other")
+
+    await _make_tree(sm, "root_m", [])
+    _age(sm, ["root_m"], days=60)
+
+    started, may_finish = asyncio.Event(), asyncio.Event()
+    real = archive._archive_tree
+
+    async def slow(user_id, tree, *, dry_run=False):
+        started.set()
+        await may_finish.wait()
+        return await real(user_id, tree, dry_run=dry_run)
+
+    archive._archive_tree = slow
+    mine = asyncio.create_task(archive.archive_user(USER))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        archive._archive_tree = real  # the other user's pass runs at full speed
+        theirs = await asyncio.wait_for(archive.archive_user("other"), timeout=5)
+    finally:
+        may_finish.set()
+        with contextlib.suppress(Exception):
+            await mine
+
+    assert theirs.trees == 1 and theirs.roots == ["root_o"]
+
+
+@pytest.mark.asyncio
+async def test_a_leftover_of_a_killed_pass_is_cleared(sm, archive, tmp_path):
+    """A pass that is killed mid-write leaves a .tmp nobody comes back to.
+
+    `_write_zip` clears the one it is about to use, so a tree that is archived
+    again heals itself. One whose conversation was resumed is never archived
+    again -- and its half-written copy would sit there for good.
+    """
+    await _make_tree(sm, "root_q", [])
+    _age(sm, ["root_q"], days=60)
+    month = tmp_path / "session_archive" / USER / "2026-01"
+    month.mkdir(parents=True, exist_ok=True)
+    stale = month / "root_gone.zip.tmp"
+    stale.write_bytes(b"half a zip")
+    cold = time.time() - 2 * 3600
+    os.utime(stale, (cold, cold))
+    # A second one that is still warm: the sweep lock holds THIS process, and
+    # a CLI sweep in another may be writing exactly such a file right now.
+    warm = month / "root_elsewhere.zip.tmp"
+    warm.write_bytes(b"somebody is writing this")
+
+    await archive.archive_user(USER)
+
+    assert not stale.exists()
+    assert warm.exists(), "a .tmp another process may be writing was taken away"
+    assert (await archive.list_archived(USER))[0]["session_id"] == "root_q"
+
+
+@pytest.mark.asyncio
+async def test_without_a_cap_one_pass_takes_everything_old_enough(sm, archive):
+    """The brief was "archive what is older than X", and that is one pass.
+
+    The `archive` fixture sets no cap, so this also holds the default: a pass
+    that stops after N leaves the rest sitting until the next day, which turns
+    a cleanup into a drip and is not what was asked for.
+    """
+    assert archive.max_trees_per_sweep == 0, "no cap unless somebody asks for one"
+    roots = [f"root_z{index}" for index in range(5)]
+    for root in roots:
+        await _make_tree(sm, root, [f"kid_{root}"])
+    _age(sm, [*roots, *(f"kid_{root}" for root in roots)], days=60)
+
+    report = await archive.archive_user(USER)
+
+    assert report.trees == 5 and report.sessions == 10
+    assert report.capped is False and report.remaining == 0
+    assert sorted(e["session_id"] for e in await archive.list_archived(USER)) == sorted(roots)
 
 
 @pytest.mark.asyncio

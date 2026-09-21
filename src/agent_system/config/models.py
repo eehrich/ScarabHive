@@ -1151,7 +1151,9 @@ class SessionArchiveConfig(BaseModel):
     retention_days: int = Field(default=30, ge=1)  # below 1 would archive live work
     sweep_interval_hours: float = Field(default=24.0, gt=0)
     first_sweep_delay_seconds: float = Field(default=300.0, ge=0)  # let the app finish starting
-    max_trees_per_sweep: int = Field(default=200, ge=1)  # one pass stays bounded
+    max_trees_per_sweep: int = Field(default=0, ge=0)  # 0: no cap -- one pass takes
+    # everything old enough, which is what "archive what is older than X" asks for.
+    # A positive value bounds what ONE pass writes and leaves the rest for the next.
     archive_path: Optional[str] = None  # default: <sessions>/../session_archive
 
 

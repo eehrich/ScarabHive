@@ -87,6 +87,8 @@ def test_build_archive_defaults_the_path_next_to_the_sessions(sm, tmp_path):
 
     assert archive.retention_days == 30
     assert archive.archive_path == tmp_path / "session_archive"
+    assert archive.max_trees_per_sweep == 0, (
+        "the configured default has to be 'no cap' too, not just the service's")
 
 
 def test_a_cli_process_brings_the_guard_that_crosses_processes(sm, config):
@@ -175,6 +177,25 @@ async def test_a_sweep_says_what_it_left_alone(sm, config, capsys):
     assert "Archived 1 conversation(s) with 1 sessions" in out
     assert "1 not old enough" in out
     assert (sm.storage_path / USER / "root_d.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_that_is_already_running_is_a_line_not_a_traceback(
+        sm, config, capsys, monkeypatch):
+    """The API's own sweep may hold the user; a CLI run then does nothing."""
+    from agent_system.services.session_archive import ArchiveError
+
+    archive = build_archive(sm, config)
+
+    async def refuse(user_id, *, dry_run=False, retention_days=None):
+        raise ArchiveError(f"a sweep for {user_id} is already running")
+
+    monkeypatch.setattr(archive, "archive_user", refuse)
+    await run_sweep(archive, USER)
+
+    out = capsys.readouterr().out
+    assert "Nothing done" in out and "already running" in out
+    assert "Traceback" not in out
 
 
 @pytest.mark.asyncio

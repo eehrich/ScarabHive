@@ -184,7 +184,7 @@ session_archive: # type SessionArchiveConfig
   retention_days: 30            # ein Baum zieht um, wenn JEDE Session älter ist
   sweep_interval_hours: 24.0
   first_sweep_delay_seconds: 300.0
-  max_trees_per_sweep: 200      # hält einen Durchgang begrenzt (nicht den Trockenlauf)
+  max_trees_per_sweep: 0        # 0 = kein Deckel: ein Durchgang nimmt alles
   # archive_path: null          # Vorgabe: data/session_archive
 ```
 
@@ -227,12 +227,20 @@ Gemessen am 20.09.2026:
   zurückgeholt. Der Rückstand von 59.960 Sessions ist damit rund
   **18 Minuten** Hintergrundarbeit — einmalig; danach ist ein täglicher Sweep
   im Sekundenbereich.
-* Der Deckel `max_trees_per_sweep` begrenzt, was ein Durchgang **schreibt**.
-  Ein Trockenlauf zählt alles: ein Bericht, der bei 200 aufhört zu zählen,
-  läse sich wie „mehr ist nicht da". Aus demselben Grund nennt ein gedeckelter
-  Durchgang in Log, CLI und Panel, **wie viele** noch warten (`remaining`) —
-  „Archived 200" sieht sonst aus wie fertig, gerade im Panel, dessen Liste
-  sich darunter aktualisiert.
+* **`max_trees_per_sweep` ist standardmäßig 0, also kein Deckel** — ein
+  Durchgang nimmt alles, was alt genug ist. Das war der Auftrag („alles älter
+  als X"), und ein Durchgang, der bei 200 aufhört, macht aus einem Aufräumen
+  ein Tröpfeln: der Rest liegt bis zum nächsten Tag. Zu begrenzen ist hier
+  auch nichts nötig — das Schreiben der ZIPs läuft ohnehin über
+  `asyncio.to_thread`, blockiert also den Event-Loop nicht; was bleibt, ist
+  Konkurrenz um die Manager-Sperre beim Löschen, und die ist der Preis der
+  Arbeit, nicht ein Grund, sie halb zu lassen.
+* Wer einen Durchgang trotzdem begrenzen will, setzt einen positiven Wert.
+  Dann nennt ein gedeckelter Durchgang in Log, CLI und Panel, **wie viele**
+  noch warten (`remaining`) — „Archived 200" sieht sonst aus wie fertig,
+  gerade im Panel, dessen Liste sich darunter aktualisiert. Ein Trockenlauf
+  wird nie gedeckelt: ein Bericht, der bei 200 aufhört zu zählen, läse sich
+  wie „mehr ist nicht da".
 * `skipped_young` zählt **alle** zu jungen Bäume des Benutzers, nicht die, an
   denen ein Durchgang zufällig vorbeikam, bevor der Deckel ihn stoppte. Vorher
   wuchs die Zahl mit jedem Durchgang, obwohl sich die Menge nicht änderte

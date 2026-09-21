@@ -2345,8 +2345,8 @@
           "type": "number"
         },
         "max_trees_per_sweep": {
-          "default": 200,
-          "minimum": 1,
+          "default": 0,
+          "minimum": 0,
           "title": "Max Trees Per Sweep",
           "type": "integer"
         },

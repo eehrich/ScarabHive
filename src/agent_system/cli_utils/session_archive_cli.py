@@ -90,8 +90,16 @@ async def run_sweep(
         # somebody is using right now.
         print("Careful: session_presence is off, so nothing here can see a "
               "running session. Only the age limit protects them.")
-    report = await archive.archive_user(
-        user_id, dry_run=dry_run, retention_days=retention_days)
+    from ..services.session_archive import ArchiveError
+
+    try:
+        report = await archive.archive_user(
+            user_id, dry_run=dry_run, retention_days=retention_days)
+    except ArchiveError as error:
+        # A refusal is an answer, not a crash: the API's own sweep may be
+        # running, and a traceback would read as a broken command.
+        print(f"Nothing done: {error}")
+        return
     days = archive.retention_days if retention_days is None else retention_days
     what = "Would archive" if dry_run else "Archived"
     print(f"{what} {report.trees} conversation(s) with {report.sessions} sessions "
