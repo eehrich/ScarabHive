@@ -13,10 +13,45 @@ import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
+from filelock import FileLock
+from filelock import Timeout as LockTimeout
+
 logger = logging.getLogger(__name__)
+
+#: How long an index edit waits for another process holding the same index.
+#: An edit is one read and one write of a few hundred kilobytes; anything near
+#: this long is a process that hangs, and an error beats hanging with it.
+INDEX_LOCK_TIMEOUT = 30.0
+
+#: What an edit of an index file does after ``change`` has seen it.
+_WRITE, _DELETE, _SKIP = "write", "delete", "skip"
+
+
+def _read_json_retrying(path: Path) -> Any:
+    """``json.load`` that rides out Windows' "being replaced" window.
+
+    Every write here is a temp file plus ``os.replace``. While another PROCESS
+    replaces a file, Windows refuses to open it -- PermissionError, for a few
+    milliseconds. The writers already retried that; the readers did not, so
+    with several agent-cli processes on one user, ``create_session`` died on
+    reading ``index.json`` (measured 21.09.2026: 8 processes x 25 sessions,
+    a crashed process in both runs), and ``list_sessions`` read the moment
+    as "no index" and started a full rebuild. FileNotFoundError is not
+    retried: the callers rely on it meaning "not there".
+    """
+    delay = 0.005
+    for attempt in range(10):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.2)
 
 
 class SessionNotFoundError(Exception):
@@ -439,9 +474,7 @@ class SessionManager:
             raise SessionNotFoundError(f"Session file not found: {path}")
         
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
+            data = _read_json_retrying(path)
             self._validate_session_data(data)
             return data
             
@@ -455,32 +488,6 @@ class SessionManager:
     async def _read_session_file_async(self, path: Path) -> Dict[str, Any]:
         """Async wrapper for reading session file to avoid blocking event loop."""
         return await asyncio.to_thread(self._read_session_file, path)
-
-    async def _read_index_async(
-        self,
-        user_id: str,
-        parent_session_id: Optional[str] = None,
-    ) -> Dict[str, Dict[str, Any]]:
-        """Read a single session index file (main or per-parent sub index).
-        
-        Args:
-            user_id: User identifier
-        
-        Returns:
-            Dict mapping session_id -> metadata
-        
-        Raises:
-            FileNotFoundError: If index doesn't exist
-        """
-        index_path = self._get_index_path(user_id, parent_session_id)
-        if not index_path.exists():
-            raise FileNotFoundError(f"Index file not found: {index_path}")
-
-        def read_index():
-            with open(index_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-
-        return await asyncio.to_thread(read_index)
 
     async def _read_all_indexes_async(self, user_id: str) -> Dict[str, Dict[str, Any]]:
         """Read main index plus all per-parent sub indices and merge.
@@ -497,8 +504,7 @@ class SessionManager:
 
         def read_one(path: Path) -> Dict[str, Dict[str, Any]]:
             try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+                data = _read_json_retrying(path)
                 return data if isinstance(data, dict) else {}
             except Exception as e:  # noqa: BLE001 — skip broken index
                 logger.warning("Failed to read index file %s: %s", path, e)
@@ -512,16 +518,97 @@ class SessionManager:
             merged.update(data)
         return merged
 
-    async def _write_index_async(
+    @staticmethod
+    def _index_lock_path(index_path: Path) -> Path:
+        """The lock file of one index partition.
+
+        NOT ``<name>.lock``: in a user directory every ``*.lock`` is a session
+        presence lock, and ``SessionPresence.list_for_user`` probes each one --
+        an index lock there would show up as a running session "index.json",
+        and one nobody holds would be deleted as a leftover. Dot-prefixed, so
+        the scans that skip hidden files skip it too.
+
+        ponytail: on POSIX filelock leaves the file behind on release, so one
+        empty ``.mutex`` stays per parent session that ever had children,
+        also after its partition is gone. Deleting it with the partition is
+        NOT the fix: unlinking a lock file another process may be opening
+        breaks the exclusion on POSIX. If the count ever matters, sweep the
+        ones whose partition is gone and whose tree is archived.
+        """
+        return index_path.parent / f".{index_path.name}.mutex"
+
+    def _edit_index_locked(
         self,
         user_id: str,
-        index_data: Dict[str, Dict[str, Any]],
-        parent_session_id: Optional[str] = None,
-    ) -> None:
-        """Write a session index file atomically (main or per-parent sub index)."""
-        index_path = self._get_index_path(user_id, parent_session_id)
-        index_path.parent.mkdir(parents=True, exist_ok=True)
-        await self._atomic_write_async(index_path, index_data)
+        parent_session_id: Optional[str],
+        change: Callable[[Dict[str, Any]], str],
+        missing: Optional[Dict[str, Any]],
+        corrupt_is_missing: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Read one index partition, let ``change`` work on it, write it back.
+
+        The one place an index is modified. Read-modify-write on a file several
+        PROCESSES share -- the API and any number of agent-cli runs of one user
+        -- loses whatever another one wrote in between: measured 21.09.2026,
+        8 processes creating 25 sessions each, and 35 and 116 of the sessions
+        that were on disk were in no index, invisible in the sidebar. The
+        in-process ``_lock`` says nothing about the other processes; this OS
+        lock does, and a process that dies drops it.
+
+        Runs in a worker thread. ``change`` returns ``_WRITE``, ``_DELETE``
+        (the partition goes, for a sub-index whose last child left) or
+        ``_SKIP``. A missing file is ``missing`` to start from, or -- with
+        ``missing`` None -- no edit at all and a None back, so the caller can
+        rebuild outside the lock (a rebuild reads every session file; holding
+        every other process off for that is not an option).
+        """
+        path = self._get_index_path(user_id, parent_session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(str(self._index_lock_path(path)), timeout=INDEX_LOCK_TIMEOUT)
+        try:
+            lock.acquire()
+        except LockTimeout as exc:
+            raise IOError(
+                f"{path.name} of {user_id} is held by another process "
+                f"(waited {INDEX_LOCK_TIMEOUT:.0f}s)") from exc
+        try:
+            try:
+                data = _read_json_retrying(path)
+                if not isinstance(data, dict):
+                    raise ValueError(f"{path.name} is not an object")
+            except FileNotFoundError:
+                if missing is None:
+                    return None
+                data = dict(missing)
+            except ValueError:
+                # Only the rebuild may throw an unreadable index away -- it is
+                # the repair. Anyone else gets the error, as before.
+                if not corrupt_is_missing or missing is None:
+                    raise
+                data = dict(missing)
+            action = change(data)
+            if action == _WRITE:
+                self._atomic_write(path, data)
+            elif action == _DELETE:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as e:
+                    logger.warning("Failed to remove emptied index %s: %s", path, e)
+            return data
+        finally:
+            lock.release()
+
+    async def _edit_index(
+        self,
+        user_id: str,
+        parent_session_id: Optional[str],
+        change: Callable[[Dict[str, Any]], str],
+        missing: Optional[Dict[str, Any]] = None,
+        corrupt_is_missing: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._edit_index_locked, user_id, parent_session_id, change, missing,
+            corrupt_is_missing)
 
     async def _rebuild_index(
         self,
@@ -578,7 +665,20 @@ class SessionManager:
                 continue
 
         if index_data:
-            await self._write_index_async(user_id, index_data, parent_session_id)
+            rebuilt = index_data
+
+            def merge(current: Dict[str, Any]) -> str:
+                # The scan took as long as it took -- minutes on a big user --
+                # and whatever another process wrote meanwhile is newer than
+                # what the scan read. So the scan only fills in; it never
+                # overwrites a row, and never drops one it did not see.
+                for sid, row in rebuilt.items():
+                    current.setdefault(sid, row)
+                return _WRITE
+
+            index_data = await self._edit_index(
+                user_id, parent_session_id, merge, missing={},
+                corrupt_is_missing=True) or rebuilt
             logger.info(
                 "Rebuilt %s index for user %s with %d sessions",
                 ("sub-index for parent " + parent_session_id) if parent_session_id else "main",
@@ -626,23 +726,24 @@ class SessionManager:
         if parent_session_id is None:
             parent_session_id = self._extract_parent_id(metadata)
 
-        try:
-            index_data = await self._read_index_async(user_id, parent_session_id)
-        except FileNotFoundError:
-            if parent_session_id is not None:
-                # A missing sub-index partition means "no children", not "index
-                # lost": create_session writes the parent link BEFORE the first
-                # index write, so every child lands in the partition, and
-                # _remove_index_entry deletes the file exactly when the last one
-                # goes. Rebuilding it would read every session file of the user
-                # to find what cannot be there -- measured 20.09.2026: 7 min 31 s
-                # for 60k files, holding self._lock, to produce one entry.
-                index_data = {}
-            else:
-                index_data = await self._rebuild_index(user_id, parent_session_id)
+        def put(index_data: Dict[str, Any]) -> str:
+            index_data[session_id] = metadata
+            return _WRITE
 
-        index_data[session_id] = metadata
-        await self._write_index_async(user_id, index_data, parent_session_id)
+        # A missing sub-index partition means "no children", not "index lost":
+        # create_session writes the parent link BEFORE the first index write,
+        # so every child lands in the partition, and _remove_index_entry
+        # deletes the file exactly when the last one goes. Rebuilding it would
+        # read every session file of the user to find what cannot be there --
+        # measured 20.09.2026: 7 min 31 s for 60k files, to produce one entry.
+        # A missing MAIN index is a lost one: rebuilt (outside the index lock,
+        # it is a full scan), then the entry goes in on top of what it found.
+        written = await self._edit_index(
+            user_id, parent_session_id, put,
+            missing={} if parent_session_id is not None else None)
+        if written is None:
+            await self._rebuild_index(user_id, parent_session_id)
+            await self._edit_index(user_id, parent_session_id, put, missing={})
 
         # Migration cleanup: when an entry is now in a sub-index, ensure it's
         # not still lingering in main from an earlier write (sub-agents are
@@ -650,12 +751,10 @@ class SessionManager:
         # adds parent_session and routes to sub here). One-off cost on the
         # first save with a parent; subsequent saves no-op the main read.
         if parent_session_id is not None:
-            try:
-                main_idx = await self._read_index_async(user_id)
-            except FileNotFoundError:
-                return
-            if main_idx.pop(session_id, None) is not None:
-                await self._write_index_async(user_id, main_idx)
+            def drop_from_main(main_idx: Dict[str, Any]) -> str:
+                return _WRITE if main_idx.pop(session_id, None) is not None else _SKIP
+
+            await self._edit_index(user_id, None, drop_from_main)
 
     async def _remove_index_entry(
         self,
@@ -670,25 +769,18 @@ class SessionManager:
         sub-agents). The caller knows this from the session data — there's
         no fallback search to keep this on the fast path.
         """
-        try:
-            data = await self._read_index_async(user_id, parent_session_id)
-        except FileNotFoundError:
-            return
-        if data.pop(session_id, None) is not None:
+        def drop(data: Dict[str, Any]) -> str:
+            if data.pop(session_id, None) is None:
+                return _SKIP
             if not data and parent_session_id:
                 # Last child removed: delete the sub-index file instead of
                 # persisting an empty {} — the file's existence doubles as the
                 # sidebar's has_children signal, so a leftover empty partition
                 # would render a phantom expand toggle forever.
-                try:
-                    self._get_index_path(user_id, parent_session_id).unlink(missing_ok=True)
-                except OSError as e:
-                    logger.warning(
-                        "Failed to remove emptied sub-index for parent %s: %s",
-                        parent_session_id, e,
-                    )
-                return
-            await self._write_index_async(user_id, data, parent_session_id)
+                return _DELETE
+            return _WRITE
+
+        await self._edit_index(user_id, parent_session_id, drop)
 
     async def create_session(
         self,
@@ -1231,8 +1323,7 @@ class SessionManager:
 
         def read_one() -> Optional[Dict[str, Dict[str, Any]]]:
             try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+                data = _read_json_retrying(path)
                 return data if isinstance(data, dict) else None
             except Exception as e:  # noqa: BLE001 — a broken index must not 500
                 logger.warning("Failed to read main index %s: %s", path, e)
@@ -1303,8 +1394,7 @@ class SessionManager:
 
         def read_one() -> Dict[str, Dict[str, Any]]:
             try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+                data = _read_json_retrying(path)
                 return data if isinstance(data, dict) else {}
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to read sub-index %s: %s", path, e)

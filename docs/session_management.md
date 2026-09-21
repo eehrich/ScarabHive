@@ -276,7 +276,28 @@ Sessions are automatically restored after page refresh via localStorage.
 
 - All writes use temp file + atomic replace pattern
 - Prevents corruption from interrupted writes
-- Thread-safe with asyncio.Lock
+- Within one process, `asyncio.Lock` serialises the manager's own tasks
+
+### Several Processes
+
+The API and any number of `agent-cli` runs write the same user's sessions,
+each with its own `SessionManager`. The asyncio lock says nothing about the
+other processes, so two more rules hold:
+
+- **Every index edit goes through `_edit_index`**, which holds an OS file lock
+  on that partition (`.index.json.mutex`, `..subs.<parent>.index.json.mutex`)
+  for one read and one write. Not `*.lock`: in a user directory every
+  `*.lock` is a session presence lock. Measured before (21.09.2026, 8
+  processes x 25 sessions): 35 and 116 sessions on disk were in no index.
+  After, with 8 and 16 processes: none.
+- **Every read retries `PermissionError`** (`_read_json_retrying`). Windows
+  refuses to open a file another process is replacing; the writers retried
+  that already, the readers did not, and `create_session` died on it.
+- A rebuild of a lost index scans for minutes and only **fills in** rows it
+  found: whatever another process wrote meanwhile is newer and stays.
+
+`tests/session/test_session_index_across_processes.py` drives real parallel
+processes.
 
 ### Security
 
@@ -288,7 +309,7 @@ Sessions are automatically restored after page refresh via localStorage.
 
 - Lazy loading (metadata only for list view)
 - Efficient JSON serialization
-- No global index (directory structure serves as index)
+- Listing reads index files (`index.json` plus one partition per parent with sub-agents), not the session files
 
 ## Migration
 
