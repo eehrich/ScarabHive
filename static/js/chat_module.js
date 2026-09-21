@@ -1789,6 +1789,10 @@
   //: steps get further apart so the common case, no successor at all, costs
   //: seven requests rather than thirty.
   const SUCCESSOR_WAITS = [1000, 2000, 3000, 5000, 8000, 15000, 25000];
+  //: How often a session held by ANOTHER process is asked about. No cap on
+  //: the number of those: a woken run is a whole turn, and while the lock
+  //: file says it is working, waiting is the right thing to do.
+  const ELSEWHERE_WAIT = 4000;
   let successorWatch = 0;
 
   /**
@@ -1814,13 +1818,87 @@
     if (!session) return;
     const token = ++successorWatch;   // a newer watch, a new run or a new session wins
     let step = 0;
-    const tick = () => {
+    let sawItWorking = false;
+    const tick = async () => {
       if (token !== successorWatch || currentSessionId !== session) return;
       if (chatModule.hasActiveRequest()) return;   // something is being followed again
+      const elsewhere = await sessionIsWorkingElsewhere(session);
+      // Asked again after the answer: a run of this page's own may have started
+      // while it was on its way, and an answer from before it would put the mark
+      // back under that run, where nothing takes it down again.
+      if (token !== successorWatch || currentSessionId !== session) return;
+      if (chatModule.hasActiveRequest()) return;
+      if (elsewhere || (elsewhere === null && sawItWorking)) {
+        // null is "could not ask", which is not "not working". Read as an answer
+        // it would end the wait on one bad request and lose the very turn this
+        // watch exists for; the mark stands and the next tick asks again.
+        sawItWorking = true;
+        showWorkingElsewhere(true);
+        setTimeout(tick, ELSEWHERE_WAIT);          // no cap while it IS working
+        return;
+      }
+      if (sawItWorking) {
+        // It let go. Its whole turn is in the session file and in no stream
+        // this process can reach, so the only way to show it is to read the
+        // session again -- which now brings the run with it, tool calls and
+        // thinking included.
+        showWorkingElsewhere(false);
+        window.sessionManager?.loadSession?.(session);
+        return;
+      }
       chatModule.followRunOfOpenSession?.({ session_id: session }, {});
       if (step < SUCCESSOR_WAITS.length) setTimeout(tick, SUCCESSOR_WAITS[step++]);
     };
     setTimeout(tick, SUCCESSOR_WAITS[step++]);
+  }
+
+  /**
+   * Is this session being worked on by a process this one cannot reach?
+   *
+   * A woken run is `agent-cli run --woken`, started by presence as a process of
+   * its own. Its events never reach the API: they go to its own status bus, and
+   * GET /events does not know its request id. /api/sessions/active reports it
+   * from the lock files with `elsewhere`, deliberately without a request id --
+   * there is nothing to attach to, only something to wait for.
+   *
+   * Three answers, not two: null is "could not ask". A run woken into another
+   * process is followed by nothing else, so a poll that fails must not be read
+   * as "it is done" -- that would read the session back mid-turn and then stop
+   * asking, which looks exactly like the bug this is here to fix.
+   */
+  async function sessionIsWorkingElsewhere(sessionId) {
+    try {
+      const response = await fetch(`/api/sessions/active?ids=${encodeURIComponent(sessionId)}`,
+        { credentials: 'include', signal: AbortSignal.timeout(10000) });
+      // A 502 and a dropped connection are the same thing here -- the question
+      // went unanswered -- so they leave by the same door. Two returns would be
+      // two decisions, and a probe caught the second one going unmeasured.
+      if (!response.ok) throw new Error(`the poll answered ${response.status}`);
+      return !!(await response.json()).active?.[sessionId]?.elsewhere;
+    } catch (error) {
+      console.warn('[chat_module] Could not ask whether the session works elsewhere:', error);
+      return null;
+    }
+  }
+
+  /** Say that the session is busy somewhere this page cannot follow. */
+  function showWorkingElsewhere(on) {
+    const bar = document.getElementById('chat');
+    if (!bar) return;
+    let note = bar.querySelector(':scope > .working-elsewhere');
+    if (!on) {
+      note?.remove();
+      return;
+    }
+    if (note) return;
+    note = document.createElement('div');
+    note.className = 'working-elsewhere';
+    // Not "was woken": a wake is the usual reason, but an agent-cli started by
+    // hand holds the session the same way, and the lock does not say which.
+    note.textContent = 'This session is being worked on in another process — '
+      + 'its answer appears here when it is done.';
+    bar.appendChild(note);
+    scrollBottom();
   }
 
   /**
@@ -2655,6 +2733,7 @@
       }
 
       // No active request: start a new request
+      showWorkingElsewhere(false);   // as in attachRun: a run of this page's own takes the chat
       const blk = addAssistantBlock(chatContainer);
       activeStreamBlk = blk;
       runActive = true; updateActionButton();  // -> Stop (empty input)
@@ -2953,6 +3032,12 @@
       }
       // stored again: a pick or New while the reload checked for the run has let it go
       storeRun(requestId, session);
+      // A run takes the chat, so the "working in another process" mark goes with
+      // it -- or it stands under a conversation the viewer is watching happen.
+      // Here and at the start of a run this page sends, which are the two places
+      // a run begins; not in the watch's own tick, which is on a timer, so the
+      // mark would linger for seconds and a check on it would measure the timer.
+      showWorkingElsewhere(false);
       const blk = addAssistantBlock(chatContainer);
       activeStreamBlk = blk;
       runActive = true; updateActionButton();

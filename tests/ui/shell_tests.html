@@ -1786,15 +1786,17 @@
     try {
       sessionButton('s-1', 'open').click();
       await until('the kit session', () => header() === 'Refactor the kit');
-      // the successor is registered while this run is still going, as a wake is:
-      // the run that ends is what STARTS it
-      await stub('/__stub/active-runs', { 's-1': 'r-live' });
       cookie('stub_stream', 'ending');   // its final answer and end after a second
       $('#task').value = 'Spawn something and sleep';
       $('#f').requestSubmit();
       await until('its own run', () => sessionStorage.getItem('activeRequestId') === 'r-ending', 3000);
       cookie('stub_stream', null);
       await until('that run over', () => !win().chatModule.hasActiveRequest(), 6000);
+      // The successor turns up a moment after the run that starts it has ended -- a
+      // woken process needs one. So the FIRST ask misses, and the watch has to come
+      // back: with one step and no ladder it asks once into the gap and stops, and
+      // the turn stays invisible exactly as it did before any of this.
+      setTimeout(() => stub('/__stub/active-runs', { 's-1': 'r-live' }), 1500);
       // and now, without anybody reloading, the session's next run is picked up
       await until('the successor followed', () => win().chatModule.hasActiveRequest()
         && sessionStorage.getItem('activeRequestId') === 'r-live', 12000);
@@ -1808,6 +1810,133 @@
     } finally {
       await stub('/__stub/active-runs', {});
       cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a session woken into another process says so, and its turn arrives when it lets go', async () => {
+    // The bug as the user sees it: "the agent never wakes up". It does -- but a woken
+    // run is agent-cli in a process of its own, and its events never reach this server
+    // at all: its status bus is its own and GET /events does not know its request id.
+    // So there is nothing to attach to. What the lock files DO say, across processes,
+    // is that the session is busy; and once it lets go, the whole turn is on disk.
+    const note = () => $('#chat > .working-elsewhere');
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      await stub('/__stub/active-runs', { 's-1': 'woken^' });   // "^": working, unreachable
+      cookie('stub_stream', 'ending');
+      $('#task').value = 'Spawn something and sleep';
+      $('#f').requestSubmit();
+      await until('its own run', () => sessionStorage.getItem('activeRequestId') === 'r-ending', 3000);
+      cookie('stub_stream', null);
+      await until('that run over', () => !win().chatModule.hasActiveRequest(), 6000);
+      // said, rather than a frozen panel that reads as "nothing happened"
+      await until('the session says it is working elsewhere', () => !!note(), 8000);
+      if (!note().textContent.includes('another process')) return false;
+      // and NOT followed as a run: there is no stream, and asking for one answers 409
+      if (win().chatModule.hasActiveRequest()) return false;
+      if (sessionStorage.getItem('activeRequestId')) return false;
+      // It lets go: the turn is read back from the session rather than streamed.
+      // Counted at the server, not in the DOM -- the messages this check itself put
+      // there satisfy any "are there messages" test whether or not anything reloads,
+      // and a mutant that dropped the load stayed green on exactly that.
+      const readBefore = await hits('session:s-1');
+      await stub('/__stub/active-runs', {});
+      await until('the session read again and the note gone',
+        async () => await hits('session:s-1') > readBefore && !note(), 12000);
+      return true;
+    } finally {
+      await stub('/__stub/active-runs', {});
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a poll that cannot be answered does not end the wait for a session working elsewhere', async () => {
+    // Nothing else follows a woken run. So the one question this watch asks has a
+    // third answer -- "could not ask" -- and reading that as "it is done" reads the
+    // session back mid-turn and then stops asking, which is the bug itself again,
+    // now reachable by a single 502 during a turn that can take minutes.
+    const note = () => $('#chat > .working-elsewhere');
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      await stub('/__stub/active-runs', { 's-1': 'woken^' });
+      cookie('stub_stream', 'ending');
+      $('#task').value = 'Spawn something and sleep';
+      $('#f').requestSubmit();
+      await until('its own run', () => sessionStorage.getItem('activeRequestId') === 'r-ending', 3000);
+      cookie('stub_stream', null);
+      await until('that run over', () => !win().chatModule.hasActiveRequest(), 6000);
+      await until('the session says it is working elsewhere', () => !!note(), 8000);
+      // and from here the poll answers 502 -- longer than one wait between asks, so
+      // at least one of them really did fail
+      const readBefore = await hits('session:s-1');
+      cookie('stub_active', 'broken');
+      await sleep(6000);
+      // the mark stands, and nothing was read back: the turn is still coming
+      return !!note() && await hits('session:s-1') === readBefore;
+    } finally {
+      cookie('stub_active', '');
+      await stub('/__stub/active-runs', {});
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check("the mark goes the moment a run of this page's own takes the chat", async () => {
+    // The session works elsewhere and the viewer writes into it anyway. That run IS
+    // this page's and is followed normally -- so the mark has to go, or it stands
+    // under a conversation the viewer is watching happen. It goes where the run takes
+    // the chat, which is why this can be asserted at once instead of after a tick.
+    const note = () => $('#chat > .working-elsewhere');
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      await stub('/__stub/active-runs', { 's-1': 'woken^' });
+      cookie('stub_stream', 'ending');
+      $('#task').value = 'Spawn something and sleep';
+      $('#f').requestSubmit();
+      await until('its own run', () => sessionStorage.getItem('activeRequestId') === 'r-ending', 3000);
+      cookie('stub_stream', null);
+      await until('that run over', () => !win().chatModule.hasActiveRequest(), 6000);
+      await until('the session says it is working elsewhere', () => !!note(), 8000);
+      // and now a message into it from here, while the mark is up
+      cookie('stub_stream', 'ending');
+      $('#task').value = 'Never mind, do this instead';
+      $('#f').requestSubmit();
+      await until('the run of this page', () => win().chatModule.hasActiveRequest(), 5000);
+      return !note();
+    } finally {
+      await stub('/__stub/active-runs', {});
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a session worked on in another process is not deleted out from under it', async () => {
+    // The delete gate cancels a session's run first, in its own words so as not to
+    // "leave an agent working for a session the server will never write again". A
+    // woken run is that agent AND the one it cannot reach: it works in a process of
+    // its own, cancel_job walks this one, and there is no request id between them.
+    // The gate read "no request id" as "no run" and deleted anyway.
+    try {
+      await loadShell();
+      await stub('/__stub/active-runs', { 's-woken-elsewhere': 'woken^' });
+      if ((await win().sessionManager.runningIn('s-woken-elsewhere'))?.request_id) return false;
+      // Raced against a timer: were the gate to ask instead, it would wait on a dialog
+      // nobody answers, and the check would hang rather than say what is wrong.
+      const settled = await Promise.race([win().sessionManager.cancelLostRun('s-woken-elsewhere'),
+                                          sleep(1500).then(() => 'asked')]);
+      // refused, and not by asking a question that has no good answer
+      return settled === false && !$('dialog.pk-dialog[open]');
+    } finally {
+      await stub('/__stub/active-runs', {});
       forgetRun();
       await loadShell();
     }
@@ -2069,7 +2198,8 @@
       // The decision itself, both ways -- a run that has answered is no run to cancel,
       // one that is still working is.
       if (await win().sessionManager.runningIn('s-answered-elsewhere') !== null) return false;
-      if (await win().sessionManager.runningIn('s-busy-elsewhere') !== 'r-live-kept-open') return false;
+      if ((await win().sessionManager.runningIn('s-busy-elsewhere'))?.request_id
+          !== 'r-live-kept-open') return false;
       // and the delete asks nothing about it. Raced against a timer: without the rule the
       // gate opens a dialog and waits for an answer that never comes, which would hang
       // the page rather than fail the check.

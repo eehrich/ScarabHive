@@ -335,11 +335,78 @@ async def list_sessions_hierarchy(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+def _add_sessions_running_elsewhere(wanted: List[str], user_id: str, agent,
+                                    answer: Dict[str, Any]) -> None:
+    """The runs this process cannot see, from the one place that spans processes.
+
+    ``active_sessions()`` is process-internal by its own account -- background
+    jobs and this process's session trackers. A WOKEN run is neither: presence
+    starts it as ``agent-cli run --woken``, a process of its own
+    (``core/session_presence.spawn_wake``). So a session that is working hard
+    right after a wake answers this poll as idle, and the panel has no way to
+    know the turn it is missing exists. That is what "the agent never wakes up"
+    looked like from the outside: measured on session jrbqugnco7, 13 messages
+    on disk, six on screen.
+
+    The lock files are the cross-process truth, and reading them is why they
+    exist. What comes back is deliberately NOT attachable and carries no
+    request id: that run's events never reach this process at all -- its status
+    bus is its own, and ``GET /events`` would not know the id. All a client can
+    do is say so, and read the session again once it is over.
+
+    Asked of the DIRECTORY, not of each id: a lock file exists only while
+    somebody holds the session, so the usual answer costs one ``scandir`` and
+    no file read at all. Per id it would be ``presence.get``, which parses the
+    whole session file to tell an idle session from none -- measured here at
+    0.4 ms over a 92 KB median, so a sidebar poll over its rows would spend
+    tens of milliseconds parsing JSON inside the event loop, for an answer
+    that is almost always "nobody holds anything".
+
+    What that leaves out is a SUB-agent's session: ``list_for_user`` keeps
+    those out, because they are run by the orchestrator that spawned them.
+    In this process that orchestrator is the one above, so such a session is
+    already in ``answer``; one being run from outside would go unmarked.
+
+    Ownership needs no separate check: presence looks in the asking user's own
+    directory, so a session of somebody else is simply not found.
+    """
+    from ..core.session_presence import presence_for
+
+    # No guard on `agent` being None: presence_for(None) is None, which is the
+    # same answer one line further down. A second check would read like it
+    # caught something this one does not.
+    presence = presence_for(getattr(agent, "system_config", None))
+    if presence is None:      # off, or no agent registered: nothing holds anything
+        return
+    # No catch: list_for_user swallows the OSErrors it can meet (an unreadable
+    # directory answers "nobody holds anything") -- one here would never run.
+    held = {s["session_id"]: s for s in presence.list_for_user(user_id)}
+    for session_id in wanted:
+        if session_id in answer:
+            continue          # this process knows it better, and can be followed
+        state = held.get(session_id)
+        if state is None:
+            continue
+        # Held by THIS process, with no job or tracker entry for it: the gaps
+        # between a run's tracker letting go and its presence hold doing so --
+        # the save, the session-end hooks -- and an append being persisted. A
+        # probe of the lock cannot tell that from another process, and reading
+        # it as one refused a delete "because another process works on it".
+        if presence.held_here(session_id, user_id):
+            continue
+        answer[session_id] = {"request_id": None,
+                              "agent_name": state.get("agent") or None,
+                              "attachable": False,
+                              "answered": False,
+                              "elsewhere": True}
+
+
 @session_router.get("/active", response_model=Dict[str, Any])
 async def list_active_sessions(
     ids: str = "",
     current_user: Optional[User] = Depends(get_optional_user),
     session_manager=Depends(get_session_manager),
+    agent=Depends(get_agent_optional),
 ):
     """Of the sessions named in ``ids``, which are running right now.
 
@@ -370,6 +437,12 @@ async def list_active_sessions(
     but following them would answer 409 and read to the viewer as a lost
     connection.
 
+    ``elsewhere`` marks a run this process is not the one running: a woken
+    session, working in its own ``agent-cli`` process. It carries no
+    ``request_id`` and is never ``attachable`` -- there is no stream to follow
+    and no way to cancel it from here, because both walk THIS process. A caller
+    can say that the session is busy and read it again when it is let go.
+
     Not reported: a session the run itself creates, until its first turn has
     named it. It has no row in the sidebar yet either, and the chat that started
     it follows its own run directly.
@@ -399,7 +472,9 @@ async def list_active_sessions(
         answer[session_id] = {"request_id": info.get("request_id"),
                               "agent_name": info.get("agent_name"),
                               "attachable": bool(info.get("attachable")),
-                              "answered": bool(info.get("answered"))}
+                              "answered": bool(info.get("answered")),
+                              "elsewhere": False}
+    _add_sessions_running_elsewhere(wanted, user_id, agent, answer)
     return {"active": answer}
 
 

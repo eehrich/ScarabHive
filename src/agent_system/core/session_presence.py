@@ -363,6 +363,18 @@ class SessionPresence:
             self._held[path] = [fd, 1]
             return True
 
+    def held_here(self, session_id: str, user_id: str) -> bool:
+        """Whether THIS process holds the session.
+
+        The lock file cannot say. Probing it opens a fresh handle, and the OS
+        lock conflicts across two handles of one process exactly as it does
+        across processes -- so a session this process holds reads as "running"
+        to its own probe, indistinguishable from one another process runs.
+        """
+        path = self._lock_path(session_id, user_id)
+        with self._guard:
+            return path in self._held
+
     def release(self, session_id: str, user_id: str) -> None:
         """Undo one hold. The last one lets the session go, and input waiting
         for it wakes it."""

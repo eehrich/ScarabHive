@@ -227,6 +227,11 @@ export class SessionManager {
   /**
    * The run working in one session right now, or null -- asked of the server.
    *
+   * The ENTRY, not its request id: a run worked on by another process carries
+   * none, and reading that as "no run" is what let a delete go through under a
+   * woken agent. What can be cancelled is `request_id`; that there is something
+   * at all is the entry itself.
+   *
    * NOT read from `this.active`: that map is drawn from a poll on its own timer and
    * is replaced whole on every tick. A delete that consulted it could find the entry
    * gone a moment after the pane drew the mark, and would then leave the agent
@@ -241,7 +246,7 @@ export class SessionManager {
     // deleted session's runs: cancelling one takes its background sub-agents with it,
     // and it is only finishing anyway -- saves and session-end hooks.
     if (!run || run.answered) return null;
-    return run.request_id || null;
+    return run;
   }
 
   /**
@@ -423,8 +428,20 @@ export class SessionManager {
     // agent working for a session the server will never write again.
     // The open session's own run is left to leaveRunningRequest below, or both would ask.
     const followedHere = id === this.currentSessionId && window.chatModule.activeRun();
-    const run = window.chatModule.lostRunIn(id) || (followedHere ? null : await this.runningIn(id));
-    if (!run) return true;
+    const lost = window.chatModule.lostRunIn(id);
+    const entry = (lost || followedHere) ? null : await this.runningIn(id);
+    const run = lost || entry?.request_id || null;
+    if (!run) {
+      if (!entry) return true;
+      // Something IS working, and nothing here can stop it: a woken run is
+      // agent-cli in a process of its own, while cancel_job walks this one and
+      // there is no request id to walk to. Deleting now is the case the
+      // paragraph above is about -- an agent writing for a session that will
+      // never be shown again -- only with no way to end it first.
+      toast('This session is being worked on in another process, which cannot be stopped from here; it stays',
+        { kind: 'warn' });
+      return false;
+    }
     const ok = await confirm('A run of this session may still be going. Deleting the session cancels it.',
       { title: 'Run may still be going', confirmLabel: 'Cancel the run', danger: true });
     if (!ok) return false;

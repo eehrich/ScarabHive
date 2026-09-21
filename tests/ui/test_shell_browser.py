@@ -87,7 +87,9 @@ table, capping the ids at 200 as the real endpoint does. A value ending in
 (``attachable`` false) -- and ``GET /events`` answers 409 for exactly those
 request ids, as app.py does, so the stub cannot say "not attachable" here and
 let the reconnect through anyway; one ending in ``~`` has answered already and
-is only finishing (``answered`` true). ``stub_active=broken`` fails the poll
+is only finishing (``answered`` true); one ending in ``^`` is a session a
+process this server cannot reach is working on (``elsewhere`` true, no
+request id), as a woken run is. ``stub_active=broken`` fails the poll
 with 502, ``slow`` answers it after 1.2 s. A reconnect records what it was told
 to catch up on: ``catch-up:<request_id>`` is ``"<catch_up>/<seen>"``.
 ``r-live-buffered`` holds four buffered events and sends only those past
@@ -822,9 +824,16 @@ def stub_app() -> FastAPI:
         # server knows of but cannot be reconnected to -- a /run with files, a
         # sub-agent's run. A trailing "~" marks a run past its answer, which
         # cancel_session spares and so must whoever cancels from this answer.
+        # A trailing "^" is a session a process this server cannot reach is
+        # working on -- a woken run, which presence starts as agent-cli of its
+        # own. There is no request id to hand out: its events never arrive here.
         def entry(rid: str) -> dict:
+            if rid.endswith("^"):
+                return {"request_id": None, "agent_name": "assistant",
+                        "attachable": False, "answered": False, "elsewhere": True}
             return {"request_id": rid.rstrip("!~"), "agent_name": "assistant",
-                    "attachable": "!" not in rid, "answered": "~" in rid}
+                    "attachable": "!" not in rid, "answered": "~" in rid,
+                    "elsewhere": False}
         return {"active": {sid: entry(active_runs[sid]) for sid in wanted if sid in active_runs}}
 
     @app.get("/api/sessions/{session_id}/children")
@@ -969,6 +978,10 @@ EXPECTED = [
     'a run let go of whose stream breaks while it saves leaves the session list alone: a message, and one with files',
     'picks while a run goes on: each takes the chat at once, the last wins, and none of them stops the run',
     'a session that works on after its run ends is followed without a reload',
+    'a session woken into another process says so, and its turn arrives when it lets go',
+    'a poll that cannot be answered does not end the wait for a session working elsewhere',
+    "the mark goes the moment a run of this page's own takes the chat",
+    'a session worked on in another process is not deleted out from under it',
     'a run works on while another session is read, and the chat picks it up again on return',
     'leaving a session with a file run does not cut that run short',
     'a delete finds the run of a session that is running somewhere else',
