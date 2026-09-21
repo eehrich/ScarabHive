@@ -438,6 +438,11 @@ llm_system:
       model_ref: openrouter-kimi-k3
       description: "Special LLM for coding tasks"
       max_steps: 500
+
+    structured:
+      model_ref: openrouter-deepseek-flash
+      description: "Structured building work: workflows, configs, schemas"
+      max_steps: 500
             
     realtime:
       model_ref: gpt-realtime-2.1-mini

@@ -31,6 +31,7 @@ Common profiles include:
 - `big` - Large context window model (gpt-4.1)
 - `chat` - Fast non-streaming model (deepseek-chat)
 - `code` - Specialized for coding tasks (gpt-5.1-codex)
+- `structured` - Structured building work: workflows, configs, schemas (DeepSeek V4 Flash via OpenRouter)
 
 ### Configuration
 

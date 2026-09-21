@@ -27,8 +27,9 @@ plugins:
         n8n_agent_list_available_tools: "List the n8n tools the workflow builder uses"
 
       agent_config:
-        # Workflows are written as SDK code (TypeScript-like): code models lead.
-        llm_profile: [or-claude-sonnet, or-gemini-pro, or-gpt-full]
+        # Structured building work; the fallback is the same model over the
+        # direct DeepSeek API, so an OpenRouter outage does not stop it.
+        llm_profile: [structured, deepseek-chat]
         llm_profile_advanced: []
         llm_params:
           "*":

@@ -258,7 +258,9 @@ src/plugins/n8n/
 - Timeout: n8n bricht die Execution ab und antwortet mit `status: error` und „timed out after N seconds“; die Execution steht dann auf `canceled` [M-MCP-49]. Das Tool meldet `tested: false`.
 - 429 → §9.
 
-### 3.4 Veröffentlichen und Auslösen (nicht für den Builder)
+### 3.4 Veröffentlichen und Auslösen
+
+Nach E4 und E6 bekommt der Builder in Phase 1b die Tools dieser Tabelle und nutzt sie nur, wenn der Nutzer ihn darum bittet: Der Nutzer spricht direkt mit ihm, einen anderen Aufrufer gibt es nicht. §3.5, §5.1, §8.4 und §8.5 beschreiben bis dahin den Stand von Phase 1a.
 
 | Tool | Weg | Parameter | Gate / Fehler |
 |---|---|---|---|
@@ -342,7 +344,7 @@ plugins:
 - `tools.allowed` als **explizite Liste** mit `+` [F-OUR10][F-OUR20]: `+n8n/n8n_search_nodes`, `+n8n/n8n_get_node_types`, `+n8n/n8n_explore_node_resources`, `+n8n/n8n_get_best_practices`, `+n8n/n8n_get_sdk_reference`, `+n8n/n8n_list_credentials`, `+n8n/n8n_validate_node_config`, `+n8n/n8n_validate_workflow`, `+n8n/n8n_create_workflow`, `+n8n/n8n_update_workflow`, `+n8n/n8n_get_workflow`, `+n8n/n8n_list_workflows`, `+n8n/n8n_test_workflow`, `+n8n/n8n_get_execution`, `+n8n/n8n_list_executions`.
 - **Nicht dabei:** publish, unpublish, archive und trigger. Damit bleibt §8.5 wahr, auch wenn jemand `allow_publish` einschaltet.
 - Skills `n8n-building`, `n8n-testing`, `n8n-recipes` on_demand. Der Prompt bleibt kurz (Rolle, Schleife, Regeln, Übergabe); das Wissen lädt der Agent, wenn er es braucht.
-- **Modell:** gebaut mit der Kette `[or-claude-sonnet, or-gemini-pro, or-gpt-full]`: Workflows sind SDK-Code (TypeScript-artig), also führen Code-Modelle, und die Kette fällt auf eine andere Route über. Ob das reicht, entscheidet die Builder-Messung (§10.4, E5). Die Profile in `config/llm*.yaml` gehören dem Betreiber.
+- **Modell:** `[structured, deepseek-chat]`. Das Profil `structured` ist DeepSeek V4 Flash über OpenRouter; der Fallback ist dasselbe Modell über die direkte DeepSeek-API, also eine andere Route. Mit diesem Modell hat der Ende-zu-Ende-Lauf einen IF-Webhook gebaut, seinen eigenen IF-Fehler am Testergebnis erkannt und mit drei Testläufen belegt, 21 Tool-Aufrufe ohne Fehler (E5). Die Profile in `config/llm*.yaml` gehören dem Betreiber.
 
 ### 5.2 Schleife
 ```
@@ -420,7 +422,7 @@ mcp_servers.yaml-Schnipsel, falls als MCP-Tool gebaut (§6.1)
 
 ### 5.7 Erreichbarkeit
 - **Nicht im Root-`sub_agent_manager`:** Kein aktiver Agent erreicht ihn [F-OUR11].
-- Der Aufrufer, den der Betreiber wählt (E6), bekommt `n8n_agent/*` in seine Allowlist; damit ist `n8n_agent_execute_task` aufrufbar [F-OUR10].
+- Der Nutzer ruft `n8n_agent` direkt auf, im Chat oder per `agent-cli` (E6); `visibility: both` macht ihn dort wählbar. Ein anderer Agent bräuchte `n8n_agent/*` in seiner Allowlist [F-OUR10]; heute hat das keiner.
 - **Kein Vorbild im Repo** [F-OUR21]. Deshalb ist ein Config-Test nach dem Muster `research/tests/test_research_config.py` Pflicht. Er prüft über `load_settings` **und** die Tool-Discovery, dass `n8n_agent_execute_task` beim Aufrufer in der Tool-Liste landet.
 
 ---
@@ -486,7 +488,7 @@ mcp_servers.yaml-Schnipsel, falls als MCP-Tool gebaut (§6.1)
 - **Den Editor einbetten geht nicht** [F-EMB1]. Jede Tool-Antwort liefert deshalb eine `editor_url` für einen neuen Tab.
 - **Panel nach dem comfyui-Muster, Kategorie `agents`:**
   - eine Liste der verwalteten Workflows (Public `GET /workflows?tags=`) mit Stand (Entwurf oder live) und letzter Execution,
-  - Veröffentlichen, Zurücknehmen, Archivieren und Auslösen **durch den Menschen** (§3.4); das ist der Freigabepunkt aus E4,
+  - Veröffentlichen, Zurücknehmen, Archivieren und Auslösen **durch den Menschen** (§3.4); neben dem Builder, der auf Bitte des Nutzers veröffentlicht (E4),
   - Vor dem Veröffentlichen zeigt das Panel die Befunde aus §5.3 auf dem aktuellen Stand. Bei `errors` ist der Knopf gesperrt; wer trotzdem will, veröffentlicht im n8n-Editor. Inline-Sub-Workflows sperren den Knopf über `EXECUTE_WORKFLOW_SOURCE`, weil deren Inhalt keine Prüfung sieht [M-MCP-40].
   - ein Link in den Editor.
 - **Endpunkte unter `/plugins/n8n/`.** Das Backend proxyt die Aufrufe, weil `/api/v1` und `/mcp-server/http` keine CORS-Header senden [F-EMB2].
@@ -743,7 +745,6 @@ Rahmen: `N8N_LIVE=1`; Workflows heißen `zz-probe-*` und werden im `finally` per
 **Phase 2:**
 - Routen `/runs` und `/hooks/execution-finished`, Bind oder Proxy mit TLS (E8).
 - Panel.
-- Watches nach einem Neustart wieder aufnehmen (E7).
 - Vorlage für einen Error-Workflow.
 
 **Phase 3 (nur nach Messung):**
@@ -757,18 +758,18 @@ Rahmen: `N8N_LIVE=1`; Workflows heißen `zz-probe-*` und werden im `finally` per
 
 | # | Frage | Empfehlung |
 |---|---|---|
-| E1 | Welchem n8n-Nutzer gehören MCP-Key und Public-Key? | Beide demselben Nutzer. Vorerst dem Owner, begrenzt durch die Riegel aus §8.6. Nach positivem M4 ein Member `scarabhive`. Fehlende Information: das Verhalten eines Member-Keys [M-MCP-29]. |
+| E1 | ~~Welchem n8n-Nutzer gehören MCP-Key und Public-Key?~~ | **Entschieden:** vorerst beide dem Owner, begrenzt durch die Riegel aus §8.6. Ein Member `scarabhive` erst nach positivem M4 (Phase 3); dafür fehlt die Messung, was ein Member-Key darf [M-MCP-29]. |
 | E2 | ~~Instanz-MCP einschalten?~~ | **Entschieden:** ja, er ist der Kern (§2). Eingeschaltet wird per Env (§11). |
 | E3 | ~~Node-Sidecar?~~ | **Entfallen:** n8n's eigene Validatoren laufen über den MCP. |
-| E4 | Darf veröffentlicht werden, und von wem? | `allow_publish: false` per Default; Veröffentlichen gehört dem Menschen (Panel). Der Builder bekommt das Tool nie (§5.1). |
-| E5 | Modellstufe | Gebaut mit der Code-Modell-Kette aus §5.1; eine stärkere Stufe nur, wenn §10.4 im Schnitt mehr als 2 Runden zeigt. |
-| E6 | Wer ruft `n8n_agent` auf? | `n8n_agent/*` in die Allowlist des Chat-Agenten, mit dem der Betreiber arbeitet; `n8n/n8n_trigger_workflow` nur dort, wenn gewünscht. Kein neuer SAM, nicht der Root-SAM. |
-| E7 | Soll der Wake einen Neustart überleben? | Phase 2 |
-| E8 | Wo erreicht n8n unsere API, und wie wird der Verkehr verschlüsselt? | Server-Instanz bzw. Reverse-Proxy mit TLS, nicht `0.0.0.0` auf dem Dev-Rechner |
+| E4 | ~~Darf veröffentlicht werden, und von wem?~~ | **Entschieden:** der Builder, wenn der Nutzer ihn darum bittet (§3.4, Phase 1b). „Wenn er gefragt wird“ ist nur eine Prompt-Regel, und der Builder liest unvertraute Daten (§8.5). Das Tool prüft deshalb selbst, was es prüfen kann: verwaltet, 0 `errors` aus §5.3, ein erfolgreicher Testlauf des aktuellen Stands. `allow_publish` bleibt der Schalter des Betreibers. |
+| E5 | ~~Modellstufe~~ | **Entschieden:** DeepSeek V4 Flash reicht, keine stärkere Stufe. Neues Profil `structured` in `config/llm.yaml` für strukturierte Bauarbeit (§5.1). |
+| E6 | ~~Wer ruft `n8n_agent` auf?~~ | **Entschieden:** der Nutzer direkt (§5.7). Kein anderer Agent bekommt ihn in die Allowlist, kein SAM. |
+| E7 | ~~Soll der Wake einen Neustart überleben?~~ | **Entschieden:** vorerst nicht. Startet unsere API neu, während `n8n_trigger_workflow` auf das Ende einer Execution wartet, geht dieser Weckruf verloren; der Ausgang bleibt in n8n lesbar (§6.2). |
+| E8 | Wo erreicht n8n unsere API, und wie wird der Verkehr verschlüsselt? | **Zurückgestellt.** Richtung: über die bestehende API mit Access-Key, nicht `0.0.0.0` auf dem Dev-Rechner. Der Nutzer erwägt statt eigener Routen (§6.3) eine Responses-API, über die man nach aktuellem Standard mit unseren Agents chattet; n8ns OpenAI-Chat-Modell spricht die Responses-API und nimmt eine eigene Basis-URL [M-MCP-64]. |
 | E10 | ~~`/rest` zur Laufzeit nutzen?~~ | **Entschieden:** nein. Nur der Deploy-Schritt nutzt es (§11). |
-| E11 | `N8N_MCP_SERVER_RATE_LIMIT` anheben [M-MCP-23]? | Default 100 lassen. Anheben erst, wenn §10.4 oder der Betrieb 429 zeigt. Das Limit schützt die Instanz auch gegen einen geleakten Key. |
-| E12 | Soll das Plugin bestehende Workflows für MCP freigeben? | Nein, weder per Tool noch per Scope (§8.6). Freigeben ist eine menschliche Entscheidung im Editor. |
-| E13 | Welche Typen darf der Builder im Test live schalten (`live_node_types`)? | Default leer. Der Betreiber trägt einzelne Typen ein, deren Außenwirkung er im Test hinnimmt (z. B. ein Test-Slack-Kanal). Code-Typen sind ausgeschlossen (§3.3). |
+| E11 | ~~`N8N_MCP_SERVER_RATE_LIMIT` anheben [M-MCP-23]?~~ | **Entschieden:** Default 100 bleibt. Anheben erst, wenn der Betrieb 429 zeigt. Das Limit schützt die Instanz auch gegen einen geleakten Key. |
+| E12 | ~~Soll das Plugin bestehende Workflows für MCP freigeben?~~ | **Entschieden:** nein, weder per Tool noch per Scope (§8.6). Freigeben ist eine menschliche Entscheidung im Editor. |
+| E13 | ~~Welche Typen darf der Builder im Test live schalten (`live_node_types`)?~~ | **Entschieden:** `live_node_types` und `allowed_hosts` bleiben leer. Der Betreiber trägt einen Typ oder Host erst ein, wenn ein Workflow ihn im Test wirklich braucht und die Außenwirkung harmlos ist (z. B. eine öffentliche Lese-API, ein Test-Slack-Kanal). Code-Typen sind ausgeschlossen (§3.3). |
 
 ---
 
