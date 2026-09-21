@@ -199,7 +199,12 @@ def test_every_async_client_on_the_llm_path_passes_verify():
     # 2026-09-20 and their manifests pick them out now. All of src/plugins
     # would pull in mcp_client, whose verify=False is a deliberate
     # per-server opt-out and has nothing to do with this context.
-    for pkg_root in [REPO / "src" / "agent_system", *llm_provider_dirs()]:
+    # llm_common is named by hand: it is the providers' shared code, and not
+    # a provider, so no manifest picks it -- the move to manifests dropped it
+    # from this scan without a word. It builds no client today; the first one
+    # it builds is what this line is for.
+    for pkg_root in [REPO / "src" / "agent_system", REPO / "src" / "plugins" / "llm_common",
+                     *llm_provider_dirs()]:
         for py in pkg_root.rglob("*.py"):
             if "tests" in py.parts or py.name == "tls.py":
                 continue

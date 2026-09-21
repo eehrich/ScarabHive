@@ -335,11 +335,12 @@ class BatchQueueManager:
                 # per provider rather than per entry.
                 #
                 # `is` holds here because both sides read a plain `def` off a
-                # CLASS, which hands out the same function object every time.
-                # Make it a classmethod or staticmethod and each access builds a
-                # fresh binding: this would be False for everyone, the warning
-                # would stop, and a provider that never overrode it would go back
-                # to recovering nothing in silence. Measured 2026-09-20.
+                # CLASS, which hands out the same function object every time --
+                # a staticmethod does too. Make it a classmethod and each access
+                # builds a fresh binding: this would be False for everyone, the
+                # warning would stop, and a provider that never overrode it would
+                # go back to recovering nothing in silence. Measured on 3.12.5:
+                # def True, staticmethod True, classmethod False.
                 if getattr(type(client), "describe_listed_batch", None) is (
                         BatchProviderClient.describe_listed_batch):
                     logger.warning(
