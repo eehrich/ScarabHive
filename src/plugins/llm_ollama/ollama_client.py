@@ -6,7 +6,10 @@ import json
 import time as _time
 from agent_system.utils.id import short_id
 
-from agent_system.llm.message_roles import DEVELOPER, SYSTEM, USER, developer_turn, resolve_rung
+from agent_system.llm.message_roles import (
+    DEVELOPER, NOTE_CLOSE, NOTE_OPEN, SYSTEM, USER, conversation_opener, developer_turn,
+    resolve_rung, rung_for_position,
+)
 from agent_system.llm.models import ChatMessage, LLMClient
 from agent_system.llm.tls import httpx_verify
 from agent_system.config.models import ModelCapabilitiesConfig
@@ -62,6 +65,7 @@ class OllamaNativeAsyncClient(LLMClient):
         import json
         from agent_system.utils.json_utils import repair_json as _repair_json
         out: list[dict[str, Any]] = []
+        opener = conversation_opener(messages)
         for m in messages:
             # Use model_dump() with mode='json' to properly serialize nested Pydantic models and datetime objects
             d = m.model_dump(exclude_none=True, mode='json')
@@ -76,12 +80,25 @@ class OllamaNativeAsyncClient(LLMClient):
             # 200. A system turn is the documented rung; a model entry may set
             # `capabilities.developer_role: user` for a template that only ever
             # renders the FIRST system message.
+            #
+            # Except the LAST one, which rides the user rung whatever the entry
+            # says: a request ending on a system turn asks for nothing, and gets
+            # nothing. One message in, one out, so the last input is the last
+            # message on the wire. See message_roles.rung_for_position.
             if d.get("role") == DEVELOPER:
+                content = d.get("content")
                 role, text = developer_turn(
-                    d.get("content") if isinstance(d.get("content"), str) else "",
-                    self._developer_rung)
+                    content if isinstance(content, str) else "",
+                    rung_for_position(self._developer_rung, last=m is messages[-1],
+                                      opens=m is opener))
                 d["role"] = role
-                if role == USER:
+                if role == USER and isinstance(content, list):
+                    # Parts, not a string: the tags go round them, and
+                    # normalize_message below still finds the images. As a
+                    # string the parts were replaced by an empty note.
+                    d["content"] = [{"type": "text", "text": NOTE_OPEN}, *content,
+                                    {"type": "text", "text": NOTE_CLOSE}]
+                elif role == USER:
                     d["content"] = text
 
             # Ollama expects tool_calls.function.arguments to be an object, not a string

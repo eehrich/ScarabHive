@@ -31,7 +31,7 @@ from agent_system.hooks import (
     HookContext,
     HookResult,
 )
-from agent_system.llm.message_roles import INSTRUCTION_ROLES
+from agent_system.llm.message_roles import INSTRUCTION_ROLES, is_input
 from agent_system.llm.models import ChatMessage
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 
@@ -354,13 +354,17 @@ class InternalMessageValidator:
         """Check for problematic message sequences."""
         issues = []
 
-        # Check that the first message that is not an INSTRUCTION is 'user'
-        # Gemini requires: user -> assistant (with tool_calls) -> tool responses
-        # A developer message is an instruction, not the start of the
-        # conversation — counting it as one made the repair below delete it.
+        # Check that the conversation opens on something the model is asked to
+        # act on. Gemini requires: user -> assistant (with tool_calls) -> tool
+        # responses. A developer NOTE is an instruction, not the start of the
+        # conversation -- counting it as one made the repair below delete it.
+        # A developer WAKE is the opposite: it is a woken run's whole task, and
+        # every route that needs a user turn first lowers it to one. `is_input`
+        # tells the two apart, the same question compaction's copy of this rule
+        # asks (context_engineer/compaction._ensure_valid_message_sequence).
         for i, msg in enumerate(messages):
-            if msg.role not in INSTRUCTION_ROLES:
-                if msg.role != "user":
+            if msg.role not in INSTRUCTION_ROLES or is_input(msg):
+                if not is_input(msg):
                     issues.append(ValidationIssue(
                         type="invalid_first_message",
                         severity="error",
@@ -631,7 +635,7 @@ class InternalMessageValidator:
         for _ in range(max_iterations):
             first_non_system_idx = None
             for i, msg in enumerate(repaired):
-                if msg.role not in INSTRUCTION_ROLES:
+                if msg.role not in INSTRUCTION_ROLES or is_input(msg):
                     first_non_system_idx = i
                     break
             
@@ -639,8 +643,12 @@ class InternalMessageValidator:
                 break  # Only system messages left
             
             first_msg = repaired[first_non_system_idx]
-            if first_msg.role == "user":
-                break  # Valid sequence
+            if is_input(first_msg):
+                # Valid. `is_input`, not the bare role: asking for `user` read a
+                # woken run's wake as missing, and this loop POPS -- it deleted
+                # the run's own assistant and tool messages one by one looking
+                # for a user turn that a woken run need not have.
+                break
             
             # Need to remove this message and related tool messages
             indices_to_remove: Set[int] = {first_non_system_idx}

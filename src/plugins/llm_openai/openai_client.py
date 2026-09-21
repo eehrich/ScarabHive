@@ -12,7 +12,8 @@ from agent_system.llm.tls import httpx_verify
 from agent_system.utils.id import short_id
 from agent_system.utils.json_utils import repair_json
 from agent_system.llm.message_roles import (
-    DEVELOPER, NOTE_CLOSE, NOTE_OPEN, SYSTEM, USER, as_note, resolve_rung,
+    DEVELOPER, NOTE_CLOSE, NOTE_OPEN, USER, as_note, conversation_opener, resolve_rung,
+    rung_for_position,
 )
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.config.models import ModelCapabilitiesConfig
@@ -108,14 +109,21 @@ class OpenAIAsyncClient(LLMClient):
         rung = resolve_rung(getattr(self.capabilities, "developer_role", None),
                             ceiling=DEVELOPER, default=DEVELOPER,
                             route=f"the endpoint at {self._base_url or 'api.openai.com'}")
-        if rung == DEVELOPER:
-            return message_dicts
+        # No early return on the developer rung: the LAST developer message rides
+        # the user rung whatever the endpoint allows, because a request ending on
+        # something that demands no answer gets none. The rule and its measurement
+        # live in message_roles.rung_for_position; this route kept the early return
+        # after the two openai_compat routes lost it, which is the argument for the
+        # rule living in one place.
+        last = message_dicts[-1] if message_dicts else None
+        opener = conversation_opener(message_dicts)
         for d in message_dicts:
             if d.get("role") != DEVELOPER:
                 continue
             content = d.get("content")
-            if rung == SYSTEM:
-                d["role"] = SYSTEM
+            target = rung_for_position(rung, last=d is last, opens=d is opener)
+            if target != USER:
+                d["role"] = target
                 continue
             d["role"] = USER
             if isinstance(content, list):
@@ -394,6 +402,9 @@ class OpenAIAsyncClient(LLMClient):
                 d = m.model_dump(exclude_none=True, mode='json')
                 # Remove multimodal_content from serialized dict - it's processed separately
                 d.pop('multimodal_content', None)
+                # Internal hook metadata. The other two serialisers here drop it;
+                # this one, the tool-calling path, sent it to the API.
+                d.pop('injected_by', None)
                 d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
                 d.pop('served_by', None)  # OpenRouter backend provenance, never sent
                 d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent

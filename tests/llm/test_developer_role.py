@@ -634,6 +634,41 @@ def test_a_running_repair_does_not_carry_the_note_off_with_it():
         f"the repair took the note with it: {result.repair_summary}"
 
 
+
+def test_a_woken_run_keeps_its_own_work_through_a_repair():
+    """A woken run's task is a `developer` wake, and it need not have a user
+    turn in front of it. The repair loop POPS whatever opens the conversation
+    until that is `user` -- so asked for the bare role, it took the run's own
+    assistant and tool messages one by one and left it the wake alone, to
+    repeat work it had already done.
+
+    Not seen in a stored session (12.849 read, six woken, all with a user turn
+    first); a woken run's REQUEST can still be without one, which is the view
+    compaction's copy of this rule was fixed for in fd110ba9. Same question,
+    same answer: `is_input`.
+    """
+    from plugins.message_validator.hooks import InternalMessageValidator
+    wake = "You were woken because input is waiting for this session."
+    done = '{"status": "success"}'
+    call = lambda cid: [{"id": cid, "type": "function",  # noqa: E731
+                         "function": {"name": "f", "arguments": "{}"}}]
+    messages = [ChatMessage(role=SYSTEM, content="prompt"),
+                ChatMessage(role=DEVELOPER, content=wake),
+                ChatMessage(role="assistant", content="", tool_calls=call("call_1")),
+                ChatMessage(role="tool", content=done, tool_call_id="call_1"),
+                # a promise with no result: a real issue, so the repair pass runs
+                ChatMessage(role="assistant", content="", tool_calls=call("call_2"))]
+
+    result = InternalMessageValidator().validate_and_repair(messages, context="test")
+
+    assert result.issues, "fixture is vacuous: nothing was repaired at all"
+    assert not [i for i in result.issues if i.type == "invalid_first_message"], (
+        f"the wake was reported as a conversation that opens wrongly: {result.issues}")
+    kept = [m.content for m in result.repaired_messages]
+    assert wake in kept, f"the repair removed the run's task: {result.repair_summary}"
+    assert done in kept, (
+        f"the repair deleted the woken run's own tool result: {result.repair_summary}")
+
 def test_the_tag_wrapper_keeps_the_text_whole():
     assert as_note("x") == f"{NOTE_OPEN}\nx\n{NOTE_CLOSE}"
 
@@ -726,3 +761,137 @@ def test_a_note_alone_is_still_a_conversation_anthropic():
 
     assert [m.get("role") for m in messages] == [USER], messages
     assert NOTE in _text_of(messages[0].get("content"))
+
+
+def _wake_after_an_answer() -> list[ChatMessage]:
+    """The shape every wake has: it follows an answer, so the message in front
+    of the note is the MODEL's. Google reads a request ending here as ending on
+    a model turn and refuses it; DeepSeek continues its own previous text."""
+    return [
+        ChatMessage(role=SYSTEM, content="You are a careful assistant."),
+        ChatMessage(role=USER, content="Find the number."),
+        ChatMessage(role="assistant", content=ANSWER),
+        ChatMessage(role=DEVELOPER, content=NOTE, injected_by="test.wake"),
+    ]
+
+
+@pytest.mark.parametrize("route", sorted(ROUTES))
+def test_a_request_never_ends_on_a_message_that_asks_nothing(route, monkeypatch):
+    """Every route, because the rule lives in one place and two of six did not
+    call it.
+
+    message_roles.rung_for_position carries the measurement (deepseek 7/15
+    empty -> 0/10, gemini 10/10 HTTP 400 -> 0/3). The Responses and Chat
+    Completions routes learned it; the OpenAI and Ollama routes kept lowering
+    the last note to `developer` and `system`, neither of which asks for
+    anything. Neither of those two endpoints is measured -- what is pinned here
+    is that the rule is applied, not how a given provider answers without it.
+
+    Through each route's own mapping, with the history swapped at the one name
+    they all read: a hand-built call to a lowering method would prove the
+    method and not that the route still uses it.
+    """
+    monkeypatch.setattr(sys.modules[__name__], "history", _wake_after_an_answer)
+    wire = ROUTES[route][0]()
+
+    role, text = wire[-1]
+    assert NOTE in text, f"{route}: the last message on the wire is not the wake -- {wire}"
+    assert role == USER, (
+        f"{route}: the request ends on a {role!r} message, which asks for nothing "
+        f"and gets nothing -- {wire}")
+
+
+def _woken_without_a_user_turn() -> list[ChatMessage]:
+    """A woken run whose request lost its user turn: the wake stands where the
+    conversation's first turn must be, and the model's answer follows it."""
+    return [
+        ChatMessage(role=SYSTEM, content="You are a careful assistant."),
+        ChatMessage(role=DEVELOPER, content=NOTE),
+        ChatMessage(role="assistant", content=ANSWER),
+        ChatMessage(role=USER, content=QUESTION),
+    ]
+
+
+def _leading_note() -> list[ChatMessage]:
+    """The leading block: a note ahead of the user's turn. Nothing is missing."""
+    return [
+        ChatMessage(role=SYSTEM, content="You are a careful assistant."),
+        ChatMessage(role=DEVELOPER, content=NOTE, injected_by="test.lead"),
+        ChatMessage(role=USER, content=QUESTION),
+        ChatMessage(role="assistant", content=ANSWER),
+    ]
+
+
+@pytest.mark.parametrize("route", sorted(ROUTES))
+def test_a_conversation_without_a_user_turn_opens_on_the_wake(route, monkeypatch):
+    """The message validator and compaction keep a woken run's work now instead
+    of deleting it until a user turn turns up (fd110ba9, and the validator's
+    copy since). That leaves requests with no user turn in front of the model's
+    first message -- and a route that hoists system messages out and leaves the
+    wake on the system rung then opens on the model's own turn, which Gemini
+    refuses. Not last, so the tail rule alone does not reach it."""
+    monkeypatch.setattr(sys.modules[__name__], "history", _woken_without_a_user_turn)
+    wire = ROUTES[route][0]()
+
+    opening = [(role, text) for role, text in wire if role != SYSTEM]
+    assert opening, f"{route}: nothing but system messages on the wire -- {wire}"
+    role, text = opening[0]
+    assert NOTE in text, f"{route}: the conversation does not open on the wake -- {wire}"
+    assert role == USER, (
+        f"{route}: the conversation opens on a {role!r} wake, which is no turn -- {wire}")
+
+
+@pytest.mark.parametrize("route", sorted(r for r, (_, rung) in ROUTES.items() if rung != USER))
+def test_a_leading_note_ahead_of_a_user_turn_keeps_its_rung(route, monkeypatch):
+    """The opener rule steps in only where a user turn is MISSING. Asked as
+    "the first message that is not system", it would turn every leading note on
+    four routes into a user turn, on every request -- the first version of it
+    did exactly that, caught before it was committed."""
+    monkeypatch.setattr(sys.modules[__name__], "history", _leading_note)
+    _, role, _ = _note_line(ROUTES[route][0]())
+    assert role == ROUTES[route][1], f"{route}: a leading note left its rung for {role!r}"
+
+
+def test_an_ollama_note_with_parts_keeps_them_on_the_user_rung():
+    """Ollama lowered a last note to the user rung through a string, and a note
+    carrying parts became an empty one -- its content replaced by the tags."""
+    from unittest.mock import patch
+    with patch("httpx.AsyncClient"):
+        from plugins.llm_ollama.ollama_client import OllamaNativeAsyncClient
+        client = OllamaNativeAsyncClient(model="qwen3")
+    wire = client._map_messages([
+        ChatMessage(role=USER, content=QUESTION),
+        ChatMessage(role="assistant", content=ANSWER),
+        ChatMessage(role=DEVELOPER, content=[{"type": "text", "text": NOTE}]),
+    ])
+    assert wire[-1]["role"] == USER, "fixture is vacuous: the note is not on the user rung"
+    assert NOTE in wire[-1]["content"], f"the note lost its parts: {wire[-1]!r}"
+    assert NOTE_OPEN in wire[-1]["content"], f"the note lost its tags: {wire[-1]!r}"
+
+
+def test_the_openai_tool_path_does_not_send_hook_metadata():
+    """Three serialisers in llm_openai; two dropped ``injected_by``, the one
+    behind tool calling did not, so every note reached api.openai.com as a
+    field the API does not define."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from plugins.llm_openai.openai_client import OpenAIAsyncClient
+
+    with patch("openai.AsyncOpenAI"):
+        client = OpenAIAsyncClient(model="gpt-5.1", api_key="k")
+    sent: dict = {}
+
+    async def create(**opts):
+        sent["messages"] = opts["messages"]
+        raise RuntimeError("stop here: the request is all this test needs")
+
+    client._client = MagicMock()
+    client._client.chat.completions.create = AsyncMock(side_effect=create)
+    try:
+        asyncio.run(client.chat_tools(history(), tools=[]))
+    except Exception:
+        pass
+    assert sent.get("messages"), "fixture is vacuous: the tool path never reached the SDK"
+    carrying = [m for m in sent["messages"] if "injected_by" in m]
+    assert not carrying, f"hook metadata went to the API: {carrying}"

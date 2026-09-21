@@ -42,8 +42,8 @@ from agent_system.llm.cache_key import (
     strip_cache_breakpoints,
 )
 from agent_system.llm.message_roles import (
-    DEVELOPER, NOTE_CLOSE, NOTE_OPEN, SYSTEM, USER, as_note, resolve_rung,
-    rung_for_position,
+    DEVELOPER, NOTE_CLOSE, NOTE_OPEN, SYSTEM, USER, as_note, conversation_opener,
+    resolve_rung, rung_for_position,
 )
 from agent_system.llm.models import LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
 from agent_system.core.cancellation import CancellationToken
@@ -862,11 +862,12 @@ class HTTPXOpenAIClient(LLMClient):
         # this route learned it an hour after the Responses route, from a
         # review, and that hour is the argument for it living in one place.
         last = message_dicts[-1] if message_dicts else None
+        opener = conversation_opener(message_dicts)
         for msg in message_dicts:
             if msg.get("role") != DEVELOPER:
                 continue
             content = msg.get("content")
-            target = rung_for_position(rung, last=msg is last)
+            target = rung_for_position(rung, last=msg is last, opens=msg is opener)
             if target != USER:
                 msg["role"] = target
                 continue

@@ -209,7 +209,7 @@ def resolve_rung(declared: Optional[str], *, ceiling: str, default: str, route: 
     return declared
 
 
-def rung_for_position(rung: str, *, last: bool) -> str:
+def rung_for_position(rung: str, *, last: bool, opens: bool = False) -> str:
     """Which rung a developer message rides, given WHERE it sits.
 
     A developer message is read but demands no answer -- that is its definition
@@ -237,11 +237,51 @@ def rung_for_position(rung: str, *, last: bool) -> str:
     learn this separately -- which is how the Responses route had it for an hour
     and the Chat-Completions route did not.
 
+    The same holds where a user turn is MISSING at the start (``opens``, see
+    ``conversation_opener`` -- which leaves a leading note in front of a user
+    turn alone). A woken run's request need not carry a user turn at all --
+    compaction may have trimmed it, and fd110ba9 made compaction and
+    the message validator keep the wake as a valid opener instead of deleting
+    the run's work to find one. On a route that hoists system messages out, a
+    wake left on the system rung then leaves the conversation opening on the
+    model's own tool call, which Gemini refuses. Not measured on the wire:
+    derived from that rule, and the reason is the same as at the tail -- the
+    message that stands where a turn must be has to be one.
+
+    Not a route here: the Realtime session (llm_openai/realtime_adapter) gives
+    every developer message to the conversation as a ``system`` item, the last
+    one included. ``response.create`` asks for a response explicitly there, so
+    the "gets nothing" failure measured above has no obvious way in -- also not
+    measured, and named so nobody reads the six routes as all of them.
+
     What each route still owns is the REWRITING: the tags that say who is
     speaking once the role no longer does, and the content-part shape they go
     in (``input_text`` on the Responses API, ``text`` on Chat Completions).
     """
-    return USER if last else rung
+    return USER if last or opens else rung
+
+
+def conversation_opener(messages: list) -> object | None:
+    """The developer message that has to open the conversation as a turn, or None.
+
+    Only where NO user turn stands in front of the model's first message -- a
+    woken run whose request lost its user turn. Then the developer message
+    right in front of that first message is the one standing where a turn must
+    be, and it is returned. Otherwise None, and nothing moves: a developer note
+    ahead of a user turn is the leading block (``leading_instructions``), which
+    stays exactly as it is.
+
+    Compared by identity (``msg is opener``), so each route passes the list it
+    actually sends.
+    """
+    candidate = None
+    for msg in messages:
+        role = role_of(msg)
+        if role == DEVELOPER:
+            candidate = msg
+        elif role != SYSTEM:
+            return None if role == USER else candidate
+    return candidate
 
 
 def developer_turn(text: str, rung: str) -> tuple[str, str]:
