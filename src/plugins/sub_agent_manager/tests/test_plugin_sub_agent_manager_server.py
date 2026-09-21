@@ -2318,7 +2318,29 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         assert server._async_jobs["sub_slow"]["status"] == "failed"
 
     @pytest.mark.asyncio
-    async def test_a_cancelled_job_wakes_it_too(self, server, monkeypatch):
+    async def test_a_job_whose_entry_was_taken_before_it_ended_wakes_nobody(self, server, monkeypatch):
+        """The entry is gone by the time the task unwinds: a poll, a wait, a `continue` or a
+        delete took it, and every one of those is the caller awake and handling the ending
+        itself. Ringing then is not free even once -- the marker a ring leaves behind turns into
+        a whole woken run when the caller's turn ends. (Archived while it ran is the exception,
+        and it has its own test: there nobody has read anything.)"""
+        import asyncio
+        told = self.presence(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await agent.started(1)
+        handle = server._async_jobs.pop("sub_slow")["task_handle"]  # a reader takes the job with it
+        agent.releases[0].set()
+        await asyncio.wait_for(handle, 5)
+
+        assert told == []
+
+    @pytest.mark.asyncio
+    async def test_a_job_the_caller_cancelled_itself_does_not_wake_it(self, server, monkeypatch):
+        """Cancelling is the caller saying it is not waiting any more, and it said so awake, in a
+        turn of its own. A ring for that job wakes an idle session for a whole turn about
+        something it called off itself."""
         import asyncio
         told = self.presence(monkeypatch)
         agent = SlowAgent()
@@ -2329,6 +2351,66 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         await TestCancelReachesABlockingRun.cancel(server)
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(handle, 5)
+
+        assert told == []
+        assert server._async_jobs["sub_slow"]["status"] == "cancelled"
+        answer = await server.manage_sub_agent(
+            {"operation": "poll", "instance_id": "sub_slow", "_session_id": "parent1"})
+        assert answer["status"] == "cancelled" and "_ended_by_caller" not in answer, \
+            "bookkeeping of ours handed to the model"
+
+    @pytest.mark.asyncio
+    async def test_a_job_the_caller_deleted_while_it_ran_does_not_wake_it(self, server, monkeypatch):
+        """`delete` is the caller dropping the sub-agent, awake -- for the bell the same as a
+        cancel of its own. Archiving to make room reaches the same method behind the caller's
+        back and still rings (below); only the tool's own delete says it was the caller."""
+        import asyncio
+        told = self.presence(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await agent.started(1)
+        handle = server._async_jobs["sub_slow"]["task_handle"]
+        deleted = await server.manage_sub_agent(
+            {"operation": "delete", "instance_id": "sub_slow", "_session_id": "parent1", "_agent": Mock()})
+        agent.releases[0].set()
+        await asyncio.wait_for(handle, 5)
+
+        assert deleted["status"] != "error", deleted
+        assert told == []
+
+    @pytest.mark.asyncio
+    async def test_an_ending_recorded_before_a_cancel_from_elsewhere_still_wakes_it(self, server, monkeypatch):
+        """The ending goes into memory first and is only then persisted and rung. A cancel from
+        elsewhere in between -- the process going down during that write -- runs the ending a
+        second time, over an entry that already says it is over. That is not the caller calling
+        it off: the caller is asleep, and it is still owed its bell."""
+        told = self.presence(monkeypatch)
+        TestCancelReachesABlockingRun.wire(server, SlowAgent())
+        server._async_jobs["sub_slow"] = {  # as the first, cut-short ending left it
+            "instance_id": "sub_slow", "status": "completed", "result": "done", "_awaiting_poll": True,
+            "parent_session_id": "parent1", "task_handle": None}
+
+        await server._finish_job("sub_slow", {"_session_id": "parent1", "wake_when_done": True},
+                                 "cancelled", drop_task=True, manager=server._get_manager(),
+                                 stored={"status": "cancelled"})
+
+        assert told == [("parent1", "u1")]
+
+    @pytest.mark.asyncio
+    async def test_a_job_cancelled_from_elsewhere_wakes_it(self, server, monkeypatch):
+        """The guard is "the caller ended it", and nothing wider: a task cancelled without the
+        tool being asked -- the request tree it hangs in going down, the process shutting down --
+        leaves a caller asleep over a job that will never answer. That one still rings."""
+        import asyncio
+        told = self.presence(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await agent.started(1)
+        server._async_jobs["sub_slow"]["task_handle"].cancel()  # nothing recorded the ending first
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(server._async_jobs["sub_slow"]["task_handle"], 5)
 
         assert told == [("parent1", "u1")]
         assert server._async_jobs["sub_slow"]["status"] == "cancelled"
@@ -2728,9 +2810,13 @@ class TestAFinishedJobDoesNotStayInMemory:
         session, which a model reads AS the sub-agent's answer."""
         self.stored(server, self.ACTIVE, [
             {"role": "user", "content": "do it"},
-            {"role": "assistant", "content": "a first pass, asked again afterwards"},
+            {"role": "assistant", "content": "a first pass, asked again afterwards", "tool_calls": None},
             {"role": "user", "content": "again, with the numbers"},
-            {"role": "assistant", "content": "the answer nobody could read before"},
+            # `tool_calls: null` is what a finished run leaves on disk: the model defaults it to
+            # None and `save_session` dumps it without exclude_none. A guard that asks whether the
+            # KEY is there instead of what is in it answers "cut off in a tool call" for every
+            # run that ever ended cleanly.
+            {"role": "assistant", "content": "the answer nobody could read before", "tool_calls": None},
             {"role": "tool", "content": "42"}])
 
         result = await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
@@ -2773,6 +2859,7 @@ class TestAFinishedJobDoesNotStayInMemory:
 
         assert result["status"] == "running"
         assert "result" not in result, "nothing to hand over yet"
+        assert result["message"] == "Archived while it runs; its ending is still to come"
         assert server._runs_in_another_process.await_args.args == ("sub_done", "u1")
 
     @pytest.mark.asyncio
@@ -2791,6 +2878,129 @@ class TestAFinishedJobDoesNotStayInMemory:
 
         assert result["status"] == "completed"
         assert result["result"] == "Sub-agent execution completed (session persisted)"
+
+    @pytest.mark.asyncio
+    async def test_the_narration_before_a_tool_call_is_not_an_answer_either(self, server):
+        """The shape the guard above missed: the run said something AND asked for a tool in the
+        same step. What stands there is what a model narrates before it works -- "let me look at
+        the configuration first" -- and it is handed over as the result, where the caller reads
+        it as the sub-agent's finding. Having no answer is the same either way."""
+        self.stored(server, self.ACTIVE, [
+            {"role": "user", "content": "do it"},
+            {"role": "assistant", "content": "Let me look at the configuration first.",
+             "tool_calls": [{"id": "1", "function": {"name": "read", "arguments": "{}"}}]}])
+
+        result = await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+
+        assert result["status"] == "completed"
+        assert result["result"] == "Sub-agent execution completed (session persisted)"
+
+    @pytest.mark.asyncio
+    async def test_a_run_another_process_holds_is_not_finished_either(self, server):
+        """The same ending as the archived one above, without the archiving: the instance is
+        active, this process has no job for it, and its transcript is still being written. A
+        coordinator woken for one sub-agent polls its others from a process of its own -- and was
+        handed the middle of a run as its result."""
+        manager = self.stored(server, self.ACTIVE, [{"role": "assistant", "content": "half a thought"}])
+        server._runs_in_another_process = AsyncMock(return_value=True)
+
+        result = await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+
+        assert result["status"] == "running"
+        assert "result" not in result, "nothing to hand over yet"
+        assert result["message"] == "Still running; its ending is still to come"
+        # the lock asked about is the SUB-session's, under the user of the session that OWNS it
+        assert server._runs_in_another_process.await_args.args == ("sub_done", "u1")
+        assert manager._extract_user_id.call_args.args[0] == "parent1"
+
+    @pytest.mark.asyncio
+    async def test_the_lock_beside_the_sub_session_is_what_answers(self, server, monkeypatch):
+        """The shape with no job anywhere: a BLOCKING create never files one, so a poll from
+        another turn of the same session finds the instance active and nothing of ours running.
+        Here the real helper runs -- the lock beside the sub-session, asked under the user of the
+        session that owns it -- and its answer must not be worded as another process's."""
+        self.stored(server, self.ACTIVE, [{"role": "assistant", "content": "half a thought"}])
+        presence = Mock(get=Mock(return_value={"status": "running", "agent": "worker"}))
+        monkeypatch.setattr(sam_server, "presence_for", lambda config: presence)
+
+        result = await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+
+        assert result["status"] == "running"
+        assert result["message"] == "Still running; its ending is still to come"
+        assert presence.get.call_args.args == ("sub_done", "u1")
+
+    @pytest.mark.asyncio
+    async def test_a_blocking_run_of_this_process_is_not_finished_either(self, server, monkeypatch):
+        """With `session_presence` off there is no cross-process answer at all, and a blocking run
+        has no job of its own anywhere -- so a poll would go straight back to calling a live run
+        completed. What runs HERE is the other half of the question `list` asks."""
+        self.stored(server, self.ACTIVE, [{"role": "assistant", "content": "half a thought"}])
+        monkeypatch.setattr(sam_server, "presence_for", lambda config: None)
+        server._running_agents.add("sub_done")
+
+        result = await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+
+        assert result["status"] == "running"
+        assert result["message"] == "Still running; its ending is still to come"
+
+    @pytest.mark.asyncio
+    async def test_a_wait_with_no_job_here_looks_less_and_less_often(self, server, monkeypatch):
+        """Every look on this branch reads two session files -- the parent's, and the lock beside
+        the sub-agent's, which parses its whole transcript uncached. At the half second the turn
+        WITH a job runs at, a forty-minute sub-agent would be four thousand of those, once per
+        waiter of a `wait_all`. So this turn doubles its pause up to `WAIT_DB_POLL_MAX`."""
+        import asyncio
+        self.stored(server, self.ACTIVE, [{"role": "assistant", "content": "the whole thought"}])
+        server._runs_in_another_process = AsyncMock(return_value=True)
+        server.default_wait_timeout = 300
+        slept = []
+        real_sleep = asyncio.sleep
+
+        async def recorded(seconds, *args, **kwargs):
+            slept.append(seconds)
+            if len(slept) == 6:  # enough to see the doubling and the ceiling; then let it end
+                server._runs_in_another_process = AsyncMock(return_value=False)
+            return await real_sleep(0)
+
+        monkeypatch.setattr(asyncio, "sleep", recorded)
+        result = await asyncio.wait_for(
+            server._handle_wait({"instance_id": "sub_done", "_session_id": "parent1"}), 10)
+
+        assert result["status"] == "completed"
+        assert slept == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0], "the pause is meant to grow and to stop growing"
+
+    @pytest.mark.asyncio
+    async def test_a_wait_over_a_run_in_another_process_does_not_call_it_gone(self, server):
+        """`wait` reads its own poll, and "running" is not one of the endings it knows: it fell
+        through to "disappeared during wait" -- said about a sub-agent that is working. A wait
+        ends when the job ends or when its timeout does, and on nothing else."""
+        import asyncio
+        self.stored(server, self.ACTIVE, [{"role": "assistant", "content": "half a thought"}])
+        server._runs_in_another_process = AsyncMock(return_value=True)
+        server.default_wait_timeout = 0.2
+
+        result = await asyncio.wait_for(  # a wait that stops ending fails here instead of hanging
+            server._handle_wait({"instance_id": "sub_done", "_session_id": "parent1"}), 5)
+
+        assert result["status"] == "error"
+        assert "Timeout" in result["error"] and "disappeared" not in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_wait_over_a_run_in_another_process_hands_over_its_ending(self, server):
+        """The other half, and the one that says it really waited: the run ends while the wait is
+        in it, and the answer it gets is the run's own -- not the timeout, and not the middle of
+        the transcript it saw on the way."""
+        import asyncio
+        self.stored(server, self.ACTIVE, [{"role": "assistant", "content": "the whole thought"}])
+        # asked at the wait's own poll, then once per turn of its loop: running, running, done
+        server._runs_in_another_process = AsyncMock(side_effect=[True, True, False])
+        server.default_wait_timeout = 30
+
+        result = await asyncio.wait_for(
+            server._handle_wait({"instance_id": "sub_done", "_session_id": "parent1"}), 10)
+
+        assert result["status"] == "completed" and result["result"] == "the whole thought"
+        assert server._runs_in_another_process.await_count == 3, "it asked again every turn"
 
     @pytest.mark.asyncio
     async def test_a_transcript_that_cannot_be_read_is_not_an_error(self, server):

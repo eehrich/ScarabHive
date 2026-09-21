@@ -62,13 +62,13 @@ parent's current values through — the intended behaviour for old sessions.
 ## Sleeping instead of polling
 
 `create(blocking=false, wake_when_done=true)` lets the caller end its turn over
-a background job. When the job ends — finished, failed or cancelled, there is no
-second ending — the manager tells the core that input is waiting for the calling
-session (`core/session_presence.wake_session`): a session another process holds
-reads that at its next step, a session nobody holds is continued in a run of its
-own. The woken run is told that input waits; it polls the instance and reads the
-result with `info`, and its task arrives as a `developer` message, so the model
-can tell a wake from somebody typing.
+a background job. When the job ends — finished, failed, or cancelled by
+something other than its caller (below) — the manager tells the core that input
+is waiting for the calling session (`core/session_presence.wake_session`): a
+session another process holds reads that at its next step, a session nobody
+holds is continued in a run of its own. The woken run is told that input waits;
+it polls the instance and reads the result with `info`, and its task arrives as
+a `developer` message, so the model can tell a wake from somebody typing.
 
 Two things make that hold rather than nearly hold:
 
@@ -106,6 +106,18 @@ Three things bound it, and none of them are this plugin's:
   exactly as every job did before. The flag costs nothing and changes nothing.
 * **`max_wake_depth`** (core, default 3) stops wake chains: a run woken that
   deep wakes nobody, and the input waits for the session's next run.
+
+What never rings is a job the caller **called off itself**: a `cancel`, or a
+`delete` while it runs. Either is the caller saying it is not waiting any more,
+said awake, in a turn of its own — a ring up to five minutes later would wake an
+idle session for a whole turn about a job it dropped. The two operations mark
+the job; the ending reads the mark rather than guessing from a status, because a
+status is terminal too when an earlier ending was cut short. Nor does a job
+ring whose ending somebody already took (a poll, a wait, a `continue`) — that
+somebody is the caller, awake. What still rings: a task cancelled from
+elsewhere (its request tree going down, the process shutting down) and an
+archiving to make room — both happen behind the caller's back, and it is asleep
+over a job it has not heard the end of.
 
 A wake that cannot be delivered is logged and costs the caller a poll, never the
 job: the run's ending is recorded before anyone is told about it.
@@ -155,7 +167,23 @@ Two more that are not limits but guards:
   run said from its transcript, instead of a fixed sentence about a persisted
   session that a model reads as the answer. An archived instance is found too:
   making room at a limit happens behind the caller's back, and its poll used to
-  answer "not found" about a run it started itself.
+  answer "not found" about a run it started itself. A run **cut off in a tool
+  call** has no answer to give — neither the empty step nor the sentence a model
+  narrates before working ("let me look at the configuration first"), which
+  handed over as a result reads as the sub-agent's finding.
+* **A run this process has no job for is not finished by that.** A blocking run
+  never had a job here, a job lives in the process that started it, and a woken
+  coordinator polls from a process of its own — so `poll` asks both questions
+  `list` asks before calling a sub-agent dead: what runs in this process, and
+  the lock a run holds beside its session (`core/session_presence.py`), which
+  answers the same in every process. Either one and the answer is *running*,
+  rather than a transcript that is still being written handed over as the
+  result. `wait` waits that one out: *running* is not an ending, and it used to
+  fall through to "disappeared during wait" about a sub-agent that was working.
+  A wait ends when the job ends or when `default_wait_timeout` does, and while
+  it has no job of its own to watch it looks less and less often — each of
+  those looks reads the parent's session and the whole transcript behind that
+  lock.
 * **A run that ended without saying so is healed by `list`.** A sub-agent that
   still looks like it runs but that nobody has in hand is marked `interrupted`
   and its stale activity cleared — otherwise a crash leaves it *running* for
