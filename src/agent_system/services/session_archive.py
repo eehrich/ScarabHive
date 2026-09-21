@@ -41,6 +41,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Set
 
+from filelock import FileLock
+from filelock import Timeout as LockTimeout
+
 logger = logging.getLogger(__name__)
 
 MANIFEST_NAME = "index.json"
@@ -49,10 +52,21 @@ ZIP_MANIFEST_MEMBER = "_manifest.json"
 #: killed leaves one behind; the next pass over that tree overwrites it,
 #: and a sweep clears the ones no tree will come back to.
 TMP_SUFFIX = ".tmp"
-#: How long a leftover has to lie still before a sweep drops it. A CLI
-#: sweep in another process writes the same names, and the in-process
-#: lock says nothing about that one.
+#: How long a leftover has to lie still before a sweep drops it. The sweep
+#: lock keeps every process that has it out, but not one still running the
+#: code from before it -- an API that was pulled and not restarted.
 TMP_MIN_AGE_SECONDS = 3600.0
+#: The two cross-process locks, both per user and both next to what they
+#: guard: one for a whole pass, one for the read-modify-write on the
+#: manifest. Separate on purpose -- a pass runs for minutes and holds the
+#: first the whole time, while it takes the second once per tree, and a
+#: restore or a delete takes only the second.
+SWEEP_LOCK_NAME = ".sweep.lock"
+MANIFEST_LOCK_SUFFIX = ".lock"
+#: How long a manifest write waits for another process. Long enough for a
+#: write that is a few hundred kilobytes of JSON, short enough that a lock
+#: nobody releases turns into an error instead of a hang.
+MANIFEST_LOCK_TIMEOUT = 20.0
 _SUBS_PREFIX = ".subs."
 _SUBS_SUFFIX = ".index.json"
 
@@ -67,6 +81,17 @@ class ArchiveNotFound(ArchiveError):
     Separate from its parent so the HTTP layer can tell "you asked about
     something that is not there" (404) from "what you asked for cannot be done
     right now" (409) without reading the message.
+    """
+
+
+class ArchiveBusy(ArchiveError):
+    """Another process holds a lock this needs -- a sweep, or the index.
+
+    Separate because it is about the USER's archive, not about one tree: a
+    pass that meets it for one tree would meet it for every tree after, each
+    after the same timeout, so the pass stops there instead of trying on.
+    Still an ArchiveError, so every caller answers it as it answers a refusal
+    (409 in the panel, one line in the CLI).
     """
 
 
@@ -184,19 +209,13 @@ class SessionArchive:
         self.max_trees_per_sweep = max_trees_per_sweep
         self._presence = presence
         self._busy_sessions = busy_sessions
+        # In front of the manifest's file lock, so tasks of THIS process queue
+        # without touching the filesystem. The file lock is what makes the
+        # edit safe; this one keeps it uncontended in the common case.
         self._manifest_lock = asyncio.Lock()
         # One restore at a time: two of the same tree would both pass the
         # conflict check and then race on writing the same files.
         self._restore_lock = asyncio.Lock()
-        # One pass per user at a time. Two of them share every target file:
-        # they write the same "<root>.zip.tmp", and the second `os.replace`
-        # lands on top of the first. Nothing is lost -- a zip that cannot be
-        # read back is thrown away before anything is deleted -- but the tree
-        # fails for no reason, and the second pass then re-registers what the
-        # first already removed and reports a delete failure per session.
-        # Cheap before, likely now: a pass is minutes, not seconds, and the
-        # panel's "Archive now" sits next to a sweep that may be running.
-        self._sweep_locks: Dict[str, asyncio.Lock] = {}
         logger.info(
             "SessionArchive initialized: archive_path=%s retention_days=%d",
             self.archive_path, self.retention_days,
@@ -387,15 +406,29 @@ class SessionArchive:
         if not user_dir.is_dir():
             return report
 
-        lock = self._sweep_locks.setdefault(user_id, asyncio.Lock())
-        # Refused, not queued: the caller asked for a pass now, and waiting
-        # out the one already running would answer minutes later with a report
-        # about somebody else's work. No await between the question and the
-        # acquire, so nothing can slip in between.
-        if lock.locked():
-            raise ArchiveError(f"a sweep for {user_id} is already running")
-        async with lock:
+        # Refused, not queued: the caller asked for a pass NOW, and waiting out
+        # the one already running would answer minutes later with a report
+        # about somebody else's work.
+        #
+        # A file lock rather than an asyncio one, because the second pass is
+        # usually not in this process: the API sweeps on a timer, and the CLI
+        # sweeps when somebody runs it. Both write the same "<root>.zip.tmp"
+        # and both register in the same index. An OS lock also answers the
+        # case an in-process flag cannot -- a sweep whose process was killed
+        # holds nothing, so the next one runs instead of waiting for a flag
+        # nobody will ever clear. It covers this process too: two handles on
+        # the same file conflict even when they belong to one process.
+        lock_path = self._user_archive_dir(user_id) / SWEEP_LOCK_NAME
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(str(lock_path), timeout=0)
+        try:
+            lock.acquire(timeout=0)
+        except LockTimeout as exc:
+            raise ArchiveBusy(f"a sweep for {user_id} is already running") from exc
+        try:
             return await self._archive_user(report, user_dir, days, dry_run=dry_run)
+        finally:
+            lock.release()
 
     async def _archive_user(
         self,
@@ -409,9 +442,10 @@ class SessionArchive:
         # Leftovers of a pass that was killed mid-write. `_write_zip` clears
         # the one it is about to use, but a tree nobody archives again -- one
         # whose conversation was resumed -- would keep its .tmp for good.
-        # Only the cold ones: the lock above holds THIS process, not a CLI
-        # sweep in another, and taking the file it is writing right now
-        # would turn a leftover into a broken pass.
+        # Only the cold ones: the sweep lock above keeps out every process
+        # that knows it, but a process still on the code from before it (an
+        # API pulled without a restart) does not ask, and taking the file it
+        # is writing right now would turn a leftover into a broken pass.
         cold = time.time() - TMP_MIN_AGE_SECONDS
         for stale in self._user_archive_dir(user_id).glob(f"*/*{TMP_SUFFIX}"):
             try:
@@ -471,6 +505,15 @@ class SessionArchive:
             try:
                 archived_bytes, failures = await self._archive_tree(
                     user_id, tree, dry_run=dry_run)
+            except ArchiveBusy as exc:
+                # The index is held by another process. Every tree after this
+                # one would wait the same timeout for the same lock, so the
+                # pass stops -- and still returns what it did so far, which a
+                # raise would throw away. Nothing of this tree was deleted:
+                # the registration that failed comes before the first delete.
+                logger.warning("session archive: pass for %s stopped (%s)", user_id, exc)
+                report.errors.append(f"{tree.root}: {exc}")
+                break
             except Exception as exc:  # noqa: BLE001 - one bad tree must not stop the sweep
                 logger.exception("session archive: tree %s failed", tree.root)
                 report.errors.append(f"{tree.root}: {exc}")
@@ -677,18 +720,61 @@ class SessionArchive:
         return datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m")
 
     async def _entry_of(self, user_id: str, root: str) -> Optional[Dict[str, Any]]:
-        """What the manifest already holds for this tree, if anything."""
-        async with self._manifest_lock:
-            manifest = _read_json(self._manifest_path(user_id))
+        """What the manifest already holds for this tree, if anything.
+
+        No lock: the manifest is only ever replaced whole, by ``os.replace``,
+        so a reader sees the file before or after a write and never during.
+        """
+        manifest = await asyncio.to_thread(_read_json, self._manifest_path(user_id))
         entry = manifest.get(root)
         return entry if isinstance(entry, dict) else None
 
+    def _edit_manifest(self, user_id: str, change: Callable[[Dict[str, Any]], Any]) -> Any:
+        """Read the manifest, let ``change`` work on it, write it back.
+
+        The one place the manifest is modified, and the reason it is one
+        place: read-modify-write on a file two processes share loses whatever
+        the other one wrote in between. The API sweeps on a timer while the
+        CLI sweeps on demand, and both register every tree they take -- the
+        loser's archive would sit on disk with nothing pointing at it, which
+        no later pass repairs, because the sessions it held are gone.
+
+        The lock file is what ``session_presence`` uses one directory over and
+        what ``okf`` uses for its own read-modify-write: an OS lock, so a
+        process that dies drops it. It is taken for the length of one edit,
+        never across an await.
+
+        Runs in a worker thread (the caller uses ``asyncio.to_thread``): the
+        JSON is a few hundred kilobytes on a busy user, and waiting for
+        another process must not stop the event loop.
+
+        ``change`` may raise -- ``forget`` does, for a tree the manifest does
+        not have -- and then nothing is written.
+        """
+        path = self._manifest_path(user_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(str(path) + MANIFEST_LOCK_SUFFIX, timeout=MANIFEST_LOCK_TIMEOUT)
+        try:
+            lock.acquire()
+        except LockTimeout as exc:
+            raise ArchiveBusy(
+                f"the archive index of {user_id} is held by another process "
+                f"(waited {MANIFEST_LOCK_TIMEOUT:.0f}s)") from exc
+        try:
+            manifest = _read_json(path)
+            result = change(manifest)
+            _write_json_atomic(path, manifest)
+            return result
+        finally:
+            lock.release()
+
     async def _remember(self, user_id: str, root: str, entry: Dict[str, Any]) -> None:
         """Put one tree into the user's manifest."""
-        async with self._manifest_lock:
-            manifest = _read_json(self._manifest_path(user_id))
+        def change(manifest: Dict[str, Any]) -> None:
             manifest[root] = entry
-            _write_json_atomic(self._manifest_path(user_id), manifest)
+
+        async with self._manifest_lock:   # in-process; the file lock spans processes
+            await asyncio.to_thread(self._edit_manifest, user_id, change)
 
     def _manifest_entry(self, user_id: str, tree: _Tree, relative: str) -> Dict[str, Any]:
         meta = tree.root_meta
@@ -844,9 +930,9 @@ class SessionArchive:
                     f"Could not restore {data['session_id']}: {exc}") from exc
 
         async with self._manifest_lock:
-            manifest = _read_json(self._manifest_path(user_id))
-            manifest.pop(root_session_id, None)
-            _write_json_atomic(self._manifest_path(user_id), manifest)
+            await asyncio.to_thread(
+                self._edit_manifest, user_id,
+                lambda manifest: manifest.pop(root_session_id, None))
         zip_path.unlink(missing_ok=True)
 
         logger.info(
@@ -900,13 +986,16 @@ class SessionArchive:
 
     async def forget(self, user_id: str, root_session_id: str) -> Dict[str, Any]:
         """Delete an archived tree for good. There is no copy after this."""
-        async with self._manifest_lock:
-            manifest = _read_json(self._manifest_path(user_id))
+        def take_it_out(manifest: Dict[str, Any]) -> Dict[str, Any]:
             entry = manifest.pop(root_session_id, None)
             if not isinstance(entry, dict):
+                # Raised inside the edit, so nothing is written back.
                 raise ArchiveNotFound(
                     f"No archived session {root_session_id} for user {user_id}")
-            _write_json_atomic(self._manifest_path(user_id), manifest)
+            return entry
+
+        async with self._manifest_lock:
+            entry = await asyncio.to_thread(self._edit_manifest, user_id, take_it_out)
         try:
             self._archive_file(user_id, entry.get("archive", "")).unlink(missing_ok=True)
         except (ArchiveNotFound, OSError) as exc:

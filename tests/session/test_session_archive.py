@@ -11,6 +11,8 @@ import asyncio
 import contextlib
 import json
 import os
+import subprocess
+import sys
 import time
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -20,6 +22,7 @@ import pytest
 
 from agent_system.core.session_presence import SessionPresence
 from agent_system.services.session_archive import (
+    SWEEP_LOCK_NAME,
     ArchiveError,
     ArchiveReport,
     ArchiveNotFound,
@@ -1111,9 +1114,13 @@ async def test_an_age_nobody_can_read_counts_as_young(sm, archive, monkeypatch):
     def blind(path):
         return [NoStat(entry) for entry in real_scandir(path)]
 
+    # The SESSIONS directory, by its whole path: the archive directory ends in
+    # the same user name, and a sweep walks that one too (for leftovers of a
+    # killed pass) -- through pathlib, which wants a context manager.
+    sessions_dir = str(_user_dir(sm))
     monkeypatch.setattr(
         "agent_system.services.session_archive.os.scandir",
-        lambda path: blind(path) if str(path).endswith(USER) else real_scandir(path))
+        lambda path: blind(path) if str(path) == sessions_dir else real_scandir(path))
 
     report = await archive.archive_user(USER)
 
@@ -1429,3 +1436,100 @@ async def test_a_restored_session_can_be_written_to_again(sm, archive):
     await sm.save_session(data)   # SessionDeletedError if the tombstone stayed
 
     assert len((await sm.load_session(USER, "root_tb"))["messages"]) == 2
+
+
+# A process that holds the sweep lock and nothing else, so the lock is tested
+# the way it is meant: from OUTSIDE. Prints one line once it has it, then
+# waits -- the test ends it by closing its stdin or by killing it.
+_HOLDER = """
+import sys
+from filelock import FileLock
+lock = FileLock(sys.argv[1], timeout=10)
+lock.acquire()
+print("held", flush=True)
+sys.stdin.readline()
+"""
+
+
+def _hold_from_another_process(lock_path: Path) -> subprocess.Popen:
+    """Start the holder and wait until it says it has the lock."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    child = subprocess.Popen(
+        [sys.executable, "-c", _HOLDER, str(lock_path)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    assert child.stdout is not None
+    line = child.stdout.readline()
+    if line.strip() != "held":
+        child.kill()
+        raise AssertionError(f"the holder never took the lock: {line!r}")
+    return child
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_in_ANOTHER_process_is_refused(sm, archive, tmp_path):
+    """The case the in-process lock could not see.
+
+    The API sweeps on a timer and the CLI sweeps when somebody runs it -- two
+    processes, both writing the same "<root>.zip.tmp" and both registering in
+    the same index. An asyncio lock says nothing about the other one.
+    """
+    await _make_tree(sm, "root_xp", [])
+    _age(sm, ["root_xp"], days=60)
+
+    child = _hold_from_another_process(
+        tmp_path / "session_archive" / USER / SWEEP_LOCK_NAME)
+    try:
+        with pytest.raises(ArchiveError, match="already running"):
+            await archive.archive_user(USER)
+        assert (_user_dir(sm) / "root_xp.json").exists(), "it archived anyway"
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+    # And the other half: the holder is gone, so the lock is gone with it. A
+    # flag in a file would still say "running" and nothing would ever sweep
+    # again; an OS lock is dropped by the process ending, killed or not.
+    # Not in the same instant, though: Windows closes a killed process's
+    # handles a moment after `wait()` returns (measured: ~0.2 s), so ask a
+    # few times before calling it stuck.
+    report = None
+    for _ in range(50):
+        try:
+            report = await archive.archive_user(USER)
+            break
+        except ArchiveError:
+            await asyncio.sleep(0.1)
+    assert report is not None, "a lock nobody holds any more still refused, 5 s on"
+    assert report.trees == 1
+
+
+@pytest.mark.asyncio
+async def test_an_index_held_by_another_process_is_an_answer_not_a_hang(
+        sm, archive, tmp_path, monkeypatch):
+    """A manifest write waits, but not forever, and the pass stops right there.
+
+    Two trees, one error: a pass that tried on would wait the same timeout
+    for the same lock once per tree -- on a real backlog, hours of nothing.
+    """
+    monkeypatch.setattr(
+        "agent_system.services.session_archive.MANIFEST_LOCK_TIMEOUT", 0.3)
+    await _make_tree(sm, "root_idx1", [])
+    await _make_tree(sm, "root_idx2", [])
+    _age(sm, ["root_idx1", "root_idx2"], days=60)
+
+    manifest = tmp_path / "session_archive" / USER / "index.json"
+    child = _hold_from_another_process(Path(str(manifest) + ".lock"))
+    try:
+        report = await archive.archive_user(USER)
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+    assert len(report.errors) == 1, f"the pass tried on: {report.errors}"
+    assert "another process" in report.errors[0]
+    assert report.trees == 0
+    assert report.remaining == 2, "the report hid how much is still waiting"
+    # Nothing was deleted: the registration comes before the first delete, and
+    # it is the registration that failed.
+    assert (_user_dir(sm) / "root_idx1.json").exists()
+    assert (_user_dir(sm) / "root_idx2.json").exists()

@@ -47,8 +47,35 @@ Kind, dessen Elterndatei fehlt.
 data/session_archive/
   <user>/
     index.json                  eine Zeile je archiviertem Baum
+    index.json.lock             Sperre für jede Änderung an index.json
+    .sweep.lock                 Sperre für einen ganzen Durchgang
     2026-08/<root_id>.zip       der Baum als ZIP
 ```
+
+**Zwei Prozesse, ein Archiv.** Die API archiviert per Timer, die CLI auf
+Zuruf — beide schreiben dieselben `<root>.zip.tmp` und tragen in dasselbe
+`index.json` ein. Deshalb sind beide Sperren **Betriebssystem-Sperren auf
+Dateien** (`filelock`), keine Flags im Speicher eines Prozesses:
+
+* `.sweep.lock` hält ein Durchgang die ganze Zeit. Ein zweiter wird
+  **abgewiesen, nicht eingereiht** (409 im Panel, eine Zeile in der CLI) —
+  wer „jetzt" sagt, will keinen Bericht, der Minuten später über fremde
+  Arbeit spricht. Stirbt ein Durchgang, gibt das Betriebssystem die Sperre
+  mit dem Prozess frei; ein Flag in einer Datei stünde danach für immer auf
+  „läuft".
+* `index.json.lock` wird für **eine** Änderung genommen (Eintragen,
+  Zurückholen, Löschen), nie über ein `await` hinweg. Ohne sie verliert ein
+  Lesen-Ändern-Schreiben, was der andere Prozess dazwischen eingetragen hat —
+  und ein ZIP, auf das nichts zeigt, heilt kein späterer Durchgang, weil seine
+  Sessions schon gelöscht sind. Wer länger als 20 s wartet, bekommt einen
+  Fehler statt eines Hängers, und der **Durchgang endet dort**: jeder weitere
+  Baum würde dieselbe Zeit auf dieselbe Sperre warten.
+
+Beide Tests dafür halten die Sperre aus einem **echten zweiten Prozess**
+(`test_a_sweep_in_ANOTHER_process_is_refused`,
+`test_an_index_held_by_another_process_is_an_answer_not_a_hang`). Gemessen
+nebenbei: unter Windows gibt ein getöteter Prozess seine Sperre erst etwa
+0,2 s nach `wait()` frei.
 
 **Ein ZIP pro Baum**, nicht pro Monat: der Baum ist die Einheit, die archiviert,
 zurückgeholt und gelöscht wird, also ist er auch die Einheit, die eine Datei

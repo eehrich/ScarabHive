@@ -23,6 +23,10 @@ nest_asyncio>=1.5.0
 brotli>=1.1.0
 Pillow>=10.0.0
 concurrent-log-handler>=0.9.25
+# services/session_archive: the per-user sweep and index locks span the API
+# and CLI processes. Already installed (okf declares it too); declared here
+# because core correctness now depends on it.
+filelock>=3.12
 aiofiles>=24.1.0
 python-jose[cryptography]>=3.3.0
 bcrypt>=5.0.0
