@@ -577,6 +577,27 @@ Knotenwissen kommt jetzt aus `search_nodes` und `get_node_types` des Instanz-MCP
 - **M-MCP-63 [aus dem Knoten-Dump]** Unter den 990 Knotentypen trägt nur `n8n-nodes-base.emailReadImap` die Gruppe `trigger`, ohne auf `Trigger` zu enden (neben webhook, cron, interval). Ohne `triggerNodeName` startet n8n den ersten aktivierten Trigger in Knotenreihenfolge (`findEnabledEligibleTrigger`). Quelle: work/nodes.json, n8n-Quelle `mcp.utils.js`, Fix-Review 2.
 - **M-MCP-64 [aus dem Knoten-Dump]** `@n8n/n8n-nodes-langchain.lmChatOpenAi` (v1 bis 1.3) hat ab v1.3 den Schalter `responsesApiEnabled` mit Vorgabe `true` (Responses-API) und unter `options` eine eigene `baseURL`. Ein n8n-Workflow kann damit einen Responses-kompatiblen Endpunkt als Chat-Modell ansprechen. Ob n8n damit einen fremden Endpunkt vollständig bedient, ist nicht gemessen. Quelle: work/nodes.json, E8.
 
+## Phase 1b: Veröffentlichen, Auslösen, Beobachten
+- **M-MCP-65 [gemessen]** Public `GET /executions/{id}` trägt `workflowVersionId`: die `versionId` des Entwurfs, auf dem die Execution lief (Testlauf 163 = `versionId` des Workflows). In der **Liste** `GET /executions` steht das Feld auf `null`. `addTags` ändert die `versionId` nicht. Damit prüft publish „dieser Stand ist getestet“ genau. Quelle: fix/p1b.py, fix/p1b2.py.
+- **M-MCP-66 [gemessen, beantwortet M11]** Antworten des MCP ohne `isError`:
+  - `publish_workflow` mit `versionId` → `{success:true, workflowId, activeVersionId}`; danach `versionId` = `activeVersionId`, `active: true`.
+  - Ein zweiter Workflow auf demselben Webhook-Pfad: `{success:false, activeVersionId:null, error:'There is a conflict with one of the webhooks.'}`.
+  - Auf einen archivierten Workflow: `{success:false, error:"Workflow '<id>' is archived and cannot be accessed."}`.
+  - `unpublish_workflow` zweimal: beide `{success:true, workflowId}`.
+  - `archive_workflow` → `{archived:true, workflowId, name}`; ein zweites Mal `isError` mit derselben Meldung wie oben. Danach `isArchived: true`, `active: false`.
+
+  Quelle: fix/p1b.py.
+- **M-MCP-67 [gemessen]** Produktions-Webhook und Executions:
+  - `responseMode` `onReceived` antwortet sofort `{"message":"Workflow was started"}` ohne Execution-ID, `lastNode` erst nach dem Lauf mit den Daten des letzten Knotens (3 s bei einem Wait von 3 s).
+  - Ein unbekannter Pfad: 404 mit `{"code":404,"message":"The requested webhook \"POST <path>\" is not registered.", "hint": …}`.
+  - `GET /executions?workflowId=` ohne `status` listet nur **fertige** Executions. Eine laufende steht nur unter `status=running` (Modus `webhook`). `startedAfter` filtert ebenfalls nur fertige.
+  - Ein Wait-Knoten ohne `unit` wartet Stunden, nicht Sekunden (die erste Probe blieb stehen und verschwand mit dem Löschen des Workflows).
+
+  Quelle: fix/p1b.py, fix/p1b2.py (Executions 163–168).
+- **M-MCP-68 [gemessen]** Public `GET /workflows/{id}` eines veröffentlichten Workflows liefert `activeVersionId` und `activeVersion` mit `nodes` (samt `webhookId`), `connections`, `versionId`, `workflowPublishHistory`. Quelle: fix/p1b.py.
+- **M-MCP-69 [gemessen, beantwortet M10]** Unser `mcp_client` gegen einen n8n-MCP-Trigger, der nicht da ist: `connect_all` wirft nicht, meldet je Server einen Fehler (geschlossener Port: `ConnectTimeout` nach 5 s; n8n erreichbar, Pfad unbekannt: `McpError: Session terminated`) und startet weiter. Die Tool-Liste ist leer, ein Aufruf ergibt `MCPConnectionError … is not connected`. Automatisch neu verbunden wird nicht. Quelle: fix/m10.py (`ExternalServerPool`, timeout 5 s).
+- **M-MCP-70 [gemessen, 22.09.2026]** Public API: Eine fehlende Execution und ein fehlender Workflow antworten `404` mit `application/json` und `{"message":"Not Found"}`. Der Testlauf 189 (MCP `test_workflow`) steht mit `mode: manual`, der Produktionslauf 190 (Webhook) mit `mode: webhook`, beide mit derselben `workflowVersionId`, weil Entwurf und veröffentlichter Stand gleich waren. Listeneinträge tragen `mode` und `startedAt`. `limit=250` wird angenommen. Quelle: Probe gegen die Testinstanz nach dem E2E-Lauf (e2e_get).
+
 ## Einbetten, CORS und Beobachtung
 - **F-EMB1 [gemessen/dokumentiert]** Einbetten und Transport:
   - Der Editor sendet `X-Frame-Options: SAMEORIGIN`, fest verdrahtet.
@@ -627,12 +648,12 @@ Knotenwissen kommt jetzt aus `search_nodes` und `get_node_types` des Instanz-MCP
 - M7 „Wirkt pinData auf AI-Subnodes?“: Der gepinnte Wurzelknoten ruft sie nicht auf [M-MCP-47]; ein gepinnter Subnode ersetzt nichts [M-MCP-48].
 - M9 „Was liefert `test_workflow` nach dem Timeout?“: `status: error` mit Timeout-Meldung, Execution `canceled` [M-MCP-49].
 - M8 „Wann läuft eine MCP-Session ab?“: entfällt, 2.39.9 vergibt keine Session [M-MCP-54].
+- M10 „mcp_client mit unerreichbarem Server“: Start läuft weiter, kein automatisches Neuverbinden [M-MCP-69].
+- M11 „Ablehnungen von `publish_workflow`“: `success:false` mit Text, ohne `isError` [M-MCP-66].
 
 **Offen:**
 - **M4:** Wie verhält sich der MCP-Key eines Member-Users [M-MCP-29]? Das braucht einen zweiten Nutzer auf der Instanz und damit das OK des Betreibers.
 - **M5:** Wie verhält sich `test_workflow` mit Schedule- oder Polling-Trigger (gepinnt)?
-- **M10:** Wie reagiert unser `mcp_client` auf einen nicht erreichbaren Remote-Server beim Start?
-- **M11:** Lehnt `publish_workflow` ab, was der Publish der Public API ablehnt (fehlender Pflichtparameter, 409-Pfadkollision), und in welcher Form?
 - **M13:** Liefert `prepare_workflow_pin_data` nach einer ersten Execution Schemas [M-MCP-2]?
 
 **Dazu ungemessen:**

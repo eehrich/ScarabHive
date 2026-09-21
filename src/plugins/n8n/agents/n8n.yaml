@@ -15,12 +15,27 @@ plugins:
       # two lists are the operator's exceptions (docs/design.md §3.3, §8.4).
       allowed_hosts: []
       live_node_types: []
+      # The builder publishes, takes offline and archives when the user asks
+      # (design E4); false leaves it only triggering. A trigger's wake waits this long.
+      allow_publish: true
+      watch_max_hours: 24
       tested_n8n_version: "2.39.9"
+
+    # The builder's memory across sessions: the user, their projects, what
+    # failed. Its own sandbox, so it never writes into another agent's bundle.
+    n8n_okf:
+      type: okf
+      enabled: true
+      description: "n8n builder: what it remembers about the user and their projects (OKF bundle)"
+      allowed_directories:
+        - data/okf/n8n
+      hook_max_concepts: 6
+      hook_graph_depth: 1
 
     n8n_agent:
       type: multi_turn_agent
       enabled: true
-      description: "Build an n8n workflow from a request and prove it runs: finds the nodes, validates, creates a draft and test-runs it with outside calls mocked"
+      description: "Build an n8n workflow from a request and prove it runs: finds the nodes, validates, creates a draft and test-runs it with outside calls mocked; publishes and runs it when asked"
 
       self_tool_descriptions:
         n8n_agent_execute_task: "Build an n8n workflow for a request and prove it with a test run; returns the workflow id, the editor link, what ran live, what was mocked, and what the user still has to do"
@@ -36,6 +51,9 @@ plugins:
             prompt_cache_mode: multi_turn
         max_steps: 60
         system_template: "./prompts/n8n_agent.md"
+        template_vars:
+          # Written once here: the prompt renders it, the hook below reads the same path.
+          okf_bundle: "data/okf/n8n"
 
         skills:
           always: []
@@ -43,7 +61,8 @@ plugins:
 
         tools:
           # Explicit list, "+" to merge with what multi_turn_agent brings.
-          # Publishing, triggering and archiving are for a human (design §3.4).
+          # The last four act for real; the prompt allows them only when the
+          # user asked, the tools check what they can (design §3.4).
           allowed:
             - "+n8n/n8n_search_nodes"
             - "+n8n/n8n_get_node_types"
@@ -60,7 +79,12 @@ plugins:
             - "+n8n/n8n_test_workflow"
             - "+n8n/n8n_get_execution"
             - "+n8n/n8n_list_executions"
+            - "+n8n/n8n_publish_workflow"
+            - "+n8n/n8n_unpublish_workflow"
+            - "+n8n/n8n_archive_workflow"
+            - "+n8n/n8n_trigger_workflow"
             - "+skills/*"
+            - "+n8n_okf/*"
 
         hooks:
           enabled: true
@@ -68,6 +92,13 @@ plugins:
             # Node definitions and execution data are large.
             context_engineer.engineer_context:
               enabled: true
+            markdown_formatter.format_markdown_output:
+              enabled: true
+            # Folds in what the user's message is about: the lexical hit and
+            # its linked concepts. Without hook_bundle it does nothing, silently.
+            n8n_okf.okf_context_injection:
+              enabled: true
+              hook_bundle: data/okf/n8n
 
       metadata:
         author: "Enrico Ehrich"

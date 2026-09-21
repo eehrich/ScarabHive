@@ -5,6 +5,8 @@ Each gap check is built from a case n8n measurably lets through
 way a test could act outside the execution (M-MCP-30, M-MCP-38, M-MCP-40,
 M-MCP-43).
 """
+import pytest
+
 from plugins.n8n.validate import (DEFAULT_BLOCKED_NODE_TYPES, DEFAULT_REVIEW_NODE_TYPES,
                                   blocking_save_settings, check_workflow,
                                   classify_workflow_validation, code_precheck, node_type_errors,
@@ -89,6 +91,17 @@ def test_respond_node_mode_needs_a_respond_node_after_the_webhook():
 
 def test_an_empty_webhook_path_is_caught():
     assert codes(check(chain(node("Hook", "n8n-nodes-base.webhook", path="  ")))) == ["WEBHOOK_PATH_EMPTY"]
+
+
+@pytest.mark.parametrize("path,unsafe", [
+    ("../victim", True), ("a/../b", True), (".", True), ("victim?x=1", True), ("victim#x", True),
+    ("a%2e%2e", True), ("a\\b", True), ("a b", True), ("a//b", True), ("orders ", True), (" orders", True),
+    ("orders", False), ("orders/new", False), ("/orders/", False), ("orders/:id", False), ("v1.2", False),
+])
+def test_a_webhook_path_that_would_reach_another_url_is_caught(path, unsafe):
+    """The path becomes part of the production URL the trigger calls."""
+    found = codes(check(chain(node("Hook", "n8n-nodes-base.webhook", path=path))))
+    assert found == (["WEBHOOK_PATH_UNSAFE"] if unsafe else [])
 
 
 def test_an_open_expression_is_caught_but_a_closed_one_passes():

@@ -1,6 +1,6 @@
 # Design: n8n-Plugin `src/plugins/n8n/`
 
-Stand: 21.09.2026, Phase 1a gebaut (Tools §3.1–§3.3, Agent, Skills, Tests); Abweichungen vom Entwurf stehen an Ort und Stelle. Gemessen an der Test-Instanz n8n 2.39.9 (Community, Docker, SQLite). Das Plugin ist für jede ScarabHive-Installation gedacht; Beispiel-URLs verwenden `http://localhost:5678`.
+Stand: 21.09.2026, Phase 1a und 1b gebaut (Tools §3.1–§3.4, Weckruf, Agent, Skills, Tests); Abweichungen vom Entwurf stehen an Ort und Stelle. Gemessen an der Test-Instanz n8n 2.39.9 (Community, Docker, SQLite). Das Plugin ist für jede ScarabHive-Installation gedacht; Beispiel-URLs verwenden `http://localhost:5678`.
 
 **Wie dieses Dokument zu lesen ist**
 - Die Fakten stehen in `docs/n8n_facts.md`. Das Design verweist nur per ID darauf, z. B. **[M-MCP-3]**. Wer baut, prüft den Fakt dort und nicht die Kurzfassung hier.
@@ -55,7 +55,7 @@ n8n_agent ──> Plugin-Tools (server.py: Riegel, Policy, Deckel, Hülle)
                  ├──────────────> Instanz-MCP  /mcp-server/http   (Bearer N8N_MCP_KEY)
                  │  liest (Riegel, Execution-Daten, Watcher, Panel-Liste)
                  ├──────────────> Public API   /api/v1            (X-N8N-API-KEY, nur lesende Scopes)
-                 │  löst aus (Mensch/Aufrufer, nicht Builder)
+                 │  löst aus (Builder auf Bitte des Nutzers)
                  └──────────────> Produktions-Webhook /webhook/<path>
 ```
 
@@ -77,9 +77,10 @@ src/plugins/n8n/
   client.py              N8nClient: EIN httpx.AsyncClient; mcp_call() (Handshake, SSE, 429, Fehlernormalisierung pro Tool)
                          + api_get() (Public API, nur GET)
   validate.py            Policy + Lückenprüfungen + Pin-Plan (§3.3, §5.3), reine Funktionen auf Workflow-JSON
-  watch.py               Execution-Poller -> PluginCache -> wake_session   (Muster terminal)
+  watch.py               wartet auf das Ende einer Execution; server.py legt es in den PluginCache und weckt
   schema.yaml            {% if not configured %} [] {% else %} …   (Muster tavily_search)  [F-OUR8]
   agents/n8n.yaml        Tool-Instanz n8n (enabled: true, ohne Keys keine Tools) + n8n_agent
+                         + n8n_okf: Gedächtnis des Builders über Nutzer und Projekte (OKF-Bundle data/okf/n8n)
   agents/prompts/n8n_agent.md
   skills/n8n-building/SKILL.md   Code-Form, Versionen, Credentials, Befund-Codes   (on_demand)
   skills/n8n-testing/SKILL.md    Pinning, Testdaten, Antwort lesen                 (on_demand)
@@ -94,7 +95,7 @@ src/plugins/n8n/
 |---|---|---|
 | `client.py` | siehe Liste unten | fachliche Entscheidungen |
 | `validate.py` | Knotentyp-Policy, Lückenprüfungen (§5.3), Code-Vorprüfung, Pin-Plan (§3.3) | alles, was n8n selbst zuverlässig prüft |
-| `watch.py` | Ende einer Execution per Public API erkennen, `PluginCache`, Wecken | Ergebnisdaten kopieren |
+| `watch.py` | Ende einer Execution per Public API erkennen | Ergebnisdaten kopieren |
 | `server.py` | Tool-Oberfläche, `_require_managed()`, Deckel, Hülle, Status-Zeilen; dieselben Methoden für Tools und Panel | – |
 
 **Aufgaben von `client.py`:**
@@ -132,7 +133,7 @@ src/plugins/n8n/
 - **Fehlernormalisierung pro Tool** (`client.py`). Eine einzige Regel für alle Tools ist falsch: Sie machte aus jedem fehlgeschlagenen Test einen Tool-Fehler und aus einer gemischten `get_node_types`-Antwort eine Ausnahme [M-MCP-6][M-MCP-44]. Deshalb:
   - **Alle Tools:** `isError: true` ist ein Fehler.
   - **`test_workflow`:** Ist `executionId` nicht leer, ist die Antwort ein **Ergebnis**, gleich welcher `status` [M-MCP-6]. Ohne `executionId` sind `success:false`, `status:"error"` oder ein Feld `error` ein Fehler (z. B. nicht freigegeben [M-MCP-6]).
-  - **`publish_workflow`, `unpublish_workflow`:** `success: false` oder ein Feld `error` ist ein Fehler [M-MCP-6][M-MCP-7].
+  - **`publish_workflow`, `unpublish_workflow`:** Jede Antwort ohne `success: true` ist ein Fehler, mit n8ns Text, wenn einer da ist [M-MCP-6][M-MCP-7][M-MCP-66].
   - **`update_workflow`, `create_workflow_from_code`:** ein Feld `error` ohne `workflowId` ist ein Fehler (z. B. `Invalid operations …` ohne `isError` [M-MCP-31]).
   - **`get_node_types`:** wird nie aus dem Text heraus zum Fehler. `# Errors`-Abschnitte können irgendwo im Text stehen, auch hinter gültigen Definitionen [M-MCP-44]; `validate.py` und `n8n_get_node_types` werten sie pro Knoten aus (§3.1, §5.3).
   - **`validate_workflow`, `validate_node_config`:** Enthält die Antwort `valid`, ist sie ein Urteil und kein Tool-Fehler, auch mit `isError: true` -- so antwortet n8n auf Code, den es nicht parsen kann [M-MCP-50].
@@ -141,8 +142,7 @@ src/plugins/n8n/
   Wer nur `isError` liest, meldet solche Fehler als Erfolg; wer `status:error` pauschal als Fehler liest, verliert das Testergebnis.
 
 **Wer welches Tool bekommt** (§5.1):
-- Der Builder erhält die 15 Tools aus §3.1–§3.3 als explizite Liste.
-- Die 4 Tools aus §3.4 gehören dem Menschen (Panel, §7) bzw. einem Aufrufer, dem der Betreiber sie ausdrücklich in die Allowlist schreibt.
+- Der Builder erhält alle 19 Tools als explizite Liste; die 4 aus §3.4 nutzt er nur auf Bitte des Nutzers (E4).
 
 ### 3.1 Knotenwissen (Weiterleitung, lesend)
 
@@ -180,7 +180,7 @@ src/plugins/n8n/
 3. `create_workflow_from_code`, ohne `projectId`. Das Ergebnis ist ein unveröffentlichter Entwurf mit `availableInMCP:true` im persönlichen Projekt des Key-Besitzers [M-MCP-1][M-MCP-12].
 4. `update_workflow` mit `[{"type":"addTags","names":[managed_tag]}]`. Fehlende Tags legt n8n an [M-MCP-14][M-MCP-31]. Scheitert der Schritt, gibt es einen Retry. Scheitert auch der, kommt ein Fehler mit `workflow_id` und dem Hinweis „nicht verwaltet: Tag fehlt“. Der Workflow ist dann für das Plugin gesperrt, aber harmlos: ein unveröffentlichter Entwurf.
 5. **Nachlesen und nachprüfen.** Per Public GET prüft das Plugin den **tatsächlich gespeicherten** Workflow mit der Knotentyp-Policy und den Lückenprüfungen (§5.3). Diese Prüfung ist die Durchsetzung; die Code-Vorprüfung ist nur ein früher Hinweis.
-6. `editor_url` = `base_url + /workflow/<id>`. Das `url`-Feld von n8n wird nicht übernommen, weil es die Basis-URL der Instanz trägt, nicht unbedingt die unseres `base_url` [M-MCP-1].
+6. `editor_url` = `public_url + /workflow/<id>`; `public_url` ist `N8N_PUBLIC_URL`, sonst `base_url` (§4). Das `url`-Feld von n8n wird nicht übernommen, weil es die Basis-URL der Instanz trägt, nicht unbedingt die unseres `base_url` [M-MCP-1].
 7. `autoAssignedCredentials` geht mit. n8n hängt vorhandene Credentials selbst an [M-MCP-1], und die Übergabe muss das nennen.
 
 **Ablauf von `n8n_update_workflow`:**
@@ -260,35 +260,38 @@ src/plugins/n8n/
 
 ### 3.4 Veröffentlichen und Auslösen
 
-Nach E4 und E6 bekommt der Builder in Phase 1b die Tools dieser Tabelle und nutzt sie nur, wenn der Nutzer ihn darum bittet: Der Nutzer spricht direkt mit ihm, einen anderen Aufrufer gibt es nicht. §3.5, §5.1, §8.4 und §8.5 beschreiben bis dahin den Stand von Phase 1a.
+Seit Phase 1b hat der Builder diese vier Tools (E4, E6): Der Nutzer spricht direkt mit ihm, einen anderen Aufrufer gibt es nicht. Er nutzt sie nur, wenn der Nutzer ihn darum bittet. Das steht im Prompt, die Tools sehen das Gespräch nicht; sie prüfen, was sie prüfen können (§8.5).
 
 | Tool | Weg | Parameter | Gate / Fehler |
 |---|---|---|---|
-| `n8n_publish_workflow` | MCP `publish_workflow` | `workflow_id` | `allow_publish: true` (Default false, E4) **und** `_require_managed()` **und** 0 `errors` aus §5.3 auf dem aktuellen Stand. n8n selbst veröffentlicht auch kaputte Workflows [M-MCP-7]. Die Fehlerform bei Pfadkollision ist M11; der Text geht wörtlich zurück. |
-| `n8n_unpublish_workflow` | MCP `unpublish_workflow` | `workflow_id` | `allow_publish: true` **und** `_require_managed()`; idempotent [F-LIFE3] |
-| `n8n_archive_workflow` | MCP `archive_workflow` | `workflow_id` | `_require_managed()`. Nicht über die Public API, denn die bräuchte `workflow:delete` [F-AUTH6]. Archivieren nimmt die Veröffentlichung zurück [F-LIFE2]. **Ein Delete-Tool gibt es nicht** [F-LIFE1]. |
-| `n8n_trigger_workflow` | Produktions-Webhook | `workflow_id`, `payload` (≤64 KB), `method?`, `wait` (`none\|wake`, Default `wake`) | `_require_managed()`; Ablauf unten |
+| `n8n_publish_workflow` | MCP `publish_workflow` mit `versionId` | `workflow_id` | `allow_publish: true` (Code-Default false, ausgeliefert true, E4) **und** `_require_managed()` **und** 0 `errors` aus §5.3 **und** ein erfolgreicher **Testlauf** genau dieses Stands: eine Execution im Modus `manual`, deren `workflowVersionId` die `versionId` des Workflows ist [M-MCP-65][M-MCP-70]. Ein Produktionslauf zählt nicht, er lief den veröffentlichten Stand. Gesucht wird unter den 250 neuesten erfolgreichen Läufen, damit ein viel genutzter Workflow den Test nicht aus dem Blick schiebt. Veröffentlicht wird per `versionId`, also genau der geprüfte Stand, auch wenn danach jemand ändert. n8n selbst veröffentlicht auch kaputte Workflows [M-MCP-7]. Eine Ablehnung (Pfadkollision, archiviert) kommt als `success:false` mit Text [M-MCP-66]; der Text geht wörtlich zurück. Die Antwort nennt die Produktions-URLs, gebaut aus `public_url` (§4). |
+| `n8n_unpublish_workflow` | MCP `unpublish_workflow` | `workflow_id` | `allow_publish: true` **und** `_require_managed()`; idempotent [F-LIFE3][M-MCP-66] |
+| `n8n_archive_workflow` | MCP `archive_workflow` | `workflow_id` | `allow_publish: true` **und** `_require_managed()`; Archivieren nimmt eine Veröffentlichung zurück [F-LIFE2]. Nicht über die Public API, denn die bräuchte `workflow:delete` [F-AUTH6]. Wiederherstellen tut der Mensch im Editor. **Ein Delete-Tool gibt es nicht** [F-LIFE1]. |
+| `n8n_trigger_workflow` | Produktions-Webhook | `workflow_id`, `payload` (≤64 KB), `method?`, `webhook_node?`, `wait` (`none\|wake`, Default `wake`), `timeout_s` | `_require_managed()`; Ablauf unten |
 
 `execute_workflow` des MCP wird nicht weitergeleitet. Der Produktivlauf geht über den Webhook, der Probelauf über `test_workflow`.
 
 **Ablauf von `n8n_trigger_workflow`:**
-1. URL und Methode kommen aus dem Webhook-Knoten des **veröffentlichten** Stands (`activeVersion` aus Public GET [F-AUTH7]): `base_url + /webhook/<path>` [F-BR3]. Einen Host, den der Agent übergibt, nimmt das Tool nie.
+1. URL und Methode kommen aus dem Webhook-Knoten des **veröffentlichten** Stands (`activeVersion.nodes` aus Public GET [M-MCP-68]): `base_url + /webhook/<path>` [F-BR3]. Einen Host, den der Agent übergibt, nimmt das Tool nie. Abgelehnt werden: kein aktivierter Webhook-Trigger (ein Schedule läuft von selbst), mehrere ohne `webhook_node`, eine Webhook-Authentifizierung (ScarabHive hält dafür kein Credential) und ein Pfad mit Routenparametern (`:name`).
 2. **Methode:** `httpMethod` des Knotens, per Default GET [F-NOD12].
-   - Bei GET/HEAD geht `payload` als Query-Parameter, sonst als JSON-Body.
+   - Bei GET/HEAD geht `payload` als Query-Parameter (nur flache Werte, höchstens 8.000 Zeichen: n8ns HTTP-Server weist eine lange Anfragezeile ab, bevor ein Workflow läuft), sonst als JSON-Body.
    - Bei `multipleMethods` ist `method` Pflicht und muss in der Liste stehen.
-3. **Execution-ID:** Die Webhook-Antwort enthält sie nicht [F-BR4]. Das Tool ermittelt sie so:
-   - aus dem Antwortfeld `executionId` (Bau-Konvention §5.5) → `correlation: "exact"`,
-   - sonst per Public `GET /executions?workflowId&startedAfter` → `correlation: "heuristic"` [F-AUTH7],
+3. **Kein Key:** Der Aufruf trägt weder den MCP- noch den API-Key. Der Workflow sieht jeden Header, und ein Key landete in seinen Execution-Daten.
+4. **Execution-ID:** Die Webhook-Antwort enthält sie nicht [F-BR4]. Das Tool ermittelt sie so:
+   - aus dem Antwortfeld `executionId` (Bau-Konvention §5.5) → `correlation: "exact"`. Die Antwort ist die Ausgabe des Workflows und kann alles enthalten; geglaubt wird nur eine reine Zahl über der höchsten ID vor dem Aufruf, deren Execution zu dem Workflow gehört und im Modus `webhook` lief.
+   - sonst die eine neue Execution im Modus `webhook` mit einer ID über der höchsten vor dem Aufruf → `correlation: "heuristic"`. Schedule-, Sub-Workflow- und Testläufe desselben Workflows zählen nicht. Die Liste ohne Status zeigt laufende Executions nicht; gefragt wird deshalb nach `running`, `waiting` und den neuesten fertigen [M-MCP-67]. Die Uhren beider Rechner spielen keine Rolle.
    - bei mehreren Kandidaten `execution_id: null` plus die Kandidatenliste.
-4. Bei `wake` zuerst `wake_blocked()` fragen (§6.2). Steht im veröffentlichten Stand `saveDataSuccessExecution` oder `saveDataErrorExecution` auf `none`, sagt die Antwort vorher, dass der Watcher den Ausgang dann nicht sehen kann [M-MCP-41].
+5. **Nach dem Aufruf** meldet das Tool keinen Fehler mehr, der wie „nichts passiert“ aussieht, sonst ruft das Modell ein zweites Mal. Kam keine Antwort (Timeout, abgebrochene Verbindung) oder scheitert das Nachschlagen, ist das Ergebnis `success` mit einer `note`: den Webhook nicht noch einmal aufrufen, mit `n8n_list_executions` nachsehen. Fehler sind nur „nicht gesendet“ (keine Verbindung) sowie ein 404 „is not registered“ und 413/414/431, und die nur, wenn das Nachschlagen danach keinen Lauf findet: Ein Respond-Knoten kann dieselben Codes und Texte senden. Jeder andere Status ist ein Lauf.
+6. Läuft die Execution noch und `wait` ist `wake`, wird zuerst `wake_blocked()` gefragt (§6.2), sonst startet der Watch. Steht `saveDataSuccessExecution` oder `saveDataErrorExecution` auf `none`, sagt die `note`, dass der Ausgang fehlen kann [M-MCP-41].
 
 **Fehlerfälle:**
-- Nicht veröffentlicht → „nicht aktiv (404 not registered)“ [F-BR4].
+- Nicht veröffentlicht → Fehler vor dem Aufruf; veröffentlichen ist die Entscheidung des Nutzers.
+- Ein Webhook-Pfad mit `.`- oder `..`-Segment, `?`, `#`, `%`, Backslash oder Leerzeichen → Fehler vor dem Aufruf, denn er führte zu einer anderen n8n-URL. `validate.py` meldet ihn schon beim Bauen als `WEBHOOK_PATH_UNSAFE`.
+- 404 mit dem Text „is not registered“ → Fehler „ist der Workflow noch veröffentlicht?“ [F-BR4][M-MCP-67]; 413, 414 und 431 → Fehler, nichts lief. Beides nur, wenn kein Lauf des Aufrufs auftaucht: Findet das Nachschlagen einen, ist es ein Lauf; scheitert das Nachschlagen, gilt Schritt 5.
 - Webhook antwortet 500 → die Execution-ID trotzdem ermitteln [F-EXE3].
 
 ### 3.5 Bewusst nicht weitergeleitet
 - `execute_workflow` (siehe §3.4).
-- `publish_workflow`, `unpublish_workflow` und `archive_workflow` an den Builder.
 - `prepare_workflow_pin_data`: Für einen frisch gebauten Workflow, den einzigen Fall des Builders in Phase 1a, liefert es keine Schemas [M-MCP-2]; der Pin-Plan baut seine Pins selbst. Jeder Aufruf kostet MCP-Budget [M-MCP-24]. Nachziehen, wenn eine Messung zeigt, dass es nach einem ersten Testlauf brauchbare Schemas liefert (§10.3, M13).
 - `restore_workflow_version`.
 - Alle `*_data_table*`-Tools.
@@ -327,8 +330,9 @@ plugins:
 (Der `n8n_agent`-Eintrag steht in derselben Datei unter `servers:`, siehe §5.1.)
 
 - **Alle Typlisten werden normalisiert verglichen** (§3.3): `n8n-nodes-base.git` sperrt damit auch `n8n-nodes-base.gitTool`, `httpRequest` erfasst `httpRequestTool` [M-MCP-42].
-- **Die drei Werte kommen aus der Umgebung,** die `config/secrets.env` beim Laden füllt [F-OUR4]. Ein `${VAR}` in der YAML würde bei jedem Start jeder Installation ohne n8n eine WARNING schreiben; deshalb liest das Plugin `N8N_BASE_URL`, `N8N_API_KEY` und `N8N_MCP_KEY` selbst (ein Wert in der YAML gewinnt). `enabled: true` ist damit gefahrlos: ohne Werte keine Tools, nur eine INFO-Zeile.
-- **Defaults stehen im Code** (`validate.py`: `blocked_node_types`, `review_node_types`). Eine konfigurierte Liste **ersetzt** den Default, sie ergänzt ihn nicht: Nur so kann der Betreiber einen Typ auch freigeben. Wer ergänzen will, kopiert den Default. Das Framework validiert keine Plugin-Config [F-OUR7]. `allow_publish` und `watch_max_hours` kommen mit Phase 1b.
+- **Die drei Werte kommen aus der Umgebung,** die `config/secrets.env` beim Laden füllt [F-OUR4]. Ein `${VAR}` in der YAML würde bei jedem Start jeder Installation ohne n8n eine WARNING schreiben; deshalb liest das Plugin `N8N_BASE_URL`, `N8N_API_KEY` und `N8N_MCP_KEY` selbst (ein Wert in der YAML gewinnt). `enabled: true` ist damit gefahrlos: ohne Werte keine Tools und eine INFO-Zeile. Erlaubt ein aktivierter Agent die Tools (der ausgelieferte `n8n_agent`), wird daraus eine WARNING, denn dann fehlt ihm sein Werkzeug.
+- **`N8N_PUBLIC_URL`** (optional): die Adresse, unter der Browser und Webhook-Aufrufer n8n erreichen, wenn es nicht `N8N_BASE_URL` ist. Editor-Links und die URLs aus `n8n_publish_workflow` entstehen daraus, ohne sie aus `N8N_BASE_URL`. Aufgerufen wird immer `N8N_BASE_URL`.
+- **Defaults stehen im Code** (`validate.py`: `blocked_node_types`, `review_node_types`). Eine konfigurierte Liste **ersetzt** den Default, sie ergänzt ihn nicht: Nur so kann der Betreiber einen Typ auch freigeben. Wer ergänzen will, kopiert den Default. Das Framework validiert keine Plugin-Config [F-OUR7]. Seit Phase 1b dazu: `allow_publish` (Code-Default aus, ausgeliefert an; nur ein echtes `true` zählt) und `watch_max_hours` (Default 24, 1 bis 168).
 - **Ohne `mcp_key` gibt es keine Tools**; das ist das tavily-Muster [F-OUR8]. Ohne `api_key` fallen der Riegel und damit alle handelnden Tools weg. Das Plugin stellt dann nur §3.1 bereit und schreibt eine WARNING, die die fehlende Variable nennt.
 - **Keine Versionsprüfung zur Laufzeit:** Ohne `/rest` gibt n8n seine Version nirgends preis [M-MCP-51]. `tested_n8n_version` ist ein Vermerk für Upgrades; geprüft wird nach einem Upgrade mit den Live-Tests (§10.3, docs/deploy/README.md).
 - **Transport:** Beginnt `base_url` mit `http://` und ist der Host nicht localhost, schreibt das Plugin beim Start eine WARNING (§8.1).
@@ -342,7 +346,7 @@ plugins:
 - `type: multi_turn_agent`, `metadata.visibility: both`.
 - `system_template: "./prompts/n8n_agent.md"`.
 - `tools.allowed` als **explizite Liste** mit `+` [F-OUR10][F-OUR20]: `+n8n/n8n_search_nodes`, `+n8n/n8n_get_node_types`, `+n8n/n8n_explore_node_resources`, `+n8n/n8n_get_best_practices`, `+n8n/n8n_get_sdk_reference`, `+n8n/n8n_list_credentials`, `+n8n/n8n_validate_node_config`, `+n8n/n8n_validate_workflow`, `+n8n/n8n_create_workflow`, `+n8n/n8n_update_workflow`, `+n8n/n8n_get_workflow`, `+n8n/n8n_list_workflows`, `+n8n/n8n_test_workflow`, `+n8n/n8n_get_execution`, `+n8n/n8n_list_executions`.
-- **Nicht dabei:** publish, unpublish, archive und trigger. Damit bleibt §8.5 wahr, auch wenn jemand `allow_publish` einschaltet.
+- **Dazu seit Phase 1b** `+n8n/n8n_publish_workflow`, `+n8n/n8n_unpublish_workflow`, `+n8n/n8n_archive_workflow` und `+n8n/n8n_trigger_workflow` (E4, E6), nur auf Bitte des Nutzers (§3.4, §8.5). Nie dabei: `execute_workflow` und Löschen (§13).
 - Skills `n8n-building`, `n8n-testing`, `n8n-recipes` on_demand. Der Prompt bleibt kurz (Rolle, Schleife, Regeln, Übergabe); das Wissen lädt der Agent, wenn er es braucht.
 - **Modell:** `[structured, deepseek-chat]`. Das Profil `structured` ist DeepSeek V4 Flash über OpenRouter; der Fallback ist dasselbe Modell über die direkte DeepSeek-API, also eine andere Route. Mit diesem Modell hat der Ende-zu-Ende-Lauf einen IF-Webhook gebaut, seinen eigenen IF-Fehler am Testergebnis erkannt und mit drei Testläufen belegt, 21 Tool-Aufrufe ohne Fehler (E5). Die Profile in `config/llm*.yaml` gehören dem Betreiber.
 
@@ -415,7 +419,8 @@ Status: GETESTET (Execution <id>) | NICHT GETESTET (Grund)
 Live bewiesen: […]   Gepinnt: […] (mit reason)   Nicht erreicht: […]
 Nicht live bewiesen, weil Code: […]  (Code läuft im Test nie live, §3.3)
 Automatisch zugeordnete Credentials: […]  (von n8n gesetzt [M-MCP-1])
-todo_for_user: Credentials anlegen (Typ, Knoten), dynamische Parameter, Veröffentlichen (Panel)
+published: <Webhook-URL> | no
+todo_for_user: Credentials anlegen (Typ, Knoten), dynamische Parameter
 Prüf-Hinweise: REVIEW_NODE mit Begründung
 mcp_servers.yaml-Schnipsel, falls als MCP-Tool gebaut (§6.1)
 ```
@@ -440,20 +445,25 @@ mcp_servers.yaml-Schnipsel, falls als MCP-Tool gebaut (§6.1)
 - **Tool-Name** ist der Knotenname, case-sensitive [F-MCP1].
 - **Jeder Aufruf erzeugt eine Execution** [F-MCP1].
 - **Plugin-Code: keiner.** Der Builder liefert den Schnipsel mit; eintragen tut der Betreiber, denn `config/` gehört ihm.
-- **n8n kann aus sein.** Das ist ein normaler Fehlerfall. Wie unser `mcp_client` beim Start auf einen nicht erreichbaren Remote-Server reagiert, ist M10. Vor dem Eintragen prüft man das einmal mit gestopptem Container.
+- **n8n kann aus sein** [M-MCP-69]. `connect_all` meldet den Server dann als gescheitert (WARNING), der Start läuft weiter. Seine Tools fehlen in der Liste, ein Aufruf sagt „not connected“. Wieder verbunden wird erst mit `/mcp-connect <name>` oder beim Neustart. Jeder unerreichbare Server verzögert den Start um bis zu `external_servers.connection.timeout`.
 
 ### 6.2 Fertige Execution weckt die Sitzung (Phase 1b)
-1. `wake_blocked()` wird **vor** dem Start gefragt; der Grund landet in `wake_note` [F-OUR12].
-2. `watch.py` startet eine asyncio-Task pro Execution. Sie pollt **Public** `GET /executions/{id}`, nicht den MCP, weil das MCP-Budget nicht für Polling reicht [M-MCP-24][F-AUTH5]. Der Backoff geht von 2 s bis 30 s, höchstens `watch_max_hours` lang.
-   - **Endstatus:** `success|error|crashed|canceled|unknown`. Bei `unknown` endet die Task mit dem Hinweis „Status unbekannt, in n8n nachsehen“ [F-EXE2].
+1. `wake_blocked()` wird **vor** dem Start gefragt; der Grund landet in `wake_note` [F-OUR12]. Ein geweckter Lauf (`wake_depth() > 0`) bekommt keinen Watch: Er ist ein einmaliger Prozess, und sein Ende nähme den Watch mit. Eine Sub-Agent-Session auch nicht: `notify()` weckt sie nie, der aufrufende Lauf übernimmt ihr Ergebnis. `wake_blocked()` liest die Session-Datei dafür bewusst nicht; das Plugin fragt `presence.get()` einmal, außerhalb der Event-Loop.
+   - Jede Ablehnung endet in `wake_note` mit der Anweisung, die Execution-ID weiterzugeben, später nachzulesen und nicht zu pollen. Die Gründe des Kerns („session presence is off …“) lesen sich sonst wie eine Einstellung, nicht wie ein nächster Schritt.
+2. Pro Execution läuft eine asyncio-Task (`wait_for_end` in `watch.py`). Sie pollt **Public** `GET /executions/{id}`, nicht den MCP, weil das MCP-Budget nicht für Polling reicht [M-MCP-24][F-AUTH5]. Der Backoff geht von 2 s bis 30 s, höchstens `watch_max_hours` lang.
+   - **Endstatus:** `success|error|crashed|canceled|unknown`. Auch n8ns eigenes `unknown` beendet die Task [F-EXE2].
    - `waiting`, `new` und `running` sind keine Endstatus [F-EXE2][F-BR7].
-   - **Verbindungsfehler** (n8n aus) heißen: weiter mit Backoff. Nach `watch_max_hours` schreibt die Task `status: "unknown", note: "n8n nicht erreichbar"` und weckt **einmal**.
-   - **404** heißt „nicht (mehr) vorhanden“, Ende. Zwei Ursachen sind möglich, und die Meldung nennt beide: Pruning [F-EXE4] oder eine Speichereinstellung des Workflows, die diese Execution gar nicht gespeichert hat [M-MCP-41]. Kam der 404 schon beim ersten Poll, lautet der Hinweis „nicht gespeichert (Einstellung des Workflows)“.
-3. Am Ende schreibt die Task `{execution_id, status, error.message≤500}` in den `PluginCache` (Schlüssel `exec:<id>`). Dann ruft sie `wake_session(…, still_needed=lambda: not read)` auf; „gelesen“ ist, sobald `n8n_get_execution(id)` lief.
+   - **Verbindungsfehler und 5xx** (n8n aus) heißen: weiter mit Backoff. Nach `watch_max_hours` endet die Task mit `status: "unknown"` und dem Hinweis „n8n nicht erreichbar“ und weckt **einmal**. Jeder andere Fehler (abgelehnter Key, fehlender Scope) beendet das Warten sofort mit seinem Text; Warten repariert ihn nicht.
+   - **404 mit n8ns JSON** (`{"message":"Not Found"}` [M-MCP-70]) heißt „nicht (mehr) vorhanden“, Ende. Ein 404 ohne dieses JSON kommt von einem Proxy, während n8n neu startet, und zählt wie ein Verbindungsfehler. Zwei Ursachen sind möglich, und die Meldung nennt beide: Pruning [F-EXE4] oder eine Speichereinstellung des Workflows, die diese Execution gar nicht gespeichert hat [M-MCP-41]. Kam der 404 schon beim ersten Poll, lautet der Hinweis „nicht gespeichert (Einstellung des Workflows)“.
+3. Am Ende legt die Task `{status, note}` im `PluginCache` ab (Schlüssel `exec:<id>`, 14 Tage), denn der geweckte Lauf ist ein neuer Prozess. `n8n_get_execution` gibt ihn dort als `watch` mit; so erfährt der geweckte Lauf auch, dass das Warten aufgegeben hat und kein Weckruf mehr kommt. Dann ruft die Task `wake_session(…, still_needed=…)` auf, außer der Ausgang ist schon gelesen.
+   - **Gelesen** ist er, sobald `n8n_get_execution(id)` in derselben Sitzung einen Endstatus zeigt oder für eine Execution läuft, deren Watch schon geendet hat, auch wenn das Lesen scheitert; dann trägt auch die Fehlerantwort den `watch`-Eintrag. Ein Lesen, während sie noch läuft, stellt den Weckruf nicht ab.
+   - Eintrag und Marken heißen nach Instanz (Hash der `base_url`), Workflow, Execution und Sitzung, damit eine alte Marke einer anderen Instanz, eines anderen Workflows oder einer anderen Sitzung nichts verschluckt. Die Lesemarke ist eine Datei neben dem Cache (`read/<Schlüssel>`), damit auch ein Lesen im geweckten Prozess das Klingeln im wartenden beendet; `still_needed` muss synchron sein. Marken entstehen nur für beobachtete Läufe (`watch/<Schlüssel>` während der Watch läuft); was älter als 14 Tage ist, räumt das Ende eines Watch weg, die abgelaufenen Einträge im Cache ebenso (`PluginCache` löscht einen Eintrag sonst nur, wenn jemand seinen Schlüssel liest). IDs, die kein sicherer Dateiname sind, bekommen keine Marke und keinen Watch.
+   - Ist der Cache nicht beschreibbar, klingelt der Watch trotzdem; er sieht dann nur kein Lesen in einem anderen Prozess.
 4. Der geweckte Prozess ist neu und liest per ID nach [F-OUR12].
 
 **Grenzen:**
-- Der Poller lebt nur im API-Prozess bzw. in `agent-cli chat`; sonst meldet das Tool `wake: false` mit Grund [F-OUR12].
+- Der Poller lebt nur im API-Prozess bzw. in `agent-cli chat`. Einen einmaligen `agent-cli run` erkennt das Tool nicht [F-OUR12]; `wake_note` nennt deshalb die Execution-ID und sagt, dass ein solcher Lauf nie geweckt wird, und der Prompt lässt den Builder die ID dem Nutzer nennen.
+- Eine Sub-Agent-Session wird nie geweckt (Schritt 1); ihr Aufrufer bekommt die Execution-ID.
 - Nach einem Neustart sind laufende Watches verloren (E7).
 - Das Pruning von n8n begrenzt, wie spät man nachlesen kann [F-EXE4].
 - `stop_plugin()` beendet die Tasks und schließt den httpx-Client, einschließlich der MCP-Session [F-OUR13].
@@ -547,17 +557,18 @@ mcp_servers.yaml-Schnipsel, falls als MCP-Tool gebaut (§6.1)
   - Sub-Workflows: nie [M-MCP-53];
   - andere Knoten mit Außenwirkung: nur, wenn der **Betreiber** ihren Typ in `live_node_types` freigegeben hat;
   - Code: nie.
-- **Veröffentlicht** kann das Plugin nichts mehr kontrollieren. Deshalb ist `allow_publish` per Default aus (E4), und der Builder hat kein Publish-Tool (§5.1).
+- **Veröffentlicht** kann das Plugin nichts mehr kontrollieren. Deshalb geht nur ein Stand live, den ein erfolgreicher Testlauf bewiesen hat, und der Betreiber kann Veröffentlichen mit `allow_publish: false` ganz abschalten (E4).
 - **Das Plugin selbst** ruft nur `base_url` auf.
 
 ### 8.5 Prompt-Injection
 - Knotenbeschreibungen (`search_nodes`, `get_node_types`; bei Community-Knoten schreibt sie deren Autor), Execution-Daten, Webhook-Antworten, Workflow-Namen, Knotennotizen und n8n-Meldungstexte kommen gekürzt und als `{"untrusted": true, "content": …}`. Der Prompt nennt diese Markierung und jeden Namen oder Wert aus einem Workflow Daten, nie Anweisung. Die Texte der SDK-Referenz und der Best Practices kommen aus n8n selbst und nicht aus Nutzerdaten [angenommen]; sie laufen ohne Hülle, aber gedeckelt.
-- **Die Grenze ist strukturell.** Der Builder hat genau die 15 Tools aus §5.1:
-  - Er kann nicht veröffentlichen, zurücknehmen, archivieren, auslösen, löschen oder ausführen.
+- **Die Grenze ist strukturell, bis auf eine Stelle.** Der Builder hat genau die 19 Tools aus §5.1:
+  - Veröffentlichen, Zurücknehmen, Archivieren und Auslösen darf er nur auf Bitte des Nutzers (E4). Das steht nur im Prompt. Ein injizierter Builder könnte also einen eigenen, getesteten Workflow veröffentlichen oder einen veröffentlichten mit einer Payload seiner Wahl auslösen. Mehr nicht: fremde Workflows verweigert `_require_managed`, ungetestete Stände die Versionsprüfung, und mit `allow_publish: false` bleibt ihm davon nur das Auslösen.
+  - Er kann nicht löschen und nicht über den MCP ausführen.
   - Er kann keine Credentials anlegen.
   - Jedes handelnde Tool verweigert fremde Workflows (`_require_managed`).
   - Was er live ausführen kann, begrenzen Pin-Plan, `allowed_hosts` und die Betreiber-Liste `live_node_types` (§3.3, §8.4). Ein injizierter Builder kann damit nichts live schalten, was der Betreiber nicht vorher freigegeben hat.
-- Ein Weckruf trägt nur `{execution_id, status}`.
+- Ein Weckruf trägt keine Daten aus n8n. Der geweckte Lauf liest die Execution über `n8n_get_execution`, eingewickelt wie jede andere.
 
 ### 8.6 Schreibbereich
 Zwei unabhängige Linien:
@@ -592,9 +603,13 @@ Ein fremder Workflow ist nur dann in Reichweite, wenn ein Mensch ihn freigibt **
 | Versionskonflikt bei Update | Abbruch über `expected_version_id` (§3.2) |
 | Testlauf-Timeout | `tested: false`, `execution_status: error`, Execution `canceled` [M-MCP-49] |
 | Archiviert | „erst wiederherstellen“ [F-LIFE2]; wiederherstellen tut der Mensch im Editor |
-| Poller-Prozess tot | `wake` bleibt aus; die Tool-Antwort hat das vorher angekündigt |
-| Execution 404 im Watch | „nicht (mehr) vorhanden: Pruning oder Speichereinstellung“ [F-EXE4][M-MCP-41] |
+| Poller-Prozess tot | `wake` bleibt aus. Angekündigt ist das nur für einen geweckten Lauf; für einen einmaligen `agent-cli run` nennt `wake_note` die Execution-ID zum späteren Nachlesen (§6.2). |
+| 404 eines Proxys im Watch | wie ein Verbindungsfehler: weiter mit Backoff [M-MCP-70] |
+| Execution 404 im Watch | „nicht gespeichert“ oder „nicht mehr vorhanden“, als `watch` bei `n8n_get_execution` [F-EXE4][M-MCP-41] |
+| Abgelehnter Key während eines Watch | Ende sofort, `watch.note` nennt den Fehler |
 | Parallele Webhook-Aufrufe | `execution_id: null` plus Kandidaten |
+| Webhook ohne Antwort (Timeout, Verbindung abgebrochen) oder Nachschlagen scheitert nach dem Aufruf | Ergebnis `success` mit `note`: nicht noch einmal aufrufen, mit `n8n_list_executions` nachsehen (§3.4) |
+| Publish ohne erfolgreichen Lauf des aktuellen Stands | Fehler: erst `n8n_test_workflow` (§3.4) |
 | MCP-Antwortform geändert (n8n-Update) | Die Normalisierung scheitert laut, nicht still. Die Live-Tests (§10.3) und die Upgrade-Checkliste in `docs/deploy/README.md` zeigen es an. |
 
 ---
@@ -642,19 +657,25 @@ Ein fremder Workflow ist nur dann in Reichweite, wenn ein Mensch ihn freigibt **
   - `setWorkflowSettings` mit `saveManualExecutions: false` wird abgelehnt, `true` und `saveData*Execution` gehen durch.
   - Test auf einem Workflow mit `saveManualExecutions:false` wird verweigert.
   - `setNodeCredential` mit unbekannter ID wird abgelehnt.
-  - unpublish ohne `allow_publish` wird verweigert.
-  - Publish mit §5.3-`errors` wird verweigert.
+  - unpublish und archive ohne `allow_publish` werden verweigert, archive auch für einen unveröffentlichten Workflow; ein String als `allow_publish` schaltet nichts ein.
+  - Publish mit §5.3-`errors` wird verweigert, ebenso ohne erfolgreichen Lauf genau des aktuellen Stands; veröffentlicht wird per `versionId`.
   - `n8n_validate_workflow` mit `valid:true` + `MISSING_REQUIRED_INPUT` ergibt `ok:false`.
-- **Trigger:** GET-Webhook → Query-Parameter; `multipleMethods` ohne `method` → Fehler.
+- **Trigger:**
+  - GET-Webhook → Query-Parameter, ohne Key im Aufruf; `multipleMethods` ohne `method`, Authentifizierung, Routenparameter, deaktivierter Webhook → Fehler ohne Aufruf.
+  - Aufgerufen wird der veröffentlichte Stand, nicht der Entwurf.
+  - `executionId` aus der Antwort gilt nur als reine Zahl über der Grenze, für eine Webhook-Execution des Workflows; sonst die eine neue Webhook-Execution; Test- und Schedule-Läufe zählen nicht; zwei neue → Kandidaten.
+  - Keine Antwort oder gescheitertes Nachschlagen nach dem Aufruf → Ergebnis mit „nicht noch einmal aufrufen“; nicht gesendet, n8ns „not registered“, 413/414/431 → Fehler; ein 404 des Workflows selbst → Lauf.
+  - Unsichere Webhook-Pfade, zu lange GET-Parameter, mehrere Webhooks ohne `webhook_node` → Fehler ohne Aufruf; die Antwort des Webhooks wird gekappt.
 - **Watcher:**
   - `running → success` löst genau einen Wake aus, `waiting` keinen, `unknown` ist Ende.
   - Connection refused bis Fristende → genau ein Wake mit `unknown`.
   - 404 beim ersten Poll → Hinweis „nicht gespeichert (Einstellung)“.
   - Ist `wake_blocked` ≠ "", startet kein Poller.
+  - Ein Lesen nach dem Ende stellt das Klingeln ab, auch in einem anderen Prozess und auch, wenn es scheitert; ein Lesen vorher nicht. Ist das Ende schon gelesen, wird gar nicht geklingelt.
+  - Ein geweckter Lauf bekommt keinen Watch; ein aufgegebener Watch kommt als `watch` beim nächsten Lesen an.
   - `stop_plugin` beendet die Tasks.
-  - Aufgerufen wird über den echten `wake_blocked` mit Test-Config.
+  - Aufgerufen wird auch über den echten `wake_blocked` und `wake_session` mit Test-Config.
 - **Deckel:** `get_node_types(httpRequest)` [M-MCP-25] und eine große Execution bleiben unter der Kappung.
-- **PluginCache** nur mit `cache_dir=tmp_path`.
 - **Pflichtwächter:**
   - `tests/plugins/test_status_end_lines.py`,
   - `test_pluginsystem_teardown_hook.py`,
@@ -680,7 +701,7 @@ Pflicht je Test. Mutiert wird nur im Speicher, danach muss `git diff` leer sein;
 - Die `allowed_hosts`-Prüfung bei `live_nodes` ignorieren.
 - `waiting` als Endstatus zählen; `unknown` aus den Endstatus nehmen.
 - Die Methode fest auf POST setzen: Der GET-Test muss rot werden.
-- Den Watcher auf MCP umstellen: Der Test „Watcher ruft nur Public GET“ muss rot werden.
+- Phase 1b: jede Sperre von publish, unpublish, archive und trigger einzeln abschalten, die Versionsprüfung auf „irgendein erfolgreicher Lauf“ lockern, den Key in den Webhook-Aufruf setzen, `waiting` als Ende zählen, das Lesezeichen vor dem Ende setzen (Harness `mut_n8n.py`, Präfix `p1b`).
 
 ### 10.3 Live, opt-in
 Rahmen: `N8N_LIVE=1`; Workflows heißen `zz-probe-*` und werden im `finally` per Public DELETE gelöscht. Danach wird geprüft, dass 0 übrig sind. Der Test-Key braucht dafür `workflow:delete`; das ist ein **eigener** Test-Key und nie der Laufzeit-Key.
@@ -692,12 +713,10 @@ Rahmen: `N8N_LIVE=1`; Workflows heißen `zz-probe-*` und werden im `finally` per
 - Der Test läuft auf dem Entwurf [M-MCP-5].
 - Jede Lücke aus §5.3 ist auf n8n-Seite noch offen. Fängt n8n einen Fall inzwischen selbst, wird unsere Prüfung gestrichen.
 
-**Gebaut sind davon** (Stand Phase 1a) der ganze Durchlauf, die Pins samt ungepinntem HTTP, der gepinnte executeWorkflow-Knoten, Code mit Netz und die Lücken H9 (Version 99, leerer Pfad) gegen `validate_workflow`. Die übrigen Punkte prüft der Betreiber nach einem Upgrade von Hand nach der Tabelle in `docs/deploy/README.md`; dort steht auch, wie der Test-Key `N8N_TEST_API_KEY` entsteht und wie die Live-Tests laufen.
+**Gebaut sind davon** der ganze Durchlauf, seit Phase 1b auch Veröffentlichen, Auslösen samt gefundener Execution, Zurücknehmen und Archivieren, dazu die Pins samt ungepinntem HTTP, der gepinnte executeWorkflow-Knoten, Code mit Netz und die Lücken H9 (Version 99, leerer Pfad) gegen `validate_workflow`. Die übrigen Punkte prüft der Betreiber nach einem Upgrade von Hand nach der Tabelle in `docs/deploy/README.md`; dort steht auch, wie der Test-Key `N8N_TEST_API_KEY` entsteht und wie die Live-Tests laufen.
 
 **Offene Messpunkte:**
 - M5: Schedule-Trigger im Testlauf.
-- M10: `mcp_client` mit gestopptem Container.
-- M11: `publish_workflow` gegen die Ablehnungen der Public API und das 409-Format.
 - M13: Liefert `prepare_workflow_pin_data` nach einem ersten Testlauf Schemas? Nur dann kommt das Tool zurück (§3.5).
 - M4 (Member-Key) nur mit OK des Betreibers.
 
@@ -737,10 +756,10 @@ Rahmen: `N8N_LIVE=1`; Workflows heißen `zz-probe-*` und werden im `finally` per
 - **Beifang nach Regel 1:** `validate_plugin.py` endet ohne `plugin.toml` mit Exit 1, gibt aber keinen Grund aus [F-OUR19]. Das wird mitrepariert.
 - **Abnahme:** M7 und M9 gemessen; die Tools einmal durch alle Schritte gegen die Instanz [M-MCP-52]; ein Ende-zu-Ende-Lauf des Agenten endet mit `success`.
 
-**Phase 1b, Ziel 2 Grundbrücke:**
-- `trigger_workflow` mit `watch.py`.
-- `publish`, `unpublish` und `archive` hinter `allow_publish` bzw. managed.
-- M10 (das MCP-Trigger-Rezept §6.1 steht schon im Skill `n8n-recipes`).
+**Phase 1b, Ziel 2 Grundbrücke (gebaut):**
+- `trigger_workflow` mit `watch.py` und Weckruf.
+- `publish`, `unpublish` und `archive` für den Builder, auf Bitte des Nutzers (E4), hinter `allow_publish` und managed; publish nur für einen getesteten Stand.
+- M10 und M11 gemessen [M-MCP-66][M-MCP-69]; das MCP-Trigger-Rezept §6.1 steht im Skill `n8n-recipes`.
 
 **Phase 2:**
 - Routen `/runs` und `/hooks/execution-finished`, Bind oder Proxy mit TLS (E8).
@@ -789,7 +808,7 @@ Rahmen: `N8N_LIVE=1`; Workflows heißen `zz-probe-*` und werden im `finally` per
 | **Delete-Tool** | DELETE löscht Executions mit und geht auch bei aktiven Workflows [F-LIFE1]; der MCP hat ohnehin keines [M-MCP-H4]. |
 | **Retry/stop als Tool** | Retry nach einem Fix liefert 500 [F-EXE3]. Neu testen ist robuster. |
 | **Eigener `n8n_sam`** | Die Allowlist reicht (§5.7). Das spart eine Stelle Config bei gleichem Ergebnis. |
-| **Builder mit `+n8n/*`** | Damit wäre §8.5 falsch, sobald `allow_publish` an ist. |
+| **Builder mit `+n8n/*`** | Die Liste bleibt explizit: Ein Tool, das n8n oder das Plugin neu dazubekommt, soll der Builder nicht ungeprüft erben (§8.5). |
 | **HARDCODED_SECRET-Heuristik** | Das wäre eine Wortliste. Geschützt wird durch die Referenz über `{id,name}`. |
 | **Beim SSRF nur warnen** | Warnen hält keinen Testlauf auf, und der Server pinnt nicht selbst [M-MCP-30]. |
 | **Code live nach String-Prüfung auf `helpers.httpRequest`** | Code hat Netz [M-MCP-38]; eine String-Prüfung auf JavaScript ist umgehbar und damit nur ein Hinweis. Code bleibt im Test gepinnt (§3.3). |

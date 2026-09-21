@@ -16,14 +16,16 @@ import yaml
 from agent_system.config.settings import get_tool_server_config, load_settings
 from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 from agent_system.skills.registry import SkillRegistry
+from plugins.n8n import server as server_module
 
 PLUGIN = Path(__file__).resolve().parent.parent
 BUILDER_TOOLS = {"search_nodes", "get_node_types", "explore_node_resources", "get_best_practices",
                  "get_sdk_reference", "list_credentials", "validate_node_config", "validate_workflow",
                  "create_workflow", "update_workflow", "get_workflow", "list_workflows",
-                 "test_workflow", "get_execution", "list_executions"}
-HUMAN_ONLY = {"publish_workflow", "unpublish_workflow", "archive_workflow", "trigger_workflow",
-              "execute_workflow", "delete_workflow"}
+                 "test_workflow", "get_execution", "list_executions",
+                 "publish_workflow", "unpublish_workflow", "archive_workflow", "trigger_workflow"}
+# n8n offers these, the plugin never forwards them (design §3.4, §13).
+NEVER = {"execute_workflow", "delete_workflow"}
 _TOOL_REF = re.compile(r"\bn8n_([a-z_]+)\b")
 
 
@@ -42,9 +44,12 @@ def allows(agent_cfg, tool: str) -> bool:
     return tool_matches_patterns(f"n8n_{tool}", "n8n", agent_cfg.agent_config.tools.allowed)
 
 
-def schema_tools() -> set[str]:
-    text = (PLUGIN / "schema.yaml").read_text(encoding="utf-8")
+def schema_tools(plugin: Path = PLUGIN) -> set[str]:
+    text = (plugin / "schema.yaml").read_text(encoding="utf-8")
     return set(re.findall(r'name: "\{\{ name \}\}_([a-z_]+)"', text))
+
+
+OKF_PLUGIN = PLUGIN.parent / "okf"
 
 
 def test_the_tool_instance_is_on_and_needs_no_variable_in_yaml(config):
@@ -59,7 +64,20 @@ def test_the_tool_instance_is_on_and_needs_no_variable_in_yaml(config):
 def test_the_builder_gets_exactly_the_building_tools(config):
     agent = resolved(config, "n8n_agent")
     assert {t for t in BUILDER_TOOLS if allows(agent, t)} == BUILDER_TOOLS
-    assert not {t for t in HUMAN_ONLY if allows(agent, t)}, "publishing and triggering are for a human"
+    assert not {t for t in NEVER if allows(agent, t)}
+    assert not NEVER & schema_tools()
+
+
+def test_publishing_is_on_as_the_operator_decided(config):
+    """Design E4: the builder publishes when the user asks. The code default is
+    off, so the switch has to be in the shipped config."""
+    n8n = resolved(config, "n8n")
+    assert getattr(n8n, "allow_publish", None) is True
+
+
+def test_missing_keys_are_warned_about_because_the_builder_wants_the_tools(config):
+    assert "n8n_agent" in server_module._agents_wanting(config, "n8n")
+    assert server_module._agents_wanting(config, "no_such_instance") == []
 
 
 def test_every_builder_tool_exists_in_the_schema():
@@ -79,8 +97,26 @@ def test_prompt_and_skills_exist_and_name_only_real_tools(config):
         front = yaml.safe_load(text.split("---")[1])
         assert front["name"] == skill and front["description"]
         texts.append(text)
-    named = {ref for text in texts for ref in _TOOL_REF.findall(text)} - {"agent"}
+    named = {ref for text in texts for ref in _TOOL_REF.findall(text)} - {"agent", "okf"}   # instances
+    memory = {ref.removeprefix("okf_") for ref in named if ref.startswith("okf_")}
+    named -= {f"okf_{ref}" for ref in memory}
     assert named <= schema_tools(), f"prompt/skills name tools that do not exist: {named - schema_tools()}"
+    assert memory and memory <= schema_tools(OKF_PLUGIN), f"no such n8n_okf tools: {memory - schema_tools(OKF_PLUGIN)}"
+
+
+def test_the_builder_remembers_in_a_bundle_of_its_own(config):
+    """The hook returns silently when hook_bundle is missing or outside the
+    sandbox -- which looks exactly like 'nothing remembered yet'."""
+    agent = resolved(config, "n8n_agent")
+    assert tool_matches_patterns("n8n_okf_write_concept", "n8n_okf", agent.agent_config.tools.allowed)
+    roots = resolved(config, "n8n_okf").allowed_directories
+    assert len(roots) == 1 and sorted(roots) != sorted(resolved(config, "okf").allowed_directories)
+    override = agent.agent_config.hooks.overrides["n8n_okf.okf_context_injection"]
+    hook = override if isinstance(override, dict) else vars(override)
+    bundle = Path(hook["hook_bundle"]).resolve()
+    assert hook.get("enabled") is True and bundle == Path(agent.agent_config.template_vars["okf_bundle"]).resolve()
+    root = Path(roots[0]).resolve()
+    assert bundle == root or root in bundle.parents
 
 
 def test_the_builder_is_reachable_as_a_tool(config):

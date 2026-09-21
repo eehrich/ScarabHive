@@ -12,22 +12,32 @@ none of it. It forwards a curated set and lays our policy on top:
 * the gaps n8n's validators measurably miss (validate.py),
 * n8n data wrapped as untrusted, every result capped, one status line per call.
 
-Publishing, triggering and archiving are not offered here (design §3.4).
+Publishing, archiving and triggering go through the same lock; publishing
+takes only the version a successful test run proved (design §3.4).
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import math
 import os
+import re
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import urlencode
 
+from agent_system.core.session_presence import presence_for, wake_blocked, wake_depth, wake_session
+from agent_system.plugins.cache import PluginCache
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
-from .client import N8nClient, N8nError, N8nNotFound, mcp_error
+from .client import N8nClient, N8nError, N8nNoAnswer, N8nNotFound, mcp_error
 from .validate import (DEFAULT_BLOCKED_NODE_TYPES, DEFAULT_REVIEW_NODE_TYPES, blocking_save_settings, check_workflow, classify_node_validation,
                        classify_workflow_validation, code_precheck, format_version, normalize_type,
-                       normalized, node_type_errors, pin_plan)
+                       normalized, node_type_errors, pin_plan, webhook_path_problem)
+from .watch import END_STATES, wait_for_end
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -40,7 +50,27 @@ CAP_SMALL = 8_000
 CAP_SDK_SECTION = 16_000
 CAP_WORKFLOW = 40_000
 CAP_EXECUTION = 12_000
+CAP_WEBHOOK_ANSWER = 8_000
 SAMPLE_CHARS = 1_000
+MAX_PAYLOAD_CHARS = 64_000
+# A GET payload travels in the request line, and n8n's HTTP server refuses long
+# ones before any workflow runs (Node's header limit is 16 KiB).
+MAX_QUERY_CHARS = 8_000
+# How long a watch's outcome and read mark are kept: n8n prunes runs after 14 days (F-EXE4).
+WATCH_RECORD_TTL_S = 14 * 24 * 3600
+# Where watch outcomes and read marks live; None is PluginCache's data/cache. Tests set a tmp dir.
+CACHE_ROOT: Optional[Path] = None
+# The parts of a watch's file names. They reach get_execution from the model,
+# so anything else never becomes a path.
+_WORKFLOW_ID = re.compile(r"[A-Za-z0-9]{1,40}")
+_EXECUTION_ID = re.compile(r"[0-9]{1,18}")
+_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,80}")
+# The test of the current version is looked for among this many newest
+# successful runs; only the test runs among them are read one by one.
+TESTED_SCAN = 250
+TESTED_LOOKBACK = 20
+# Pause between looks for the execution a webhook call started.
+LOOKUP_PAUSE_S = 1.0
 SDK_SECTIONS = ("patterns", "patterns_detailed", "expressions", "functions", "rules",
                 "import", "guidelines", "design")
 BEST_PRACTICE_TECHNIQUES = (
@@ -99,6 +129,11 @@ class N8nServer(SchemaBasedToolServer):
                             or os.environ.get("N8N_BASE_URL", "")).rstrip("/")
         self.api_key = str(getattr(server_config, "api_key", "") or os.environ.get("N8N_API_KEY", ""))
         self.mcp_key = str(getattr(server_config, "mcp_key", "") or os.environ.get("N8N_MCP_KEY", ""))
+        # Where browsers and webhook callers reach n8n, when that is not where
+        # ScarabHive does (docs/deploy/README.md): the links and webhook URLs
+        # handed to the user are built from it.
+        self.public_url = str(getattr(server_config, "public_url", "") or os.environ.get("N8N_PUBLIC_URL", "")
+                              or self.base_url).rstrip("/")
         self.managed_tag = str(getattr(server_config, "managed_tag", "") or "scarabhive")
         self.allowed_hosts = frozenset(getattr(server_config, "allowed_hosts", None) or ())
         self.live_node_types = normalized(getattr(server_config, "live_node_types", None) or ())
@@ -107,12 +142,25 @@ class N8nServer(SchemaBasedToolServer):
         self.review = normalized(getattr(server_config, "review_node_types", None)
                                  or DEFAULT_REVIEW_NODE_TYPES)
         self.timeout = float(getattr(server_config, "timeout", 60) or 60)
+        # Publishing, unpublishing, archiving a published workflow (design E4).
+        # Only a real true counts: the framework does not check plugin config.
+        self.allow_publish = getattr(server_config, "allow_publish", False) is True
+        self.watch_max_hours = _bounded(getattr(server_config, "watch_max_hours", None), 24, 1, 168) or 24
         self._client: Optional[N8nClient] = None
+        self._watches: set[asyncio.Task] = set()
+        # execution id -> {"status", "read"}: the watches of this process.
+        self._watched: dict[str, dict] = {}
+        self._outcomes: Optional[PluginCache] = None
 
         missing = [var for var, value in (("N8N_BASE_URL", self.base_url), ("N8N_MCP_KEY", self.mcp_key),
                                           ("N8N_API_KEY", self.api_key)) if not value]
         if len(missing) == 3:
-            logger.info("n8n not configured -- %s offers no tools", name)
+            wanting = _agents_wanting(system_config, name)
+            if wanting:
+                logger.warning("n8n not configured -- %s offers no tools, yet %s allow them: set N8N_BASE_URL, "
+                               "N8N_MCP_KEY and N8N_API_KEY (docs/deploy/README.md)", name, ", ".join(wanting))
+            else:
+                logger.info("n8n not configured -- %s offers no tools", name)
         elif missing:
             logger.warning("n8n partly configured -- %s lacks %s (docs/deploy/README.md)",
                            name, ", ".join(missing))
@@ -134,14 +182,18 @@ class N8nServer(SchemaBasedToolServer):
         return self._client
 
     async def stop_plugin(self) -> None:
-        """The shutdown hook the framework calls: closes the HTTP client and
-        with it the MCP session."""
+        """The shutdown hook the framework calls: ends the watches, then closes
+        the HTTP client and with it the MCP session."""
+        watches = list(self._watches)
+        for task in watches:
+            task.cancel()
+        await asyncio.gather(*watches, return_exceptions=True)
         if self._client is not None:
             await self._client.aclose()
             self._client = None
 
     def _editor_url(self, workflow_id: str) -> str:
-        return f"{self.base_url}/workflow/{workflow_id}"
+        return f"{self.public_url}/workflow/{workflow_id}"
 
     async def _fail(self, status, message: str) -> dict:
         await status.error(message[:140])
@@ -585,15 +637,30 @@ class N8nServer(SchemaBasedToolServer):
                            "includeData": bool(params.get("include_data")), "truncateData": 2000}
         if params.get("nodes"):
             arguments["nodeNames"] = [str(n) for n in params["nodes"]][:10]
+        execution_id = str(execution_id)
+        key = self._watch_key(workflow_id, execution_id, params.get("_session_id") or "")
+        record = await self._watch_record(key)
+        if record is not None:
+            # This session's watch rang for it: this turn took the news, even if the read below fails.
+            self._mark_read(key)
         try:
             result = await self._mcp("get_workflow_execution", arguments)
         except N8nError as exc:
-            return await self._fail(status, str(exc))
+            answer = await self._fail(status, str(exc))
+            if record is not None:
+                answer["watch"] = record    # a run that is gone can only be told through this
+            return answer
+        execution = result.payload.get("execution") if isinstance(result.payload, dict) else None
+        if isinstance(execution, dict) and execution.get("status") in END_STATES and self._watched_somewhere(key):
+            self._mark_read(key)            # the end is read: a wake for it would bring nothing new
         text, truncated = _cap(result.text, CAP_EXECUTION)
-        await status.end(f"execution {execution_id}: {len(result.text)} chars"
+        await status.end(f"execution {_short(execution_id)}: {len(result.text)} chars"
                          + (" with data" if arguments["includeData"] else ""))
-        return {"status": "success", "execution_id": str(execution_id), "data": _untrusted(text),
-                "truncated": truncated}
+        answer = {"status": "success", "execution_id": execution_id, "data": _untrusted(text),
+                  "truncated": truncated}
+        if record is not None:
+            answer["watch"] = record
+        return answer
 
     async def list_executions(self, params: dict[str, Any]) -> dict[str, Any]:
         status = params.get("_status") or _NoStatus()
@@ -601,16 +668,476 @@ class N8nServer(SchemaBasedToolServer):
         if limit is None:
             return await self._fail(status, "limit: a number from 1 to 20")
         try:
-            page = await self._n8n().api_get("/executions", {
-                "workflowId": params.get("workflow_id"), "status": params.get("status"), "limit": limit})
+            found = await self._executions(params.get("workflow_id"), limit, params.get("status"))
         except N8nError as exc:
             return await self._fail(status, str(exc))
         executions = [{"id": e.get("id"), "workflow_id": e.get("workflowId"), "status": e.get("status"),
                        "mode": e.get("mode"), "started_at": e.get("startedAt"), "stopped_at": e.get("stoppedAt")}
-                      for e in page.get("data") or []]
+                      for e in found]
         await status.end(f"{len(executions)} execution(s)"
                          + (f" of {_short(params['workflow_id'])}" if params.get("workflow_id") else ""))
         return {"status": "success", "count": len(executions), "executions": executions}
+
+    # ── §3.4 publish, archive, trigger ────────────────────────────────────
+
+    async def publish_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
+        status = params.get("_status") or _NoStatus()
+        workflow_id = params.get("workflow_id")
+        if not self.allow_publish:
+            return await self._fail(status, "publishing is switched off by the operator (allow_publish)")
+        try:
+            workflow = await self._require_managed(workflow_id)
+            findings = await self._check_stored(workflow)
+            blocking = [f for f in findings if f["level"] == "error"]
+            if blocking:
+                await status.error(f"{workflow_id}: not published, {len(blocking)} blocking finding(s)")
+                return {"status": "error", "error": "the workflow has blocking findings; fix and test it first",
+                        "findings": findings}
+            version = str(workflow.get("versionId") or "")
+            proof = await self._tested_in(workflow_id, version)
+            if proof is None:
+                return await self._fail(status, f"{workflow_id}: its current version has no successful test "
+                                                f"run among the newest {TESTED_SCAN} successful runs -- run "
+                                                f"n8n_test_workflow on it first")
+            # By version id: an edit after these checks must not go live untested.
+            answer = (await self._mcp("publish_workflow", {"workflowId": workflow_id, "versionId": version})).payload
+        except N8nError as exc:
+            return await self._fail(status, str(exc))
+        await status.end(f"published {workflow_id} {_short(workflow.get('name'))}, proven by execution {proof}")
+        return {"status": "success", "workflow_id": workflow_id, "active_version_id": answer.get("activeVersionId"),
+                "proven_by_execution": proof, "webhooks": _untrusted(self._production_urls(workflow)),
+                "editor_url": self._editor_url(workflow_id)}
+
+    async def _tested_in(self, workflow_id: str, version: str) -> Optional[str]:
+        """The id of a successful TEST run of exactly this version, or None.
+
+        Only a test proves the draft: a production run ran the published
+        version, and n8n stores a test as mode manual (M-MCP-70). The list
+        leaves workflowVersionId empty; an execution read on its own carries it
+        (M-MCP-65), so the newest test runs are read one by one."""
+        if not version:
+            return None
+        # ponytail: one page; a workflow with more production runs since its test
+        # than TESTED_SCAN is refused -- page on with nextCursor if that happens.
+        page = await self._n8n().api_get("/executions", {"workflowId": workflow_id, "status": "success",
+                                                         "limit": TESTED_SCAN})
+        for item in [i for i in _items(page) if i.get("mode") == "manual"][:TESTED_LOOKBACK]:
+            try:
+                execution = await self._n8n().api_get(f"/executions/{item.get('id')}")
+            except N8nNotFound:
+                continue
+            if isinstance(execution, dict) and execution.get("workflowVersionId") == version:
+                return str(item.get("id"))
+        return None
+
+    def _production_urls(self, workflow: dict) -> list[dict]:
+        urls = []
+        for hook in _webhooks(workflow.get("nodes")):
+            entry: dict = {"node": hook["node"], "methods": hook["methods"]}
+            if ":" in hook["path"]:
+                # n8n serves route parameters under another URL form (unmeasured): no guess.
+                entry["note"] = "the path has route parameters; take the URL from the n8n editor"
+            else:
+                entry["url"] = f"{self.public_url}/webhook/{hook['path']}"
+            urls.append(entry)
+        return urls
+
+    async def unpublish_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
+        status = params.get("_status") or _NoStatus()
+        workflow_id = params.get("workflow_id")
+        if not self.allow_publish:
+            return await self._fail(status, "taking workflows offline is switched off with publishing (allow_publish)")
+        try:
+            workflow = await self._require_managed(workflow_id)
+            await self._mcp("unpublish_workflow", {"workflowId": workflow_id})
+        except N8nError as exc:
+            return await self._fail(status, str(exc))
+        was_published = bool(workflow.get("activeVersionId"))
+        await status.end(f"unpublished {workflow_id} {_short(workflow.get('name'))}"
+                         + ("" if was_published else " (was not published)"))
+        return {"status": "success", "workflow_id": workflow_id, "was_published": was_published}
+
+    async def archive_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
+        status = params.get("_status") or _NoStatus()
+        workflow_id = params.get("workflow_id")
+        if not self.allow_publish:
+            return await self._fail(status, "archiving is switched off with publishing (allow_publish)")
+        try:
+            workflow = await self._require_managed(workflow_id)
+            await self._mcp("archive_workflow", {"workflowId": workflow_id})
+        except N8nError as exc:
+            return await self._fail(status, str(exc))
+        await status.end(f"archived {workflow_id} {_short(workflow.get('name'))}")
+        return {"status": "success", "workflow_id": workflow_id, "archived": True,
+                "note": "an archived workflow is restored in the n8n editor"}
+
+    async def trigger_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
+        status = params.get("_status") or _NoStatus()
+        workflow_id = params.get("workflow_id")
+        payload = params.get("payload") if params.get("payload") is not None else {}
+        wait = params.get("wait") or "wake"
+        timeout_s = _bounded(params.get("timeout_s"), 60, 5, 300)
+        if timeout_s is None:
+            return await self._fail(status, "timeout_s: seconds, a number from 5 to 300")
+        if wait not in ("wake", "none"):
+            return await self._fail(status, "wait: wake (be woken when the run ends) or none")
+        if not isinstance(payload, dict):
+            return await self._fail(status, "payload: a JSON object")
+        try:
+            size = len(json.dumps(payload, allow_nan=False))
+        except (TypeError, ValueError):
+            return await self._fail(status, "payload: plain JSON values only")
+        if size > MAX_PAYLOAD_CHARS:
+            return await self._fail(status, f"payload: at most {MAX_PAYLOAD_CHARS} characters as JSON")
+        try:
+            workflow = await self._require_managed(workflow_id)
+            hook, method = _trigger_target(workflow, params.get("webhook_node"), params.get("method"))
+            if method in ("GET", "HEAD"):
+                if not all(isinstance(v, (str, int, float, bool)) for v in payload.values()):
+                    return await self._fail(status, f"a {method} webhook takes the payload as query parameters: "
+                                                    f"flat values only")
+                if len(urlencode(payload)) > MAX_QUERY_CHARS:
+                    return await self._fail(status, f"a {method} webhook takes at most {MAX_QUERY_CHARS} characters "
+                                                    f"of query parameters; more needs a POST webhook")
+            before = max((_as_int(e.get("id")) for e in await self._executions_now(workflow_id)), default=0)
+            response, note = None, ""
+            try:
+                response = await self._n8n().webhook(method, hook["path"], payload, timeout=timeout_s)
+            except N8nNoAnswer as exc:
+                note = f"{exc}; the run may still be going"
+            refused = _not_run(response) if response is not None else ""
+        except N8nError as exc:
+            return await self._fail(status, str(exc))
+        # From here on the webhook was called: no answer may read as "nothing
+        # happened", or the model calls it a second time. Even n8n's refusal is
+        # believed only when no run of this call turns up: a workflow can answer
+        # the same codes and text.
+        result: dict[str, Any] = {
+            "status": "success", "workflow_id": workflow_id, "method": method,
+            "http_status": response.status_code if response is not None else None,
+            "response": _untrusted(_cap(response.text, CAP_WEBHOOK_ANSWER)[0]) if response is not None else None,
+            "execution_id": None, "editor_url": self._editor_url(workflow_id)}
+        looked = False
+        try:
+            execution_id, correlation, candidates = await self._find_execution(workflow_id, before, response)
+            state = ""
+            if execution_id:
+                execution = await self._n8n().api_get(f"/executions/{execution_id}")
+                state = str(execution.get("status") or "") if isinstance(execution, dict) else ""
+            looked = True
+        except N8nError as exc:
+            execution_id, correlation, candidates, state = None, None, [], ""
+            note = f"{note}; " if note else ""
+            note += f"its execution could not be looked up ({exc})"
+        if refused and looked and not execution_id and not candidates:
+            return await self._fail(status, f"{method} /webhook/{hook['path']}: {refused}")
+        result.update(execution_id=execution_id, correlation=correlation, execution_status=state or None)
+        if candidates:
+            result["candidates"] = candidates
+            note = (f"{note}; " if note else "") + "several runs started at the same time -- pick yours by its data"
+        if not execution_id and not candidates and not note:
+            note = "no run of it was found yet"
+        settings = workflow.get("settings") or {}
+        if "none" in (settings.get("saveDataSuccessExecution"), settings.get("saveDataErrorExecution")):
+            note = (f"{note}; " if note else "") + "the workflow does not store some runs (saveData... none)"
+        if note:
+            result["note"] = note + ("" if execution_id else
+                                     " -- do not call the webhook again, look with n8n_list_executions")
+        armed = False
+        if wait == "wake" and state not in END_STATES:
+            session_id, user_id = params.get("_session_id") or "", params.get("_user_id") or ""
+            if not execution_id:
+                blocked = "no execution was found to watch"
+            elif wake_depth():
+                # A woken run is a one-shot process: its end takes the watch with it.
+                blocked = "this run was itself woken and ends with its turn"
+            else:
+                blocked = wake_blocked(self.system_config, session_id, user_id)
+            if not blocked and self._watch_key(workflow_id, execution_id, session_id) is None:
+                blocked = "this session cannot be watched"
+            if not blocked and await self._is_sub_agent(session_id, user_id):
+                blocked = "a sub-agent's session is never woken"
+            if blocked:
+                if execution_id:
+                    # Every refusal says what to do: most read as settings, not as a next step.
+                    blocked += (f"; you are not woken -- give execution id {execution_id} to whoever asked and "
+                                f"read it later with n8n_get_execution, do not poll it")
+                result.update(wake=False, wake_note=blocked)
+            else:
+                self._watch(workflow_id, execution_id, session_id, user_id)
+                armed = True
+                result.update(wake=True, wake_note=f"you are woken when the run ends: give the user execution id "
+                                                   f"{execution_id} and end your turn, then read it with "
+                                                   f"n8n_get_execution. A one-shot agent-cli run is never woken.")
+        await status.end(f"{workflow_id}: {method} webhook {result['http_status'] or 'no answer'}, execution "
+                         f"{execution_id or '?'} {state or 'not found'}" + (", wake armed" if armed else ""))
+        return result
+
+    async def _executions(self, workflow_id: Any, limit: int, state: Any = None) -> list[dict]:
+        """Executions newest first. Without a state the plain list leaves out
+        what still runs (M-MCP-67), so running and waiting ones are asked for too."""
+        seen: dict[str, dict] = {}
+        for query in ([{"status": state}] if state else [{"status": "running"}, {"status": "waiting"}, {}]):
+            page = await self._n8n().api_get("/executions", {"workflowId": workflow_id, "limit": limit, **query})
+            for item in _items(page):
+                seen[str(item.get("id"))] = item
+        return sorted(seen.values(), key=lambda e: _as_int(e.get("id")), reverse=True)[:limit]
+
+    async def _executions_now(self, workflow_id: str) -> list[dict]:
+        return await self._executions(workflow_id, 20)
+
+    async def _find_execution(self, workflow_id: str, before: int, response) -> tuple:
+        """(id, correlation, candidates) of the run a webhook call started:
+        exact when the workflow answered with its executionId (design §5.5),
+        else the one new non-manual run since the call."""
+        try:
+            body = response.json() if response is not None else None
+        except (ValueError, RecursionError):
+            body = None
+        # The answer is the workflow's own output, which may carry anything:
+        # only a plain id of a run this call can have started is believed.
+        claimed = str(body.get("executionId") or "") if isinstance(body, dict) else ""
+        if claimed.isascii() and claimed.isdigit() and len(claimed) <= 18 and int(claimed) > before:
+            try:
+                execution = await self._n8n().api_get(f"/executions/{claimed}")
+            except N8nError:
+                execution = None            # a bogus claim never stops the lookup below
+            if isinstance(execution, dict) and str(execution.get("workflowId")) == str(workflow_id) \
+                    and execution.get("mode") == "webhook":
+                return claimed, "exact", []
+        for attempt in range(3):
+            # A production webhook call starts a run in mode webhook (M-MCP-67);
+            # schedule, sub-workflow and test runs are someone else's.
+            fresh = sorted(str(e.get("id")) for e in await self._executions_now(workflow_id)
+                           if _as_int(e.get("id")) > before and e.get("mode") == "webhook")
+            if len(fresh) == 1:
+                return fresh[0], "heuristic", []
+            if fresh:
+                return None, None, fresh
+            if attempt < 2:
+                await asyncio.sleep(LOOKUP_PAUSE_S)
+        return None, None, []
+
+    async def _is_sub_agent(self, session_id: str, user_id: str) -> bool:
+        """wake_blocked leaves this out (core/session_presence.py): a sub-agent's
+        session is never woken, the run that spawned it hands its result over.
+        Asked off the loop, as it parses the session file."""
+        presence = presence_for(self.system_config)
+        if presence is None:
+            return False
+        try:
+            state = await asyncio.to_thread(presence.get, session_id, user_id)
+        except Exception as exc:  # noqa: BLE001 - after the webhook call nothing may raise
+            logger.warning("n8n: could not tell whether session %s is a sub-agent's: %s", session_id, exc)
+            return False
+        return bool(state and state.get("sub_agent"))
+
+    def _watch(self, workflow_id: str, execution_id: str, session_id: str, user_id: str) -> None:
+        key = self._watch_key(workflow_id, execution_id, session_id)
+        entry: dict = {"status": None, "read": False}
+        self._watched[key] = entry
+        _touch(self._mark_path("watch", key))
+        task = asyncio.create_task(self._run_watch(key, execution_id, entry, session_id, user_id))
+        self._watches.add(task)
+        task.add_done_callback(self._watches.discard)
+
+    async def _run_watch(self, key: str, execution_id: str, entry: dict, session_id: str, user_id: str) -> None:
+        """Waits for the end, records it, then rings the session unless the end
+        was read already. n8n holds the run; the woken run -- a new process --
+        reads it by id and gets the record with it (design §6.2)."""
+        try:
+            outcome = await wait_for_end(lambda: self._n8n().api_get(f"/executions/{execution_id}"),
+                                         max_s=self.watch_max_hours * 3600)
+            entry.update(outcome)
+            record = {"status": outcome["status"]}
+            if outcome.get("note"):
+                record["note"] = outcome["note"] + ("; the watch has ended, no further wake comes"
+                                                    if outcome["status"] in ("unknown", "not_found") else "")
+            logger.info("n8n execution %s ended for the watch: %s", execution_id, record)
+            store = self._store()
+            if store is not None:
+                await store.set(f"exec:{key}", record, ttl=WATCH_RECORD_TTL_S)
+            if self._was_read(key, entry):
+                return
+            await wake_session(self.system_config, session_id, user_id,
+                               what=f"n8n execution {execution_id} ({outcome['status']})",
+                               still_needed=lambda: not self._was_read(key, entry))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a broken watch costs its wake, never the process
+            logger.exception("n8n watch of execution %s failed", execution_id)
+        finally:
+            self._watched.pop(key, None)
+            _remove(self._mark_path("watch", key))
+            await self._sweep()
+
+    def _watch_key(self, workflow_id: Any, execution_id: Any, session_id: Any) -> Optional[str]:
+        """One session's watch of one run on this n8n instance: the name of its
+        record and marks, so an old mark of another instance, workflow or session
+        silences nothing. None when a part could make an unsafe file name."""
+        workflow_id, execution_id, session_id = str(workflow_id), str(execution_id), str(session_id)
+        if not (_WORKFLOW_ID.fullmatch(workflow_id) and _EXECUTION_ID.fullmatch(execution_id)
+                and _SESSION_ID.fullmatch(session_id)):
+            return None
+        instance = hashlib.sha256(self.base_url.encode()).hexdigest()[:8]
+        return f"{instance}-{workflow_id}-{execution_id}-{session_id}"
+
+    def _store(self) -> Optional[PluginCache]:
+        """Watch records and marks, visible to every process: a woken run is a new
+        one (core/session_presence.py). Best effort: without a writable cache a
+        watch still rings, it only cannot see a read in another process."""
+        if self._outcomes is None:
+            try:
+                self._outcomes = PluginCache(self.name, cache_dir=CACHE_ROOT)
+            except OSError as exc:
+                logger.warning("n8n: no watch records, the cache is not writable: %s", exc)
+                return None
+        return self._outcomes
+
+    def _mark_path(self, kind: str, key: Optional[str]) -> Optional[Path]:
+        store = self._store() if key else None
+        return store.cache_dir / kind / key if store is not None else None
+
+    async def _watch_record(self, key: Optional[str]) -> Optional[dict]:
+        store = self._store() if key else None
+        record = await store.get(f"exec:{key}") if store is not None else None
+        return record if isinstance(record, dict) else None
+
+    def _watched_somewhere(self, key: Optional[str]) -> bool:
+        """A watch of this key runs here or in another process. Reads of runs
+        nobody watches leave no mark."""
+        mark = self._mark_path("watch", key)
+        return key in self._watched or (mark is not None and mark.exists())
+
+    def _mark_read(self, key: Optional[str]) -> None:
+        entry = self._watched.get(key)
+        if entry is not None:
+            entry["read"] = True
+        _touch(self._mark_path("read", key))
+
+    def _was_read(self, key: str, entry: dict) -> bool:
+        """Synchronous, as wake_session's still_needed must be: read here, or in
+        another process (the woken run)."""
+        mark = self._mark_path("read", key)
+        return bool(entry["read"] or (mark is not None and mark.exists()))
+
+    async def _sweep(self) -> None:
+        """Marks and records past their TTL. PluginCache drops a record only when
+        its key is read again, and nobody reads an old watch's key."""
+        store = self._store()
+        if store is None:
+            return
+        await store.cleanup_expired()
+        cutoff = time.time() - WATCH_RECORD_TTL_S
+        for kind in ("read", "watch"):
+            try:
+                folder = store.cache_dir / kind
+                for mark in folder.glob("*") if folder.is_dir() else []:
+                    if mark.stat().st_mtime < cutoff:
+                        mark.unlink()
+            except OSError as exc:
+                logger.debug("n8n: %s marks not swept: %s", kind, exc)
+
+
+def _touch(path: Optional[Path]) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    except OSError as exc:
+        logger.warning("n8n: could not write %s: %s", path, exc)
+
+
+def _remove(path: Optional[Path]) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.debug("n8n: could not remove %s: %s", path, exc)
+
+
+def _items(page: Any) -> list[dict]:
+    items = page.get("data") if isinstance(page, dict) else None
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def _agents_wanting(system_config: Any, name: str) -> list[str]:
+    """The enabled agents whose allowlist names this instance's tools."""
+    servers = getattr(getattr(system_config, "plugins", None), "servers", None) or {}
+    wanting = []
+    for server, cfg in servers.items():
+        allowed = getattr(getattr(getattr(cfg, "agent_config", None), "tools", None), "allowed", None) or []
+        if getattr(cfg, "enabled", False) and any(str(p).lstrip("+").split("/")[0] == name for p in allowed):
+            wanting.append(server)
+    return sorted(wanting)
+
+
+def _not_run(response) -> str:
+    """Why n8n seems to have answered before any workflow ran, or "": its own
+    "not registered" 404 (M-MCP-67) and the too-large codes. A workflow can
+    answer these too, so the caller believes it only when no run turns up."""
+    if response.status_code == 404 and "is not registered" in response.text:
+        return "n8n does not know this webhook -- is the workflow still published?"
+    if response.status_code in (413, 414, 431):
+        return f"n8n refused the request as too large (HTTP {response.status_code}); nothing ran"
+    return ""
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(str(value))
+    except ValueError:
+        return -1
+
+
+def _webhooks(nodes: Any) -> list[dict]:
+    """The enabled Webhook triggers among nodes: name, path, methods, authentication.
+    httpMethod defaults to GET, with multipleMethods to GET and POST (F-NOD12)."""
+    found = []
+    for node in nodes if isinstance(nodes, list) else []:
+        if not isinstance(node, dict) or node.get("disabled") or node.get("type") != "n8n-nodes-base.webhook":
+            continue
+        parameters = node.get("parameters") if isinstance(node.get("parameters"), dict) else {}
+        methods = parameters.get("httpMethod")
+        if parameters.get("multipleMethods"):
+            methods = methods if isinstance(methods, list) and methods else ["GET", "POST"]
+        else:
+            methods = [methods if isinstance(methods, str) and methods else "GET"]
+        found.append({"node": node.get("name"), "path": str(parameters.get("path") or "").strip("/"),
+                      "methods": [str(m).upper() for m in methods],
+                      "auth": str(parameters.get("authentication") or "none")})
+    return found
+
+
+def _trigger_target(workflow: dict, node_name: Any, method: Any) -> tuple[dict, str]:
+    """The published Webhook trigger to call, and the method; N8nError says why none fits."""
+    active = workflow.get("activeVersion")
+    if not workflow.get("activeVersionId") or not isinstance(active, dict):
+        raise N8nError(f"workflow {workflow.get('id')} is not published; publishing it is the user's decision "
+                       f"(n8n_publish_workflow)")
+    hooks = [h for h in _webhooks(active.get("nodes")) if not node_name or h["node"] == node_name]
+    if not hooks:
+        raise N8nError("the published version has no enabled Webhook trigger"
+                       + (f" named {_short(node_name)}" if node_name else "")
+                       + "; only webhook workflows are started from here, a schedule runs by itself")
+    if len(hooks) > 1:
+        raise N8nError("the published version has several Webhook triggers; name one in webhook_node")
+    hook = hooks[0]
+    if hook["auth"] != "none":
+        raise N8nError(f"the webhook requires {_short(hook['auth'])}; ScarabHive holds no credential for it")
+    problem = webhook_path_problem(hook["path"]) if hook["path"] else "the webhook path is empty"
+    if problem:
+        raise N8nError(problem)
+    if ":" in hook["path"]:
+        raise N8nError("the webhook path has route parameters (:name); call it from the n8n editor")
+    wanted = str(method).upper() if method else ""
+    if wanted and wanted not in hook["methods"]:
+        raise N8nError(f"the webhook takes {', '.join(hook['methods'])}, not {_short(wanted)}")
+    if not wanted and len(hook["methods"]) > 1:
+        raise N8nError(f"the webhook takes {', '.join(hook['methods'])}; pick one in method")
+    return hook, wanted or hook["methods"][0]
 
 
 def _credential_list(payload: Any) -> list[dict]:

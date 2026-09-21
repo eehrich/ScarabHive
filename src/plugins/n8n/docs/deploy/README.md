@@ -116,6 +116,7 @@ N8N_MCP_KEY=<N8N_MCP_KEY aus CREDENTIALS>
 ```
 
 - `N8N_BASE_URL` ist die Adresse, unter der **ScarabHive** n8n erreicht, ohne abschließenden `/`. Das kann eine andere sein als `N8N_PUBLIC_URL`, z. B. wenn beide auf demselben Host laufen.
+- Ist sie eine andere, gehört auch `N8N_PUBLIC_URL=<öffentliche Adresse>` in `config/secrets.env`. Editor-Links und die Webhook-URLs, die der Agent nach dem Veröffentlichen nennt, baut das Plugin daraus; ohne sie aus `N8N_BASE_URL`, und die taugt dann nicht für Aufrufer von außen.
 - Das **Owner-Passwort gehört nicht** in `config/secrets.env`. ScarabHive braucht es zur Laufzeit nicht; es bleibt in `CREDENTIALS` für dich.
 
 Danach ScarabHive neu starten. Die Plugin-Instanz ist bereits eingeschaltet (`enabled: true` in `agents/n8n.yaml`) und bietet ohne die Werte keine Tools an. Ohne `N8N_MCP_KEY` stellt das Plugin keine Tools bereit; ohne `N8N_API_KEY` nur die lesenden Knotenwissen-Tools.
@@ -183,6 +184,7 @@ Das Plugin stützt sich auf gemessenes Verhalten einer bestimmten n8n-Version. N
 | Ein gepinnter Sub-Workflow-Aufruf startet den Sub-Workflow nicht | M-MCP-53 | Darum dürfen Sub-Workflows im Test nie live laufen. |
 | Code hat Netz über `helpers.httpRequest` | M-MCP-38 | Begründet, warum Code im Test nie live läuft. |
 | `validate_workflow` lässt Version 99 und einen leeren Webhook-Pfad durch | M-MCP-H9 | Fängt n8n das inzwischen selbst, fällt die eigene Prüfung weg. |
+| Veröffentlichen per `versionId`, Auslösen per Webhook, die laufende Execution finden, Zurücknehmen, Archivieren | M-MCP-65 bis M-MCP-68, M-MCP-70 | Darauf ruhen die Versionsprüfung und das Wiederfinden einer ausgelösten Execution. |
 
 **Von Hand zu prüfen** (mit den Skripten aus den Quellen in `n8n_facts.md`):
 

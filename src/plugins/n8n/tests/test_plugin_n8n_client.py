@@ -11,7 +11,8 @@ import httpx
 import pytest
 
 from plugins.n8n import client as client_module
-from plugins.n8n.client import McpResult, N8nClient, N8nError, N8nNotFound, mcp_error, to_result
+from plugins.n8n.client import (McpResult, N8nClient, N8nError, N8nNoAnswer, N8nNotFound, N8nUnavailable, mcp_error,
+                               to_result)
 
 API_KEY, MCP_KEY = "api-secret-123", "mcp-secret-456"
 
@@ -225,6 +226,18 @@ async def test_public_api_answers_and_failures():
     await client.aclose()
 
 
+async def test_only_n8ns_own_404_means_not_found():
+    """A proxy answers a plain 404 while n8n restarts (M-MCP-70: n8n's is JSON);
+    a watch must wait on that, not give the run up as gone."""
+    def proxy(request):
+        return httpx.Response(404, text="404 page not found")
+
+    client = N8nClient("http://n8n.test", API_KEY, MCP_KEY, transport=httpx.MockTransport(proxy))
+    with pytest.raises(N8nUnavailable):
+        await client.api_get("/executions/7")
+    await client.aclose()
+
+
 async def test_an_answer_that_is_not_json_names_the_likely_cause():
     """A proxy or login page in front of n8n answers 200 with HTML."""
     fake = FakeN8n()
@@ -333,3 +346,66 @@ def test_to_result_prefers_structured_content_then_json_text():
     raw = {"content": [{"type": "text", "text": "plain"}], "structuredContent": {"b": 2}}
     assert to_result(raw).payload == {"b": 2}
     assert to_result({"content": [{"type": "text", "text": "plain"}]}).payload == "plain"
+
+
+
+async def test_a_webhook_call_carries_no_key_and_sends_get_as_query():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"message": "Workflow was started"})
+
+    client = N8nClient("http://n8n.test", API_KEY, MCP_KEY, transport=httpx.MockTransport(handler))
+    await client.webhook("POST", "orders", {"n": 1}, timeout=5)
+    await client.webhook("GET", "/orders", {"n": 1}, timeout=5)
+    await client.aclose()
+    post, get = seen
+    assert post.url.path == "/webhook/orders" and json.loads(post.content) == {"n": 1}
+    assert get.url.path == "/webhook/orders" and get.url.params["n"] == "1" and not get.content
+    for request in seen:
+        assert API_KEY not in str(request.headers) and MCP_KEY not in str(request.headers)
+
+
+@pytest.mark.parametrize("error,sent", [(httpx.ConnectError, False), (httpx.ConnectTimeout, False),
+                                        (httpx.ReadTimeout, True), (httpx.RemoteProtocolError, True)])
+async def test_a_webhook_sent_without_an_answer_is_told_apart_from_one_never_sent(error, sent):
+    def handler(request):
+        raise error("boom", request=request)
+
+    client = N8nClient("http://n8n.test", API_KEY, MCP_KEY, transport=httpx.MockTransport(handler))
+    with pytest.raises(N8nError) as raised:
+        await client.webhook("POST", "orders", {}, timeout=5)
+    await client.aclose()
+    assert isinstance(raised.value, N8nNoAnswer) is sent
+
+
+@pytest.mark.parametrize("tool", ["publish_workflow", "unpublish_workflow"])
+@pytest.mark.parametrize("payload,expected", [
+    ({"success": True, "workflowId": "w", "activeVersionId": "v"}, None),
+    ({"success": False, "error": "There is a conflict with one of the webhooks."}, "conflict"),
+    ({"workflowId": "w"}, "did not confirm"),
+])
+def test_publish_answers_count_only_with_success(tool, payload, expected):
+    error = mcp_error(tool, McpResult(payload, json.dumps(payload), False))
+    assert error is None if expected is None else expected in error
+
+
+
+async def test_a_server_error_or_no_connection_is_worth_waiting_for_a_refused_key_is_not():
+    fake = FakeN8n()
+    client = N8nClient("http://n8n.test", API_KEY, MCP_KEY, transport=httpx.MockTransport(fake))
+    with pytest.raises(N8nUnavailable):
+        await client.api_get("/broken")
+    with pytest.raises(N8nError) as refused:
+        await client.api_get("/denied")
+    assert not isinstance(refused.value, N8nUnavailable)
+    await client.aclose()
+
+    def refuse(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    down = N8nClient("http://n8n.test", API_KEY, MCP_KEY, transport=httpx.MockTransport(refuse))
+    with pytest.raises(N8nUnavailable):
+        await down.api_get("/workflows")
+    await down.aclose()

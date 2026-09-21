@@ -19,6 +19,7 @@ import pytest
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.n8n.client import N8nClient
 from plugins.n8n.server import N8nServer
+from plugins.n8n.watch import wait_for_end
 
 NEEDED = ("N8N_BASE_URL", "N8N_API_KEY", "N8N_MCP_KEY", "N8N_TEST_API_KEY")
 pytestmark = pytest.mark.skipif(
@@ -97,6 +98,48 @@ async def test_the_plugin_proves_a_workflow_end_to_end(n8n):
         assert tested["tested"], tested
         shape = next(n for n in tested["nodes"]["content"] if n["name"] == "Shape")
         assert shape["run"] == "live" and "Hello Ada" in shape["sample"]
+    finally:
+        await server.stop_plugin()
+
+
+async def test_publish_trigger_and_take_offline_through_the_plugin(n8n):
+    """M-MCP-65 to M-MCP-68: an untested version is refused, the tested one goes
+    live by its version id, a webhook run is found while it still runs, and
+    it is taken offline again. If a step breaks after an upgrade, re-measure
+    before changing the plugin."""
+    cfg = ToolServerConfig()
+    cfg.allow_publish = True
+    server = N8nServer("n8n", AgentSystemConfig(), cfg)
+    name = PREFIX + uuid.uuid4().hex[:6]
+    code = sdk(name,
+               ("hook", "trigger", "n8n-nodes-base.webhook", 2.1, "Hook", f"{{ httpMethod: 'POST', path: '{name}' }}"),
+               ("pause", "node", "n8n-nodes-base.wait", 1.1, "Pause", "{ amount: 3, unit: 'seconds' }"),
+               ("shape", "node", "n8n-nodes-base.set", 3.4, "Shape",
+                "{ assignments: { assignments: [{ id: 'a', name: 'got', value: expr('{{ $json.body.x }}'), "
+                "type: 'string' }] } }"),
+               chain=["hook", "pause", "shape"])
+    try:
+        created = await server.create_workflow({"code": code, "name": name, "_status": Status()})
+        assert created["status"] == "success" and created["ok"], created
+        wid = created["workflow_id"]
+        untested = await server.publish_workflow({"workflow_id": wid, "_status": Status()})
+        assert "no successful test" in untested.get("error", ""), untested
+        tested = await server.test_workflow({"workflow_id": wid, "_status": Status(), "mocks": {"Pause": [{"json": {"body": {"x": "T"}}}]},
+                                             "trigger_input": [{"json": {"body": {"x": "T"}}}]})
+        assert tested["tested"], tested
+        published = await server.publish_workflow({"workflow_id": wid, "_status": Status()})
+        assert published["status"] == "success", published
+        assert published["webhooks"]["content"][0]["url"].endswith(f"/webhook/{name}")
+        fired = await server.trigger_workflow({"workflow_id": wid, "payload": {"x": "LIVE"}, "wait": "none",
+                                               "_status": Status()})
+        assert fired["http_status"] == 200 and fired["correlation"] == "heuristic", fired
+        assert fired["execution_status"] == "running", "the run ended before it was found; the lookup of a running run is unproven"
+        ended = await wait_for_end(lambda: server._n8n().api_get(f"/executions/{fired['execution_id']}"), max_s=60)
+        assert ended == {"status": "success"}
+        offline = await server.unpublish_workflow({"workflow_id": wid, "_status": Status()})
+        assert offline["was_published"] is True, offline
+        archived = await server.archive_workflow({"workflow_id": wid, "_status": Status()})
+        assert archived["archived"] is True, archived
     finally:
         await server.stop_plugin()
 

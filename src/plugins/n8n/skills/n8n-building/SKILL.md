@@ -66,9 +66,10 @@ Pass `expected_version_id` from your last read. Refused by policy: removing the 
 | code | level | means | do |
 |---|---|---|---|
 | `BLOCKED_NODE` | error | shell, file, legacy code or instance-admin node -- not allowed | use a dedicated node |
-| `REVIEW_NODE` | warning | HTTP, Code, FTP, sub-workflow, MCP client: a human looks before publishing | name it in the handover |
+| `REVIEW_NODE` | warning | HTTP, Code, FTP, sub-workflow, MCP client: a human looks before publishing | name it in the handover, and to the user before you publish |
 | `UNKNOWN_TYPE_VERSION` | error | n8n does not know this type/version | take the version `get_node_types` knows |
 | `WEBHOOK_PATH_EMPTY` | error | webhook without a path answers 404 | set a path |
+| `WEBHOOK_PATH_UNSAFE` | error | a path with `..`, `?`, `#`, `%` or other characters would reach another n8n URL | a plain path such as `orders/new` |
 | `RESPOND_NODE_MISSING` | error | `responseMode: responseNode` without a Respond to Webhook after it -- green in a test, HTTP 500 in production | add the node or use `lastNode` |
 | `EXPRESSION_UNBALANCED` | error | `{{` without `}}` | close it |
 | `EXECUTE_WORKFLOW_SOURCE` | error | sub-workflow not from the database with a fixed id | store it, reference its id |

@@ -6,7 +6,8 @@ through the public API (``/api/v1``), for two measured reasons: the MCP
 allows 100 requests per IP and five minutes while the public API has no
 limit, and the MCP only sees workflows exposed to it (docs/n8n_facts.md
 M-MCP-24, F-AUTH5, M-MCP-20). The public key therefore holds read scopes only,
-and this client has no way to send anything but a GET with it.
+and this client has no way to send anything but a GET with it. The third way
+is a published workflow's production webhook, called without any key.
 
 One ``httpx.AsyncClient`` and one MCP handshake per process: a handshake
 costs two of the hundred requests (initialize, initialized). n8n 2.39.9's MCP
@@ -40,6 +41,16 @@ class N8nError(Exception):
 
 class N8nNotFound(N8nError):
     """The public API answered 404 for this path."""
+
+
+class N8nUnavailable(N8nError):
+    """n8n cannot answer right now: not reachable, or a server error. Worth
+    waiting for, unlike a refused key or a missing scope."""
+
+
+class N8nNoAnswer(N8nError):
+    """A webhook request went out without an answer coming back: the workflow
+    may be running, so the caller must not send it again."""
 
 
 @dataclass
@@ -122,6 +133,10 @@ def mcp_error(tool: str, result: McpResult) -> Optional[str]:
         if payload.get("error") and not payload.get("workflowId"):
             return str(payload["error"])[:500]
         return None
+    if tool in ("publish_workflow", "unpublish_workflow") and payload.get("success") is not True:
+        # A refusal comes as {"success": false, "error": ...} without isError
+        # (M-MCP-6, M-MCP-66); an answer without success is no success either.
+        return str(payload.get("error") or f"n8n did not confirm {tool}")[:500]
     if payload.get("error"):
         return str(payload["error"])[:500]
     return None
@@ -161,13 +176,40 @@ class N8nClient:
         if response.status_code == 403:
             raise N8nError(f"the n8n public API key lacks the scope for GET {path}")
         if response.status_code == 404:
-            raise N8nNotFound(f"not found: GET {path}")
+            try:
+                from_n8n = isinstance(response.json(), dict)    # n8n: {"message": "Not Found"} (M-MCP-70)
+            except ValueError:
+                from_n8n = False
+            if from_n8n:
+                raise N8nNotFound(f"not found: GET {path}")
+            # A proxy's page while n8n restarts is no answer about the thing asked for.
+            raise N8nUnavailable(f"GET {path} answered 404 without n8n's JSON -- a proxy in front of n8n?")
+        if response.status_code >= 500:
+            raise N8nUnavailable(self._http_error(response, f"GET {path}"))
         if response.status_code >= 400:
             raise N8nError(self._http_error(response, f"GET {path}"))
         try:
             return response.json()
         except ValueError:
             raise _not_json("the n8n public API") from None
+
+    # ── production webhook ────────────────────────────────────────────────
+
+    async def webhook(self, method: str, path: str, payload: dict, *, timeout: float) -> httpx.Response:
+        """Call ``/webhook/<path>`` of a published workflow; any HTTP status comes back.
+
+        Carries NO key: the workflow sees every header it is sent, and a key
+        would land in its execution data. GET and HEAD send the payload as
+        query parameters, every other method as a JSON body."""
+        data: dict = {"params": payload} if method in ("GET", "HEAD") else {"json": payload}
+        try:
+            return await self._http.request(method, "/webhook/" + path.lstrip("/"), timeout=timeout,
+                                            headers={"Accept": "application/json"}, **data)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise self._unreachable(exc) from None      # nothing was sent
+        except httpx.HTTPError as exc:
+            raise N8nNoAnswer(f"the webhook request went out but no answer came back within {timeout:g} s "
+                              f"({type(exc).__name__})") from None
 
     # ── instance MCP ──────────────────────────────────────────────────────
 
@@ -284,5 +326,5 @@ class N8nClient:
         return f"{what} answered HTTP {response.status_code}: {detail}"[:300]
 
     def _unreachable(self, exc: Exception) -> N8nError:
-        return N8nError(f"n8n not reachable at {self.base_url} ({type(exc).__name__}) -- is the "
+        return N8nUnavailable(f"n8n not reachable at {self.base_url} ({type(exc).__name__}) -- is the "
                         f"container running? {self.base_url}/healthz tells")

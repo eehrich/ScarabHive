@@ -9,7 +9,7 @@ Node versions below are examples; confirm them with `n8n_get_node_types`.
 
 # Webhook that answers -- callable by ScarabHive
 
-POST, a Respond to Webhook node, and the execution id in the answer: that is how a caller finds the run again.
+POST, a Respond to Webhook node, and the execution id in the answer: that is how a caller finds the run again -- `n8n_trigger_workflow` matches it exactly. A webhook with authentication or a path with `:params` cannot be triggered from ScarabHive.
 
 ```javascript
 const hook = trigger({ type: 'n8n-nodes-base.webhook', version: 2.1,
@@ -39,11 +39,11 @@ Read `n8n_get_sdk_reference` section `patterns_detailed` for `languageModel`, `m
 
 # Error workflow
 
-A workflow that starts with `n8n-nodes-base.errorTrigger` receives `execution {id, url, error, lastNodeExecuted}` and `workflow {id, name}`. n8n only accepts it as another workflow's `errorWorkflow` once it is PUBLISHED and contains the Error Trigger -- publishing is for a human. Build it, test it, hand over: "publish X, then I set it as errorWorkflow of Y" (`setWorkflowSettings`).
+A workflow that starts with `n8n-nodes-base.errorTrigger` receives `execution {id, url, error, lastNodeExecuted}` and `workflow {id, name}`. n8n only accepts it as another workflow's `errorWorkflow` once it is PUBLISHED and contains the Error Trigger. Build it, test it; publish it only if the user asked for that, then set it as `errorWorkflow` of the other (`setWorkflowSettings`). Otherwise hand over: "publish X, then set it as errorWorkflow of Y".
 
 # A workflow as a tool for ScarabHive agents
 
-Start with `@n8n/n8n-nodes-langchain.mcpTrigger` (version 2.x) and give it tool nodes; each tool's name is its NODE name, case-sensitive. Set the trigger's `authentication: 'bearerAuth'` with `credentials: { httpBearerAuth: newCredential('<name> token') }` -- n8n defaults to `none`, which leaves a published endpoint open to anyone who reaches n8n. The credential goes into `todo_for_user`; the same token goes into `<VAR>` below. After a human publishes it, the operator adds to `config/mcp_servers.yaml`:
+Start with `@n8n/n8n-nodes-langchain.mcpTrigger` (version 2.x) and give it tool nodes; each tool's name is its NODE name, case-sensitive. Set the trigger's `authentication: 'bearerAuth'` with `credentials: { httpBearerAuth: newCredential('<name> token') }` -- n8n defaults to `none`, which leaves a published endpoint open to anyone who reaches n8n. The credential goes into `todo_for_user`; the same token goes into `<VAR>` below. Once it is published, the operator adds to `config/mcp_servers.yaml`:
 
 ```yaml
 external_servers:
@@ -55,6 +55,6 @@ external_servers:
       auth: {type: bearer, bearer_token: "${<VAR>}"}
 ```
 
-and `"<name>.*"` to the allowlist of the agent that should use it. Every call is an n8n execution. Put this snippet into the handover -- you do not edit `config/`.
+and `"<name>.*"` to the allowlist of the agent that should use it. Every call is an n8n execution. If n8n is not reachable when ScarabHive starts, these tools are missing until `/mcp-connect <name>` or a restart. Put this snippet into the handover -- you do not edit `config/`.
 
 A test run pins the MCP trigger, so its tools never run and show as `not_reached`. Prove each tool's logic as its own workflow (a sub-workflow behind a `toolWorkflow` node, tested on its own), or hand the tools over as NOT TESTED.

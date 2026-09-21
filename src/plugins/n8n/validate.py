@@ -101,6 +101,20 @@ def is_trigger_type(node_type: str) -> bool:
     return node_type.endswith("Trigger") or node_type in _TRIGGER_TYPES
 
 
+# A webhook path becomes part of the production URL. A dot segment, "?", "#",
+# "%" or a backslash would send a call to another n8n URL (review, Phase 1b).
+_WEBHOOK_PATH = re.compile(r"[A-Za-z0-9_~:.-]+(/[A-Za-z0-9_~:.-]+)*")
+
+
+def webhook_path_problem(path: str) -> str:
+    """Why a webhook path is unsafe to call, or ""."""
+    trimmed = path.strip("/")
+    if not _WEBHOOK_PATH.fullmatch(trimmed) or any(s in (".", "..") for s in trimmed.split("/")):
+        return (f"webhook path {path[:60]!r}: only letters, digits and - _ . ~ : between single slashes, "
+                f"and no . or .. segment")
+    return ""
+
+
 def finding(code: str, level: str, message: str, node: Optional[str] = None, fix_hint: str = "") -> dict:
     return {"code": code, "level": level, "node": node, "message": message, "fix_hint": fix_hint}
 
@@ -267,9 +281,13 @@ def check_workflow(workflow: dict, *, blocked: frozenset, review: frozenset,
                                      f"(source={source!r})", name,
                                      "store the sub-workflow and reference its id"))
         if node_type == "n8n-nodes-base.webhook":
-            if not str(params.get("path") or "").strip():
+            path = str(params.get("path") or "")
+            if not path.strip():
                 found.append(finding("WEBHOOK_PATH_EMPTY", "error", "webhook path is empty", name,
                                      "set a path; an empty one answers 404"))
+            elif webhook_path_problem(path):
+                found.append(finding("WEBHOOK_PATH_UNSAFE", "error", webhook_path_problem(path), name,
+                                     "use a plain path such as orders or orders/new"))
             if params.get("responseMode") == "responseNode" and \
                     not _reaches(workflow, name, "n8n-nodes-base.respondToWebhook"):
                 found.append(finding("RESPOND_NODE_MISSING", "error",

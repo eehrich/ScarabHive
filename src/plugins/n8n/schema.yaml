@@ -229,13 +229,62 @@ tools:
   - type: function
     function:
       name: "{{ name }}_list_executions"
-      description: "Recent executions, optionally of one workflow or with one status."
+      description: "Recent executions newest first, running and waiting ones included; optionally of one workflow or with one status."
       parameters:
         type: object
         properties:
           workflow_id: {type: string}
           status: {type: string, enum: ["success", "error", "running", "waiting", "canceled", "crashed", "new", "unknown"]}
           limit: {type: integer, minimum: 1, maximum: 20, default: 10}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_publish_workflow"
+      description: "Publish a workflow for production -- only when the user asked for it. Takes the current version only if it has no blocking finding and a successful test run; returns the production webhook URLs."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+        required: [workflow_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_unpublish_workflow"
+      description: "Take a published workflow offline -- only when the user asked for it."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+        required: [workflow_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_archive_workflow"
+      description: "Archive a workflow; a published one goes offline. Restoring is done in the n8n editor. Only when the user asked for it."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+        required: [workflow_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_trigger_workflow"
+      description: "Run a PUBLISHED workflow for real through its production webhook -- only when the user asked for it; it acts like any production run. Returns the webhook's answer and the execution. If the answer says wake: true, you are woken when the run ends: give the user the execution id and end your turn; otherwise follow wake_note."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+          payload: {type: object, description: "JSON body; for a GET webhook flat query parameters"}
+          method: {type: string, description: "Only when the webhook takes several methods"}
+          webhook_node: {type: string, description: "Only when the workflow has several Webhook triggers"}
+          wait: {type: string, enum: ["wake", "none"], default: "wake"}
+          timeout_s: {type: integer, minimum: 5, maximum: 300, default: 60, description: "How long to wait for the webhook's answer"}
+        required: [workflow_id]
         additionalProperties: false
 {% endif %}
 {% endif %}
