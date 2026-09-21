@@ -2160,6 +2160,15 @@ Two more rules that follow from how the hook is reached
   hook that worked. Test through `capabilities.stop_plugin` and assert that
   nothing was logged, not just that the first line ran.
 
+* Release only what the plugin itself opened. The tool integration is the
+  **process's** -- the entry point (app lifespan, `agent-cli`, `agent-run`,
+  chat) ends it with `shutdown_tools()`. The `Agent` base class has no
+  teardown at all, on purpose: an agent that stopped the integration would
+  stop every plugin in the process, and one that cleared its session tracker
+  would take the session locks from runs `shutdown_tools()` does not wait for.
+  An agent-based plugin that opens something of its own adds `stop_plugin`
+  for exactly that.
+
 `tests/pluginsystem/test_pluginsystem_teardown_hook.py` reads every plugin's
 factory class and fails if it has a teardown under any other name.
 

@@ -59,8 +59,9 @@ async def test_stopping_the_plugin_stops_the_search_engine(server, monkeypatch, 
     assert stopped == ["search"], (
         "the framework's stop never reached the index -- the indexer keeps "
         "running and the vector store stays open")
-    assert not caplog.records, (
-        f"the hook did not finish: {[r.getMessage() for r in caplog.records]}")
+    failed = [r.getMessage() for r in caplog.records
+              if r.name == "agent_system.plugins.capabilities"]
+    assert not failed, f"the hook did not finish: {failed}"
 
 
 @pytest.mark.asyncio

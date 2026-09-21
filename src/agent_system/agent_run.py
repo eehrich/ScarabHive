@@ -42,6 +42,7 @@ from .cli_utils.common import (
     format_error
 )
 from .llm.batch.initialization import init_batch_system, shutdown_batch_system
+from .tools.integration import shutdown_tools
 
 if TYPE_CHECKING:
     from .llm.models import ChatMessage
@@ -490,6 +491,16 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             presence.release(actual_session_id, session_user)
         # Shutdown batch queue manager if it was started
         await shutdown_batch_system()
+        # The tool integration is this PROCESS's, not the agent's: the agent
+        # only set up the module-level singleton because it asked first. So
+        # the entry point takes it down, as agent-cli and the app do -- this
+        # stops every plugin (a terminal's background processes, an SSH
+        # channel, file_ops' indexer) instead of leaving them to whatever the
+        # interpreter's exit happens to reach. A wake run is this process too.
+        try:
+            await shutdown_tools()
+        except Exception as e:  # noqa: BLE001 - the run is over; say it, don't fail it
+            logger.warning("Failed to shut down the tool integration: %s", e)
 
 
 def main() -> None:

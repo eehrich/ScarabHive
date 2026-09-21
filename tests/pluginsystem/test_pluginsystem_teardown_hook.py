@@ -26,14 +26,12 @@ hands back has a teardown-looking method at all, it must also have
 guessing names at runtime would mean calling whatever a plugin happens to call
 ``cleanup``, and some of those are tools that delete things.
 
-One thing this deliberately does NOT reach: an agent plugin's inherited
-``Agent.shutdown()``. Bases outside the package are not followed, and that is
-the right answer rather than an omission -- ``Agent.shutdown()`` is called
-from nowhere in ``src`` (measured 21.09.2026), but wiring it to this hook
-would tear down a PROCESS-WIDE tool integration from one plugin's stop, and in
-a CLI process it would re-enter ``shutdown_all`` through
-``ToolServerIntegration.shutdown``. That is a decision about who owns the
-integration, not a missing forward, and it is open.
+Bases outside the package are not followed, so agent plugins are judged by
+what they add, not by what they inherit from ``Agent``. The ``Agent`` base
+has its own test: ``tests/agent/test_agent_stop_plugin.py`` pins that it has
+no teardown under a dead name any more (it had ``shutdown()``, which nothing
+called) and that stopping an agent touches neither the tool integration --
+the process entry point's -- nor the session state of runs still going.
 
 Read statically, like ``tests/plugins/test_status_end_lines.py``'s second
 layer: importing every plugin would need a GPU, an SSH server and half the

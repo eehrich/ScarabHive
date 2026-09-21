@@ -261,3 +261,38 @@ class TestSessionPresence:
         finally:
             holder.kill()
             holder.wait()
+
+
+class TestAgentRunOwnsTheToolIntegration:
+    """agent-run is a process entry point, so the tool integration is its to end.
+
+    The agent only sets up the module-level singleton because it asked first;
+    it does not own it (tests/agent/test_agent_stop_plugin.py). agent-cli and
+    the app lifespan already called shutdown_tools() on their way out --
+    agent-run was the one entry point that left every plugin to the
+    interpreter's exit: a terminal's background processes, an SSH channel,
+    file_ops' indexer. A wake run is an agent-run process too.
+    """
+
+    @pytest.fixture
+    def ended(self, run_env, monkeypatch):
+        calls = []
+
+        async def fake_shutdown_tools():
+            calls.append("shutdown_tools")
+
+        monkeypatch.setattr(agent_run, "shutdown_tools", fake_shutdown_tools)
+        return calls
+
+    def test_a_run_that_finishes_takes_it_down(self, run_env, ended):
+        _run(session_id="s1")
+        assert ended == ["shutdown_tools"]
+
+    def test_a_run_that_fails_takes_it_down_too(self, run_env, ended, monkeypatch):
+        async def broken(*args, **kwargs):
+            raise RuntimeError("the model went away")
+
+        monkeypatch.setattr(agent_run, "run_agent_request", broken)
+        with pytest.raises(SystemExit):
+            _run(session_id="s1")
+        assert ended == ["shutdown_tools"], "a failed run left the plugins running"

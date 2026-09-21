@@ -28,7 +28,6 @@ class ToolIntegrationManager:
         self.system_config = system_config
         self.agent_config = agent_config
         self.tool_integration = None
-        self.tools_initialized_locally = False
         self._agent_ref = None  # Will be set by Agent after creation
 
     async def setup_tool_integration(self) -> None:
@@ -52,9 +51,13 @@ class ToolIntegrationManager:
             # Create or get a new integration with system_config (not agent_config!)
             self.tool_integration = get_tool_integration(config=self.system_config)
             if not self.tool_integration.initialized:
-                # Initialize with the full system configuration
+                # Initialize with the full system configuration. Being the first
+                # to initialize it does not make it the agent's: it is the
+                # module-level singleton, every other agent of this process
+                # uses it from here on, and the process entry point
+                # (app lifespan, agent-cli, agent-run, chat) shuts it down
+                # with shutdown_tools() when the process is done.
                 await self.tool_integration.initialize(self.system_config)
-                self.tools_initialized_locally = True
                 logger.debug("Initialized tool integration for agent with full system configuration")
 
             # Set agent reference for cancellation support if available
@@ -144,12 +147,3 @@ class ToolIntegrationManager:
             logger.debug("Failed to build schema for external tool %s: %s", tool_name, e)
 
         return None, {}
-
-    async def shutdown(self) -> None:
-        """Shutdown tool integration if we initialized it locally."""
-        if self.tools_initialized_locally and self.tool_integration:  # type: ignore[unreachable]
-            try:  # type: ignore[unreachable]
-                await self.tool_integration.shutdown()
-                logger.debug("Shut down tool integration")
-            except Exception as e:
-                logger.debug("Error shutting down tool integration: %s", e)

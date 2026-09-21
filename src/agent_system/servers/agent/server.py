@@ -1859,8 +1859,8 @@ class Agent(ToolServer):
         # processes (writer pipelines) after their first request, because
         # ToolServerIntegration.shutdown() stops all plugins but leaves
         # `initialized` True -- so the next request found a half-dead
-        # integration and never re-initialized it. Shutdown belongs to
-        # Agent.shutdown() / process end, where it already happens.
+        # integration and never re-initialized it. Shutdown belongs to the
+        # process entry point (shutdown_tools), never to an agent.
 
         # Reset the current_request_id ContextVar so it doesn't leak to other tasks
         if context and context.context_reset_token is not None:
@@ -3717,29 +3717,6 @@ class Agent(ToolServer):
 
             yield {"type": "end"}
 
-
-    async def shutdown(self) -> None:
-        """Shutdown the agent and clean up resources"""
-        logger.info("Agent shutdown initiated")
-
-        # Shut down the tool integration -- but only one WE created.
-        #
-        # This used to call tool_integration.shutdown() directly, skipping the
-        # tools_initialized_locally check the manager makes. The integration is
-        # usually the process-wide one, so one agent finishing tore down the
-        # external connections of every other agent. It stops plugins now, so
-        # the same call would stop them for the whole process.
-        if hasattr(self, '_tool_integration_manager') and self._tool_integration_manager:
-            try:
-                await self._tool_integration_manager.shutdown()
-                logger.debug("tool integration shutdown completed")
-            except Exception as e:
-                logger.warning(f"Error during tool integration shutdown: {e}")
-
-        # Clear sessions and request mappings
-        self._session_tracker.clear()
-
-        logger.info("Agent shutdown completed")
 
     # ToolServer interface implementation
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
