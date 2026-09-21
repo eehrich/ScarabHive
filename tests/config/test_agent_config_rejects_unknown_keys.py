@@ -75,7 +75,20 @@ class TestUnknownKeysAreRejected:
                             scanned += 1
                             reached.add(path)
                             try:
-                                AgentConfig(**block)
+                                # Unknown FIELDS are this test's question. The
+                                # profile keys of llm_params are not: they are
+                                # judged against the agent's chains, and a file
+                                # read on its own does not have them when the
+                                # chain is inherited through `type:`. Judged
+                                # here, a child keying its params to its
+                                # parent's chain was rejected although the
+                                # loader runs it correctly, and the only way to
+                                # pass was a copy of the parent's chain, free to
+                                # drift from it. They are judged where the chain
+                                # is known: test_no_real_agent_has_a_stale_
+                                # profile_key, through the real load path.
+                                AgentConfig.model_validate(
+                                    block, context={"drop_stale_llm_params": True})
                             except ValidationError as exc:
                                 rejected.append(f"{path}: {exc}")
                         for value in node.values():

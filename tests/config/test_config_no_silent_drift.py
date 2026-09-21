@@ -364,6 +364,46 @@ class TestStaleLlmParamKeysAreDroppedLoudly:
         assert any("child_agent" in r.getMessage() and "zzz" in r.getMessage()
                    for r in caplog.records), "the stale key was dropped without a word"
 
+    def test_no_real_agent_has_a_stale_profile_key(self):
+        """The anti-drift half of the stale-key rule, on the REAL config.
+
+        Every shipped server through load_settings and get_tool_server_config
+        -- the path an agent is built on, inheritance included -- and not one
+        profile key that its chains do not contain. The per-file scan in
+        test_agent_config_rejects_unknown_keys used to carry this and could
+        not: a file read on its own does not know a chain it inherits.
+
+        With a control first: one real server given a key no chain has must
+        be reported, or a reporting that stopped reporting would pass this
+        with nothing measured.
+        """
+        from agent_system.config.settings import (
+            _reported_stale_llm_params,
+            get_tool_server_config,
+            load_settings,
+        )
+
+        control = load_settings()
+        name, server = next((n, s) for n, s in control.plugins.servers.items()
+                            if getattr(s, "agent_config", None) is not None
+                            and not s.agent_config.llm_params)
+        server.agent_config.llm_params = {"zzz_in_no_chain": {"max_tokens": 1}}
+        _reported_stale_llm_params.clear()
+        get_tool_server_config(name, control)
+        assert any(n == name for n, _ in _reported_stale_llm_params), (
+            f"control failed: a stale key on {name!r} went unreported, so this "
+            f"test would measure nothing")
+
+        cfg = load_settings()
+        _reported_stale_llm_params.clear()
+        servers = list(cfg.plugins.servers)
+        for name in servers:
+            get_tool_server_config(name, cfg)
+        assert len(servers) > 100, f"only {len(servers)} servers loaded -- the scan went blind"
+        stale = sorted(_reported_stale_llm_params, key=lambda m: m[0])
+        assert not stale, "profile keys in none of the agent's chains:\n  " + "\n  ".join(
+            f"{n}: {sorted(keys)}" for n, keys in stale)
+
     def test_it_reaches_the_logfile_even_though_the_config_loads_first(self, tmp_path):
         """Every entry point loads the config BEFORE configuring logging, so an
         error raised during the load has no handler to go to and never reaches
