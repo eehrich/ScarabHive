@@ -53,13 +53,12 @@ _ABORT_STATUS = (("Error:", "error"), ("Cancelled:", "cancelled"))
 _ABORTED_AS = {"error": "failed", "cancelled": "cancelled"}
 
 
-def _blocking_ending(result_text: str, run: dict[str, Any]) -> str:
+def _blocking_ending(result_text: str) -> str:
     """The status a blocking run leaves on its instance -- the background run's rule
-    (`_execute_async_job`, `_finish_job`): failed or cancelled for an answer that aborted;
-    otherwise open again, unless the instance was archived while it ran (`_archive_job` marks the
-    run), which a clean ending must not undo. Left "active" after an abort, the instance read as
-    idle: done, the answer ready."""
-    return _ABORTED_AS.get(_outcome_status(result_text)) or ("archived" if run.get("archived") else "active")
+    (`_execute_async_job`): failed or cancelled for an answer that aborted; otherwise open again,
+    which leaves one archived while it ran archived (the manager's rule, `_write_sub_agent`).
+    Left "active" after an abort, the instance read as idle: done, the answer ready."""
+    return _ABORTED_AS.get(_outcome_status(result_text)) or "active"
 
 #: The longest a `wait` waits between two looks at a sub-agent this process has no job for --
 #: reached by doubling from half a second. Each of those looks reads the parent's session file
@@ -995,7 +994,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     sub_session_id=sub_session_id,
                     last_used=datetime.now(UTC).isoformat(),
                     message_count=2,  # user + assistant for initial creation
-                    status=_blocking_ending(result_text, run),
+                    status=_blocking_ending(result_text),
                 )
                 settled = True
 
@@ -1205,7 +1204,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     sub_session_id=instance_id,
                     last_used=datetime.now(UTC).isoformat(),
                     message_count=new_message_count,
-                    status=_blocking_ending(result_text, run),
+                    status=_blocking_ending(result_text),
                 )
                 settled = True
 
@@ -1300,9 +1299,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         f"Sub-agent {instance_id} has status='{metadata['status']}' in DB but no active task. "
                         f"Marking as 'interrupted' (likely server restart or crash)."
                     )
-                    await manager.update_sub_session_metadata(
+                    healed = await manager.update_sub_session_metadata(
                         parent_session_id=parent_session_id,
                         sub_session_id=instance_id,
+                        # Only over what it judged: the list was read before the loop, and a run
+                        # that ended since -- its ending written, then its slot let go -- reads as
+                        # a crash on that copy. Healed anyway, a clean ending said "crashed".
+                        expect={key: metadata.get(key) for key in ("status", "last_used", "activity_updated_at")},
                         status="interrupted",
                         completed_at=datetime.now(UTC).isoformat(),
                         error="Server restarted or crashed while sub-agent was running",
@@ -1310,7 +1313,18 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         current_activity=None,
                         activity_updated_at=None,
                     )
-                    metadata = {**metadata, "current_activity": None, "activity_updated_at": None}
+                    if healed:
+                        metadata = {**metadata, "current_activity": None, "activity_updated_at": None}
+                    else:
+                        try:
+                            fresh = await manager.list_sub_sessions(parent_session_id, include_completed=True)
+                        except Exception as error:  # the heal was quiet about a failure, so is this
+                            logger.warning(f"Could not re-read sub-agent {instance_id}: {error}")
+                            fresh = []
+                        metadata = next((m for m in fresh if m.get("instance_id") == instance_id), metadata)
+                        if not include_completed and metadata.get("status") == "archived":
+                            continue
+                        sub_status = await self._shown_status(metadata, lambda: user_id)
 
                 # Get actual message count from sub-session (not from cached metadata)
                 try:
@@ -1789,14 +1803,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         never passes through this server at all: it is handed this method as `on_archived` when
         the manager is built. The two differ in exactly one thing at the ending -- whether the
         caller should be woken for it -- and `_finish_job` cannot tell them apart without this.
-
-        A blocking run is marked too: its clean ending would open the instance again
-        (`_blocking_ending`).
         """
-        async with self._running_lock:
-            run = self._blocking_runs.get(instance_id)
-            if run is not None:
-                run["archived"] = True
         async with self._async_jobs_lock:
             job = self._async_jobs.get(instance_id)
             if job is None:
@@ -1870,70 +1877,62 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         # still says active and reads as completed. It closes itself when the write lands.
         was_archived = False
         ended_by_caller = False
-        async with self._async_jobs_lock:
-            job = self._async_jobs.get(instance_id)
-            if job is not None:
-                # Said by the caller's own `cancel` or `delete`, under THIS lock, before the task
-                # unwinds into here. Read as a mark and not inferred from the status: a status is
-                # terminal here too when an earlier call of this method was cut short by a cancel
-                # from elsewhere -- and that caller is asleep, and waits for its bell.
-                ended_by_caller = bool(job.get("_ended_by_caller"))
-                if job.get("_archived"):
-                    # archived while it ran: nobody polls an archived instance, and the entry
-                    # would keep its result for the life of the process
-                    was_archived = True
-                    del self._async_jobs[instance_id]
-                    job = None
-            if job is not None:
-                job.update(status=job_status, completed_at=datetime.now(UTC).isoformat(),
-                           _awaiting_poll=True, **fields)
-                if drop_task:
-                    # a task ended by CancelledError keeps it, and with it every frame of the run
-                    job["task_handle"] = None
-
-        if was_archived and job_status == "completed":
-            # It was archived while it ran, and a clean ending must not undo that: the success
-            # path stores "active", which would put the instance back into the listing AND back
-            # into the count the limit reads -- the room the archiving made would be gone again.
-            # Only the clean ending. "failed" and "cancelled" are the run's verdict and they say
-            # themselves that it is over; overwriting them with "archived" would hide an aborted
-            # fan-out behind a status that reads as an orderly end.
-            stored = {**stored, "status": "archived"}
-
-        parent_session_id = params.get("_session_id")
-        written = False
         try:
-            if parent_session_id:
-                if manager is None:
-                    registry = self._extract_registry(params)
-                    manager = self._get_manager(self._extract_session_service(params), registry)
-                written = await manager.update_sub_session_metadata(
-                    parent_session_id=parent_session_id,
-                    sub_session_id=instance_id,
-                    **stored,
-                ) is not False
-        except Exception as persist_error:
-            logger.warning(f"Failed to persist {job_status} status for {instance_id}: {persist_error}")
-
-        if ended_by_caller and job is not None and written:
-            # Called off by the caller, awake: it knows how this ended and is not coming back
-            # to read it, so an entry held for that read would stay for the life of the process.
-            # Dropped only once the ending is stored -- a poll or wait meanwhile finds it there,
-            # not a status that still says active; unstored, the entry stays the only answer.
             async with self._async_jobs_lock:
-                self._async_jobs.pop(instance_id, None)
+                job = self._async_jobs.get(instance_id)
+                if job is not None:
+                    # Said by the caller's own `cancel` or `delete`, under THIS lock, before the task
+                    # unwinds into here. Read as a mark and not inferred from the status: a status is
+                    # terminal here too when an earlier call of this method was cut short by a cancel
+                    # from elsewhere -- and that caller is asleep, and waits for its bell.
+                    ended_by_caller = bool(job.get("_ended_by_caller"))
+                    if job.get("_archived"):
+                        # archived while it ran: nobody polls an archived instance, and the entry
+                        # would keep its result for the life of the process
+                        was_archived = True
+                        del self._async_jobs[instance_id]
+                        job = None
+                if job is not None:
+                    job.update(status=job_status, completed_at=datetime.now(UTC).isoformat(),
+                               _awaiting_poll=True, **fields)
+                    if drop_task:
+                        # a task ended by CancelledError keeps it, and with it every frame of the run
+                        job["task_handle"] = None
 
-        logger.info(f"Async execution finished for {instance_id} ({job_status})"
-                    + ("" if instance_id not in self._async_jobs else ", awaiting result poll"))
+            parent_session_id = params.get("_session_id")
+            written = False
+            try:
+                if parent_session_id:
+                    if manager is None:
+                        registry = self._extract_registry(params)
+                        manager = self._get_manager(self._extract_session_service(params), registry)
+                    written = await manager.update_sub_session_metadata(
+                        parent_session_id=parent_session_id,
+                        sub_session_id=instance_id,
+                        **stored,
+                    ) is not False
+            except Exception as persist_error:
+                logger.warning(f"Failed to persist {job_status} status for {instance_id}: {persist_error}")
 
-        # The RUN is over here, on every path that reaches this method, so the slot it held goes
-        # now -- before the bell, not after it. The success path reaches `_finish_job` inside the
-        # try whose finally releases it, and the ringing below can last five minutes: held that
-        # long, the instance answers "already running" to the `continue` the woken caller makes,
-        # and `list` reports a run that ended long ago. The abort paths have already released it;
-        # discard is idempotent, and this is the one place all three endings meet.
-        async with self._running_lock:
-            self._running_agents.discard(instance_id)
+            if ended_by_caller and job is not None and written:
+                # Called off by the caller, awake: it knows how this ended and is not coming back
+                # to read it, so an entry held for that read would stay for the life of the process.
+                # Dropped only once the ending is stored -- a poll or wait meanwhile finds it there,
+                # not a status that still says active; unstored, the entry stays the only answer.
+                async with self._async_jobs_lock:
+                    self._async_jobs.pop(instance_id, None)
+
+            logger.info(f"Async execution finished for {instance_id} ({job_status})"
+                        + ("" if instance_id not in self._async_jobs else ", awaiting result poll"))
+        finally:
+            # The RUN is over here, on every path that reaches this method, so the slot it held
+            # goes now -- before the bell, not after it: the ringing below can last minutes, and
+            # held that long the instance answers "already running" to the `continue` the woken
+            # caller makes, and `list` reports a run that ended long ago. Here and nowhere else:
+            # released again after the bell, it took the slot of the run that continue started.
+            # And in a finally: an ending cut short (a second cancel) kept the slot for good.
+            async with self._running_lock:
+                self._running_agents.discard(instance_id)
 
         # Whatever the ending was: the session that asked to be woken is waiting for this one,
         # and a job that failed leaves it waiting just as a job that finished does.
@@ -2098,67 +2097,61 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     raise ValueError(f"Sub-agent '{instance_id}' is already running")
                 self._running_agents.add(instance_id)
 
-            try:
-                # Get agent and execute
-                agent = registry.get(agent_name)
-                if not agent:
-                    raise ValueError(f"Agent '{agent_name}' not found in registry")
+            # Get agent and execute
+            agent = registry.get(agent_name)
+            if not agent:
+                raise ValueError(f"Agent '{agent_name}' not found in registry")
 
-                user_id = await self._prepare_agent(
-                    agent, manager, session_service, params,
-                    parent_session_id=parent_session_id, instance_id=instance_id,
-                    agent_name=agent_name,
-                )
+            user_id = await self._prepare_agent(
+                agent, manager, session_service, params,
+                parent_session_id=parent_session_id, instance_id=instance_id,
+                agent_name=agent_name,
+            )
 
-                # Execute (collect final result)
-                parent_request_id = params.get("_request_id")
-                sub_request_id = f"{parent_request_id}_async_{short_id(6)}" if parent_request_id else f"async_{short_id()}"
-                if instance_id in self._async_jobs:  # cancel reaches the job's tool calls and sub-agents by it
-                    self._async_jobs[instance_id]["request_id"] = sub_request_id
+            # Execute (collect final result)
+            parent_request_id = params.get("_request_id")
+            sub_request_id = f"{parent_request_id}_async_{short_id(6)}" if parent_request_id else f"async_{short_id()}"
+            if instance_id in self._async_jobs:  # cancel reaches the job's tool calls and sub-agents by it
+                self._async_jobs[instance_id]["request_id"] = sub_request_id
 
-                # Register sub-request user mapping for admin dashboard
-                _register_request_user(sub_request_id, user_id)
+            # Register sub-request user mapping for admin dashboard
+            _register_request_user(sub_request_id, user_id)
 
-                result_text = await self._consume_run(
-                    agent, manager,
-                    parent_session_id=parent_session_id, instance_id=instance_id,
-                    task=task, request_id=sub_request_id,
-                    use_advanced_model=use_advanced_model,
-                )
+            result_text = await self._consume_run(
+                agent, manager,
+                parent_session_id=parent_session_id, instance_id=instance_id,
+                task=task, request_id=sub_request_id,
+                use_advanced_model=use_advanced_model,
+            )
 
-                # Save session
-                llm_profile = agent.agent_config.default_llm_profile
-                await session_service.save_session(
-                    agent=agent,
-                    user_id=user_id,
-                    session_id=instance_id,
-                    agent_name=agent_name,
-                    llm_profile=llm_profile,
-                    was_new_session=True
-                )
+            # Save session
+            llm_profile = agent.agent_config.default_llm_profile
+            await session_service.save_session(
+                agent=agent,
+                user_id=user_id,
+                session_id=instance_id,
+                agent_name=agent_name,
+                llm_profile=llm_profile,
+                was_new_session=True
+            )
 
-                # A run whose ANSWER is "Error: ..."/"Cancelled: ..." did not
-                # complete -- it aborted and handed the transport's complaint
-                # back as content. Only an exception marked such a job failed
-                # until now, so `wait_all` counted it under "Completed: N,
-                # Failed: 0" and a fan-out of dead reviewers read as a clean
-                # one. The job status uses the vocabulary it already has.
-                outcome = _outcome_status(result_text)
-                job_status = _ABORTED_AS.get(outcome, "completed")
+            # A run whose ANSWER is "Error: ..."/"Cancelled: ..." did not
+            # complete -- it aborted and handed the transport's complaint
+            # back as content. Only an exception marked such a job failed
+            # until now, so `wait_all` counted it under "Completed: N,
+            # Failed: 0" and a fan-out of dead reviewers read as a clean
+            # one. The job status uses the vocabulary it already has.
+            outcome = _outcome_status(result_text)
+            job_status = _ABORTED_AS.get(outcome, "completed")
 
-                # Update metadata: a finished-but-aborted run is not active any
-                # more, the same way the two paths below record it.
-                await self._finish_job(
-                    instance_id, params, job_status, manager=manager,
-                    stored={"last_used": datetime.now(UTC).isoformat(),
-                            "status": "active" if job_status == "completed" else job_status},
-                    outcome=outcome, result=result_text,
-                )
-
-            finally:
-                # Release lock
-                async with self._running_lock:
-                    self._running_agents.discard(instance_id)
+            # Update metadata: a finished-but-aborted run is not active any
+            # more, the same way the two paths below record it.
+            await self._finish_job(
+                instance_id, params, job_status, manager=manager,
+                stored={"last_used": datetime.now(UTC).isoformat(),
+                        "status": "active" if job_status == "completed" else job_status},
+                outcome=outcome, result=result_text,
+            )
 
         except asyncio.CancelledError:
             # Job was cancelled (e.g., parent agent interrupted). Persisting it is what keeps a

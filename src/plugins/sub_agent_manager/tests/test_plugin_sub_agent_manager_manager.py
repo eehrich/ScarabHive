@@ -1,11 +1,12 @@
 """Unit tests for SubAgentManager."""
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from plugins.sub_agent_manager.manager import SubAgentManager
+from plugins.sub_agent_manager.manager import SubAgentLimitReached, SubAgentManager
 
 
 @pytest.fixture
@@ -784,3 +785,94 @@ async def test_an_active_instance_already_holds_its_place(mock_session_service, 
     await manager.reopen_sub_session("parent123", "sub_open")
 
     assert _statuses_written(mock_session_service) == [("sub_open", "active")]
+
+
+# --- one parent's entries, written by several at once --------------------------------------------
+
+async def _stored_manager(tmp_path, **limits):
+    """A manager on a real SessionManager: parent ``s-1`` of user ``ada``, spawning ``worker``."""
+    from agent_system.config.models import AgentConfig
+    from agent_system.services.session_manager import SessionManager
+    from agent_system.services.session_service import SessionService
+    from agent_system.tools.base import ToolServerRegistry
+
+    service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))
+    await service.session_manager.create_session(user_id="ada", session_id="s-1", title="The coordinator",
+                                                 agent_name="coordinator", llm_profile="normal")
+    registry = ToolServerRegistry()
+    worker = MagicMock()
+    worker.name = "worker"
+    worker.agent_config = AgentConfig(llm_profile="normal")
+    registry.register("worker", worker)
+    return service, SubAgentManager(service, registry, **limits)
+
+
+def _spawn(manager, n=0):
+    return manager.create_sub_session("s-1", "worker", f"task {n}", params={"_user_id": "ada"})
+
+
+async def _entries(service):
+    return (await service.session_manager.load_session("ada", "s-1"))["metadata"]["sub_agents"]
+
+
+@pytest.mark.asyncio
+async def test_a_fan_out_of_creates_keeps_the_limit(tmp_path):
+    """The creates of one step all read the same count, and six of them passed a limit of three."""
+    service, manager = await _stored_manager(tmp_path, max_sub_agents_per_session=3, max_sub_agents_per_type=3)
+
+    spawned = await asyncio.gather(*(_spawn(manager, n) for n in range(6)), return_exceptions=True)
+
+    assert sum(isinstance(result, SubAgentLimitReached) for result in spawned) == 3, spawned
+    assert [entry["status"] for entry in (await _entries(service)).values()] == ["active"] * 3
+
+
+@pytest.mark.asyncio
+async def test_a_continue_beside_a_create_keeps_the_limit(tmp_path):
+    """A reopen takes a place like a create does -- from the same count."""
+    service, manager = await _stored_manager(tmp_path, max_sub_agents_per_session=2, max_sub_agents_per_type=2)
+    failed = await _spawn(manager)
+    await manager.update_sub_session_metadata("s-1", failed, status="failed")
+    await _spawn(manager, 1)
+
+    outcome = await asyncio.gather(manager.reopen_sub_session("s-1", failed), _spawn(manager, 2),
+                                   return_exceptions=True)
+
+    assert sum(isinstance(result, SubAgentLimitReached) for result in outcome) == 1, outcome
+    assert sum(entry["status"] == "active" for entry in (await _entries(service)).values()) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_archive_beside_an_activity_update_stays(tmp_path):
+    """An entry is written whole: an update that had read it before the archive landed wrote the
+    archive away -- and a running sub-agent writes its activity at every tool call."""
+    service, manager = await _stored_manager(tmp_path)
+    instance = await _spawn(manager)
+
+    await asyncio.gather(manager.update_sub_session_metadata("s-1", instance, status="archived"),
+                         manager.update_sub_agent_activity("s-1", instance, "Running tool: search"))
+
+    entry = (await _entries(service))[instance]
+    assert (entry["status"], entry["current_activity"]) == ("archived", "Running tool: search")
+
+
+@pytest.mark.asyncio
+async def test_only_a_reopen_opens_an_archived_instance_again(tmp_path):
+    """A clean ending writes "active", a list that finds a run orphaned "interrupted" -- either
+    over an archive that landed while the run went on took back the room it made. A run's verdict
+    is written, and a continue reopens, through the limits."""
+    service, manager = await _stored_manager(tmp_path)
+    instance = await _spawn(manager)
+
+    async def stored_after(**updates):
+        await manager.update_sub_session_metadata("s-1", instance, **updates)
+        return (await _entries(service))[instance]
+
+    await manager.update_sub_session_metadata("s-1", instance, status="archived")
+    ending = await stored_after(status="active", last_used="then")
+    assert (ending["status"], ending["last_used"]) == ("archived", "then"), "the rest of the ending is written"
+    assert (await stored_after(status="interrupted"))["status"] == "archived"
+    assert (await stored_after(status="failed"))["status"] == "failed"
+
+    await manager.update_sub_session_metadata("s-1", instance, status="archived")
+    await manager.reopen_sub_session("s-1", instance)
+    assert (await _entries(service))[instance]["status"] == "active"

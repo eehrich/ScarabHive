@@ -160,6 +160,16 @@ Two more that are not limits but guards:
 * **No concurrent run of the same instance.** `_running_agents` plus a lock;
   a second `create`/`continue` on a busy instance is refused rather than
   interleaved into one transcript.
+* **The manager writes a parent's sub-agent entries one at a time.** An entry
+  is written whole, and a limit is a count that a spawn reads and then fills; a
+  lock per parent session holds both. The creates of a fan-out are counted one
+  after another — six of them used to pass a limit of three — and an archive
+  beside a running sub-agent's activity update is no longer written away. Only
+  a `continue` opens an archived instance again, through the limits; a clean
+  ending or `list`'s healing leaves it archived, and the healing writes only
+  over the state it judged. The lock is per process and holds among the
+  manager's writes: a whole-file save of the parent session (the core's
+  checkpoint) is not held off by it.
 * **Instance ids do not collide across parents or restarts.** The counter is
   class-level (shared by every manager instance) behind a class lock, and
   seeded from the time of day rather than zero, so a restart does not re-issue

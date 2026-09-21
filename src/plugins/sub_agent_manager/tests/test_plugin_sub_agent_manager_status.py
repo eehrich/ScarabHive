@@ -68,6 +68,7 @@ def _wire(server, events):
     manager.create_sub_session = AsyncMock(return_value="sub_session_1")
     manager.update_sub_session_metadata = AsyncMock()
     manager.reopen_sub_session = partial(SubAgentManager.reopen_sub_session, manager)
+    manager._write_sub_agent = manager.update_sub_session_metadata
     manager.update_sub_agent_activity = AsyncMock()
     manager._extract_user_id = Mock(return_value="user_1")
     manager._session_service = session_service
@@ -394,23 +395,6 @@ async def test_a_blocking_create_whose_call_is_cancelled_stores_cancelled(server
         await call
 
     assert _statuses_written(server)[-1] == "cancelled"
-
-
-async def test_a_delete_while_a_blocking_run_works_stays_done(server):
-    """A clean ending opens the instance again -- unless it was archived meanwhile, which the
-    background path has always honoured (_finish_job)."""
-    _wire(server, [])
-
-    async def run_events(*args, **kwargs):
-        yield {"type": "start"}
-        await server._archive_job("sub_session_1", by_caller=True)
-        yield {"type": "final", "summary": "here is the answer"}
-
-    server._extract_registry().get().run_events = run_events
-
-    await _create(server)
-
-    assert _stored_at_the_end(server)["status"] == "archived"
 
 
 async def test_a_continue_refused_at_a_limit_leaves_the_instance_as_it_was(server):

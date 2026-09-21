@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import weakref
 from agent_system.services.session_manager import SessionNotFoundError
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
@@ -20,6 +21,21 @@ logger = logging.getLogger(__name__)
 #: Stored statuses of a sub-agent that is still there to use: "active" (running or
 #: idle) and "interrupted" (its session is present, its last run ended unexpectedly).
 OPEN_STATUSES = ("active", "interrupted")
+
+#: One lock per parent session, shared by every manager in this process (the server builds one
+#: per call). A sub-agent's entry is written whole -- update_session_metadata merges one
+#: level -- so a write that had read it before another landed wrote that one away; and a limit is
+#: a count that a spawn reads and then fills. Measured without it: an archive beside an activity
+#: update was lost, and a fan-out of six creates passed a limit of three.
+#: ponytail: per process -- another process writing the same parent is not held off by it.
+_parent_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+
+def _parent_lock(parent_session_id: str) -> asyncio.Lock:
+    lock = _parent_locks.get(parent_session_id)
+    if lock is None:
+        lock = _parent_locks[parent_session_id] = asyncio.Lock()
+    return lock
 
 
 class SubAgentLimitReached(ValueError):
@@ -79,7 +95,9 @@ class SubAgentManager:
                 a limit is reached instead of returning limit_reached error.
             on_archived: Told which instance was archived, right after it was. Auto-archiving
                 happens down here, while what an archived instance leaves behind lives in the
-                server above (its background jobs), which never sees the id otherwise.
+                server above (its background jobs), which never sees the id otherwise. Called
+                with the parent's lock held (`_make_room`): it must not write that parent's
+                sub-agents, or it waits on itself.
         """
         self._session_service = session_service
         self._registry = registry
@@ -124,6 +142,21 @@ class SubAgentManager:
         Raises:
             ValueError: If parent session not found, agent type invalid, or max depth exceeded
         """
+        # The count and the entry that takes the place it found, in one piece: every create of a
+        # fan-out read the same count otherwise.
+        async with _parent_lock(parent_session_id):
+            return await self._create_sub_session(
+                parent_session_id, agent_type, initial_message, instance_label, params)
+
+    async def _create_sub_session(
+        self,
+        parent_session_id: str,
+        agent_type: str,
+        initial_message: str,
+        instance_label: Optional[str],
+        params: Optional[dict],
+    ) -> str:
+        """create_sub_session, under the parent's lock."""
         # Extract user_id from params or session file
         user_id = self._extract_user_id(parent_session_id, params)
         session_manager = self._session_service.session_manager
@@ -528,7 +561,8 @@ class SubAgentManager:
     ) -> None:
         """Room for one more active sub-agent of `agent_type` among the parent's
         `existing_sub_agents`: under both limits, or -- with auto_archive_on_limit -- once the
-        oldest active one is archived. SubAgentLimitReached otherwise."""
+        oldest active one is archived. SubAgentLimitReached otherwise. The caller holds the
+        parent's lock from its count to the entry that takes the room."""
         active_sub_agents = [
             sub_id for sub_id, sub_meta in existing_sub_agents.items()
             if sub_meta.get("status") == "active"
@@ -595,31 +629,36 @@ class SubAgentManager:
         archived -- takes a place like a new one: the limits apply, and with auto_archive_on_limit
         the oldest active one makes room.
         A continue used to reopen past them, and the session stayed over its limit for good.
+        It is the one write that opens an archived instance again (`_write_sub_agent`).
         """
         user_id = self._extract_user_id(parent_session_id)
-        try:
-            parent_data = await self._session_service.session_manager.load_session(user_id, parent_session_id)
-        except Exception as error:
-            # Nothing to count against -- and the write below fails the same way and says so.
-            logger.warning(f"Could not load parent session {parent_session_id}: {error}")
-            parent_data = {}
-        sub_agents = parent_data.get("metadata", {}).get("sub_agents", {})
-        metadata = sub_agents.get(instance_id)
-        if metadata is not None and metadata.get("status") != "active":
-            # the limits count active ones only, so it does not count itself
-            await self._make_room(parent_session_id, sub_agents, metadata.get("agent_type", ""))
-        await self.update_sub_session_metadata(
-            parent_session_id=parent_session_id,
-            sub_session_id=instance_id,
-            status="active",
-            current_activity=None,
-            activity_updated_at=None,
-        )
+        async with _parent_lock(parent_session_id):
+            try:
+                parent_data = await self._session_service.session_manager.load_session(user_id, parent_session_id)
+            except Exception as error:
+                # Nothing to count against -- and the write below fails the same way and says so.
+                logger.warning(f"Could not load parent session {parent_session_id}: {error}")
+                parent_data = {}
+            sub_agents = parent_data.get("metadata", {}).get("sub_agents", {})
+            metadata = sub_agents.get(instance_id)
+            if metadata is not None and metadata.get("status") != "active":
+                # the limits count active ones only, so it does not count itself
+                await self._make_room(parent_session_id, sub_agents, metadata.get("agent_type", ""))
+            await self._write_sub_agent(
+                parent_session_id=parent_session_id,
+                sub_session_id=instance_id,
+                reopen=True,
+                status="active",
+                current_activity=None,
+                activity_updated_at=None,
+            )
 
     async def update_sub_session_metadata(
         self,
         parent_session_id: str,
         sub_session_id: str,
+        *,
+        expect: Optional[dict[str, Any]] = None,
         **updates: Any
     ) -> bool:
         """Update sub-session metadata in parent session. False when it wrote nothing.
@@ -627,7 +666,26 @@ class SubAgentManager:
         Args:
             parent_session_id: Parent session ID
             sub_session_id: Sub-session ID
+            expect: Write only while the stored entry still holds these values -- for a decision
+                taken on an earlier read of it.
             **updates: Metadata fields to update (e.g., last_used, status)
+        """
+        async with _parent_lock(parent_session_id):
+            return await self._write_sub_agent(
+                parent_session_id=parent_session_id, sub_session_id=sub_session_id, expect=expect,
+                **updates)
+
+    async def _write_sub_agent(
+        self, parent_session_id: str, sub_session_id: str, *, reopen: bool = False,
+        expect: Optional[dict[str, Any]] = None, **updates: Any
+    ) -> bool:
+        """update_sub_session_metadata, for a caller that holds the parent's lock.
+
+        An open status (OPEN_STATUSES) leaves an archived instance archived: a run that ended
+        cleanly, a list that found its activity orphaned -- the archive may have landed while it
+        ran, and undone it would take back the room it made. Only `reopen` opens one again, and
+        reopen_sub_session applies the limits first. failed and cancelled are a run's verdict and
+        are written.
         """
         user_id = self._extract_user_id(parent_session_id)
         session_manager = self._session_service.session_manager
@@ -649,6 +707,12 @@ class SubAgentManager:
 
         # Build update for the specific sub-agent
         current_sub_agent = parent_data["metadata"]["sub_agents"][sub_session_id].copy()
+        if expect and any(current_sub_agent.get(key) != value for key, value in expect.items()):
+            logger.debug(f"Sub-session {sub_session_id} changed since it was read; not writing {updates}")
+            return False
+        if (not reopen and current_sub_agent.get("status") == "archived"
+                and updates.get("status") in OPEN_STATUSES):
+            updates = {key: value for key, value in updates.items() if key != "status"}
         current_sub_agent.update(updates)
         
         # Use atomic metadata update
@@ -718,13 +782,14 @@ class SubAgentManager:
         return candidates[0][0]
 
     async def _archive_sub_agent(self, parent_session_id: str, sub_session_id: str) -> bool:
-        """Archive a sub-agent by setting its status to 'archived' in parent metadata.
+        """Archive a sub-agent by setting its status to 'archived' in parent metadata. The caller
+        holds the parent's lock (_make_room).
 
         Args:
             parent_session_id: Parent session ID
             sub_session_id: Sub-agent instance ID to archive
         """
-        written = await self.update_sub_session_metadata(
+        written = await self._write_sub_agent(
             parent_session_id=parent_session_id,
             sub_session_id=sub_session_id,
             status="archived",

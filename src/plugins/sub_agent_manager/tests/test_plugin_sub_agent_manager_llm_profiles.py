@@ -136,6 +136,7 @@ class TestSubAgentManagerCreateOperation:
         mock_manager.create_sub_session = AsyncMock(return_value="sub_session_1")
         mock_manager.update_sub_session_metadata = AsyncMock()
         mock_manager.reopen_sub_session = partial(SubAgentManager.reopen_sub_session, mock_manager)
+        mock_manager._write_sub_agent = mock_manager.update_sub_session_metadata
         mock_manager.update_sub_agent_activity = AsyncMock()
         mock_manager._extract_user_id = Mock(return_value="user_1")
         mock_manager._session_service = mock_session_service
@@ -200,6 +201,7 @@ class TestSubAgentManagerCreateOperation:
         mock_manager.create_sub_session = AsyncMock(return_value="sub_session_1")
         mock_manager.update_sub_session_metadata = AsyncMock()
         mock_manager.reopen_sub_session = partial(SubAgentManager.reopen_sub_session, mock_manager)
+        mock_manager._write_sub_agent = mock_manager.update_sub_session_metadata
         mock_manager.update_sub_agent_activity = AsyncMock()
         mock_manager._extract_user_id = Mock(return_value="user_1")
         mock_manager._session_service = mock_session_service
@@ -268,6 +270,7 @@ class TestSubAgentManagerContinueOperation:
         mock_manager = Mock()
         mock_manager.update_sub_session_metadata = AsyncMock()
         mock_manager.reopen_sub_session = partial(SubAgentManager.reopen_sub_session, mock_manager)
+        mock_manager._write_sub_agent = mock_manager.update_sub_session_metadata
         mock_manager.update_sub_agent_activity = AsyncMock()
         mock_manager._extract_user_id = Mock(return_value="user_1")
         mock_manager._session_service = mock_session_service
@@ -334,6 +337,7 @@ class TestSubAgentManagerContinueOperation:
         mock_manager = Mock()
         mock_manager.update_sub_session_metadata = AsyncMock()
         mock_manager.reopen_sub_session = partial(SubAgentManager.reopen_sub_session, mock_manager)
+        mock_manager._write_sub_agent = mock_manager.update_sub_session_metadata
         mock_manager.update_sub_agent_activity = AsyncMock()
         mock_manager._extract_user_id = Mock(return_value="user_1")
         mock_manager._session_service = mock_session_service
@@ -420,6 +424,7 @@ class TestSubAgentManagerUseCases:
         mock_manager.create_sub_session = AsyncMock(return_value="sub_session_1")
         mock_manager.update_sub_session_metadata = AsyncMock()
         mock_manager.reopen_sub_session = partial(SubAgentManager.reopen_sub_session, mock_manager)
+        mock_manager._write_sub_agent = mock_manager.update_sub_session_metadata
         mock_manager.update_sub_agent_activity = AsyncMock()
         mock_manager._extract_user_id = Mock(return_value="user_1")
         mock_manager._session_service = mock_session_service

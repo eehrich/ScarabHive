@@ -1653,6 +1653,7 @@ class TestAdvancedCreateOnlyAgents:
         manager._session_service = session_service
         manager.update_sub_session_metadata = AsyncMock()
         manager.reopen_sub_session = partial(SubAgentManager.reopen_sub_session, manager)
+        manager._write_sub_agent = manager.update_sub_session_metadata
         manager.refresh_sub_context_vars = AsyncMock(return_value={})
         manager.update_sub_agent_activity = AsyncMock()
 
@@ -1974,6 +1975,7 @@ class TestCancelReachesABlockingRun:
         manager.create_sub_session = AsyncMock(return_value="sub_slow")
         manager.update_sub_session_metadata = AsyncMock()
         manager.reopen_sub_session = partial(SubAgentManager.reopen_sub_session, manager)
+        manager._write_sub_agent = manager.update_sub_session_metadata
         manager.refresh_sub_context_vars = AsyncMock(return_value={})
         manager.update_sub_agent_activity = AsyncMock()
         server._extract_registry = Mock(return_value=Mock(get=Mock(return_value=agent)))
@@ -2413,6 +2415,64 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
 
         assert told == [("parent1", "u1")]
         assert server._async_jobs["sub_slow"]["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_job_holds_its_slot_until_its_ending_is_stored(self, server):
+        """Let go first, a continue could start the instance again before the job's "failed" was
+        written -- and that "failed" then landed on the new run."""
+        agent = SlowAgent()
+        session_service = TestCancelReachesABlockingRun.wire(server, agent)
+        session_service.save_session = AsyncMock(side_effect=RuntimeError("the disk said no"))
+        held = []
+
+        async def store(**fields):
+            held.append((fields.get("status"), "sub_slow" in server._running_agents))
+
+        server._get_manager().update_sub_session_metadata = AsyncMock(side_effect=store)
+        await self.start(server)
+        await self.run_to_end(server, agent)
+
+        assert ("failed", True) in held, held
+        assert "sub_slow" not in server._running_agents
+
+    @pytest.mark.asyncio
+    async def test_a_job_whose_ending_was_cut_short_still_lets_go_of_its_slot(self, server):
+        """A cancel arriving while the ending is being stored (here the failed one) cuts it
+        short. The slot is let go of after that write, so it stayed taken: "already running" for
+        the life of the process."""
+        import asyncio
+        agent = SlowAgent()
+        session_service = TestCancelReachesABlockingRun.wire(server, agent)
+        session_service.save_session = AsyncMock(side_effect=RuntimeError("the disk said no"))
+        server._get_manager().update_sub_session_metadata = AsyncMock(side_effect=asyncio.CancelledError())
+        await self.start(server)
+        with pytest.raises(asyncio.CancelledError):
+            await self.run_to_end(server, agent)
+
+        assert "sub_slow" not in server._running_agents
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ending", ["completed", "failed"])
+    async def test_a_new_run_keeps_the_slot_the_old_job_let_go_of(self, server, monkeypatch, ending):
+        """The slot goes before the bell, and the bell can ring for minutes: the continue the woken
+        caller makes holds the slot by then. The old job's own cleanup after the bell took it from
+        under that run -- "already running" gone, and a second continue on the same transcript."""
+        self.presence(monkeypatch)
+        agent = SlowAgent()
+        session_service = TestCancelReachesABlockingRun.wire(server, agent)
+        if ending == "failed":
+            session_service.save_session = AsyncMock(side_effect=RuntimeError("the disk said no"))
+
+        async def a_continue_starts_meanwhile(instance_id, *args, **kwargs):
+            async with server._running_lock:
+                server._running_agents.add(instance_id)
+
+        server._wake_parent = a_continue_starts_meanwhile
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+
+        assert server._async_jobs["sub_slow"]["status"] == ending, "fixture: another ending"
+        assert "sub_slow" in server._running_agents
 
     @pytest.mark.asyncio
     async def test_a_job_whose_entry_was_taken_before_it_ended_wakes_nobody(self, server, monkeypatch):
@@ -3248,23 +3308,6 @@ class TestAFinishedJobDoesNotStayInMemory:
                                  manager=manager)
 
         assert stored_kwargs["status"] == job_status, stored_kwargs
-
-    @pytest.mark.asyncio
-    async def test_the_ending_of_an_archived_run_leaves_it_archived(self, server):
-        """The success path stores "active". For an instance archived while it ran that undoes
-        the archiving -- it is back in the listing and back in the count the limit reads, so the
-        room that was made is gone again."""
-        stored_kwargs = {}
-        manager = AsyncMock()
-        manager.update_sub_session_metadata = AsyncMock(
-            side_effect=lambda **kw: stored_kwargs.update(kw))
-        self.job(server, "sub_busy", "running", _archived=True)
-
-        await server._finish_job("sub_busy", {"_session_id": "parent1"}, "completed",
-                                 stored={"status": "active", "last_used": "now"}, manager=manager,
-                                 result="done")
-
-        assert stored_kwargs["status"] == "archived", stored_kwargs
 
     @pytest.mark.asyncio
     async def test_an_archiving_that_wrote_nothing_is_not_reported_as_done(self, server):

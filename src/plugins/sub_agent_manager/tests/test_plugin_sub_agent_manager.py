@@ -618,6 +618,118 @@ async def test_the_tool_list_marks_a_sub_agent_without_a_run_interrupted_and_cle
 
 
 @pytest.mark.asyncio
+async def test_a_run_that_ends_while_the_list_looks_keeps_its_ending(tmp_path):
+    """The list is read before its loop. A run that ends in between -- ending written, slot let
+    go -- still shows its activity on that copy and reads as a crash: healed on it, a clean
+    ending was stored as "interrupted", "crashed". It keeps its ending and is shown by it."""
+    from datetime import UTC, datetime
+
+    from agent_system.config.models import AgentConfig, AgentSystemConfig, ToolServerConfig
+    from agent_system.tools.base import ToolServerRegistry
+    from agent_system.services.session_manager import SessionManager
+    from agent_system.services.session_service import SessionService
+    from plugins.sub_agent_manager.server import SubAgentManagerServer
+
+    service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))
+    server = SubAgentManagerServer("sam", AgentSystemConfig(), ToolServerConfig(allowed_agents=["*"]))
+    registry = ToolServerRegistry()
+    agent = MagicMock()
+    agent.name = "writer_agent"
+    agent.agent_config = AgentConfig(llm_profile="normal")
+    registry.register("writer_agent", agent)
+    await service.session_manager.create_session(user_id="ada", session_id="parent", agent_name="coordinator", llm_profile="normal")
+    manager = server._get_manager(service, registry)
+    sub_id = await manager.create_sub_session(parent_session_id="parent", agent_type="writer_agent", initial_message="task",
+                                              params={"_creator_plugin": "sam"})
+    await manager.update_sub_agent_activity("parent", sub_id, "Thinking...")  # the run, still going
+
+    shown_on = server._shown_status
+
+    async def the_run_ends_meanwhile(metadata, user_id):
+        shown = await shown_on(metadata, user_id)
+        if metadata.get("current_activity"):
+            await manager.update_sub_session_metadata("parent", sub_id, status="active",
+                                                      last_used=datetime.now(UTC).isoformat(),
+                                                      current_activity=None, activity_updated_at=None)
+        return shown
+
+    server._shown_status = the_run_ends_meanwhile
+    [listed] = (await server._handle_list({"_session_id": "parent", "_session_service": service}))["instances"]
+
+    stored = (await service.session_manager.load_session("ada", "parent", bypass_cache=True))["metadata"]["sub_agents"][sub_id]
+    assert (stored["status"], stored.get("error")) == ("active", None), stored
+    assert listed["status"] == "idle", listed
+
+
+async def _a_list_whose_heal_is_refused(tmp_path, meanwhile):
+    """A sub-agent that reads as crashed on the list's copy, and ``meanwhile`` -- written after
+    the list judged it -- refusing the heal. Returns the list's answer and the stored entry."""
+    from agent_system.config.models import AgentConfig, AgentSystemConfig, ToolServerConfig
+    from agent_system.tools.base import ToolServerRegistry
+    from agent_system.services.session_manager import SessionManager
+    from agent_system.services.session_service import SessionService
+    from plugins.sub_agent_manager.server import SubAgentManagerServer
+
+    service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))
+    server = SubAgentManagerServer("sam", AgentSystemConfig(), ToolServerConfig(allowed_agents=["*"]))
+    registry = ToolServerRegistry()
+    agent = MagicMock()
+    agent.name = "writer_agent"
+    agent.agent_config = AgentConfig(llm_profile="normal")
+    registry.register("writer_agent", agent)
+    await service.session_manager.create_session(user_id="ada", session_id="parent", agent_name="coordinator", llm_profile="normal")
+    manager = server._get_manager(service, registry)
+    sub_id = await manager.create_sub_session(parent_session_id="parent", agent_type="writer_agent", initial_message="task",
+                                              params={"_creator_plugin": "sam"})
+    await manager.update_sub_agent_activity("parent", sub_id, "Thinking...")
+    shown_on = server._shown_status
+
+    async def written_meanwhile(metadata, user_id):
+        shown = await shown_on(metadata, user_id)
+        if metadata.get("current_activity"):
+            await manager.update_sub_session_metadata("parent", sub_id, **meanwhile)
+        return shown
+
+    server._shown_status = written_meanwhile
+    answer = await server._handle_list({"_session_id": "parent", "_session_service": service})
+    stored = (await service.session_manager.load_session("ada", "parent", bypass_cache=True))["metadata"]["sub_agents"][sub_id]
+    return answer, stored
+
+
+@pytest.mark.asyncio
+async def test_an_instance_archived_while_the_list_looks_is_not_listed(tmp_path):
+    """Archived in the window (a delete, a create making room): the heal is refused, and the
+    fresh copy says archived -- which a list without include_completed does not show."""
+    answer, stored = await _a_list_whose_heal_is_refused(tmp_path, {"status": "archived"})
+    assert stored["status"] == "archived"
+    assert answer["instances"] == [], answer
+
+
+@pytest.mark.asyncio
+async def test_a_refused_heal_that_cannot_re_read_does_not_fail_the_list(tmp_path, monkeypatch):
+    """The heal was quiet about a failure; the re-read after a refused one must be too."""
+    from datetime import UTC, datetime
+
+    from plugins.sub_agent_manager.manager import SubAgentManager
+
+    reads = []
+    list_sub_sessions = SubAgentManager.list_sub_sessions
+
+    async def the_second_read_fails(self, *args, **kwargs):
+        reads.append(1)
+        if len(reads) > 1:
+            raise OSError("the file is being replaced")
+        return await list_sub_sessions(self, *args, **kwargs)
+
+    monkeypatch.setattr(SubAgentManager, "list_sub_sessions", the_second_read_fails)
+    answer, _ = await _a_list_whose_heal_is_refused(
+        tmp_path, {"status": "active", "last_used": datetime.now(UTC).isoformat(),
+                                "current_activity": None, "activity_updated_at": None})
+    assert len(reads) == 2, "fixture: the heal was not refused"
+    assert [i["status"] for i in answer["instances"]] == ["interrupted"], answer
+
+
+@pytest.mark.asyncio
 async def test_the_sub_agent_list_carries_the_phase_of_the_session():
     """The panel's list names the session's phase and the agents it lets the tool spawn, by the tool's own rule."""
     from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
