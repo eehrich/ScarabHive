@@ -21,6 +21,7 @@ Usage:
     store.delete("collection_name", ids=["doc1"])
 """
 
+import contextlib
 import functools
 import logging
 import math
@@ -31,7 +32,79 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from filelock import FileLock
+
 logger = logging.getLogger(__name__)
+
+#: Held while a process opens a chroma store and while it gets or creates a
+#: collection -- the two steps that write chroma's schema. Measured 21.09.2026
+#: (chromadb 1.5.9): four processes opening a NEW store at once, one died on
+#: "table embeddings_queue_config already exists" and its documents were
+#: never written. Taken once per process and name; writes have their own lock.
+_CHROMA_INIT_LOCK = ".agent_system_init.lock"
+#: A first open after a chroma upgrade migrates the whole store; on the
+#: 233 MB memory store that is not seconds. Waiting beats dying half-way.
+_CHROMA_INIT_TIMEOUT = 600.0
+#: Held for every chroma WRITE, across processes, and the counter next to it
+#: says how many writes the store has seen. A process whose view is older than
+#: the counter reopens the store before it writes. Why both: every process
+#: keeps its own copy of a collection's vector index in memory, and saves it
+#: with the claim "complete up to my last write". A process that writes on a
+#: view without the other processes' writes therefore saves an index that
+#: lacks them -- counted, never found again. The lock ALONE is worse than no
+#: guard: it lines the writers up, and each saves its stale view after the one
+#: before. Measured 21.09.2026 (chromadb 1.5.9, Windows, 16 writers x 200
+#: documents, found again by their own vector, of 640): one after another
+#: 638; no guard 596-639, a race; the lock alone 200 and 444; lock + reopen
+#: 635-639. On Linux (Rust bindings, WSL): one after another 636; the lock
+#: alone 405 and 246; lock + reopen 637-638; and no guard left a store whose
+#: count() hangs for every process that opens it, twice in two runs. That is a
+#: MEASUREMENT, not a unit test -- at test sizes the race does not happen with
+#: or without the guard -- and it is re-runnable:
+#: scripts/measure_vector_store_processes.py.
+_CHROMA_WRITE_LOCK = ".agent_system_write.lock"
+_CHROMA_GENERATION = ".agent_system_generation"
+_CHROMA_WRITE_TIMEOUT = 600.0
+
+
+class _ChromaAccess:
+    """What one PROCESS holds for one store path -- shared by every VectorStore on it.
+
+    chromadb keeps one System per persist directory in a process-global
+    registry and stops it only when the LAST client on it closes. Two
+    VectorStores on the same path in one process -- file_ops and
+    workspace_file_ops both default to data/cache/file_ops_chromadb -- therefore
+    share one in-memory view, and "reopen to see the other processes' writes"
+    handed the reopening instance the same stale System back, because the
+    other instance still held it. So the client, the write counter it has
+    seen, and the lock live here, once per path: a reopen replaces the view
+    for every instance at once, and ``epoch`` tells each of them to drop the
+    collection handles it cached from the old one. Measured with a second
+    store open in every writer process (16 x 200): one access per instance
+    638 and 206 of 640 found again, shared 637 and 639.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.client: Any = None
+        self.seen_generation: Optional[int] = None
+        self.epoch = 0
+        self.users = 0
+
+
+_CHROMA_ACCESS: Dict[str, _ChromaAccess] = {}
+_CHROMA_ACCESS_GUARD = threading.Lock()
+
+
+def _acquire_access(persist_path: Path) -> tuple:
+    """The access for this path, with one more user on it; and its registry key."""
+    key = str(persist_path.resolve())
+    with _CHROMA_ACCESS_GUARD:
+        access = _CHROMA_ACCESS.get(key)
+        if access is None:
+            access = _CHROMA_ACCESS[key] = _ChromaAccess()
+        access.users += 1
+    return access, key
 
 # Vector dimension for MiniLM-L6-v2 (default embedding model)
 EMBEDDING_DIM = 384
@@ -268,9 +341,14 @@ class VectorStore:
         # Detect backend
         self._backend = get_vector_backend()
         
-        # ChromaDB state
-        self._chroma_client = None
+        # ChromaDB state. The client and the write counter it has seen are the
+        # PATH's, shared with every other VectorStore of this process on the
+        # same directory (see _ChromaAccess); the collection handles are this
+        # instance's cache, valid for as long as the shared client is.
+        self._access, self._access_key = _acquire_access(self.persist_path)
+        self._released = False
         self._chroma_collections: Dict[str, Any] = {}
+        self._chroma_epoch = self._access.epoch
         self._chroma_embedding_fn = None
         
         # sqlite-vec state
@@ -287,7 +365,9 @@ class VectorStore:
         # that call other locked methods don't deadlock). Held for the whole op
         # incl. embedding, since the embedding model isn't guaranteed thread-safe
         # either - correctness over parallel embedding.
-        self._lock = threading.RLock()
+        # The lock is the PATH's: an instance that replaces the shared client
+        # must not do it under another instance's running query.
+        self._lock = self._access.lock
 
         logger.info(f"VectorStore initialized: path={persist_path}, backend={self._backend}")
     
@@ -301,6 +381,39 @@ class VectorStore:
                 pass
             self._sqlite_conn = None
         self._chroma_collections.clear()
+        if not self._released:
+            self._released = True
+            with _CHROMA_ACCESS_GUARD:
+                self._access.users -= 1
+                last = self._access.users == 0
+                if last:
+                    _CHROMA_ACCESS.pop(self._access_key, None)
+            if last:
+                self._close_chroma_client()
+        logger.debug("VectorStore closed")
+
+    @property
+    def _chroma_client(self) -> Any:
+        return self._access.client
+
+    @_chroma_client.setter
+    def _chroma_client(self, client: Any) -> None:
+        self._access.client = client
+
+    @property
+    def _seen_generation(self) -> Optional[int]:
+        """The store's write counter as it stood when the shared client opened,
+        or after this process's own last write -- see _CHROMA_WRITE_LOCK."""
+        return self._access.seen_generation
+
+    @_seen_generation.setter
+    def _seen_generation(self, value: Optional[int]) -> None:
+        self._access.seen_generation = value
+
+    def _close_chroma_client(self) -> None:
+        """Stop the PATH's chroma client -- for every instance on it; the next access opens a new one."""
+        self._chroma_collections.clear()
+        self._access.epoch += 1
         if self._chroma_client is not None:
             # Dropping the reference is NOT enough. chromadb keeps every System in
             # a process-global registry (SharedSystemClient._identifier_to_system,
@@ -336,7 +449,7 @@ class VectorStore:
                         exc.__class__.__name__,
                     )
             self._chroma_client = None
-        logger.debug("VectorStore closed")
+        self._seen_generation = None
     
     def __enter__(self):
         """Context manager entry."""
@@ -373,7 +486,8 @@ class VectorStore:
             metadatas: Metadata dicts for each document (optional)
         """
         if self._backend == "chromadb":
-            self._chromadb_add(collection, ids, documents, embeddings, metadatas)
+            with self._chroma_write():
+                self._chromadb_add(collection, ids, documents, embeddings, metadatas)
         else:
             self._sqlite_vec_add(collection, ids, documents, embeddings, metadatas)
     
@@ -420,7 +534,8 @@ class VectorStore:
             where: Metadata filter for deletion (ChromaDB only)
         """
         if self._backend == "chromadb":
-            self._chromadb_delete(collection, ids, where)
+            with self._chroma_write():
+                self._chromadb_delete(collection, ids, where)
         else:
             self._sqlite_vec_delete(collection, ids)
     
@@ -534,8 +649,9 @@ class VectorStore:
         """Delete an entire collection."""
         if self._backend == "chromadb":
             try:
-                client = self._get_chromadb_client()
-                client.delete_collection(name)
+                with self._chroma_write():
+                    client = self._get_chromadb_client()
+                    client.delete_collection(name)
                 self._chroma_collections.pop(name, None)
                 logger.info(f"Deleted ChromaDB collection: {name}")
             except Exception as e:
@@ -557,8 +673,9 @@ class VectorStore:
         """Reset/clear all data (for testing)."""
         if self._backend == "chromadb":
             try:
-                client = self._get_chromadb_client()
-                client.reset()
+                with self._chroma_write():
+                    client = self._get_chromadb_client()
+                    client.reset()
                 self._chroma_collections.clear()
                 logger.info("ChromaDB reset complete")
             except Exception as e:
@@ -583,39 +700,69 @@ class VectorStore:
             import chromadb
             from chromadb.config import Settings
 
-            # Telemetrie-Logger daempfen. anonymized_telemetry=False (unten) SOLLTE
-            # reichen, aber chromadb 1.4.0 neutralisiert Posthog nur ueber das alte
-            # Modul-Flag posthog.disabled=True — das ignoriert posthog>=7, das zudem
-            # capture() von 3 positionalen Args auf (event, **kwargs) umgestellt hat.
-            # Folge: chromadb feuert capture() weiter, es wirft TypeError, gefangen im
-            # try/except als logger.error (harmlos — der Fehler fliegt VOR jedem
-            # Netzwerk-I/O, nichts verlaesst den Prozess). Bis chromadb/posthog wieder
-            # zusammenpassen, den Telemetrie-Logger stummschalten. Muss VOR der Client-
-            # Erstellung stehen (dort feuert das erste Event, ClientStartEvent).
-            logging.getLogger("chromadb.telemetry").setLevel(logging.CRITICAL)
-
             # WORKAROUND: On Windows, Rust bindings hang/crash (GitHub issue #5937)
             # Use Python SegmentAPI implementation instead
-            if platform.system() == "Windows":
-                settings = Settings(
-                    anonymized_telemetry=False,
-                    allow_reset=True,
-                    chroma_api_impl="chromadb.api.segment.SegmentAPI",  # Bypass Rust bindings
-                    persist_directory=str(self.persist_path),
-                    is_persistent=True
-                )
-                self._chroma_client = chromadb.Client(settings)
-                logger.info(f"ChromaDB client initialized (SegmentAPI) at {self.persist_path}")
-            else:
-                self._chroma_client = chromadb.PersistentClient(
-                    path=str(self.persist_path),
-                    settings=Settings(
+            with self._chroma_init_lock():  # opening writes the schema -- see _CHROMA_INIT_LOCK
+                # Read BEFORE the open: a write in between then costs one reopen
+                # too many at the next write, never one too few.
+                self._seen_generation = self._read_generation()
+                if platform.system() == "Windows":
+                    settings = Settings(
                         anonymized_telemetry=False,
-                        allow_reset=True
+                        allow_reset=True,
+                        chroma_api_impl="chromadb.api.segment.SegmentAPI",  # Bypass Rust bindings
+                        persist_directory=str(self.persist_path),
+                        is_persistent=True
                     )
-                )
-                logger.info(f"ChromaDB client initialized at {self.persist_path}")
+                    self._chroma_client = chromadb.Client(settings)
+                    logger.info(f"ChromaDB client initialized (SegmentAPI) at {self.persist_path}")
+                else:
+                    self._chroma_client = chromadb.PersistentClient(
+                        path=str(self.persist_path),
+                        settings=Settings(
+                            anonymized_telemetry=False,
+                            allow_reset=True
+                        )
+                    )
+                    logger.info(f"ChromaDB client initialized at {self.persist_path}")
         return self._chroma_client
+
+    def _chroma_init_lock(self) -> FileLock:
+        """The cross-process lock for opening this store and making collections."""
+        return FileLock(str(self.persist_path / _CHROMA_INIT_LOCK), timeout=_CHROMA_INIT_TIMEOUT)
+
+    def _read_generation(self) -> int:
+        """How many chroma writes this store has seen; 0 when nothing says.
+
+        Unreadable counts as 0, which can only make a later write reopen once
+        more than it had to -- never skip a reopen it needed.
+        """
+        try:
+            return int((self.persist_path / _CHROMA_GENERATION).read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return 0
+
+    @contextlib.contextmanager
+    def _chroma_write(self):
+        """One chroma write: alone across processes, on a view with every write before it."""
+        with FileLock(str(self.persist_path / _CHROMA_WRITE_LOCK), timeout=_CHROMA_WRITE_TIMEOUT):
+            current = self._read_generation()
+            if self._chroma_client is not None and current != self._seen_generation:
+                # Somebody wrote since this client opened: drop it, and the
+                # write below opens the store as it is now.
+                self._close_chroma_client()
+            counter = self.persist_path / _CHROMA_GENERATION
+            try:
+                yield
+            except BaseException:
+                # Part of it may be in the store. The others must reopen, and so
+                # must this process -- its own view is now anybody's guess. One
+                # reopen too many is cheap; one too few loses documents.
+                counter.write_text(str(current + 1), encoding="utf-8")
+                self._seen_generation = None
+                raise
+            counter.write_text(str(current + 1), encoding="utf-8")
+            self._seen_generation = current + 1
     
     def _get_chromadb_embedding_fn(self):
         """Get or create ChromaDB embedding function."""
@@ -631,25 +778,33 @@ class VectorStore:
     
     def _get_chromadb_collection(self, name: str):
         """Get or create ChromaDB collection."""
+        if self._chroma_epoch != self._access.epoch:
+            # Another instance on this path replaced the shared client; the
+            # handles cached here belong to the stopped one.
+            self._chroma_collections.clear()
+            self._chroma_epoch = self._access.epoch
         if name not in self._chroma_collections:
             client = self._get_chromadb_client()
             embedding_fn = self._get_chromadb_embedding_fn()
-            
-            try:
-                # Try to get existing collection
-                self._chroma_collections[name] = client.get_collection(
-                    name=name,
-                    embedding_function=embedding_fn
-                )
-                logger.debug(f"Loaded ChromaDB collection: {name}")
-            except Exception:
-                # Create new collection
-                self._chroma_collections[name] = client.create_collection(
-                    name=name,
-                    metadata={"hnsw:space": "cosine"},
-                    embedding_function=embedding_fn
-                )
-                logger.info(f"Created ChromaDB collection: {name}")
+
+            # Under the init lock: two processes that both miss the get would
+            # both create, and the second one's create raises "already exists".
+            with self._chroma_init_lock():
+                try:
+                    # Try to get existing collection
+                    self._chroma_collections[name] = client.get_collection(
+                        name=name,
+                        embedding_function=embedding_fn
+                    )
+                    logger.debug(f"Loaded ChromaDB collection: {name}")
+                except Exception:
+                    # Create new collection
+                    self._chroma_collections[name] = client.create_collection(
+                        name=name,
+                        metadata={"hnsw:space": "cosine"},
+                        embedding_function=embedding_fn
+                    )
+                    logger.info(f"Created ChromaDB collection: {name}")
         
         return self._chroma_collections[name]
     

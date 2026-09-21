@@ -41,7 +41,8 @@ websockets>=15.0.0
 # leaks its tokio runtime (~6 file descriptors, ~5 threads) — with one
 # store per session that exhausted the API's descriptor limit in 22h.
 chromadb>=1.5.0,<2.0
-posthog>=3.0.0,<3.2.0
+# (posthog<3.2 was pinned here for chromadb 1.4's telemetry; 1.5 no longer
+# imports posthog at all, and the pin only downgraded what is installed.)
 chroma-hnswlib>=0.7.6
 sqlite-vec>=0.1.0
 sentence-transformers>=4.0.0

@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import aiofiles
+from filelock import FileLock
+from filelock import Timeout as LockTimeout
 
 from agent_system.utils.vector_store import (
     VectorStore,
@@ -41,6 +43,12 @@ logger = logging.getLogger(__name__)
 #: with 2000 no test tree ever reaches the second round, and the chunking was
 #: therefore never executed by the suite that claimed to check it.
 EMBED_BATCH_SIZE = 2000
+
+#: One index pass at a time across processes -- see rebuild_index.
+_PASS_LOCK_NAME = ".file_ops_index_pass.lock"
+#: How long a FULL rebuild waits for another process's pass. A full pass over
+#: this repository measured 423 s; twice that is a pass that is stuck.
+_FULL_PASS_WAIT = 900.0
 
 
 class FileSearchEngine:
@@ -127,12 +135,7 @@ class FileSearchEngine:
         try:
             logger.info("FILE_OPS: Initializing VectorStore for semantic search...")
             
-            # Get persist path from config or use default
-            persist_path = Path(self.config.get(
-                "chroma_db_path",  # Keep old config name for compatibility
-                "data/cache/file_ops_chromadb"
-            ))
-            
+            persist_path = self._persist_path()
             self._vector_store = VectorStore(persist_path=persist_path)
             self._state_path = persist_path / f"{self._collection_name}_state.json"
 
@@ -212,8 +215,60 @@ class FileSearchEngine:
             logger.debug("FILE_OPS: an index pass is already running — skipping this one")
             return False
         async with self._index_lock:
-            await self._run_index_pass(status_callback, incremental)
+            # The same rule across PROCESSES. Every agent-cli that loads
+            # file_ops runs its own background indexer over the same store, so
+            # N processes walked the same tree N times, each writing on its own
+            # stale view of the index (VectorStore now keeps that from losing
+            # vectors, but only by reopening the store per batch) and each
+            # writing the state file from its own memory.
+            pass_lock = self._pass_lock()
+            if pass_lock is not None:
+                try:
+                    if incremental:
+                        pass_lock.acquire(timeout=0)      # one syscall, no need for a thread
+                    else:
+                        await asyncio.to_thread(pass_lock.acquire, timeout=_FULL_PASS_WAIT)
+                except LockTimeout:
+                    if incremental:
+                        logger.debug("FILE_OPS: another process is indexing — skipping this pass")
+                        return False
+                    raise VectorStoreError(
+                        f"another process held the index for {_FULL_PASS_WAIT:.0f}s -- "
+                        "the full rebuild did not run")
+            try:
+                if pass_lock is not None:
+                    # Another process may have indexed since this one read the
+                    # state -- start from what is on disk, not from memory.
+                    await asyncio.to_thread(self._load_state)
+                await self._run_index_pass(status_callback, incremental)
+            finally:
+                if pass_lock is not None:
+                    pass_lock.release()
         return True
+
+    def _persist_path(self) -> Path:
+        """Where the semantic index lives -- one answer for the store and its lock."""
+        return Path(self.config.get(
+            "chroma_db_path",  # Keep old config name for compatibility
+            "data/cache/file_ops_chromadb"
+        ))
+
+    def _pass_lock(self) -> Optional[FileLock]:
+        """The cross-process lock for one index pass, next to the store it writes.
+
+        Derived from the config, NOT from the opened store: the store opens
+        inside the first pass, so a lock that waited for it would have let
+        exactly that pass -- the first one of every process -- run unguarded.
+
+        thread_local=False: a full rebuild takes it in a worker thread and lets
+        go on the event loop, and filelock counts per thread by default -- the
+        release would not have released anything.
+        """
+        if not self.config.get("enable_semantic_search", True):
+            return None
+        persist_path = self._persist_path()
+        persist_path.mkdir(parents=True, exist_ok=True)
+        return FileLock(str(persist_path / _PASS_LOCK_NAME), thread_local=False)
 
     async def _run_index_pass(self, status_callback=None, incremental=True):
         """Full or incremental rebuild of the SEMANTIC index.
