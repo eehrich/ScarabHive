@@ -429,6 +429,16 @@ class SessionPresence:
                 "agent": state["agent"] or (stored or {}).get("agent", ""),
                 "sub_agent": bool(stored and stored["sub_agent"])}
 
+    def status(self, session_id: str, user_id: str) -> Optional[str]:
+        """running or waking while some process has the session in hand or is
+        waking it, else None -- what get() says about the lock, without reading
+        the session file beside it. For a caller that asks often: the sub-agent
+        list asks per sub-agent before every LLM call, and a sub-agent's
+        session file is its whole transcript."""
+        path = self._lock_path(session_id, user_id)
+        state = _probe(path) if path is not None else None
+        return state["status"] if state else None
+
     def list_for_user(self, user_id: str, exclude: str = "") -> list[dict[str, Any]]:
         """The user's sessions that run or are being woken. Sub-agents' sessions
         stay out: they belong to the run that spawned them."""

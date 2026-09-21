@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import functools
 import logging
 from datetime import UTC, datetime
 from collections.abc import Callable
@@ -19,7 +20,7 @@ from agent_system.llm.token_utils import extract_text_from_content
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
 
-from plugins.sub_agent_manager.manager import SubAgentManager
+from plugins.sub_agent_manager.manager import SubAgentLimitReached, SubAgentManager
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,22 @@ def agent_allowed(agent_name: str, allowed: List[str], blocked: List[str]) -> bo
 #: and `status` keeps meaning "the run is over".
 _ABORT_STATUS = (("Error:", "error"), ("Cancelled:", "cancelled"))
 
+#: An aborted outcome as the job status it gives and the status it stores on the instance --
+#: the same word in both, and in the background and the blocking way alike.
+_ABORTED_AS = {"error": "failed", "cancelled": "cancelled"}
+
+
+def _blocking_ending(result_text: str, run: dict[str, Any]) -> str:
+    """The status a blocking run leaves on its instance -- the background run's rule
+    (`_execute_async_job`, `_finish_job`): failed or cancelled for an answer that aborted;
+    otherwise open again, unless the instance was archived while it ran (`_archive_job` marks the
+    run), which a clean ending must not undo. Left "active" after an abort, the instance read as
+    idle: done, the answer ready."""
+    return _ABORTED_AS.get(_outcome_status(result_text)) or ("archived" if run.get("archived") else "active")
+
 #: The longest a `wait` waits between two looks at a sub-agent this process has no job for --
-#: reached by doubling from half a second. Each of those looks reads two session files (see
-#: `_handle_wait`), so the cadence of the cheap turn would be paid in disk here.
+#: reached by doubling from half a second. Each of those looks reads the parent's session file
+#: (see `_handle_wait`), so the cadence of the cheap turn would be paid in disk here.
 WAIT_DB_POLL_MAX = 8.0
 
 
@@ -59,6 +73,31 @@ def _outcome_status(result_text: str) -> str:
         if result_text.startswith(prefix):
             return status
     return "completed"
+
+
+def _stamp(value: Any) -> Optional[datetime]:
+    """A stored time. Every one written carries its zone (measured: 4326 of 4326)."""
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _left_mid_run(metadata: dict[str, Any]) -> bool:
+    """Whether a stored activity nobody holds was left by a run that died, not after one ended.
+
+    Every ending of a run that leaves the instance open records `last_used` after the run is over
+    (one that closes it stores failed or cancelled, which is shown as such). An activity written
+    later than that came from a run whose end was never recorded: its process died, or its
+    caller's did before the ending reached anyone -- either way nobody has the result. One written
+    earlier is the last status line of a run from before `_consume_run` cleared the activity at its
+    ending. Measured 21.09.2026: 1118 of those ("✅ completed (N steps)") against 10 unrecorded
+    ends (9 "⚙️ Calling LLM ...", 1 whose caller died). The words cannot tell them apart: mid-run
+    a tool's status line ends with "completed" too.
+    """
+    written, ended = _stamp(metadata.get("activity_updated_at")), _stamp(metadata.get("last_used"))
+    return bool(metadata.get("current_activity")) and written is not None \
+        and (ended is None or written > ended)
 
 
 def _without_status(params: dict) -> dict:
@@ -193,7 +232,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         self._blocking_runs: dict[str, dict[str, Any]] = {}
 
         # Track async jobs by instance_id: {instance_id: {task, status, started_at, result, error}}
-        # A finished job stays until a poll has read its ending (or a continue replaces it); the stored state answers after
+        # A finished job stays until a poll has read its ending (or a continue replaces it) -- one its caller called off
+        # itself (cancel, delete) only until that ending is stored; the stored state answers after
         self._async_jobs: dict[str, dict[str, Any]] = {}
         self._async_jobs_lock = asyncio.Lock()
 
@@ -618,23 +658,40 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         The text is what the caller hands back to the model: the answer, or "Error: ..." /
         "Cancelled: ..." -- the two prefixes `_outcome_status` reads the outcome from.
         """
-        result_text = ""
-        async for event in agent.run_events(
-            task=task,
-            request_id=request_id,
-            session_id=instance_id,
-            use_advanced_model=use_advanced_model,
-            # Note: config_overrides would go here if Agent.run_events supported them
-            # For now, sub-agent uses its default configuration
-        ):
-            if run is not None and run.pop("early", False):  # cancelled while it was prepared
-                await agent.cancel_request(request_id)
-            event_type = event.get("type")
-
-            # Track activity for the live status display
+        async def track(activity: Optional[str]) -> None:
             try:
+                await manager.update_sub_agent_activity(parent_session_id, instance_id, activity)
+            except Exception as activity_err:
+                # Don't fail execution if activity tracking fails
+                logger.debug(f"Activity tracking failed: {activity_err}")
+
+        # The activity is set only while the run holds its session's lock. A process that dies
+        # mid-run leaves it behind, and that is what `_shown_status` reads as interrupted -- so an
+        # activity nobody holds must never come from a run that is fine. The run takes its lock
+        # right after "start" (Agent._presence_hold), before anything here sets one, and lets go
+        # of it before its trailing status lines and "end" (Agent._run_events' finally): hence
+        # cleared at the ending event, and nothing said after it. The finally is for a run that
+        # raised.
+        result_text, over = "", False
+        try:
+            async for event in agent.run_events(
+                task=task,
+                request_id=request_id,
+                session_id=instance_id,
+                use_advanced_model=use_advanced_model,
+                # Note: config_overrides would go here if Agent.run_events supported them
+                # For now, sub-agent uses its default configuration
+            ):
+                if run is not None and run.pop("early", False):  # cancelled while it was prepared
+                    await agent.cancel_request(request_id)
+                event_type = event.get("type")
+                ending = event_type in ("final", "error", "cancelled")
+
+                # Track activity for the live status display
                 activity = None
-                if event_type == "thinking_delta":
+                if over or ending:
+                    pass
+                elif event_type == "thinking_delta":
                     activity = "💭 Thinking..."
                 elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
                     activity = f"🔧 Running tool: {event.get('action', 'tool')}"
@@ -643,33 +700,32 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     icon = {"error": "❌", "end": "✅"}.get(phase, "⚙️")
                     activity = f"{icon} {event.get('message', 'Processing...')}"
                 if activity:
-                    await manager.update_sub_agent_activity(parent_session_id, instance_id, activity)
-            except Exception as activity_err:
-                # Don't fail execution if activity tracking fails
-                logger.debug(f"Activity tracking failed: {activity_err}")
+                    await track(activity)
+                if ending and not over:
+                    over = True
+                    await track(None)
 
-            # Collect final result (can be "final", "error", or "cancelled")
-            if event_type == "final":
-                result_text = event.get("summary", "")
-                # Clear activity on completion
-                await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
-                # DON'T break here - continue iterating to get "end" event
-                # This ensures _finalize_request runs and messages are persisted
-            elif event_type == "end":
-                # Generator fully completed, messages are now in SessionTracker
-                break
-            elif event_type in ("error", "cancelled"):
-                if event_type == "error":
-                    result_text = f"Error: {event.get('message', 'Unknown error')}"
-                    logger.warning(f"Sub-agent {instance_id} returned error: {result_text}")
-                else:
-                    # The event the agent loop sends carries neither, and then the run was stopped
-                    # from outside: the sentence says that rather than "Unknown".
-                    reason = event.get("reason") or event.get("message") or "Request was cancelled"
-                    result_text = f"Cancelled: {reason}"
-                    logger.info(f"Sub-agent {instance_id} was cancelled: {result_text}")
-                await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
-                break  # Stop waiting for more events
+                # Collect final result (can be "final", "error", or "cancelled")
+                if event_type == "final":
+                    result_text = event.get("summary", "")
+                    # DON'T break here - continue iterating to get "end" event
+                    # This ensures _finalize_request runs and messages are persisted
+                elif event_type == "end":
+                    # Generator fully completed, messages are now in SessionTracker
+                    break
+                elif event_type in ("error", "cancelled"):
+                    if event_type == "error":
+                        result_text = f"Error: {event.get('message', 'Unknown error')}"
+                        logger.warning(f"Sub-agent {instance_id} returned error: {result_text}")
+                    else:
+                        # The event the agent loop sends carries neither, and then the run was stopped
+                        # from outside: the sentence says that rather than "Unknown".
+                        reason = event.get("reason") or event.get("message") or "Request was cancelled"
+                        result_text = f"Cancelled: {reason}"
+                        logger.info(f"Sub-agent {instance_id} was cancelled: {result_text}")
+                    break  # Stop waiting for more events
+        finally:
+            await track(None)
         return result_text
 
     async def _handle_create(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -774,21 +830,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     instance_label=instance_label,
                     params=params  # Pass params for user_id extraction and creator_plugin
                 )
-            except ValueError as e:
-                # Handle max sub-agents limit gracefully
-                if "Maximum number of active sub-agents" in str(e):
-                    msg = str(e).split("Active sub-agents:")[0].strip()
-                    logger.info(f"Sub-agent limit reached: {msg}")
-                    if status:
-                        await status.error(msg)
-                    return {
-                        "instance_id": None,
-                        "status": "limit_reached",
-                        "error": msg,
-                        "agent_type": agent_name
-                    }
-                # Re-raise other ValueErrors (invalid agent, etc.)
-                raise
+            except SubAgentLimitReached as e:
+                return await self._limit_reached(e, status, instance_id=None, agent_type=agent_name)
 
             logger.info(f"Created sub-session {sub_session_id} for parent {parent_session_id}")
 
@@ -851,6 +894,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 run = self._blocking_runs[sub_session_id] = {
                     "agent": None, "request_id": None, "parent_session_id": parent_session_id, "cancelled": False}
 
+            # False while the stored status knows nothing of how this run ends (_store_blocking_abort)
+            settled = False
             try:
                 # Get agent from registry
                 agent = registry.get(agent_name)
@@ -944,13 +989,15 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 )
                 logger.debug(f"Saved sub-agent session {sub_session_id} with messages")
 
-                # Update metadata after execution (including message_count)
+                # Update metadata after execution: message_count, and how the run ended
                 await manager.update_sub_session_metadata(
                     parent_session_id=parent_session_id,
                     sub_session_id=sub_session_id,
                     last_used=datetime.now(UTC).isoformat(),
-                    message_count=2  # user + assistant for initial creation
+                    message_count=2,  # user + assistant for initial creation
+                    status=_blocking_ending(result_text, run),
                 )
+                settled = True
 
                 if status:
                     # result_text carries the outcome ("Error: ..."/"Cancelled: ...")
@@ -974,6 +1021,10 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     "message_count": 2,  # user + assistant
                     "agent_type": agent_name
                 }
+            except (Exception, asyncio.CancelledError) as error:
+                if not settled:
+                    await self._store_blocking_abort(manager, parent_session_id, sub_session_id, error)
+                raise
             finally:
                 # ALWAYS release lock, even on error (CRITICAL for preventing deadlock)
                 async with self._running_lock:
@@ -1051,15 +1102,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 raise ValueError(f"Agent type '{agent_type}' not found")
             use_advanced_model = self._continue_use_advanced(agent_type, use_advanced_model)
 
-            # Reactivate archived sub-agent BEFORE execution starts
-            # This ensures the sub-agent shows as "active" during execution
-            await manager.update_sub_session_metadata(
-                parent_session_id=parent_session_id,
-                sub_session_id=instance_id,
-                status="active"
-            )
-            logger.debug(f"Reactivated sub-agent {instance_id} (was potentially archived)")
-
             # Check if sub-agent is already running (prevent concurrent execution)
             # CRITICAL: Use single try-finally to ensure _running_agents is ALWAYS cleaned up
             async with self._running_lock:
@@ -1074,7 +1116,15 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 run = self._blocking_runs[instance_id] = {
                     "agent": None, "request_id": None, "parent_session_id": parent_session_id, "cancelled": False}
 
+            # True while the stored status knows nothing of this run: before the reopen it still tells
+            # the last one's ending, and a reopen refused at a limit leaves it at that
+            settled = True
             try:
+                # Reopen BEFORE execution starts -- and only once this run is registered: a continue
+                # refused as "already running" must not touch the run it met.
+                await manager.reopen_sub_session(parent_session_id, instance_id)
+                settled = False
+
                 # An earlier background run of this instance that has ended: this run replaces its ending, which
                 # a later poll or wait would report instead of this run's
                 async with self._async_jobs_lock:
@@ -1149,15 +1199,15 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 messages = sub_session_data.get("messages", [])
                 new_message_count = len(messages) + 2  # existing + user + assistant
 
-                # Update last_used timestamp, message_count, and reactivate status in parent metadata
-                # IMPORTANT: Reactivate archived sub-agents by setting status back to "active"
+                # Update last_used, message_count, and how the run ended
                 await manager.update_sub_session_metadata(
                     parent_session_id=parent_session_id,
                     sub_session_id=instance_id,
                     last_used=datetime.now(UTC).isoformat(),
                     message_count=new_message_count,
-                    status="active"  # Reactivate archived sub-agents
+                    status=_blocking_ending(result_text, run),
                 )
+                settled = True
 
                 if status:
                     # Same as the create path: an aborted continuation must
@@ -1179,6 +1229,10 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     "message_count": len(messages) + 2,  # existing + user + assistant
                     "agent_type": agent_type
                 }
+            except (Exception, asyncio.CancelledError) as error:
+                if not settled:
+                    await self._store_blocking_abort(manager, parent_session_id, instance_id, error)
+                raise
             finally:
                 # ALWAYS release lock, even on error (CRITICAL for preventing deadlock)
                 async with self._running_lock:
@@ -1186,6 +1240,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     self._blocking_runs.pop(instance_id, None)
                 logger.debug(f"Released running lock for sub-agent {instance_id}")
 
+        except SubAgentLimitReached as e:
+            # the reopen takes a place: refused like a create, not reported as a crash
+            return await self._limit_reached(e, status, instance_id=params.get("instance_id"))
         except Exception as e:
             logger.exception(f"Error in continue_sub_agent: {e}")
             if status:
@@ -1215,12 +1272,17 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             registry = params.get("_registry")  # Optional - won't fail if missing
             manager = self._get_manager(session_service, registry)
 
-            # List sub-sessions - filter by this plugin instance
-            sub_sessions = await manager.list_sub_sessions(
-                parent_session_id=parent_session_id,
-                include_completed=include_completed,
-                creator_plugin=self.name  # Only show sub-agents created by THIS instance
-            )
+            # List sub-sessions - filter by this plugin instance. A run that failed or was
+            # cancelled is listed too: its instance is still there to continue, and a caller that
+            # did not end it itself learns of it nowhere else. Archived ones only on request.
+            sub_sessions = [
+                metadata for metadata in await manager.list_sub_sessions(
+                    parent_session_id=parent_session_id,
+                    include_completed=True,
+                    creator_plugin=self.name  # Only show sub-agents created by THIS instance
+                )
+                if include_completed or metadata.get("status") != "archived"
+            ]
 
             # Format response - load actual message count from each sub-session
             session_manager = session_service.session_manager
@@ -1229,39 +1291,26 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             instances = []
             for metadata in sub_sessions:
                 instance_id = metadata["instance_id"]
-                sub_status = metadata["status"]
+                sub_status = await self._shown_status(metadata, lambda: user_id)
 
-                activity_text = (metadata.get("current_activity") or "")
-                activity_lower = activity_text.lower()
-                looks_running = bool(activity_text) and (
-                    "completed" not in activity_lower
-                    and "cancelled" not in activity_lower
-                    and "canceled" not in activity_lower
-                    and "failed" not in activity_lower
-                    and "error" not in activity_lower
-                )
-                
-                # CRITICAL: If a sub-agent looks like it's running (status OR activity),
-                # but we have no active async job (e.g., after server restart), mark interrupted.
-                if sub_status in ("running", "pending") or (sub_status == "active" and looks_running):
-                    if (not self.is_agent_running(instance_id)
-                            and not await self._runs_in_another_process(instance_id, user_id)):
-                        logger.warning(
-                            f"Sub-agent {instance_id} has status='{sub_status}' in DB but no active task. "
-                            f"Marking as 'interrupted' (likely server restart or crash)."
-                        )
-                        await manager.update_sub_session_metadata(
-                            parent_session_id=parent_session_id,
-                            sub_session_id=instance_id,
-                            status="interrupted",
-                            completed_at=datetime.now(UTC).isoformat(),
-                            error="Server restarted or crashed while sub-agent was running",
-                            # Clear stale activity to prevent WebUI from displaying RUNNING forever.
-                            current_activity=None,
-                            activity_updated_at=None,
-                        )
-                        sub_status = "interrupted"
-                        metadata = {**metadata, "current_activity": None, "activity_updated_at": None}
+                # A run left behind by a process that died: said once, here, and written, so the
+                # stale activity stops reading as a run under way (the panel shows what is stored).
+                if sub_status == "interrupted" and metadata["status"] != "interrupted":
+                    logger.warning(
+                        f"Sub-agent {instance_id} has status='{metadata['status']}' in DB but no active task. "
+                        f"Marking as 'interrupted' (likely server restart or crash)."
+                    )
+                    await manager.update_sub_session_metadata(
+                        parent_session_id=parent_session_id,
+                        sub_session_id=instance_id,
+                        status="interrupted",
+                        completed_at=datetime.now(UTC).isoformat(),
+                        error="Server restarted or crashed while sub-agent was running",
+                        # Clear stale activity to prevent WebUI from displaying RUNNING forever.
+                        current_activity=None,
+                        activity_updated_at=None,
+                    )
+                    metadata = {**metadata, "current_activity": None, "activity_updated_at": None}
 
                 # Get actual message count from sub-session (not from cached metadata)
                 try:
@@ -1568,7 +1617,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             return {
                 "instance_id": instance_id,
                 "agent_type": agent_type,
-                "status": metadata.get("status", "unknown"),
+                # what it is doing, as `list` says it -- stored, a running and an idle one are both "active"
+                "status": await self._shown_status({**metadata, "instance_id": instance_id}, lambda: user_id)
+                if metadata else "unknown",
                 "created_at": metadata.get("created_at"),
                 "last_used": metadata.get("last_used"),
                 "message_count": total,
@@ -1738,7 +1789,14 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         never passes through this server at all: it is handed this method as `on_archived` when
         the manager is built. The two differ in exactly one thing at the ending -- whether the
         caller should be woken for it -- and `_finish_job` cannot tell them apart without this.
+
+        A blocking run is marked too: its clean ending would open the instance again
+        (`_blocking_ending`).
         """
+        async with self._running_lock:
+            run = self._blocking_runs.get(instance_id)
+            if run is not None:
+                run["archived"] = True
         async with self._async_jobs_lock:
             job = self._async_jobs.get(instance_id)
             if job is None:
@@ -1750,6 +1808,34 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 if by_caller:
                     # deleted by the caller, awake: the same as a cancel of its own for the bell
                     job["_ended_by_caller"] = True
+
+    @staticmethod
+    async def _limit_reached(error: SubAgentLimitReached, status: Any, **fields: Any) -> dict[str, Any]:
+        """The answer when a limit leaves no room, to a create or a continue: the reason without the
+        ids behind it, under a status the caller counts as a failure (agent_caller)."""
+        message = str(error).split("Active sub-agents:")[0].strip()
+        logger.info(f"Sub-agent limit reached: {message}")
+        if status:
+            await status.error(message)
+        return {**fields, "status": "limit_reached", "error": message}
+
+    async def _store_blocking_abort(
+        self, manager: SubAgentManager, parent_session_id: str, instance_id: str, error: BaseException
+    ) -> None:
+        """A blocking run that ended by an exception stores how, as a background one does: failed,
+        or cancelled when the tool call itself was. Left "active" it read as idle -- done, the
+        answer ready. Best effort: the run's own error is the one to report."""
+        ending = ({"status": "cancelled"} if isinstance(error, asyncio.CancelledError)
+                  else {"status": "failed", "error": str(error)})
+        try:
+            await manager.update_sub_session_metadata(
+                parent_session_id=parent_session_id,
+                sub_session_id=instance_id,
+                completed_at=datetime.now(UTC).isoformat(),
+                **ending,
+            )
+        except Exception as persist_error:
+            logger.warning(f"Failed to persist {ending['status']} status for {instance_id}: {persist_error}")
 
     async def _finish_job(
         self,
@@ -1772,6 +1858,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
         The job is kept, marked `_awaiting_poll`, until a poll has read its ending -- dropping it
         here would send a `wait` running meanwhile to the stored state, which may still say active.
+        One the caller called off itself goes once that state is written: nobody reads it later.
         `stored` is what the sub-session's metadata records; the ways differ in that, so each
         caller says it.
         """
@@ -1814,20 +1901,30 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             stored = {**stored, "status": "archived"}
 
         parent_session_id = params.get("_session_id")
+        written = False
         try:
             if parent_session_id:
                 if manager is None:
                     registry = self._extract_registry(params)
                     manager = self._get_manager(self._extract_session_service(params), registry)
-                await manager.update_sub_session_metadata(
+                written = await manager.update_sub_session_metadata(
                     parent_session_id=parent_session_id,
                     sub_session_id=instance_id,
                     **stored,
-                )
+                ) is not False
         except Exception as persist_error:
             logger.warning(f"Failed to persist {job_status} status for {instance_id}: {persist_error}")
 
-        logger.info(f"Async execution finished for {instance_id} ({job_status}), awaiting result poll")
+        if ended_by_caller and job is not None and written:
+            # Called off by the caller, awake: it knows how this ended and is not coming back
+            # to read it, so an entry held for that read would stay for the life of the process.
+            # Dropped only once the ending is stored -- a poll or wait meanwhile finds it there,
+            # not a status that still says active; unstored, the entry stays the only answer.
+            async with self._async_jobs_lock:
+                self._async_jobs.pop(instance_id, None)
+
+        logger.info(f"Async execution finished for {instance_id} ({job_status})"
+                    + ("" if instance_id not in self._async_jobs else ", awaiting result poll"))
 
         # The RUN is over here, on every path that reaches this method, so the slot it held goes
         # now -- before the bell, not after it. The success path reaches `_finish_job` inside the
@@ -2047,8 +2144,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 # Failed: 0" and a fan-out of dead reviewers read as a clean
                 # one. The job status uses the vocabulary it already has.
                 outcome = _outcome_status(result_text)
-                job_status = {"error": "failed", "cancelled": "cancelled"}.get(
-                    outcome, "completed")
+                job_status = _ABORTED_AS.get(outcome, "completed")
 
                 # Update metadata: a finished-but-aborted run is not active any
                 # more, the same way the two paths below record it.
@@ -2312,11 +2408,10 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             # Async execution in progress - poll until done
             start_time = asyncio.get_event_loop().time()
             # Two turns of this loop cost very different things. With a job here it is a dict
-            # lookup under a lock; without one it is the parent's session file (re-parsed whenever
-            # a sub-agent wrote its activity since) plus the lock beside the sub-session, which
-            # parses that sub-agent's whole transcript uncached. Half a second of THAT is four
-            # thousand reads over a forty-minute run, once per waiter of a wait_all, so the turn
-            # without a job backs off instead.
+            # lookup under a lock; without one it is the parent's session file, re-parsed whenever
+            # a sub-agent wrote its activity since -- which a running one does all the time. Half a
+            # second of THAT is four thousand reads over a forty-minute run, once per waiter of a
+            # wait_all, so the turn without a job backs off instead.
             db_pause = 0.5
 
             while True:
@@ -2625,13 +2720,38 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         if presence is None:
             return False
         try:
-            # get() opens the lock file and reads the session json beside it -- the sessions this
-            # process reads it takes off the loop too (SessionManager._read_session_file_async).
-            state = await asyncio.to_thread(presence.get, instance_id, user_id)
+            # The lock only: get() would parse the session file beside it too -- a sub-agent's
+            # whole transcript, per sub-agent and per LLM call for the injected list. A probe does
+            # not wait for anything, so it stays on the loop.
+            state = presence.status(instance_id, user_id)
         except Exception as error:  # a listing must not fail over a lock file
             logger.debug(f"Session presence: could not read {instance_id}: {error}")
             return False
-        return bool(state) and state["status"] in ("running", "waking")
+        return state in ("running", "waking")
+
+    async def _shown_status(self, metadata: dict[str, Any], user_id: Callable[[], str]) -> str:
+        """running, idle, or how the last run ended -- a sub-agent's state as the model and the
+        injected list name it.
+
+        Stored, an open instance is "active" whether a run is under way or not: a clean ending
+        stores it too, so the word says nothing a caller can act on. A run is what tells the two
+        apart -- one of this process, or the lock a run holds beside its session in any other,
+        from before its first activity to after its last. An activity with neither behind it was
+        left by a process that died mid-run.
+
+        The injected list asks this before every LLM call: the lock is a probe of one file, and
+        `user_id` is found only when one is asked (it scans the session directories).
+        """
+        stored = metadata.get("status")
+        if stored not in ("active", "running", "pending"):
+            return stored or "unknown"
+        instance_id = metadata.get("instance_id", "")
+        if self.is_agent_running(instance_id) \
+                or await self._runs_in_another_process(instance_id, user_id()):
+            return "running"
+        if stored == "active" and not _left_mid_run(metadata):
+            return "idle"
+        return "interrupted"
 
     def _get_current_phase(self, params: dict[str, Any]) -> Optional[str]:
         """Get current workflow phase from session template vars or agent config default.
@@ -2763,12 +2883,19 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 'phase_variable': self.phase_variable,
                 'phase_agents': self.phase_agents
             }
+            # found once, and only if a sub-agent's lock is asked about: it scans the session dirs
+            user_id = functools.cache(lambda: manager._extract_user_id(context.session_id))
+
+            async def status_of(metadata: dict[str, Any]) -> str:
+                return await self._shown_status(metadata, user_id)
+
             injector = SubAgentContextInjector(
-                manager, 
-                self.name, 
-                hook_config, 
+                manager,
+                self.name,
+                hook_config,
                 self.allowed_agents,
-                phase_filtering_config
+                phase_filtering_config,
+                status_of=status_of,
             )
 
             # Delegate to injector

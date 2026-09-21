@@ -1,12 +1,14 @@
 """The Sub-Agents panel in a real browser, against the real plugin: its router, its list, info and delete handlers, the
 session files they read and write, its static files. No agent runs: ``sub_research_a`` is held in ``_running_agents``,
-the seam a run in this process goes through; the panel shows every sub-agent as stored, run here or not.
+the seam a run in this process goes through, and ``sub_writer_c`` and ``sub_writer_n`` answer at
+``_runs_in_another_process``, the seam of a run another process holds. The panel shows what the server reads from
+that, in the words of the tool's ``list`` -- never the stored "active".
 
 Seeded under ``tmp_path``, instance ``sam_writer`` with phase filtering on and ``info_max_limit`` 15, session ``s-1`` (phase ``planning``):
 ``sub_research_a`` running with the activity "Running tool: web_search"; ``sub_writer_b`` idle, its last activity
-"Completed", with a 45-message transcript (a tool call and markup among it) and a task summary of markup;
-``sub_writer_c`` reporting "Thinking..." without a run in this process -- as one running in another process does,
-which the panel shows as stored and must not mark interrupted; ``sub_writer_h`` interrupted; ``sub_writer_d`` archived;
+"✅ completed (3 steps)" written before its last end, with a 45-message transcript (a tool call and markup among it)
+and a task summary of markup; ``sub_writer_c`` reporting "Thinking..." from a run another process holds -- running,
+and not written interrupted by a panel; ``sub_writer_h`` interrupted; ``sub_writer_d`` archived;
 ``sub_writer_e`` failed; and
 ``sub_other_f``, spawned by another manager instance, which this one does not list. Last used in that order, newest
 first. One level deeper, under ``sub_writer_b`` and by another instance as well: ``sub_writer_n``, running -- in the
@@ -92,11 +94,14 @@ async def seed(server, service) -> dict[str, str]:
     await sessions.save_session(parent)
     stamp = lambda minutes: f"2026-09-15T10:{minutes:02d}:00+00:00"  # noqa: E731
     ids = {
+        # an activity written after the last recorded end is a run under way; one before it, the
+        # last line a run from before the server cleared it at every ending left behind (b)
         "a": await spawn(server, service, "s-1", "research_agent", "research_a", last_used=stamp(50),
-                         current_activity="Running tool: web_search"),
+                         current_activity="Running tool: web_search", activity_updated_at=stamp(51)),
         "b": await spawn(server, service, "s-1", "writer_agent", "writer_b", last_used=stamp(40), task_summary=MARKUP,
-                         current_activity="Completed"),
-        "c": await spawn(server, service, "s-1", "writer_agent", "writer_c", last_used=stamp(30), current_activity="Thinking..."),
+                         current_activity="✅ completed (3 steps)", activity_updated_at=stamp(39)),
+        "c": await spawn(server, service, "s-1", "writer_agent", "writer_c", last_used=stamp(30), current_activity="Thinking...",
+                         activity_updated_at=stamp(31)),
         "h": await spawn(server, service, "s-1", "writer_agent", "writer_h", last_used=stamp(25), status="interrupted"),
         "d": await spawn(server, service, "s-1", "writer_agent", "writer_d", last_used=stamp(20), status="archived"),
         "e": await spawn(server, service, "s-1", "writer_agent", "writer_e", last_used=stamp(10), status="failed"),
@@ -105,7 +110,8 @@ async def seed(server, service) -> dict[str, str]:
     }
     # one level deeper, and by another manager instance: the map shows it under ``sub_writer_b``, the list neither
     ids["n"] = await spawn(server, service, ids["b"], "writer_agent", "writer_n", creator="sam_other",
-                           created_at=stamp(30), last_used=stamp(35), current_activity="Running tool: web_search")
+                           created_at=stamp(30), last_used=stamp(35), current_activity="Running tool: web_search",
+                           activity_updated_at=stamp(36))
     sub = await sessions.load_session(USER, ids["b"])
     sub["messages"] = transcript()
     await sessions.save_session(sub)
@@ -122,6 +128,11 @@ def panel_app(tmp_path: Path) -> FastAPI:
     plugin = PLUGIN_FACTORY(NAME, AgentSystemConfig(), ToolServerConfig(**CONFIG))  # served in the app's own event loop
     service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))
     plugin.server._running_agents.add(ids["a"])
+    elsewhere = {ids["c"], ids["n"]}
+
+    async def runs_elsewhere(instance_id: str, user_id: str) -> bool:  # the lock beside the session, held elsewhere
+        return instance_id in elsewhere
+    plugin.server._runs_in_another_process = runs_elsewhere
     app = FastAPI()
     app.state.session_service = service
     app.state.ids = ids

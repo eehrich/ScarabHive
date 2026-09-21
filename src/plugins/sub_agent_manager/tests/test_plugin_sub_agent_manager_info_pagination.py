@@ -312,3 +312,17 @@ class TestInfoOnAnInstanceThatDoesNotExist:
         assert result["status"] == "error"
         assert real_sub_id in result["error"]
         assert "exactly as returned" in result["error"]
+
+
+class TestInfoSaysWhatTheSubAgentIsDoing:
+    """Stored, a running and an idle sub-agent both say "active"; `info` hands the model the
+    words `list` and the injected list use."""
+
+    @pytest.mark.asyncio
+    async def test_idle_once_its_run_is_over_and_running_while_one_is(self, server, session_service, sub_session):
+        sub_id, _ = sub_session
+        idle = await server._handle_info(_params(sub_id, session_service))
+        server._running_agents.add(sub_id)
+        running = await server._handle_info(_params(sub_id, session_service))
+
+        assert (idle["status"], running["status"]) == ("idle", "running")

@@ -13,7 +13,8 @@ tools:
         - poll: Check async status (NON-BLOCKING) -> Do not poll too frequently!
         - wait/wait_all: Wait for completion (BLOCKING)
         - cancel: Stop running agent
-        - list: Active sub-agents
+        - list: Your sub-agents and their status -- running (working now), idle (its
+          last run is done), or interrupted/failed/cancelled
         - info: Read a sub-agent's transcript (see 'messages' + 'window' in the
           response). Default (no 'offset') returns the TAIL -- the most recent
           messages, which is what you want right after a run. To read the full
@@ -179,8 +180,8 @@ hooks:
     type: pre_llm_call
     enabled: false # by default false, must be activate if sub agents are used
     description: |
-      Injects active sub-agent information into system prompt before LLM calls.
-      Provides coordinator agent with awareness of available sub-agents.
+      Appends this session's sub-agents and their status (running, idle, or how
+      the last run ended) as a turn at the end of the history, when it changed.
     timeout: 5.0
     order:
       after: ["begin"]  # Run after initialization hooks
@@ -203,13 +204,13 @@ config:
   hook_config:
     enabled: true
     inject_sub_agent_context:
-      # Injects active sub-agent list into coordinator's system prompt
+      # Appends the coordinator's sub-agents and their status to its history
       # Gives coordinator agent visibility into available sub-agents for follow-up tasks
       enabled: true
       # Limits number of sub-agents shown to prevent system prompt bloat
-      # Shows the N most recently created sub-agents
+      # Shows N: the open ones first, then the most recently created
       max_sub_agents_shown: 5
-      show_completed: false
+      show_completed: false  # true = archived ones too (failed and cancelled are always shown)
       format: markdown
   # Phase-based agent filtering (optional, top-level key of the server entry)
   # Filters the "Available agents" list based on a session template variable

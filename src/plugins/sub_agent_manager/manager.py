@@ -17,6 +17,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Stored statuses of a sub-agent that is still there to use: "active" (running or
+#: idle) and "interrupted" (its session is present, its last run ended unexpectedly).
+OPEN_STATUSES = ("active", "interrupted")
+
+
+class SubAgentLimitReached(ValueError):
+    """No room for one more active sub-agent: a limit is reached, and nothing was archived to make
+    some. A ValueError still, for every caller that catches those."""
+
 
 class SubAgentManager:
     """Manages lifecycle of sub-agent instances.
@@ -188,64 +197,8 @@ class SubAgentManager:
                 f"(max_nesting_depth={self.max_nesting_depth}, inherited budget={inherited})"
             )
 
-        # Get existing sub-agents
-        existing_sub_agents = parent_data.get("metadata", {}).get("sub_agents", {})
-        active_sub_agents = [
-            sub_id for sub_id, sub_meta in existing_sub_agents.items()
-            if sub_meta.get("status") == "active"
-        ]
-        
-        # Check total session limit
-        if len(active_sub_agents) >= self.max_sub_agents_per_session:
-            if self.auto_archive_on_limit:
-                oldest_id = self._find_oldest_sub_agent(existing_sub_agents, active_sub_agents)
-                if not await self._archive_sub_agent(parent_session_id, oldest_id):
-                    # Nothing was archived, so no room was made. Spawning anyway puts the
-                    # session over the limit it asked for, quietly and for good.
-                    raise ValueError(
-                        f"Maximum number of active sub-agents per session "
-                        f"({self.max_sub_agents_per_session}) reached, and the oldest "
-                        f"({oldest_id}) could not be archived to make room."
-                    )
-                active_sub_agents = [sid for sid in active_sub_agents if sid != oldest_id]
-                logger.info(
-                    f"Auto-archived sub-agent {oldest_id} (session limit) "
-                    f"to make room in parent {parent_session_id}"
-                )
-            else:
-                raise ValueError(
-                    f"Maximum number of active sub-agents per session "
-                    f"({self.max_sub_agents_per_session}) reached. "
-                    f"Active sub-agents: {len(active_sub_agents)}"
-                )
-        
-        # Check per-type limit
-        active_agents_of_type = [
-            sub_id for sub_id in active_sub_agents
-            if existing_sub_agents[sub_id].get("agent_type") == agent_type
-        ]
-        
-        if len(active_agents_of_type) >= self.max_sub_agents_per_type:
-            if self.auto_archive_on_limit:
-                oldest_id = self._find_oldest_sub_agent(existing_sub_agents, active_agents_of_type)
-                if not await self._archive_sub_agent(parent_session_id, oldest_id):
-                    raise ValueError(
-                        f"Maximum number of active sub-agents of type '{agent_type}' "
-                        f"({self.max_sub_agents_per_type}) reached, and the oldest "
-                        f"({oldest_id}) could not be archived to make room."
-                    )
-                active_agents_of_type = [sid for sid in active_agents_of_type if sid != oldest_id]
-                active_sub_agents = [sid for sid in active_sub_agents if sid != oldest_id]
-                logger.info(
-                    f"Auto-archived sub-agent {oldest_id} (type limit: {agent_type}) "
-                    f"to make room in parent {parent_session_id}"
-                )
-            else:
-                raise ValueError(
-                    f"Maximum number of active sub-agents of type '{agent_type}' "
-                    f"({self.max_sub_agents_per_type}) reached. "
-                    f"Active sub-agents: {active_agents_of_type}"
-                )
+        await self._make_room(parent_session_id,
+                              parent_data.get("metadata", {}).get("sub_agents", {}), agent_type)
 
         # Get actual agent to extract llm_profile (check before id generation)
         agent = self._registry.get(agent_type)
@@ -556,9 +509,7 @@ class SubAgentManager:
 
         result = []
         for instance_id, metadata in sub_agents.items():
-            # Treat "interrupted" as still visible by default (session is still present,
-            # but last execution ended unexpectedly).
-            if not include_completed and metadata.get("status") not in ("active", "interrupted"):
+            if not include_completed and metadata.get("status") not in OPEN_STATUSES:
                 continue
             # Filter by creator_plugin if specified
             if creator_plugin and metadata.get("creator_plugin") != creator_plugin:
@@ -571,6 +522,99 @@ class SubAgentManager:
         logger.debug(f"Listed {len(result)} sub-sessions for parent {parent_session_id}")
 
         return result
+
+    async def _make_room(
+        self, parent_session_id: str, existing_sub_agents: dict[str, Any], agent_type: str
+    ) -> None:
+        """Room for one more active sub-agent of `agent_type` among the parent's
+        `existing_sub_agents`: under both limits, or -- with auto_archive_on_limit -- once the
+        oldest active one is archived. SubAgentLimitReached otherwise."""
+        active_sub_agents = [
+            sub_id for sub_id, sub_meta in existing_sub_agents.items()
+            if sub_meta.get("status") == "active"
+        ]
+
+        # Check total session limit
+        if len(active_sub_agents) >= self.max_sub_agents_per_session:
+            if self.auto_archive_on_limit:
+                oldest_id = self._find_oldest_sub_agent(existing_sub_agents, active_sub_agents)
+                if not await self._archive_sub_agent(parent_session_id, oldest_id):
+                    # Nothing was archived, so no room was made. Spawning anyway puts the
+                    # session over the limit it asked for, quietly and for good.
+                    raise SubAgentLimitReached(
+                        f"Maximum number of active sub-agents per session "
+                        f"({self.max_sub_agents_per_session}) reached, and the oldest "
+                        f"({oldest_id}) could not be archived to make room."
+                    )
+                active_sub_agents = [sid for sid in active_sub_agents if sid != oldest_id]
+                logger.info(
+                    f"Auto-archived sub-agent {oldest_id} (session limit) "
+                    f"to make room in parent {parent_session_id}"
+                )
+            else:
+                raise SubAgentLimitReached(
+                    f"Maximum number of active sub-agents per session "
+                    f"({self.max_sub_agents_per_session}) reached. "
+                    f"Active sub-agents: {len(active_sub_agents)}"
+                )
+
+        # Check per-type limit
+        active_agents_of_type = [
+            sub_id for sub_id in active_sub_agents
+            if existing_sub_agents[sub_id].get("agent_type") == agent_type
+        ]
+
+        if len(active_agents_of_type) >= self.max_sub_agents_per_type:
+            if self.auto_archive_on_limit:
+                oldest_id = self._find_oldest_sub_agent(existing_sub_agents, active_agents_of_type)
+                if not await self._archive_sub_agent(parent_session_id, oldest_id):
+                    raise SubAgentLimitReached(
+                        f"Maximum number of active sub-agents of type '{agent_type}' "
+                        f"({self.max_sub_agents_per_type}) reached, and the oldest "
+                        f"({oldest_id}) could not be archived to make room."
+                    )
+                active_agents_of_type = [sid for sid in active_agents_of_type if sid != oldest_id]
+                active_sub_agents = [sid for sid in active_sub_agents if sid != oldest_id]
+                logger.info(
+                    f"Auto-archived sub-agent {oldest_id} (type limit: {agent_type}) "
+                    f"to make room in parent {parent_session_id}"
+                )
+            else:
+                raise SubAgentLimitReached(
+                    f"Maximum number of active sub-agents of type '{agent_type}' "
+                    f"({self.max_sub_agents_per_type}) reached. "
+                    f"Active sub-agents: {active_agents_of_type}"
+                )
+
+    async def reopen_sub_session(self, parent_session_id: str, instance_id: str) -> None:
+        """Open an instance for a new run: status "active", and no activity left from an earlier
+        one -- an activity from a run that never recorded its end reads as a crash to every
+        process until the new run takes its lock.
+
+        One the limits do not count -- anything but active: failed, cancelled, interrupted,
+        archived -- takes a place like a new one: the limits apply, and with auto_archive_on_limit
+        the oldest active one makes room.
+        A continue used to reopen past them, and the session stayed over its limit for good.
+        """
+        user_id = self._extract_user_id(parent_session_id)
+        try:
+            parent_data = await self._session_service.session_manager.load_session(user_id, parent_session_id)
+        except Exception as error:
+            # Nothing to count against -- and the write below fails the same way and says so.
+            logger.warning(f"Could not load parent session {parent_session_id}: {error}")
+            parent_data = {}
+        sub_agents = parent_data.get("metadata", {}).get("sub_agents", {})
+        metadata = sub_agents.get(instance_id)
+        if metadata is not None and metadata.get("status") != "active":
+            # the limits count active ones only, so it does not count itself
+            await self._make_room(parent_session_id, sub_agents, metadata.get("agent_type", ""))
+        await self.update_sub_session_metadata(
+            parent_session_id=parent_session_id,
+            sub_session_id=instance_id,
+            status="active",
+            current_activity=None,
+            activity_updated_at=None,
+        )
 
     async def update_sub_session_metadata(
         self,

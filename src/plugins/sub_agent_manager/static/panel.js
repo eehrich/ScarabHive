@@ -24,7 +24,6 @@ let opened = null;
 let opening = 0;
 
 const STATES = {
-  active: { label: 'Active', kind: 'ok' },  // stored: running or idle, which only the list's activity tells
   running: { label: 'Running', kind: 'info' },
   idle: { label: 'Idle', kind: 'ok' },
   interrupted: { label: 'Interrupted', kind: 'warn' },
@@ -33,15 +32,10 @@ const STATES = {
   failed: { label: 'Failed', kind: 'danger' },
 };
 const OPEN = ['running', 'idle', 'interrupted'];
-const OVER = ['completed', 'cancelled', 'canceled', 'failed', 'error'];  // an activity naming one is over (as the server judges it)
 
-/** Running, idle or the stored status: an active sub-agent runs while it reports an activity that is not over. */
-function state(agent) {
-  if (agent.status === 'running' || agent.status === 'pending') return 'running';
-  if (agent.status !== 'active') return agent.status;
-  const activity = (agent.current_activity || '').toLowerCase();
-  return activity && !OVER.some((word) => activity.includes(word)) ? 'running' : 'idle';
-}
+/** What a sub-agent is doing, as the server reads it for the tool's `list` and the injected list: the same words, by
+ * the same rule, which asks the run itself. The stored status says "active" for running and idle alike. */
+const state = (agent) => agent.state || agent.status;
 
 const described = (name) => STATES[name] || { label: name, kind: '' };
 const number = (value) => Number(value ?? 0).toLocaleString();
@@ -102,7 +96,7 @@ async function refresh(event) {
     stat('running', 'Running', count('running')),
     stat('idle', 'Idle', count('idle')),
     stat('interrupted', 'Interrupted', count('interrupted')),
-    stat('closed', 'Archived or ended', agents.filter((agent) => !OPEN.includes(state(agent))).length),
+    stat('closed', 'Failed, cancelled or archived', agents.filter((agent) => !OPEN.includes(state(agent))).length),
   ]);
 }
 

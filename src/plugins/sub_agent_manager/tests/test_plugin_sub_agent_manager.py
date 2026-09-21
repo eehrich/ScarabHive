@@ -7,6 +7,11 @@ from plugins.sub_agent_manager.hooks import SubAgentContextInjector
 from plugins.sub_agent_manager.manager import SubAgentManager
 
 
+async def stored_status(metadata):
+    """What the injector is told a sub-agent is doing: here, the stored status as it stands."""
+    return metadata.get("status", "unknown")
+
+
 @pytest.fixture
 def mock_manager():
     """Create mock SubAgentManager."""
@@ -48,7 +53,7 @@ def injector(mock_manager):
         "show_completed": False,
         "format": "markdown"
     }
-    return SubAgentContextInjector(mock_manager, "test_sam", config)
+    return SubAgentContextInjector(mock_manager, "test_sam", config, status_of=stored_status)
 
 
 @pytest.mark.asyncio
@@ -72,7 +77,7 @@ async def test_hook_writes_an_unchanged_list_only_once(injector):
     
     sub_agent_messages = [
         msg for msg in context.messages
-        if "## Active Sub-Agents" in (msg.content or "")
+        if "## Sub-Agents" in (msg.content or "")
     ]
     assert len(sub_agent_messages) == 1
     assert context.messages[-1] is sub_agent_messages[0], "appended, not pushed to the head"
@@ -85,7 +90,7 @@ async def test_hook_writes_an_unchanged_list_only_once(injector):
 
     sub_agent_messages = [
         msg for msg in context.messages
-        if "## Active Sub-Agents" in (msg.content or "")
+        if "## Sub-Agents" in (msg.content or "")
     ]
     assert len(sub_agent_messages) == 1
 
@@ -111,7 +116,7 @@ async def test_hook_prevents_multiple_injections_across_calls(injector):
 
         sub_agent_messages = [
             msg for msg in context.messages
-            if "## Active Sub-Agents" in (msg.content or "")
+            if "## Sub-Agents" in (msg.content or "")
         ]
 
         assert len(sub_agent_messages) == 1, (
@@ -139,7 +144,7 @@ async def test_hook_supersedes_an_older_unmarked_list(injector):
 
     sub_agent_messages = [
         msg for msg in context.messages
-        if "## Active Sub-Agents" in (msg.content or "")
+        if "Sub-Agents" in (msg.content or "")
     ]
     assert len(sub_agent_messages) == 2, "the stale block stays, the new one is appended"
     assert "outdated info" in sub_agent_messages[0].content, "history is not rewritten"
@@ -164,7 +169,7 @@ async def test_hook_appends_instead_of_inserting_at_the_head(injector):
     result = await injector.inject_sub_agent_context(context)
     assert result.success is True
     
-    assert "## Active Sub-Agents" in (context.messages[-1].content or ""),         "the block is the last turn"
+    assert "## Sub-Agents" in (context.messages[-1].content or ""),         "the block is the last turn"
     assert [m.content for m in context.messages[:3]] == [
         "Main system prompt.", "Hello", "Hi there!"],         "everything that was there before must stay byte-identical"
 
@@ -176,7 +181,7 @@ async def test_hook_no_injection_when_no_sub_agents():
     manager = MagicMock(spec=SubAgentManager)
     manager.list_sub_sessions = AsyncMock(return_value=[])
     
-    injector = SubAgentContextInjector(manager, "test_sam", {"enabled": True})
+    injector = SubAgentContextInjector(manager, "test_sam", {"enabled": True}, status_of=stored_status)
     
     context = HookContext(
         hook_type="inject_sub_agent_context",
@@ -196,7 +201,7 @@ async def test_hook_no_injection_when_no_sub_agents():
     # Should have no sub-agent injections
     sub_agent_messages = [
         msg for msg in context.messages
-        if msg.role == "system" and "## Active Sub-Agents" in msg.content
+        if "## Sub-Agents" in (msg.content or "")
     ]
     assert len(sub_agent_messages) == 0, "Should have no injection when no sub-agents"
 
@@ -219,7 +224,7 @@ async def test_hook_updates_when_sub_agents_change(mock_manager, injector):
     assert result1.success is True
     
     # Verify 2 sub-agents are shown
-    injection = [m for m in context.messages if "## Active Sub-Agents" in m.content][0]
+    injection = [m for m in context.messages if "## Sub-Agents" in m.content][0]
     assert "research_agent" in injection.content
     assert "code_agent" in injection.content
     
@@ -245,7 +250,7 @@ async def test_hook_updates_when_sub_agents_change(mock_manager, injector):
     assert result2.success is True
     
     # Should still have exactly one injection
-    injections = [m for m in context.messages if "## Active Sub-Agents" in (m.content or "")]
+    injections = [m for m in context.messages if "## Sub-Agents" in (m.content or "")]
     assert len(injections) == 2, "the new state is appended behind the old one"
 
     updated_injection = injections[-1]
@@ -434,7 +439,7 @@ async def test_phase_filtering_shows_correct_agents():
     allowed_agents = ["story_designer", "story_reviewer", "character_designer", 
                       "character_reviewer", "structure_builder", "continuity_guardian"]
     
-    injector = SubAgentContextInjector(mock_manager, "w_sam", hook_config, allowed_agents, phase_filtering_config)
+    injector = SubAgentContextInjector(mock_manager, "w_sam", hook_config, allowed_agents, phase_filtering_config, status_of=stored_status)
     
     # Create mock agent with session_tracker that returns workflow_phase
     mock_agent = MagicMock()
@@ -459,7 +464,7 @@ async def test_phase_filtering_shows_correct_agents():
     assert result.modified is True
     
     # Find the injected message
-    injected = [m for m in context.messages if "## Active Sub-Agents" in m.content]
+    injected = [m for m in context.messages if "## Sub-Agents" in m.content]
     assert len(injected) == 1
     
     content = injected[0].content
@@ -497,7 +502,7 @@ async def test_phase_filtering_disabled_shows_all_allowed():
     
     allowed_agents = ["story_designer", "story_reviewer", "character_designer"]
     
-    injector = SubAgentContextInjector(mock_manager, "w_sam", hook_config, allowed_agents, phase_filtering_config)
+    injector = SubAgentContextInjector(mock_manager, "w_sam", hook_config, allowed_agents, phase_filtering_config, status_of=stored_status)
     
     context = HookContext(
         hook_type="inject_sub_agent_context",
@@ -512,7 +517,7 @@ async def test_phase_filtering_disabled_shows_all_allowed():
     result = await injector.inject_sub_agent_context(context)
     
     assert result.success is True
-    injected = [m for m in context.messages if "## Active Sub-Agents" in m.content]
+    injected = [m for m in context.messages if "## Sub-Agents" in m.content]
     assert len(injected) == 1
     
     content = injected[0].content
@@ -603,7 +608,7 @@ async def test_the_tool_list_marks_a_sub_agent_without_a_run_interrupted_and_cle
     manager = server._get_manager(service, registry)
     sub_id = await manager.create_sub_session(parent_session_id="parent", agent_type="writer_agent", initial_message="task",
                                               params={"_creator_plugin": "sam"})
-    await manager.update_sub_session_metadata(parent_session_id="parent", sub_session_id=sub_id, current_activity="Thinking...")
+    await manager.update_sub_agent_activity("parent", sub_id, "Thinking...")  # a run that never ended
 
     params = {"_session_id": "parent", "_session_service": service}
     [listed] = (await server._handle_list(params))["instances"]

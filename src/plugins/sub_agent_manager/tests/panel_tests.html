@@ -109,7 +109,7 @@
     await sleep(200);  // an image that loaded would have fired its handler
     const idle = badge('b') === 'Idle' && card('b').querySelector('.sa-task').textContent === MARKUP && !$('#agents img') && window.__xss === undefined
       && card('b').querySelector('.sa-meta').textContent.includes('45 messages') && card('b').dataset.state === 'idle'
-      && card('b').querySelector('.sa-activity').textContent.trim() === 'Completed';  // an activity that is over: idle
+      && card('b').querySelector('.sa-activity').textContent.trim() === '✅ completed (3 steps)';  // written before its last end: idle
     const actions = ['a', 'b', 'c', 'h'].every((key) => act(key, 'transcript') && act(key, 'archive') && !act(key, 'archive').disabled);
     const phase = !$('#phase').hidden && $('#phase .pk-badge').textContent === 'planning'
       && $('#phase [data-part="agents"]').textContent === 'story_designer'
@@ -140,7 +140,7 @@
     await until('the drawer', () => drawer().open && $('#detailBody dl'));
     const shownFacts = facts();
     const tail = indexes();
-    const head = $('#detailTitle').textContent === ids.b && shownFacts.Agent === 'writer_agent' && shownFacts.Status === 'Active'
+    const head = $('#detailTitle').textContent === ids.b && shownFacts.Agent === 'writer_agent' && shownFacts.Status === 'Idle'
       && shownFacts.Task === MARKUP;
     // info_max_limit is 15: the tail and every page above it come capped at 15
     const onTail = $('#detailBody [data-part="shown"]').textContent === 'the last 15 of 45 messages'
@@ -472,7 +472,7 @@
     await go(`${BASE}/`);  // no link: the session is the host's, and this page is the host
     await autoOff();
     tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-2', title: 'Second' } });
-    // by now g is archived: in the map, which shows every state, not in the list on its Open filter
+    // by now g is archived: in the map, which shows every state, not in the list on its default filter
     await until('the map of s-2', () => $('#map .sa-root')?.dataset.id === 's-2' && topOfMap().join() === 'g');
     document.cookie = 'sa_map=slow:s-1; path=/';
     try {

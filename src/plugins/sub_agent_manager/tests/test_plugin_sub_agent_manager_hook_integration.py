@@ -125,8 +125,72 @@ async def test_on_pre_llm_call_injects_context(system_config, server_config):
         # Verify injected content
         injected = context.messages[-1]
         assert injected.role == DEVELOPER
-        assert "Active Sub-Agents" in injected.content
-        assert "web_research_agent" in injected.content
+        assert "## Sub-Agents" in injected.content
+        assert "| web_research_agent | `test_sub_001` | idle | Research topic |" in injected.content
+
+
+def _worker(instance_id, status="active", activity=None, created="2026-09-21T06:00:00Z"):
+    return {"instance_id": instance_id, "agent_type": "worker", "status": status,
+            "created_at": created, "task_summary": "count the words", "current_activity": activity}
+
+
+def _coordinator_turn():
+    return HookContext(hook_type=HookType.PRE_LLM_CALL, request_id="req", session_id="parent1",
+                       agent=MagicMock(), agent_name="coordinator",
+                       messages=[ChatMessage(role="user", content="go")], step=1)
+
+
+@pytest.mark.asyncio
+async def test_the_list_says_running_while_a_run_is_under_way_and_idle_once_it_is_over(
+        system_config, server_config):
+    """Stored, both read "active" -- a clean ending stores it too -- so the list read the same
+    before and after a worker finished, and a coordinator could not tell from it that the
+    worker was done. What tells them apart is the run."""
+    server = SubAgentManagerServer("sub_agent_manager", system_config, server_config)
+    manager = MagicMock()
+    manager.list_sub_sessions = AsyncMock(return_value=[
+        _worker("sub_worker"),
+        _worker("sub_failed", status="failed", created="2026-09-21T05:00:00Z"),
+        _worker("sub_archived", status="archived", created="2026-09-21T04:00:00Z")])
+    context = _coordinator_turn()
+
+    with patch.object(server, "_get_manager", return_value=manager):
+        server._running_agents.add("sub_worker")
+        await server.on_pre_llm_call(context)
+        running = context.messages[-1].content
+        server._running_agents.discard("sub_worker")
+        await server.on_pre_llm_call(context)
+        idle = context.messages[-1].content
+
+    assert "| worker | `sub_worker` | running | count the words |" in running
+    assert "| worker | `sub_worker` | idle | count the words |" in idle
+    assert "| worker | `sub_failed` | failed |" in idle, "a run that failed is listed, not dropped"
+    assert "sub_archived" not in idle, "archived ones only with show_completed"
+    assert len(context.messages) == 3, "one block while it ran, one once it was over"
+
+
+@pytest.mark.asyncio
+async def test_a_run_in_another_process_is_asked_about_under_the_sessions_user(
+        system_config, server_config, monkeypatch):
+    """A woken coordinator runs in a process of its own, and its other workers in the one that
+    started them: there only the lock beside the worker's session answers, and it lives in the
+    directory of the user the session belongs to."""
+    from plugins.sub_agent_manager import server as sam_server
+    presence = MagicMock()
+    presence.status = MagicMock(return_value="running")
+    monkeypatch.setattr(sam_server, "presence_for", lambda config: presence)
+    server = SubAgentManagerServer("sub_agent_manager", system_config, server_config)
+    manager = MagicMock()
+    manager._extract_user_id = MagicMock(return_value="ada")
+    manager.list_sub_sessions = AsyncMock(return_value=[_worker("sub_elsewhere", activity="🔧 Running tool: read")])
+    context = _coordinator_turn()
+
+    with patch.object(server, "_get_manager", return_value=manager):
+        await server.on_pre_llm_call(context)
+
+    assert "| worker | `sub_elsewhere` | running |" in context.messages[-1].content
+    assert presence.status.call_args.args == ("sub_elsewhere", "ada")
+    assert manager._extract_user_id.call_args.args == ("parent1",)
 
 
 @pytest.mark.asyncio

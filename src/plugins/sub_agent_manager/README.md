@@ -23,7 +23,7 @@ and keeping a sub-agent's prompt in sync with the coordinator's state.
 | `poll` | non-blocking status of an async run |
 | `wait` / `wait_all` | block until one / all finish |
 | `cancel` | stop a running instance |
-| `list` | active sub-agents |
+| `list` | the sub-agents and their status: running, idle, or how the last run ended |
 | `info` | read a transcript (see pagination below) |
 | `delete` | archive the instance |
 
@@ -142,7 +142,10 @@ their own verdict; and its answer is read from the transcript afterwards. What
 changes is that the instance is out of `list` from then on. If the archiving
 cannot be written, no room was made and the spawn is refused rather than
 quietly taking the session over its own limit. With the flag off, the limit
-refuses the spawn in the first place.
+refuses the spawn in the first place. A `continue` of an instance the limits
+do not count (anything but active: failed, cancelled, interrupted, archived)
+takes a place the same way — it used to reopen past them, and the session
+stayed over its limit for good.
 
 `max_nesting_depth` counts **levels below the session that calls this
 manager**, not absolute depth in the session tree: `1` lets a coordinator
@@ -182,8 +185,29 @@ Two more that are not limits but guards:
   fall through to "disappeared during wait" about a sub-agent that was working.
   A wait ends when the job ends or when `default_wait_timeout` does, and while
   it has no job of its own to watch it looks less and less often — each of
-  those looks reads the parent's session and the whole transcript behind that
-  lock.
+  those looks reads the parent's session, re-parsed whenever a sub-agent wrote
+  its activity.
+* **Running or idle is asked of the run, not read from the status.** This
+  process's own runs answer first, then the lock beside the sub-agent's
+  session — a probe of the lock file, not a read of the session, since the
+  injected list asks before every LLM call. A run holds that lock from right
+  after `start`, through its setup, until after its ending event. It reports
+  an activity only inside that span: cleared at the ending event, because the
+  run lets go of the lock before its trailing lines and `end`. An activity
+  nobody holds is what a crash leaves; a word outside the span would heal a
+  run that is fine. Where nobody holds it, time decides, not words (mid-run a
+  tool's status line ends with "completed" too): an activity written after
+  the last recorded end (`last_used`) was left by a run whose end nobody
+  recorded — its process died, or its caller's (measured 10 such records,
+  9 of them crashes mid-LLM-call); one written before it is the last line of a run from
+  before the activity was cleared at every ending — idle, 1118 records. A
+  `continue` reopens an instance without such a leftover. With
+  `session_presence` off only this manager's own runs answer, so a run of
+  another process — or, in the map, of another SAM instance — cannot be told
+  from a crash and reads *interrupted*, the word `list` heals it to. A run
+  that aborted — its answer "Error: ..." or "Cancelled: ..." — or raised
+  stores `failed` or `cancelled`, blocking or in the background; a clean one
+  opens the instance again, unless it was archived while it ran.
 * **A run that ended without saying so is healed by `list`.** A sub-agent that
   still looks like it runs but that nobody has in hand is marked `interrupted`
   and its stale activity cleared — otherwise a crash leaves it *running* for
@@ -250,9 +274,18 @@ The hook is off by default and enabled per coordinator; its options sit in the
 server entry's `hook_config.inject_sub_agent_context` block, and
 `max_sub_agents_shown` bounds how much of the list reaches the request on every
 call. The block is appended as a `developer` turn at the end and written only
-when a
-sub-agent is added, removed or changes status (newest created first, no usage
-counters or times) -- every change costs the provider cache behind it.
+when a sub-agent is added, removed or changes status (open ones first, each
+group newest created first, with its task, no usage counters or times): a change costs that turn, and
+nothing before it.
+
+The status column says what a sub-agent is doing, the same words `list`,
+`info` and the panel use: `running` while a run is under way, `idle` once it is over, or
+`interrupted`, `failed`, `cancelled` for a last run that did not finish.
+Stored, running and idle are both `active` -- a clean ending stores it too --
+so the block would read the same before and after a worker finished; the run
+itself tells them apart (see the limits and guards above). A failed or cancelled one is listed like an
+open one, since the coordinator may not have ended it itself; archived ones
+only with `show_completed`.
 
 ## The panel
 
@@ -283,19 +316,22 @@ the panel says so too: a branch cut short looks exactly like a leaf otherwise.
 
 ### List
 
-- **Figures:** sub-agents, running, idle, interrupted, archived or ended.
-  *Running* is an active sub-agent reporting an activity that is not over
-  (the rule `list` uses). The panel shows the **stored** state and never
-  writes, where the tool's `list` heals what a crash left behind (above).
+- **Figures:** sub-agents, running, idle, interrupted, and failed,
+  cancelled or archived. The state is the server's, in the words and by the
+  rule of the tool's `list` (above) — it asks the run, not the stored
+  `active`. Unlike `list` the panel never writes: a run that died shows
+  `interrupted` here, and stays so stored until `list` heals it.
 - **Phase:** with `phase_filtering` on, the session's phase and the agents it
   lets the tool spawn, by the tool's own rule.
 - **Cards:** state, id, agent type, messages, last use, task and activity.
-  The filter shows the open ones (default), the running ones, or all — it
+  The filter shows the running, idle and interrupted ones (default), the
+  running ones, or all — it
   belongs to this tab; the map always shows the whole session.
 - **Transcript** opens in a drawer on the tail; *Earlier messages* loads the
   pages above it.
-- **Archive** (active and interrupted ones) asks first and does what the
-  tool's `delete` does: the history stays, `continue` reactivates it.
+- **Archive** (running, idle and interrupted ones) asks first and does what the
+  tool's `delete` does: the history stays, `continue` reactivates it (taking
+  a place under the limits).
 
 Both refresh every 10 s while the panel is visible, whichever tab is showing.
 

@@ -107,6 +107,20 @@ class TestHolding:
             store.hold("sb", USER, "agent_x")
         assert "agent_b" in str(refused.value), "the refusal does not say who runs it"
 
+    def test_status_answers_about_the_lock_without_reading_the_session(
+            self, store, other_process, tmp_path, monkeypatch):
+        """The sub-agent list asks this per sub-agent before every LLM call, and
+        a sub-agent's session file is its whole transcript: get() parses it."""
+        _stored(tmp_path, "sb")
+        _stored(tmp_path, "nobody_holds_it")
+        other_process("sb")
+        monkeypatch.setattr(sp, "_stored_session",
+                            lambda path: pytest.fail("status() read the session file"))
+
+        assert store.status("sb", USER) == "running"
+        assert store.status("nobody_holds_it", USER) is None
+        assert store.status("no_such_session", USER) is None
+
     # Short on purpose: without the bound this hangs rather than fails, and a
     # 120-second wait for the default timeout hides which test it was.
     @pytest.mark.timeout(10)

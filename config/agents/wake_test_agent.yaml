@@ -27,13 +27,6 @@ plugins:
       max_sub_agents_per_type: 5
       allowed_agents:
         - "wake_test_worker"
-      hook_config:
-        inject_sub_agent_context:
-          # Without this the injected list keeps only active and interrupted
-          # ones -- and a run that ended cleanly is stored as "active", so the
-          # block would read the same before and after it finished. Nothing
-          # would announce itself to a turn the user started.
-          show_completed: true
 
     # Answers in one step and takes its time doing it, so the caller really is
     # asleep while it runs.
@@ -72,8 +65,8 @@ plugins:
 
         # The list of sub-agents, appended as a developer turn at the end of
         # the history (not at the head -- there every change would cost the
-        # cached prefix). With show_completed on the manager above, a finished
-        # instance says so there, which is what the "asked" case below reads.
+        # cached prefix). A worker reads "running" there while it works and
+        # "idle" once it is done, which is what the "asked" case below reads.
         hooks:
           enabled: true
           overrides:
@@ -114,9 +107,10 @@ plugins:
 
           One more case, and it is not a wake: in a CLI chat nobody starts a
           turn for you, the user does. So whenever a turn of yours begins and
-          the injected sub-agent list shows an instance that has finished and
-          that you have not reported yet, report it first, the same way (poll,
-          info, times), before you do anything else the user asked for.
+          the injected sub-agent list shows an instance that is no longer
+          running (idle, failed, cancelled or interrupted) and that you have
+          not reported yet, report it first, the same way (poll, info, times),
+          before you do anything else the user asked for.
 
           Say which of the two happened, every time, in one line: "woken" when
           a turn began without the user typing, "asked" when they did. Being

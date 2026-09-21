@@ -60,9 +60,11 @@ class SubAgentManagerWebFactory:
     async def get_sub_agents(self, request: Request, session_id: str = SESSION) -> dict[str, Any]:
         """Every sub-agent of the session this instance spawned, archived ones included, and the workflow phase.
 
-        Read-only, unlike the tool's ``list``: that one heals what a crash left behind, marking a sub-agent nobody
-        has in hand interrupted. A panel is a viewer -- it refreshes every ten seconds, of its own accord, in
-        whichever process happens to serve it -- so it writes nothing and shows the stored state."""
+        Each carries ``state``: what it is doing, in the words and by the rule of the tool's ``list`` (running,
+        idle, interrupted, failed, cancelled, archived) -- the stored ``status`` says "active" for running and idle
+        alike. Read-only, unlike ``list``: that one heals what a crash left behind, marking a sub-agent nobody has in
+        hand interrupted. A panel is a viewer -- it refreshes every ten seconds, of its own accord, in whichever
+        process happens to serve it -- so it writes nothing."""
         session_service = get_session_service()
         manager = self.server._get_manager(session_service)
         try:
@@ -79,7 +81,8 @@ class SubAgentManagerWebFactory:
                 count = metadata.get("message_count", 0)
             instances.append({key: metadata.get(key) for key in (
                 "instance_id", "agent_type", "status", "created_at", "last_used", "task_summary", "current_activity",
-                "activity_updated_at")} | {"message_count": count})
+                "activity_updated_at")} | {"message_count": count,
+                                           "state": await self.server._shown_status(metadata, lambda: user_id)})
         return {"instances": instances, "phase": await self._phase(session_service, session_id)}
 
     async def _phase(self, session_service, session_id: str) -> dict[str, Any] | None:
@@ -156,6 +159,8 @@ class SubAgentManagerWebFactory:
                 nodes.append({key: metadata.get(key) for key in (
                     "agent_type", "status", "created_at", "last_used", "task_summary", "current_activity")}
                     | {"instance_id": instance_id, "parent_session_id": parent_id,
+                       "state": await self.server._shown_status({**metadata, "instance_id": instance_id},
+                                                                lambda: user_id),
                        "children": await branch(instance_id, depth - 1)})
             return nodes
 

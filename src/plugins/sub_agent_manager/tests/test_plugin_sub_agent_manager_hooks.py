@@ -10,6 +10,11 @@ from agent_system.hooks.plugin_hook import HookContext, HookType
 from agent_system.llm.models import ChatMessage
 
 
+async def stored_status(metadata):
+    """What the injector is told a sub-agent is doing: here, the stored status as it stands."""
+    return metadata.get("status", "unknown")
+
+
 @pytest.fixture
 def mock_manager():
     """Create mock SubAgentManager."""
@@ -26,7 +31,7 @@ def injector(mock_manager):
         "show_completed": False,
         "format": "markdown"
     }
-    return SubAgentContextInjector(mock_manager, "test_sam", config)
+    return SubAgentContextInjector(mock_manager, "test_sam", config, status_of=stored_status)
 
 
 @pytest.mark.asyncio
@@ -112,7 +117,7 @@ async def test_inject_context_with_sub_agents(injector, mock_manager):
     # Verify injected message is system role
     injected_msg = context.messages[-1]
     assert injected_msg.role == DEVELOPER
-    assert "Active Sub-Agents" in injected_msg.content
+    assert "## Sub-Agents" in injected_msg.content
     assert "web_research_agent" in injected_msg.content
     assert "financial_analyst_agent" in injected_msg.content
     assert "parent_sub_web_research_001" in injected_msg.content
@@ -131,7 +136,7 @@ async def test_inject_context_limits_max_shown(mock_manager):
         "show_completed": True,
         "format": "markdown"
     }
-    injector = SubAgentContextInjector(mock_manager, "test_sam", config)
+    injector = SubAgentContextInjector(mock_manager, "test_sam", config, status_of=stored_status)
     
     # Mock 5 sub-agents with distinct creation times (index 4 is newest), listed
     # shuffled and with last_used running the other way: neither the input order
@@ -179,6 +184,32 @@ async def test_inject_context_limits_max_shown(mock_manager):
     assert "parent_sub_agent_000" not in injected_content
     assert "parent_sub_agent_001" not in injected_content
     assert "parent_sub_agent_002" not in injected_content
+
+
+@pytest.mark.asyncio
+async def test_the_cut_keeps_the_open_sub_agents_before_newer_failed_ones(mock_manager):
+    """Failed and cancelled rows are listed now, and by creation time alone they sort in
+    ahead of older open ones: a coordinator that replaced two failed workers had the two
+    workers it can still use cut off behind them."""
+    injector = SubAgentContextInjector(mock_manager, "test_sam", {"max_sub_agents_shown": 4},
+                                       status_of=stored_status)
+    base_time = datetime.now(UTC)
+    rows = [("worker_a", "active"), ("worker_b", "active"), ("worker_c", "failed"),
+            ("worker_d", "cancelled"), ("worker_e", "active"), ("worker_f", "interrupted")]
+    mock_manager.list_sub_sessions.return_value = [
+        {"instance_id": instance_id, "agent_type": "basic_agent", "status": status,
+         "task_summary": f"Task {n}", "created_at": (base_time + timedelta(seconds=n)).isoformat()}
+        for n, (instance_id, status) in enumerate(rows)
+    ]
+    context = HookContext(hook_type=HookType.PRE_LLM_CALL, request_id="test_req",
+                          session_id="test_session", agent=MagicMock(), agent_name="coordinator",
+                          messages=[ChatMessage(role="user", content="Test")], step=1)
+
+    await injector.inject_sub_agent_context(context)
+
+    block = context.messages[-1].content
+    assert [instance_id for instance_id, _ in rows if instance_id in block] == [
+        "worker_a", "worker_b", "worker_e", "worker_f"]
 
 
 @pytest.mark.asyncio
@@ -255,9 +286,9 @@ async def test_markdown_context_format(injector, mock_manager):
     
     injected_content = context.messages[-1].content
     
-    # Check Markdown table formatting (minimal: Type, Instance ID, Status)
-    assert "## Active Sub-Agents" in injected_content
-    assert "| Type | Instance ID | Status |" in injected_content
+    # Check Markdown table formatting
+    assert "## Sub-Agents" in injected_content
+    assert "| Type | Instance ID | Status | Task |" in injected_content
     assert "test_agent" in injected_content
     assert "`test_sub_001`" in injected_content
     assert "active" in injected_content
@@ -271,7 +302,7 @@ async def test_text_context_format(mock_manager):
         "format": "text",
         "show_completed": True
     }
-    injector = SubAgentContextInjector(mock_manager, "test_sam", config)
+    injector = SubAgentContextInjector(mock_manager, "test_sam", config, status_of=stored_status)
     
     sub_agents = [
         {
@@ -301,7 +332,7 @@ async def test_text_context_format(mock_manager):
     injected_content = context.messages[-1].content
     
     # Check text formatting (no Markdown)
-    assert "ACTIVE SUB-AGENTS:" in injected_content
+    assert injected_content.startswith("SUB-AGENTS:")
     assert "1. test_agent (test_sub_001)" in injected_content
     assert "Status: active" in injected_content
     assert "Messages" not in injected_content  # grows on every continue

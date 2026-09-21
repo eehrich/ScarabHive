@@ -49,16 +49,6 @@ def test_the_worker_is_spawnable_and_has_nothing_to_work_with(config):
     assert entry(config, "wake_test_worker").agent_config.tools.allowed == []
 
 
-def test_the_injected_list_says_when_a_sub_agent_is_done(config):
-    """The harness's "asked" case reads the injected list to notice a finished run.
-    Its default is to show only active ones -- and a clean ending is stored as
-    "active", so without this the block reads the same before and after."""
-    hook_config = getattr(entry(config, "wake_test_sam"), "hook_config", None) or {}
-    options = hook_config.get("inject_sub_agent_context") or {}
-
-    assert options.get("show_completed") is True
-
-
 def test_the_hook_override_names_a_hook_that_exists(config):
     """`<instance>.<hook>` is what the registry builds. A key that matches nothing
     is not an error anywhere -- the hook just stays off, and the harness quietly

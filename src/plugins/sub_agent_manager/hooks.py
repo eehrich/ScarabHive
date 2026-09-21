@@ -1,12 +1,13 @@
 """Hook implementations for sub-agent context injection."""
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, Dict, List, Optional
 
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.llm.message_roles import DEVELOPER
 from agent_system.llm.models import ChatMessage
 
-from .manager import SubAgentManager
+from .manager import OPEN_STATUSES, SubAgentManager
 
 
 logger = logging.getLogger(__name__)
@@ -18,25 +19,33 @@ _LEGACY_HEADERS = ("## Active Sub-Agents", "ACTIVE SUB-AGENTS:")
 #: What supersedes the list once the last sub-agent is gone. Saying it
 #: costs one turn; deleting the old block instead would rewrite history
 #: that the provider has already cached.
-_EMPTY_BLOCK = ("## Active Sub-Agents\n\n"
-                "None -- every sub-agent of this run has finished.")
+_EMPTY_BLOCK = ("## Sub-Agents\n\n"
+                "None left -- every sub-agent of this session is archived.")
+
+#: What the statuses mean -- "idle" alone does not say that a run is over.
+_LEGEND = ("running: working now. idle: its last run is done; poll or info for the answer, "
+           "continue for more. interrupted, failed, cancelled: its last run did not finish.")
 
 
 class SubAgentContextInjector:
-    """Appends the active sub-agents to the history before an LLM call.
+    """Appends this session's sub-agents and what each is doing to the history before an LLM call.
 
     A `developer` turn at the end, written only when the list says
     something new. Never at the head: there a provider hoists it into the
-    prompt and every change invalidates the cached prefix behind it.
+    prompt and every change invalidates the cached prefix behind it. At the
+    end a change costs the new turn and nothing before it -- which is what
+    lets the list say running and idle, and not only that an instance exists.
     """
 
     def __init__(
-        self, 
-        manager: SubAgentManager, 
+        self,
+        manager: SubAgentManager,
         server_name: str,
         config: Optional[Dict[str, Any]] = None,
         allowed_agents: Optional[List[str]] = None,
-        phase_filtering_config: Optional[Dict[str, Any]] = None
+        phase_filtering_config: Optional[Dict[str, Any]] = None,
+        *,
+        status_of: Callable[[Dict[str, Any]], Awaitable[str]],
     ):
         """Initialize the context injector.
 
@@ -46,9 +55,13 @@ class SubAgentContextInjector:
             config: Optional configuration (max_shown, show_completed, etc.)
             allowed_agents: List of allowed agent types for this manager
             phase_filtering_config: Phase filtering config from server (top-level, not hook_config)
+            status_of: A sub-agent's stored metadata -> what it is doing (running, idle, or how
+                its last run ended). The server's, which knows the runs; stored, a running and
+                an idle instance both say "active".
         """
         self.manager = manager
         self.server_name = server_name  # Track which plugin instance this belongs to
+        self.status_of = status_of
         self.config = config or {}
         self.allowed_agents = allowed_agents or []
 
@@ -112,11 +125,17 @@ class SubAgentContextInjector:
             # Query sub-agents for this session
             # Filter by creator_plugin (self.server_name) to only show sub-agents from THIS manager
             try:
-                sub_agents = await self.manager.list_sub_sessions(
-                    parent_session_id=context.session_id,
-                    include_completed=self.show_completed,
-                    creator_plugin=self.server_name  # Only show sub-agents created by THIS instance
-                )
+                # A failed or cancelled run is listed like an open one: the coordinator may not
+                # have ended it itself, and a row that just vanished would say nothing about how.
+                # Archived ones only with show_completed -- that is the coordinator's own delete.
+                sub_agents = [
+                    sub_agent for sub_agent in await self.manager.list_sub_sessions(
+                        parent_session_id=context.session_id,
+                        include_completed=True,
+                        creator_plugin=self.server_name  # Only show sub-agents created by THIS instance
+                    )
+                    if self.show_completed or sub_agent.get("status") != "archived"
+                ]
             except (FileNotFoundError, Exception) as e:
                 # Session file doesn't exist yet (new session) or other session-related error
                 # This is normal - sessions are created on first save
@@ -140,15 +159,22 @@ class SubAgentContextInjector:
                                             injected_by=self.marker))
                 return HookResult(success=True, modified=True, context=context)
 
-            # Newest first by creation time: unlike last_used, it does not move
+            # Open ones first, since the cut below keeps the head: a coordinator that
+            # replaced two failed workers must still see the older two it can use.
+            # Then newest first by creation time: unlike last_used, it does not move
             # when a sub-agent is continued, so the block stays byte-identical.
-            sub_agents.sort(key=lambda x: (x.get("created_at", ""), x.get("instance_id", "")),
+            sub_agents.sort(key=lambda x: (x.get("status") in OPEN_STATUSES,
+                                           x.get("created_at", ""), x.get("instance_id", "")),
                             reverse=True)
 
             # Limit number shown
             if len(sub_agents) > self.max_sub_agents_shown:
                 sub_agents = sub_agents[:self.max_sub_agents_shown]
                 logger.debug(f"[SubAgentContext] Limited to {self.max_sub_agents_shown} sub-agents")
+
+            # What each one is doing, for the rows shown only: asking can mean a file read.
+            sub_agents = [{**sub_agent, "status": await self.status_of(sub_agent)}
+                          for sub_agent in sub_agents]
 
             # Build context message with phase-aware allowed agents
             context_content = self._build_context_message(sub_agents, phase_allowed_agents, current_phase)
@@ -269,37 +295,36 @@ class SubAgentContextInjector:
         current_phase: Optional[str] = None
     ) -> str:
         """Build compact Markdown table context message with phase-aware agent list."""
-        lines = ["## Active Sub-Agents\n"]
-        
+        lines = ["## Sub-Agents\n"]
+
         # Show phase-allowed agents if configured
         if phase_allowed_agents and current_phase:
             lines.append(f"**Phase `{current_phase}` - Available agents:** {', '.join(phase_allowed_agents)}\n")
         elif self.allowed_agents and '*' not in self.allowed_agents:
             # Fall back to static allowed_agents if no phase filtering
             lines.append(f"**Available agents:** {', '.join(self.allowed_agents)}\n")
-        
-        if sub_agents:
-            # Table header - minimal columns to preserve token caching
-            lines.append("| Type | Instance ID | Status |")
-            lines.append("|------|-------------|--------|")
-            
-            for sub_agent in sub_agents:
-                instance_id = sub_agent.get("instance_id", "unknown")
-                agent_type = sub_agent.get("agent_type", "unknown")
-                status = sub_agent.get("status", "unknown")
-                
-                lines.append(f"| {agent_type} | `{instance_id}` | {status} |")
-            
-            lines.append("")
-            lines.append(f"Continue: `{self.server_name}_manage_sub_agent(operation='continue', instance_id='...', message='...')`")
-        else:
-            lines.append("*No active sub-agents*")
+
+        # No message count or time: they move on every continue, and each move is a new turn.
+        lines.append("| Type | Instance ID | Status | Task |")
+        lines.append("|------|-------------|--------|------|")
+
+        for sub_agent in sub_agents:
+            instance_id = sub_agent.get("instance_id", "unknown")
+            agent_type = sub_agent.get("agent_type", "unknown")
+            status = sub_agent.get("status", "unknown")
+            task = " ".join((sub_agent.get("task_summary") or "").split()).replace("|", "\\|")
+
+            lines.append(f"| {agent_type} | `{instance_id}` | {status} | {task} |")
+
+        lines.append("")
+        lines.append(_LEGEND)
+        lines.append(f"Continue: `{self.server_name}_manage_sub_agent(operation='continue', instance_id='...', message='...')`")
 
         return "\n".join(lines)
 
     def _build_text_context(self, sub_agents: List[Dict[str, Any]]) -> str:
         """Build plain text context message."""
-        lines = ["ACTIVE SUB-AGENTS:", ""]
+        lines = ["SUB-AGENTS:", ""]
 
         for i, sub_agent in enumerate(sub_agents, 1):
             instance_id = sub_agent.get("instance_id", "unknown")
@@ -315,6 +340,7 @@ class SubAgentContextInjector:
                 ""
             ])
 
+        lines.append(_LEGEND)
         lines.append(f"Use the {self.server_name}_manage_sub_agent tool with operation='continue' to resume conversations.")
 
         return "\n".join(lines)

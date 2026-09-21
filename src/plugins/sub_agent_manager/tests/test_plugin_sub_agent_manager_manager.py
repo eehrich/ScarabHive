@@ -732,3 +732,55 @@ async def test_auto_archive_disabled_still_raises(mock_session_service, mock_reg
             agent_type="web_research",
             initial_message="Third task",
         )
+
+
+# --- reopening takes a place ---------------------------------------------------------------------
+
+def _parent_with(mock_session_service, **sub_agents):
+    """A parent whose registry holds these instances, all of one type, oldest first."""
+    mock_session_service.session_manager.load_session = AsyncMock(return_value={
+        "session_id": "parent123", "depth": 1, "metadata": {"sub_agents": {
+            instance_id: {"instance_id": instance_id, "agent_type": "reviewer", "status": status,
+                          "created_at": f"2026-01-01T10:0{n}:00+00:00"}
+            for n, (instance_id, status) in enumerate(sub_agents.items())}}})
+
+
+def _statuses_written(mock_session_service) -> list[tuple[str, str]]:
+    return [(instance_id, entry.get("status"))
+            for call in mock_session_service.session_manager.update_session_metadata.await_args_list
+            for instance_id, entry in call.args[2]["sub_agents"].items()]
+
+
+@pytest.mark.asyncio
+async def test_a_reopen_takes_a_place_like_a_new_one(mock_session_service, mock_registry):
+    """A continue reopened a failed or archived instance past both limits, and the session
+    stayed over them for good: the limits count only what is open."""
+    manager = SubAgentManager(mock_session_service, mock_registry, max_sub_agents_per_type=1)
+    _parent_with(mock_session_service, sub_open="active", sub_failed="failed")
+
+    with pytest.raises(ValueError, match="of type 'reviewer'"):
+        await manager.reopen_sub_session("parent123", "sub_failed")
+
+    assert _statuses_written(mock_session_service) == []
+
+
+@pytest.mark.asyncio
+async def test_a_reopen_makes_room_the_way_a_create_does(mock_session_service, mock_registry):
+    manager = SubAgentManager(mock_session_service, mock_registry, max_sub_agents_per_type=1,
+                              auto_archive_on_limit=True)
+    _parent_with(mock_session_service, sub_open="active", sub_failed="failed")
+
+    await manager.reopen_sub_session("parent123", "sub_failed")
+
+    assert _statuses_written(mock_session_service) == [("sub_open", "archived"), ("sub_failed", "active")]
+
+
+@pytest.mark.asyncio
+async def test_an_active_instance_already_holds_its_place(mock_session_service, mock_registry):
+    """Counted against itself, an active instance of a full session could never be continued."""
+    manager = SubAgentManager(mock_session_service, mock_registry, max_sub_agents_per_type=1)
+    _parent_with(mock_session_service, sub_open="active")
+
+    await manager.reopen_sub_session("parent123", "sub_open")
+
+    assert _statuses_written(mock_session_service) == [("sub_open", "active")]

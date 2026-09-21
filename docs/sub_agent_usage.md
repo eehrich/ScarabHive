@@ -176,7 +176,7 @@ The same `instance_id` cannot run concurrently. Pattern for parallel work: sever
 
 **Parameters:**
 - `operation`: Must be `"list"`
-- `include_completed` (optional): Include archived sub-agents (default: false; `active` and `interrupted` are always listed)
+- `include_completed` (optional): Include archived sub-agents (default: false; every other one is always listed -- running, idle, interrupted, failed, cancelled)
 
 **Returns:**
 ```json
@@ -185,7 +185,7 @@ The same `instance_id` cannot run concurrently. Pattern for parallel work: sever
     {
       "instance_id": "sub_web_research_001",
       "agent_type": "web_research_agent",
-      "status": "active",
+      "status": "idle",
       "created_at": "2025-11-02T10:30:00Z",
       "last_used": "2025-11-02T10:35:00Z",
       "task_summary": "Research latest AI developments",
@@ -222,7 +222,7 @@ The same `instance_id` cannot run concurrently. Pattern for parallel work: sever
 {
   "instance_id": "sub_web_research_001",
   "agent_type": "web_research_agent",
-  "status": "active",
+  "status": "idle",
   "created_at": "2025-11-02T10:30:00Z",
   "last_used": "2025-11-02T10:35:00Z",
   "message_count": 5,
@@ -443,26 +443,29 @@ The "Available" list applies the same `allowed_agents`/`blocked_agents` check as
 
 ### Hook Configuration
 
-The `inject_sub_agent_context` hook appends this SAM instance's active sub-agents as a `developer` turn at the end of the history before each LLM call. The hook is registered with `enabled: false`; an agent turns it on with `hooks.overrides: {<sam instance>.inject_sub_agent_context: {enabled: true}}`. The `enabled` option below is the injector's own switch, not the registration. The options are read from `hook_config.inject_sub_agent_context` on the SAM server entry.
+The `inject_sub_agent_context` hook appends this SAM instance's sub-agents and their status as a `developer` turn at the end of the history before each LLM call. The hook is registered with `enabled: false`; an agent turns it on with `hooks.overrides: {<sam instance>.inject_sub_agent_context: {enabled: true}}`. The `enabled` option below is the injector's own switch, not the registration. The options are read from `hook_config.inject_sub_agent_context` on the SAM server entry.
 
-The block is marked with `injected_by: sub_agent_manager:<instance>` and written only when it says something new -- a sub-agent added, removed or changed status; rows are ordered newest created first and carry no usage counters or times. An earlier block keeps its place and is superseded by the newer one: deleting it would rewrite the prefix the provider has already cached. When the last sub-agent has finished, that is news too and is said once.
+The block is marked with `injected_by: sub_agent_manager:<instance>` and written only when it says something new -- a sub-agent added, removed or changed status; rows are ordered open ones first (running, idle, interrupted), each group newest created first, and carry the task, but no usage counters or times. The status is what the sub-agent is doing: `running` while a run is under way (in this process, or in any other that holds the lock beside its session), `idle` once it is over, or `interrupted`, `failed`, `cancelled` for a last run that did not finish. Stored, running and idle are both `active`; the block never says that word. An earlier block keeps its place and is superseded by the newer one: deleting it would rewrite the prefix the provider has already cached. When the last sub-agent is archived, that is news too and is said once.
 
 **Options:**
 - `enabled`: Enable/disable context injection (default: true)
-- `max_sub_agents_shown`: Limit sub-agents shown, newest created first (default: 10)
-- `show_completed`: Include archived sub-agents (default: false)
+- `max_sub_agents_shown`: Limit sub-agents shown, open ones first, then newest created first (default: 10)
+- `show_completed`: Include archived sub-agents (default: false); failed and cancelled ones are always shown
 - `format`: "markdown" or "text" (default: "markdown")
 
 **Injected Context Example:**
 
 ```markdown
-## Active Sub-Agents
+## Sub-Agents
 
 **Available agents:** web_research_agent, financial_analyst_agent
 
-| Type | Instance ID | Status |
-|------|-------------|--------|
-| web_research_agent | `sub_web_research_0001` | active |
+| Type | Instance ID | Status | Task |
+|------|-------------|--------|------|
+| web_research_agent | `sub_web_research_0002` | running | Compare the three vendors' pricing |
+| web_research_agent | `sub_web_research_0001` | idle | Collect the vendors' published SLAs |
+
+running: working now. idle: its last run is done; poll or info for the answer, continue for more. interrupted, failed, cancelled: its last run did not finish.
 
 Continue: `sub_agent_manager_manage_sub_agent(operation='continue', instance_id='...', message='...')`
 ```

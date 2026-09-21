@@ -18,6 +18,11 @@ from plugins.sub_agent_manager.hooks import SubAgentContextInjector
 from plugins.sub_agent_manager.server import SubAgentManagerServer
 
 
+async def stored_status(metadata):
+    """What the injector is told a sub-agent is doing: here, the stored status as it stands."""
+    return metadata.get("status", "unknown")
+
+
 def _sub_agent(n, *, status="active", last_used="2026-09-15T10:00:00Z", messages=3):
     return {"instance_id": f"sub_worker_{n:04d}", "agent_type": "worker", "status": status,
             "created_at": f"2026-09-15T09:00:0{n}Z", "last_used": last_used,
@@ -32,7 +37,7 @@ def _context(messages):
 def _injector(sub_agents, **config):
     manager = MagicMock()
     manager.list_sub_sessions = AsyncMock(return_value=sub_agents)
-    return SubAgentContextInjector(manager, "work_sam", {"format": "markdown", **config}), manager
+    return SubAgentContextInjector(manager, "work_sam", {"format": "markdown", **config}, status_of=stored_status), manager
 
 
 def _blocks(messages):
@@ -119,26 +124,32 @@ async def test_an_emptied_list_is_superseded_not_deleted():
     assert len(_blocks(context.messages)) == 2
 
 
+async def test_a_task_cannot_break_the_table():
+    """The task is what the model wrote: a pipe or a line break in it ends the row early."""
+    injector, _ = _injector([{**_sub_agent(1), "task_summary": "compare a | b\nand then c"}])
+    context = _context([ChatMessage(role="user", content="go")])
+
+    await injector.inject_sub_agent_context(context)
+
+    assert "| worker | `sub_worker_0001` | active | compare a \\| b and then c |" in _blocks(context.messages)[-1].content
+
+
 async def test_a_block_persisted_without_a_marker_counts_as_the_previous_one():
-    """An old unmarked block is mine: it decides whether anything is new.
+    """An old unmarked block is mine: when the list has emptied since, that is news.
 
     Blocks written before the marker existed were persisted as plain system
-    messages. Not recognising one means the first call of a resumed session
-    appends the very same list a second time.
+    messages, under the header they had then. Not recognising one leaves its
+    list of sub-agents as the last word of a resumed session whose sub-agents
+    are all archived by now.
     """
-    injector, _ = _injector([_sub_agent(1)])
-    rendered = _context([ChatMessage(role="user", content="go")])
-    await injector.inject_sub_agent_context(rendered)
-    same_text = _blocks(rendered.messages)[-1].content
-
-    unmarked = ChatMessage(role="system", content=same_text)
+    injector, _ = _injector([])
+    unmarked = ChatMessage(role="system", content="## Active Sub-Agents\n\n| worker | `sub_worker_0001` | active |")
     context = _context([ChatMessage(role="system", content="prompt"), unmarked,
                         ChatMessage(role="user", content="go")])
     result = await injector.inject_sub_agent_context(context)
 
-    assert result.modified is False, (
-        "the unmarked block was not recognised as the previous one")
-    assert not _blocks(context.messages), "nothing new to say, so nothing is written"
+    assert result.modified is True, "the unmarked block was not recognised as the previous one"
+    assert "None left" in _blocks(context.messages)[-1].content
     assert unmarked in context.messages
 
 
