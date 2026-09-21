@@ -1037,13 +1037,10 @@ plugins:
       enabled: true
       config:
         prompt_text: |
-          If you start to repeat yourself, try a different approach.
-
-        injection_position: "before_last_user"  # or "end"
-        # Not "system": Anthropic and Gemini hoist a system message out of the
-        # history into the prompt head, which is both a lie about when it
-        # started to hold and a cache break on every call.
-        role: "developer"
+          If you start to repeat yourself with tool calls or thinking, try a different approach.
+        injection_position: "after_system" # or "before_last_user" or "end"
+        # make it at system role, else the llm is confused about injections
+        role: "system"
 
     # Fuehrt die vorhersagbaren Eroeffnungs-Tool-Calls (Dokument laden,
     # Context-Var setzen) direkt nach dem User-Turn aus, VOR dem ersten
