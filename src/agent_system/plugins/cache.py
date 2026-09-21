@@ -9,6 +9,7 @@ import hashlib
 import time
 from pathlib import Path
 from typing import Any, Optional, Dict
+from uuid import uuid4
 import logging
 
 logger = logging.getLogger(__name__)
@@ -96,10 +97,18 @@ class PluginCache:
             logger.debug(f"Cache hit for key: {key[:50]}...")
             return cache_data.get('data')
             
-        except (json.JSONDecodeError, KeyError, OSError) as e:
+        except (json.JSONDecodeError, KeyError) as e:
             logger.warning(f"Failed to read cache file {cache_file}: {e}")
             # Remove corrupted cache file
             cache_file.unlink(missing_ok=True)
+            return None
+        except OSError as e:
+            # NOT corrupt: on Windows a file another process is replacing
+            # cannot be opened for a few milliseconds (PermissionError). With
+            # several agent-cli processes on one cache that is routine, and
+            # deleting here threw away the entry the other process had just
+            # written -- a paid search result, fetched again. A miss is enough.
+            logger.debug(f"Cache file {cache_file} unreadable right now: {e}")
             return None
     
     async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
@@ -130,7 +139,11 @@ class PluginCache:
         
         try:
             # Write atomically by using a temporary file
-            temp_file = cache_file.with_suffix('.tmp')
+            # A temp name of its own per write: two processes caching the same
+            # key wrote into ONE "<key>.tmp" and replaced each other's half-
+            # written file. Still ending in ".tmp", so the cache's own
+            # "*.json" scans never take it for an entry.
+            temp_file = cache_file.with_name(f".{cache_file.name}.{uuid4().hex[:8]}.tmp")
             with open(temp_file, 'w', encoding='utf-8') as f:
                 json.dump(cache_data, f, indent=2, ensure_ascii=False)
             
@@ -213,11 +226,15 @@ class PluginCache:
                         cache_file.unlink()
                         deleted_count += 1
                         
-                except (json.JSONDecodeError, KeyError, OSError) as e:
+                except (json.JSONDecodeError, KeyError) as e:
                     logger.warning(f"Failed to process cache file {cache_file}: {e}")
                     # Remove corrupted files
                     cache_file.unlink(missing_ok=True)
                     deleted_count += 1
+                except OSError as e:
+                    # Being replaced by another process right now, not corrupt
+                    # (see get()): the next cleanup looks at it again.
+                    logger.debug(f"Cache file {cache_file} unreadable right now: {e}")
             
             if deleted_count > 0:
                 logger.info(f"Cleaned up {deleted_count} expired cache files for {self.plugin_name}")

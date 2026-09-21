@@ -354,3 +354,46 @@ class TestCacheIntegration:
         assert len(results) == 10
         for i, result in enumerate(results):
             assert result["operation_id"] == i
+
+# --- several processes on one cache --------------------------------------
+# Production runs many agent-cli processes, and a plugin's cache directory is
+# shared by all of them. Two things broke there, both about files another
+# process is writing at that very moment.
+
+@pytest.mark.asyncio
+async def test_an_entry_being_replaced_is_a_miss_not_deleted(tmp_path, monkeypatch):
+    """Windows refuses to open a file another process is replacing.
+
+    That PermissionError was read as corruption, and the entry the other
+    process had just written -- a paid search result -- was deleted.
+    """
+    cache = PluginCache(plugin_name="p", cache_dir=tmp_path, default_ttl=60)
+    await cache.set("k", {"answer": 42})
+    entry = cache._get_cache_file("k")
+    real_open = open
+
+    def being_replaced(file, *args, **kwargs):
+        if str(file) == str(entry):
+            raise PermissionError(13, "being replaced by another process")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", being_replaced)
+    assert await cache.get("k") is None
+    monkeypatch.undo()
+
+    assert entry.exists(), "a file another process was writing got deleted as corrupt"
+    assert await cache.get("k") == {"answer": 42}
+
+
+@pytest.mark.asyncio
+async def test_two_writers_of_one_key_do_not_share_a_temp_file(tmp_path):
+    """Every write used "<key>.tmp" -- two processes caching the same key wrote
+    into one file and replaced each other's half-written copy.
+
+    Pinned by occupying that shared name: a writer that still uses it fails.
+    """
+    cache = PluginCache(plugin_name="p", cache_dir=tmp_path, default_ttl=60)
+    cache._get_cache_file("k").with_suffix(".tmp").mkdir(parents=True)
+
+    assert await cache.set("k", {"answer": 42}) is True
+    assert await cache.get("k") == {"answer": 42}
