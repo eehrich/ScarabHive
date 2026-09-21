@@ -14,6 +14,15 @@ logger = logging.getLogger(__name__)
 
 SESSION = Query(..., description="The parent session whose sub-agents")
 
+# What one map may cost. The panel asks for it every ten seconds, so the expensive part is bounded on its own:
+# a node with sub-agents is READ, and ``load_session`` reads the whole file, transcript included. MAP_READS bounds
+# those, MAP_NODES the answer. MAP_DEPTH is only a guard against a link that leads back into itself -- a real tree
+# ends at the manager's ``max_nesting_depth`` (5 by default) long before. Whichever is reached, the answer says
+# ``truncated`` rather than growing.
+MAP_NODES = 300
+MAP_READS = 60
+MAP_DEPTH = 20
+
 
 def get_session_service():
     """The app's session service: sub-agents are sessions linked to their parent."""
@@ -92,6 +101,73 @@ class SubAgentManagerWebFactory:
         spawnable = (phases.get(current) or phases.get("_default") or server.allowed_agents) if current else server.allowed_agents
         return {"variable": server.phase_variable, "current": current, "agents": list(spawnable),
                 "allowed_agents": list(server.allowed_agents)}
+
+    async def get_agent_map(self, request: Request, session_id: str = SESSION) -> dict[str, Any]:
+        """The session and everything below it, nested: each sub-agent carries the sub-agents it spawned itself.
+
+        Two things it does differently from the list, both on purpose. It shows what ANY manager instance spawned --
+        below the first level the spawning instance is the sub-agent's own, so leaving a branch out for its name
+        would be a map that lies -- and it carries no message count: the stored one lags a run behind (the list
+        reads the transcript's own length instead), and reading every node to correct it is what this walk avoids.
+        """
+        session_service = get_session_service()
+        manager = self.server._get_manager(session_service)
+        sessions = session_service.session_manager
+        user_id = manager._extract_user_id(session_id)
+        remaining = MAP_NODES
+        reads = MAP_READS
+        truncated = False
+
+        async def branch(parent_id: str, depth: int,
+                         stored: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+            """The sub-agents of one node, oldest first, each with its own below it.
+
+            A node is read only when the stat behind ``_has_children`` says a sub-index exists for it: a session
+            with fifty leaves must not read fifty session files to learn that they are leaves. The one thing that
+            stat answers differently from the metadata read here is a node whose last sub-agent was DELETED --
+            deleting it unlinks the sub-index while the entry stays in the parent's metadata, and the node is then
+            shown as the leaf it has become, rather than as the parent of something that is gone.
+
+            Whatever is NOT shown is said, once, as ``truncated`` -- a node cut off looks exactly like a leaf
+            otherwise. ``stored`` is a session already read: the root's, which the answer needs for its title
+            anyway, and which is charged to the reads all the same.
+            """
+            nonlocal remaining, reads, truncated
+            if not sessions._has_children(user_id, parent_id):
+                return []
+            if depth <= 0 or remaining <= 0 or reads <= 0:  # something IS below here, and it is not being shown
+                truncated = True
+                return []
+            reads -= 1
+            if stored is None:
+                try:
+                    stored = await sessions.load_session(user_id, parent_id)
+                except Exception as error:  # the stat says there are sub-agents and the file does not answer
+                    logger.debug("No sub-agents under %s: %s", parent_id, error)
+                    truncated = True
+                    return []
+            listed = (stored.get("metadata") or {}).get("sub_agents") or {}
+            nodes = []
+            for instance_id, metadata in sorted(listed.items(), key=lambda pair: pair[1].get("created_at") or ""):
+                if remaining <= 0:  # the siblings after this one are not shown either
+                    truncated = True
+                    break
+                remaining -= 1
+                nodes.append({key: metadata.get(key) for key in (
+                    "agent_type", "status", "created_at", "last_used", "task_summary", "current_activity")}
+                    | {"instance_id": instance_id, "parent_session_id": parent_id,
+                       "children": await branch(instance_id, depth - 1)})
+            return nodes
+
+        try:
+            root = await sessions.load_session(user_id, session_id)
+        except Exception as error:  # a session not saved yet is a map of one node
+            logger.debug("No session %s to map: %s", session_id, error)
+            root = {}
+        children = await branch(session_id, MAP_DEPTH, stored=root or None)
+        return {"root": {"instance_id": session_id, "title": root.get("title"),
+                         "agent_type": root.get("agent_name"), "children": children},
+                "truncated": truncated}
 
     async def get_sub_agent(self, request: Request, agent_id: str, session_id: str = SESSION,
                             offset: int | None = Query(None, ge=0), limit: int | None = Query(None, ge=1)) -> dict[str, Any]:

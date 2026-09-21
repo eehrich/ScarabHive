@@ -4,7 +4,7 @@
 {% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
 {% block toolbar %}
 <pk-session></pk-session>
-<select id="show" class="pk-select pk-select--sm sa-show" aria-label="Show">
+<select id="show" class="pk-select pk-select--sm sa-show" aria-label="Show" hidden>
   <option value="open">Open</option>
   <option value="running">Running</option>
   <option value="all">All, archived included</option>
@@ -12,9 +12,20 @@
 <pk-refresh interval="10" auto></pk-refresh>
 {% endblock %}
 {% block content %}
-<div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
-<div class="pk-muted sa-phase" id="phase" hidden></div>
-<div id="agents" class="pk-stack"></div>
+<div class="pk-tabs" role="tablist" data-pk-tabs>
+  <button class="pk-tab" role="tab" aria-selected="true" aria-controls="tab-map" data-tab="map">Map</button>
+  <button class="pk-tab" role="tab" aria-selected="false" aria-controls="tab-list" data-tab="list">List</button>
+</div>
+
+<section id="tab-map" role="tabpanel" aria-label="Map">
+  <div id="map" class="pk-stack sa-map"></div>
+</section>
+
+<section id="tab-list" role="tabpanel" aria-label="List" hidden>
+  <div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
+  <div class="pk-muted sa-phase" id="phase" hidden></div>
+  <div id="agents" class="pk-stack"></div>
+</section>
 
 <dialog id="detail" class="pk-dialog pk-drawer sa-drawer" aria-labelledby="detailTitle">
   <div class="pk-dialog-head">

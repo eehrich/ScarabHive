@@ -685,3 +685,165 @@ async def test_the_sub_agent_list_carries_the_phase_of_the_session():
 
         server.phase_filtering_enabled = False
         assert (await factory.get_sub_agents(mock_request, session_id="test_session"))["phase"] is None
+
+
+async def _session_with_a_manager(tmp_path):
+    """Session ``s-1`` of user ``ada``, and a manager instance ``sam`` that may spawn ``writer_agent``."""
+    from agent_system.config.models import AgentConfig, AgentSystemConfig, ToolServerConfig
+    from agent_system.services.session_manager import SessionManager
+    from agent_system.services.session_service import SessionService
+    from agent_system.tools.base import ToolServerRegistry
+    from plugins.sub_agent_manager.server import SubAgentManagerServer
+
+    service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))
+    await service.session_manager.create_session(user_id="ada", session_id="s-1", title="The coordinator",
+                                                 agent_name="coordinator", llm_profile="normal")
+    registry = ToolServerRegistry()
+    agent = MagicMock()
+    agent.name = "writer_agent"
+    agent.agent_config = AgentConfig(llm_profile="normal")
+    registry.register("writer_agent", agent)
+    server = SubAgentManagerServer("sam", AgentSystemConfig(), ToolServerConfig(allowed_agents=["*"]))
+    return service, server, server._get_manager(service, registry)
+
+
+def _spawn(manager, parent: str, label: str, creator: str = "sam"):
+    return manager.create_sub_session(parent_session_id=parent, agent_type="writer_agent",
+                                      initial_message=f"Task of {label}", instance_label=label,
+                                      params={"_creator_plugin": creator, "_user_id": "ada"})
+
+
+@pytest.mark.asyncio
+async def test_the_agent_map_nests_a_sub_agents_own_sub_agents_under_it(tmp_path):
+    """The map walks the whole session: a sub-agent's sub-agents hang under it, oldest first, each naming the
+    session it hangs under -- which is what the panel passes to read its transcript.
+
+    Whoever spawned them: below the first level the manager instance is the sub-agent's own, so the map shows what
+    any instance created, where the list of the same session shows only this one's.
+    """
+    from unittest.mock import patch
+
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    service, server, manager = await _session_with_a_manager(tmp_path)
+    factory = SubAgentManagerWebFactory(server)
+    first = await _spawn(manager, "s-1", "first")
+    below = await _spawn(manager, first, "below", creator="sam_other")
+    second = await _spawn(manager, "s-1", "second", creator="sam_other")
+    await manager.update_sub_session_metadata(parent_session_id=first, sub_session_id=below,
+                                              current_activity="Running tool: web_search")
+
+    with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
+        answer = await factory.get_agent_map(MagicMock(), session_id="s-1")
+        listed = await factory.get_sub_agents(MagicMock(), session_id="s-1")
+
+    root = answer["root"]
+    assert (root["instance_id"], root["title"], root["agent_type"]) == ("s-1", "The coordinator", "coordinator")
+    assert [child["instance_id"] for child in root["children"]] == [first, second]  # oldest first
+    assert [child["parent_session_id"] for child in root["children"]] == ["s-1", "s-1"]
+    [nested] = root["children"][0]["children"]
+    assert (nested["instance_id"], nested["parent_session_id"]) == (below, first)
+    assert (nested["agent_type"], nested["current_activity"]) == ("writer_agent", "Running tool: web_search")
+    assert root["children"][1]["children"] == [] and answer["truncated"] is False
+    assert [instance["instance_id"] for instance in listed["instances"]] == [first]
+
+
+@pytest.mark.asyncio
+async def test_the_agent_map_reads_only_the_sessions_that_have_sub_agents(tmp_path):
+    """A leaf is not opened: a stat on its sub-index says it has none, and the session file is the expensive read
+    in a walk the panel repeats every ten seconds."""
+    from unittest.mock import patch
+
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    service, server, manager = await _session_with_a_manager(tmp_path)
+    factory = SubAgentManagerWebFactory(server)
+    parent = await _spawn(manager, "s-1", "parent")
+    for label in ("leaf_a", "leaf_b"):
+        await _spawn(manager, parent, label)
+
+    sessions = service.session_manager
+    opened: list[str] = []
+    read = sessions.load_session
+
+    async def counted(user_id, session_id, **kwargs):
+        opened.append(session_id)
+        return await read(user_id, session_id, **kwargs)
+
+    sessions.load_session = counted
+    with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
+        answer = await factory.get_agent_map(MagicMock(), session_id="s-1")
+    assert len(answer["root"]["children"][0]["children"]) == 2
+    assert opened == ["s-1", parent]  # the two leaves are stated, not read, and the root is read once
+
+
+@pytest.mark.asyncio
+async def test_the_agent_map_says_when_something_below_is_not_shown(tmp_path):
+    """Every bound the walk has leaves a node that looks exactly like a leaf: the sub-agents it may answer with,
+    the sessions it may read, the depth it may go. Whichever one cuts, the answer says ``truncated`` -- and a tree
+    that fits exactly does not, or the panel would put a banner over a complete map."""
+    from unittest.mock import patch
+
+    from plugins.sub_agent_manager import web_endpoints
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    service, server, manager = await _session_with_a_manager(tmp_path)
+    factory = SubAgentManagerWebFactory(server)
+    first = await _spawn(manager, "s-1", "one")
+    second = await _spawn(manager, "s-1", "two")
+    below = await _spawn(manager, first, "below")
+
+    async def mapped(**bounds):
+        with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service), \
+                patch.multiple(web_endpoints, **bounds):
+            return await factory.get_agent_map(MagicMock(), session_id="s-1")
+
+    whole = await mapped(MAP_NODES=3)  # the tree is three nodes and fits exactly
+    assert whole["truncated"] is False
+    assert [child["instance_id"] for child in whole["root"]["children"]] == [first, second]
+    assert [child["instance_id"] for child in whole["root"]["children"][0]["children"]] == [below]
+
+    nodes = await mapped(MAP_NODES=2)  # the last sibling does not fit
+    assert nodes["truncated"] is True and [child["instance_id"] for child in nodes["root"]["children"]] == [first]
+
+    reads = await mapped(MAP_READS=1)  # the root is read, nothing below it is
+    assert reads["truncated"] is True and reads["root"]["children"][0]["children"] == []
+
+    deep = await mapped(MAP_DEPTH=1)  # one level, and what hangs below it is not a leaf
+    assert deep["truncated"] is True and deep["root"]["children"][0]["children"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_agent_map_says_so_when_a_node_it_has_to_read_is_gone(tmp_path):
+    """A sub-agent deleted from the store while its own sub-agents stay behind: the stat still says there is
+    something under it and its session file no longer answers for it. It is drawn as the leaf it looks like --
+    but not passed off as one."""
+    from unittest.mock import patch
+
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    service, server, manager = await _session_with_a_manager(tmp_path)
+    factory = SubAgentManagerWebFactory(server)
+    parent = await _spawn(manager, "s-1", "parent")
+    await _spawn(manager, parent, "below")
+    await _spawn(manager, "s-1", "other")  # deleting the only child of a node unlinks its sub-index: keep one
+    await service.session_manager.delete_session("ada", parent, create_backup=False)
+
+    with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
+        answer = await factory.get_agent_map(MagicMock(), session_id="s-1")
+    node = answer["root"]["children"][0]
+    assert (node["instance_id"], node["children"]) == (parent, []) and answer["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_agent_map_of_a_session_that_is_not_stored_is_that_session_alone(tmp_path):
+    """A session the panel is opened on before it is ever saved: the map is its one node, not an error."""
+    from unittest.mock import patch
+
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    service, server, _ = await _session_with_a_manager(tmp_path)
+    with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
+        answer = await SubAgentManagerWebFactory(server).get_agent_map(MagicMock(), session_id="s-unsaved")
+    assert answer == {"root": {"instance_id": "s-unsaved", "title": None, "agent_type": None, "children": []},
+                      "truncated": False}

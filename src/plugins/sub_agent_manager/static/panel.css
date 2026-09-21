@@ -19,3 +19,25 @@
 .sa-role { font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: var(--space-1); }
 .sa-content { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary); }
 .sa-call { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-secondary); overflow-wrap: anywhere; margin-top: var(--space-1); }
+
+/* The map: the session, and under it the sub-agents of its sub-agents. Rails and elbows are drawn on the list
+   items, so nesting needs no measurement -- every level is one more of the same. */
+.sa-map { gap: var(--space-2); }
+.sa-kids { list-style: none; margin: 0; padding: 0 0 0 var(--space-3); }
+.sa-kids > li { position: relative; padding-left: var(--space-5); }
+.sa-kids > li::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; border-left: 1px solid var(--border-default); }
+.sa-kids > li:last-child::before { bottom: auto; height: 1.4rem; }  /* down to its own elbow, not past it */
+.sa-kids > li::after { content: ""; position: absolute; left: 0; top: 1.4rem; width: var(--space-5); border-top: 1px solid var(--border-default); }
+.sa-node { display: flex; align-items: flex-start; gap: var(--space-2); width: 100%; margin: var(--space-1) 0;
+  padding: var(--space-2) var(--space-3); text-align: left; font: inherit; color: var(--text-primary);
+  background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
+.sa-node .pk-dot { margin-top: 0.45em; }
+.sa-root { background: var(--surface-2); }
+button.sa-node { cursor: pointer; }
+button.sa-node:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.sa-node[data-state="running"] { border-color: var(--info); }
+.sa-node-body { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.sa-node-title { overflow-wrap: anywhere; }
+.sa-node-meta, .sa-node-doing { font-size: var(--text-xs); overflow-wrap: anywhere; }
+.sa-node-meta { color: var(--text-muted); }
+.sa-node-doing { display: flex; align-items: center; gap: var(--space-1); color: var(--info); }

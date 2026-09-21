@@ -1,5 +1,6 @@
 // Sub-Agents: the sub-agents this manager spawned in the session open in the chat (or the one a link names,
-// ?session_id=) -- what each is doing, its transcript, and archiving one.
+// ?session_id=) -- what each is doing, its transcript, and archiving one. Two views of the same session: the map
+// (the whole tree, sub-agents of sub-agents included) and the list (this instance's own, with the actions).
 import { api, html, render, icon, confirm, session } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
@@ -10,6 +11,8 @@ let page = 50;
 /** The sub-agents listed, or null: no session open, or they could not be loaded. */
 let agents = null;
 let phase = null;
+/** The map: {root, truncated}, {error} when it alone failed, or null with no session open. */
+let map = null;
 /** The session the list shown belongs to: an action acts on it, whatever the chat has switched to since. */
 let shownFor = null;
 let load = 0;
@@ -66,25 +69,33 @@ async function refresh(event) {
   const mine = ++load;
   if (!id) {
     busy = false;
-    show(null, null, null);
+    show(null, null, null, null);
     render($('stats'), empty('message-square', 'No session open', 'Open a session in the chat to see its sub-agents.'));
     return;
   }
   busy = true;
-  let answer;
+  const listing = api(`${BASE}sub-agents?session_id=${encodeURIComponent(id)}`, { quiet: true });
+  // asked for at the same time and kept apart: one of the two failing is not both, and each says what happened to it
+  const mapping = api(`${BASE}agent-map?session_id=${encodeURIComponent(id)}`, { quiet: true })
+    .catch((error) => ({ error: error.message }));
+  let answer = null;
+  let failed = null;
   try {
-    answer = await api(`${BASE}sub-agents?session_id=${encodeURIComponent(id)}`, { quiet: true });
+    answer = await listing;
   } catch (error) {
-    if (mine === load) {  // nothing of the session shown before stays, as if it were this one's
-      show(null, null, null);
-      render($('stats'), empty('circle-alert', 'Sub-agents could not be loaded', error.message));
-    }
-    return;
-  } finally {
-    if (mine === load) busy = false;
+    failed = error;
   }
+  // both in, then judged: released earlier, a tick would start over the map still on its way and discard this load;
+  // judged earlier, the answer for a session left behind would be drawn after the one for the session now open
+  const tree = await mapping;
+  if (mine === load) busy = false;
   if (mine !== load) return;  // another session was asked for since
-  show(answer.instances, answer.phase, id);
+  if (failed) {  // nothing of the session shown before stays, as if it were this one's; the map answered for itself
+    show(null, null, null, tree);
+    render($('stats'), empty('circle-alert', 'Sub-agents could not be loaded', failed.message));
+    return;
+  }
+  show(answer.instances, answer.phase, id, tree);
   const count = (name) => agents.filter((agent) => state(agent) === name).length;
   render($('stats'), [
     stat('total', 'Sub-agents', agents.length),
@@ -95,12 +106,14 @@ async function refresh(event) {
   ]);
 }
 
-function show(list, phaseInfo, sessionId) {
+function show(list, phaseInfo, sessionId, tree) {
   agents = list;
   phase = phaseInfo;
+  map = tree || null;
   shownFor = sessionId;
   drawPhase();
   drawAgents();
+  drawMap();
 }
 
 function drawPhase() {
@@ -155,6 +168,64 @@ function drawAgents() {
   if (focused) button(focused.dataset.act, focused.dataset.id)?.focus();
 }
 
+// ------------------------------------------------------------------------- map
+
+/** How long a sub-agent was at it: from its creation to its last use. Empty while one of the two is missing. */
+function span(from, to) {
+  const ms = new Date(to) - new Date(from);
+  if (!(ms >= 0)) return '';
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? `${minutes}m ${seconds % 60}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+const nodeBody = (title, meta, doing) => html`<span class="sa-node-body">
+  <span class="sa-node-title">${title}</span>
+  <span class="sa-node-meta">${meta.filter(Boolean).join(' · ')}</span>
+  ${doing ? html`<span class="sa-node-doing">${icon('activity', { size: 'sm' })}${doing}</span>` : ''}
+</span>`;
+
+/** One sub-agent in the map. It carries the session it hangs under: a nested one's is not the one in the chat. */
+const mapNode = (agent) => {
+  const name = state(agent);
+  const { label, kind } = described(name);
+  return html`<button type="button" class="sa-node" data-act="transcript" data-id="${agent.instance_id}"
+    data-session="${agent.parent_session_id}" data-state="${name}">
+    <span class="pk-dot${kind ? ` pk-dot--${kind}` : ''}"></span>
+    ${nodeBody(agent.task_summary || agent.agent_type || agent.instance_id,
+      [agent.agent_type, agent.instance_id, span(agent.created_at, agent.last_used), label],
+      name === 'running' ? agent.current_activity : '')}
+  </button>`;
+};
+
+const branch = (children) => ((children || []).length
+  ? html`<ul class="sa-kids">${children.map((child) => html`<li>${mapNode(child)}${branch(child.children)}</li>`)}</ul>`
+  : '');
+
+function drawMap() {
+  const focused = document.activeElement?.closest?.('#map button[data-id]');  // drawn anew, it keeps the focus
+  if (!map) {
+    render($('map'), empty('message-square', 'No session open', 'Open a session in the chat to see its sub-agents.'));
+    return;
+  }
+  if (map.error) {
+    render($('map'), empty('circle-alert', 'The map could not be loaded', map.error));
+    return;
+  }
+  const root = map.root;
+  render($('map'), html`<div class="sa-tree">
+      <div class="sa-node sa-root" data-id="${root.instance_id}">
+        <span class="pk-dot"></span>${nodeBody(root.title || root.instance_id, [root.agent_type, root.instance_id])}
+      </div>
+      ${branch(root.children)}
+    </div>
+    ${root.children.length ? '' : html`<div class="pk-muted">No sub-agents in this session</div>`}
+    ${map.truncated ? html`<div class="pk-muted">Not everything below this session is shown:
+      the map stops at what one look may read.</div>` : ''}`);
+  if (focused) $('map').querySelector(`button[data-id="${CSS.escape(focused.dataset.id)}"]`)?.focus();
+}
+
 // --------------------------------------------------------------------- actions
 
 async function archive(id) {
@@ -201,16 +272,17 @@ function drawTranscript() {
     <div class="pk-stack" data-part="messages">${messages.length ? messages.map(entry) : html`<div class="pk-muted">No messages</div>`}</div>`);
 }
 
-async function openTranscript(id) {
+/** ``sessionId``: the session the sub-agent hangs under -- its own parent in the map, the shown one in the list. */
+async function openTranscript(id, sessionId = shownFor) {
   const mine = ++opening;
-  const sessionId = shownFor;
+  const scope = session.shown;
   let data;
   try {
     data = await api(`${BASE}sub-agents/${encodeURIComponent(id)}?session_id=${encodeURIComponent(sessionId)}`);
   } catch {
     return;  // api() has shown the failure
   }
-  if (mine !== opening || sessionId !== session.shown) return;  // another opened since, or the session left
+  if (mine !== opening || scope !== session.shown) return;  // another opened since, or the session left
   opened = { id, session: sessionId, data, messages: data.messages, start: data.window.start_index };
   drawTranscript();
   if (!$('detail').open) $('detail').showModal();
@@ -250,6 +322,12 @@ document.addEventListener('refresh', refresh);
 // an open transcript stays: it names its session, and closing it would take the focus from the chat
 document.addEventListener('sessionscope', refresh);
 $('show').addEventListener('change', drawAgents);
+// the filter belongs to the list: the map shows the whole session, archived and ended included
+document.addEventListener('tabchange', (event) => { $('show').hidden = event.detail.tab !== 'list'; });
+$('map').addEventListener('click', (event) => {
+  const control = event.target.closest('button[data-act="transcript"]');
+  if (control && event.detail <= 1) openTranscript(control.dataset.id, control.dataset.session);
+});
 $('agents').addEventListener('click', (event) => {
   const control = event.target.closest('button[data-act]');
   // not the second click of a double click: on a card drawn anew in between it would hit the button now in its place
@@ -261,8 +339,10 @@ $('detailBody').addEventListener('click', (event) => {
   const control = event.target.closest('button[data-act="earlier"]');
   if (control) loadEarlier(control);
 });
+// the card or the map node may have been drawn anew meanwhile; the one on the tab not showing cannot take the focus
 $('detail').addEventListener('close', () => {
-  if (opened) button('transcript', opened.id)?.focus();  // the card may have been drawn anew meanwhile
+  if (opened) [...document.querySelectorAll(`button[data-act="transcript"][data-id="${CSS.escape(opened.id)}"]`)]
+    .find((control) => control.offsetParent)?.focus();
 });
 $('detail').addEventListener('click', (event) => {
   const drawer = $('detail');

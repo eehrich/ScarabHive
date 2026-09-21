@@ -229,9 +229,31 @@ counters or times) -- every change costs the provider cache behind it.
 ## The panel
 
 **Sub-Agents** (category `agents`, one per manager instance — `sam_writer`,
-`sam_skills`, …) shows the sub-agents this instance spawned in the session open
-in the chat, or in the one a session link names (`?session_id=`). Without a
-session it says so and asks nothing.
+`sam_skills`, …) opens on the session open in the chat, or on the one a session
+link names (`?session_id=`). Without a session it says so and asks nothing. Two
+tabs over the same session: the **map** it opens on, and the **list**.
+
+### Map
+
+The session and everything below it, nested: a sub-agent's own sub-agents hang
+under it. A node names its state, what it was given to do, its agent type, its
+id and how long it was at it (creation to last use), and a click opens its
+transcript — read against its own parent, not against the session in the chat.
+
+Two deliberate differences to the list. It shows what **any** manager instance
+spawned: below the first level the instance is the sub-agent's own, so a branch
+left out for its name would be a map that lies. And it carries no message
+count: a node is read only when a stat on its sub-index says it has sub-agents
+at all, and the stored count lags a run behind (the list reads the transcript's
+own length instead). A node whose last sub-agent was *deleted* loses that
+sub-index with it and shows as the leaf it has become.
+
+The walk is bounded three ways — the sub-agents it answers with (300), the
+sessions it reads (60; `load_session` reads the whole transcript with them) and
+the depth. Whichever one cuts something off, the answer says `truncated` and
+the panel says so too: a branch cut short looks exactly like a leaf otherwise.
+
+### List
 
 - **Figures:** sub-agents, running, idle, interrupted, archived or ended.
   *Running* is an active sub-agent reporting an activity that is not over
@@ -240,18 +262,20 @@ session it says so and asks nothing.
 - **Phase:** with `phase_filtering` on, the session's phase and the agents it
   lets the tool spawn, by the tool's own rule.
 - **Cards:** state, id, agent type, messages, last use, task and activity.
-  The filter shows the open ones (default), the running ones, or all.
+  The filter shows the open ones (default), the running ones, or all — it
+  belongs to this tab; the map always shows the whole session.
 - **Transcript** opens in a drawer on the tail; *Earlier messages* loads the
   pages above it.
 - **Archive** (active and interrupted ones) asks first and does what the
   tool's `delete` does: the history stays, `continue` reactivates it.
 
-The list refreshes every 10 s while the panel is visible.
+Both refresh every 10 s while the panel is visible, whichever tab is showing.
 
 | Endpoint | Answer |
 |---|---|
 | `GET /plugins/<name>/` | the panel |
 | `GET /sub-agents?session_id=` | `{instances: [...], phase: {variable, current, agents, allowed_agents} \| null}` — every sub-agent, archived included, in `list`'s fields, read-only |
+| `GET /agent-map?session_id=` | `{root: {instance_id, title, agent_type, children: [...]}, truncated}` — the tree, every node carrying its `parent_session_id` and its own `children`, read-only |
 | `GET /sub-agents/{id}?session_id=&offset=&limit=` | the transcript window, as `info` pages it |
 | `DELETE /sub-agents/{id}?session_id=` | archived, as `delete` |
 

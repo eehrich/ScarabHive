@@ -9,12 +9,15 @@ Seeded under ``tmp_path``, instance ``sam_writer`` with phase filtering on and `
 which the panel shows as stored and must not mark interrupted; ``sub_writer_h`` interrupted; ``sub_writer_d`` archived;
 ``sub_writer_e`` failed; and
 ``sub_other_f``, spawned by another manager instance, which this one does not list. Last used in that order, newest
-first. Session ``s-2``: ``sub_writer_g`` idle. Session ``s-3``: none.
+first. One level deeper, under ``sub_writer_b`` and by another instance as well: ``sub_writer_n``, running -- in the
+map, in no list. Session ``s-2``: ``sub_writer_g`` idle. Session ``s-3``: none.
 
 Behind the panel's back: POST /__stub/spawn creates a sub-agent in ``s-1`` (idle, newest), POST /__stub/drop/{id}
-deletes a sub-agent's session file. GET /__stub/asked counts the lists asked for, per session. Cookies: ``sa_list=fails``
-fails the list, ``sa_list=slow`` holds it 1.5 s; ``sa_slow=<id>`` holds that sub-agent's transcript 1.5 s, and its
-archive 1.5 s before it archives.
+deletes a sub-agent's session file. GET /__stub/asked counts both calls of a refresh, per session -- the map under
+``map:<session>``. Cookies: ``sa_list=fails``
+fails the list, ``sa_list=slow`` holds it 1.5 s, ``sa_map=slow`` (or ``slow:<session>``) holds the map of every
+session (or of that one) 1.5 s; ``sa_slow=<id>`` holds that
+sub-agent's transcript 1.5 s, and its archive 1.5 s before it archives.
 """
 from __future__ import annotations
 
@@ -100,6 +103,9 @@ async def seed(server, service) -> dict[str, str]:
         "f": await spawn(server, service, "s-1", "other_agent", "other_f", creator="sam_other", last_used=stamp(55)),
         "g": await spawn(server, service, "s-2", "writer_agent", "writer_g"),
     }
+    # one level deeper, and by another manager instance: the map shows it under ``sub_writer_b``, the list neither
+    ids["n"] = await spawn(server, service, ids["b"], "writer_agent", "writer_n", creator="sam_other",
+                           created_at=stamp(30), last_used=stamp(35), current_activity="Running tool: web_search")
     sub = await sessions.load_session(USER, ids["b"])
     sub["messages"] = transcript()
     await sessions.save_session(sub)
@@ -111,7 +117,7 @@ def panel_app(tmp_path: Path) -> FastAPI:
 
     seeding = PLUGIN_FACTORY(NAME, AgentSystemConfig(), ToolServerConfig(**CONFIG))
     ids = asyncio.run(seed(seeding.server, SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))))
-    assert len(set(ids.values())) == 8
+    assert len(set(ids.values())) == 9
 
     plugin = PLUGIN_FACTORY(NAME, AgentSystemConfig(), ToolServerConfig(**CONFIG))  # served in the app's own event loop
     service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))
@@ -126,12 +132,16 @@ def panel_app(tmp_path: Path) -> FastAPI:
     async def stub_modes(request: Request, call_next):
         path = request.url.path
         held = False
-        if path == base:
-            session = request.query_params.get("session_id", "")
+        if path in (base, f"/plugins/{NAME}/agent-map"):  # both calls of a refresh, the map under "map:<session>"
+            session = ("map:" if path.endswith("agent-map") else "") + request.query_params.get("session_id", "")
             asked[session] = asked.get(session, 0) + 1
+        if path == base:
             if request.cookies.get("sa_list") == "fails":
                 return JSONResponse({"detail": "The session store is locked"}, status_code=500)
             held = request.cookies.get("sa_list") == "slow"
+        if path.endswith("/agent-map"):  # every map, or only the one of the session named
+            mode = request.cookies.get("sa_map", "")
+            held = mode == "slow" or mode == f"slow:{request.query_params.get('session_id', '')}"
         slow = request.cookies.get("sa_slow")
         if slow and path == f"{base}/{slow}":
             held = True
@@ -205,7 +215,7 @@ EXPECTED = [
     'an archive on its way keeps its button disabled across redraws, and the other cards usable',
     'a sub-agent gone behind the panel is refused with a notice and opens nothing',
     'the endpoints refuse a sub-agent of another session or none as not found',
-    'a failed load shows the error and none of the sub-agents shown before',
+    'a failed list shows the error and drops its sub-agents, and the map that answered stays',
     'a tick of the auto refresh leaves a load still on its way alone',
     'an answer for the session left behind is not drawn, and an open transcript stays without taking the focus',
     'an archive acts on the session whose card was clicked, also after the chat switched',
@@ -213,6 +223,10 @@ EXPECTED = [
     'cards drawn anew keep the keyboard focus',
     'closing the drawer gives the focus back to its card, also when the list was drawn anew behind it',
     'the auto refresh runs from the start and brings a new sub-agent',
+    'the panel opens on the map, and a sub-agent of a sub-agent hangs under it',
+    'a node of the map opens the transcript of a sub-agent below the session',
+    'a tick while the map of a load is still on its way leaves that load alone',
+    'the map of a session left behind is not drawn over the one now open',
 ]
 
 

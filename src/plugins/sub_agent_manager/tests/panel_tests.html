@@ -39,10 +39,18 @@
   const frame = document.getElementById('panel');
   const doc = () => frame.contentDocument;
   const $ = (selector) => doc().querySelector(selector);
-  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const visit = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  // the panel opens on the map; every check but the map's own drives the list
+  const go = async (path) => { await visit(path); tabTo('list'); };
   const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
   const cards = () => [...doc().querySelectorAll('#agents article[data-id]')];
-  const shown = () => cards().map((card) => Object.keys(ids).find((key) => ids[key] === card.dataset.id) || card.dataset.id).join();
+  const keyFor = (id) => Object.keys(ids).find((key) => ids[key] === id) || id;
+  const shown = () => cards().map((card) => keyFor(card.dataset.id)).join();
+  const tabTo = (name) => $(`.pk-tab[data-tab="${name}"]`).click();
+  const mapNode = (key) => $(`#map button[data-id="${ids[key]}"]`);
+  const keysIn = (list) => [...(list?.children || [])].map((item) => keyFor(item.querySelector('button').dataset.id));
+  const topOfMap = () => keysIn($('#map .sa-tree > ul'));
+  const kidsOf = (key) => keysIn(mapNode(key)?.parentElement.querySelector(':scope > ul'));
   const card = (key) => $(`#agents article[data-id="${ids[key]}"]`);
   const act = (key, action) => card(key)?.querySelector(`button[data-act="${action}"]`);
   const setFilter = (value) => {
@@ -67,6 +75,7 @@
     .filter((key) => key.startsWith('pk.refresh:')).forEach((key) => localStorage.removeItem(key));
   const noCookies = () => {
     document.cookie = 'sa_list=; path=/; max-age=0';
+    document.cookie = 'sa_map=; path=/; max-age=0';
     document.cookie = 'sa_slow=; path=/; max-age=0';
   };
 
@@ -248,16 +257,22 @@
       unsaved: unsaved.instances.length === 0 && unsaved.phase.current === null && unsaved.phase.agents.length === 3 });
   });
 
-  await check('a failed load shows the error and none of the sub-agents shown before', async () => {
+  await check('a failed list shows the error and drops its sub-agents, and the map that answered stays', async () => {
     document.cookie = 'sa_list=fails; path=/';
     try {
+      const before = topOfMap();
+      const fresh = (await (await fetch('/__stub/spawn', { method: 'POST' })).json()).id;  // behind the panel
       refreshNow();
       await until('the error', () => $('#stats').textContent.includes('Sub-agents could not be loaded'));
-      const failed = $('#stats').textContent.includes('The session store is locked') && cards().length === 0
+      // the map is asked for in the same breath and answers for itself: it carries the one spawned since,
+      // so what stands here is this load's answer and not what the last one left behind
+      const mapOfThisLoad = await until('the map of this load', () => topOfMap().includes(fresh));
+      const failed = mapOfThisLoad && !before.includes(fresh) && !$('#map .pk-empty')
+        && $('#stats').textContent.includes('The session store is locked') && cards().length === 0
         && $('#agents').textContent.trim() === '' && $('#phase').hidden;
       noCookies();
       refreshNow();
-      await until('the sub-agents again', () => statValue('total') === '7');
+      await until('the sub-agents again', () => statValue('total') === '8');
       return failed;
     } finally {
       noCookies();
@@ -276,7 +291,7 @@
       await sleep(300);
       refreshNow();  // overtakes it: the first answer coming in must not free the ticks while this one is on its way
       ticking = setInterval(tick, 200);
-      await until('the sub-agents while the ticks go on', () => statValue('total') === '7', 2300);
+      await until('the sub-agents while the ticks go on', () => statValue('total') === '8', 2300);
       return true;
     } finally {
       clearInterval(ticking);
@@ -356,14 +371,14 @@
 
   await check('cards drawn anew keep the keyboard focus', async () => {
     await go(`${BASE}/?session_id=s-1`);
-    await until('the sub-agents of s-1', () => statValue('total') === '7');
+    await until('the sub-agents of s-1', () => statValue('total') === '8');
     await autoOff();
     setFilter('all');
     const focused = act('d', 'transcript');
     focused.focus();
     await fetch('/__stub/spawn', { method: 'POST' });
     refreshNow();
-    await until('the spawned one', () => statValue('total') === '8');
+    await until('the spawned one', () => statValue('total') === '9');
     return doc().activeElement === act('d', 'transcript') && act('d', 'transcript') !== focused;
   });
 
@@ -373,7 +388,7 @@
     const before = act('d', 'transcript');
     await fetch('/__stub/spawn', { method: 'POST' });
     refreshNow();
-    await until('the list drawn anew', () => statValue('total') === '9');
+    await until('the list drawn anew', () => statValue('total') === '10');
     drawer().close();
     await sleep(100);
     return !drawer().open && act('d', 'transcript') !== before && doc().activeElement === act('d', 'transcript');
@@ -381,11 +396,96 @@
 
   await check('the auto refresh runs from the start and brings a new sub-agent', async () => {
     await go(`${BASE}/?session_id=s-1`);
-    await until('the sub-agents of s-1', () => statValue('total') === '9');
+    await until('the sub-agents of s-1', () => statValue('total') === '10');
     const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
     await fetch('/__stub/spawn', { method: 'POST' });
-    await until('the new one, brought by a tick', () => statValue('total') === '10', 14000);
+    await until('the new one, brought by a tick', () => statValue('total') === '11', 14000);
     return running;
+  });
+
+  await check('the panel opens on the map, and a sub-agent of a sub-agent hangs under it', async () => {
+    await visit(`${BASE}/?session_id=s-1`);
+    await until('the map', () => mapNode('b'));
+    const opens = $('.pk-tab[aria-selected="true"]')?.dataset.tab === 'map' && !$('#tab-map').hidden && $('#tab-list').hidden
+      && $('#show').hidden;  // the filter belongs to the list
+    const root = $('#map .sa-root').textContent;
+    const top = topOfMap();
+    // every instance's and every state, where the list shows this instance's open ones; a nested one is not at the top
+    const whole = top.includes('f') && top.includes('d') && top.includes('b') && !top.includes('n');
+    const nested = kidsOf('b').join() === 'n' && mapNode('n').dataset.state === 'running'
+      && mapNode('n').textContent.includes('Running tool: web_search') && mapNode('n').textContent.includes('writer_agent')
+      && mapNode('n').textContent.includes('5m 0s');  // created 10:30, last used 10:35
+    tabTo('list');
+    setFilter('all');
+    return every({ opens, root: root.includes('s-1') && root.includes('coordinator'), whole, nested,
+      filterBack: !$('#show').hidden,
+      // the list of the same session, drawn and not empty, has neither the other instance's nor the nested one
+      listWithoutThem: cards().length > 0 && !['f', 'n'].some((key) => shown().split(',').includes(key)) });
+  });
+
+  await check('a node of the map opens the transcript of a sub-agent below the session', async () => {
+    const both = cards()[0].dataset.id;  // a direct one: a card in the list AND a node in the map
+    tabTo('map');
+    const node = await until('the nested node', () => mapNode('n'));
+    node.focus();
+    node.click();
+    await until('its transcript', () => drawer().open && $('#detailTitle').textContent === ids.n);
+    // read against its own parent, not against the session open in the chat
+    const own = facts().Session === ids.b && facts().Agent === 'writer_agent' && $('#detailBody').textContent.includes('No messages');
+    $('#detail [data-close]').click();
+    await sleep(100);
+    const focus = doc().activeElement === mapNode('n');
+
+    // the same sub-agent twice in the document: the focus goes back to the one on the tab that is showing
+    const inTheMap = () => $(`#map button[data-id="${CSS.escape(both)}"]`);
+    inTheMap().click();
+    await until('the transcript of the one in both', () => drawer().open && $('#detailTitle').textContent === both);
+    $('#detail [data-close]').click();
+    await sleep(100);
+    return every({ own, closed: !drawer().open, focus, twice: doc().activeElement === inTheMap() });
+  });
+
+  await check('a tick while the map of a load is still on its way leaves that load alone', async () => {
+    await go(`${BASE}/?session_id=s-1`);
+    await until('the sub-agents of s-1', () => statValue('total'));
+    await autoOff();
+    const before = Number(statValue('total'));
+    await fetch('/__stub/spawn', { method: 'POST' });  // only a load that draws can bring it
+    const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+    let ticking = null;
+    document.cookie = 'sa_map=slow; path=/';
+    try {
+      refreshNow();  // its list answers at once, its map 1.5 s later
+      await sleep(300);
+      // free after the list, this load would be overtaken by every tick and its own answer thrown away
+      ticking = setInterval(tick, 200);
+      await until('the one spawned, drawn while the ticks go on',
+        () => Number(statValue('total')) === before + 1, 2300);
+      return true;
+    } finally {
+      clearInterval(ticking);
+      noCookies();
+    }
+  });
+
+  await check('the map of a session left behind is not drawn over the one now open', async () => {
+    await go(`${BASE}/`);  // no link: the session is the host's, and this page is the host
+    await autoOff();
+    tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-2', title: 'Second' } });
+    // by now g is archived: in the map, which shows every state, not in the list on its Open filter
+    await until('the map of s-2', () => $('#map .sa-root')?.dataset.id === 's-2' && topOfMap().join() === 'g');
+    document.cookie = 'sa_map=slow:s-1; path=/';
+    try {
+      tell({ type: 'pk:session', session: { id: 's-1', title: 'First' } });  // its map is held 1.5 s
+      await sleep(100);
+      tell({ type: 'pk:session', session: { id: 's-3', title: 'Third' } });  // answers at once, and has none
+      await until('the empty s-3', () => $('#map .sa-root')?.dataset.id === 's-3');
+      await sleep(2000);  // the answer for s-1 is in by now: judged when it lands, not when it was asked for
+      return every({ map: $('#map .sa-root').dataset.id === 's-3', empty: topOfMap().length === 0,
+        list: statValue('total') === '0' });
+    } finally {
+      noCookies();
+    }
   });
 
   await fetch('/__results', {
