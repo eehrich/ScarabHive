@@ -318,21 +318,23 @@ class TerminalServer(SchemaBasedToolServer):
         if blocked:
             return None, blocked
 
-        def still_needed() -> bool:
-            info = self.process_manager.processes.get(process_id_of[0])
-            return info is not None and not info["read_after_finish"]
-
-        process_id_of = [""]   # filled in below; the callback outlives this call
-
         async def on_finish(process_id: str) -> None:
-            process_id_of[0] = process_id
-            info = self.process_manager.processes.get(process_id, {})
-            exit_code = info.get("exit_code")
+            info = self.process_manager.processes.get(process_id)
+            if info is None or info["read_after_finish"]:
+                # Read, killed or its id handed to a later run while the
+                # capture task was still draining the pipes: nothing left to
+                # hand over and nobody to ring. Recording it anyway would
+                # leave the copy in the cache for its full hour.
+                return
+            # The ring holds the ENTRY, not the id. An id is free again once
+            # its process is over, so a later run can hold it -- and a lookup
+            # by id would then let that fresh process answer for this ring.
             await self._record(process_id, info)
             await wake_session(
                 self.system_config, session_id, user_id,
-                what=f"background process {process_id} (exit {exit_code})",
-                still_needed=still_needed)
+                what=f"background process {process_id} "
+                     f"(exit {info.get('exit_code')})",
+                still_needed=lambda: not info["read_after_finish"])
 
         return on_finish, ""
 
@@ -352,13 +354,31 @@ class TerminalServer(SchemaBasedToolServer):
         custom_process_id = params.get("process_id")
         # Before the process is spawned, not after: replacing the entry of a
         # running process would leave it running with nobody able to read its
-        # output or kill it.
-        if custom_process_id and custom_process_id in self.process_manager.processes:
-            message = (f"process_id {custom_process_id} is already in use; "
+        # output or kill it. A FINISHED entry is a different thing: the tool
+        # invites a stable id ("build", "dev"), nothing ever removes an entry,
+        # and refusing the second run because the first one ENDED would make
+        # that invitation a trap -- for the rest of the process's life.
+        taken = (self.process_manager.processes.get(custom_process_id)
+                 if custom_process_id else None)
+        if taken is not None and taken["process"].returncode is None:
+            message = (f"process_id {custom_process_id} is in use by a running process; "
                        f"choose another one or leave it out")
             await params["_status"].error(message[:140])
             return {"status": "error", "error": message,
                     "error_type": "ProcessIdInUse"}
+        if taken is not None:
+            # Its armed wake goes with it: once the id belongs to another run
+            # the old outcome is unreachable under it either way, and nobody
+            # will mutate the entry the ring holds any more.
+            taken["read_after_finish"] = True
+            # The recording goes with it. A record left under this id would
+            # answer get_output for the NEW process with the OLD result, and
+            # that is worse than the refusal this branch just lifted. The entry
+            # itself needs no removal: register_process replaces it below.
+            try:
+                await self._recorded.delete(custom_process_id)
+            except Exception as e:  # noqa: BLE001 - reusing the id must not fail over it
+                logger.warning(f"Could not drop the record of {custom_process_id}: {e}")
         on_finish, wake_note = (self._wake_callback(params) if params.get("wake")
                                 else (None, ""))
 
@@ -441,9 +461,15 @@ class TerminalServer(SchemaBasedToolServer):
         except Exception as e:  # noqa: BLE001 - reporting must not break the process
             logger.warning(f"Could not record the result of {process_id}: {e}")
 
-    async def _recall(self, process_id: str, requester_session: str | None) -> dict | None:
+    async def _recall(self, process_id: str, requester_session: str | None,
+                      stream: str = "both") -> dict | None:
         """A result recorded by the process that ran it, for the run that was
-        woken for it. Read once: it is handed over, not kept."""
+        woken for it. Read once: it is handed over, not kept.
+
+        ``stream`` is honoured here for the same reason the live reader
+        honours it: a woken run that asks for stderr alone is avoiding the
+        60 000 characters of stdout, and answering with both anyway spends
+        exactly the context it was trying to save."""
         try:
             record = await self._recorded.get(process_id)
         except Exception as e:  # noqa: BLE001
@@ -460,8 +486,8 @@ class TerminalServer(SchemaBasedToolServer):
         return {
             "status": "success",
             "process_id": process_id,
-            "stdout": record.get("stdout", ""),
-            "stderr": record.get("stderr", ""),
+            "stdout": record.get("stdout", "") if stream in ("stdout", "both") else "",
+            "stderr": record.get("stderr", "") if stream in ("stderr", "both") else "",
             "is_running": False,
             "exit_code": record.get("exit_code"),
             "started_at": record.get("started_at"),
@@ -495,11 +521,24 @@ class TerminalServer(SchemaBasedToolServer):
             requester_session=params.get("_session_id")
         )
 
+        if result["status"] == "success" and not result.get("is_running", True):
+            # The live registry answered for a process that is over, so the
+            # caller has the outcome and the copy written for a wake is spent.
+            # Dropping it was _recall's job alone -- and _recall runs only when
+            # the live registry MISSES, which is never the case in the process
+            # that ran the command. Its record sat in data/cache for the full
+            # hour, one per armed wake, up to 60 000 characters each.
+            try:
+                await self._recorded.delete(process_id)
+            except Exception as e:  # noqa: BLE001 - the answer is already built
+                logger.debug(f"Could not drop the record of {process_id}: {e}")
+
         if result["status"] != "success":
             # Not in THIS process's memory. A run woken for this process is a
             # new one and never has it, so the outcome the old process recorded
             # is the answer here.
-            recorded = await self._recall(process_id, params.get("_session_id"))
+            recorded = await self._recall(process_id, params.get("_session_id"),
+                                          stream)
             if recorded is not None:
                 result = recorded
 
@@ -557,3 +596,14 @@ class TerminalServer(SchemaBasedToolServer):
         logger.info(f"Cleaning up terminal server '{self.name}'")
         await self.executor.cleanup()
         await self.process_manager.cleanup()
+
+    async def stop_plugin(self) -> None:
+        """The name the framework actually calls at shutdown.
+
+        ``cleanup()`` waits for the capture tasks and cancels what is left, but
+        nothing reached it: ``plugins/capabilities.stop_plugin`` is the only
+        shutdown hook the adapter knows (tool_adapter.py:361), and it looks for
+        THIS name. Every background process therefore outlived the run that
+        started it, with its capture task still attached.
+        """
+        await self.cleanup()

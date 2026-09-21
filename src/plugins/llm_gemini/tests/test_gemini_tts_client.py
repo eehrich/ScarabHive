@@ -468,6 +468,36 @@ class TestItReportsWhatTheSynthesisCost:
         # dict into an INTEGER column.
         assert [type(v) for v in usage.values()] == [int, int, int]
 
+    def test_a_cache_read_is_carried_under_the_nesting_pricing_looks_in(self):
+        """Cache reads are billed at a fraction of a fresh prompt token. Dropped,
+        a cached synthesis is priced as if every token had been read fresh --
+        the one direction that OVERSTATES spend. normalize_usage looks for them
+        at exactly this nesting."""
+        from plugins.llm_gemini.gemini_tts_client import _usage_from
+        from agent_system.llm.pricing import normalize_usage
+
+        response = MagicMock()
+        response.usage_metadata.prompt_token_count = 2000
+        response.usage_metadata.candidates_token_count = 1850
+        response.usage_metadata.total_token_count = 3850
+        response.usage_metadata.cached_content_token_count = 1500
+
+        usage = _usage_from(response)
+        assert usage["prompt_tokens_details"] == {"cached_tokens": 1500}
+        assert normalize_usage(usage).cached_tokens == 1500
+
+    def test_no_cache_read_adds_no_empty_nesting(self):
+        """A zero would read as "the cache was asked and missed"; it was not."""
+        from plugins.llm_gemini.gemini_tts_client import _usage_from
+
+        response = MagicMock()
+        response.usage_metadata.prompt_token_count = 10
+        response.usage_metadata.candidates_token_count = 20
+        response.usage_metadata.total_token_count = 30
+        response.usage_metadata.cached_content_token_count = 0
+
+        assert "prompt_tokens_details" not in _usage_from(response)
+
     def test_the_total_is_carried_when_the_sdk_reports_it(self):
         """Thinking tokens are billed as output and appear in the total but
         NOT in candidates_token_count; without the total the consumer falls

@@ -158,21 +158,23 @@ class SSHControlToolServer(SchemaBasedToolServer):
         if blocked:
             return None, blocked
 
-        started = [""]   # filled in below; the callback outlives this call
-
-        def still_needed() -> bool:
-            info = self.processes.processes.get(started[0])
-            return info is not None and not info["read_after_finish"]
-
         async def on_finish(process_id: str) -> None:
-            started[0] = process_id
-            info = self.processes.processes.get(process_id, {})
+            info = self.processes.processes.get(process_id)
+            if info is None or info["read_after_finish"]:
+                # Read, killed or its id handed to a later command while the
+                # capture task was still draining the channel: nothing left to
+                # hand over and nobody to ring. Recording it anyway would
+                # leave the copy in the cache for its full hour.
+                return
+            # The ring holds the ENTRY, not the id: an id is free again once
+            # its command is over, and a lookup by id would then let a fresh
+            # command answer for this ring.
             await self._record(process_id, info)
             await wake_session(
                 self.system_config, session_id, user_id,
                 what=f"background command {process_id} on "
                      f"{info.get('machine')} (exit {info.get('exit_code')})",
-                still_needed=still_needed)
+                still_needed=lambda: not info["read_after_finish"])
 
         return on_finish, ""
 
@@ -205,6 +207,15 @@ class SSHControlToolServer(SchemaBasedToolServer):
 
         if status:
             await status.progress(f"Starting on {machine}: {_short(command)}")
+
+        reused = params.get("process_id")
+        if reused:
+            # Same reason as the terminal plugin: a record left under a reused
+            # id would answer a woken run with the PREVIOUS command's output.
+            try:
+                await self._recorded.delete(reused)
+            except Exception as e:  # noqa: BLE001 - reusing the id must not fail over it
+                logger.warning(f"Could not drop the record of {reused}: {e}")
 
         try:
             result = await self.processes.start(
@@ -264,9 +275,15 @@ class SSHControlToolServer(SchemaBasedToolServer):
         except Exception as e:  # noqa: BLE001 - reporting must not break the command
             logger.warning(f"Could not record the result of {process_id}: {e}")
 
-    async def _recall(self, process_id: str, requester_session) -> dict | None:
+    async def _recall(self, process_id: str, requester_session,
+                      stream: str = "both") -> dict | None:
         """A result recorded by the process that ran it, for the run woken
-        for it. Read once: it is handed over, not kept."""
+        for it. Read once: it is handed over, not kept.
+
+        ``stream`` is honoured here for the same reason the live reader
+        honours it: a woken run that asks for stderr alone is avoiding the
+        30 000 characters of stdout, and answering with both anyway spends
+        exactly the context it was trying to save."""
         try:
             record = await self._recorded.get(process_id)
         except Exception as e:  # noqa: BLE001
@@ -285,8 +302,8 @@ class SSHControlToolServer(SchemaBasedToolServer):
             "process_id": process_id,
             "machine": record.get("machine"),
             "command": record.get("command"),
-            "stdout": record.get("stdout", ""),
-            "stderr": record.get("stderr", ""),
+            "stdout": record.get("stdout", "") if stream in ("stdout", "both") else "",
+            "stderr": record.get("stderr", "") if stream in ("stderr", "both") else "",
             "is_running": False,
             "exit_code": record.get("exit_code"),
             "started_at": record.get("started_at"),
@@ -304,11 +321,23 @@ class SSHControlToolServer(SchemaBasedToolServer):
             stream=params.get("stream", "both"),
             clear_buffer=params.get("clear_buffer", False),
             requester_session=params.get("_session_id"))
+        if result["status"] == "success" and not result.get("is_running", True):
+            # The live registry answered for a command that is over, so the
+            # caller has the outcome and the copy written for a wake is spent.
+            # Dropping it was _recall's job alone -- and _recall runs only when
+            # the live registry MISSES, which is never the case in the process
+            # that ran the command. One orphan per armed wake, an hour each.
+            try:
+                await self._recorded.delete(process_id)
+            except Exception as e:  # noqa: BLE001 - the answer is already built
+                logger.debug(f"Could not drop the record of {process_id}: {e}")
+
         if result["status"] != "success":
             # Not in THIS process's memory. A run woken for this command is
             # a new one and never has it, so what the old process recorded is
             # the answer here.
-            recorded = await self._recall(process_id, params.get("_session_id"))
+            recorded = await self._recall(process_id, params.get("_session_id"),
+                                          params.get("stream", "both"))
             if recorded is not None:
                 result = recorded
         if status:

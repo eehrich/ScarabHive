@@ -115,13 +115,18 @@ fires for chat as well, so anything counted there without checking
 transport-level hook, so a retried or failed-over call fires it more than once
 per agent step.
 
-**TTS spend is still outside the table**, and for a reason rather than an
-oversight: `notify_tts_response` reports audio seconds and bytes, not tokens,
-so there is nothing to normalise into a row. A row that pretended otherwise
-would be worse than the gap. Note which guard actually keeps it out, because
-it is not the obvious one: TTS sets `agent=None` too, so it passes the agent
-check and is stopped by the empty-usage check one line further down. Tighten
-that check and audio starts being booked as tokens.
+**TTS spend is in the table since 58af72208, but only where a provider counts
+it.** What decides is the usage, not the kind of call. Gemini answers a
+synthesis with the same `usage_metadata` its chat calls carry, so those tokens
+are real and are booked; OpenAI's `/audio/speech` returns audio and nothing
+else, is billed per character, and arrives with `llm_usage` empty — the
+empty-usage check one line below the agent check stops it, and that is the
+guard doing the work, not the obvious one. TTS sets `agent=None` too, so it
+passes the agent check. Tighten the usage check and a provider that cannot
+count starts being booked with an invented number.
+
+Such a row is spend, not a context: it is recorded with a window of 0, which
+keeps it off every context reading.
 
 ### What it costs and how long it takes
 

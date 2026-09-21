@@ -131,7 +131,8 @@ class TTSResult:
 # ---------------------------------------------------------------------------
 # The dispatch itself lives in llm/hook_notify.py, shared with the other
 # clients that run without an agent around them. What stays here is the TTS
-# vocabulary: audio seconds and bytes, and the absence of a token usage.
+# vocabulary: audio seconds and bytes, and a token usage only where the
+# provider reports one -- Gemini does, OpenAI's /audio/speech does not.
 
 
 async def notify_tts_request(

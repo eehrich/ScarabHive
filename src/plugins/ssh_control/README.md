@@ -170,6 +170,12 @@ restrict `/plugins/<instance>/*` in `auth.plugin_security` if that is not everyo
 runs; `kill_process` stops it. One machine per call — the answer carries one
 process id, and how many may run at once is what the pool allows (see below).
 
+A `process_id` you choose yourself must not belong to a RUNNING command:
+reusing one returns `ProcessIdInUse` rather than replacing the entry, which
+would leave the command behind it running with no way to read its output or
+stop it. Once that command is over the id is free again: the next run takes
+the name, and anything recorded under it is dropped with it.
+
 **What a background command costs:** it holds one connection out of that
 machine's pool for its whole life. `max_connections` is 3 by default, and one
 connection always stays free for ordinary commands — so two background commands
@@ -215,8 +221,9 @@ process that holds the result anyway.
 that is in the middle of a turn takes that marker at its next step expecting a
 hook to hand the waiting input over — nothing hands over "your command
 finished". So the ringing repeats while the session stays busy (10 s apart, up
-to five minutes) and stops early once `get_output` has read the finished
-result: a session that dealt with it itself is not started again for it.
+to five minutes) and stops early once the session has dealt with the command
+itself — `get_output` on the finished result, or `kill_process`. Either way it
+is not started again for something it already handled.
 
 Three further cases end with no wake, and only the first is refused up front:
 
@@ -247,8 +254,11 @@ older lines are dropped, so a long build cannot grow the answer without bound.
 
 **Known gaps.**
 
-- **A recorded result lives one hour and is read once.** A woken run that never
-  calls `get_output` leaves it to expire; a second reader finds nothing.
+- **A recorded result lives one hour and is read once.** It is dropped as soon
+  as anybody reads the finished command — by the woken run that recalls it, by
+  a `get_output` in the process that still holds the result, or by handing its
+  `process_id` to a new run. A woken run that never calls `get_output` at all
+  leaves it to expire; a second reader finds nothing.
 - **Only the last 50 finished commands stay readable.** Each entry holds two
   line buffers, so they cannot be kept for the life of the process. What is
   still running is never dropped, and neither is the one that just ended.

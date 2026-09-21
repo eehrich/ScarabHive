@@ -161,9 +161,11 @@ again. Both reasons are known before the process starts:
 | `false` | `session presence is off (config: session_presence.enabled)` | Poll `get_output`. |
 | `false` | `this call belongs to no session, so there is nobody to wake` | Poll `get_output`. |
 
-A `process_id` you choose yourself must be free: reusing one returns
-`ProcessIdInUse` rather than replacing the entry, which would leave the
-process behind it running with no way to read or kill it.
+A `process_id` you choose yourself must not belong to a RUNNING process:
+reusing one returns `ProcessIdInUse` rather than replacing the entry, which
+would leave the process behind it running with no way to read or kill it.
+Once that process is over the id is free again: the next run takes the name,
+and anything recorded under it is dropped with it.
 
 A call that did not ask is told nothing about a wake — the two fields are absent.
 
@@ -187,8 +189,9 @@ process that holds the result anyway.
 that is in the middle of a turn takes that marker at its next step expecting a
 hook to hand the waiting input over — nothing hands over "your command
 finished". So the ringing repeats while the session stays busy (10 s apart, up
-to five minutes) and stops early once `get_output` has read the finished
-result: a session that dealt with it itself is not started again for it.
+to five minutes) and stops early once the session has dealt with the process
+itself — `get_output` on the finished result, or `kill_process`. Either way it
+is not started again for something it already handled.
 
 Three further cases end with no wake, and only the first is refused up front:
 
@@ -419,8 +422,11 @@ all, because the wrapping happens below the model. Output is capped at
   unconfined spawn — but that path is not live-verified.
 - **Confinement is decided at spawn.** A mode change takes effect on the next
   command, never on one already running.
-- **A recorded result lives one hour and is read once.** A woken run that never
-  calls `get_output` leaves it to expire; a second reader finds nothing.
+- **A recorded result lives one hour and is read once.** It is dropped as soon
+  as anybody reads the finished process — by the woken run that recalls it, by
+  a `get_output` in the process that still holds the result, or by handing its
+  `process_id` to a new run. A woken run that never calls `get_output` at all
+  leaves it to expire; a second reader finds nothing.
 - **A wake needs the process that started the work.** Background processes live
   in the tool server's memory, so the API and `agent-cli chat` (whose prompt waits
   on the same loop) can wake; a one-shot `agent-cli run` ends its turn and takes

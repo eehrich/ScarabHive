@@ -73,5 +73,16 @@ class SSHControlHybridPlugin:
         """Clean up resources."""
         await self.tool_server.close()
 
+    async def stop_plugin(self) -> None:
+        """The name the framework actually calls at shutdown.
+
+        ``close()`` waits for the background commands and closes the pools, but
+        nothing reached it: ``plugins/capabilities.stop_plugin`` is the only
+        shutdown hook the adapter knows (tool_adapter.py:361), and it looks for
+        THIS name. Remote commands and their SSH channels therefore outlived
+        the run that started them.
+        """
+        await self.close()
+
 
 PLUGIN_FACTORY = SSHControlHybridPlugin

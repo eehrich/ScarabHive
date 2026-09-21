@@ -13,15 +13,15 @@ class ProcessManager:
     """Manages background processes."""
 
     def __init__(self, max_buffer_lines: int = 1000):
-        # Held, not fired and forgotten: a task nobody references can be
-        # collected mid-flight, and cleanup has to be able to wait for it.
-        self._tasks: set[asyncio.Task] = set()
         """
         Initialize process manager.
 
         Args:
             max_buffer_lines: Maximum lines to keep in output buffers
         """
+        # Held, not fired and forgotten: a task nobody references can be
+        # collected mid-flight, and cleanup has to be able to wait for it.
+        self._tasks: set[asyncio.Task] = set()
         self.processes: Dict[str, Dict] = {}
         self.max_buffer_lines = max_buffer_lines
 
@@ -263,6 +263,13 @@ class ProcessManager:
                 signal_used = "SIGKILL (forced)"
 
             logger.info(f"Killed process {process_id} with {signal_used}")
+
+            # Killing it IS dealing with it. Without this the armed wake keeps
+            # ringing for its full five minutes and eventually starts a whole
+            # agent-cli run to tell the session about a process it ended
+            # itself -- get_output was the only thing that set this flag, and
+            # nobody calls get_output on something they just killed.
+            proc_info["read_after_finish"] = True
 
             return {
                 "status": "success",

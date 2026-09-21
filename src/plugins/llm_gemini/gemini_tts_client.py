@@ -421,9 +421,18 @@ def _usage_from(response: Any) -> Optional[dict]:
         prompt = _count("prompt_token_count")
         completion = _count("candidates_token_count")
         total = _count("total_token_count")
+        cached = _count("cached_content_token_count")
         if prompt is None and completion is None and total is None:
             return None
         usage = {"prompt_tokens": prompt or 0, "completion_tokens": completion or 0}
+        if cached:
+            # Cache reads are billed at a fraction of a fresh prompt token, and
+            # pricing.normalize_usage looks for them under this exact nesting.
+            # Dropped, a cached synthesis was priced as if every prompt token
+            # had been read fresh -- the one direction that overstates spend.
+            # gemini_batch.py and gemini_utils.py read the same field off the
+            # same SDK object; only this reader did not.
+            usage["prompt_tokens_details"] = {"cached_tokens": cached}
         if total is not None:
             # Carried because it is the authoritative number: thinking tokens
             # are billed as output and appear in the total without appearing

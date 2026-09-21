@@ -87,13 +87,20 @@ class RemoteProcessManager:
         # await in between. Tool calls run in PARALLEL, so a check that is
         # followed by an await and only then by the registration is read by
         # every simultaneous call as "nothing is running yet".
-        if process_id and process_id in self.processes:
+        taken = self.processes.get(process_id) if process_id else None
+        if taken is not None and taken["finished_at"] is None:
             return {
                 "status": "error",
-                "error": f"process_id {process_id} is already in use; "
+                "error": f"process_id {process_id} is in use by a running command; "
                          f"choose another one or leave it out",
                 "error_type": "ProcessIdInUse"
             }
+        if taken is not None:
+            # A FINISHED entry does not own the id: the tool invites a stable
+            # one, and _forget_old_finished reclaims it only after 50 further
+            # commands have ended -- for a recurring id, never. Its armed wake
+            # goes with it; the old outcome is unreachable under this id now.
+            taken["read_after_finish"] = True
         self._forget_old_finished()
         process_id = process_id or self.generate_process_id()
         self.processes[process_id] = {
@@ -272,6 +279,9 @@ class RemoteProcessManager:
             return {"status": "error", "error": f"Process {process_id} not found",
                     "error_type": "ProcessNotFound"}
         if proc_info["finished_at"] is not None:
+            # Asking for it to stop is dealing with it, so an armed wake has
+            # nothing left to ring about -- see the signal path below.
+            proc_info["read_after_finish"] = True
             return {"status": "success", "process_id": process_id,
                     "signal": "none", "note": "already finished",
                     "exit_code": proc_info["exit_code"]}
@@ -295,6 +305,12 @@ class RemoteProcessManager:
 
         # The capture task notices the end, records it and releases the
         # connection; it is not raced here.
+        #
+        # Killing it IS dealing with it. get_output was the only thing that set
+        # this flag, and nobody reads the output of a command they just ended --
+        # so an armed wake went on ringing for its full five minutes and then
+        # started a whole agent-cli run to report a death the caller ordered.
+        proc_info["read_after_finish"] = True
         logger.info(f"Signalled background command {process_id} with {signal_used}")
         return {"status": "success", "process_id": process_id, "signal": signal_used}
 
