@@ -687,5 +687,21 @@ class FileOpsServer(SchemaBasedToolServer):
         await self.search_engine.stop()
         await super().shutdown()
 
+    async def stop_plugin(self) -> None:
+        """The name the framework actually calls -- `shutdown` is not it.
+
+        `capabilities.stop_plugin` looks up exactly one attribute and has no
+        fallback: `getattr(plugin, "stop_plugin", None)`, otherwise it
+        returns. So `shutdown` above was unreachable, and with it the ordered
+        stop of the semantic index -- the background indexer kept running and
+        the vector store was never released. At process exit the OS takes both
+        back; on a plugin reload inside a living process nobody does, which is
+        the shape the FD leak had.
+
+        It is defined HERE, on what PLUGIN_FACTORY returns, because that is
+        what the adapter reaches: `getattr(adapter, "plugin_server", adapter)`.
+        """
+        await self.shutdown()
+
 
 PLUGIN_FACTORY = FileOpsServer
