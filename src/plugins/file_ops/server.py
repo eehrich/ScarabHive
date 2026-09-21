@@ -682,26 +682,28 @@ class FileOpsServer(SchemaBasedToolServer):
                 "error_type": type(e).__name__
             }
 
-    async def shutdown(self):
-        """Cleanup on shutdown."""
-        await self.search_engine.stop()
-        await super().shutdown()
-
     async def stop_plugin(self) -> None:
-        """The name the framework actually calls -- `shutdown` is not it.
+        """Release the semantic index: the framework's ONE teardown hook.
 
+        This used to be called `shutdown`, and nothing ever called it.
         `capabilities.stop_plugin` looks up exactly one attribute and has no
         fallback: `getattr(plugin, "stop_plugin", None)`, otherwise it
-        returns. So `shutdown` above was unreachable, and with it the ordered
-        stop of the semantic index -- the background indexer kept running and
-        the vector store was never released. At process exit the OS takes both
-        back; on a plugin reload inside a living process nobody does, which is
-        the shape the FD leak had.
+        returns. So the ordered stop of the semantic index never happened --
+        the background indexer kept running and the vector store was never
+        released. At process exit the OS takes both back; on a plugin reload
+        inside a living process nobody does, which is the shape the FD leak
+        had.
+
+        Being unreachable, it had also rotted: it ended on
+        `super().shutdown()`, and no class in the MRO has one -- an
+        AttributeError that `capabilities.stop_plugin` swallows into a
+        warning. Renaming it is the whole fix; there is no base teardown to
+        chain to, and a second name for the same thing is what started this.
 
         It is defined HERE, on what PLUGIN_FACTORY returns, because that is
         what the adapter reaches: `getattr(adapter, "plugin_server", adapter)`.
         """
-        await self.shutdown()
+        await self.search_engine.stop()
 
 
 PLUGIN_FACTORY = FileOpsServer

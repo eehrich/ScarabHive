@@ -12,6 +12,7 @@ that calls `server.stop_plugin()` itself would stay green after a rename.
 """
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -37,7 +38,14 @@ def test_the_factory_is_what_carries_the_hook():
 
 
 @pytest.mark.asyncio
-async def test_stopping_the_plugin_stops_the_search_engine(server, monkeypatch):
+async def test_stopping_the_plugin_stops_the_search_engine(server, monkeypatch, caplog):
+    """Reached AND finished.
+
+    `capabilities.stop_plugin` swallows whatever the hook raises into a
+    warning, so "the first line ran" is not the same as "the teardown
+    worked" -- the dead `shutdown` this replaces ended on a
+    `super().shutdown()` that does not exist, and only the log said so.
+    """
     stopped = []
 
     async def record():
@@ -45,11 +53,14 @@ async def test_stopping_the_plugin_stops_the_search_engine(server, monkeypatch):
 
     monkeypatch.setattr(server.search_engine, "stop", record)
 
-    await capabilities.stop_plugin(server)
+    with caplog.at_level(logging.WARNING, logger="agent_system.plugins.capabilities"):
+        await capabilities.stop_plugin(server)
 
     assert stopped == ["search"], (
         "the framework's stop never reached the index -- the indexer keeps "
         "running and the vector store stays open")
+    assert not caplog.records, (
+        f"the hook did not finish: {[r.getMessage() for r in caplog.records]}")
 
 
 @pytest.mark.asyncio

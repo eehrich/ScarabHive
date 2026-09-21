@@ -24,6 +24,7 @@ This document explains how to create plugins (tool servers) for AgentSystem. It 
   - [Web Endpoints and UI Integration](#web-endpoints-and-ui-integration)
   - [CLI Support (Optional)](#cli-support-optional)
   - [Background Tasks](#background-tasks)
+  - [Starting and Stopping (`start_plugin` / `stop_plugin`)](#starting-and-stopping-start_plugin--stop_plugin)
 - [Configuration and Deployment](#configuration-and-deployment)
 - [Testing and Quality Assurance](#testing-and-quality-assurance)
 - [Packaging and Distribution](#packaging-and-distribution)
@@ -2111,6 +2112,56 @@ async def tool_with_subtasks(self, params: dict):
     results = await asyncio.gather(*tasks, return_exceptions=True)
     return {"status": "success", "results": results}
 ```
+
+### Starting and Stopping (`start_plugin` / `stop_plugin`)
+
+A plugin that opens anything -- a socket, a thread, a background task, a
+vector store, a child process -- closes it in **`stop_plugin`**, and in no
+other method. These two names are the whole lifecycle contract:
+
+```python
+class MyServer(SchemaBasedToolServer):
+    async def start_plugin(self) -> None:
+        """After registration, once. Optional."""
+        self._worker = asyncio.create_task(self._pump())
+
+    async def stop_plugin(self) -> None:
+        """At app shutdown and on unregister. Optional -- but it is the ONLY
+        teardown the framework calls."""
+        self._worker.cancel()
+        await self._store.close()
+```
+
+`plugins/capabilities.stop_plugin` looks up exactly one attribute and has **no
+fallback**:
+
+```python
+hook = getattr(plugin, "stop_plugin", None)
+if hook is None:
+    return
+```
+
+so a teardown called `shutdown`, `close` or `cleanup` is never called at all,
+and nothing says so -- no log, no error, the resources simply stay. Three
+plugins had exactly that on 2026-09-21: `terminal` (`cleanup`) left every
+background process with its capture task attached, `ssh_control` (`close`)
+left remote commands and their SSH channels open, and `file_ops` (`shutdown`)
+never released the semantic indexer or its vector store. At process exit the
+OS takes all of it back; on a plugin reload inside a living process nobody
+does.
+
+Two more rules that follow from how the hook is reached
+(`getattr(adapter, "plugin_server", adapter)` in `plugins/tool_adapter.py`):
+
+* It must sit on the object **`PLUGIN_FACTORY` returns**. A hook on an inner
+  helper -- a connection manager, a tool server the plugin wraps -- is never
+  found. Forward from the outer object if the work lives inside.
+* Exceptions are swallowed into a warning, so a hook that raises looks like a
+  hook that worked. Test through `capabilities.stop_plugin` and assert that
+  nothing was logged, not just that the first line ran.
+
+`tests/pluginsystem/test_pluginsystem_teardown_hook.py` reads every plugin's
+factory class and fails if it has a teardown under any other name.
 
 ## Configuration and Deployment
 
