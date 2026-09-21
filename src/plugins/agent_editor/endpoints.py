@@ -475,7 +475,7 @@ class AgentEditorWebEndpoints:
             raise HTTPException(status_code=422, detail="yaml: a string is required")
         try:
             anchored = has_anchors(text)
-            entry = None if anchored else yaml.load(text, Loader=TypedLoader) or {}
+            entry = None if anchored else yaml.load(text, Loader=TypedLoader) or {}  # pure-yaml: libyaml refuses `!web/[ab]*`
         except Exception as error:  # a scanner error, but also e.g. ValueError for the date 2001-02-30
             raise HTTPException(status_code=422, detail=f"{type(error).__name__}: {error}")
         if anchored:

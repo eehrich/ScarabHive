@@ -55,7 +55,11 @@ def test_c_and_python_loaders_agree_on_every_repo_yaml():
 def test_no_production_code_calls_the_pure_python_loader():
     """Anti-drift: every load in src/ (outside tests and the helper itself)
     goes through yaml_io. ``src/scripts`` is deliberately excluded -- dev
-    tools that do not import agent_system."""
+    tools that do not import agent_system.
+
+    A site that NEEDS the pure parser says so on the line: ``# pure-yaml:
+    <why>``. Without a way to say it, one deliberate exception kept this guard
+    red for six days, and a red guard stops nothing."""
     offenders = []
     # Every spelling that reaches PyYAML's loaders, not only the one this repo
     # happens to use today: the module under any alias (``yaml.``, ``_yaml.``)
@@ -70,6 +74,10 @@ def test_no_production_code_calls_the_pure_python_loader():
     for probe in ("x = yaml.safe_load(text)", "_yaml.load(text)",
                   "from yaml import safe_load"):
         assert pattern.search(probe), f"the scan pattern no longer matches {probe!r}"
+    # An exemption names its reason; a bare marker is no reason.
+    exempt = re.compile(r"#\s*pure-yaml:\s*\S")
+    assert exempt.search("yaml.load(t)  # pure-yaml: libyaml refuses x")
+    assert not exempt.search("yaml.load(t)  # pure-yaml:")
     scanned = 0
     for pkg in ("agent_system", "plugins", "plugins_writer", "plugins_trading"):
         for py in (SRC / pkg).rglob("*.py"):
@@ -77,7 +85,7 @@ def test_no_production_code_calls_the_pure_python_loader():
                 continue
             scanned += 1
             for lineno, line in enumerate(py.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                if pattern.search(line):
+                if pattern.search(line) and not exempt.search(line):
                     offenders.append(f"{py.relative_to(REPO)}:{lineno}: {line.strip()}")
     assert scanned, "no production file was scanned"
     assert not offenders, "\n".join(offenders)
