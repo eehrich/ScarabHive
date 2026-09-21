@@ -3095,6 +3095,15 @@ class Agent(ToolServer):
                     # not a person -- the note used to arrive as a user message
                     # ("mimics the user typing weiter"), and stayed in the
                     # session afterwards as if someone had.
+                    #
+                    # The role stays `developer` although a prompt ENDING on one
+                    # cannot be answered (measured 21.09.2026: 6/6 empty, and
+                    # Google refuses such a request outright). That is a wire
+                    # problem and it is fixed on the wire -- the stored message
+                    # keeps saying who spoke, and the client lowers the LAST
+                    # developer item to the user rung. Doing it here instead
+                    # would put a user-role loop note back in the transcript,
+                    # which is what test_agent_step_budget_note forbids.
                     continue_message = ChatMessage(role=DEVELOPER, content="Continue with your task.",
                                                    timestamp=datetime.now(timezone.utc),
                                                    injected_by="agent.empty_response")

@@ -66,7 +66,7 @@ import httpx
 from agent_system.llm.tls import httpx_verify
 from agent_system.llm.message_roles import (
     ASSISTANT, DEVELOPER, NOTE_CLOSE, NOTE_OPEN, SYSTEM, TOOL, USER,
-    as_note, resolve_rung,
+    as_note, resolve_rung, rung_for_position,
 )
 from agent_system.llm.models import (
     ChatMessage,
@@ -411,13 +411,18 @@ class OpenAIResponsesClient(LLMClient):
         Only the user rung touches the content: there the role no longer says
         what the text is, so the tags have to. Parts are wrapped part by part
         rather than stringified, so an image inside a note survives.
+
+        THE LAST ITEM IS A SPECIAL CASE, whatever the rung says --
+        ``message_roles.rung_for_position`` decides that and carries the
+        measurement. Every route needs it, so it does not live here.
         """
         rung = self._developer_rung
+        last = items[-1] if items else None
         for item in items:
             if item.get("role") != DEVELOPER:
                 continue
-            item["role"] = rung
-            if rung != USER:
+            item["role"] = rung_for_position(rung, last=item is last)
+            if item["role"] != USER:
                 continue
             content = item.get("content")
             if isinstance(content, list):

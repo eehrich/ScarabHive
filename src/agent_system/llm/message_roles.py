@@ -209,6 +209,41 @@ def resolve_rung(declared: Optional[str], *, ceiling: str, default: str, route: 
     return declared
 
 
+def rung_for_position(rung: str, *, last: bool) -> str:
+    """Which rung a developer message rides, given WHERE it sits.
+
+    A developer message is read but demands no answer -- that is its definition
+    and what the notes the loop adds mid-turn are for. The last message is a
+    different job: it is what the model is being asked, and a woken run's whole
+    task arrives that way (``cli_utils/agent_runner.wake_message``).
+
+    Measured 21.09.2026 through the production clients, on a real wake history
+    (an answer, then the task -- the shape every wake has, because a wake
+    follows an answer):
+
+        ~deepseek/deepseek-v4-flash-latest   7/15 empty answers  ->  0/10
+        google/gemini-3.5-flash-lite         10/10 HTTP 400      ->  0/3
+
+    Google says it outright -- "Requests ending with a model turn are not
+    supported" -- because it does not count a developer item as a turn. DeepSeek
+    does not refuse; it continues the previous text instead of answering. One
+    cause, two symptoms. Removing the developer messages does NOT heal it
+    (5/6 still empty): what heals is a last message that ASKS.
+
+    Here rather than in the clients, and not where such a message is built: the
+    stored transcript has to keep saying who spoke (``developer`` with
+    ``injected_by``, held by tests/agent/test_agent_step_budget_note.py), more
+    than one place appends one, and six routes would otherwise each have to
+    learn this separately -- which is how the Responses route had it for an hour
+    and the Chat-Completions route did not.
+
+    What each route still owns is the REWRITING: the tags that say who is
+    speaking once the role no longer does, and the content-part shape they go
+    in (``input_text`` on the Responses API, ``text`` on Chat Completions).
+    """
+    return USER if last else rung
+
+
 def developer_turn(text: str, rung: str) -> tuple[str, str]:
     """(role, text) for a developer note sent on ``rung``."""
     if rung == DEVELOPER:
