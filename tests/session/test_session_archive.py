@@ -19,6 +19,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from filelock import FileLock
+from filelock import Timeout as LockTimeout
 
 from agent_system.core.session_presence import SessionPresence
 from agent_system.services.session_archive import (
@@ -1463,6 +1465,63 @@ def _hold_from_another_process(lock_path: Path) -> subprocess.Popen:
         child.kill()
         raise AssertionError(f"the holder never took the lock: {line!r}")
     return child
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_neither_takes_nor_needs_the_sweep_lock(sm, archive, tmp_path):
+    """A dry run writes nothing. Taking the lock anyway made the timer's real
+    pass fail as "already running" for as long as a report took to read --
+    minutes on a big user. And a dry run next to a real pass may report."""
+    await _make_tree(sm, "root_dl", [])
+    _age(sm, ["root_dl"], days=60)
+    lock_path = tmp_path / "session_archive" / USER / SWEEP_LOCK_NAME
+
+    # First, while nobody else holds it: the dry run must leave it free.
+    # (Before the other process below -- Windows drops a killed process's
+    # lock only a moment after wait() returns.)
+    seen = {}
+    real = archive._archive_user
+
+    async def look_at_the_lock(*args, **kwargs):
+        probe = FileLock(str(lock_path), timeout=0)
+        try:
+            probe.acquire(timeout=0)
+            probe.release()
+            seen["free"] = True
+        except LockTimeout:
+            seen["free"] = False
+        return await real(*args, **kwargs)
+
+    archive._archive_user = look_at_the_lock
+    await archive.archive_user(USER, dry_run=True)
+    archive._archive_user = real
+    assert seen["free"] is True, "the dry run held the sweep lock"
+
+    # Then with a real pass running elsewhere: the dry run still reports.
+    child = _hold_from_another_process(lock_path)
+    try:
+        report = await archive.archive_user(USER, dry_run=True)
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+    assert report.trees == 1 and not report.errors
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_leaves_the_leftovers_alone(sm, archive, tmp_path):
+    """Clearing a killed pass's .tmp is a write; a dry run reports only."""
+    await _make_tree(sm, "root_dt", [])
+    _age(sm, ["root_dt"], days=60)
+    month = tmp_path / "session_archive" / USER / "2026-01"
+    month.mkdir(parents=True, exist_ok=True)
+    stale = month / "root_gone.zip.tmp"
+    stale.write_bytes(b"half a zip")
+    cold = time.time() - 2 * 3600
+    os.utime(stale, (cold, cold))
+
+    await archive.archive_user(USER, dry_run=True)
+
+    assert stale.exists(), "the dry run deleted a file"
 
 
 @pytest.mark.asyncio

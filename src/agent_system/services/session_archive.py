@@ -405,6 +405,11 @@ class SessionArchive:
         user_dir = self._user_dir(user_id)
         if not user_dir.is_dir():
             return report
+        if dry_run:
+            # A dry run writes nothing, so it needs no lock -- and must not
+            # take one: holding it for the minutes a big user takes to read
+            # would refuse the timer's real pass as "already running".
+            return await self._archive_user(report, user_dir, days, dry_run=True)
 
         # Refused, not queued: the caller asked for a pass NOW, and waiting out
         # the one already running would answer minutes later with a report
@@ -447,7 +452,9 @@ class SessionArchive:
         # API pulled without a restart) does not ask, and taking the file it
         # is writing right now would turn a leftover into a broken pass.
         cold = time.time() - TMP_MIN_AGE_SECONDS
-        for stale in self._user_archive_dir(user_id).glob(f"*/*{TMP_SUFFIX}"):
+        # Not in a dry run: it reports, it does not clean up.
+        leftovers = [] if dry_run else self._user_archive_dir(user_id).glob(f"*/*{TMP_SUFFIX}")
+        for stale in leftovers:
             try:
                 if stale.stat().st_mtime > cold:
                     continue

@@ -62,7 +62,9 @@ Dateien** (`filelock`), keine Flags im Speicher eines Prozesses:
   wer „jetzt" sagt, will keinen Bericht, der Minuten später über fremde
   Arbeit spricht. Stirbt ein Durchgang, gibt das Betriebssystem die Sperre
   mit dem Prozess frei; ein Flag in einer Datei stünde danach für immer auf
-  „läuft".
+  „läuft". Ein **Trockenlauf** nimmt sie nicht: Er schreibt nichts, und
+  gehalten hätte er den echten Durchgang des Timers für die Minuten eines
+  großen Nutzers abgewiesen. Er räumt auch keine alten `.tmp` weg.
 * `index.json.lock` wird für **eine** Änderung genommen (Eintragen,
   Zurückholen, Löschen), nie über ein `await` hinweg. Ohne sie verliert ein
   Lesen-Ändern-Schreiben, was der andere Prozess dazwischen eingetragen hat —
