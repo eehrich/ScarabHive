@@ -242,8 +242,8 @@ llm_system:
       model: ~deepseek/deepseek-pro-latest
       provider_routing:
         order:
-        - deepseek
         - alibaba
+        - deepinfra
         allow_fallbacks: false
 
     # V4.1 Flash ist teurer als V4; gepinnt auf die zwei guenstigen Anbieter.
