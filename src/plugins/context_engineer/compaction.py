@@ -787,16 +787,42 @@ class LayeredCompactionStrategy:
             )
             return self._finalize(result) if arrivals else result
 
-        # Build trigger reason for logging
+        # The event that sets off the event-triggered media pass (below), None
+        # for none. Only while always_compact_media_keep_last is 0: the
+        # always-compact pass handles media more precisely.
+        media_event = trigger_event if self.config.always_compact_media_keep_last == 0 and (
+            (trigger_event == "user_message" and self.config.compact_media_after_user_message)
+            or (trigger_event == "final_response" and self.config.compact_media_after_final_response)
+        ) else None
+
+        # Why this run, for the log: what set it off, not that it was entered.
+        # A bare FORCED and the tokens against target_tokens -- where a
+        # compaction ENDS -- read as a demand for a reduction:
+        # "[FORCED, MEDIA_ALWAYS, TOKENS(88565>70000)]" ending in "0.0%
+        # reduction, layers applied: []" was chased as a failure, and was the
+        # media pass the hook forces on every call, with no layer due below
+        # layer1_threshold. "held": the hook's hysteresis holds the layers that
+        # rewrite messages (P, 1, 2, 3), so none of them runs on it.
+        held = "" if rewrite_layers else ", held"
         triggers = []
-        if force:
-            triggers.append("FORCED")
+        if manual:
+            triggers.append("MANUAL")
+        if bytes_exceeded:
+            triggers.append(f"BYTES({request_bytes / (1024*1024):.1f}MB>"
+                            f"{self.config.max_request_bytes / (1024*1024):.0f}MB)")
         if max_messages_exceeded:
-            triggers.append(f"MSG_LIMIT({len(messages)}>{self.config.max_messages})")
+            triggers.append(f"MSG_LIMIT({len(messages)}>{self.config.max_messages}{held})")
         if always_compact_media:
             triggers.append("MEDIA_ALWAYS")
-        if current_tokens > self.config.target_tokens:
-            triggers.append(f"TOKENS({current_tokens}>{self.config.target_tokens})")
+        if media_event:
+            triggers.append(f"MEDIA_EVENT({media_event})")
+        if current_tokens >= self.config.layer1_threshold:
+            triggers.append(f"TOKENS({current_tokens}>={self.config.layer1_threshold}{held})")
+        if not triggers:
+            # A caller forcing it without a reason, or the context past
+            # target_tokens alone: then only the media dedup runs.
+            triggers.append("FORCED" if force else
+                            f"ABOVE_TARGET({current_tokens}>{self.config.target_tokens})")
         
         logger.info(
             f"Starting compaction [{', '.join(triggers)}]: {current_tokens} tokens, "
@@ -831,12 +857,8 @@ class LayeredCompactionStrategy:
         
         # Pre-Layer: Event-triggered media compaction
         # Compact all media if configured to do so on user message or final response
-        # SKIP if always_compact_media is enabled (it handles media more precisely)
-        if self.config.always_compact_media_keep_last == 0:
-            if trigger_event == "user_message" and self.config.compact_media_after_user_message:
-                await self._compact_media_after_event(result, trigger="user_message")
-            elif trigger_event == "final_response" and self.config.compact_media_after_final_response:
-                await self._compact_media_after_event(result, trigger="final_response")
+        if media_event:
+            await self._compact_media_after_event(result, trigger=media_event)
         
         # If byte size is the issue, compact media aggressively
         # Keep media only in the last 2 messages (of any role), evict the large

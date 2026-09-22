@@ -2988,3 +2988,80 @@ class TestRestorationBlockNotDuplicated:
             for m in msgs
         ), "Alt-Kopien ohne Marker blieben stehen"
         assert [m.role for m in msgs] == ["system", "user"]
+
+
+class TestTheCompactionLogNamesWhatSetItOff:
+    """The start line of a compaction names why it runs.
+
+    It named the tokens against target_tokens -- where a compaction ENDS --
+    and a bare FORCED: "[FORCED, MEDIA_ALWAYS, TOKENS(88565>70000)]" ending in
+    "0.0% reduction, layers applied: []" was chased as a failure. It was the
+    media pass the hook forces on every call, with no layer due below
+    layer1_threshold.
+    """
+
+    @pytest.fixture
+    def compact(self, tmp_path, caplog):
+        async def run(tokens, *, keep_media=0, after_user_message=False, after_final_response=False,
+                      max_messages=0, max_request_bytes=None, **kwargs):
+            config = CompactionConfig(
+                # The thresholds plugins.yaml runs with.
+                layer1_threshold=140000, layer2_threshold=170000, layer3_threshold=200000,
+                target_tokens=70000, always_compact_media_keep_last=keep_media,
+                compact_media_after_user_message=after_user_message,
+                compact_media_after_final_response=after_final_response, max_messages=max_messages,
+            )
+            if max_request_bytes is not None:
+                config.max_request_bytes = max_request_bytes
+            strategy = LayeredCompactionStrategy(
+                tool_store=ToolResultStore(tmp_path / "tools.db"),
+                core_memory=CoreMemory(storage_path=tmp_path / "memory.json"),
+                archival_memory=ArchivalMemory(tmp_path / "archive.db", session_id="test"),
+                config=config,
+            )
+            messages = [{"role": "user", "content": "Question"}, {"role": "assistant", "content": "Answer"}]
+            caplog.clear()
+            with caplog.at_level("INFO", logger="plugins.context_engineer.compaction"):
+                await strategy.compact(messages, current_tokens=tokens, **kwargs)
+            started = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Starting compaction [")]
+            assert len(started) == 1, caplog.text
+            return started[0][len("Starting compaction ["):].split("]")[0]
+        return run
+
+    @pytest.mark.asyncio
+    async def test_the_media_pass_the_hook_forces_is_named_as_that(self, compact):
+        # Production: the hook forces every call while always_compact_media is on.
+        assert await compact(88565, keep_media=1, force=True) == "MEDIA_ALWAYS"
+
+    @pytest.mark.asyncio
+    async def test_the_tokens_are_named_against_the_threshold_of_layer_1(self, compact):
+        assert await compact(140000) == "TOKENS(140000>=140000)"
+        assert await compact(139999) == "ABOVE_TARGET(139999>70000)"
+
+    @pytest.mark.asyncio
+    async def test_limits_held_by_the_hysteresis_say_so(self, compact):
+        assert (await compact(150000, keep_media=1, force=True, rewrite_layers=False)
+                == "MEDIA_ALWAYS, TOKENS(150000>=140000, held)")
+        # Pre-Layer P is held like the layers (max_messages 190 in production).
+        assert (await compact(100, keep_media=1, force=True, rewrite_layers=False, max_messages=1)
+                == "MSG_LIMIT(2>1, held), MEDIA_ALWAYS")
+        assert await compact(100, max_messages=1) == "MSG_LIMIT(2>1)"
+
+    @pytest.mark.asyncio
+    async def test_a_forced_run_names_its_reason(self, compact):
+        assert await compact(100, manual=True) == "MANUAL"
+        assert await compact(100, force=True) == "FORCED"  # a caller that gave none
+        assert (await compact(100, force=True, trigger_event="user_message", after_user_message=True)
+                == "MEDIA_EVENT(user_message)")
+        assert (await compact(100, force=True, trigger_event="final_response", after_final_response=True)
+                == "MEDIA_EVENT(final_response)")
+        # Each event by its own flag only.
+        assert await compact(100, force=True, trigger_event="final_response", after_user_message=True) == "FORCED"
+        # The always-compact pass takes the event's place, so the event is not named.
+        assert (await compact(100, force=True, keep_media=1, trigger_event="user_message",
+                              after_user_message=True) == "MEDIA_ALWAYS")
+        # Nor does a negative keep_last run the event pass: the schema's minimum is not enforced,
+        # and the pass has only ever run at 0.
+        assert (await compact(100, force=True, keep_media=-1, trigger_event="user_message",
+                              after_user_message=True) == "FORCED")
+        assert await compact(100, max_request_bytes=10) == "BYTES(0.0MB>0MB)"
