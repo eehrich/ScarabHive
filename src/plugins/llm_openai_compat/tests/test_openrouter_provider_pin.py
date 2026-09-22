@@ -24,6 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[3]))
 
+from agent_system.llm import backend_affinity
 from agent_system.llm.models import ChatMessage
 from agent_system.llm.tls import httpx_verify
 from plugins.llm_openai_compat import httpx_client
@@ -388,3 +389,119 @@ class TestTheChatRoute:
         assert sent["provider"]["order"] == AI_STUDIO_FIRST
         assert result["assistant"]["served_by"] == "StreamLake"
         assert lookup.call_args.args == (OPENROUTER, "Google AI Studio", client._verify)
+
+
+class TestTheAgentTypesBackend:
+    """A run's first call starts where the agent type was served last.
+
+    Its history names no backend yet, but the prompt it shares with every
+    other run of its type is cached there. Measured 22.09.2026 on the server,
+    first calls of v4/v6 runs: 57.8 % read from cache within 5 min of the
+    type's previous call on the same backend, 27.8 % on another; 22.5 % vs
+    9.0 % within 30 min; past 30 min about 1 % either way.
+    """
+
+    FIRST_TURN = [ChatMessage(role="user", content="first turn")]
+
+    @pytest.mark.usefixtures("published")
+    async def test_a_run_without_history_starts_on_the_recent_backend(self):
+        sent = await routing_pinned_to_last_backend(
+            dict(VERTEX_FIRST), self.FIRST_TURN, OPENROUTER, True, recent_backend="Google AI Studio")
+        assert sent["order"] == AI_STUDIO_FIRST
+
+    @pytest.mark.usefixtures("published")
+    async def test_the_runs_own_history_wins(self):
+        # Only the run's own turns say which backend verifies the reasoning they replay.
+        sent = await routing_pinned_to_last_backend(
+            {"order": list(AI_STUDIO_FIRST)}, _history("Google"), OPENROUTER, True,
+            recent_backend="Google AI Studio")
+        assert sent["order"] == ["google-vertex", "google-ai-studio"]
+
+    def test_the_backend_is_kept_per_agent_type_and_model(self):
+        backend_affinity.remember("v6_story_coordinator", "m", "StreamLake")
+        assert backend_affinity.recent("v6_story_coordinator", "m", None) == "StreamLake"
+        assert backend_affinity.recent("v6_story_panel", "m", None) is None
+        assert backend_affinity.recent("v6_story_coordinator", "other/model", None) is None
+        assert backend_affinity.recent(None, "m", None) is None
+
+    @pytest.mark.parametrize("minutes, elapsed, expected", [
+        (None, 29 * 60, "StreamLake"),        # the default window: 30 min
+        (None, 31 * 60, None),
+        (5, 4 * 60, "StreamLake"),
+        (5, 6 * 60, None),
+        (0, 0, None),                         # 0 turns it off
+    ])
+    def test_the_window(self, monkeypatch, minutes, elapsed, expected):
+        now = [1000.0]
+        monkeypatch.setattr(backend_affinity.time, "monotonic", lambda: now[0])
+        backend_affinity.remember("agent", "m", "StreamLake")
+        now[0] += elapsed
+        assert backend_affinity.recent("agent", "m", minutes) == expected
+
+    @pytest.mark.usefixtures("published")
+    async def test_the_responses_route_starts_the_next_run_where_the_type_was_served(self):
+        def served(backend):
+            return httpx.Response(200, json={"output": [], "openrouter_metadata": _meta(backend)})
+
+        first = TestTheResponsesRoutes()._client()
+        first.set_app_title("v6_story_coordinator")
+        first._post = AsyncMock(return_value=served("Google AI Studio"))
+        await first.chat_tools(list(self.FIRST_TURN), [])
+        assert first._post.call_args.args[2]["provider"]["order"] == VERTEX_FIRST["order"]
+
+        # Another run of the same type -- on a client of its own, as parallel
+        # sub-agents, escalation and fallback get one.
+        second = TestTheResponsesRoutes()._client()
+        second.set_app_title("v6_story_coordinator")
+        await second.chat_tools(list(self.FIRST_TURN), [])
+        assert second._post.call_args.args[2]["provider"]["order"] == AI_STUDIO_FIRST
+
+        other_type = TestTheResponsesRoutes()._client()
+        other_type.set_app_title("v6_story_panel")
+        await other_type.chat_tools(list(self.FIRST_TURN), [])
+        assert other_type._post.call_args.args[2]["provider"]["order"] == VERTEX_FIRST["order"]
+
+    @pytest.mark.usefixtures("published")
+    async def test_the_chat_route_starts_the_next_run_where_the_type_was_served(self):
+        def answer(backend):
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "x"},
+                                   "finish_reason": "stop"}],
+                      "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                      "openrouter_metadata": _meta(backend)},
+                request=httpx.Request("POST", OPENROUTER + "/chat/completions"))
+
+        sent = []
+        for backend in ("Google AI Studio", "Google"):
+            client = _httpx()
+            client.set_app_title("v4_beat_scorer")
+            with patch("httpx.AsyncClient") as mock_async_client:
+                mock_client = AsyncMock()
+                mock_client.post = AsyncMock(return_value=answer(backend))
+                mock_async_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+                await client._make_request_non_streaming(list(self.FIRST_TURN), tools=[])
+            sent.append(mock_client.post.call_args.kwargs["json"]["provider"]["order"])
+        assert sent == [VERTEX_FIRST["order"], AI_STUDIO_FIRST]
+
+    async def test_a_failed_attempt_or_an_unnamed_client_remembers_nothing(self):
+        client = _httpx()
+        await client._notify_post_response(
+            {"model": client.model, "routing": {"selected": "Google AI Studio"}})
+        client.set_app_title("v4_beat_scorer")
+        await client._notify_retry("openai_httpx", client.model, OPENROUTER, False, "429", 0, 2,
+                                   response_data={"openrouter_metadata": _meta("Google AI Studio")})
+        await client._notify_post_response(
+            {"model": client.model, "error": "boom", "routing": {"selected": "Google AI Studio"}})
+        assert client.recent_backend() is None
+        await client._notify_post_response(
+            {"model": client.model, "routing": {"selected": "Google AI Studio"}})
+        assert client.recent_backend() == "Google AI Studio"
+
+    def test_the_model_entry_sets_the_window(self):
+        client = _httpx()
+        client.set_app_title("agent")
+        backend_affinity.remember("agent", client.model, "StreamLake")
+        client.provider_affinity_minutes = 0
+        assert client.recent_backend() is None

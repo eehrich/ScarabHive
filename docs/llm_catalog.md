@@ -20,10 +20,11 @@ Code. Welche Route welchen Schlüssel auswertet:
 | `assistant_reasoning_field` | ja | – | – | – | – |
 | `thinking_request_shape` | – | – | – | ja | – |
 | `stream_silence_timeout` | ja | ja | – | – | – |
+| `provider_affinity_minutes` | ja | ja | ja | – | – |
 | `prompt_cache_marker_style` | ja | ja | verweigert `anthropic` | eigener Weg | – |
 | `safety_settings` | ja | ja | verweigert | – | nur `gemini*` (nativ) |
 
-Die ersten fünf Zeilen sind die **Dialekt-Schlüssel**: steht einer auf einer
+Die ersten sechs Zeilen sind die **Dialekt-Schlüssel**: steht einer auf einer
 Route, die ihn nicht auswertet, protokolliert der Bau des Clients das („is not
 wired for provider=…"). Die letzten beiden Zeilen haben diesen Wächter nicht.
 Ein unbekannter **Wert** lässt den Bau in allen Fällen scheitern. Beides mit Absicht: still ignoriert zu werden ist der
@@ -85,8 +86,31 @@ Backend geliefert hat. Der nächste Request desselben Laufs stellt die
 passenden Einträge von `provider_routing.order` nach vorn. Die Liste wird nur
 umsortiert, nie gekürzt oder erweitert, der Fallback auf die übrigen Einträge
 bleibt also. Den Slug zum Anzeigenamen liefert die Anbieterliste; im Code
-steht kein Anbietername. Ein Profil ohne `order` bekommt keinen Pin, ein
-Aufruf ohne vorherigen Assistant-Turn auch nicht.
+steht kein Anbietername. Ein Profil ohne `order` bekommt keinen Pin.
+
+**Der erste Aufruf eines Laufs** hat noch keinen Assistant-Turn. Er startet
+auf dem Backend, das den **Agent-Typ** zuletzt bedient hat — gleich welche
+Instanz, welcher Lauf, welcher Client (`agent_system/llm/backend_affinity.py`,
+Schlüssel Agent-Name + Modell, gesetzt über `set_app_title`). Dort liegt der
+Prompt, den alle Läufe des Typs teilen. Das gilt nur innerhalb von
+`provider_affinity_minutes` nach dem letzten Aufruf des Typs (Default 30,
+`0` = aus, pro Modelleintrag oder per `llm_params` pro Agent). Danach ist
+der Cache kalt, und es gilt wieder die konfigurierte `order`. Gemessen am
+22.09.2026 an den ersten Aufrufen von v4/v6-Läufen (72 h):
+
+| Abstand zum letzten Aufruf des Typs | gleiches Backend | anderes Backend |
+|---|---|---|
+| < 5 min | 57,8 % aus dem Cache | 27,8 % |
+| 5–30 min | 22,5 % | 9,0 % |
+| 30–60 min | 1,1 % | 8,3 % |
+
+Die eigene Historie eines Laufs schlägt diesen Wert immer: nur sie sagt,
+welches Backend das zurückgespielte Reasoning prüfen kann. Lehnt das
+vorgezogene Backend ab (429, 5xx), fällt das Gateway im selben Request auf
+die übrigen `order`-Einträge weiter (gemessen: 34 von 38 Wechseln innerhalb
+eines Laufs waren genau das, die übrigen 4 Requests trugen keine `order`).
+Der Speicher lebt im Prozess; nach einem Neustart folgt der erste Aufruf
+jedes Typs wieder der `order`.
 
 ### `session_id`: Cache-Lokalität ohne harten Pin
 

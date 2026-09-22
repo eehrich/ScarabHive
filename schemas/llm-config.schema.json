@@ -646,6 +646,19 @@
           "default": null,
           "title": "Provider Routing"
         },
+        "provider_affinity_minutes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Affinity Minutes"
+        },
         "reasoning_details_mode": {
           "anyOf": [
             {

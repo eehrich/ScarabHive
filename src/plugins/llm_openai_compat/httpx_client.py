@@ -147,7 +147,8 @@ async def _provider_slug(base_url: str, name: str, verify: Any) -> Optional[str]
 async def routing_pinned_to_last_backend(provider_routing: Optional[dict],
                                          messages: list,
                                          base_url: str,
-                                         verify: Any) -> Optional[dict]:
+                                         verify: Any,
+                                         recent_backend: Optional[str] = None) -> Optional[dict]:
     """provider_routing with the backend of the latest recorded turn in front.
 
     That backend holds the run's prompt cache, and it is the only one that can
@@ -163,6 +164,12 @@ async def routing_pinned_to_last_backend(provider_routing: Optional[dict],
     from the history (``served_by`` on the assistant messages) on every
     request and never kept on a client -- one client serves every parallel
     session of an agent type.
+
+    A history without one -- a run's first call -- starts on
+    ``recent_backend``: the one that answered the agent type lately
+    (``LLMClient.recent_backend``), which holds the prompt the type's runs
+    share. The run's own turns always win over it: only they say which
+    backend can verify the reasoning they replay.
 
     The metadata names the backend by display name, ``order`` takes slugs; the
     gateway's provider list translates. A configured entry matches by its
@@ -180,6 +187,7 @@ async def routing_pinned_to_last_backend(provider_routing: Optional[dict],
         if isinstance(value, str) and value:
             served = value
             break
+    served = served or recent_backend
     if served is None:
         return provider_routing
     slug = await _provider_slug(base_url, served, verify)
@@ -305,6 +313,9 @@ class HTTPXOpenAIClient(LLMClient):
         # warm (cache is backend-local; cross-backend load-balancing breaks it).
         # Popped from extra_params and injected as top-level "provider" field below.
         self.provider_routing: dict | None = self.extra_params.pop("provider_routing", None)
+        # How long a new run starts on the backend that answered this agent
+        # type last (routing_pinned_to_last_backend); None = the default.
+        self.provider_affinity_minutes = self.extra_params.pop("provider_affinity_minutes", None)
 
         # Gateway request plugins (context-compression, response-healing,
         # moderation, ...) and the request-level cache controls. Both are
@@ -576,6 +587,7 @@ class HTTPXOpenAIClient(LLMClient):
         OpenRouter activity dashboard.  X-Title is set to match so the
         dashboard shows a human-readable name.
         """
+        super().set_app_title(title)
         if self._is_openrouter and title:
             self._headers["HTTP-Referer"] = f"{self._openrouter_base_referer}/{title}"
             self._headers["X-Title"] = title
@@ -1182,7 +1194,8 @@ class HTTPXOpenAIClient(LLMClient):
         # implicit prompt cache stays warm. Only honored by OpenRouter.
         if self.provider_routing and self._is_openrouter:
             payload["provider"] = await routing_pinned_to_last_backend(
-                self.provider_routing, messages, self.base_url, self._verify)
+                self.provider_routing, messages, self.base_url, self._verify,
+                recent_backend=self.recent_backend())
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
@@ -1713,7 +1726,8 @@ class HTTPXOpenAIClient(LLMClient):
         # implicit prompt cache stays warm. Only honored by OpenRouter.
         if self.provider_routing and self._is_openrouter:
             payload["provider"] = await routing_pinned_to_last_backend(
-                self.provider_routing, messages, self.base_url, self._verify)
+                self.provider_routing, messages, self.base_url, self._verify,
+                recent_backend=self.recent_backend())
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:

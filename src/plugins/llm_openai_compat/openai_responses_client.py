@@ -247,6 +247,7 @@ class OpenAIResponsesClient(LLMClient):
         max_tokens: Optional[int] = None,
         service_tier: Optional[str] = None,
         provider_routing: Optional[dict] = None,
+        provider_affinity_minutes: Optional[float] = None,
         safety_settings: Optional[dict] = None,
         prompt_cache_key: Optional[str] = None,
         prompt_cache_mode: Optional[str] = None,
@@ -287,6 +288,9 @@ class OpenAIResponsesClient(LLMClient):
         self.max_tokens = max_tokens
         self.service_tier = service_tier
         self.provider_routing = provider_routing
+        # How long a new run starts on the backend that answered this agent
+        # type last (routing_pinned_to_last_backend); None = the default.
+        self.provider_affinity_minutes = provider_affinity_minutes
         self.safety_settings = safety_settings
         self.prompt_cache_key = prompt_cache_key
         self.prompt_cache_mode = prompt_cache_mode
@@ -1167,7 +1171,7 @@ class OpenAIResponsesClient(LLMClient):
         # like the httpx route: another endpoint is never asked for the list.
         provider = (await routing_pinned_to_last_backend(
             self.provider_routing, messages, self.base_url,
-            httpx_verify(self.ssl_verify))
+            httpx_verify(self.ssl_verify), recent_backend=self.recent_backend())
             if self._is_openrouter else self.provider_routing)
 
         def build_payload() -> dict:

@@ -328,6 +328,13 @@ class LLMClient:
     #: context_usage_tracker) read it off the client to attribute call latency.
     _last_response_duration_ms: Any = None
 
+    #: The agent this client serves (set_app_title). Keys the backend a
+    #: gateway routed its calls to (backend_affinity); None remembers nothing.
+    served_agent: Optional[str] = None
+    #: How long that backend stays the one a new run starts on. None = the
+    #: default of backend_affinity, 0 = off. Set from the model entry.
+    provider_affinity_minutes: Optional[float] = None
+
     def set_llm_hooks(
         self,
         on_pre_request: Any = None,
@@ -364,6 +371,12 @@ class LLMClient:
         # chat_tools per client instance at a time → last-value is unambiguous.
         if not response_info.get("error") and response_info.get("duration_ms") is not None:
             self._last_response_duration_ms = response_info.get("duration_ms")
+        # Here, not in the hooks: those are wired only while hooks are on.
+        backend = (response_info.get("routing") or {}).get("selected")
+        if (backend and self.served_agent and response_info.get("model")
+                and not response_info.get("error")):
+            from .backend_affinity import remember
+            remember(self.served_agent, response_info["model"], backend)
         if self._on_post_llm_response:
             try:
                 await self._on_post_llm_response(response_info)
@@ -466,10 +479,22 @@ class LLMClient:
             elapsed += sleep_time
 
     def set_app_title(self, title: str) -> None:
-        """Set the application title for providers that support it (e.g., OpenRouter X-Title).
+        """Name the agent this client serves.
 
-        Override in subclasses that can use this information.
+        Providers that support it show the name (OpenRouter X-Title);
+        subclasses that do extend this and call it. It also keys the backend
+        a gateway routed the agent's calls to (``recent_backend``).
         """
+        self.served_agent = title or None
+
+    def recent_backend(self) -> Optional[str]:
+        """The backend that answered this client's agent on its model lately.
+
+        Where a run with no history of its own starts: see backend_affinity.
+        """
+        from .backend_affinity import recent
+        return recent(self.served_agent, getattr(self, "model", None),
+                      self.provider_affinity_minutes)
 
     async def chat(self, messages: list[ChatMessage], cancellation_token=None, status_scope=None) -> str:
         raise NotImplementedError

@@ -782,6 +782,13 @@ def _reset_all_global_state():
     except ImportError:
         pass
     
+    # Reset the backend each agent type was last served by
+    try:
+        from agent_system.llm import backend_affinity
+        backend_affinity.clear()
+    except ImportError:
+        pass
+
     # Reset plugin discovery shared modules
     try:
         from agent_system.plugins import discovery as discovery_module

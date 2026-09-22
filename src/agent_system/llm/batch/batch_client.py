@@ -83,6 +83,7 @@ class BatchLLMClient(LLMClient):
 
     def set_app_title(self, title: str) -> None:
         """Pass through to underlying client (if it supports it)."""
+        super().set_app_title(title)
         if hasattr(self.underlying_client, "set_app_title"):
             self.underlying_client.set_app_title(title)
     

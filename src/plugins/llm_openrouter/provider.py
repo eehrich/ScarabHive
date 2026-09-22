@@ -44,7 +44,7 @@ def build_openrouter_sdk(cfg: "LLMModelConfig",
         )
 
     warn_unwired(cfg, provider="openrouter_sdk", logger=logger,
-                 wired=("tool_schema_dialect", "reasoning_details_mode"))
+                 wired=("tool_schema_dialect", "reasoning_details_mode", "provider_affinity_minutes"))
 
     from .openrouter_sdk_client import build_openrouter_sdk_client
     return build_openrouter_sdk_client(
@@ -65,6 +65,7 @@ def build_openrouter_sdk(cfg: "LLMModelConfig",
         max_tokens=cfg.max_tokens,
         service_tier=cfg.service_tier,
         provider_routing=cfg.provider_routing,
+        provider_affinity_minutes=cfg.provider_affinity_minutes,
         prompt_cache_key=cfg.prompt_cache_key,
         prompt_cache_mode=cfg.prompt_cache_mode,
         temperature=cfg.temperature,
