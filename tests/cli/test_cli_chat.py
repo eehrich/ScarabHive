@@ -372,7 +372,7 @@ class _FakeAgent:
         self._events = events
         self.cancelled_requests = []
 
-    async def run_events(self, task, session_id=None, llm_override=None,
+    async def run_events(self, task, request_id=None, session_id=None, llm_override=None,
                          llm_profile_info_override=None):
         for ev in self._events:
             if ev.get("_publish_status"):
@@ -575,7 +575,7 @@ class TestRunChatTurn:
 
 
 class _ExplodingAgent:
-    async def run_events(self, task, session_id=None, llm_override=None,
+    async def run_events(self, task, request_id=None, session_id=None, llm_override=None,
                          llm_profile_info_override=None):
         raise RuntimeError("auth kaputt")
         yield  # pragma: no cover -- makes this an async generator

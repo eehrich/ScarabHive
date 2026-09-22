@@ -95,6 +95,12 @@ async def collect_final_result(
         task_text = task
     
     result = {"task": task_text, "calls": []}
+    # Inside another run (an agent-as-tool, a plugin calling an agent from its tool
+    # call), a Ctrl-C is not this call's: its user started the outer run, and only
+    # that run's handler knows it (agent-cli, chat). Asked now -- the nested run
+    # sets the variable itself.
+    from ...tools.status import current_request_id
+    inside_a_run = bool(current_request_id.get())
     
     try:
         async for event in agent.run_events(task, request_id=request_id, session_id=session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info_override):
@@ -131,6 +137,8 @@ async def collect_final_result(
     except (KeyboardInterrupt, Exception) as e:
         # Handle cancellation gracefully
         import asyncio
+        if isinstance(e, KeyboardInterrupt) and inside_a_run:
+            raise
         if isinstance(e, (asyncio.CancelledError, KeyboardInterrupt)):
             result["cancelled"] = True
         else:

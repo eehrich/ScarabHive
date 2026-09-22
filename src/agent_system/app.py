@@ -38,7 +38,7 @@ from .llm.batch.initialization import init_batch_system, shutdown_batch_system, 
 from .services import ConfigService, ToolServerService, ToolService, AgentService
 from .services.session_manager import SessionManager, SessionPermissionError
 from .servers.agent.components.status_forwarding import in_line_with_a_live_run
-from .core.session_presence import SessionBusy, presence_for
+from .core.session_presence import SessionBusy, forget_stop, presence_for
 from .services.background_job_manager import (
     BackgroundJob,
     BackgroundJobManager,
@@ -307,6 +307,11 @@ async def _validate_client_request_id(client_request_id: str) -> str:
                 "the original run is still in flight"
             ),
         )
+    # A new run under an id that was stopped before (writer_jobs dispatches a run
+    # again under its id): that stop was the earlier run's (core/session_presence.py).
+    # Here and nowhere else -- the ids every other caller mints are new, and a stop
+    # noted before their run registers is theirs.
+    forget_stop(rid)
     return rid
 
 

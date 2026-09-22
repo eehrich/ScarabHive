@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import psutil
@@ -29,7 +31,9 @@ from agent_system.config.models import (
     SessionPresenceConfig,
 )
 from agent_system.core import session_presence as sp
+from agent_system.core.cancellation import get_cancellation_manager
 from agent_system.tools.base import ToolServerRegistry
+from agent_system.tools.status import current_request_id
 from agent_system.servers.agent.server import Agent
 from agent_system.services.session_manager import SessionManager
 
@@ -563,3 +567,530 @@ class TestTheAgentLoop:
         [event async for event in agent.run_events("do it", session_id="s1")]
 
         assert events == [False], "a run that saved nothing counts its input as delivered"
+
+
+class TestAStoppedRun:
+    """A run its user stopped: nothing starts its session again by itself. Measured in the
+    user's test of 22.09.2026: a stop with a message appended mid-run and async sub-agents
+    at work woke the session as agent-cli in a process of its own, and the chat showed it as
+    worked on elsewhere until that run was done."""
+
+    @pytest.fixture(autouse=True)
+    def no_stops_from_other_tests(self, monkeypatch):
+        monkeypatch.setattr(sp, "_stops", set())
+
+    def test_input_left_waiting_does_not_wake_a_session_let_go_stopped(self, store, tmp_path, spawned):
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "agent_a", run="r1")
+        assert store.notify("s1", USER)[0] == "delivered_next_step", "fixture: the input found the run"
+        sp.note_stop("r1")
+        store.release("s1", USER)
+        assert spawned == []
+        # work of the stopped run that ends later rings for it: queued, not woken
+        assert store.notify("s1", USER) == ("queued", sp.STOPPED)
+        assert spawned == [] and not store.pending("s1", USER)
+
+    def test_the_stop_counts_when_an_outer_hold_lets_go_last(self, store, tmp_path, spawned):
+        # The endpoint holds the session around the run and lets go after it, knowing
+        # nothing of the stop.
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "endpoint") and store.hold("s1", USER, "run", run="r1")
+        store.notify("s1", USER)
+        sp.note_stop("r1")
+        store.release("s1", USER)
+        store.release("s1", USER)
+        assert spawned == []
+        assert store.notify("s1", USER)[0] == "queued"
+
+    def test_the_next_run_lifts_the_mark(self, store, tmp_path, spawned):
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "agent_a", run="r1")
+        sp.note_stop("r1")
+        store.release("s1", USER)
+        assert store.hold("s1", USER, "agent_a", run="r2")
+        store.notify("s1", USER)
+        store.release("s1", USER)
+        assert spawned == [("s1", USER, 1)]
+
+    def test_a_hold_that_starts_no_run_keeps_the_mark(self, store, tmp_path, spawned):
+        # /undo and an append hold the session to write it, and a woken run holds it
+        # before it looks for input: none of them is the run that takes it up again.
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "agent_a", run="r1")
+        sp.note_stop("r1")
+        store.release("s1", USER)
+        assert store.hold("s1", USER, "endpoint")
+        store.release("s1", USER)
+        assert store.notify("s1", USER)[0] == "queued"
+        assert spawned == []
+
+    def test_while_a_chat_stays_open_after_a_stop_nothing_starts_a_turn(self, store, tmp_path, spawned):
+        # agent-cli chat holds its session between turns, so the stopped turn's hold is
+        # not the last: the chat answers from memory, for rings of its own process and
+        # for its prompt watcher, which asks pending() for a ring from elsewhere.
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "chat") and store.hold("s1", USER, "turn", run="r1")
+        sp.note_stop("r1")
+        store.release("s1", USER)
+        assert store.notify("s1", USER) == ("queued", sp.STOPPED)
+        elsewhere = sp.SessionPresence(tmp_path)
+        assert elsewhere.notify("s1", USER)[0] == "delivered_next_step", "fixture: the ring found no holder"
+        assert not store.pending("s1", USER)
+        store.release("s1", USER)
+        assert spawned == []
+
+    def test_a_stop_noted_after_the_run_let_go_still_counts(self, store, tmp_path, spawned):
+        # A Ctrl-C in the run's own frames: the run lets go before the chat hears of it.
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "chat") and store.hold("s1", USER, "turn", run="r1")
+        assert store.notify("s1", USER)[0] == "delivered_next_step"
+        store.release("s1", USER)
+        sp.note_stop("r1")
+        assert not store.pending("s1", USER)
+        store.release("s1", USER)
+        assert spawned == []
+        assert (tmp_path / USER / "s1.stopped").exists()
+
+    def test_a_turn_after_a_stopped_one_is_not_stopped(self, store, tmp_path, spawned):
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "chat") and store.hold("s1", USER, "turn", run="r1")
+        sp.note_stop("r1")
+        store.release("s1", USER)
+        assert store.hold("s1", USER, "turn", run="r2")
+        # while it runs, what rings for it is read by it
+        assert store.notify("s1", USER)[0] == "delivered_next_step"
+        store.release("s1", USER)
+        store.release("s1", USER)   # the chat ends
+        assert spawned == [("s1", USER, 1)]
+        assert not (tmp_path / USER / "s1.stopped").exists()
+
+    def test_the_run_an_endpoint_holds_around_lifts_the_mark(self, store, tmp_path, spawned):
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "agent_a", run="r1")
+        sp.note_stop("r1")
+        store.release("s1", USER)
+        assert store.hold("s1", USER, "endpoint") and store.hold("s1", USER, "run", run="r2")
+        assert store.notify("s1", USER)[0] == "delivered_next_step"
+        store.release("s1", USER)
+        store.release("s1", USER)
+        assert spawned == [("s1", USER, 1)]
+
+    def test_an_agent_as_tool_stopped_alone_does_not_stop_its_caller(self, store, tmp_path, spawned):
+        # An agent-as-tool runs on its caller's session, under the caller's tool call id.
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "caller", run="r1") and store.hold("s1", USER, "tool", run="r1_003")
+        sp.note_stop("r1_003")
+        store.release("s1", USER)
+        assert store.notify("s1", USER)[0] == "delivered_next_step"
+        store.release("s1", USER)
+        assert spawned == [("s1", USER, 1)]
+
+    @pytest.mark.parametrize("stopped, woken", [("older", True), ("newer", False)])
+    def test_the_run_that_took_it_last_decides_whatever_lets_go_last(self, store, tmp_path, spawned, stopped, woken):
+        # The older run still finalizes (a slow save, session-end hooks) while the
+        # user's newer one runs through, so the older one lets go last.
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "endpoint") and store.hold("s1", USER, "run", run="older")
+        assert store.hold("s1", USER, "endpoint") and store.hold("s1", USER, "run", run="newer")
+        sp.note_stop(stopped)
+        store.notify("s1", USER)
+        store.release("s1", USER)
+        store.release("s1", USER)
+        store.release("s1", USER)
+        store.release("s1", USER)
+        assert spawned == ([("s1", USER, 1)] if woken else [])
+
+    def test_input_rung_before_the_stop_does_not_wake_after_the_next_run(self, store, tmp_path, spawned):
+        # The stop took its doorbell; the input waits in its store, read at a step.
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "agent_a", run="r1")
+        assert store.notify("s1", USER)[0] == "delivered_next_step"
+        sp.note_stop("r1")
+        store.release("s1", USER)
+        assert store.hold("s1", USER, "agent_a", run="r2")
+        store.release("s1", USER)
+        assert spawned == []
+
+    def test_a_stop_that_lets_go_while_a_ring_takes_the_lock_is_seen(self, store, tmp_path, spawned, monkeypatch):
+        # The ring passed the check before the lock; the stopped run let go in between.
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "agent_a", run="r1")
+        open_locked = sp._open_locked
+
+        def run_lets_go_first(path):
+            sp.note_stop("r1")
+            store.release("s1", USER)
+            return open_locked(path)
+
+        monkeypatch.setattr(sp, "_open_locked", run_lets_go_first)
+        assert store.notify("s1", USER) == ("queued", sp.STOPPED)
+        assert spawned == []
+
+    def test_an_outer_hold_that_saw_ctrl_c_notes_it_for_its_run(self, store, tmp_path, spawned):
+        # agent-run: Ctrl-C cancels the task, not the run, and the run lets go first,
+        # knowing nothing of it. agent-run's own hold goes last and says it.
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "cli") and store.hold("s1", USER, "run", run="r1")
+        store.notify("s1", USER)
+        store.release("s1", USER)
+        store.release("s1", USER, stopped=True)
+        assert spawned == []
+        assert sp.stopped_by_user("r1")
+        assert store.notify("s1", USER)[0] == "queued"
+
+    @pytest.mark.parametrize("stopped, woken", [("r2", False), ("r1", True)])
+    def test_an_agent_as_tool_of_an_older_run_is_not_the_last_run(self, store, tmp_path, spawned, stopped, woken):
+        # Two runs on one session at once (two tabs, two agents); the older one then
+        # calls an agent-as-tool, under its own tool-call id.
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "a", run="r1") and store.hold("s1", USER, "b", run="r2")
+        assert store.hold("s1", USER, "tool", run="r1_005")
+        sp.note_stop(stopped)
+        store.notify("s1", USER)
+        store.release("s1", USER)
+        store.release("s1", USER)
+        store.release("s1", USER)
+        assert spawned == ([("s1", USER, 1)] if woken else [])
+
+    def test_an_agent_as_tool_does_not_lift_its_stopped_callers_mark(self, tmp_path, monkeypatch, spawned):
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+        store = sp.presence_for(SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True)))
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "a", run="r1")
+        sp.note_stop("r1")
+        assert (tmp_path / USER / "s1.stopped").exists(), "fixture: the stop marked nothing"
+        assert store.hold("s1", USER, "tool", run="r1_004")   # a tool call still in flight
+        assert (tmp_path / USER / "s1.stopped").exists()
+        store.release("s1", USER)
+        store.release("s1", USER)
+
+    def test_a_stop_is_on_disk_as_soon_as_it_is_noted(self, tmp_path, monkeypatch, spawned):
+        # agent-cli chat keeps the session for hours after a Ctrl-C; a process that
+        # ends before it lets go (closed, killed) must not take the stop with it.
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+        store = sp.presence_for(SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True)))
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "chat") and store.hold("s1", USER, "turn", run="r1")
+        store.release("s1", USER)
+        sp.note_stop("r1")
+        assert (tmp_path / USER / "s1.stopped").exists()
+        elsewhere = sp.SessionPresence(tmp_path)   # what another process reads
+        assert elsewhere.notify("s1", USER) == ("queued", sp.STOPPED)
+        store.release("s1", USER)
+
+    def test_a_stop_marks_only_the_session_of_the_run_it_stopped(self, tmp_path, monkeypatch, spawned):
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+        store = sp.presence_for(SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True)))
+        _stored(tmp_path, "s1")
+        _stored(tmp_path, "s2")
+        assert store.hold("s1", USER, "a", run="r1") and store.hold("s2", USER, "b", run="r2")
+        sp.note_stop("r1")
+        assert (tmp_path / USER / "s1.stopped").exists(), "fixture: the stop marked nothing"
+        assert not (tmp_path / USER / "s2.stopped").exists()
+        store.release("s1", USER)
+        store.release("s2", USER)
+
+    def test_a_holder_that_saw_a_stop_before_any_run_took_it_marks_it(self, store, tmp_path, spawned):
+        # A Ctrl-C while agent-cli or agent-run still loads the session.
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "cli")
+        assert sp.SessionPresence(tmp_path).notify("s1", USER)[0] == "delivered_next_step"
+        store.release("s1", USER, stopped=True)
+        assert spawned == []
+        assert store.notify("s1", USER)[0] == "queued"
+
+    async def test_a_stop_noted_while_the_work_already_rings_is_seen_at_the_next_ring(
+            self, tmp_path, monkeypatch, spawned):
+        # A background process of r1 ends while r1 still holds: the ring rings on. Then the
+        # user stops r1 and asks again (r2). A check before the first ring alone lets the
+        # stopped run's work through the STOPPED answers until r2 lifts the mark.
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)
+        config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
+        store = sp.presence_for(config)
+        _stored(tmp_path, "s1")
+        real_notify, answers = store.notify, []
+
+        def notify(session_id, user_id):
+            answer = real_notify(session_id, user_id)
+            answers.append(answer)
+            if len(answers) == 1:      # r1 still holds; now its user stops it
+                sp.note_stop("r1")
+                store.release("s1", USER)
+            elif len(answers) == 2:    # reached only if the stop is not checked again
+                store.hold("s1", USER, "agent_a", run="r2")
+            elif len(answers) == 3:
+                store.release("s1", USER)
+            return answer
+
+        monkeypatch.setattr(store, "notify", notify)
+        assert store.hold("s1", USER, "agent_a", run="r1")
+        token = current_request_id.set("r1_002_async_x")
+        try:
+            state = await sp.wake_session(config, "s1", USER, what="r1's background process")
+        finally:
+            current_request_id.reset(token)
+
+        assert answers[0][0] == "delivered_next_step", "fixture: the first ring did not find r1 holding"
+        assert state == "queued"
+        assert spawned == []
+
+    async def test_a_caller_that_names_the_run_is_believed_over_the_task(self, tmp_path, monkeypatch, spawned):
+        # An admin cancels the sub-agent itself: its own id is noted, and the job's task
+        # still carries it from the stream it did not drain. Its caller, r1, was not stopped.
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)
+        config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
+        store = sp.presence_for(config)
+        _stored(tmp_path, "s1")
+        sp.note_stop("r1_001_async_x")
+        token = current_request_id.set("r1_001_async_x")
+        try:
+            state = await sp.wake_session(config, "s1", USER, what="sub-agent x", started_by="r1_001")
+        finally:
+            current_request_id.reset(token)
+        assert state == "woke_session"
+        assert spawned == [("s1", USER, 1)]
+
+    async def test_a_run_adopted_under_an_id_that_was_stopped_before_is_not_stopped(self):
+        # writer_jobs sends a run again under its request id, through /run.
+        from agent_system.app import _validate_client_request_id
+
+        sp.note_stop("r-again-01")
+        assert await _validate_client_request_id("r-again-01") == "r-again-01"
+        assert not sp.stopped_by_user("r-again-01")
+
+    async def test_a_stop_noted_before_the_run_registers_stays(self, tmp_path, monkeypatch):
+        # A minted id (chat, agent-cli) is new: a stop noted before its run registers is its own.
+        woken = []
+        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        _stored(tmp_path, "s1")
+        sp.note_stop("r-early-stop")
+        agent = _agent(tmp_path, monkeypatch, lambda: sp.presence_for(agent.system_config).notify("s1", USER))
+
+        [event async for event in agent.run_events("do it", session_id="s1", request_id="r-early-stop")]
+
+        assert sp.stopped_by_user("r-early-stop")
+        assert woken == []
+
+    async def test_a_ctrl_c_inside_an_agent_as_tool_is_the_outer_runs(self, tmp_path, monkeypatch):
+        # collect_final_result swallows a Ctrl-C of the run it collects -- not of one it
+        # collects for another run, whose handler has to see it.
+        from agent_system.servers.agent.result_utils import collect_final_result
+
+        _stored(tmp_path, "s1")
+        agent = _agent(tmp_path, monkeypatch, lambda: None)
+
+        def ctrl_c(self, session_id, request_id):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(Agent, "_presence_step", ctrl_c)
+        token = current_request_id.set("r1")
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                await collect_final_result(agent, "do it", request_id="r1_003", session_id="s1")
+        finally:
+            current_request_id.reset(token)
+        assert not sp.stopped_by_user("r1_003")
+
+    async def test_work_of_a_stopped_run_does_not_wake_after_the_next_run(
+            self, tmp_path, monkeypatch, spawned, caplog):
+        # Stop, then ask again at once: the new run lifts the mark, and a sub-agent the
+        # stopped run started ends meanwhile. Its task carries the stopped run's id.
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)   # a wrong answer rings on
+        config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
+        store = sp.presence_for(config)
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "agent_a", run="r1")
+        sp.note_stop("r1")
+        store.release("s1", USER)
+        assert store.hold("s1", USER, "agent_a", run="r2")   # the user asks again
+
+        token = current_request_id.set("r1_003_async_x")
+        try:
+            with caplog.at_level(logging.INFO, logger=sp.__name__):
+                state = await sp.wake_session(config, "s1", USER, what="sub-agent x")
+        finally:
+            current_request_id.reset(token)
+        store.release("s1", USER)
+
+        assert state == "queued"
+        assert spawned == []
+        assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+    async def test_work_of_the_run_that_holds_it_still_rings(self, tmp_path, monkeypatch, spawned):
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)
+        config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
+        store = sp.presence_for(config)
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "agent_a", run="r1")
+        sp.note_stop("r1")
+        store.release("s1", USER)
+        assert store.hold("s1", USER, "agent_a", run="r10")
+
+        token = current_request_id.set("r10_001_async_y")   # r10's, not r1's
+        try:
+            state = await sp.wake_session(config, "s1", USER, still_needed=lambda: False)
+        finally:
+            current_request_id.reset(token)
+        store.release("s1", USER)
+
+        assert state == "delivered_next_step"
+        assert spawned == [("s1", USER, 1)]
+
+    async def test_work_of_a_run_nobody_stopped_reaches_the_session_after_the_next_run(
+            self, tmp_path, monkeypatch, spawned):
+        # r0 ended its turn over background work; the user then asks (r1) and stops
+        # that. r0's work ends while the session is marked: it is still news once the
+        # user's next run (r2) lifts the mark.
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0.05)
+        config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
+        store = sp.presence_for(config)
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "agent_a", run="r1")
+        sp.note_stop("r1")
+        store.release("s1", USER)
+
+        token = current_request_id.set("r0_002_async_z")
+        try:
+            ringing = asyncio.create_task(sp.wake_session(config, "s1", USER, what="r0's sub-agent"))
+        finally:
+            current_request_id.reset(token)
+        await asyncio.sleep(0.2)
+        assert not ringing.done(), "the ringing gave up at the stopped session"
+        assert store.hold("s1", USER, "agent_a", run="r2")
+        await asyncio.sleep(0.2)
+        store.release("s1", USER)
+        await asyncio.wait_for(ringing, 10)
+
+        assert spawned == [("s1", USER, 1)]
+
+    async def test_a_stopped_session_is_no_warning(self, tmp_path, monkeypatch, spawned, caplog):
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)
+        config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
+        store = sp.presence_for(config)
+        _stored(tmp_path, "s1")
+        assert store.hold("s1", USER, "agent_a", run="r1")
+        sp.note_stop("r1")
+        store.release("s1", USER)
+
+        with caplog.at_level(logging.INFO, logger=sp.__name__):
+            assert await sp.wake_session(config, "s1", USER, what="a background command") == "queued"
+
+        assert [record.levelno for record in caplog.records if "Did NOT wake" in record.getMessage()] == [logging.INFO]
+        assert spawned == []
+
+    async def test_the_stop_button_notes_the_stop(self):
+        from agent_system.services.background_job_manager import BackgroundJobManager
+
+        await BackgroundJobManager().cancel_job("r-stop-button")
+
+        assert sp.stopped_by_user("r-stop-button")
+        assert sp.stopped_by_user("r-stop-button_004_async_x")
+        assert not sp.stopped_by_user("r-stop-button2")
+
+    async def test_a_run_after_a_stopped_one_is_woken_as_usual(self, tmp_path, monkeypatch):
+        woken = []
+        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        _stored(tmp_path, "s1")
+        agent = _agent(tmp_path, monkeypatch, lambda: sp.presence_for(agent.system_config).notify("s1", USER))
+        presence = sp.presence_for(agent.system_config)
+        assert presence.hold("s1", USER, "test_agent", run="r1")
+        sp.note_stop("r1")
+        presence.release("s1", USER)
+
+        events = [event async for event in agent.run_events("do it", session_id="s1", request_id="r-next")]
+
+        assert any(event.get("type") == "final" for event in events), f"fixture: the run did not answer: {events}"
+        assert woken == ["s1"]
+
+    async def test_work_a_stopped_run_started_does_not_ring_after_the_next_run(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)   # a wrong answer rings on
+        woken = []
+        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        _stored(tmp_path, "s1")
+
+        def stop():
+            sp.note_stop("r-stopped")
+            get_cancellation_manager().cancel_request("r-stopped")
+
+        agent = _agent(tmp_path, monkeypatch, stop, tool_call_first=True)
+        events = [event async for event in agent.run_events("do it", session_id="s1", request_id="r-stopped")]
+        assert any(event.get("type") == "cancelled" for event in events), f"fixture: the run did not stop: {events}"
+        presence = sp.presence_for(agent.system_config)
+        assert presence.hold("s1", USER, "test_agent", run="r-next")   # the user asks again
+
+        token = current_request_id.set("r-stopped_002_async_x")   # a sub-agent it started
+        try:
+            state = await sp.wake_session(agent.system_config, "s1", USER, what="sub-agent x")
+        finally:
+            current_request_id.reset(token)
+        presence.release("s1", USER)
+
+        assert state == "queued"
+        assert woken == []
+
+    async def test_a_run_its_user_stops_is_not_woken_by_input_that_came_meanwhile(self, tmp_path, monkeypatch):
+        woken = []
+        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        _stored(tmp_path, "s1")
+
+        def during_call():
+            sp.presence_for(agent.system_config).notify("s1", USER)   # a message comes in
+            sp.note_stop("r-stopped")                                   # and its user stops the run
+            get_cancellation_manager().cancel_request("r-stopped")
+
+        agent = _agent(tmp_path, monkeypatch, during_call, tool_call_first=True)
+
+        events = [event async for event in agent.run_events("do it", session_id="s1", request_id="r-stopped")]
+
+        assert any(event.get("type") == "cancelled" for event in events), f"fixture: the run did not stop: {events}"
+        assert woken == []
+        assert sp.presence_for(agent.system_config).notify("s1", USER)[0] == "queued"
+        assert woken == []
+
+    async def test_a_stop_during_the_runs_finalize_counts(self, tmp_path, monkeypatch):
+        # The run has answered and saves (session-end hooks can take seconds): its token
+        # is gone, and the Stop that comes now still stops it.
+        woken = []
+        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        _stored(tmp_path, "s1")
+        agent = _agent(tmp_path, monkeypatch, lambda: None)
+        finalize = Agent._finalize_request
+
+        async def stopped_while_saving(self, *args, **kwargs):
+            await finalize(self, *args, **kwargs)
+            sp.presence_for(agent.system_config).notify("s1", USER)
+            sp.note_stop("r-saving")
+
+        monkeypatch.setattr(Agent, "_finalize_request", stopped_while_saving)
+
+        events = [event async for event in agent.run_events("do it", session_id="s1", request_id="r-saving")]
+
+        assert any(event.get("type") == "final" for event in events), f"fixture: the run did not answer: {events}"
+        assert woken == []
+        assert sp.presence_for(agent.system_config).notify("s1", USER)[0] == "queued"
+
+    async def test_a_run_that_fails_is_no_stop(self, tmp_path, monkeypatch):
+        # Its own failure cancels its token (and its sub-requests'): input that came
+        # meanwhile still wakes the session.
+        woken = []
+        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        _stored(tmp_path, "s1")
+        agent = _agent(tmp_path, monkeypatch, lambda: None)
+
+        async def failing_loop(self, *args, **kwargs):
+            sp.presence_for(agent.system_config).notify("s1", USER)
+            raise RuntimeError("the loop broke")
+            yield  # an async generator, as the loop is
+
+        monkeypatch.setattr(Agent, "_execute_llm_loop", failing_loop)
+
+        events = [event async for event in agent.run_events("do it", session_id="s1", request_id="r-failing")]
+
+        assert any(event.get("type") == "error" for event in events), f"fixture: the run did not fail: {events}"
+        assert woken == ["s1"]

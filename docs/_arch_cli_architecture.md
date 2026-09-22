@@ -98,7 +98,8 @@ In dieser Reihenfolge, alles in `main`:
 8. **Session-Presence** (`core/session_presence.py`): die Session wird
    *gehalten, bevor* sie geladen wird. Belegt → Fehler (Exit 1), `--force`
    übergeht einen verwaisten Halt, `--woken` (vom Weck-Befehl gesetzt) tritt
-   still zurück.
+   still zurück. Ctrl+C ist ein Stopp: Die Session wird markiert losgelassen, und
+   nichts weckt sie danach von selbst (`session_locking.md` §5).
 
    Zwei Dinge musste `chat` dafür lernen. Erstens: **der Prompt wartet auf dem
    Event-Loop, nicht daneben.** `PromptSession.prompt()` ist synchron — es

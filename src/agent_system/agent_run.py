@@ -159,6 +159,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         force: Run the session even though another process holds it
     """
     presence = None
+    stopped = False   # Ctrl-C: its user stopped the run (core/session_presence.py)
     try:
         # Handle --list-sessions flag (needs session_manager only)
         if list_sessions is not None:
@@ -424,6 +425,10 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     pass
             if status_queue:
                 status_bus.unsubscribe(status_queue)  # Not async!
+        if result.get("cancelled", False):
+            # Its task was cancelled, not the run: the run cannot tell, this hold
+            # can, and notes it for the run it held around.
+            stopped = True
 
         # Save session after successful request execution (skip if cancelled)
         if not result.get("cancelled", False):
@@ -477,6 +482,9 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 # default=str: a non-JSON tool value must not fail a finished run.
                 print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
 
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        stopped = True   # before or around the run: its user stopped it all the same
+        raise
     except ValueError as e:
         # User-friendly error for common issues (agent not found, etc.)
         print(format_error(str(e)), file=sys.stderr)
@@ -488,7 +496,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         sys.exit(1)
     finally:
         if presence:
-            presence.release(actual_session_id, session_user)
+            presence.release(actual_session_id, session_user, stopped=stopped)
         # Shutdown batch queue manager if it was started
         await shutdown_batch_system()
         # The tool integration is this PROCESS's, not the agent's: the agent

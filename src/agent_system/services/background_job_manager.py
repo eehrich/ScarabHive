@@ -384,6 +384,13 @@ class BackgroundJobManager:
             none of those layers matched (the request really wasn't
             tracked).
         """
+        # Somebody stopped it -- the web chat's Stop, an admin, a deleted session,
+        # writer_jobs. Noted first: the run may be past the point where the
+        # layers below reach it (its finalize), and its session is let go marked
+        # all the same, so nothing starts it again by itself (core/session_presence.py).
+        from ..core.session_presence import note_stop
+        note_stop(request_id)
+
         # 1. Token cancellation (existing behaviour, prefix-matched).
         cancellation_manager = get_cancellation_manager()
         token_cancelled = cancellation_manager.cancel_request(request_id)

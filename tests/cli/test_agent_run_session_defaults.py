@@ -262,6 +262,56 @@ class TestSessionPresence:
             holder.kill()
             holder.wait()
 
+    @pytest.mark.parametrize("stopped", [True, False])
+    def test_a_run_its_user_stopped_is_not_woken_by_input_that_came_meanwhile(
+            self, run_env, monkeypatch, tmp_path, stopped):
+        # Ctrl-C cancels agent-run's task, not the run: the run lets go of its own hold
+        # knowing nothing of it, and the hold of agent-run goes last and says it.
+        from agent_system.config.models import SessionPresenceConfig
+        from agent_system.core import session_presence as sp
+
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path / "sessions"))
+        run_env.config.session_presence = SessionPresenceConfig(enabled=True)
+        presence = sp.presence_for(run_env.config)
+        monkeypatch.setattr(sp, "_stops", set())
+        woken = []
+        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+
+        async def run(agent, request, session_id, llm_override=None, llm_profile_info=None):
+            # holds and lets go of the session as the agent loop does, never told of the stop
+            assert presence.hold(session_id, "cli_user", "agent", run="r-run")
+            assert presence.notify(session_id, "cli_user")[0] == "delivered_next_step", "fixture: not held"
+            presence.release(session_id, "cli_user")
+            return {"cancelled": True} if stopped else {"summary": "done", "calls": []}
+
+        monkeypatch.setattr(agent_run, "run_agent_request", run)
+        _run(session_id="s1")
+
+        assert woken == ([] if stopped else ["s1"])
+
+
+    def test_a_ctrl_c_while_the_session_loads_is_a_stop(self, run_env, monkeypatch, tmp_path):
+        from agent_system.config.models import SessionPresenceConfig
+        from agent_system.core import session_presence as sp
+
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path / "sessions"))
+        run_env.config.session_presence = SessionPresenceConfig(enabled=True)
+        presence = sp.presence_for(run_env.config)
+        monkeypatch.setattr(sp, "_stops", set())
+        woken = []
+        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+
+        async def interrupted_load(agent, user_id, session_id):
+            assert sp.SessionPresence(tmp_path / "sessions").notify(session_id, user_id)[0] == "delivered_next_step"
+            raise asyncio.CancelledError   # asyncio.run's answer to Ctrl-C
+
+        monkeypatch.setattr(run_env.service, "load_and_restore_session", interrupted_load)
+        with pytest.raises(asyncio.CancelledError):
+            _run(session_id="s1")
+
+        assert woken == []
+        assert presence.notify("s1", "cli_user")[0] == "queued"
+
 
 class TestAgentRunOwnsTheToolIntegration:
     """agent-run is a process entry point, so the tool integration is its to end.

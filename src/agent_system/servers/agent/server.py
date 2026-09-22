@@ -1704,7 +1704,7 @@ class Agent(ToolServer):
                 user_id = get_request_user(request_id)
             held = None
             try:
-                if presence.hold(session_id, user_id, self.name):
+                if presence.hold(session_id, user_id, self.name, run=request_id):
                     held = (presence, session_id, user_id)
             except SessionBusy as busy:
                 # Forced past the refusal at the entry point. The input waiting

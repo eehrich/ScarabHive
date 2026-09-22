@@ -22,6 +22,7 @@ except Exception:
 from .config.settings import get_tool_server_config, load_settings
 from .paths import enter_project, user_path
 from .config.models import AgentSystemConfig
+from .core.cancellation import get_cancellation_manager
 from .core.session_presence import SessionBusy, presence_for
 from .llm.models import ChatMessage
 from .plugins import discover_all_plugins
@@ -1608,13 +1609,39 @@ def main() -> None:
                 return
 
     # Run session operations
-    should_continue, was_new_session = run_async(handle_session_operations())
+    try:
+        should_continue, was_new_session = run_async(handle_session_operations())
+    except KeyboardInterrupt:
+        # Held already: let go marked, or the input waiting wakes it as this exits.
+        if presence:
+            presence.release(actual_session_id, session_user, stopped=True)
+        shut_down_runtime()
+        raise
     if not should_continue:
         # Chat as well: it takes the hold over only once its REPL runs.
         if presence:
             presence.release(actual_session_id, session_user)
         shut_down_runtime()
         sys.exit(1)
+
+    # Ctrl-C is its user stopping the run. The hold below says so as it lets go
+    # (core/session_presence.py): the session is marked, and nothing starts it
+    # again by itself -- whenever the run lets go, in its own frames before this
+    # hears of it or at exit after. The run's token stops its tool calls and
+    # sub-agents.
+    run_request_id = short_id()
+    run_stopped = []
+
+    def _stop_the_run() -> None:
+        run_stopped.append(True)
+        get_cancellation_manager().cancel_request(run_request_id)
+
+    def _run_stoppable(coro: Any) -> dict:
+        try:
+            return run_async(coro)
+        except KeyboardInterrupt:
+            _stop_the_run()   # out of the loop, the run left where it was
+            raise
 
     async def _stream_and_run_with_status(
         agent: Agent,
@@ -1707,7 +1734,7 @@ def main() -> None:
             print()
 
         try:
-            async for ev in agent.run_events(task, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
+            async for ev in agent.run_events(task, request_id=run_request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                 t = ev.get("type")
                 if t in ("tool_call", "mcp_call") and show_tools:  # the old name until every deployed side is new (rename 17.09.2026)
                     srv = ev.get("server")
@@ -1812,6 +1839,7 @@ def main() -> None:
 
             return final_result
         except (asyncio.CancelledError, KeyboardInterrupt):
+            _stop_the_run()
             # Close an open thinking block first, or the exit message is grey
             if thinking_streamed:
                 _close_thinking_block()
@@ -1932,9 +1960,11 @@ def main() -> None:
             # Raw mode: use run_events with result collection
             from .servers.agent.result_utils import collect_final_result
 
-            result = run_async(collect_final_result(agent, task_input, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
+            result = _run_stoppable(collect_final_result(agent, task_input, request_id=run_request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
+            if result.get("cancelled"):
+                run_stopped.append(True)   # a Ctrl-C collect_final_result caught
         else:
-            result = run_async(_stream_and_run_with_status(agent, task_input, actual_session_id, show_tools=show_tools, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
+            result = _run_stoppable(_stream_and_run_with_status(agent, task_input, actual_session_id, show_tools=show_tools, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
 
         # Chat saved its own sessions per turn and prints its own output.
         if is_chat:
@@ -2002,7 +2032,7 @@ def main() -> None:
         # releasing again would drop the abandoned turn's -- waking a
         # session whose run is still unwinding.
         if presence and not is_chat:
-            presence.release(actual_session_id, session_user)
+            presence.release(actual_session_id, session_user, stopped=bool(run_stopped))
         shut_down_runtime()
 
     # Human-readable final output

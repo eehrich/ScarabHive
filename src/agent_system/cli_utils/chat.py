@@ -43,7 +43,7 @@ from .common import (
 from .attachments import sort_attachments
 from .session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
 from .session_defaults import session_defaults
-from ..core.session_presence import WAKE_TASK, SessionBusy, presence_for
+from ..core.session_presence import WAKE_TASK, SessionBusy, note_stop, presence_for
 from .agent_runner import wake_message
 
 logger = logging.getLogger(__name__)
@@ -509,6 +509,7 @@ async def run_chat_turn(
     try:
         async for ev in agent.run_events(
             task,
+            request_id=state.get("request_id"),
             session_id=session_id,
             llm_override=llm_override,
             llm_profile_info_override=llm_profile_info,
@@ -3164,7 +3165,11 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     delivered to the running agent instead of going through the prompt, still
     reaches the input history.
     """
-    state: dict[str, Any] = {"editor": editor}
+    # Named and claimed before it starts: a Ctrl-C before its run takes the
+    # session stops it all the same.
+    from ..utils.id import short_id
+    state: dict[str, Any] = {"editor": editor, "request_id": short_id()}
+    claimed = _claim_turn(ctx, state["request_id"])
     turn = loop.create_task(run_chat_turn(
         ctx.agent, task, ctx.session_id, renderer,
         show_status=ctx.show_status,
@@ -3193,10 +3198,27 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
         # The reader owns terminal state on POSIX -- it has to be restored on
         # every exit, including Ctrl-C, or the shell stays in cbreak.
         _stop_typing(loop, reader, poller, renderer, state)
+        if claimed is not None:
+            claimed.release(ctx.session_id, ctx.session_user)
     for key in ("typed_queue", "typed_partial"):
         if state.get(key):
             result[key] = state[key]
     return result
+
+
+def _claim_turn(ctx: "_ChatContext", request_id: str) -> Optional[Any]:
+    """The turn is the session's last run from its start (core/session_presence.py),
+    not only once its run takes the session: a stop noted in between (_cancel_turn)
+    would otherwise be the previous turn's business. Nested in the chat's own hold;
+    the run's hold under the same id nests in this one."""
+    presence = presence_for(getattr(ctx.agent, "system_config", None))
+    if presence is None:
+        return None
+    try:
+        return presence if presence.hold(ctx.session_id, ctx.session_user, ctx.entry_name,
+                                         run=request_id) else None
+    except SessionBusy:
+        return None   # another process has it; the chat's own hold said so already
 
 
 def _stop_typing(loop: asyncio.AbstractEventLoop, reader: _KeyReader,
@@ -3233,6 +3255,11 @@ def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     print("\nCancelling turn... (Ctrl-C again to force)", file=sys.stderr)
     request_id = state.get("request_id")
     if request_id:
+        # Its user stopped it: noted, so the session is let go marked and nothing
+        # starts it again by itself -- not the prompt's wake watcher, not leaving
+        # the chat (core/session_presence.py). Also when the Ctrl-C landed in the
+        # run's own frames and it let go before this.
+        note_stop(request_id)
         # Graceful: flips the cancellation token, the agent unwinds and
         # yields its cancelled/end events through the normal path.
         # KeyboardInterrupt is NOT an Exception -- a second Ctrl-C here has to

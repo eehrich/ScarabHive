@@ -23,6 +23,17 @@ A woken run carries its depth in HIVE_WAKE_DEPTH; at max_wake_depth nobody is
 woken, so sessions that answer each other cannot start each other forever.
 Sub-agents' sessions are never woken and never listed: they belong to the run
 that spawned them.
+
+A session whose last run its user stopped starts again only when somebody
+starts it: not for input left waiting, not for work of the stopped run that
+ends later and rings for it (wake_session knows that work by the run it came
+from). The input waits in its store for the next run. A stop is noted where it
+is made (note_stop: the web chat's Stop, Ctrl-C in a CLI), not asked of the
+run, which may let go before it hears of it or after it can be told. The run
+that took the session LAST decides: the holding process answers from memory,
+and its last hold leaves <session>.stopped. The next run lifts the mark as it
+takes the session; a hold that starts no run (/undo, an append, a woken run
+that steps aside) leaves it.
 """
 from __future__ import annotations
 
@@ -35,6 +46,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -318,13 +330,72 @@ def _take(path: Path, session_id: str) -> int:
         time.sleep(_RETRY_WAIT)
 
 
+#: Request ids of the runs their user stopped, noted where the stop is made.
+#: ponytail: one id per user stop for the life of the process.
+_stops: set[str] = set()
+_stops_lock = threading.Lock()
+
+
+def _belongs(request_id: str, run: str) -> bool:
+    """A run's tool calls, sub-agents and agent-as-tool runs carry its id as a prefix."""
+    return bool(run) and (request_id == run or request_id.startswith(run + "_"))
+
+
+def _note(request_id: str) -> None:
+    if request_id:
+        with _stops_lock:
+            _stops.add(request_id)
+
+
+def note_stop(request_id: str) -> None:
+    """Its user stopped this run -- the web chat's Stop, Ctrl-C in a CLI. Not for
+    a run that ends by its own failure, and not for a caller ending its sub-agent:
+    neither is its user stopping anything.
+
+    A session this process holds and whose last run it was is marked on disk at
+    once, not only when the process lets go: a process that ends before that
+    (a chat left open for hours, then closed) must not take the stop with it."""
+    if not request_id:
+        return
+    _note(request_id)
+    with _stores_lock:
+        stores = list(_stores.values())
+    for store in stores:
+        store._mark_stopped(request_id)
+
+
+def forget_stop(request_id: str) -> None:
+    """A new run is adopted under an id a caller chose (app.py): whatever an
+    earlier run of the same id was told is over (writer_jobs sends a run again
+    under its id)."""
+    with _stops_lock:
+        _stops.discard(request_id)
+
+
+def stopped_by_user(request_id: str) -> bool:
+    """Whether this run, or the run it belongs to, was stopped by its user."""
+    if not request_id:
+        return False
+    with _stops_lock:
+        return any(_belongs(request_id, run) for run in _stops)
+
+
+@dataclass
+class _Hold:
+    """This process's hold on a session."""
+    fd: int
+    holds: int = 1
+    last_run: str = ""  # the run that took it last: how that one ended is the session's
+    runs: set[str] = field(default_factory=set)  # the runs that took it while held, not nested ones
+
+
 class SessionPresence:
     """The lock files under one sessions directory, and the wake rules over them."""
 
     def __init__(self, root: str | Path, max_wake_depth: int = 3):
         self.root = Path(root)
         self.max_wake_depth = max_wake_depth
-        self._held: dict[Path, list[int]] = {}  # lock file -> [handle, holds] of this process
+        self._held: dict[Path, _Hold] = {}
         self._guard = threading.Lock()
 
     def _user_dir(self, user_id: str) -> Path:
@@ -336,8 +407,12 @@ class SessionPresence:
             return None
         return self._user_dir(user_id) / f"{session_id}.lock"
 
-    def hold(self, session_id: str, user_id: str, agent_name: str) -> bool:
-        """This process has the session in hand. Holds nest.
+    def hold(self, session_id: str, user_id: str, agent_name: str, run: str = "") -> bool:
+        """This process has the session in hand. Holds nest. ``run`` names a
+        run (the agent loop) by its request id: its hold lifts a stop mark, no
+        other hold does, and it is the session's last run unless it runs inside
+        a run that took the session in this hold (an agent-as-tool on its
+        caller's session).
 
         Raises SessionBusy while another process runs the session: two runs
         would both write the conversation and the last save would win. False
@@ -347,8 +422,13 @@ class SessionPresence:
         if path is None:
             return False
         with self._guard:
-            if path in self._held:
-                self._held[path][1] += 1
+            entry = self._held.get(path)
+            if entry is not None:
+                entry.holds += 1
+                if run and not any(_belongs(run, taken) for taken in entry.runs):
+                    entry.last_run = run
+                    entry.runs.add(run)
+                    _unlink(path.with_suffix(".stopped"))   # a run takes it: whatever stopped is over
                 return True
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -356,11 +436,13 @@ class SessionPresence:
             except OSError as exc:
                 logger.warning("Session presence: could not hold %s: %s", session_id, exc)
                 return False
+            if run:
+                _unlink(path.with_suffix(".stopped"))   # a run takes it: whatever stopped is over
             try:
                 _write(fd, {"agent": agent_name, "since": time.time()})
             except OSError:
                 pass  # the lock is what counts; the content only names the agent
-            self._held[path] = [fd, 1]
+            self._held[path] = _Hold(fd, last_run=run, runs={run} if run else set())
             return True
 
     def held_here(self, session_id: str, user_id: str) -> bool:
@@ -375,23 +457,37 @@ class SessionPresence:
         with self._guard:
             return path in self._held
 
-    def release(self, session_id: str, user_id: str) -> None:
+    def release(self, session_id: str, user_id: str, stopped: bool = False) -> None:
         """Undo one hold. The last one lets the session go, and input waiting
-        for it wakes it."""
+        for it wakes it -- unless its last run was stopped by its user.
+
+        ``stopped`` is for a holder around a run that saw its user stop it where
+        the run cannot hear of it (agent-run: Ctrl-C cancels the task, not the
+        run): it notes the stop for the session's last run -- and marks the
+        session when no run took it yet (a Ctrl-C while a CLI loads it)."""
         path = self._lock_path(session_id, user_id)
         with self._guard:
             entry = self._held.get(path)
             if entry is None:
                 return
-            entry[1] -= 1
-            if entry[1]:
+            if stopped:
+                _note(entry.last_run)
+                self._touch_stopped(path, session_id)
+            entry.holds -= 1
+            if entry.holds:
                 return
             del self._held[path]
+            if stopped_by_user(entry.last_run):
+                # Before the lock goes: a ring in between would find it idle and
+                # wake it.
+                self._touch_stopped(path, session_id)
+            if path.with_suffix(".stopped").exists():
+                _unlink(path.with_suffix(".pending"))   # the input waits in its store; its doorbell goes
             try:
-                _drop(entry[0], path)
+                _drop(entry.fd, path)
             except OSError as exc:
                 logger.warning("Session presence: releasing %s: %s", session_id, exc)
-        if path.with_suffix(".pending").exists():
+        if self.pending(session_id, user_id):
             logger.info("Session %s let go with input waiting; waking it", session_id)
             try:
                 self.notify(session_id, user_id)
@@ -401,6 +497,20 @@ class SessionPresence:
                 # the exception already in flight. hold() guards the same way.
                 logger.warning("Session presence: waking %s: %s", session_id, exc)
 
+    @staticmethod
+    def _touch_stopped(path: Path, session_id: str) -> None:
+        try:
+            path.with_suffix(".stopped").touch()
+        except OSError as exc:
+            logger.warning("Session presence: marking %s stopped: %s", session_id, exc)
+
+    def _mark_stopped(self, request_id: str) -> None:
+        """Mark the sessions held here whose last run a stop just covered."""
+        with self._guard:
+            for path, entry in self._held.items():
+                if _belongs(entry.last_run, request_id):
+                    self._touch_stopped(path, path.stem)
+
     def take_pending(self, session_id: str, user_id: str) -> None:
         """A step of the session is about to hand the waiting input over."""
         path = self._lock_path(session_id, user_id)
@@ -409,9 +519,23 @@ class SessionPresence:
 
     def pending(self, session_id: str, user_id: str) -> bool:
         """Whether input is waiting for the session. A woken run asks before it
-        starts: whoever held the session meanwhile may have taken it over."""
+        starts: whoever held the session meanwhile may have taken it over. Not
+        for a session whose last run its user stopped: its input waits for a
+        run somebody starts."""
         path = self._lock_path(session_id, user_id)
-        return path is not None and path.with_suffix(".pending").exists()
+        return (path is not None and path.with_suffix(".pending").exists()
+                and not self._stopped(path))
+
+    def _stopped(self, path: Path) -> bool:
+        """Whether the session's last run was stopped by its user: said by this
+        process while a run of it held the session, by <session>.stopped
+        otherwise."""
+        with self._guard:
+            entry = self._held.get(path)
+            last_run = entry.last_run if entry is not None else ""
+        if last_run:
+            return stopped_by_user(last_run)
+        return path.with_suffix(".stopped").exists()
 
     def get(self, session_id: str, user_id: str) -> Optional[dict[str, Any]]:
         """{"status": running | waking | idle, "agent": ..., "sub_agent": ...}
@@ -478,6 +602,11 @@ class SessionPresence:
                 _unlink(path.with_suffix(".pending"))
             return "unknown", "no such session"
         pending = path.with_suffix(".pending")
+        if self._stopped(path):
+            # Its user stopped its last run: nothing starts it again by itself. The
+            # input waits in its store for the next run.
+            _unlink(pending)
+            return "queued", STOPPED
         pending.touch()  # before the lock: a holder letting go right now still finds it
         keep = False     # the lock file stays: a run of this session is on its way
         waiting = True   # the marker stays: that run has not taken the input yet
@@ -486,6 +615,11 @@ class SessionPresence:
             if fd is None:
                 return "delivered_next_step", ""
             try:
+                if path.with_suffix(".stopped").exists():
+                    # Again under the lock: a stopped run that let go after the
+                    # check above marked the session before its lock went.
+                    waiting = False
+                    return "queued", STOPPED
                 content = _read(fd)
                 if alive(content.get("wake_pid"), content.get("wake_started")):
                     keep = True
@@ -556,6 +690,11 @@ def presence_for(system_config: Any) -> Optional[SessionPresence]:
 #: visible, not quietly demoted.
 PRESENCE_OFF = "session presence is off (config: session_presence.enabled)"
 
+#: notify()'s note for a session whose user stopped its last run, and
+#: wake_session's for work such a run started. The user's choice, not a fault:
+#: neither is reported as a warning.
+STOPPED = "its user stopped its last run; nothing starts it again by itself"
+
 
 def wake_blocked(system_config: Any, session_id: str, user_id: str) -> str:
     """Why waking this session is ruled out already, or "" when it is not.
@@ -613,13 +752,16 @@ WAKE_RETRIES = 30
 #: lets go at some point, and one a wake run is ALREADY on its way to is being
 #: read right now -- ringing on through the second starts a second wake run for
 #: news somebody is reading. notify() gave both the same answer until 20.09.2026;
-#: "being_woken" ends the ringing here by not being in this set.
+#: "being_woken" ends the ringing here by not being in this set. A session its
+#: user stopped is rung on as well (the loop below): the next run the user starts
+#: lifts its mark, and work of a run nobody stopped is still news then.
 RING_AGAIN = frozenset({"delivered_next_step"})
 
 
 async def wake_session(system_config: Any, session_id: str, user_id: str,
                        what: str = "",
-                       still_needed: Optional[Callable[[], bool]] = None) -> str:
+                       still_needed: Optional[Callable[[], bool]] = None,
+                       started_by: Optional[str] = None) -> str:
     """Tell a session that something it has been waiting for is over.
 
     For work that outlives the turn which started it -- a sub-agent, a
@@ -646,6 +788,17 @@ async def wake_session(system_config: Any, session_id: str, user_id: str,
     arrives at the prompt. A one-shot ``agent-cli run`` ends its turn and
     takes the work with it, and then nothing is left to wake anybody.
 
+    Work of a run its user stopped rings nobody: the user stopped it, and the
+    next run the user starts is no reason to deliver it either. The run is the
+    one the caller's task inherited (tools/status.current_request_id) -- the
+    work's task is started from the run's tool call, and its tool calls and
+    sub-agents carry the run's id as a prefix. A task started outside any run
+    (a sweeper) carries whichever run started it, or none, and a task that
+    iterated another run's stream carries that one's -- a caller that knows the
+    run passes it as ``started_by``. Work of another run
+    rings on while the session is marked stopped, within the same budget: the
+    user's next run lifts the mark.
+
     A failed wake costs its caller a poll, never the operation: by the time
     this runs the operation is over and recorded, and letting the failure
     through would have the caller's error handling record a finished job as
@@ -663,6 +816,9 @@ async def wake_session(system_config: Any, session_id: str, user_id: str,
             report("Not waking %s for %s: %s", session_id, what or "finished work", blocked)
             return ""
         presence = presence_for(system_config)
+        if started_by is None:
+            from ..tools.status import current_request_id
+            started_by = current_request_id.get() or ""
         # notify() reads and writes lock files and may start a process. The
         # loop this runs on serves every other request of the process, so it
         # does not wait for that here.
@@ -684,8 +840,13 @@ async def wake_session(system_config: Any, session_id: str, user_id: str,
                     logger.debug("Stopped ringing %s for %s: nobody waits for it any more",
                                  session_id, what or "finished work")
                     return state
+            # Before every ring, the first included: the user may start a run
+            # meanwhile, which lifts the session's mark but does not want this.
+            if stopped_by_user(started_by):
+                state, note = "queued", STOPPED
+                break
             state, note = await asyncio.to_thread(presence.notify, session_id, user_id)
-            if state not in RING_AGAIN:
+            if state not in RING_AGAIN and note != STOPPED:
                 break
 
         # notify() has exits that wake nobody -- a sub-agent's session, a wake
@@ -700,7 +861,7 @@ async def wake_session(system_config: Any, session_id: str, user_id: str,
         # every attribute access on a logger builds a fresh bound method -- so
         # the line said "Did NOT wake" for a wake that worked.
         woke = state in ("woke_session", "delivered_next_step", "being_woken")
-        report = logger.info if woke else logger.warning
+        report = logger.info if woke or note == STOPPED else logger.warning
         report("%s %s for %s: %s%s", "Woke" if woke else "Did NOT wake",
                session_id, what or "finished work", state, f" ({note})" if note else "")
         return state
