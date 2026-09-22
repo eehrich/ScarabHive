@@ -1588,6 +1588,10 @@
         && failed.textContent.includes("the helper's model is down"), 'a failed sub-run does not say so');
       const stopped = box.querySelector('.sub-run[data-run-id="r-subrun_008_async_x5"]');
       need(stopped && stopped.dataset.state === 'error', 'a cancelled sub-run does not say so');
+      // why it failed stands where the answer would: folded away it is as good as unsaid
+      const reason = failed.querySelector(':scope > .sub-run-body > .container-section > .assistant-text');
+      need(reason.style.display !== 'none' && reason.textContent.includes("the helper's model is down"),
+        'a failed sub-run keeps the reason folded away');
       // open by default (chat.sub_agents); its header folds and opens it, and so takes it in hand
       const bodyShown = (run) => run.querySelector(':scope > .sub-run-body').getClientRects().length > 0;
       need(bodyShown(sub) && header.getAttribute('aria-expanded') === 'true', 'a sub-run does not start open');
@@ -1609,7 +1613,45 @@
       need(stray && stray.dataset.state === 'unfinished', 'the stray sub-run is not marked unfinished');
       need(stray.querySelector('.open-mark') && !stray.querySelector('.spinner'), 'the stray sub-run still spins');
       // and it has answered too, so its steps fold like its caller's -- by its OWN answer
-      return subStep('1').querySelector(':scope > .container-body').style.display === 'none';
+      need(subStep('1').querySelector(':scope > .container-body').style.display === 'none',
+        "a sub-agent's steps did not fold at its own answer");
+      // opening a fold is the viewer saying what they want to look at: the chat stops
+      // following, or the content that just grew pins the end over it
+      const scroll = $('#chatScroll');
+      const smooth = scroll.style.scrollBehavior;
+      scroll.style.scrollBehavior = 'auto';
+      try {
+        scroll.scrollTop = scroll.scrollHeight;   // at the end, so the chat follows
+        await painted();
+        // the LAST folded one: what it opens lies below it and above the end, where the
+        // browser does not keep the position for us the way it does for growth above
+        const folded = [...doc().querySelectorAll('#chat .step-section > .container-header')]
+          .filter((header) => header.nextElementSibling.style.display === 'none').pop();
+        need(folded, 'fixture: nothing was folded to open');
+        folded.click();
+        await painted();
+        need(scroll.scrollTop + scroll.clientHeight < scroll.scrollHeight - 4,
+          'opening a fold pinned the chat back to its end');
+        // A box that opens by its own trigger (a sub-agent's run, thinking) says the same.
+        // Measured on what follows rather than on what it opened: a box may hold three
+        // lines, and three lines are not a distance anybody could see.
+        scroll.scrollTop = scroll.scrollHeight;
+        await painted();
+        header.click();                    // shut again
+        header.click();                    // and opened by hand
+        const stood = scroll.scrollTop;
+        const tall = doc().createElement('div');
+        tall.className = 'follow-probe';
+        tall.style.height = '1500px';
+        $('#chat').appendChild(tall);
+        await painted();
+        const after = scroll.scrollTop;   // read BEFORE the probe goes: removing it clamps
+        tall.remove();                    // the position back and makes both cases look alike
+        return need(after === stood,
+          'a box opened by hand left the chat following, and the next content pulled it away');
+      } finally {
+        scroll.style.scrollBehavior = smooth;
+      }
     } finally {
       cookie('stub_stream', null);
       forgetRun();

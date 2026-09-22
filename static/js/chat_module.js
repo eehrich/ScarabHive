@@ -95,7 +95,16 @@
     lastTop = el.scrollTop;
   }
 
-  // force: the viewer asked for the end and gets it, whatever they did in between.
+  // Opened by hand: the viewer said what they want to look at, and the end is not it.
+  // Without this the chat pins itself over what they just unfolded -- the content grew,
+  // and growth alone never moves the position, so nothing else says they left the end.
+  function readingHere() {
+    following = false;
+  }
+
+  // force: the end is what the viewer asked for (a message sent, a session opened), so
+  // it is not weighed against where they are -- but a scroll of theirs in the meantime
+  // still counts, as it does for everything else.
   function pinEnd(force = false) {
     const el = scroller();
     if (!el) return;
@@ -1232,6 +1241,7 @@
       const open = body.style.display === 'none';
       body.style.display = open ? 'block' : 'none';
       markOpen(section, open);
+      if (open) readingHere();
       // Touched by hand: from here on this section is the viewer's, and the next step
       // starting must not fold it away under them.
       section.dataset.touched = 'true';
@@ -1538,6 +1548,7 @@
     const flip = () => {
       body.hidden = !body.hidden;
       trigger.setAttribute('aria-expanded', body.hidden ? 'false' : 'true');
+      if (!body.hidden) readingHere();
     };
     trigger.addEventListener('click', flip);
     trigger.addEventListener('keydown', (e) => {
@@ -2324,7 +2335,8 @@
       setFolded(element.querySelector(':scope > .sub-run-header'), element.querySelector(':scope > .sub-run-body'),
         chatPrefs.sub_agents === 'collapsed');
     });
-    chatContainer.querySelectorAll('.sub-run-body > .container-section:not([data-touched])').forEach((section) => {
+    chatContainer.querySelectorAll(
+        '.sub-run-body > .container-section:not([data-touched]):not([data-reason])').forEach((section) => {
       const body = section.querySelector(':scope > .assistant-text');
       if (!body) return;
       const open = chatPrefs.sub_agent_output !== 'collapsed';
@@ -2966,7 +2978,7 @@
       if (storedSessions.get(sessionId) === read) storedSessions.delete(sessionId);
       view.element.dataset.stored = 'failed';   // read again if its live events take it over
       if (!view.element.isConnected || view.live) return;   // the live events show it
-      showSection(view.t);
+      showReason(view.t);
       view.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(`Could not be read: ${error.message}`)}</div>`;
       markSubRun(view, 'error');
       return;
@@ -3094,7 +3106,7 @@
         markSubRun(view, 'done');
         break;
       case 'error':
-        showSection(view.t);
+        showReason(view.t);
         view.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(ev.message || ev.error || 'Error')}</div>`;
         markSubRun(view, 'error');
         break;
@@ -4011,6 +4023,20 @@
     return followRun();
   };
   
+  // Where a failure puts its reason, the answer's own place: shown AND open. The setting
+  // that folds a sub-agent's answer away (chat.sub_agent_output) is about answers; a
+  // reason nobody sees is the same as none, and the header says only that it went wrong.
+  function showReason(element) {
+    showSection(element);
+    const section = element.closest('.container-section');
+    if (!section || !section.querySelector(':scope > [data-toggle="response"]')) return;
+    element.style.display = 'block';
+    markOpen(section, true);
+    // Not the setting's business from here on: it folds answers, and this box holds a
+    // reason -- a later change of the setting would take it back out of sight.
+    section.dataset.reason = 'true';
+  }
+
   function showSection(element) {
     const section = element.closest('.container-section');
     if (section && section.style.display === 'none') {
