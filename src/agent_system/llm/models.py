@@ -496,6 +496,11 @@ class LLMClient:
         return recent(self.served_agent, getattr(self, "model", None),
                       self.provider_affinity_minutes)
 
+    def forget_backend(self) -> None:
+        """Stop starting this agent's calls on that backend -- it refused one."""
+        from .backend_affinity import forget
+        forget(self.served_agent, getattr(self, "model", None))
+
     async def chat(self, messages: list[ChatMessage], cancellation_token=None, status_scope=None) -> str:
         raise NotImplementedError
 

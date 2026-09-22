@@ -52,6 +52,12 @@ def recent(agent: Optional[str], model: Optional[str],
     return entry[0]
 
 
+def forget(agent: Optional[str], model: Optional[str]) -> None:
+    """Drop what is remembered: that backend just refused this agent's call."""
+    if agent and model:
+        _last.pop((agent, model), None)
+
+
 def clear() -> None:
     """Forget every backend (test isolation)."""
     _last.clear()

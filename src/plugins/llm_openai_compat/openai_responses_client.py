@@ -101,6 +101,7 @@ from plugins.llm_common.model_dialects import (
 from .httpx_client import (
     HTTPXTimeoutConfig,
     openrouter_routing_info,
+    release_provider_pin,
     routing_pinned_to_last_backend,
 )
 from plugins.llm_common.openai_utils import convert_audio_to_input_audio
@@ -1174,6 +1175,10 @@ class OpenAIResponsesClient(LLMClient):
             httpx_verify(self.ssl_verify), recent_backend=self.recent_backend())
             if self._is_openrouter else self.provider_routing)
 
+        # A pin is one backend with no fallbacks, so a refusal reaches us.
+        # Local, never on self: one client serves parallel runs.
+        pinned = provider is not self.provider_routing
+
         def build_payload() -> dict:
             payload = self._build_payload(messages, tools)
             if provider:
@@ -1181,6 +1186,19 @@ class OpenAIResponsesClient(LLMClient):
             return payload
 
         payload = build_payload()
+
+        def release_pin_after_refusal() -> bool:
+            """A refusal sends the retry out as the model entry is configured."""
+            nonlocal pinned, provider
+            if not pinned:
+                return False
+            pinned = False
+            provider = self.provider_routing
+            self.forget_backend()
+            release_provider_pin(payload, self.provider_routing)
+            logger.info("Provider pin released after a refusal (model=%s)", self.model)
+            return True
+
         url = f"{self.base_url}/responses"
         _enc_retried = False
         # Muss VOR der Schleife stehen: gesetzt wird es nur in den 429-Zweigen,
@@ -1284,6 +1302,14 @@ class OpenAIResponsesClient(LLMClient):
                             self._PROVIDER, self.model, url, stream,
                             "429 flex->standard tier drop", attempt, self.max_retries + 1)
                         continue
+                    if release_pin_after_refusal():
+                        # Like the tier drop above: the request changes
+                        # substantially (another backend may answer), so this
+                        # costs no retry slot.
+                        await self._notify_retry(
+                            self._PROVIDER, self.model, url, stream,
+                            "429, provider pin released", attempt, self.max_retries + 1)
+                        continue
                     retry_after = None
                     try:
                         retry_after = float(response.headers.get("retry-after", ""))
@@ -1300,7 +1326,7 @@ class OpenAIResponsesClient(LLMClient):
 
                 if response.status_code >= 500:
                     if attempt < self.max_retries:
-                        backoff = self.retry_backoff * (2 ** attempt)
+                        backoff = 0.0 if release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
                         logger.warning(
                             f"Responses request {response.status_code}, "
                             f"retry {attempt + 1}/{self.max_retries} in {backoff:.0f}s: {self.model}")
@@ -1319,6 +1345,16 @@ class OpenAIResponsesClient(LLMClient):
                         status_code=response.status_code)
 
                 if response.status_code >= 400:
+                    # A 404 under our own pin: that backend does not serve this
+                    # model (endpoint list changed, alias moved on). Not a dead
+                    # model until a request without the pin says so. Costs no
+                    # retry slot -- the request changes substantially.
+                    if response.status_code == 404 and release_pin_after_refusal():
+                        await self._notify_retry(
+                            self._PROVIDER, self.model, url, stream,
+                            "404, provider pin released", attempt, self.max_retries + 1)
+                        continue
+
                     # Backstop only — the native item round-trip is the fix for
                     # the encrypted-reasoning 400s of the Chat Completions
                     # bridge. Should one still occur (defective item straight
@@ -1467,7 +1503,7 @@ class OpenAIResponsesClient(LLMClient):
                 #    filter) must keep reaching the fallback chain at once.
                 if (body_err and attempt < self.max_retries
                         and self._is_transient_body_error(body_err)):
-                    backoff = self.retry_backoff * (2 ** attempt)
+                    backoff = 0.0 if release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
                     logger.warning(
                         "Responses body server-error, retry %d/%d in %.0fs: %s (%s)",
                         attempt + 1, self.max_retries, backoff, self.model,

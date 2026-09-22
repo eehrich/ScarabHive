@@ -149,35 +149,39 @@ async def routing_pinned_to_last_backend(provider_routing: Optional[dict],
                                          base_url: str,
                                          verify: Any,
                                          recent_backend: Optional[str] = None) -> Optional[dict]:
-    """provider_routing with the backend of the latest recorded turn in front.
+    """The known backend as a HARD pin: ``order: [it]``, ``allow_fallbacks: false``.
 
-    That backend holds the run's prompt cache, and it is the only one that can
-    verify the encrypted reasoning the next request replays. Measured
-    2026-09-11 with two backends configured for one model: the first refused
-    102 of 102 histories whose last turn the second had served and accepted
-    135 of 135 of its own -- every later turn of such a run paid a 400 and
-    lost the cache.
+    That backend holds the prompt cache, and it is the only one that can
+    verify the encrypted reasoning a replay carries. Measured 2026-09-11 with
+    two backends configured for one model: the first refused 102 of 102
+    histories whose last turn the second had served and accepted 135 of 135
+    of its own -- every later turn of such a run paid a 400 and lost the cache.
 
-    Reordered only, never narrowed or widened: the other configured backends
-    stay behind it, so an outage of the pinned one still falls through to
-    them, and a backend the configuration does not list is not added. Derived
-    from the history (``served_by`` on the assistant messages) on every
-    request and never kept on a client -- one client serves every parallel
-    session of an agent type.
+    A soft order does not hold. ``allow_fallbacks: false`` only keeps out
+    backends OUTSIDE the list, so a list of two still rotates on a refusal
+    (measured: 34 of 38 backend changes inside a run), and an entry without
+    any ``order`` is load-balanced freely by the gateway: one v6 coder call on
+    22.09.2026 went to a backend whose cache was cold and cost four times its
+    neighbours. Hence one entry and no fallbacks -- a refusal reaches us
+    instead of being routed around, and ``release_provider_pin`` then sends
+    the retry out as the model entry is configured.
 
-    A history without one -- a run's first call -- starts on
-    ``recent_backend``: the one that answered the agent type lately
+    Which backend: the latest ``served_by`` of this run's own history, else
+    ``recent_backend`` -- the one that answered the agent type lately
     (``LLMClient.recent_backend``), which holds the prompt the type's runs
-    share. The run's own turns always win over it: only they say which
-    backend can verify the reasoning they replay.
+    share. The run's own turns always win: only they say which backend can
+    verify the reasoning they replay.
 
-    The metadata names the backend by display name, ``order`` takes slugs; the
-    gateway's provider list translates. A configured entry matches by its
-    slug before the first "/" and keeps its suffix (``<slug>/fp8``).
+    Nothing is pinned without a backend to pin to, and a configured ``order``
+    that does not list it stays as it is -- the entry decides WHICH backends
+    may serve, this only decides which of them does. The metadata names a
+    backend by display name, ``order`` takes slugs; the gateway's provider
+    list translates. A configured entry matches by its slug before the first
+    "/" and keeps its suffix (``<slug>/fp8``).
     """
-    order = provider_routing.get("order") if isinstance(provider_routing, dict) else None
-    if not isinstance(order, list):
-        return provider_routing
+    routing = provider_routing if isinstance(provider_routing, dict) else None
+    order = routing.get("order") if routing else None
+    order = order if isinstance(order, list) else None
     served = None
     for msg in reversed(messages):
         role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
@@ -191,12 +195,34 @@ async def routing_pinned_to_last_backend(provider_routing: Optional[dict],
     if served is None:
         return provider_routing
     slug = await _provider_slug(base_url, served, verify)
-    front = [entry for entry in order
-             if isinstance(entry, str) and entry.split("/")[0] == slug]
-    if not front or order[:len(front)] == front:
+    if not slug:
         return provider_routing
-    return {**provider_routing,
-            "order": front + [entry for entry in order if entry not in front]}
+    if order is not None:
+        # The configured entries for that backend, suffixes and all. None of
+        # them means the configuration does not allow it: leave the entry be.
+        pinned = [entry for entry in order
+                  if isinstance(entry, str) and entry.split("/")[0] == slug]
+        if not pinned:
+            return provider_routing
+    else:
+        pinned = [slug]
+    if routing and routing.get("order") == pinned and routing.get("allow_fallbacks") is False:
+        return provider_routing
+    return {**(routing or {}), "order": pinned, "allow_fallbacks": False}
+
+
+def release_provider_pin(payload: dict, provider_routing: Optional[dict]) -> None:
+    """Take the pin out of *payload*: the pinned backend refused this call.
+
+    The retry then travels as the model entry is configured -- for an entry
+    with an ``order`` that is its own list again, for one without any the
+    gateway chooses. Only a refusal gets this far: the pin is one backend
+    with no fallbacks, so nothing else can have answered.
+    """
+    if provider_routing:
+        payload["provider"] = provider_routing
+    else:
+        payload.pop("provider", None)
 
 
 @dataclass
@@ -1190,12 +1216,28 @@ class HTTPXOpenAIClient(LLMClient):
 
         self._apply_gateway_extras(payload, resolved_cache_key)
 
-        # Provider routing (OpenRouter): bias toward a sticky backend so the
-        # implicit prompt cache stays warm. Only honored by OpenRouter.
-        if self.provider_routing and self._is_openrouter:
-            payload["provider"] = await routing_pinned_to_last_backend(
+        # Provider routing (OpenRouter): the known backend as a hard pin, so
+        # the prompt cache stays warm. Only honored by OpenRouter. ``pinned``
+        # is local, never on self: one client serves parallel runs.
+        pinned = False
+        if self._is_openrouter:
+            provider = await routing_pinned_to_last_backend(
                 self.provider_routing, messages, self.base_url, self._verify,
                 recent_backend=self.recent_backend())
+            if provider:
+                payload["provider"] = provider
+            pinned = provider is not self.provider_routing
+
+        def _release_pin_after_refusal() -> bool:
+            """A refusal sends the retry out as the model entry is configured."""
+            nonlocal pinned
+            if not pinned:
+                return False
+            pinned = False
+            self.forget_backend()
+            release_provider_pin(payload, self.provider_routing)
+            logger.info("Provider pin released after a refusal (model=%s)", self.model)
+            return True
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
@@ -1274,7 +1316,9 @@ class HTTPXOpenAIClient(LLMClient):
                         if attempt < self.rate_limit_max_retries:
                             base = retry_after or (self.rate_limit_backoff * (1.5 ** attempt))
                             jitter = base * random.uniform(0.0, 0.5)
-                            backoff_time = base + jitter
+                            # No waiting out a pinned backend's 429: the retry is
+                            # free to go to another one.
+                            backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
                             logger.warning(f"Rate limited (429), retrying in {backoff_time:.0f}s (attempt {attempt + 1}/{self.rate_limit_max_retries})")
                             await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)")
                             await self._notify_retry("openai_httpx", self.model, url, False, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
@@ -1302,7 +1346,7 @@ class HTTPXOpenAIClient(LLMClient):
 
                     # Handle server errors (5xx) - retry with exponential backoff
                     if response.status_code >= 500 and attempt < self.max_retries:
-                        backoff_time = self.retry_backoff * (2 ** attempt)
+                        backoff_time = 0.0 if _release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
                         logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
                         await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
                         await self._notify_retry("openai_httpx", self.model, url, False, f"Server error ({response.status_code})", attempt, self.max_retries + 1)
@@ -1313,6 +1357,15 @@ class HTTPXOpenAIClient(LLMClient):
                     if response.status_code >= 400:
                         error_text = response.text[:200] if response.text else ""
                         error_msg = f"HTTP {response.status_code}: {error_text}"
+
+                        # A 404 under our own pin: that backend does not serve
+                        # this model (endpoint list changed, alias moved on).
+                        # Not a dead model until a request without the pin says so.
+                        if response.status_code == 404 and _release_pin_after_refusal():
+                            await self._notify_retry(
+                                "openai_httpx", self.model, url, False,
+                                "404, provider pin released", attempt, self.max_retries + 1)
+                            continue
 
                         # Self-healing: OpenAI encrypted-reasoning 400 (defective
                         # blob from the OpenRouter bridge) can arrive as an
@@ -1436,7 +1489,7 @@ class HTTPXOpenAIClient(LLMClient):
                     if _body_429_msg and attempt < self.rate_limit_max_retries:
                         base = self.rate_limit_backoff * (1.5 ** attempt)
                         jitter = base * random.uniform(0.0, 0.5)
-                        backoff_time = base + jitter
+                        backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
                         tier_note = ""
                         if payload.get("service_tier"):
                             dropped = payload.pop("service_tier")
@@ -1722,12 +1775,28 @@ class HTTPXOpenAIClient(LLMClient):
 
         self._apply_gateway_extras(payload, resolved_cache_key)
 
-        # Provider routing (OpenRouter): bias toward a sticky backend so the
-        # implicit prompt cache stays warm. Only honored by OpenRouter.
-        if self.provider_routing and self._is_openrouter:
-            payload["provider"] = await routing_pinned_to_last_backend(
+        # Provider routing (OpenRouter): the known backend as a hard pin, so
+        # the prompt cache stays warm. Only honored by OpenRouter. ``pinned``
+        # is local, never on self: one client serves parallel runs.
+        pinned = False
+        if self._is_openrouter:
+            provider = await routing_pinned_to_last_backend(
                 self.provider_routing, messages, self.base_url, self._verify,
                 recent_backend=self.recent_backend())
+            if provider:
+                payload["provider"] = provider
+            pinned = provider is not self.provider_routing
+
+        def _release_pin_after_refusal() -> bool:
+            """A refusal sends the retry out as the model entry is configured."""
+            nonlocal pinned
+            if not pinned:
+                return False
+            pinned = False
+            self.forget_backend()
+            release_provider_pin(payload, self.provider_routing)
+            logger.info("Provider pin released after a refusal (model=%s)", self.model)
+            return True
 
         # Add max_tokens if configured (limits output length)
         if self.max_tokens:
@@ -1866,7 +1935,9 @@ class HTTPXOpenAIClient(LLMClient):
                             if attempt < self.rate_limit_max_retries:
                                 base = retry_after or (self.rate_limit_backoff * (1.5 ** attempt))
                                 jitter = base * random.uniform(0.0, 0.5)
-                                backoff_time = base + jitter
+                                # No waiting out a pinned backend's 429: the retry is
+                                # free to go to another one.
+                                backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
                                 logger.warning(f"Rate limited (429), retrying in {backoff_time:.0f}s (attempt {attempt + 1}/{self.rate_limit_max_retries})")
                                 await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)")
                                 await self._notify_retry("openai_httpx", self.model, url, True, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
@@ -1888,7 +1959,7 @@ class HTTPXOpenAIClient(LLMClient):
 
                         # Handle server errors (5xx) - retry with exponential backoff
                         if response.status_code >= 500 and attempt < self.max_retries:
-                            backoff_time = self.retry_backoff * (2 ** attempt)
+                            backoff_time = 0.0 if _release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
                             logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
                             await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
                             await self._notify_retry("openai_httpx", self.model, url, True, f"Server error ({response.status_code})", attempt, self.max_retries + 1)
@@ -1901,6 +1972,14 @@ class HTTPXOpenAIClient(LLMClient):
                             error_body = await response.aread()
                             error_text = error_body.decode('utf-8', errors='replace')
                             error_msg = f"HTTP {response.status_code}: {error_text[:200]}"
+                            # A 404 under our own pin — see the non-streaming path.
+                            if response.status_code == 404 and _release_pin_after_refusal():
+                                await self._notify_retry(
+                                    "openai_httpx", self.model, url, True,
+                                    "404, provider pin released (stream)", attempt,
+                                    self.max_retries + 1)
+                                continue
+
                             # Self-healing: OpenAI encrypted-reasoning 400
                             # arriving as an HTTP-status 400 (mirrors the
                             # non-streaming path). Two-stage recovery, heals
@@ -2417,7 +2496,7 @@ class HTTPXOpenAIClient(LLMClient):
                 if _body_429_retry_msg and attempt < self.rate_limit_max_retries:
                     base = self.rate_limit_backoff * (1.5 ** attempt)
                     jitter = base * random.uniform(0.0, 0.5)
-                    backoff_time = base + jitter
+                    backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
                     tier_note = ""
                     if payload.get("service_tier"):
                         dropped = payload.pop("service_tier")

@@ -82,11 +82,29 @@ naiver Vergleich schlüge ausgerechnet bei den härtesten Pins Fehlalarm.
 Gemeldet, nicht gerichtet.
 
 **Anbieter-Pin:** Jeder Assistant-Turn merkt sich als `served_by`, welches
-Backend geliefert hat. Der nächste Request desselben Laufs stellt die
-passenden Einträge von `provider_routing.order` nach vorn. Die Liste wird nur
-umsortiert, nie gekürzt oder erweitert, der Fallback auf die übrigen Einträge
-bleibt also. Den Slug zum Anzeigenamen liefert die Anbieterliste; im Code
-steht kein Anbietername. Ein Profil ohne `order` bekommt keinen Pin.
+Backend geliefert hat. Der nächste Request geht als **harter Pin** darauf
+raus: `order: [dieses eine]` plus `allow_fallbacks: false`. Den Slug zum
+Anzeigenamen liefert die Anbieterliste; im Code steht kein Anbietername.
+
+Warum hart: `allow_fallbacks: false` hält nur Anbieter **außerhalb** der Liste
+draußen. Eine Liste mit zwei Einträgen rotiert trotzdem — bei DeepSeek in 34
+von 38 Backend-Wechseln innerhalb eines Laufs —, und ein Eintrag ganz ohne
+`order` wird vom Gateway frei verteilt: ein `coder`-Aufruf am 22.09.2026 landete
+so auf einem Backend mit kaltem Cache und kostete das Vierfache seiner
+Nachbarn. Deshalb ein Eintrag ohne Ausweichweg; ein Modelleintrag ohne
+`order` wird genauso gepinnt.
+
+Der Eintrag entscheidet weiter, **welche** Backends überhaupt dürfen: steht
+das gelieferte nicht in seiner `order`, bleibt der Eintrag unverändert.
+
+**Lehnt das gepinnte Backend ab** (429, 5xx, oder 404 „No endpoints found",
+wenn es das Modell nicht mehr führt), geht derselbe Aufruf sofort noch einmal
+raus — ohne Pin, also so, wie der Modelleintrag konfiguriert ist, und ohne
+Rate-Limit-Wartezeit; dort darf das Gateway wieder wählen. Der Agent-Typ
+merkt sich das abgelehnte Backend nicht weiter. Was das Backend dagegen
+beantwortet hat (etwa ein 400 wegen eines defekten Reasoning-Items), ist keine
+Ablehnung: die Heilung bleibt auf demselben Backend, sonst scheitert der
+zurückgespielte Verlauf erneut.
 
 **Der erste Aufruf eines Laufs** hat noch keinen Assistant-Turn. Er startet
 auf dem Backend, das den **Agent-Typ** zuletzt bedient hat — gleich welche
