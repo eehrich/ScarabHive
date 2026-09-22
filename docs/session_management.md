@@ -75,8 +75,20 @@ Each message in the `messages` array includes:
 | `tool_call_id` | string | ID reference for tool responses (optional) |
 | `timestamp` | string | ISO 8601 timestamp (optional) |
 | `reasoning_content` | string | Chain-of-thought reasoning (optional) |
+| `request_id` | string | Auf der ersten Nachricht eines Laufs dessen Request-ID (optional; nie an einen Provider). |
+| `tool_request_ids` | object | Auf einer Assistant-Nachricht mit Tool-Calls: je Call-ID die Request-ID, unter der sein Tool läuft — gestempelt, sobald die Tools starten, also schon, während der Aufruf noch wartet (optional; nie an einen Provider). Ein Lauf, den ein Tool startet, trägt diese ID als Präfix (`<id>_async_…`, `<id>_sub_…`). |
+| `step` | int | Auf einer Assistant-Nachricht: der Schritt der Loop, aus dem sie kommt, so nummeriert wie die Live-Ereignisse des Laufs — auch ein Schritt, der nichts gespeichert hat, zählt mit (optional; nie an einen Provider). |
 
 The `estimated_tokens` field is computed when the session is saved using `~4 chars/token` for text and `~1000 tokens` for images.
+
+Die Zeile einer Sub-Session in `.subs.{parent_id}.index.json` trägt zusätzlich
+`runs`: die Request-IDs, mit denen ihre Läufe geöffnet wurden (jede Nachricht
+mit `request_id`), abgeleitet bei jedem Speichern und bei jedem Neuaufbau des
+Index. `GET
+/api/sessions/{id}/children` gibt sie mit; der Chat hängt damit nach einem
+Reload jeden Lauf eines Sub-Agents unter den Aufruf, der ihn gestartet hat
+(`docs/webui_konzept.md` § 5.4). Top-Level-Zeilen in `index.json` haben kein
+`runs`.
 ```
 
 ## API Endpoints

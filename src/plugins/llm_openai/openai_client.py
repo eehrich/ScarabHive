@@ -15,7 +15,9 @@ from agent_system.llm.message_roles import (
     DEVELOPER, NOTE_CLOSE, NOTE_OPEN, USER, as_note, conversation_opener, resolve_rung,
     rung_for_position,
 )
-from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
+from agent_system.llm.models import (
+    PRIVATE_MESSAGE_FIELDS, ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError,
+)
 from agent_system.config.models import ModelCapabilitiesConfig
 from plugins.llm_common import cancellation, openai_utils
 
@@ -118,10 +120,12 @@ class OpenAIAsyncClient(LLMClient):
         last = message_dicts[-1] if message_dicts else None
         opener = conversation_opener(message_dicts)
         for d in message_dicts:
-            # Internal hook metadata, dropped here for all three serialisers: the
-            # opener above tells a wake from a note by it. The tool-calling path
-            # once sent it to the API.
-            d.pop('injected_by', None)
+            # Fields that are ours, not the conversation's, dropped here for all three
+            # serialisers -- after the opener above, which tells a wake from a note
+            # by injected_by. One list, one place: each serialiser used to pop its
+            # own, and the tool-calling path once sent injected_by to the API.
+            for key in PRIVATE_MESSAGE_FIELDS:
+                d.pop(key, None)
             if d.get("role") != DEVELOPER:
                 continue
             content = d.get("content")
@@ -172,9 +176,6 @@ class OpenAIAsyncClient(LLMClient):
                 result = []
                 for m in messages:
                     d = m.model_dump(exclude_none=True, mode='json')
-                    d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
-                    d.pop('served_by', None)  # OpenRouter backend provenance, never sent
-                    d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent
                     # Kept for us, not for the API: reasoning_content is a
                     # DeepSeek extension and unknown here. Every sibling client
                     # drops it before the request; this one now produces it, so
@@ -405,9 +406,6 @@ class OpenAIAsyncClient(LLMClient):
                 d = m.model_dump(exclude_none=True, mode='json')
                 # Remove multimodal_content from serialized dict - it's processed separately
                 d.pop('multimodal_content', None)
-                d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
-                d.pop('served_by', None)  # OpenRouter backend provenance, never sent
-                d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent
                 # Kept for us, not for the API — see chat() above.
                 d.pop('reasoning_content', None)
 
@@ -726,11 +724,8 @@ class OpenAIAsyncClient(LLMClient):
             result = []
             for m in messages:
                 d = m.model_dump(exclude_none=True, mode='json')
-                # Remove internal metadata from serialized dict
+                # processed separately; the private fields go in _apply_developer_rung
                 d.pop('multimodal_content', None)
-                d.pop('rd_orphaned', None)  # Internal reasoning-invalidation marker (utils/reasoning_artifacts.py)
-                d.pop('served_by', None)  # OpenRouter backend provenance, never sent
-                d.pop('reasoning_model', None)  # Producer of reasoning_details, never sent
 
                 # Normalize content for OpenAI API
                 if isinstance(d.get('content'), list):

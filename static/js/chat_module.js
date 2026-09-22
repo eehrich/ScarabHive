@@ -146,8 +146,8 @@
   // commands exist: that is the shared catalogue in chat_commands.py.
   // ---------------------------------------------------------------------
 
-  async function getJSON(url) {
-    const resp = await fetch(url, { credentials: 'include' });
+  async function getJSON(url, options = {}) {
+    const resp = await fetch(url, { credentials: 'include', ...options });
     if (!resp.ok) {
       let detail = resp.status + ' ' + resp.statusText;
       try {
@@ -1251,7 +1251,12 @@
         </div>
         <div class="status-body"></div>
       </div>`;
-    view.steps.appendChild(section);
+    // In step order: a live step the gate held back (waitingFor) can be older than the
+    // stored steps read before it -- an empty answer the loop dropped, or a text-only one a
+    // continuation followed, has no stored section, and its marker comes after them.
+    const later = key === RUN_SECTION ? null
+      : [...view.steps.querySelectorAll(':scope > .step-section')].find((other) => Number(other.dataset.step) > Number(key));
+    view.steps.insertBefore(section, later || null);
     foldOnClick(section.querySelector('.container-header'));
     const thinking = section.querySelector('.step-thinking');
     const toggle = thinking.querySelector('.thinking-toggle');
@@ -1353,6 +1358,21 @@
     return section ? section.querySelector(':scope > .container-body > .status-body') : null;
   }
 
+  // A request id's levels as the server counts them (utils/tree_hierarchy.py,
+  // SUFFIX_PATTERN), peeled off its right edge: `_nnn` a tool call, `_sub_x`,
+  // `_sub_cont_x`, `_async_x`, `_minlen_n` the runs sub_agent_manager starts. A run's
+  // depth (a sub_run envelope's depth_level) is its number of levels.
+  const ID_LEVEL = /_((?:sub_cont|sub|async|minlen)_[0-9a-zA-Z]+|\d{3})$/;
+  function parentOf(id) {
+    const level = ID_LEVEL.exec(id || '');
+    return level && level.index > 0 ? id.slice(0, level.index) : null;
+  }
+  function depthOf(id) {
+    let depth = 0;
+    for (let up = parentOf(id); up; up = parentOf(up)) depth += 1;
+    return depth;
+  }
+
   /**
    * The run a status line is from: the deepest run started under `blk` whose id it
    * carries, or `blk` itself.
@@ -1382,9 +1402,74 @@
    * up an empty "Run" section in the new one.
    */
   function placeStatus(blk, ev) {
+    takeOverStoredPath(blk, ev.request_id || '');
+    const waiting = waitingFor(blk, ev.request_id || '');
+    if (waiting) {
+      waiting.push(() => placeStatus(blk, ev));
+      return;
+    }
     const view = statusViewFor(blk, ev.request_id || '');
-    const existing = activeOperations.get(ev.request_id && ev.request_id !== 'default' ? ev.request_id : ev.server);
-    addStatusEvent(existing ? existing.parentElement : statusBodyFor(view), ev, view);
+    const key = ev.request_id && ev.request_id !== 'default' ? ev.request_id : ev.server;
+    const existing = activeOperations.get(key);
+    // A call the read brought back keeps its step: the read can be steps ahead of the
+    // lines that waited for it, and the step it ended on is not the one this call ran in.
+    // Wherever the read put it: the followed run's call in the session's own blocks, the
+    // call of an agent called as a tool (its run's id is its call's) in its caller's steps,
+    // around the agent's box -- the row then belongs to the caller.
+    const storedCall = !existing && ev.request_id && chatContainer.querySelector(
+      `.step-section > .container-body > .status-body > .tool-detail[data-key="${CSS.escape(ev.request_id)}"]`);
+    const owner = storedCall && view.runId === ev.request_id ? statusViewFor(blk, parentOf(ev.request_id) || '') : view;
+    addStatusEvent(existing ? existing.parentElement : (storedCall ? storedCall.parentElement : statusBodyFor(view)), ev, owner);
+    // released after its stream ended: a row it leaves open is not updated any more (release)
+    if (blk.streamEnded && activeOperations.has(key)) lateRows.add(key);
+  }
+
+  /**
+   * The queue a live event of `requestId` waits in, or null when it can go now.
+   *
+   * It waits for what the page still reads about its run: its own session and the
+   * listing of the runs under it (loadStoredSubRun), or -- for a run under the followed
+   * one with no box yet -- the listing of the session on screen (sessionGate). Applied
+   * before, it lands where the page has no step for it yet, and a run under it gets a
+   * box beside the one the read makes; applied after, it lands as in a run followed
+   * from its start. The followed run's own lines never wait.
+   */
+  function waitingFor(blk, requestId) {
+    const view = statusViewFor(blk, requestId);
+    // A stored run on its way the page has not read -- one an `_async_` or `_minlen_`
+    // level kept from being taken over, or one under a run taken over (then the nearest
+    // view itself): its read lists the run the event is from, so the event waits for it,
+    // started now if need be.
+    for (let id = requestId; id; id = id === view.runId ? null : parentOf(id)) {
+      const stored = storedRunViews.get(id);
+      if (!stored || !stored.element.isConnected) continue;
+      if (!stored.waiting && stored.element.dataset.stored === 'pending') {
+        storedWatch.unobserve(stored.element);
+        loadStoredSubRun(storedSubRuns.get(stored.element));
+      }
+      if (stored.waiting) return stored.waiting;
+      break;   // read (or its read failed): its listing is done
+    }
+    if (view.waiting) return view.waiting;
+    // A run under the followed one with no box yet may be one the session's listing
+    // brings -- also under a live box that is never read itself (an agent called as a
+    // tool). While that listing is on its way there is no stored box to wait for.
+    const below = run.requestId && requestId.startsWith(run.requestId) ? requestId.slice(run.requestId.length) : requestId;
+    const underARun = /_(?:sub_cont|sub|async|minlen)_[0-9a-zA-Z]+(?:_|$)/.test(below);
+    return underARun && sessionGate && sessionGate.waiting ? sessionGate.waiting : null;
+  }
+
+  /** What waited for `gate` goes now, in the order it came. */
+  function release(gate) {
+    const waiting = gate.waiting || [];
+    gate.waiting = null;
+    waiting.forEach((go) => go());
+    // their stream ended while they waited: what they left open is not updated any more
+    // -- after the whole batch (an end in it closes its row first), and only theirs
+    if (lateRows.size) {
+      markOpenScopesUnfinished([...lateRows]);
+      lateRows.clear();
+    }
   }
 
   /** Every run started under `blk`, at any depth. */
@@ -1464,24 +1549,36 @@
    * this switch at all until now: the status lines say what a tool did, and what it was
    * asked and what it answered went nowhere.
    */
-  function toolDetail(blk, data, kind, payload) {
+  function toolDetail(blk, data, kind, payload, live = false) {
     if (!blk || !blk.steps) return;
     const text = JSON.stringify(payload, null, 2) || '';
     const shown = text.length > TOOL_DETAIL_CHARS
       ? `${text.slice(0, TOOL_DETAIL_CHARS)}\n… ${text.length - TOOL_DETAIL_CHARS} more characters`
       : text;
     const action = data.action || 'tool';
-    const row = data.request_id
-      ? blk.steps.querySelector(`.operation-progress[data-request-id="${CSS.escape(data.request_id)}"]`)
-      : null;
+    const key = data.request_id ? CSS.escape(data.request_id) : null;
+    // Where this call's parts already are: a stored run taken over by its live events
+    // gets a call's arguments and result from the session read AND from the stream, and
+    // a second block made for them would stand empty, or split the call in two.
+    // A live part by its request id, anywhere in the chat: the followed run's call read
+    // back sits in the session's own block, not in the live one (placeStatus finds it the
+    // same way). A replayed part stays in its block -- a session older than the stamps keys
+    // it by the provider's id, which another run may use too.
+    const scope = live ? chatContainer : blk.steps;
+    const known = key && scope.querySelector(`.tool-detail[data-key="${key}"] > .tool-detail-body, `
+      + `.operation-progress[data-request-id="${key}"] > .tool-detail-body`);
+    const row = key && !known ? scope.querySelector(`.operation-progress[data-request-id="${key}"]`) : null;
     // No row means the call opened no status scope -- an unknown tool, say. What it was
     // asked still belongs to the call that asked, rather than nowhere; with no line to
     // click it brings a line of its own, naming the tool.
-    const body = row ? detailBlockFor(row) : looseDetailBlock(blk, action, data.request_id);
+    const body = known || (row ? detailBlockFor(row) : looseDetailBlock(blk, action, data.request_id));
     if (!body) return;
+    // Once per call and kind. Only by id: without one, calls to the same tool share a block.
+    if (key && body.querySelector(`:scope > [data-kind="${kind}"]`)) return;
 
     const part = document.createElement('div');
     part.className = 'tool-detail-part';
+    part.dataset.kind = kind;
     const label = document.createElement('span');
     label.className = 'tool-detail-label';
     label.textContent = kind;
@@ -1549,7 +1646,7 @@
     if (!calls.length && !thinking) return;   // a plain answer needs no step of its own
     const section = stepOf(blk, stepNo);
     if (!section) return;
-    if (thinking) thinkingOf(section).appendChild(document.createTextNode(thinking));
+    if (thinking) thinkingOf(section).textContent = thinking;
     // toolDetail files its block under the step the run is ON. Set here and put
     // back, because replaying is the one case where that is not "now" -- the
     // loop around this is synchronous, so nothing else reads it meanwhile.
@@ -1558,9 +1655,14 @@
     try {
       calls.forEach((tc) => {
         const fn = tc.function || {};
-        const data = {action: fn.name || 'tool', request_id: tc.id || ''};
-        toolDetail(blk, data, 'arguments', maybeJson(fn.arguments));
         const answer = resultFor.get(tc.id);
+        // Keyed by the id the tool ran under, where the session kept it
+        // (ChatMessage.tool_request_ids, stamped as the tool started): the runs the
+        // call started carry it as their prefix, and hang from this block
+        // (attachStoredSubRuns) -- also while the call still waits for them.
+        const ranUnder = msg.tool_request_ids && msg.tool_request_ids[tc.id];
+        const data = {action: fn.name || 'tool', request_id: ranUnder || tc.id || ''};
+        toolDetail(blk, data, 'arguments', maybeJson(fn.arguments));
         if (answer) toolDetail(blk, data, 'result', maybeJson(answer.content));
       });
     } finally {
@@ -1571,6 +1673,20 @@
   const activeOperations = new Map();
   const treeNodes = new Map(); // requestId -> { element, parentId, depth, children:Set }
   const pendingChildren = new Map(); // parentId -> [{elementInfo}]
+  const lateRows = new Set();   // rows opened by live events released after their stream ended
+
+  /**
+   * The rows of a chat that was cleared for a session read back. Kept, a run followed
+   * again after the viewer left its session and came back found its operations here,
+   * updated the rows of the chat it left -- no longer in the page -- and its lines were
+   * never seen.
+   */
+  function forgetRows() {
+    activeOperations.clear();
+    lateRows.clear();
+    treeNodes.clear();
+    pendingChildren.clear();
+  }
 
   function toggleTreeNode(requestId) {
     const node = treeNodes.get(requestId);
@@ -2073,8 +2189,11 @@
    * running, and the checkmark is the one thing on this line a reader trusts.
    * The row says what it last said, plus that nobody is watching it any more.
    */
-  function markOpenScopesUnfinished() {
-    activeOperations.forEach((operationDiv) => {
+  function markOpenScopesUnfinished(keys = [...activeOperations.keys()]) {
+    keys.forEach((key) => {
+      const operationDiv = activeOperations.get(key);
+      if (!operationDiv) return;
+      activeOperations.delete(key);
       const iconSpan = operationDiv.querySelector('.progress-icon');
       const line = operationDiv.querySelector('.progress-line');
       if (iconSpan) iconSpan.innerHTML = '<div class="open-mark">⋯</div>';
@@ -2086,7 +2205,6 @@
         line.appendChild(note);
       }
     });
-    activeOperations.clear();
   }
 
   // The EventSource of a run the chat follows again after a reload (followRun)
@@ -2385,6 +2503,11 @@
    * controls, the request id, a message appended mid-run -- stays in handleSSEEvent.
    */
   function renderRunEvent(view, data) {
+    // A page that joined mid-call (a reload, a stored run taken over) saw no marker open
+    // the call in flight: an event that names its step opens it -- forward only, so a
+    // stream behind what was read changes nothing, and a run followed from its start
+    // has had its marker open it already.
+    if (data.step > (view.openStep || 0)) view.openStep = data.step;
     switch (data.type) {
       case 'reasoning_delta': {
         // The model's actual reasoning, and the only place it is shown at all:
@@ -2395,6 +2518,9 @@
         // Appended as a text node rather than `textContent +=`, which re-reads
         // and rewrites the whole box per delta -- a run reasons in hundreds of
         // them.
+        // A step the session read back already holds whole (a stored run its live
+        // events took over): its tail must not come twice.
+        if (view.storedStep && data.step <= view.storedStep) break;
         const section = stepOf(view, data.step);
         if (section) thinkingOf(section).appendChild(document.createTextNode(data.delta || ''));
         break;
@@ -2442,10 +2568,10 @@
         }
         break;
       case 'tool_call':
-        toolDetail(view, data, 'arguments', data.params);
+        toolDetail(view, data, 'arguments', data.params, true);
         break;
       case 'tool_result':
-        toolDetail(view, data, 'result', data.result);
+        toolDetail(view, data, 'result', data.result, true);
         break;
       case 'final': {
         // The answer is here, so no call is in flight any more: what the run says while
@@ -2503,20 +2629,31 @@
    * retries, goes beside it.
    */
   function subRunView(blk, envelope) {
+    // A stored box of it is in the tree already: taken over (handleSubRunEvent).
     for (const view of allSubRuns(blk)) {
       if (view.runId === envelope.run_id) return view;
     }
     const owner = statusViewFor(blk, envelope.spawned_by || envelope.run_id);
-    const retried = [...allSubRuns(blk)].find((view) => view.runId === envelope.spawned_by);
-    // No row of its call to hang from (its status line never came): the step of the
-    // run that started it, not whichever step the followed run is on.
-    const anchor = rowOf(blk, envelope.run_id) || rowOf(blk, envelope.spawned_by)
-      || (retried && retried.element.parentElement) || statusBodyFor(owner);
+    const retried = /_minlen_[0-9a-zA-Z]+$/.test(envelope.run_id) && envelope.spawned_by
+      && chatContainer.querySelector(`.sub-run[data-run-id="${CSS.escape(envelope.spawned_by)}"]`);
+    // Its call: read back (a session opened mid-run), the call's block holds the runs it
+    // started, and one it starts after the page read it goes there too; else the call's
+    // row, in the followed block or in a stored run taken over. No row of its call to
+    // hang from (its status line never came): the step of the run that started it, not
+    // whichever step the followed run is on.
+    const callAt = (id) => (id && chatContainer.querySelector(`.tool-detail[data-key="${CSS.escape(id)}"]`))
+      || rowOf(blk, id) || rowOf(owner, id);
+    const anchor = callAt(envelope.run_id) || callAt(envelope.spawned_by)
+      || (retried && retried.parentElement) || statusBodyFor(owner);
     if (!anchor) return null;
+    return makeSubRun(owner, anchor, envelope.run_id, envelope.depth_level || 0, envelope.agent);
+  }
 
+  /** A sub-run's box in `anchor`, with its own view, registered with the run that started it. */
+  function makeSubRun(owner, anchor, runId, depthLevel, agent) {
     const element = document.createElement('div');
     element.className = 'sub-run';
-    element.dataset.runId = envelope.run_id;
+    element.dataset.runId = runId;
     element.dataset.state = 'running';
     element.innerHTML = `
       <div class="sub-run-header">
@@ -2526,7 +2663,7 @@
         <span class="sub-run-task pk-muted"></span>
       </div>
       <div class="sub-run-body"></div>`;
-    element.querySelector('.sub-run-agent').textContent = envelope.agent || 'sub-agent';
+    element.querySelector('.sub-run-agent').textContent = agent || 'sub-agent';
     anchor.appendChild(element);
 
     const header = element.querySelector('.sub-run-header');
@@ -2538,10 +2675,311 @@
     header.addEventListener('click', touch);
     header.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') touch(); });
 
-    const view = runView(body, envelope.run_id, envelope.depth_level || 0);
+    const view = runView(body, runId, depthLevel);
     view.element = element;
-    owner.subRuns.set(envelope.run_id, view);
+    owner.subRuns.set(runId, view);
+    subRunOf.set(element, view);
+    gatherEarlyRows(view);
     return view;
+  }
+
+  /**
+   * A run's lines that came before its box -- its start was before the page joined, so
+   * its first word was a line, placed in the deepest run the page had then
+   * (statusViewFor) -- into its box now, with the virtual parent they hang from. Not
+   * those already in its box or in the box of a run under it.
+   */
+  function gatherEarlyRows(view) {
+    const id = CSS.escape(view.runId);
+    chatContainer.querySelectorAll(`.operation-progress.virtual-parent[data-request-id="${id}"], `
+      + `.operation-progress[data-request-id^="${id}_"]`).forEach((row) => {
+      const box = row.closest('.sub-run');
+      if (box && (box === view.element || box.dataset.runId.startsWith(`${view.runId}_`))) return;
+      const from = row.parentElement;
+      statusBodyFor(view).appendChild(row);
+      const left = from.closest('.step-section');
+      if (left && left.dataset.step === RUN_SECTION && !from.children.length && !thinkingOf(left).textContent) left.remove();
+    });
+  }
+
+  /** What a sub-run was asked, in its header. */
+  function showSubRunTask(view, text) {
+    const task = view.element.querySelector('.sub-run-task');
+    task.textContent = text.length > 120 ? `${text.slice(0, 120)}…` : text;
+    task.title = text;
+  }
+
+  // The stored sub-runs of the session on screen, each read from its sub-session once
+  // its box comes near the chat's viewport (a pipeline's one call starts hundreds):
+  // box -> {view, sessionId, runId}; run id -> its view, for a live run's events; each
+  // sub-session read, and each session's listing of its sub-sessions, once per session
+  // shown (a promise each).
+  const subRunOf = new WeakMap();   // every sub-run box -> its view
+  const storedSubRuns = new WeakMap();
+  const storedRunViews = new Map();
+  const storedSessions = new Map();
+  const storedChildren = new Map();
+  let storedWatch = null;
+  let sessionGate = null;   // {waiting} while the session on screen lists its sub-sessions
+  // A stored read live events may wait for gives up, or a stalled one would hold them for
+  // good; given up, it has failed like any other. Generous: the browser queues what comes
+  // into view together, and a big sub-session is formatted message by message.
+  // The session left takes its reads with it: the browser's queue for this host is the
+  // page's too.
+  let storedReadsCut = new AbortController();
+  const storedRead = (url) => getJSON(url, { signal: AbortSignal.any([storedReadsCut.signal, AbortSignal.timeout(120000)]) });
+
+  /** Forget the stored sub-runs of the session that was on screen, and what waited for them. */
+  function forgetStoredSubRuns() {
+    storedReadsCut.abort();
+    storedReadsCut = new AbortController();
+    sessionGate = null;
+    storedRunViews.clear();
+    storedSessions.clear();
+    storedChildren.clear();
+    if (storedWatch) storedWatch.disconnect();
+  }
+
+  /** Read a stored sub-run once its box comes near the viewport -- never while folded away. */
+  function watchStoredSubRun(element) {
+    if (!storedWatch) {
+      storedWatch = new IntersectionObserver((entries) => entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        storedWatch.unobserve(entry.target);
+        loadStoredSubRun(storedSubRuns.get(entry.target));
+      }), { root: scroller(), rootMargin: '200px 0px' });
+    }
+    storedWatch.observe(element);
+  }
+
+  /**
+   * A stored run that is still working, as its live events arrive: its box, under the
+   * call that started it, goes on with them -- registered with the run the chat
+   * follows, so its status lines and its end find it -- instead of a second box.
+   *
+   * `live` says the stream has its ending now; a stored box it never reached is ended
+   * by its own read. One the session already shows answered stays done: its end may
+   * come live after the answer did.
+   */
+  function takeOverStoredRun(owner, view) {
+    storedRunViews.delete(view.runId);
+    view.live = true;
+    if (view.element.dataset.state !== 'done') {
+      view.element.dataset.state = 'running';
+      view.element.querySelector('.sub-run-icon').innerHTML = '<div class="spinner"></div>';
+    }
+    owner.subRuns.set(view.runId, view);
+    // Not read yet, or its read failed: what it did so far comes now, into the steps
+    // before the live ones -- and the read's error is not its answer.
+    const stored = view.element.dataset.stored;
+    if (stored === 'pending' || stored === 'failed') {
+      if (stored === 'failed') view.t.innerHTML = '';
+      storedWatch.unobserve(view.element);
+      loadStoredSubRun(storedSubRuns.get(view.element));
+    }
+    return view;
+  }
+
+  /**
+   * The stored runs on the way to `requestId`, taken over by a live event of it --
+   * outermost first, so each registers with the run above it. A run's first live word
+   * may be a status line (a call's line comes before the call's own events), and a
+   * helper at work means the run that waits for it is at work too: not across an
+   * `_async_` level (its caller may be over) or a `_minlen_` one (a retry, beside the
+   * run it retries).
+   */
+  function takeOverStoredPath(blk, requestId) {
+    const path = [];
+    for (let id = requestId; id; id = parentOf(id)) {
+      path.unshift(id);
+      if (/_(?:async|minlen)_[0-9a-zA-Z]+$/.test(id)) break;
+    }
+    path.forEach((id) => {
+      const stored = storedRunViews.get(id);
+      if (stored && stored.element.isConnected) takeOverStoredRun(statusViewFor(blk, parentOf(id) || id), stored);
+    });
+  }
+
+  /**
+   * The runs a session read back started, each under the call that started it.
+   *
+   * A sub-agent's run lives in a session of its own. The run's first message carries
+   * its request id, the message with the call that started it the id that call's tool
+   * ran under -- the prefix of the run's (ChatMessage.request_id, .tool_request_ids) --
+   * and /children lists each sub-session's runs by that id. The header is made now;
+   * what the run did is read from its session once it comes into view
+   * (watchStoredSubRun).
+   *
+   * A run hangs under the nearest call read back whose id its own extends: the run of
+   * an agent called as a tool is not kept, so what that agent started hangs under the
+   * call to it. A run with no such call (compacted away, or older than the stamps) is
+   * not shown. The live events of these runs wait for the listing (waitingFor).
+   */
+  async function attachStoredSubRuns(session, views) {
+    if (!session || !Object.keys((session.metadata && session.metadata.sub_agents) || {}).length) return;
+    const id = session.session_id;
+    let listed;
+    if (!storedChildren.has(id)) {
+      storedChildren.set(id, storedRead(`/api/sessions/${encodeURIComponent(id)}/children`));
+    }
+    const listing = storedChildren.get(id);
+    try {
+      listed = await listing;
+    } catch (error) {
+      // Not kept: the next run of this sub-session to be read lists again.
+      if (storedChildren.get(id) === listing) storedChildren.delete(id);
+      console.warn('The sub-agents of this session could not be listed:', error);
+      return;
+    }
+    const calls = new Map();
+    views.forEach((view) => {
+      if (!view.box.isConnected) return;   // the chat has moved on meanwhile
+      view.box.querySelectorAll('.tool-detail[data-key]').forEach((el) => {
+        if (!calls.has(el.dataset.key)) calls.set(el.dataset.key, { view, el });
+      });
+    });
+    // The call whose id the run's extends: `X_003_sub_a` was started by X_003, and
+    // `X_003_sub_a_minlen_1`, a retry of it, goes beside it under the same call.
+    const callOf = (runId) => {
+      for (let end = runId.lastIndexOf('_'); end > 0; end = runId.lastIndexOf('_', end - 1)) {
+        const call = calls.get(runId.slice(0, end));
+        if (call) return call;
+      }
+      return null;
+    };
+    const nodes = [...((listed && listed.sessions) || [])]
+      .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+    nodes.forEach((node) => (node.runs || []).forEach((runId) => {
+      const call = callOf(runId);
+      if (!call) return;
+      if (chatContainer.querySelector(`.sub-run[data-run-id="${CSS.escape(runId)}"]`)) return;
+      const view = makeSubRun(call.view, call.el, runId, depthOf(runId), node.agent_name);
+      view.element.dataset.stored = 'pending';
+      storedSubRuns.set(view.element, { view, sessionId: node.session_id, runId });
+      storedRunViews.set(runId, view);
+      watchStoredSubRun(view.element);
+    }));
+  }
+
+  /**
+   * One stored sub-run, read from its sub-session into its box: its steps, its answer,
+   * its own sub-runs. Its live events wait until then (waitingFor).
+   */
+  async function loadStoredSubRun(stored) {
+    stored.view.waiting = stored.view.waiting || [];
+    try {
+      await readStoredSubRun(stored);
+    } finally {
+      // the chat moved on meanwhile: what waited belongs to a block no longer shown
+      if (stored.view.element.isConnected) release(stored.view);
+      else stored.view.waiting = null;
+    }
+  }
+
+  async function readStoredSubRun({ view, sessionId, runId }) {
+    view.element.dataset.stored = 'loading';
+    if (!storedSessions.has(sessionId)) {
+      storedSessions.set(sessionId, storedRead(`/api/sessions/${encodeURIComponent(sessionId)}`));
+    }
+    const read = storedSessions.get(sessionId);
+    let session;
+    try {
+      session = await read;
+    } catch (error) {
+      // Not kept: the next run of this sub-session to come into view reads it again.
+      if (storedSessions.get(sessionId) === read) storedSessions.delete(sessionId);
+      view.element.dataset.stored = 'failed';   // read again if its live events take it over
+      if (!view.element.isConnected || view.live) return;   // the live events show it
+      showSection(view.t);
+      view.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(`Could not be read: ${error.message}`)}</div>`;
+      markSubRun(view, 'error');
+      return;
+    }
+    if (!view.element.isConnected) return;   // the chat has moved on meanwhile
+    view.element.dataset.stored = 'loaded';
+    // Its messages: from the one that opened it to the one that opened the next run of
+    // the same sub-agent.
+    const messages = session.messages || [];
+    const opens = (m) => !!m.request_id;
+    const start = messages.findIndex((m) => opens(m) && m.request_id === runId);
+    if (start < 0) {
+      if (!view.live) markSubRun(view, 'unfinished');
+      return;
+    }
+    const next = messages.findIndex((m, index) => index > start && opens(m));
+    const own = messages.slice(start, next < 0 ? messages.length : next);
+    showSubRunTask(view, messageText(own[0]));
+    const answered = replayRun(view, own.slice(1));
+    if (answered) {
+      settleView(view);
+      markSubRun(view, 'done');
+    } else if (!view.live) {
+      markSubRun(view, 'unfinished');
+    }
+    await attachStoredSubRuns(session, [view]);
+  }
+
+  /**
+   * What the tools answered to the calls of `messages[index]`, by call id: the answers that
+   * follow it, up to the next LLM call. Not by id alone across the session -- a provider
+   * may give every run's call the same id, and the first run then showed the last's answer.
+   */
+  function answersTo(messages, index) {
+    const answers = new Map();
+    for (let at = index + 1; at < messages.length && messages[at].role !== 'assistant'; at += 1) {
+      if (messages[at].role === 'tool' && messages[at].tool_call_id) answers.set(messages[at].tool_call_id, messages[at]);
+    }
+    return answers;
+  }
+
+  /** A run's messages after its first, read back into its view: a step per LLM call, the answer in its box. */
+  function replayRun(view, messages) {
+    let stepNo = 0;
+    let answered = false;
+    messages.forEach((msg, index) => {
+      if (msg.role !== 'assistant') return;
+      // numbered as the server numbered it (ChatMessage.step), which counts a step that
+      // stored nothing too; counted, in a session older than that
+      stepNo = msg.step || stepNo + 1;
+      replayStep(view, msg, stepNo, answersTo(messages, index));
+      answered = !!msg.content && !(msg.tool_calls && msg.tool_calls.length);
+      if (msg.content) showAnswer(view, msg.content, msg.content_format);
+    });
+    view.storedStep = stepNo;   // what the stream still sends of these steps is here already
+    // Still working: its last step is the call in flight, open as a live run leaves it
+    // until its answer -- the lines its tools still send go there, not to a "Run" section.
+    if (!answered && !view.openStep && view.element.dataset.state === 'running') view.openStep = stepNo || null;
+    return answered;
+  }
+
+  /**
+   * The followed run is over, and so is every run under it the stream led -- once what
+   * waits for a read has gone (waitingFor). A stored box the stream never took over is
+   * ended by its own read.
+   */
+  function endSubRuns(owner) {
+    if (!owner.element) {
+      // the followed run: after the session's listing, and after the read of a stored
+      // run outside its tree that holds live events (waitingFor) -- both bring runs it leads
+      const reading = sessionGate && sessionGate.waiting ? sessionGate
+        : [...storedRunViews.values()].find((stored) => stored.waiting && stored.waiting.length);
+      if (reading) {
+        reading.waiting.push(() => endSubRuns(owner));
+        return;
+      }
+    }
+    for (const view of owner.subRuns.values()) {
+      if (view.waiting) {
+        view.waiting.push(() => endSubRun(view));
+        continue;
+      }
+      endSubRun(view);
+    }
+  }
+
+  function endSubRun(view) {
+    if (view.live || !view.element.dataset.stored) markSubRun(view, 'unfinished');
+    endSubRuns(view);
   }
 
   /** Say on a sub-run's header how it ended. */
@@ -2560,17 +2998,19 @@
    * what that run would have streamed had the chat followed it directly.
    */
   function handleSubRunEvent(blk, envelope) {
+    takeOverStoredPath(blk, envelope.run_id);
+    const waiting = waitingFor(blk, envelope.run_id);
+    if (waiting) {
+      waiting.push(() => handleSubRunEvent(blk, envelope));
+      return;
+    }
     const ev = envelope.event || {};
     const view = subRunView(blk, envelope);
     if (!view) return;
     switch (ev.type) {
-      case 'start': {
-        const task = view.element.querySelector('.sub-run-task');
-        const text = String(ev.task || '');
-        task.textContent = text.length > 120 ? `${text.slice(0, 120)}…` : text;
-        task.title = text;
+      case 'start':
+        showSubRunTask(view, String(ev.task || ''));
         break;
-      }
       case 'final':
         renderRunEvent(view, ev);
         markSubRun(view, 'done');
@@ -2751,13 +3191,14 @@
         break;
       case 'end':
         run.over = true;
+        blk.streamEnded = true;   // this block's stream, not the run followed since (placeStatus)
         pendingAppendRebind = false;
         // Before the stream goes: whatever is still open stops being updated
         // the moment it closes, so the row has to say so rather than freeze.
         markOpenScopesUnfinished();
         // A sub-agent's run can outlive its caller's (an async one it never waited
         // for): nothing of it reaches this page any more, and its header says so.
-        for (const view of allSubRuns(blk)) markSubRun(view, 'unfinished');
+        endSubRuns(blk);
         // ... and the session may work on without this run. Watch for that.
         watchForASuccessorRun();
         // a reload no longer follows it -- a refused run's end leaves another one's alone
@@ -3526,6 +3967,7 @@
     currentSessionId = null;
     const chatEl = document.getElementById('chat');
     chatEl.innerHTML = '';
+    forgetStoredSubRuns();
     releasePreviewObjectUrls();
     // not chosen, but all that is left when the stored session cannot be shown: a lost run of it stays
     if (event.detail.chosen) leaveLostRun(null);
@@ -3550,18 +3992,14 @@
       const chatEl = document.getElementById('chat');
       if (chatEl) {
         chatEl.innerHTML = '';
+        forgetRows();
         releasePreviewObjectUrls();
       }
       
-      // Restore messages
-      // What a tool answered, by the call it answered. The session has carried
-      // this all along -- measured over 58 sessions: tool_calls on 29 % of the
-      // messages, tool_call_id on 37 %, reasoning on 32 %. None of it was ever
+      // Restore messages. What a tool answered, by the call it answered (answersTo): the
+      // session has carried this all along -- measured over 58 sessions: tool_calls on
+      // 29 % of the messages, tool_call_id on 37 %, reasoning on 32 %. None of it was ever
       // shown again, so switching sessions looked like the run had been erased.
-      const resultFor = new Map();
-      session.messages.forEach((m) => {
-        if (m.role === 'tool' && m.tool_call_id) resultFor.set(m.tool_call_id, m);
-      });
       // One assistant block per RUN, with a step per LLM call inside it -- the
       // shape the live view builds. A message that opens a turn ends the run
       // before it, so the next assistant message starts a new block.
@@ -3572,6 +4010,8 @@
       // run goes on (live_events_seen) -- and stays open unless it has answered.
       let answered = false;
       const endRun = () => { settleView(runBlk); runBlk = null; stepNo = 0; };
+      const replayed = [];   // every run block, for the sub-runs their calls started
+      forgetStoredSubRuns();
 
       session.messages.forEach((msg, index) => {
         // Skip system messages and tool-related messages
@@ -3628,17 +4068,14 @@
           chatEl.appendChild(row);
           endRun();  // what follows belongs to a new run, in a block of its own
         } else if (msg.role === 'assistant') {
-          if (!runBlk) runBlk = addAssistantBlock(chatEl);
-          replayStep(runBlk, msg, ++stepNo, resultFor);
-          answered = !!msg.content && !(msg.tool_calls && msg.tool_calls.length);
-          if (msg.content) {
-            showSection(runBlk.t);
-            // Use formatContent to detect HTML vs plain text
-            runBlk.t.innerHTML = `<div class="response-text">${formatContent(msg.content, msg.content_format)}</div>`;
-            if (msg.content_format === 'html' && typeof Prism !== 'undefined') {
-              Prism.highlightAllUnder(runBlk.t);
-            }
+          if (!runBlk) {
+            runBlk = addAssistantBlock(chatEl);
+            replayed.push(runBlk);
           }
+          stepNo = msg.step || stepNo + 1;   // as the server numbered it (ChatMessage.step)
+          replayStep(runBlk, msg, stepNo, answersTo(session.messages, index));
+          answered = !!msg.content && !(msg.tool_calls && msg.tool_calls.length);
+          if (msg.content) showAnswer(runBlk, msg.content, msg.content_format);
         } else if (msg.role === 'developer') {
           // What the run told the model, at the point it told it. Without this
           // branch the note fell through every else-if and the restored chat
@@ -3659,6 +4096,13 @@
         }
       });
       if (answered) settleView(runBlk);
+      // Not awaited: the session is shown either way, its sub-runs join it when listed --
+      // and the live events of runs under the followed one wait until then (waitingFor).
+      const gate = { waiting: [] };
+      sessionGate = gate;
+      attachStoredSubRuns(session, replayed).finally(() => {
+        if (sessionGate === gate) release(gate);   // a session shown since has a gate of its own
+      });
 
       // Session just loaded - always scroll to the latest content.
       scrollBottom(true);

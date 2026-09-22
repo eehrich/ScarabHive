@@ -1643,10 +1643,13 @@ class Agent(ToolServer):
 
         # add the new user input as last message
         # Use initial_message if provided (for multimodal input), otherwise create from task
-        if initial_message:
-            messages.append(initial_message)
-        else:
-            messages.append(ChatMessage(role="user", content=sanitize_for_llm(task), timestamp=datetime.now(timezone.utc)))
+        opening = initial_message or ChatMessage(
+            role="user", content=sanitize_for_llm(task), timestamp=datetime.now(timezone.utc))
+        # The run's own id on the first message it stores (ChatMessage.request_id): a
+        # session read back tells its runs apart by it, and finds a sub-agent's run
+        # under the call that started it.
+        opening.request_id = request_id
+        messages.append(opening)
 
         # Also include any appended messages already queued for this request
         messages = await self._session_tracker.drain_appended_messages(request_id, messages)
@@ -2978,6 +2981,8 @@ class Agent(ToolServer):
                 thinking_model=assistant.get("thinking_model"),
                 # OpenRouter backend of this turn: the next request pins to it.
                 served_by=assistant.get("served_by"),
+                # the step as the live events number it (ChatMessage.step)
+                step=step + 1,
                 timestamp=datetime.now(timezone.utc)
             )
             messages.append(assistant_msg)
@@ -3294,7 +3299,8 @@ class Agent(ToolServer):
                     request_id=request_id,
                     session_id=session_id,
                     user_id=user_id,
-                    status_forwarder=context.status_forwarder
+                    status_forwarder=context.status_forwarder,
+                    assistant_message=assistant_msg,
                 ):
                     if item.get("type") == "status":
                         # Yield status events in real-time during tool execution

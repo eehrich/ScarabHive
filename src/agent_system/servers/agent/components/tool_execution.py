@@ -182,7 +182,8 @@ class ToolExecutionManager:
         request_id: str | None = None,
         session_id: str | None = None,
         user_id: str | None = None,
-        status_forwarder: Optional[StatusEventForwarder] = None
+        status_forwarder: Optional[StatusEventForwarder] = None,
+        assistant_message: Optional[ChatMessage] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute tools in parallel while streaming status events in real-time.
 
@@ -195,6 +196,8 @@ class ToolExecutionManager:
             user_id: User ID to inject into tool params for multi-user isolation
             status_forwarder: Per-request status forwarder for streaming events (MUST be passed per-request
                              to avoid race conditions with concurrent requests)
+            assistant_message: The message whose tool calls these are: it is stamped with the
+                             id each tool runs under (ChatMessage.tool_request_ids)
 
         Yields:
             Dict with either:
@@ -312,6 +315,7 @@ class ToolExecutionManager:
             tasks = []
             task_tool_info: Dict[asyncio.Task, tuple] = {}  # task -> (tc, tool_name, openai_tool_name)
             task_indices: Dict[asyncio.Task, int] = {}  # task -> original index (for ordering responses)
+            request_ids: Dict[str, str] = {}  # call id -> the id its tool runs under
             for i, (tc, tool_name, openai_tool_name, params) in enumerate(valid_tool_executions):
                 # Create tool-specific request_id (same logic as execute_tools)
                 original_request_id = request_id
@@ -338,6 +342,12 @@ class ToolExecutionManager:
                 tasks.append(task)
                 task_tool_info[task] = (tc, tool_name, openai_tool_name)
                 task_indices[task] = i  # Store original index for ordering
+                if tc.get("id") and tool_specific_request_id:
+                    request_ids[tc["id"]] = tool_specific_request_id
+            if assistant_message is not None and request_ids:
+                # Before any tool answers: the live list holds this same message, so a
+                # viewer who joins while a call still waits finds its runs already.
+                assistant_message.tool_request_ids = request_ids
 
             # Collect results with their original indices for later sorting
             # IMPORTANT: Gemini API requires function_response parts to be in the same

@@ -133,6 +133,12 @@ class MultimodalToolContent(BaseModel):
 ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, TextFileContent, str, Dict[str, Any]]
 
 
+#: Fields of a ChatMessage that are ours, not the conversation's: never sent to a provider.
+#: A client that serialises the whole message pops these (a list per client drifted).
+PRIVATE_MESSAGE_FIELDS = frozenset({"injected_by", "rd_orphaned", "served_by", "reasoning_model", "request_id",
+                                    "tool_request_ids", "step"})
+
+
 class ChatMessage(BaseModel):
     """Chat message supporting both text-only and multimodal content.
 
@@ -222,6 +228,20 @@ class ChatMessage(BaseModel):
     # Used by injection hooks to find and replace their previous injections
     # instead of fragile content-based matching.
     injected_by: Optional[str] = None
+    # The id of the run this message opened, on the first message a run stores. A
+    # session read back tells its runs apart by it. Never sent.
+    request_id: Optional[str] = None
+    # On an assistant message with tool calls: the request id each call's tool runs
+    # under, by call id, stamped as the tools start -- a run a tool starts carries
+    # that id as its prefix (<id>_async_..., <id>_sub_...), so a session read back,
+    # even while the call still waits, finds a sub-agent's run under the call that
+    # started it. Never sent.
+    tool_request_ids: Optional[Dict[str, str]] = None
+    # On an assistant message: the step of the run's loop that produced it, numbered as
+    # the run's live events number their steps. A session read back shows its steps by
+    # it -- counting the messages instead falls behind after a step that stored nothing
+    # (an empty answer is dropped). Never sent.
+    step: Optional[int] = None
 
     def is_multimodal(self) -> bool:
         """Check if message contains multimodal content."""

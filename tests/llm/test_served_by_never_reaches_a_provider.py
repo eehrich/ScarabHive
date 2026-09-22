@@ -1,4 +1,6 @@
-"""served_by is bookkeeping for the provider pin -- it must never reach a provider.
+"""served_by is bookkeeping for the provider pin -- it must never reach a provider,
+and neither may request_id, tool_request_ids or step, the run a stored message
+opened, the ids its calls' tools ran under and the loop step it came from.
 
 Strict providers reject unknown message keys (see
 HTTPXOpenAIClient._sanitize_message_for_api), and a fallback chain can carry an
@@ -20,27 +22,30 @@ from plugins.llm_openai.openai_client import OpenAIAsyncClient
 from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient
 from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
 
-TURN = [ChatMessage(role="user", content="hi"),
-        ChatMessage(role="assistant", content="ok", served_by="Google AI Studio"),
-        ChatMessage(role="user", content="next")]
+TURN = [ChatMessage(role="user", content="hi", request_id="run0000001"),
+        ChatMessage(role="assistant", content="ok", served_by="Google AI Studio",
+                    tool_request_ids={"call_1": "run0000001_001"}, step=1),
+        ChatMessage(role="user", content="next", request_id="run0000002")]
+PRIVATE = ("served_by", "request_id", "tool_request_ids", "step")
 
 
 def _assert_absent(messages):
     assert messages, "nothing was sent -- vacuous test"
-    assert all("served_by" not in m for m in messages)
+    assert all(key not in m for m in messages for key in PRIVATE), messages
 
 
 def test_httpx_whitelist_drops_it():
     clean = HTTPXOpenAIClient._sanitize_message_for_api(
-        {"role": "assistant", "content": "ok", "served_by": "Google AI Studio"})
-    assert "served_by" not in clean
+        {"role": "assistant", "content": "ok", "served_by": "Google AI Studio", "request_id": "run0000001",
+         "tool_request_ids": {"call_1": "run0000001_001"}, "step": 1})
+    assert not set(PRIVATE) & set(clean)
 
 
 def test_responses_items_do_not_carry_it():
     client = OpenAIResponsesClient(model="m", api_key="k",
                                    base_url="https://openrouter.ai/api/v1")
     items = client._messages_to_input(list(TURN))
-    assert items and "served_by" not in str(items)
+    assert items and not any(key in str(items) for key in PRIVATE)
 
 
 def test_ollama_drops_it():

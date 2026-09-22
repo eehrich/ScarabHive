@@ -497,6 +497,10 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                         # reads the unsent round as everything after the last
                         # assistant message that is NOT injected.
                         injected_by="tool_preload",
+                        # the step whose LLM call these results feed, numbered as
+                        # the loop stamps its own answers (ChatMessage.step): a
+                        # session read back shows the pair in that step
+                        step=(context.step or 0) + 1,
                         tool_calls=[{
                             "id": call_id,
                             "type": "function",

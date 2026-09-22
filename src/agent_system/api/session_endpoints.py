@@ -307,6 +307,8 @@ def _session_node(s: Dict[str, Any]) -> Dict[str, Any]:
         "context_vars": s.get("context_vars", {}),
         "has_children": bool(s.get("has_children")),
         "children": [],
+        # A sub-session's runs by the request id each opened with (SessionManager._index_metadata).
+        "runs": s.get("runs", []),
     }
 
 

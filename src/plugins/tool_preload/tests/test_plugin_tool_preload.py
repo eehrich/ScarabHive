@@ -393,6 +393,24 @@ class TestChains:
         assert out[3].tool_calls[0]["id"] == out[4].tool_call_id
 
     @pytest.mark.asyncio
+    async def test_each_pair_carries_the_step_its_results_feed(self, plugin):
+        """The hook runs in the loop's step k, before the LLM call the live events
+        number k + 1; a session read back numbers the pair by it, as the loop's own
+        answers are (ChatMessage.step)."""
+        rules = [{"match": "Szene\\s+(?P<sid>\\d+)", "calls": [
+            {"tool": "set_var", "params": {"name": "scene", "value": "{sid}"}},
+            {"tool": "get_scene", "params": {"scene_id": "{sid}"}},
+        ]}]
+        context = make_context([user("arbeite an Szene 42")], rules, FakeAgent())
+        context.step = 2
+
+        result = await plugin.preload(context)
+
+        calls = [m for m in result.context.messages if m.role == "assistant"]
+        assert len(calls) == 2, "fixture: two pairs appended"
+        assert [m.step for m in calls] == [3, 3]
+
+    @pytest.mark.asyncio
     async def test_disallowed_tool_aborts_the_chain_but_keeps_prior_pairs(self, plugin):
         """Later calls may depend on the rejected one — running them anyway
         executes a chain whose premise failed."""

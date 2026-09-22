@@ -16,6 +16,12 @@
     catch (error) { results[name] = `error: ${error && error.message}`; }
   };
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // A rendering update in the shell and time for what it sends: an IntersectionObserver
+  // speaks only after the next one, so a read that must NOT happen is looked for after it.
+  const painted = async () => {
+    await new Promise((resolve) => win().requestAnimationFrame(() => win().requestAnimationFrame(resolve)));
+    await sleep(200);
+  };
   /** Resolves with the first truthy value of predicate -- which may ask the stub server, and so be async. */
   async function until(what, predicate, timeout = 10000) {
     const end = performance.now() + timeout;
@@ -1387,6 +1393,25 @@
     }
   });
 
+  await check('two runs of a session read back keep their calls apart, whatever id the provider gave them', async () => {
+    // Keyed by the provider's id where the session carries no stamp -- and a provider may
+    // give every run a call_1: each run's call is looked for in its own block.
+    try {
+      await stub('/__stub/sessions', { session_id: 's-twice', title: 'Twice', run: 'twice', has_children: false });
+      await loadShell();
+      sessionButton('s-twice', 'open').click();
+      await until('the twice session', () => $('#headerSessionId').textContent === 'Twice');
+      const [first, second] = await until('its two runs', () => $$('#chat .msg.assistant').length === 2 && $$('#chat .msg.assistant'), 3000);
+      const call = (box) => box.querySelectorAll('.tool-detail[data-key="call_1"]');
+      return need(call(first).length === 1 && call(second).length === 1
+        && call(first)[0].textContent.includes('the first answer') && call(second)[0].textContent.includes('the second answer')
+        && !call(first)[0].textContent.includes('the second answer'),
+        `calls: ${call(first).length} and ${call(second).length}`);
+    } finally {
+      await loadShell();
+    }
+  });
+
   await check('a session read back from disk brings its run with it, not just the answer', async () => {
     // Everything below was in the session file all along and was thrown away on load:
     // the tool messages were skipped outright and the assistant's tool_calls and
@@ -1677,6 +1702,378 @@
       return need(done.querySelector(':scope > .container-body').style.display === 'none', 'the answered run stayed open');
     } finally {
       cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check("a session read back shows what its sub-agents did under the calls that started them, read when it comes into view", async () => {
+    // A sub-agent's steps live in a session of its own: after a reload the chat showed
+    // the call that started it and nothing of what it did. Its runs are found by the
+    // ids the server stores; each is read from its session only once it can be seen --
+    // a pipeline's session has hundreds.
+    const read = async (id) => (await (await stub('/__stub/hits')).json())[`session:${id}`] || 0;
+    try {
+      await stub('/__stub/sessions', { session_id: 's-helpers', title: 'Helped', run: 'helpers', has_children: false,
+        metadata: { sub_agents: { 'sub-help': {} } } });
+      await loadShell();
+      sessionButton('s-helpers', 'open').click();
+      await until('the helped session', () => $('#headerSessionId').textContent === 'Helped');
+      const box = await until('its run', () => $$('#chat .msg.assistant').at(-1));
+      // numbered as the server numbered it: the step before stored nothing
+      const step = box.querySelector(':scope > .steps > .step-section[data-step="2"]');
+      need(step && !box.querySelector(':scope > .steps > .step-section[data-step="1"]'),
+        `the steps are counted, not numbered (${[...box.querySelectorAll(':scope > .steps > .step-section')].map((s) => s.dataset.step)})`);
+      const first = await until('the first run, under the call that started it', () => step.querySelector(
+        '.tool-detail[data-key="rh00000001_003"] > .sub-run[data-run-id="rh00000001_003_sub_aaaaaa"]'), 3000);
+      const second = step.querySelector('.tool-detail[data-key="rh00000001_004"] > .sub-run[data-run-id="rh00000001_004_sub_cont_bbbbbb"]');
+      need(second, 'the continued run does not hang from the call that continued it');
+      need(!box.querySelector('.sub-run[data-run-id="rh00000001_099_async_gone"]'), 'a run whose call is not read back was placed anyway');
+      // the run has answered, its step is folded: nothing of the sub-agents is read yet
+      await painted();
+      need(await read('sub-help') === 0, 'a sub-run was read before it could be seen');
+      need(unfold(step), 'the step does not open');
+      await until('its steps', () => first.querySelector(':scope > .sub-run-body > .steps > .step-section[data-step="1"]'), 3000);
+      need(first.dataset.state === 'done' && first.querySelector('.sub-run-task').textContent === 'Research the icons'
+        && first.querySelector(':scope > .sub-run-body .response-text b'), 'the first run is not shown as it was');
+      await until('the second run', () => second.dataset.state === 'unfinished', 3000);
+      need(second.querySelector('.sub-run-task').textContent === 'And the colours' && !second.textContent.includes('Icons'),
+        "the continued run shows the first one's work");
+      need(await read('sub-help') === 1, 'the sub-session was read once per run');
+      // listed for it, not (yet) in its session: its call has started it, nothing more is known
+      const absent = step.querySelector('.tool-detail[data-key="rh00000001_005"] > .sub-run[data-run-id="rh00000001_005_sub_dddddd"]');
+      need(absent, 'a run listed but not in its session was not placed');
+      await until('the absent run', () => absent.dataset.state === 'unfinished', 3000);
+      // the helper's own helper hangs from ITS call, and is read once it can be seen: not
+      // with its step opened inside a helper folded away by the setting, but once the
+      // setting opens that helper again
+      const firstStep = first.querySelector(':scope > .sub-run-body > .steps > .step-section[data-step="1"]');
+      const deep = await until('the helper of the helper', () => firstStep.querySelector(
+        '.tool-detail[data-key="rh00000001_003_sub_aaaaaa_002"] > .sub-run[data-run-id="rh00000001_003_sub_aaaaaa_002_sub_cccccc"]'), 3000);
+      choose({ sub_agents: 'collapsed' });
+      firstStep.querySelector(':scope > .container-header').click();
+      await painted();
+      need(await read('sub-deep') === 0, 'the helper of the helper was read before it could be seen');
+      choose({});
+      await until('the helper of the helper read', () => deep.dataset.state === 'done', 3000);
+      need(deep.textContent.includes('Five.') && deep.querySelector('.sub-run-task').textContent === 'Count them',
+        'the helper of the helper is not shown as it was');
+      need(await hits('children:sub-help') === 1, "the helper's sub-agents were listed once per run");
+      // opened again, the session is read again: nothing of the last showing is kept
+      sessionButton('s-helpers', 'open').click();
+      await until('the session shown anew', () => $('#chat .sub-run[data-run-id="rh00000001_003_sub_aaaaaa"]')
+        && !first.isConnected, 3000);
+      need(unfold($('#chat .msg.assistant > .steps > .step-section[data-step="2"]')), 'the step does not open again');
+      await until('the sub-session read anew', async () => await read('sub-help') === 2, 3000);
+      // a session that started no sub-agents does not ask for any
+      sessionButton('s-run', 'open').click();
+      await until('the run read back', () => $('#headerSessionId').textContent === 'A run read back');
+      return need(!(await (await stub('/__stub/hits')).json())['children:s-run'], 'a session without sub-agents asked for them');
+    } finally {
+      await loadShell();
+    }
+  });
+
+  await check("a sub-session that could not be read is read again for its next run", async () => {
+    // One failed read stood for every run of that sub-session: each showed the error
+    // without asking again, until the whole session was opened anew.
+    const read = async (id) => (await (await stub('/__stub/hits')).json())[`session:${id}`] || 0;
+    try {
+      await stub('/__stub/sessions', { session_id: 's-flaky', title: 'Flaky', run: 'flaky', has_children: false,
+        metadata: { sub_agents: { 'sub-flaky': {} } } });
+      await loadShell();
+      sessionButton('s-flaky', 'open').click();
+      await until('the flaky session', () => $('#headerSessionId').textContent === 'Flaky');
+      const box = await until('its run', () => $$('#chat .msg.assistant').at(-1));
+      const [one, two] = [1, 2].map((n) => box.querySelector(`:scope > .steps > .step-section[data-step="${n}"]`));
+      const failed = await until('the run of step 1', () => one.querySelector(
+        '.tool-detail[data-key="rf00000001_001"] > .sub-run[data-run-id="rf00000001_001_sub_aaaaaa"]'), 3000);
+      const next = two.querySelector('.tool-detail[data-key="rf00000001_002"] > .sub-run[data-run-id="rf00000001_002_sub_cont_bbbbbb"]');
+      need(next, 'the run of step 2 was not placed');
+      need(unfold(one), 'step 1 does not open');
+      await until('the failed read', () => failed.dataset.state === 'error', 3000);
+      need(failed.textContent.includes('Could not be read'), 'the failed read does not say so');
+      need(unfold(two), 'step 2 does not open');
+      await until('the next run', () => next.dataset.state !== 'running', 3000);
+      need(next.dataset.state === 'done' && next.textContent.includes('Read.') && await read('sub-flaky') === 2,
+        `the next run was not read again (${next.dataset.state}, ${await read('sub-flaky')} reads)`);
+      // its own sub-agents could not be listed for that run: the next run lists again
+      await until('the failed listing', async () => await hits('children:sub-flaky') === 1, 3000);
+      await painted();
+      const third = box.querySelector(':scope > .steps > .step-section[data-step="3"] .sub-run[data-run-id="rf00000001_003_sub_cont_cccccc"]');
+      need(third, 'the run of step 3 was not placed');
+      need(unfold(third.closest('.step-section')), 'step 3 does not open');
+      await until('its helper', () => third.querySelector(
+        '.tool-detail[data-key="rf00000001_003_sub_cont_cccccc_001"] > .sub-run[data-run-id="rf00000001_003_sub_cont_cccccc_001_sub_dddddd"]'), 3000);
+      return need(await hits('children:sub-flaky') === 2, `listed ${await hits('children:sub-flaky')} times`);
+    } finally {
+      await loadShell();
+    }
+  });
+
+  await check("a pipeline read back while it runs: its sub-agents hang under the call waiting for them, are read as they come into view, and one at work goes on in its box", async () => {
+    // A pipeline's one call starts a sub-agent per chapter and waits for all of them.
+    // Read back mid-run, the call had no answer and so no id to find them by; found, they
+    // would all be read at once as the step showed; and a chapter still being written
+    // got a second, empty box for its live events beside the stored one. Each chapter
+    // the stub streams stands for one way a stored run meets its live events (the stub's
+    // LIVE_CHAPTERS); the live events wait until the test releases them.
+    const read = async (id) => (await (await stub('/__stub/hits')).json())[`session:${id}`] || 0;
+    const id = (n) => `r-live-piping_001_sub_q${String(n).padStart(5, '0')}`;
+    const boxesOf = (n) => $$(`#chat .sub-run[data-run-id="${id(n)}"]`);
+    const boxOf = (n) => boxesOf(n)[0];
+    const helper = (name) => $(`#chat .sub-run[data-run-id="${id(60)}_001_sub_${name}60000"]`);
+    const stepsOf = (element) => [...element.querySelectorAll(':scope > .sub-run-body > .steps > .step-section')]
+      .map((section) => section.dataset.step).join();
+    const once = (element, text) => element.textContent.split(text).length === 2;
+    const settle = () => sleep(300);
+    // A jump, not the chat's smooth scroll: that passes over every box on its way, and
+    // reads them as it does.
+    const jumpTo = (element) => element.scrollIntoView({ block: 'start', behavior: 'instant' });
+    try {
+      await stub('/__stub/sessions', { session_id: 's-pipeline-live', title: 'A book under way', run: 'pipeline-live',
+        has_children: false, live_events_seen: 0, metadata: { sub_agents: { 'sub-q00': {} } } });
+      await stub('/__stub/active-runs', { 's-pipeline-live': 'r-live-piping' });
+      await loadShell();
+      // The chat's scroll jumps here: a smooth one passes over every box on its way down as
+      // a session is shown, and which of them it reads is then a matter of timing.
+      $('#chatScroll').style.scrollBehavior = 'auto';
+      sessionButton('s-pipeline-live', 'open').click();
+      await until('the book under way', () => $('#headerSessionId').textContent === 'A book under way');
+      const call = await until('the call still waiting', () => $('#chat .tool-detail[data-key="r-live-piping_001"]'), 3000);
+      await until('its sub-agents under it', () => call.querySelectorAll(':scope > .sub-run').length === 120, 3000);
+      // what comes into view is read, what does not waits
+      jumpTo(boxOf(0));
+      await until('chapters 0 and 1 read', () => boxOf(0).dataset.state === 'unfinished' && boxOf(1).dataset.state === 'done', 3000);
+      await until("chapter 2's read failing", () => boxOf(2).dataset.stored === 'failed', 3000);
+      await painted();
+      need([45, 60, 75].every((n) => boxOf(n).dataset.stored === 'pending') && await read('sub-q60') === 0,
+        `a chapter out of view was read (${$$('#chat .sub-run[data-stored="loaded"]').length} read)`);
+      // out of view and back: what was read is not read again -- seen on the box, not in
+      // the stub's hits, which a read served from the page's cache never reaches
+      const reads = [];
+      const watch = new (win().MutationObserver)((records) => reads.push(...records));
+      for (const n of [0, 1]) watch.observe(boxOf(n), { attributes: true, attributeFilter: ['data-stored'] });
+      win().document.getElementById('chatScroll').scrollTo({ top: 1e7, behavior: 'instant' });
+      await settle();
+      jumpTo(boxOf(0));
+      await settle();
+      reads.push(...watch.takeRecords());
+      watch.disconnect();
+      need(!reads.length, `a chapter read before was read again (${reads.map((r) => r.target.dataset.runId).join()})`);
+      await stub('/__stub/live/release', {});
+      // chapter 0, read, goes on: the tail of its step 1 and its call's result are not
+      // shown twice, and a line of its own work sits flat in it
+      await until('the live chapters done', () => [0, 2, 45, 60].every((n) => boxOf(n).dataset.state === 'done'), 6000);
+      // chapter 4 ended without an answer; the async helper it left goes on -- that does
+      // not make chapter 4 work again
+      const asyncHelper = $(`#chat .sub-run[data-run-id="${id(4)}_001_async_a0400"]`);
+      await until("the async helper's line", () => asyncHelper && asyncHelper.querySelector('.operation-progress[data-request-id$="_a0400_002"]'), 3000);
+      need(boxOf(4).dataset.state === 'unfinished' && asyncHelper.dataset.state === 'running',
+        `chapter 4 ${boxOf(4).dataset.state}, its async helper ${asyncHelper.dataset.state}`);
+      // the pipeline called an agent as a tool; the async helper it started is listed with
+      // the session, and read into its box under the call
+      const editor = $('#chat .tool-detail[data-key="r-live-piping_002"]');
+      // the lines of the pipeline's two calls go to the calls the session read back, not
+      // to a section of the live block: the one it waits in, and the editor's (its run's
+      // id is its call's)
+      // chapter 3 called an agent as a tool: its call's line is chapter 3's, beside the call
+      // it read back, and hangs from nothing else
+      const row3 = boxOf(3).querySelector(`.operation-progress[data-request-id="${id(3)}_001"]`);
+      const block3 = boxOf(3).querySelector(`.tool-detail[data-key="${id(3)}_001"]`);
+      need(row3 && block3 && row3.parentElement === block3.parentElement && !boxOf(3).querySelector('.virtual-parent'),
+        `chapter 3's call line: ${row3 && row3.parentElement.className}, virtual parents ${boxOf(3).querySelectorAll('.virtual-parent').length}`);
+      for (const n of ['001', '002']) {
+        const row = $(`#chat .operation-progress[data-request-id="r-live-piping_${n}"]`);
+        const block = $(`#chat .tool-detail[data-key="r-live-piping_${n}"]`);
+        need(row && block && row.parentElement === block.parentElement,
+          `the line of call ${n} is in ${row && row.parentElement.parentElement.parentElement.dataset.step}`);
+      }
+      const editorHelper = await until("the editor's helper", () => editor
+        && editor.querySelector(':scope > .sub-run[data-run-id="r-live-piping_002_001_async_x0200"]'), 3000);
+      await until("the editor's helper read", () => editorHelper.dataset.stored === 'loaded', 3000);
+      need(once(editorHelper, "the editor's helper starts."), "the editor's helper does not show what it did before");
+      // chapter 7's retry goes beside chapter 7
+      const retry7 = $(`#chat .sub-run[data-run-id="${id(7)}_minlen_0"]`);
+      need(retry7 && retry7.parentElement === boxOf(7).parentElement, `chapter 7's retry hangs in ${retry7 && retry7.parentElement.className}`);
+      // chapter 0 called an agent as a tool, and no line of that call came: its run goes
+      // into chapter 0's step, not beside chapter 0
+      need(boxOf(0).querySelector(':scope > .sub-run-body > .steps > .step-section[data-step="2"] .sub-run[data-run-id$="_q00000_004"]'),
+        `the agent chapter 0 called hangs in ${$('#chat .sub-run[data-run-id$="_q00000_004"]')?.parentElement.className}`);
+      const own = await until('its own line', () => boxOf(0).querySelector('.operation-progress[data-request-id$="_q00000_003"] .progress-line'), 3000);
+      need(own.style.paddingLeft === '0px', `a line of chapter 0's own sits ${own.style.paddingLeft} in`);
+      need(boxOf(0).querySelectorAll('[data-kind="result"]').length === 1, "chapter 0's call shows its result twice");
+      // chapter 60, read slowly after its live events began: what it did before goes before them,
+      // and what it said before its call does not replace its live answer
+      await until('chapter 60 read', () => boxOf(60).dataset.stored === 'loaded', 4000);
+      // chapter 2, whose read failed, is read again as its live events take it over
+      await until('chapter 2 read again', () => boxOf(2).dataset.stored === 'loaded', 3000);
+      need(!boxOf(2).textContent.includes('Could not be read'), "chapter 2's failed read stands as its answer");
+      // its step 2 stored nothing, and its marker came live after the read: before step 3
+      need(stepsOf(boxOf(2)) === '2,3', `chapter 2's steps ${stepsOf(boxOf(2))}`);
+      for (const n of [0, 2, 45, 60]) {
+        const [box, ...more] = boxesOf(n);
+        need(!more.length, `chapter ${n} got a second box`);
+        need(box.parentElement === call, `chapter ${n} left the call that started it`);
+        need(box.querySelector('.sub-run-task').textContent === `Chapter ${n}` && once(box, `chapter ${n} is planned.`)
+          && box.textContent.includes(`Chapter ${n} finished live.`) && box.dataset.state === 'done',
+          `chapter ${n} does not show what it did before and after once (${box.dataset.state}, steps ${stepsOf(box)})`);
+      }
+      // what the stream sends for the step in flight goes into that step: no Run section,
+      // no second, empty block for a call the session read already showed
+      need(stepsOf(boxOf(0)) === '1,2' && stepsOf(boxOf(60)) === '1,2',
+        `steps out of order: 0: ${stepsOf(boxOf(0))}, 60: ${stepsOf(boxOf(60))}`);
+      need(!boxOf(0).querySelector('.tool-detail-body:empty'), "chapter 0's call got a second, empty block");
+      // chapter 45's first word was the line of the call it waits in: that took it over,
+      // and once read the line sits in the step the call was made in, flat
+      const stepOf45 = (step) => boxOf(45).querySelector(`:scope > .sub-run-body > .steps > .step-section[data-step="${step}"]`);
+      // (its step is the server's 2: the one before stored nothing; the read was a step
+      // ahead, its step 3 stored, and the line still goes to the step of its call)
+      const line45 = stepOf45(2) && stepOf45(2).querySelector('.operation-progress[data-request-id$="_q00045_001"] .progress-line');
+      need(line45 && line45.style.paddingLeft === '0px' && stepsOf(boxOf(45)) === '2,3',
+        `chapter 45's call line is not in its step 2 (steps ${stepsOf(boxOf(45))}, ${line45 && line45.style.paddingLeft})`);
+      // chapter 60's step 2 had no marker: the line of it goes there all the same
+      need(boxOf(60).querySelector(':scope > .sub-run-body > .steps > .step-section[data-step="2"] .operation-progress[data-request-id$="_q00060_002"]'),
+        "chapter 60's line of step 2 is not in step 2");
+      // chapter 1 had answered: a line after its answer is the run's, not its last step's
+      need(stepsOf(boxOf(1)) === 'run', `chapter 1's line after its answer went to ${stepsOf(boxOf(1))}`);
+      need(!boxOf(60).textContent.includes('Looking at chapter 60 first.'), "chapter 60's stored words replaced its live answer");
+      // chapters 1 and 75 had answered: their end, live, leaves them done -- read or not
+      await until('chapter 75 read', () => boxOf(75).dataset.stored === 'loaded', 3000);
+      need(boxOf(1).dataset.state === 'done' && boxOf(75).dataset.state === 'done',
+        `an answered chapter was ended as unfinished (1: ${boxOf(1).dataset.state}, 75: ${boxOf(75).dataset.state})`);
+      // chapter 60's helpers: the one at work is taken over in its box, the finished one
+      // keeps waiting to be read through the run's end
+      const working = await until('the helper at work done', () => helper('h')?.dataset.state === 'done' && helper('h'), 5000);
+      // read at its take-over, while chapter 60 is still out of view: found in the live
+      // tree instead, it would wait until chapter 60 comes into view
+      await until('the helper read at its take-over', () => working.dataset.stored === 'loaded', 3000);
+      need(once(working, 'the helper starts.') && stepsOf(working) === '1,2',
+        `the helper at work was not taken over (steps ${stepsOf(working)})`);
+      need($$(`#chat .sub-run[data-run-id="${id(60)}_001_sub_h60000"]`).length === 1 && working.textContent.includes('Helper finished live.'),
+        "chapter 60's helper got a second box");
+      // the guard of chapter 60's third helper spoke: that helper, stored and never seen, was
+      // read for it, and the guard hangs under the helper's call
+      const keeper = $(`#chat .sub-run[data-run-id="${id(60)}_001_sub_k60000"]`);
+      const guard = await until("the third helper's guard", () => keeper && keeper.querySelector(
+        `.tool-detail[data-key="${id(60)}_001_sub_k60000_001"] > .sub-run[data-run-id="${id(60)}_001_sub_k60000_001_async_g6000"]`), 4000);
+      await until("the guard read", () => guard.dataset.stored === 'loaded', 3000);
+      need(keeper.dataset.stored === 'loaded' && once(guard, 'the guard starts.'), `the third helper ${keeper.dataset.stored}`);
+      await until('the run over', () => !win().chatModule.hasActiveRequest(), 6000);
+      // the pipeline's own call answered live: into the call the session read back, not a
+      // second one in the live block
+      const piped = $$('#chat .tool-detail[data-key="r-live-piping_001"]');
+      need(piped.length === 1 && piped[0].querySelector(':scope > .tool-detail-body > [data-kind="result"]'),
+        `the pipeline's call is shown ${piped.length} times`);
+      // over, it is no longer at work: a watch for the session's next run finds nothing
+      await stub('/__stub/active-runs', {});
+      // a chapter begun after the session was read hangs under the call that began it
+      need(boxOf(120) && boxOf(120).parentElement === call && boxOf(120).dataset.state === 'done',
+        `chapter 120 is not under the call (${boxOf(120) && boxOf(120).parentElement.className})`);
+      // its line came before its box: it went into the box when that was made
+      need(boxOf(120).querySelector('.operation-progress[data-request-id$="_q00120_002"]'), "chapter 120's early line is not in its box");
+      // chapter 3's end never came: the followed run's ends it -- once chapter 35's read,
+      // which a helper's word started just before the end, has let what waited go
+      await until('chapter 3 ended', () => boxOf(3).dataset.state !== 'running', 4000);
+      need(boxOf(3).dataset.state === 'unfinished', `chapter 3 was left ${boxOf(3).dataset.state}`);
+      // chapter 35's async helper spoke after the run's answer: 104 was read for it (not
+      // taken over), the helper hangs under 104's call, and the run's end ended it
+      const helper35 = await until("chapter 35's helper", () => $(`#chat .sub-run[data-run-id="${id(35)}_001_async_a0350"]`), 4000);
+      // its end waits for its read, as the followed run's end does for every read it holds
+      await until("chapter 35's helper ended", () => helper35.dataset.state !== 'running', 4000);
+      need(helper35 && boxOf(35).contains(helper35) && boxOf(35).dataset.stored === 'loaded'
+        && boxOf(35).dataset.state === 'unfinished' && once(helper35, 'the async helper of 35 starts.')
+        && helper35.dataset.state === 'unfinished',
+        `chapter 35 ${boxOf(35).dataset.state}/${boxOf(35).dataset.stored}, its helper in ${helper35 && helper35.parentElement.className} ${helper35 && helper35.dataset.state}`);
+      // the pipeline's line after its answer was open while that read let its events go:
+      // one row, and it ended
+      const saves = $$('#chat .operation-progress[data-request-id="r-live-piping_003"]');
+      need(saves.length === 1 && !saves[0].classList.contains('unfinished'),
+        `the pipeline's save line: ${saves.length} rows, ${saves.map((r) => r.className)}`);
+      need(helper('f').dataset.state === 'running', `the finished helper, never read, was ended as ${helper('f').dataset.state}`);
+      // the run's end folded the pipeline's step, and every chapter in it: open it again
+      need(unfold(call.closest('.step-section')), "the pipeline's step does not open");
+      jumpTo(boxOf(60));
+      need(unfold(boxOf(60).querySelector(':scope > .sub-run-body > .steps > .step-section[data-step="1"]')), "chapter 60's step does not open");
+      // into view itself, and back into view while it is not read: the boxes above it still
+      // change size as their runs settle (a shift of some 2800px was seen once, cause open)
+      await until('the finished helper read', () => {
+        if (helper('f').dataset.stored === 'pending') jumpTo(helper('f'));
+        return helper('f').dataset.state === 'done';
+      }, 3000);
+      // Read back again, three ways.
+      // (1) Read anew at once after the run's answer -- as a watch for the session's next
+      //     run does -- while chapter 35 is being read for its helper: what waited for that
+      //     read belongs to the showing before, and nothing of it reaches the next.
+      await stub('/__stub/active-runs', { 's-pipeline-live': 'r-live-piping' });
+      sessionButton('s-pipeline-live', 'open').click();
+      const shownA = await until('the call again', () => !call.isConnected && $('#chat .tool-detail[data-key="r-live-piping_001"]'), 6000);
+      await until("chapter 35's read for its helper", () => boxOf(35) && boxOf(35).dataset.stored === 'loading', 12000);
+      await stub('/__stub/active-runs', {});
+      win().sessionManager.loadSession('s-pipeline-live');
+      await until('the chapters listed anew', () => !shownA.isConnected
+        && $$('#chat .tool-detail[data-key="r-live-piping_001"] > .sub-run').length >= 120, 6000);
+      await sleep(2500);   // chapter 35's read for the showing before is back meanwhile
+      need(!$(`#chat .sub-run[data-run-id="${id(35)}_001_async_a0350"]`) && boxOf(35).dataset.stored === 'pending',
+        `the showing before reached this one: chapter 35 ${boxOf(35).dataset.stored}`);
+      // (2) Read back with its listing held until the run is over: what happens under the
+      //     pipeline waits for the listing, the pipeline's own line does not; then each
+      //     chapter is read and goes on in its box, and what the run's end ended is ended.
+      cookie('stub_children', 'held');
+      await stub('/__stub/active-runs', { 's-pipeline-live': 'r-live-piping' });
+      sessionButton('s-1', 'open').click();
+      await until('the other session', () => !$('#chat .tool-detail[data-key="r-live-piping_001"]'), 6000);
+      sessionButton('s-pipeline-live', 'open').click();
+      const again = await until('the call held', () => $('#chat .tool-detail[data-key="r-live-piping_001"]'), 6000);
+      await until('the pipeline\'s own line', () => $('#chat .operation-progress[data-request-id="r-live-piping_001"]'), 6000);
+      await until('the run over again', () => !win().chatModule.hasActiveRequest(), 15000);
+      await stub('/__stub/active-runs', {});
+      // the agent called as a tool is no listed run: it never waits
+      const early = $$('#chat .sub-run:not([data-run-id="r-live-piping_002"])');
+      need(!early.length, `a box came before the listing (${early.map((b) => b.dataset.runId)})`);
+      cookie('stub_children', null);
+      await stub('/__stub/lists/release', {});
+      await until('the stored ones', () => again.querySelectorAll(':scope > .sub-run').length === 122, 6000);
+      await until('the chapters at work read and done', () => [0, 2, 45, 60].every((n) => boxOf(n).dataset.stored === 'loaded'
+        && boxOf(n).dataset.state === 'done'), 6000);
+      // what waited past the stream's end and was left open says so
+      const line45Again = $('#chat .operation-progress[data-request-id$="_q00045_001"]');
+      need(line45Again && line45Again.classList.contains('unfinished'), `chapter 45's line after the end: ${line45Again && line45Again.className}`);
+      const helper35Again = await until("chapter 35's helper again", () => $(`#chat .sub-run[data-run-id="${id(35)}_001_async_a0350"]`), 4000);
+      await until("chapter 35's helper ended", () => helper35Again.dataset.state !== 'running', 4000);
+      need(helper35Again.dataset.state === 'unfinished' && $$('#chat .sub-run[data-run-id="r-live-piping_002_001_async_x0200"]').length === 1,
+        `chapter 35's helper ${helper35Again.dataset.state}; the editor's helper ${$$('#chat .sub-run[data-run-id="r-live-piping_002_001_async_x0200"]').length} boxes`);
+      need([0, 1, 2, 3, 45, 60, 75, 120].every((n) => boxesOf(n).length === 1) && stepsOf(boxOf(60)) === '1,2'
+        && boxOf(3).dataset.state === 'unfinished' && boxOf(120).dataset.state === 'done',
+        `after the listing: ${[0, 1, 2, 3, 45, 60, 75, 120].map((n) => `${n}:${boxesOf(n).length}/${boxOf(n) && boxOf(n).dataset.state}`)}, steps of 60 ${stepsOf(boxOf(60))}, `
+        + `boxes of 0 in ${boxesOf(0).map((b) => `${b.parentElement.className}[${b.parentElement.dataset.key || b.parentElement.dataset.step || ''}]`)}, `
+        + `calls ${$$('#chat .tool-detail[data-key="r-live-piping_001"]').length}, same ${boxesOf(0)[0]?.parentElement === boxesOf(0)[1]?.parentElement}, `
+        + `stored ${boxesOf(0).map((b) => b.dataset.stored)}, blocks ${$$('#chat .msg.assistant').length}`);
+      // (3) Held again, and read anew at once after the answer, before its listing came:
+      //     what waited for the showing before goes with it -- the next one's boxes are not
+      //     taken over by a run it does not follow.
+      cookie('stub_children', 'held');
+      await stub('/__stub/active-runs', { 's-pipeline-live': 'r-live-piping' });
+      sessionButton('s-1', 'open').click();
+      await until('the other session again', () => !$('#chat .tool-detail[data-key="r-live-piping_001"]'), 6000);
+      sessionButton('s-pipeline-live', 'open').click();
+      const shownC = await until('the call held again', () => $('#chat .tool-detail[data-key="r-live-piping_001"]'), 6000);
+      // its answer came, its stream reads on to its end: the session may be read anew now
+      await until('its answer', () => win().chatModule.hasActiveRequest() && !win().chatModule.activeRun(), 15000);
+      await stub('/__stub/active-runs', {});
+      win().sessionManager.loadSession('s-pipeline-live');
+      await until('the call once more', () => !shownC.isConnected && $('#chat .tool-detail[data-key="r-live-piping_001"]'), 6000);
+      cookie('stub_children', null);
+      await stub('/__stub/lists/release', {});
+      await until('the chapters listed once more', () => $$('#chat .tool-detail[data-key="r-live-piping_001"] > .sub-run').length >= 120, 6000);
+      await sleep(500);
+      return need([45, 60].every((n) => boxOf(n).dataset.stored === 'pending'),
+        `the showing before took this one's boxes over: ${[45, 60].map((n) => boxOf(n).dataset.stored)}`);
+    } finally {
+      cookie('stub_children', null);
+      await stub('/__stub/lists/release', {});
+      await stub('/__stub/live/release', {});
+      await stub('/__stub/active-runs', {});
       forgetRun();
       await loadShell();
     }
@@ -3663,10 +4060,11 @@
       sessionButton('s-run', 'open').click();
       await until('the run session again', () => $('#headerSessionId').textContent === 'A run read back');
       await until('the kept choice', () => thinkingShown(), 3000);
-      const again = panelFrame('/ui/panels/settings').contentDocument;
-      const choice = (name, value) => again.querySelector(`#chatPreferences input[name="${name}"][value="${value}"]`);
+      // asked each time: restored after the reload, the panel may still be loading its page
+      const choice = (name, value) => panelFrame('/ui/panels/settings').contentDocument
+        .querySelector(`#chatPreferences input[name="${name}"][value="${value}"]`);
       const pick = (value) => choice('sub_agents', value);
-      await until('the settings again', () => pick('expanded').checked, 3000);
+      await until('the settings again', () => pick('expanded')?.checked, 3000);
       // two choices inside one round trip: the second is kept with the first, not over it
       cookie('stub_preferences', 'slow');
       choice('fold_steps', 'never').click();

@@ -646,20 +646,7 @@ class SessionManager:
                 if pid != parent_session_id:
                     continue
 
-                index_data[session_data["session_id"]] = {
-                    "session_id": session_data["session_id"],
-                    "user_id": session_data["user_id"],
-                    "title": session_data["title"],
-                    "created_at": session_data["created_at"],
-                    "updated_at": session_data["updated_at"],
-                    "agent_name": session_data["agent_name"],
-                    "llm_profile": session_data["llm_profile"],
-                    "message_count": session_data["metadata"].get("message_count", 0),
-                    "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
-                    "tags": session_data["metadata"].get("tags", []),
-                    "parent_session": session_data.get("parent_session"),
-                    "depth": session_data.get("depth", 1),
-                }
+                index_data[session_data["session_id"]] = self._index_metadata(session_data)
             except Exception as e:
                 logger.warning("Failed to read session %s for index rebuild: %s", session_file, e)
                 continue
@@ -695,7 +682,7 @@ class SessionManager:
         which method wrote them is an index nobody can read.
         """
         metadata = session_data.get("metadata", {})
-        return {
+        row = {
             "session_id": session_data["session_id"],
             "user_id": session_data["user_id"],
             "title": session_data["title"],
@@ -709,6 +696,14 @@ class SessionManager:
             "parent_session": session_data.get("parent_session"),
             "depth": session_data.get("depth", 1),
         }
+        if SessionManager._extract_parent_id(session_data):
+            # The runs of a sub-session, by the id each opened with (ChatMessage.request_id):
+            # a session read back asks its children for them and hangs each under the
+            # call it started from. Only sub-sessions: nothing looks up a top-level
+            # session's runs, and index.json would grow by one id per turn.
+            row["runs"] = [m["request_id"] for m in session_data.get("messages") or []
+                           if isinstance(m, dict) and m.get("request_id")]
+        return row
 
     async def _update_index_entry(
         self,

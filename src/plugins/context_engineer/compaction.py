@@ -1890,6 +1890,11 @@ class LayeredCompactionStrategy:
             # back as a message a person wrote.
             if msg.get("injected_by"):
                 archived_msg["injected_by"] = msg["injected_by"]
+            # Which run it opened, which ids its calls' tools ran under: a session
+            # read back finds its sub-agents' runs by them, archived or not.
+            for stamp in ("request_id", "tool_request_ids", "step"):
+                if msg.get(stamp):
+                    archived_msg[stamp] = msg[stamp]
 
             messages[i] = archived_msg
             result.messages_archived += 1
