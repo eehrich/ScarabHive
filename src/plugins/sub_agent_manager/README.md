@@ -83,12 +83,16 @@ Two things make that hold rather than nearly hold:
   would start a second woken run, a whole turn on the user's money.
 * **The promise is checked before the caller sleeps on it.** `create` asks what
   can be answered up front — `session_presence` off, no session behind the call,
-  a wake chain already at `max_wake_depth` — and says so in its answer, with the
-  reason. "Armed" is not a guarantee: two exits cannot be checked there, the
-  process holding the job outliving the turn (below) and the caller being a
-  sub-agent's own session, which is never woken and whose detection means
-  parsing a whole session file on the caller's loop. "Not armed" is a certainty,
-  and it used to be the one thing the caller was never told.
+  a wake chain already at `max_wake_depth`, and the caller being a sub-agent's
+  own session, which is never woken (the run that spawned it takes its answer)
+  — and says so in its answer, with the reason. The core leaves the last one out
+  of `wake_blocked`, since it means reading the session file; a `create` has
+  just read and written that very session, so the manager asks it. Told it may
+  sleep, a sub-agent that started a job ended its turn over it: its caller got
+  "I am waiting" for an answer, and the job's result reached nobody. "Armed" is
+  still not a guarantee — the process holding the job has to outlive the turn
+  (below). "Not armed" is a certainty, and it used to be the one thing the
+  caller was never told.
 
 Three things bound it, and none of them are this plugin's:
 
@@ -168,8 +172,10 @@ Two more that are not limits but guards:
   a `continue` opens an archived instance again, through the limits; a clean
   ending or `list`'s healing leaves it archived, and the healing writes only
   over the state it judged. The lock is per process and holds among the
-  manager's writes: a whole-file save of the parent session (the core's
-  checkpoint) is not held off by it.
+  manager's writes. A whole-file save of the parent session (the core's
+  checkpoint) is not held off by it, and no longer needs to be: `save_session`
+  lets the metadata already in the file win (`b579f62fe`), so a checkpoint
+  does not write an older `sub_agents` back.
 * **Instance ids do not collide across parents or restarts.** The counter is
   class-level (shared by every manager instance) behind a class lock, and
   seeded from the time of day rather than zero, so a restart does not re-issue

@@ -1967,8 +1967,12 @@ class TestCancelReachesABlockingRun:
         session_service = Mock()
         session_service.save_session = AsyncMock()
         session_service.session_manager = Mock()
-        session_service.session_manager.load_session = AsyncMock(return_value={
-            "agent_name": "slow_agent", "parent_session": {"session_id": "parent1"}, "context_vars": {}})
+
+        async def load_session(user_id, session_id, *args, **kwargs):
+            if session_id == "parent1":  # the caller, a session of its own
+                return {"agent_name": "coordinator", "context_vars": {}}
+            return {"agent_name": "slow_agent", "parent_session": {"session_id": "parent1"}, "context_vars": {}}
+        session_service.session_manager.load_session = AsyncMock(side_effect=load_session)
         manager = Mock()
         manager._extract_user_id = Mock(return_value="u1")
         manager._session_service = session_service
@@ -2738,6 +2742,25 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         assert "NOT be woken" in started["message"], started["message"]
         assert "session presence is off" in started["message"], "the reason is what to act on"
         assert "poll or wait" in started["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_sub_agent_that_starts_a_job_is_told_it_is_not_woken(self, server, monkeypatch):
+        """A sub-agent's own session is never woken: the run that spawned it takes its answer.
+        Told it may sleep, it ended its turn over the job -- its caller got "I am waiting" for an
+        answer, and the job's result reached nobody."""
+        self.presence(monkeypatch)
+        self.arming(monkeypatch)  # the core has nothing against it: it does not look at the link
+        agent = SlowAgent()
+        session_service = TestCancelReachesABlockingRun.wire(server, agent)
+        session_service.session_manager.load_session.side_effect = None
+        session_service.session_manager.load_session.return_value = {
+            "agent_name": "coordinator", "parent_session": {"session_id": "the_top"}, "context_vars": {}}
+
+        started = await self.start(server, wake_when_done=True)
+
+        assert "NOT be woken" in started["message"], started["message"]
+        assert "sub-agent's own session" in started["message"], started["message"]
+        assert "end your turn:" not in started["message"], started["message"]
 
     @pytest.mark.asyncio
     async def test_a_caller_that_can_be_woken_is_told_it_may_sleep(self, server, monkeypatch):

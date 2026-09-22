@@ -876,7 +876,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     "instance_id": sub_session_id,
                     "status": "running",
                     "agent_type": agent_name,
-                    "message": self._async_started_message(
+                    "message": await self._async_started_message(
                         params, parent_session_id, manager),
                 }
 
@@ -1956,8 +1956,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 # seen. That one hands over no guard and rings the budget.
                 still_needed=None if was_archived else (lambda: self._ending_is_unread(instance_id)))
 
-    def _async_started_message(self, params: dict[str, Any], parent_session_id: str,
-                               manager: Optional[SubAgentManager]) -> str:
+    async def _async_started_message(self, params: dict[str, Any], parent_session_id: str,
+                                     manager: Optional[SubAgentManager]) -> str:
         """What `create(blocking=false)` tells the model about the job it just started.
 
         The tool description promises the wake without conditions, because it describes the
@@ -1966,11 +1966,12 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         a caller told nothing about ends its turn over and waits for good. So the answer says
         which of the two it is, with the reason, because the reason is what a model can act on.
 
-        "Not blocked" is not a promise either, and `wake_blocked` names the two exits it cannot
-        check up front: whether the process holding the job outlives the turn, and whether this
-        is a sub-agent's own session, which is never woken -- reading that means parsing the
-        whole session file on the caller's loop. Both show only at the ending, as a wake that did
-        not happen. Being woken stays the good case and polling stays the fallback.
+        `wake_blocked` names two exits it cannot check up front. One is checked here all the same
+        (`_never_woken`): a sub-agent's own session, which is never woken. Told it may sleep, a
+        sub-agent that starts a job ended its turn over it, handing its caller an answer that was
+        only "I am waiting", and the job's result reached nobody. The other stays open: whether
+        the process holding the job outlives the turn. It shows only at the ending, as a wake that
+        did not happen, so being woken stays the good case and polling the fallback.
         """
         started = "Sub-agent execution started in background."
         if not params.get("wake_when_done"):
@@ -1978,7 +1979,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         try:
             # `manager` is never None here: this runs on the create path, which built one.
             user_id = manager._extract_user_id(parent_session_id, params)
-            blocked = wake_blocked(self.system_config, parent_session_id, user_id)
+            blocked = (wake_blocked(self.system_config, parent_session_id, user_id)
+                       or await self._never_woken(manager, user_id, parent_session_id))
         except Exception as e:
             # The job is running. A create must not fail over the wording of its own answer, and
             # the neutral sentence is the one that was there before any of this.
@@ -1990,6 +1992,22 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         return (f"{started} You may end your turn: this session is woken when it finishes, "
                 f"however it ends except a cancel or delete of your own, and you poll the "
                 f"instance then.")
+
+    @staticmethod
+    async def _never_woken(manager: SubAgentManager, user_id: str, session_id: str) -> str:
+        """Why a session that could be woken is not: it is a sub-agent's own -- the run that
+        spawned it takes its answer, and the core wakes none (`notify`, by the same link
+        `session_presence._stored_session` reads). "" otherwise.
+
+        The core leaves this out of `wake_blocked` because it would parse the session file on the
+        caller's loop at every armed wake. A create has just read and written this very session,
+        so here it is the session manager's cache, or one read off the loop.
+        """
+        session = await manager._session_service.session_manager.load_session(user_id, session_id)
+        if session.get("parent_session"):
+            return ("this is a sub-agent's own session, and those are never woken: ending your "
+                    "turn hands your answer to the run that spawned you")
+        return ""
 
     def _ending_is_unread(self, instance_id: str) -> bool:
         """Whether this job's ending is still waiting for somebody to read it.
