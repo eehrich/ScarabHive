@@ -2136,6 +2136,10 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 self.system_config, parent_session_id, user_id,
                 what=f"sub-agent {instance_id}",
                 still_needed=still_needed,
+                # The run that asked for the job, by the id of its create call. Asked instead, the
+                # core reads the ringing task's current request -- a job still carries its sub-agent's
+                # there, and a stopped sub-agent read as a stopped caller that is never woken.
+                started_by=str(params.get("_request_id") or ""),
             )
         except Exception as e:
             # The job is done and recorded; a wake that fails costs the caller a poll, not the run.

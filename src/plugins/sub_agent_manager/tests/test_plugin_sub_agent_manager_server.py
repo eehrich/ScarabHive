@@ -2355,6 +2355,25 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         await asyncio.wait_for(handle, 5)
 
     @pytest.mark.asyncio
+    async def test_the_wake_names_the_run_that_asked_for_the_job(self, server, monkeypatch):
+        """By the id of its create call. Left to the core, it reads the ringing task's current
+        request -- the sub-agent's -- and a stopped sub-agent kept its caller from being woken."""
+        named = []
+
+        async def wake(system_config, session_id, user_id, what="", still_needed=None, started_by=None):
+            named.append(started_by)
+            return "woke_session"
+
+        monkeypatch.setattr(sam_server, "wake_session", wake)
+        self.arming(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+
+        assert named == ["req1"], named
+
+    @pytest.mark.asyncio
     async def test_a_finished_job_wakes_the_session_that_started_it(self, server, monkeypatch):
         """And it is told only once the ending is recorded: a woken run reads the job, so a wake
         that goes out first sends it to a job that still says it is running."""
