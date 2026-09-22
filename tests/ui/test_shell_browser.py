@@ -261,6 +261,9 @@ STORED_RUNS = {
         {"role": "user", "content": "And the colours", "request_id": f"{HELPED}_004_sub_cont_bbbbbb"},
         {"role": "assistant", "content": "", **_calls(f"{HELPED}_004_sub_cont_bbbbbb", ("c_2", "file_ops_read_file"))},
         *_answers("c_2"),
+        # its last word so far an interim: a hook's follow-up came after it
+        {"role": "assistant", "content": "Two colours so far.", "content_format": "text"},
+        {"role": "user", "content": "Check the rest.", "injected_by": "agent_continuation.followup"},
     ],
     "sub-deep": [
         {"role": "user", "content": "Count them", "request_id": f"{HELPED}_003_sub_aaaaaa_002_sub_cccccc"},
@@ -278,6 +281,53 @@ STORED_RUNS = {
         {"role": "assistant", "content": "", "tool_calls": [_call("call_1", "file_ops_read_file")]},
         {"role": "tool", "tool_call_id": "call_1", "content": '{"status": "success", "note": "the second answer"}'},
         {"role": "assistant", "content": "Done twice.", "content_format": "text"},
+    ],
+    # thinking stored only inside reasoning_details, in both shapes the server writes:
+    # flat text blocks, and the reasoning items of a verbatim replay block. The
+    # encrypted payload next to them is not text and must never show.
+    # Kept on reasoning_content, it is the one copy that counts; flat blocks come before
+    # the items, an item's content before its summary (thinking_text's order).
+    "details": [
+        {"role": "user", "content": "Think it over"},
+        {"role": "assistant", "content": "", "reasoning_details": [
+            {"type": "reasoning.text", "text": "weighing it in a block."},
+            {"type": "reasoning.summary", "summary": "summed flat."},
+            {"type": "reasoning.encrypted", "data": "SEALED-PAYLOAD"}],
+         "tool_calls": [_call("call_1", "file_ops_read_file")]},
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"status": "success"}'},
+        {"role": "assistant", "content": "", "reasoning_content": "in its own words.",
+         "reasoning_details": [{"type": "reasoning.text", "text": "KEPT-TWICE"}],
+         "tool_calls": [_call("call_2", "file_ops_read_file")]},
+        {"role": "tool", "tool_call_id": "call_2", "content": '{"status": "success"}'},
+        {"role": "assistant", "content": "Thought it over.", "content_format": "text", "reasoning_details": [
+            {"type": "reasoning.responses_items", "items": [
+                {"type": "reasoning", "encrypted_content": "SEALED-ITEM",
+                 "content": [{"type": "reasoning_text", "text": "thought in an item."}],
+                 "summary": [{"type": "summary_text", "text": "summed up in an item."}]}]},
+            {"type": "reasoning.text", "text": "flat after the items."}]},
+    ],
+    # two runs a hook kept going: the follow-up it injected is marked, opens no turn,
+    # and the steps after it are the same run's -- numbered on, no `step` stored.
+    # Two, so the first run is ended by a typed turn and the last by its answer.
+    "continued": [
+        {"role": "user", "content": "Look around"},
+        {"role": "assistant", "content": "", "tool_calls": [_call("call_1", "file_ops_read_file")]},
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"status": "success"}'},
+        {"role": "assistant", "content": "Had a first look.", "content_format": "text"},
+        {"role": "user", "content": "Now check the rest.", "injected_by": "agent_continuation.followup"},
+        {"role": "assistant", "content": "", "tool_calls": [_call("call_2", "file_ops_read_file")]},
+        {"role": "tool", "tool_call_id": "call_2", "content": '{"status": "success"}'},
+        {"role": "assistant", "content": "Checked the rest.", "content_format": "text"},
+        {"role": "user", "content": "Once more"},
+        {"role": "assistant", "content": "Looked again.", "content_format": "text"},
+        {"role": "user", "content": "Keep going.", "injected_by": "agent_continuation.followup"},
+        {"role": "assistant", "content": "All done.", "content_format": "text"},
+    ],
+    # read back while the continued run goes on: its last word so far is an interim
+    "continuing": [
+        {"role": "user", "content": "Look around"},
+        {"role": "assistant", "content": "Had a first look.", "content_format": "text"},
+        {"role": "user", "content": "Now check the rest.", "injected_by": "agent_continuation.followup"},
     ],
     "flaky": [
         {"role": "user", "content": "Try twice", "request_id": FLAKY},
@@ -1532,6 +1582,8 @@ EXPECTED = [
     'a sub-agents lines nest under the call that spawned it, none go missing, and what was still running when the run ended says so',
     'clicking a tool status line unfolds what it was asked and what it answered, as one block per call',
     'a session read back from disk brings its run with it, not just the answer',
+    'a session read back shows thinking the server kept only in reasoning_details',
+    'a session read back keeps a run a hook continued as one run, not two turns',
     'two runs of a session read back keep their calls apart, whatever id the provider gave them',
     'steps stay open while the run works and fold once it has answered; one opened by hand stays open',
     "a sub-agent's run stays in the step that started it and shows its own steps, one level in",

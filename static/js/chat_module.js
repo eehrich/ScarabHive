@@ -1628,6 +1628,36 @@
   }
 
   /**
+   * A stored message's thinking, wherever the server kept it: on the message as
+   * reasoning_content, or -- when the provider's artifact is kept verbatim anyway --
+   * only inside reasoning_details, as flat text blocks or as the reasoning items of a
+   * verbatim replay block. The rule of utils/reasoning_artifacts.thinking_text; read
+   * from reasoning_content alone, a third of the stored runs came back without their
+   * thinking. `data` is the encrypted round-trip payload, never text.
+   */
+  function storedThinking(msg) {
+    const own = msg.reasoning_content;
+    if (typeof own === 'string' && own.trim()) return own;
+    const texts = [];
+    const items = [];
+    const text = (v) => typeof v === 'string' && v.trim();
+    for (const block of Array.isArray(msg.reasoning_details) ? msg.reasoning_details : []) {
+      if (!block || typeof block !== 'object') continue;
+      for (const item of Array.isArray(block.items) ? block.items : []) {
+        if (!item || item.type !== 'reasoning') continue;
+        for (const field of ['content', 'summary']) {
+          for (const part of Array.isArray(item[field]) ? item[field] : []) {
+            if (part && text(part.text)) items.push(part.text);
+          }
+        }
+      }
+      const value = block.text || block.summary;
+      if (text(value)) texts.push(value);
+    }
+    return [...texts, ...items].join('\n\n');
+  }
+
+  /**
    * One LLM call of a session read back from disk, in the containers the live
    * run builds: its thinking and what it asked each tool, foldable as ever.
    *
@@ -1642,7 +1672,7 @@
    */
   function replayStep(blk, msg, stepNo, resultFor) {
     const calls = msg.tool_calls || [];
-    const thinking = msg.reasoning_content || '';
+    const thinking = storedThinking(msg);
     if (!calls.length && !thinking) return;   // a plain answer needs no step of its own
     const section = stepOf(blk, stepNo);
     if (!section) return;
@@ -2937,6 +2967,8 @@
     let stepNo = 0;
     let answered = false;
     messages.forEach((msg, index) => {
+      // a hook's continuation after its last word: that word was an interim, the run goes on
+      if (msg.role === 'user' && msg.injected_by) answered = false;
       if (msg.role !== 'assistant') return;
       // numbered as the server numbered it (ChatMessage.step), which counts a step that
       // stored nothing too; counted, in a session older than that
@@ -4009,7 +4041,10 @@
       // its answer. The LAST run may still be working -- a session read back while its
       // run goes on (live_events_seen) -- and stays open unless it has answered.
       let answered = false;
-      const endRun = () => { settleView(runBlk); runBlk = null; stepNo = 0; };
+      // A run can span several blocks: after a continuation it goes on in a fresh
+      // one below the injected message, as the live view rebinds it (rebindLiveBlock).
+      let runBlocks = [];
+      const endRun = () => { runBlocks.forEach(settleView); runBlocks = []; runBlk = null; stepNo = 0; };
       const replayed = [];   // every run block, for the sub-runs their calls started
       forgetStoredSubRuns();
 
@@ -4019,7 +4054,23 @@
           return;
         }
 
-        if (msg.role === 'user') {
+        if (msg.role === 'user' && msg.injected_by) {
+          // Put there by a hook, not typed: a continuation (agent_continuation's follow-ups,
+          // a missing required spawn) or what a hook hands the run (debate_forum's posts).
+          // No turn anybody took, so the run goes on -- shown in the shape of the live
+          // 'continuation' event, the run's next steps in a fresh block below. That event's
+          // count and reason are not stored, and not every marker is a continuation: the
+          // badge names what is known, the marker who sent it.
+          const contRow = document.createElement('div');
+          contRow.className = 'row';
+          const contMsg = document.createElement('div');
+          contMsg.className = 'msg user continuation-msg';
+          contMsg.innerHTML = `<div class="continuation-badge">${kitIcon('info')} Injected</div><div class="continuation-reason">${escapeHtml(msg.injected_by)}</div><div class="continuation-text">${formatTextWithLineBreaks(messageText(msg))}</div>`;
+          contRow.appendChild(contMsg);
+          chatEl.appendChild(contRow);
+          runBlk = null;
+          answered = false;   // what the run said before it was an interim, not its answer
+        } else if (msg.role === 'user') {
           // Add user message
           const row = document.createElement('div');
           row.className = 'row';
@@ -4071,6 +4122,7 @@
           if (!runBlk) {
             runBlk = addAssistantBlock(chatEl);
             replayed.push(runBlk);
+            runBlocks.push(runBlk);
           }
           stepNo = msg.step || stepNo + 1;   // as the server numbered it (ChatMessage.step)
           replayStep(runBlk, msg, stepNo, answersTo(session.messages, index));
@@ -4095,7 +4147,7 @@
           if (!msg.injected_by) endRun();
         }
       });
-      if (answered) settleView(runBlk);
+      if (answered) runBlocks.forEach(settleView);
       // Not awaited: the session is shown either way, its sub-runs join it when listed --
       // and the live events of runs under the followed one wait until then (waitingFor).
       const gate = { waiting: [] };

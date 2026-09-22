@@ -1707,6 +1707,65 @@
     }
   });
 
+  await check('a session read back keeps a run a hook continued as one run, not two turns', async () => {
+    // A hook's follow-up is stored as a user message marked injected_by. Read back as
+    // a typed turn, it split the run in two: a user bubble, the steps numbered anew,
+    // the first half folded as if the run had ended there.
+    try {
+      await stub('/__stub/sessions', { session_id: 's-continued', title: 'Continued', run: 'continued', has_children: false });
+      await loadShell();
+      sessionButton('s-continued', 'open').click();
+      await until('the continued session', () => $('#headerSessionId').textContent === 'Continued');
+      await until('its last block', () => $$('#chat .msg.assistant').length === 4);
+      const typed = $$('#chat .msg.user:not(.continuation-msg)');
+      need(typed.length === 2, `typed turns shown: ${typed.length}`);
+      const cont = $$('#chat .continuation-msg');
+      need(cont.length === 2 && cont[0].textContent.includes('Now check the rest.')
+        && cont[0].textContent.includes('agent_continuation.followup'), 'the follow-ups are not shown with who sent them');
+      const blocks = $$('#chat .msg.assistant');
+      const steps = blocks[1].querySelector('.step-section');
+      need(steps && steps.dataset.step === '3', `the steps after the follow-up were numbered anew: ${steps && steps.dataset.step}`);
+      const open = blocks.map((b, i) => b.querySelector('.steps[data-settled]') ? '' : i).filter((i) => i !== '');
+      need(!open.length, `blocks of an ended run left open: ${open}`);
+      // the same run read back before it answered: what it said so far stays open
+      await stub('/__stub/sessions', { session_id: 's-continuing', title: 'Continuing', run: 'continuing', has_children: false });
+      await loadShell();
+      sessionButton('s-continuing', 'open').click();
+      await until('the continuing session', () => $('#headerSessionId').textContent === 'Continuing');
+      const going = await until('its block', () => $$('#chat .msg.assistant').at(-1));
+      need(!going.querySelector('.steps[data-settled]'), 'a run still going was folded as answered at its interim');
+      return true;
+    } finally {
+      await loadShell();
+    }
+  });
+
+  await check('a session read back shows thinking the server kept only in reasoning_details', async () => {
+    // The server stores a message's thinking ONCE: on reasoning_content, or inside
+    // reasoning_details when that artifact is kept verbatim anyway. Read back from
+    // reasoning_content alone, a third of the stored runs came back without their thinking.
+    try {
+      await stub('/__stub/sessions', { session_id: 's-details', title: 'Thought over', run: 'details', has_children: false });
+      await loadShell();
+      sessionButton('s-details', 'open').click();
+      await until('the thought-over session', () => $('#headerSessionId').textContent === 'Thought over');
+      const box = await until('its run', () => $$('#chat .msg.assistant').at(-1));
+      const thought = (n) => {
+        const t = box.querySelector(`.step-section[data-step="${n}"] .thinking-content`);
+        return t && !t.closest('.step-thinking').hidden ? t.textContent : '';
+      };
+      need(thought(1).includes('weighing it in a block.') && thought(1).includes('summed flat.'), `step 1 thinking: "${thought(1)}"`);
+      need(thought(2).includes('in its own words.') && !thought(2).includes('KEPT-TWICE'), `step 2 thinking: "${thought(2)}"`);
+      const third = thought(3);
+      const at = ['flat after the items.', 'thought in an item.', 'summed up in an item.'].map((t) => third.indexOf(t));
+      need(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], `step 3 thinking: "${third}"`);
+      need(!box.textContent.includes('SEALED'), 'the encrypted payload was shown as thinking');
+      return true;
+    } finally {
+      await loadShell();
+    }
+  });
+
   await check("a session read back shows what its sub-agents did under the calls that started them, read when it comes into view", async () => {
     // A sub-agent's steps live in a session of its own: after a reload the chat showed
     // the call that started it and nothing of what it did. Its runs are found by the
