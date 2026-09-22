@@ -1,0 +1,70 @@
+# coding_cli: Claude Code as a tool, and the agent that hands work to it.
+#
+# Runs use the Claude Code login of the account ScarabHive runs under -- the
+# operator's subscription, not an API key (the child gets no ANTHROPIC_API_KEY).
+# Without the claude executable the instance offers no tools, so an
+# installation without Claude Code loses nothing by this being enabled.
+plugins:
+  servers:
+
+    coding_cli:
+      type: coding_cli
+      enabled: true
+      description: "Claude Code, headless on the operator's subscription: programming tasks in a git worktree, results on a branch"
+      # The subscription belongs to one person: only these ScarabHive users start runs.
+      allowed_users: [admin, cli_user]
+      # Repositories by name; each run gets a fresh worktree of the repo's HEAD
+      # on its own branch. exclude: tracked files the run never sees, here the
+      # ones that hold secrets -- secrets.env the keys, config.yaml the JWT
+      # signing key and the default admin password. Every other file holding
+      # one of their values (a .env value, a YAML value under a key named like
+      # a secret) is kept out as well; the answer lists them under `hidden`.
+      workdirs:
+        scarabhive:
+          path: "."
+          exclude: [config/secrets.env, config/config.yaml]
+      # Shell commands Claude Code may run, as Claude Code permission patterns
+      # (e.g. "pytest:*"). Empty: no shell at all. Every allowed command runs
+      # code the run may have written, with the operator's rights: it can read
+      # any file, config/secrets.env included, and push with the stored git
+      # credentials. The shell tool itself is refused git push/remote/config/
+      # worktree, a program an allowed command starts is not. On Linux, pytest
+      # in a worktree of this repo kills the API: its root conftest.py ends every
+      # python process of the venv (README, Known gaps).
+      allowed_commands: []
+      # No run starts while a subscription window is at or past this share.
+      max_window_utilization: 0.8
+      # How long run_task waits before it answers with a run id and a wake.
+      wait_s: 300
+      # A run still going after this is stopped; what it changed is committed.
+      max_run_minutes: 60
+      # Runs going at the same time; every one spends the subscription.
+      max_parallel: 1
+      # Claude Code's model; empty: the subscription's default.
+      model: ""
+      # Environment variables the child gets beyond what Claude Code needs to
+      # start and log in. No key from config/secrets.env reaches it otherwise.
+      pass_env: []
+
+    claude_code_agent:
+      type: multi_turn_agent
+      enabled: true
+      description: "Hand a programming task to Claude Code (on the operator's subscription) and report the branch and changes it left"
+
+      self_tool_descriptions:
+        claude_code_agent_execute_task: "Have Claude Code carry out a programming task in a git worktree; returns the branch, the changed files and Claude Code's report"
+        claude_code_agent_list_available_tools: "List the tools the Claude Code agent uses"
+
+      agent_config:
+        # It only relays: the coding happens in Claude Code.
+        llm_profile: [or-gemini-flash, or-deepseek-flash]
+        llm_profile_advanced: []
+        llm_params:
+          "*":
+            prompt_cache_mode: multi_turn
+        max_steps: 20
+        system_template: "./prompts/claude_code_agent.md"
+
+        tools:
+          allowed:
+            - "+coding_cli/*"
