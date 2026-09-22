@@ -506,15 +506,15 @@ def test_the_anthropic_payload_never_marks_the_note():
 
 
 @pytest.mark.parametrize("declared", [None, SYSTEM])
-def test_the_responses_payload_never_marks_the_note(declared):
+def test_the_responses_payload_marks_no_part_not_even_the_note(declared):
     """Through the real payload build, on the marker style that marks at all.
 
-    Both rungs matter here. On `developer` the guard in mark_conversation_tail
-    does the work; on `system` the note becomes a system message and
-    mark_last_system takes the LAST system message -- so lowering it before
-    the markers would take the breakpoint off the system prompt AND put it on
-    a line that changes every call. (The OpenAI marker style is not a case:
-    without a CACHE_BREAKPOINT sentinel in the text it marks nothing at all.)
+    On this route OpenRouter forwards cache_control only as one top-level key
+    (measured 2026-09-22); Anthropic places it on the last block itself. So
+    no item may carry a marker -- the note on neither rung -- and the key
+    sits on the body. That a note ending the input then carries the
+    automatic breakpoint is the route's known cost, see
+    OpenAIResponsesClient._lower_developer_items.
     """
     from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
     client = OpenAIResponsesClient(
@@ -526,12 +526,13 @@ def test_the_responses_payload_never_marks_the_note(declared):
                                         injected_by="test.budget")]
     del messages[3]
 
-    items = client._build_payload(messages, None)["input"]
+    payload = client._build_payload(messages, None)
 
-    marked = [i for i in items if _cache_marked(i.get("content"))]
-    assert marked, "nothing was marked at all -- the fixture does not reach the caching branch"
-    assert not any(NOTE in _text_of(i.get("content")) for i in marked), \
-        f"the breakpoint sits on the note: {marked}"
+    assert payload["cache_control"] == {"type": "ephemeral"}
+    assert any(NOTE in _text_of(i.get("content")) for i in payload["input"]), \
+        "the note is not in the input -- the fixture tests nothing"
+    marked = [i for i in payload["input"] if _cache_marked(i.get("content"))]
+    assert not marked, f"a part carries a marker OpenRouter drops on this route: {marked}"
 
 
 def test_the_conversation_cache_breakpoint_skips_a_volatile_note():

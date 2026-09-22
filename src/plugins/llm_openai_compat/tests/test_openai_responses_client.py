@@ -717,57 +717,61 @@ def _iter_all_parts(payload):
             yield from (p for p in content if isinstance(p, dict))
 
 
-class TestAnthropicFuturePath:
-    """Claude on the Responses API must use cache_control (the shared policy),
-    NOT the GPT breakpoint path. The GPT default path stays byte-for-byte
-    unchanged.
+class TestClaudeCacheControl:
+    """Claude on the Responses API: one top-level cache_control, nothing on
+    the parts. The GPT breakpoint path stays untouched.
 
-    ⚠️ These tests prove the PAYLOAD is right, not that the cache works.
-    Measured live 2026-09-01 against OpenRouter with the identical prompt
-    twice: over the Responses API both calls came back cached=0, write=0 and
-    billed the same $0.009278 -- OpenRouter drops cache_control on that route.
-    The same model over Chat Completions (openai_httpx): write=4617, then
-    cached=4617 at $0.0009674, a tenth of the price.
-
-    Claude therefore runs on `provider: openai_httpx` (see the guard in
-    tests/config/test_claude_models_declare_their_cache_dialect.py). Do not
-    read a green suite here as permission to move it back -- the wiring below
-    is correct and still arrives nowhere.
+    Measured 2026-09-22 against OpenRouter (claude-haiku-4.5, the same ~15.6k
+    token request twice): cache_control on an input_text part, on the message
+    item, on a tool or with a ttl -> the second call read 0 cached tokens;
+    top-level -> 15,628. These tests pin the payload; the cache itself is
+    only visible live.
     """
 
-    def test_claude_with_the_declared_dialect_is_cached(self):
-        """What config/llm_openrouter.yaml declares for openrouter-claude:
-        the marker style is a property of the MODEL, so the client never has
-        to recognize a model name. Before that line existed the style fell
-        back to the GPT one and — with no prompt_cache_key on the profile —
-        the markers were stripped entirely: 0% cache hits, full prompt billed
-        every turn (measured 2026-09-01, ~200k prompt tokens per turn)."""
-        c = _client(model="~anthropic/claude-sonnet-latest",
-                    prompt_cache_marker_style="anthropic",
-                    prompt_cache_mode="multi_turn")
-        msgs = [
-            ChatMessage(role="system", content="SYS"),
-            ChatMessage(role="user", content="Q1"),
-            ChatMessage(role="assistant", content="A1"),
-            ChatMessage(role="user", content="Q2"),
-        ]
-        tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
-        p = c._build_payload(msgs, tools)
+    CONVERSATION = [
+        ChatMessage(role="system", content="SYS"),
+        ChatMessage(role="user", content="Q1"),
+        ChatMessage(role="assistant", content="A1"),
+        ChatMessage(role="user", content="Q2"),
+    ]
+    TOOLS = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
 
-        parts = list(_iter_all_parts(p))
-        assert any("cache_control" in part for part in parts)
-        assert all("prompt_cache_breakpoint" not in part for part in parts)
-        assert p["tools"][-1].get("cache_control") == {"type": "ephemeral"}
+    def _claude(self, mode):
+        return _client(model="~anthropic/claude-sonnet-latest",
+                       prompt_cache_marker_style="anthropic", prompt_cache_mode=mode)
+
+    def test_a_conversation_is_cached_at_the_top_only(self):
+        p = self._claude("multi_turn")._build_payload(self.CONVERSATION, self.TOOLS)
+        assert p["cache_control"] == {"type": "ephemeral"}
+        assert all("cache_control" not in part and "prompt_cache_breakpoint" not in part
+                   for part in _iter_all_parts(p))
+        assert all("cache_control" not in t for t in p["tools"])
+
+    def test_a_tool_loop_counts_as_a_conversation(self):
+        """A tool loop replays function_call items that carry no role; the
+        history is read from the ChatMessages, so auto still caches."""
+        msgs = [ChatMessage(role="system", content="SYS"), ChatMessage(role="user", content="Q"),
+                ChatMessage(role="assistant", content="",
+                            tool_calls=[{"id": "c1", "type": "function",
+                                         "function": {"name": "f", "arguments": "{}"}}]),
+                ChatMessage(role="tool", content="R", tool_call_id="c1")]
+        p = self._claude("auto")._build_payload(msgs, self.TOOLS)
+        assert p["cache_control"] == {"type": "ephemeral"}
+
+    def test_auto_without_history_and_one_shot_stay_uncached(self):
+        """The top-level marker caches the whole prompt; a single call would
+        pay the write surcharge for nothing."""
+        first = self.CONVERSATION[:2]
+        assert "cache_control" not in self._claude("auto")._build_payload(first, None)
+        assert "cache_control" not in self._claude("one_shot")._build_payload(self.CONVERSATION, None)
 
     def test_a_non_claude_model_is_left_alone(self):
-        """Counter-check: the GPT path must stay free of Anthropic keys."""
         c = _client(prompt_cache_mode="multi_turn")   # openai/gpt-5.6-terra
-        p = c._build_payload([ChatMessage(role="system", content="SYS"),
-                              ChatMessage(role="user", content="Q")], None)
+        p = c._build_payload(self.CONVERSATION, None)
+        assert "cache_control" not in p
         assert all("cache_control" not in part for part in _iter_all_parts(p))
 
     def test_gpt_default_uses_breakpoints_not_cache_control(self):
-        """Default (no marker style) = GPT-5.6 breakpoint path, no cache_control."""
         c = _client(prompt_cache_key="auto", prompt_cache_mode="task_sequence")
         task = "STATIC\n<<<CACHE_BREAKPOINT>>>\nAPPEND\n<<<CACHE_BREAKPOINT>>>\nVOLATILE"
         p = c._build_payload([ChatMessage(role="user", content=task)], None)
@@ -775,56 +779,13 @@ class TestAnthropicFuturePath:
         assert any("prompt_cache_breakpoint" in part for part in parts)
         assert all("cache_control" not in part for part in parts)
 
-    def test_anthropic_style_uses_cache_control_not_breakpoints(self):
-        c = _client(
-            model="anthropic/claude-sonnet-4",
-            prompt_cache_marker_style="anthropic",
-            prompt_cache_mode="multi_turn",
-            prompt_cache_key="auto",
-        )
-        msgs = [
-            ChatMessage(role="system", content="SYS"),
-            ChatMessage(role="user", content="Q1"),
-        ]
-        tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
-        p = c._build_payload(msgs, tools)
-        parts = list(_iter_all_parts(p))
-        # cache_control present, NO OpenAI breakpoints
-        assert any("cache_control" in part for part in parts)
-        assert all("prompt_cache_breakpoint" not in part for part in parts)
-        # last tool marked
-        assert p["tools"][-1].get("cache_control") == {"type": "ephemeral"}
-
-    def test_anthropic_style_strips_sentinels(self):
-        """Anthropic path removes OpenAI breakpoint sentinels (wrong dialect)."""
-        c = _client(
-            model="anthropic/claude-sonnet-4",
-            prompt_cache_marker_style="anthropic",
-            prompt_cache_mode="multi_turn",
-        )
+    def test_claude_strips_the_breakpoint_sentinels(self):
         task = "A\n<<<CACHE_BREAKPOINT>>>\nB"
-        p = c._build_payload([ChatMessage(role="user", content=task)], None)
-        for part in _iter_all_parts(p):
-            assert "<<<CACHE_BREAKPOINT>>>" not in part.get("text", "")
-
-    def test_anthropic_cap_never_exceeds_four(self):
-        c = _client(
-            model="anthropic/claude-sonnet-4",
-            prompt_cache_marker_style="anthropic",
-            prompt_cache_mode="multi_turn",
-        )
-        msgs = [
-            ChatMessage(role="system", content="SYS"),
-            ChatMessage(role="user", content="Q1"),
-            ChatMessage(role="assistant", content="A1"),
-            ChatMessage(role="user", content="Q2"),
-        ]
-        tools = [{"type": "function", "function": {"name": f"t{i}", "parameters": {}}}
-                 for i in range(5)]
-        p = c._build_payload(msgs, tools)
-        n = sum(1 for part in _iter_all_parts(p) if "cache_control" in part)
-        n += sum(1 for t in p.get("tools", []) if "cache_control" in t)
-        assert n <= 4
+        for mode in ("multi_turn", "one_shot"):
+            p = self._claude(mode)._build_payload([ChatMessage(role="user", content=task)], None)
+            texts = [part.get("text", "") for part in _iter_all_parts(p)]
+            texts += [i["content"] for i in p["input"] if isinstance(i.get("content"), str)]
+            assert texts and all("<<<CACHE_BREAKPOINT>>>" not in t for t in texts)
 
 
 class TestTruncationReachesTheCaller:

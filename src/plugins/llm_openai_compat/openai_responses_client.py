@@ -83,12 +83,7 @@ from agent_system.llm.cache_key import (
     MARKER_STYLE_OPENAI,
     anthropic_cache_conversation,
     boundary_registry,
-    cap_cache_control,
     derive_prompt_cache_key,
-    mark_conversation_tail,
-    mark_last_system,
-    mark_last_tool,
-    messages_have_history,
     plan_cache_blocks,
     strip_cache_breakpoints,
 )
@@ -406,12 +401,12 @@ class OpenAIResponsesClient(LLMClient):
     def _lower_developer_items(self, items: list) -> None:
         """Put every developer item on the rung this route uses.
 
-        LAST, after the cache markers: while the item still says `developer`,
-        mark_last_system and mark_conversation_tail both look straight past it,
-        which is the point. Lowered first, a note on the `system` rung would
-        take the system breakpoint off the prompt, and one at the end would
-        take the conversation breakpoint -- in both cases the marker would sit
-        on the one text that is rewritten every call.
+        LAST, after the cache markers (see _build_payload). Claude on this
+        route does not depend on that order any more: its one top-level
+        cache_control lands on the last block, whatever the role. A step that
+        ends on a note (the step budget) therefore reads nothing from the
+        cache -- measured 2026-09-22, and the Chat Completions route with its
+        explicit breakpoints shows the same.
 
         Only the user rung touches the content: there the role no longer says
         what the text is, so the tags have to. Parts are wrapped part by part
@@ -686,50 +681,42 @@ class OpenAIResponsesClient(LLMClient):
                 parts.append(part)
             item["content"] = parts
 
-    def _apply_anthropic_cache_blocks(self, items: list, tools: Optional[list]) -> None:
-        """Anthropic cache_control auf Responses-input-Items (Zukunfts-Pfad).
+    def _apply_top_level_cache_control(self, payload: dict, messages: list) -> None:
+        """Claude over the Responses API: one top-level ``cache_control``.
 
-        Aktuell routet KEIN Claude-Modell ueber die Responses-API — alle Claude
-        laufen via httpx-OpenRouter (Chat Completions) bzw. natives SDK. Diese
-        Verdrahtung greift, sobald ein Modell mit ``provider=openai_responses``
-        UND ``prompt_cache_marker_style=anthropic`` konfiguriert wird; sie nutzt
-        exakt dieselbe geteilte Policy (cache_key.py) wie die anderen Claude-
-        Pfade — kein zweiter Cache-Dialekt.
+        Named apart from httpx's ``_apply_anthropic_cache_control``: that one
+        marks content parts, this route has nowhere to put them.
 
-        Anthropic verwendet cache_control (nicht die OpenAI-Breakpoint-Sentinels),
-        deshalb: etwaige Sentinels rueckstandsfrei entfernen und stattdessen den
-        System-Prefix + (bei Multi-Turn) den wachsenden Konversations-Tail + die
-        letzte Tool-Definition als Breakpoints markieren; der Cap erzwingt das
-        harte 4-Block-Limit.
+        OpenRouter forwards ``cache_control`` on this route ONLY at the top of
+        the body. Measured 2026-09-22 (claude-haiku-4.5, ~15.6k prompt tokens,
+        the same request twice): on an ``input_text`` part, on the message
+        item, on a tool and with a ``ttl`` the second call read 0 tokens from
+        the cache; top-level it read 15,628, and a growing conversation read
+        the whole previous turn every round. Chat Completions takes both forms.
 
-        String-Content wird zuerst in Responses-``input_text``-Parts gehoben,
-        damit der Marker auf einem gueltigen Responses-Blocktyp landet und nicht
-        auf ``{"type": "text"}`` (Chat-Completions-Format) — sonst waere das
-        Payload ungueltig.
+        Top-level means Anthropic's automatic placement: ONE breakpoint on the
+        last block, which is exactly the shared policy's conversation tail.
+        What this route cannot do is a separate breakpoint on the system prefix
+        or the tools, so the modes that cache only those (``one_shot``,
+        ``task_sequence``, ``auto`` before the first answer) get no cache here.
+
+        History is read from the ChatMessages, not from ``input``: a tool loop
+        replays function_call/function_call_output items, which carry no
+        role, and would never count as a conversation.
         """
-        for item in items:
-            if not isinstance(item, dict) or item.get("type") != "message":
-                continue
-            content = item.get("content")
+        for item in payload["input"]:
+            content = item.get("content") if isinstance(item, dict) else None
             if isinstance(content, str):
-                # Responses-API: Assistant-Text ist output_text, sonst input_text.
-                part_type = "output_text" if item.get("role") == "assistant" else "input_text"
-                item["content"] = [
-                    {"type": part_type, "text": strip_cache_breakpoints(content)}
-                ]
+                item["content"] = strip_cache_breakpoints(content)
             elif isinstance(content, list):
                 for part in content:
                     if (isinstance(part, dict)
                             and isinstance(part.get("text"), str)
                             and CACHE_BP_SENTINEL in part["text"]):
                         part["text"] = strip_cache_breakpoints(part["text"])
-        mark_last_system(items)
-        if anthropic_cache_conversation(
-            self.prompt_cache_mode, messages_have_history(items)
-        ):
-            mark_conversation_tail(items)
-        mark_last_tool(tools or [])
-        cap_cache_control([tools or [], items])
+        has_history = any(_get(m, "role") in ("assistant", "tool") for m in messages)
+        if anthropic_cache_conversation(self.prompt_cache_mode, has_history):
+            payload["cache_control"] = {"type": "ephemeral"}
 
     def _build_payload(self, messages: list, tools: Optional[list]) -> dict:
         # No `instructions` field. It used to carry the newest volatile note
@@ -801,9 +788,7 @@ class OpenAIResponsesClient(LLMClient):
             payload["safety_identifier"] = self.safety_identifier
         converted_tools = self._convert_tools(tools)
         if self.prompt_cache_marker_style == MARKER_STYLE_ANTHROPIC:
-            # Zukunfts-Pfad: Claude via Responses-API -> cache_control statt
-            # OpenAI-Breakpoints (dieselbe geteilte Policy wie httpx/native).
-            self._apply_anthropic_cache_blocks(payload["input"], converted_tools)
+            self._apply_top_level_cache_control(payload, messages)
         else:
             self._apply_cache_blocks(payload["input"], resolved_key)
         # After every marker pass, never before -- see _lower_developer_items.
