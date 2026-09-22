@@ -2311,7 +2311,7 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         """
         told = []
 
-        async def wake(system_config, session_id, user_id, what="", still_needed=None):
+        async def wake(system_config, session_id, user_id, what="", still_needed=None, started_by=None):
             if guards is not None:
                 guards.append(still_needed)
             if order is not None:
@@ -2655,7 +2655,7 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         description pushes the woken caller towards, and `list` reports a run long finished."""
         running = []
 
-        async def wake(system_config, session_id, user_id, what="", still_needed=None):
+        async def wake(system_config, session_id, user_id, what="", still_needed=None, started_by=None):
             running.append(set(server._running_agents))
             return "woke_session"
 
@@ -2675,7 +2675,7 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         `what` is the only name the work has in the operator's log."""
         seen = []
 
-        async def wake(system_config, session_id, user_id, what="", still_needed=None):
+        async def wake(system_config, session_id, user_id, what="", still_needed=None, started_by=None):
             seen.append((system_config, what))
             return "woke_session"
 
@@ -2851,6 +2851,94 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
 
         assert waited["status"] == "completed" and waited["result"] == "done"
         assert "_awaiting_poll" not in waited and "task_handle" not in waited, waited
+
+
+class TestTheRunningSlotKnowsItsHolder:
+    """The running slot records the task that took it. A continue refused because a run still going
+    holds it is the caller's mistake, logged at INFO; a slot no run holds leaked. And only its holder
+    lets go of a slot another run still going holds."""
+
+    @staticmethod
+    def logged(caplog):
+        """The refusals at INFO, and every record that reads as a fault."""
+        records = [r for r in caplog.records if r.name == "plugins.sub_agent_manager.server"]
+        return ([r.getMessage() for r in records if r.levelno == logging.INFO and " refused: " in r.getMessage()],
+                [r.getMessage() for r in records if r.levelno >= logging.WARNING or r.exc_info])
+
+    @pytest.mark.asyncio
+    async def test_a_continue_on_a_background_job_still_going(self, server, caplog):
+        import asyncio
+        runs = TestCancelReachesABlockingRun
+        agent = SlowAgent()
+        runs.wire(server, agent)
+        await runs.finish(runs.start(server, "create", blocking=False))
+        await agent.started(1)
+        with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
+            refused = await runs.finish(runs.start(server, "continue"))
+        handle = server._async_jobs["sub_slow"]["task_handle"]
+        agent.releases[0].set()
+        await asyncio.wait_for(handle, 5)
+
+        assert "already running" in str(refused.get("error", "")), refused
+        refusals, faults = self.logged(caplog)
+        assert faults == [] and len(refusals) == 1, caplog.text
+        assert "sub_slow" not in server._running_agents and server._slot_holders == {}
+
+    @pytest.mark.asyncio
+    async def test_a_continue_on_a_blocking_run_still_going(self, server, caplog):
+        runs = TestCancelReachesABlockingRun
+        agent = SlowAgent()
+        runs.wire(server, agent)
+        first = runs.start(server, "continue")
+        await agent.started(1)
+        with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
+            refused = await runs.finish(runs.start(server, "continue"))
+        agent.releases[0].set()
+        await runs.finish(first)
+
+        assert "already running" in str(refused.get("error", "")), refused
+        refusals, faults = self.logged(caplog)
+        assert faults == [] and len(refusals) == 1, caplog.text
+        assert "sub_slow" not in server._running_agents and server._slot_holders == {}
+
+    @pytest.mark.asyncio
+    async def test_a_job_that_ends_twice_leaves_the_continue_after_it_its_slot(self, server, monkeypatch):
+        """The job lets go of its slot before it rings its caller; the caller continues the instance
+        meanwhile, and a cancel reaches the job while it still rings -- its second ending freed the
+        continue's slot, and a second continue could run beside it on the same transcript."""
+        import asyncio
+        ringing = asyncio.Event()
+
+        async def wake(system_config, session_id, user_id, what="", still_needed=None, started_by=None):
+            ringing.set()
+            await asyncio.Event().wait()  # rings until the job is cancelled
+
+        monkeypatch.setattr(sam_server, "wake_session", wake)
+        TestTheCallerIsWokenWhenItsJobIsDone.arming(monkeypatch)
+        runs = TestCancelReachesABlockingRun
+        agent = SlowAgent()
+        runs.wire(server, agent)
+        await runs.finish(runs.start(server, "create", blocking=False, wake_when_done=True))
+        handle = server._async_jobs["sub_slow"]["task_handle"]
+        await agent.started(1)
+        agent.releases[0].set()
+        await asyncio.wait_for(ringing.wait(), 5)
+        assert "sub_slow" not in server._running_agents, "let go before the bell"
+
+        continued = runs.start(server, "continue")
+        await agent.started(2)
+        writes = server._get_manager().update_sub_session_metadata
+        before = writes.await_count
+        handle.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(handle, 5)
+
+        assert "sub_slow" in server._running_agents, "the job's second ending freed the continue's slot"
+        # and it stored "cancelled" over the running continue, which dropped out of `list`
+        assert [call.kwargs for call in writes.await_args_list[before:]] == [], writes.await_args_list[before:]
+        agent.releases[1].set()
+        assert "error" not in await runs.finish(continued)
+        assert "sub_slow" not in server._running_agents and server._slot_holders == {}
 
 
 class TestListDoesNotDeclareALiveSubAgentDead:

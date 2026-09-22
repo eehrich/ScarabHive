@@ -6,6 +6,7 @@ import asyncio
 import fnmatch
 import functools
 import logging
+import weakref
 from datetime import UTC, datetime
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, List, Optional
@@ -97,6 +98,21 @@ def _left_mid_run(metadata: dict[str, Any]) -> bool:
     written, ended = _stamp(metadata.get("activity_updated_at")), _stamp(metadata.get("last_used"))
     return bool(metadata.get("current_activity")) and written is not None \
         and (ended is None or written > ended)
+
+
+class CallerMistake(ValueError):
+    """A call naming a sub-agent that is not there, not the caller's, or busy. The model is
+    answered and can correct it; the manager did nothing wrong. Logged as an error, with a
+    traceback, it read like a crash in the server log."""
+
+
+def _log_failure(operation: str, error: Exception) -> None:
+    """How a handler logs the error it answers with: a CallerMistake at INFO, anything else with
+    its traceback."""
+    if isinstance(error, CallerMistake):
+        logger.info(f"{operation} refused: {error}")
+    else:
+        logger.exception(f"Error in {operation}: {error}")
 
 
 def _without_status(params: dict) -> dict:
@@ -223,6 +239,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         # Format: {sub_session_id: True}
         self._running_agents: set[str] = set()
         self._running_lock = asyncio.Lock()
+        # The task that took each running slot (`_take_slot`), weakly: a leaked slot must not keep
+        # its ended run's frames alive for the life of the process.
+        self._slot_holders: dict[str, weakref.ref[asyncio.Task[Any]]] = {}
 
         # A blocking create/continue, from the moment it is marked running: instance_id -> {agent, request_id
         # (both None until the run begins), parent_session_id, cancelled, early (a cancel came before that)}.
@@ -889,7 +908,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         "Wait for current execution to complete or use a different instance."
                     )
                 # Mark as running -- and cancellable from here on, not only once the run has begun
-                self._running_agents.add(sub_session_id)
+                self._take_slot(sub_session_id)
                 run = self._blocking_runs[sub_session_id] = {
                     "agent": None, "request_id": None, "parent_session_id": parent_session_id, "cancelled": False}
 
@@ -1027,7 +1046,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             finally:
                 # ALWAYS release lock, even on error (CRITICAL for preventing deadlock)
                 async with self._running_lock:
-                    self._running_agents.discard(sub_session_id)
+                    self._release_slot(sub_session_id)
                     self._blocking_runs.pop(sub_session_id, None)
                 logger.debug(f"Released running lock for sub-agent {sub_session_id}")
 
@@ -1079,23 +1098,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             session_service = self._extract_session_service(params)
             manager = self._get_manager(session_service, registry)
             user_id = manager._extract_user_id(parent_session_id, params)
-            session_manager = manager._session_service.session_manager
 
-            try:
-                sub_session_data = await session_manager.load_session(user_id, instance_id)
-            except (FileNotFoundError, SessionNotFoundError):
-                raise ValueError(f"Sub-agent instance '{instance_id}' not found")
-
-            # Verify parent link
-            parent_link = sub_session_data.get("parent_session", {}).get("session_id")
-            if parent_link != parent_session_id:
-                raise ValueError(
-                    f"Sub-agent '{instance_id}' does not belong to current session "
-                    f"(actual_parent={parent_link}, caller={parent_session_id})"
-                )
+            sub_session_data = await self._callers_sub_session(manager, user_id, parent_session_id, instance_id)
 
             # Get agent type from session data
-            agent_type = sub_session_data.get("agent_name")
+            agent_type = sub_session_data.get("agent_name") or ""
             agent = registry.get(agent_type)
             if not agent:
                 raise ValueError(f"Agent type '{agent_type}' not found")
@@ -1105,13 +1112,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             # CRITICAL: Use single try-finally to ensure _running_agents is ALWAYS cleaned up
             async with self._running_lock:
                 if instance_id in self._running_agents:
-                    raise ValueError(
+                    raise (CallerMistake if self._slot_has_a_run(instance_id) else ValueError)(
                         f"Sub-agent '{instance_id}' is already running. "
                         "Cannot execute the same sub-agent instance concurrently. "
                         "Wait for current execution to complete."
                     )
                 # Mark as running -- and cancellable from here on, not only once the run has begun
-                self._running_agents.add(instance_id)
+                self._take_slot(instance_id)
                 run = self._blocking_runs[instance_id] = {
                     "agent": None, "request_id": None, "parent_session_id": parent_session_id, "cancelled": False}
 
@@ -1235,7 +1242,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             finally:
                 # ALWAYS release lock, even on error (CRITICAL for preventing deadlock)
                 async with self._running_lock:
-                    self._running_agents.discard(instance_id)
+                    self._release_slot(instance_id)
                     self._blocking_runs.pop(instance_id, None)
                 logger.debug(f"Released running lock for sub-agent {instance_id}")
 
@@ -1243,7 +1250,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             # the reopen takes a place: refused like a create, not reported as a crash
             return await self._limit_reached(e, status, instance_id=params.get("instance_id"))
         except Exception as e:
-            logger.exception(f"Error in continue_sub_agent: {e}")
+            _log_failure("continue_sub_agent", e)
             if status:
                 await status.error(f"Failed to continue sub-agent: {str(e)}")
             return {
@@ -1556,6 +1563,66 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         ids = ", ".join(sorted(m["instance_id"] for m in known if m.get("instance_id")))
         return f"This session's sub-agents are: {ids}. Use the instance_id exactly as returned, never assembled from a label and a guessed number."
 
+    async def _callers_sub_session(self, manager: SubAgentManager, user_id: str, parent_session_id: str,
+                                   instance_id: str) -> dict[str, Any]:
+        """The session of the caller's sub-agent `instance_id`. CallerMistake for an id that names
+        none: one never issued, one of another session, or one no session id can be -- a label or a
+        quoted id, which `load_session` refuses as a bare ValueError, as it does a corrupt file."""
+        session_manager = manager._session_service.session_manager
+        sub_session_data = None
+        try:
+            session_manager._validate_session_id(instance_id)
+        except ValueError:
+            pass  # no session is called that
+        else:
+            try:
+                sub_session_data = await session_manager.load_session(user_id, instance_id)
+            except (FileNotFoundError, SessionNotFoundError):
+                pass
+        if sub_session_data is None:
+            raise CallerMistake(
+                f"Sub-agent '{instance_id}' not found. "
+                f"{await self._known_instance_hint(manager, parent_session_id)}"
+            )
+        parent_link = sub_session_data.get("parent_session", {}).get("session_id")
+        if parent_link != parent_session_id:
+            raise CallerMistake(
+                f"Sub-agent '{instance_id}' does not belong to current session "
+                f"(actual_parent={parent_link}, caller={parent_session_id})"
+            )
+        return sub_session_data
+
+    def _take_slot(self, instance_id: str) -> None:
+        """Mark the instance running, held by the task that runs it. Under `_running_lock`."""
+        self._running_agents.add(instance_id)
+        task = asyncio.current_task()
+        if task is not None:
+            self._slot_holders[instance_id] = weakref.ref(task)
+
+    def _release_slot(self, instance_id: str) -> None:
+        """Let go of the instance's running slot -- unless another run still going holds it. A job
+        ends twice when a cancel reaches it while it rings its caller (`_finish_job`), and the slot
+        it let go of the first time may by then belong to the continue that caller started: freed
+        again, a second continue ran beside it on the same transcript. Under `_running_lock`."""
+        holder = self._slot_holder(instance_id)
+        if holder is not None and holder is not asyncio.current_task():
+            return
+        self._running_agents.discard(instance_id)
+        self._slot_holders.pop(instance_id, None)
+
+    def _slot_holder(self, instance_id: str) -> Optional[asyncio.Task[Any]]:
+        """The task still going that holds the instance's running slot, None for none."""
+        ref = self._slot_holders.get(instance_id)
+        task = ref() if ref is not None else None
+        return task if task is not None and not task.done() else None
+
+    def _slot_has_a_run(self, instance_id: str) -> bool:
+        """Whether the instance's running slot is held by a run still going: the task that took it
+        has not ended. Every run lets go of it in a `finally`, so a slot whose task has ended, or
+        that no task took, leaked -- the manager's fault, not the caller's, and it refuses every
+        continue on that instance for the life of the process."""
+        return self._slot_holder(instance_id) is not None
+
     async def _handle_info(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'info' operation - read a sub-agent's transcript, paged.
 
@@ -1594,22 +1661,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             user_id = manager._extract_user_id(parent_session_id, params)
             session_manager = manager._session_service.session_manager
 
-            # Load sub-session data
-            try:
-                sub_session_data = await session_manager.load_session(user_id, instance_id)
-            except (FileNotFoundError, SessionNotFoundError):
-                raise ValueError(
-                    f"Sub-agent '{instance_id}' not found. "
-                    f"{await self._known_instance_hint(manager, parent_session_id)}"
-                )
-
-            # Verify ownership
-            parent_link = sub_session_data.get("parent_session", {}).get("session_id")
-            if parent_link != parent_session_id:
-                raise ValueError(
-                    f"Sub-agent '{instance_id}' does not belong to current session "
-                    f"(actual_parent={parent_link}, caller={parent_session_id})"
-                )
+            sub_session_data = await self._callers_sub_session(manager, user_id, parent_session_id, instance_id)
 
             # Extract info
             messages = sub_session_data.get("messages", [])
@@ -1643,7 +1695,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             }
 
         except Exception as e:
-            logger.exception(f"Error in get_sub_agent_info: {e}")
+            _log_failure("get_sub_agent_info", e)
             if status:
                 await status.error(f"Failed to get sub-agent info: {e}")
             return {
@@ -1901,8 +1953,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
             parent_session_id = params.get("_session_id")
             written = False
+            # A run still going that holds the instance -- the continue its caller started after the
+            # first ending -- owns what the sub-session's metadata says. A second ending (a cancel
+            # while this job rang) stored "cancelled" over it, and `list` dropped the running one.
+            holder = self._slot_holder(instance_id)
+            superseded = holder is not None and holder is not asyncio.current_task()
             try:
-                if parent_session_id:
+                if parent_session_id and not superseded:
                     if manager is None:
                         registry = self._extract_registry(params)
                         manager = self._get_manager(self._extract_session_service(params), registry)
@@ -1918,7 +1975,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 # Called off by the caller, awake: it knows how this ended and is not coming back
                 # to read it, so an entry held for that read would stay for the life of the process.
                 # Dropped only once the ending is stored -- a poll or wait meanwhile finds it there,
-                # not a status that still says active; unstored, the entry stays the only answer.
+                # not a status that still says active; unstored (failed, or left to the run going after
+                # this one), the entry stays.
                 async with self._async_jobs_lock:
                     self._async_jobs.pop(instance_id, None)
 
@@ -1929,10 +1987,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             # goes now -- before the bell, not after it: the ringing below can last minutes, and
             # held that long the instance answers "already running" to the `continue` the woken
             # caller makes, and `list` reports a run that ended long ago. Here and nowhere else:
-            # released again after the bell, it took the slot of the run that continue started.
+            # released again after the bell, it took the slot of the run that continue started --
+            # as a second ending would, but `_release_slot` leaves a slot another run holds alone.
             # And in a finally: an ending cut short (a second cancel) kept the slot for good.
             async with self._running_lock:
-                self._running_agents.discard(instance_id)
+                self._release_slot(instance_id)
 
         # Whatever the ending was: the session that asked to be woken is waiting for this one,
         # and a job that failed leaves it waiting just as a job that finished does.
@@ -2113,7 +2172,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             async with self._running_lock:
                 if instance_id in self._running_agents:
                     raise ValueError(f"Sub-agent '{instance_id}' is already running")
-                self._running_agents.add(instance_id)
+                self._take_slot(instance_id)
 
             # Get agent and execute
             agent = registry.get(agent_name)

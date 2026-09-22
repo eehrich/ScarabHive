@@ -8,6 +8,8 @@ call the server's _handle_info directly -- the same call path the tool uses.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock
@@ -312,6 +314,191 @@ class TestInfoOnAnInstanceThatDoesNotExist:
         assert result["status"] == "error"
         assert real_sub_id in result["error"]
         assert "exactly as returned" in result["error"]
+
+
+class TestAMistakenCallIsNoErrorInTheLog:
+    """A call naming a sub-agent that is not there, not the caller's, or busy is answered, and the
+    model can correct it: INFO in the log, no traceback. Production 22.09.2026: a `continue` on
+    'sub_Auditor-B_496875' logged "Error in continue_sub_agent" with two chained tracebacks."""
+
+    @staticmethod
+    def logged(caplog):
+        """The refusals at INFO, and every record that reads as a fault."""
+        records = [r for r in caplog.records if r.name == "plugins.sub_agent_manager.server"]
+        return ([r.getMessage() for r in records if r.levelno == logging.INFO and " refused: " in r.getMessage()],
+                [r.getMessage() for r in records if r.levelno >= logging.WARNING or r.exc_info])
+
+    @staticmethod
+    def continue_params(sub_id, session_service, sub_agent_manager):
+        return _params(sub_id, session_service, message="go on", _agent=Mock(registry=sub_agent_manager._registry))
+
+    @pytest.mark.asyncio
+    async def test_a_continue_on_an_instance_that_was_never_created(
+            self, server, session_service, sub_agent_manager, sub_session, caplog):
+        real_sub_id, _ = sub_session
+        with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
+            result = await server._handle_continue(
+                self.continue_params("sub_Auditor-B_496875", session_service, sub_agent_manager))
+
+        assert result["status"] == "error"
+        assert result["error"].startswith("Sub-agent 'sub_Auditor-B_496875' not found."), result
+        assert real_sub_id in result["error"], result  # the ids that would have worked
+        refusals, faults = self.logged(caplog)
+        assert faults == [] and len(refusals) == 1, caplog.text
+        assert refusals[0].startswith("continue_sub_agent refused: "), refusals
+
+    @pytest.mark.asyncio
+    async def test_an_id_no_session_can_have_is_not_found_either(
+            self, server, session_service, sub_agent_manager, sub_session, caplog):
+        """A label, or an id with a quote or a space: `load_session` refuses its format with a bare
+        ValueError -- as it does a corrupt file, which stays a fault."""
+        real_sub_id, _ = sub_session
+        with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
+            continued = await server._handle_continue(
+                self.continue_params("Auditor B", session_service, sub_agent_manager))
+            info = await server._handle_info(_params(f"'{real_sub_id}'", session_service))
+
+        assert continued["error"].startswith("Sub-agent 'Auditor B' not found."), continued
+        assert info["error"].startswith(f"Sub-agent ''{real_sub_id}'' not found."), info
+        assert real_sub_id in continued["error"], continued
+        refusals, faults = self.logged(caplog)
+        assert faults == [] and len(refusals) == 2, caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_continue_on_another_sessions_instance(
+            self, server, session_service, session_manager, sub_agent_manager, sub_session, caplog):
+        await session_manager.create_session(
+            user_id=USER, session_id="another_coordinator", title="Other", agent_name="meta_agent",
+            llm_profile="normal")
+        theirs = await sub_agent_manager.create_sub_session(
+            parent_session_id="another_coordinator", agent_type="web_research_agent", initial_message="start")
+        with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
+            result = await server._handle_continue(self.continue_params(theirs, session_service, sub_agent_manager))
+
+        assert "does not belong to current session" in result["error"], result
+        refusals, faults = self.logged(caplog)
+        assert faults == [] and len(refusals) == 1, caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_continue_on_an_instance_that_is_running(
+            self, server, session_service, sub_agent_manager, sub_session, caplog):
+        sub_id, _ = sub_session
+        server._take_slot(sub_id)  # held by this test's task, which is still going
+        with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
+            result = await server._handle_continue(self.continue_params(sub_id, session_service, sub_agent_manager))
+
+        assert "is already running" in result["error"], result
+        refusals, faults = self.logged(caplog)
+        assert faults == [] and len(refusals) == 1, caplog.text
+
+    @pytest.mark.parametrize("holder", ["ended", "none"])
+    @pytest.mark.asyncio
+    async def test_a_running_slot_no_run_holds_is_a_fault(
+            self, server, session_service, sub_agent_manager, sub_session, caplog, holder):
+        """A leaked slot refuses every continue on the instance for the life of the process: the
+        manager's fault, so it keeps its traceback -- whether the task that took it has ended or no
+        task took it."""
+        sub_id, _ = sub_session
+        if holder == "ended":
+            async def take():
+                server._take_slot(sub_id)
+            await asyncio.create_task(take())
+        else:
+            server._running_agents.add(sub_id)
+        with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
+            result = await server._handle_continue(self.continue_params(sub_id, session_service, sub_agent_manager))
+
+        assert "is already running" in result["error"], result
+        refusals, faults = self.logged(caplog)
+        assert refusals == [] and len(faults) == 1 and "Error in continue_sub_agent" in faults[0], caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_slot_no_run_still_going_holds_is_let_go_by_whoever_releases_it(self, server):
+        async def take():
+            server._take_slot("sub_ended")
+        await asyncio.create_task(take())
+        server._running_agents.add("sub_untaken")
+        async with server._running_lock:
+            server._release_slot("sub_ended")
+            server._release_slot("sub_untaken")
+        assert not {"sub_ended", "sub_untaken"} & server._running_agents and server._slot_holders == {}
+
+    @pytest.mark.asyncio
+    async def test_a_leaked_slot_does_not_keep_its_run_alive(self, server):
+        """A leak keeps the slot, not the ended task with every frame of its run."""
+        import gc
+        import weakref
+
+        async def take():
+            server._take_slot("sub_x")
+        task = asyncio.create_task(take())
+        await task
+        ended = weakref.ref(task)
+        del task
+        await asyncio.sleep(0)  # the loop still holds a finished task until its callbacks have run
+        gc.collect()
+
+        assert ended() is None
+        assert "sub_x" in server._running_agents and not server._slot_has_a_run("sub_x")
+
+    @pytest.mark.asyncio
+    async def test_a_corrupt_sub_agent_file_is_a_fault_not_a_missing_sub_agent(
+            self, server, session_service, session_manager, sub_agent_manager, sub_session, temp_storage, caplog):
+        """load_session refuses a corrupt file with the same bare ValueError as an id of the wrong
+        format: the model must not be told "not found" about a sub-agent that exists."""
+        sub_id, _ = sub_session
+        (temp_storage / USER / f"{sub_id}.json").write_text("{not json", encoding="utf-8")
+        session_manager._cache.clear()
+        with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
+            continued = await server._handle_continue(
+                self.continue_params(sub_id, session_service, sub_agent_manager))
+            info = await server._handle_info(_params(sub_id, session_service))
+
+        assert "not found" not in continued["error"] and "not found" not in info["error"], (continued, info)
+        refusals, faults = self.logged(caplog)
+        assert refusals == [] and len(faults) == 2, caplog.text
+
+    @pytest.mark.asyncio
+    async def test_info_on_an_instance_that_was_never_created_or_is_another_sessions(
+            self, server, session_service, session_manager, sub_agent_manager, sub_session, caplog):
+        await session_manager.create_session(
+            user_id=USER, session_id="another_coordinator", title="Other", agent_name="meta_agent",
+            llm_profile="normal")
+        theirs = await sub_agent_manager.create_sub_session(
+            parent_session_id="another_coordinator", agent_type="web_research_agent", initial_message="start")
+        with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
+            never = await server._handle_info(_params("sub_never_existed_999", session_service))
+            foreign = await server._handle_info(_params(theirs, session_service))
+
+        assert "not found" in never["error"] and "does not belong" in foreign["error"], (never, foreign)
+        refusals, faults = self.logged(caplog)
+        assert faults == [] and len(refusals) == 2, caplog.text
+        assert all(r.startswith("get_sub_agent_info refused: ") for r in refusals), refusals
+
+    @pytest.mark.asyncio
+    async def test_a_fault_of_the_manager_still_logs_its_traceback(self, server, session_service, caplog):
+        """The counter-proof: no session behind the call is a wiring fault, not the model's."""
+        params = _params("sub_whatever", session_service)
+        del params["_session_id"]
+        with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
+            result = await server._handle_info(params)
+
+        assert result["status"] == "error"
+        refusals, faults = self.logged(caplog)
+        assert refusals == [] and len(faults) == 1 and "Error in get_sub_agent_info" in faults[0], caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_continue_whose_agent_is_gone_still_logs_its_traceback(
+            self, server, session_service, sub_session, caplog):
+        """The counter-proof on continue: the stored sub-agent's type is no longer registered."""
+        sub_id, _ = sub_session
+        params = _params(sub_id, session_service, message="go on", _agent=Mock(registry=Mock(get=Mock(return_value=None))))
+        with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
+            result = await server._handle_continue(params)
+
+        assert "Agent type 'web_research_agent' not found" in result["error"], result
+        refusals, faults = self.logged(caplog)
+        assert refusals == [] and len(faults) == 1 and "Error in continue_sub_agent" in faults[0], caplog.text
 
 
 class TestInfoSaysWhatTheSubAgentIsDoing:
