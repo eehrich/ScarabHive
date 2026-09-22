@@ -186,17 +186,17 @@ async def test_agent_handles_llm_error_in_response():
     )
     agent = Agent("test_agent", system_config, agent_config, registry)
     
-    # Mock LLM to return error in assistant
-    agent.llm = create_mock_llm([
-        {
-            "assistant": {
-                "error": {
-                    "message": "Rate limit exceeded. Please try again later.",
-                    "type": "rate_limit_error"
-                }
+    # Mock LLM to return error in assistant -- twice: one error in the body is
+    # asked again on the same model, only an error that stays ends the run.
+    body_error = {
+        "assistant": {
+            "error": {
+                "message": "Rate limit exceeded. Please try again later.",
+                "type": "rate_limit_error"
             }
         }
-    ])
+    }
+    agent.llm = create_mock_llm([body_error, body_error])
     
     # Execute agent
     events = []

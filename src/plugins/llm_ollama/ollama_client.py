@@ -506,8 +506,9 @@ class OllamaNativeAsyncClient(LLMClient):
                     await report_status(f"Stream failed after {max_retries + 1} attempts: {self.model}")
                     logger.error(f"Ollama streaming failed after {max_retries + 1} attempts: {e}")
                     await self._notify_stream_failure(url, _request_start, f"Stream failed after {max_retries + 1} attempts: {e}")
+                    # retried: the agent must not ask a whole retry cycle again.
                     yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {
-                        "error": True, "type": "ollama_api_error",
+                        "error": True, "type": "ollama_api_error", "retried": True,
                         "message": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
                     return
 

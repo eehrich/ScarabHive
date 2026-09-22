@@ -2448,6 +2448,11 @@ class Agent(ToolServer):
             current_llm, fallback_profiles, escalated_this_step, step_profile = (
                 _pick_step_llm(escalated_this_step))
             fallback_taken: set = set()
+            # Clients this step already asked a second time after an error in
+            # the body -- each gets that once, see the upstream-error branch.
+            # The clients themselves, not id()s: a dropped fallback client's id
+            # can come back on the next one built.
+            body_error_retried: list = []
             if previous_step_llm is not None and current_llm is not previous_step_llm:
                 # A switch between steps: into or out of an escalation, around a
                 # blocked LLM or back to it. The history carries the previous
@@ -2642,6 +2647,29 @@ class Agent(ToolServer):
                                 "usage": pending_thinking_complete["usage"],
                             }, current_llm)
 
+                        if (not str(error_type).startswith("content_filter")
+                                and not error_info.get("retried")
+                                and not any(c is current_llm for c in body_error_retried)):
+                            # Once more on the SAME model first. Measured
+                            # 22.09.2026: the same request shape went through
+                            # 405 times, and the two invalid_prompt bodies came
+                            # 3 s apart -- a gateway hiccup, not the request.
+                            # Straight to the fallback moved those runs onto
+                            # it for good. An unknown deterministic error costs
+                            # one call more, then switches. Straight on: a
+                            # content filter (content_filter, httpx's
+                            # content_filter_<native>) -- the same model blocks
+                            # the same text again -- and an error its client
+                            # marks "retried", which already went through a
+                            # whole retry cycle with backoff.
+                            body_error_retried.append(current_llm)
+                            logger.warning(
+                                f"[{self.name}] Upstream error from LLM, "
+                                f"asking {getattr(current_llm, 'model', '?')} once more")
+                            await status_worker.progress(
+                                f"LLM error ({error_type}), retrying once",
+                                meta={"step": step + 1})
+                            continue
                         taken = _take_fallback()
                         if taken:
                             fallback_profile, fallback_llm = taken

@@ -973,7 +973,9 @@ class OpenAIAsyncClient(LLMClient):
                         "duration_ms": (_time.time() - _request_start) * 1000,
                         "error": message, "timestamp_ms": _time.time() * 1000,
                     })
-                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"message": message}}}
+                    # retried: the agent must not ask a whole retry cycle again.
+                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {
+                        "message": message, "retried": True}}}
                     return
 
             except Exception as e:

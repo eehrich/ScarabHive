@@ -617,11 +617,12 @@ async def test_4xx_blocks_follow_the_status(
 
 class _UpstreamErrorLLM:
     """Answers HTTP 200 with an error body — how a gateway proxies its own
-    5xx. First call fails, later calls succeed."""
+    5xx. The first *failures* calls fail, later calls succeed."""
 
-    model = "m-gateway"
-
-    def __init__(self):
+    def __init__(self, failures: int = 1, model: str = "m-gateway", name: str = "gateway"):
+        self.failures = failures
+        self.model = model
+        self.name = name
         self.call_count = 0
 
     def supports_streaming(self):
@@ -629,11 +630,12 @@ class _UpstreamErrorLLM:
 
     async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
         self.call_count += 1
-        if self.call_count == 1:
+        if self.call_count <= self.failures:
             return {"assistant": {"role": "assistant", "content": "", "error": {
                 "message": "stream closed with reason: error",
                 "type": "upstream_error_server_error"}}}
-        return {"assistant": {"role": "assistant", "content": "FINAL", "tool_calls": None}}
+        return {"assistant": {"role": "assistant", "content": f"FINAL-{self.name}",
+                              "tool_calls": None}}
 
 
 @pytest.mark.asyncio
@@ -641,7 +643,7 @@ async def test_an_upstream_error_does_not_block_the_llm(system_config_with_profi
     """A gateway hiccup says nothing about the model's availability. Blocking it
     routed whole hours onto the next chain member — for the writer chains that
     is a 4x-priced model."""
-    primary = _UpstreamErrorLLM()
+    primary = _UpstreamErrorLLM(failures=2)
     fallback = _ScriptedLLM("fallback")
     agent = _chain_agent(system_config_with_profiles, primary, fallback)
 
@@ -650,6 +652,83 @@ async def test_an_upstream_error_does_not_block_the_llm(system_config_with_profi
     assert fallback.call_count >= 1, "this request was not rescued"
     assert model_health.available(primary, "next-request"), (
         "the upstream error blocked the LLM — every agent would walk around it")
+
+
+@pytest.mark.asyncio
+async def test_a_single_upstream_error_is_retried_on_the_same_model(system_config_with_profiles):
+    """One error in the body is asked again on the SAME model before the chain
+    moves on. Two gateway hiccups 3 s apart (22.09.2026) otherwise put whole
+    runs on the fallback."""
+    primary = _UpstreamErrorLLM(failures=1)
+    fallback = _ScriptedLLM("fallback")
+    agent = _chain_agent(system_config_with_profiles, primary, fallback)
+
+    events = await _run(agent)
+
+    assert _final(events) == "FINAL-gateway"
+    assert primary.call_count == 2
+    assert fallback.call_count == 0, "one hiccup must not switch the model"
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_upstream_error_goes_to_the_fallback(system_config_with_profiles):
+    """A deterministic error (a content filter) fails the retry too: one call
+    more, then the chain."""
+    primary = _UpstreamErrorLLM(failures=99)
+    fallback = _UpstreamErrorLLM(failures=0, model="m-fallback", name="fallback")
+    agent = _chain_agent(system_config_with_profiles, primary, fallback)
+
+    events = await _run(agent)
+
+    assert _final(events) == "FINAL-fallback"
+    assert primary.call_count == 2, "exactly one retry on the failing model"
+
+
+class _FinalBodyErrorLLM(_UpstreamErrorLLM):
+    """Fails every call with the given error body."""
+
+    def __init__(self, error: dict):
+        super().__init__(failures=99)
+        self.error = error
+
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
+        self.call_count += 1
+        return {"assistant": {"role": "assistant", "content": "", "error": dict(self.error)}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [
+    {"message": "blocked by the content filter", "type": "content_filter"},
+    # httpx names it after the provider's own reason
+    {"message": "Provider content filter blocked response", "type": "content_filter_safety"},
+    # the client already went through its retry cycle with backoff
+    {"message": "Stream failed after 4 attempts: reset", "retried": True},
+], ids=["content_filter", "content_filter_native", "client_retried"])
+async def test_what_a_retry_cannot_fix_switches_at_once(system_config_with_profiles, error):
+    """A content filter blocks the same text again; a client that already
+    retried would run its whole cycle a second time. Neither is asked again."""
+    primary = _FinalBodyErrorLLM(error)
+    fallback = _ScriptedLLM("fallback")
+    agent = _chain_agent(system_config_with_profiles, primary, fallback)
+
+    await _run(agent)
+
+    assert primary.call_count == 1
+    assert fallback.call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_gets_its_own_retry(system_config_with_profiles):
+    """The retry belongs to the model, not to the step: a fallback that
+    stumbles once is asked again too, instead of ending the run."""
+    primary = _UpstreamErrorLLM(failures=99)
+    fallback = _UpstreamErrorLLM(failures=1, model="m-fallback", name="fallback")
+    agent = _chain_agent(system_config_with_profiles, primary, fallback)
+
+    events = await _run(agent)
+
+    assert _final(events) == "FINAL-fallback"
+    assert fallback.call_count == 2
 
 
 class _ArtifactLLM:

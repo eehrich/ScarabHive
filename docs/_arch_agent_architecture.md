@@ -583,7 +583,7 @@ Volle Ketten-Semantik (Advanced-Kette, `llm_params`, Migrationsskript
 | `LLMQuotaExhaustedError` | sofort `fallback_recovery_seconds` | nächstes Profil der Kette |
 | HTTP 401/402/403/404 | sofort `fallback_recovery_seconds` | nächstes Profil; war die Basis gescheitert, wird es Basis des Laufs |
 | 5xx, Verbindungsfehler, jeder andere 4xx (400/408/409/413/422 …) | keine | nächstes Profil; war die Basis gescheitert, wird es Basis des Laufs |
-| Fehler im Antwort-Body (HTTP 200 mit `error`) | keine | nächstes Profil; war die Basis gescheitert, wird es Basis des Laufs; ist die Kette aufgebraucht, endet der Lauf mit einem `error`-Event |
+| Fehler im Antwort-Body (HTTP 200 mit `error`) | keine | erst **einmal dasselbe Modell** (pro Modell und Schritt; ein Gateway-Aussetzer trifft selten zweimal), dann nächstes Profil; sofort wechseln ein Content-Filter (`content_filter`, `content_filter_<native>`), weil dasselbe Modell denselben Text wieder sperrt, und ein Fehler, den sein Client mit `retried` markiert (er hat schon selbst mit Backoff wiederholt). War die Basis gescheitert, wird das Profil Basis des Laufs; ist die Kette aufgebraucht, endet der Lauf mit einem `error`-Event |
 | lokal keine Dateideskriptoren mehr (EMFILE) | keine | kein Wechsel, Fehler |
 
 **Ein Burst ist ein Fehlschlag.** Ein 429 auf einen Aufruf, der losging, bevor
