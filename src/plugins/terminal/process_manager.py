@@ -239,6 +239,10 @@ class ProcessManager:
         process = proc_info["process"]
 
         if process.returncode is not None:
+            # Dealt with all the same: the session meant to end it, and it had
+            # just ended by itself -- the usual race for a wake that is armed.
+            # Left unset, the wake rang on for a process it tried to stop.
+            proc_info["read_after_finish"] = True
             return {
                 "status": "error",
                 "error": f"Process {process_id} already terminated with exit code {process.returncode}",

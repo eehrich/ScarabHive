@@ -97,6 +97,26 @@ class TestKillingItIsDealingWithIt:
             await server.cleanup()
 
     @pytest.mark.asyncio
+    async def test_killing_one_that_just_ended_stops_the_ring_too(self, presence_on, no_real_wake):
+        """The race a wake invites: the process ends, the session sends its
+        kill a moment later. The answer is ProcessAlreadyTerminated -- and the
+        session has dealt with it all the same."""
+        server = TerminalServer("test", presence_on, {})
+        try:
+            started = await _start(server, Quiet(), command="echo done", wake=True)
+            pid = started["process_id"]
+            info = await _wait_until_finished(server, pid)
+            info["read_after_finish"] = False   # nobody has read it yet
+
+            killed = await server.kill_process(
+                {"process_id": pid, "_status": Quiet(), "_session_id": "sess-1"})
+
+            assert killed.get("error_type") == "ProcessAlreadyTerminated", killed
+            assert info["read_after_finish"] is True
+        finally:
+            await server.cleanup()
+
+    @pytest.mark.asyncio
     async def test_the_callback_the_ring_holds_agrees(self, presence_on, no_real_wake):
         """Not the flag but the callback that reads it -- that is what core calls."""
         server = TerminalServer("test", presence_on, {})
