@@ -263,7 +263,7 @@ async def test_the_route_is_wired_to_the_dependencies_it_reads(monkeypatch):
             active = answer.json()["active"]
             assert set(active) == {"s-mine", "s-lock"}, "another user's run, or a session that runs nowhere"
             assert active["s-mine"] == {"request_id": "r1", "agent_name": "an_agent",
-                                        "attachable": True, "answered": False}
+                                        "attachable": True, "answered": False, "elsewhere": False}
             # the lock-only one got there through the injected session manager
             assert owns.asked == [("ada", "s-lock")], \
                 "the session manager was never asked -- the parameter is wired elsewhere"
