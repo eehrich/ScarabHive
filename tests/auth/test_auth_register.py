@@ -59,3 +59,32 @@ def test_changing_to_an_email_someone_else_has_is_a_400(client, temp_db):
 
     assert response.status_code == 400
     assert temp_db.get_user_by_username("other").email == "other@example.com"
+
+
+@pytest.mark.parametrize("username", ["cli_user", "anonymous", "CLI_User", "Anonymous"])
+def test_nobody_registers_as_an_identity_that_runs_without_an_account(client, temp_db, username):
+    # agent-cli runs as cli_user, unauthenticated web access as anonymous: an account
+    # under either name would share their sessions and pass every check by name.
+    response = client.post("/auth/register", json={**NEW_USER, "username": username})
+
+    assert response.status_code == 400, response.text
+    assert temp_db.get_user_by_username(username) is None
+
+
+def test_a_name_that_differs_only_in_case_is_taken(client, temp_db):
+    # A user's sessions live in a directory named after it; on Windows these are one.
+    assert client.post("/auth/register", json=NEW_USER).status_code == 201
+
+    response = client.post("/auth/register", json={**NEW_USER, "username": "Newbie",
+                                                   "email": "other@example.com"})
+
+    assert response.status_code == 400, response.text
+    assert temp_db.get_user_by_username("Newbie") is None
+
+
+def test_an_admin_cannot_create_one_either(temp_db):
+    from agent_system.auth.models import UserCreate
+
+    with pytest.raises(ValueError, match="reserved"):
+        temp_db.create_user(UserCreate(username="cli_user", email="c@example.com",
+                                       password="password123", role=UserRole.ADMIN))

@@ -91,6 +91,12 @@ class UserDatabase:
         finally:
             conn.close()
     
+    #: Identities that run without an account: agent-cli and agent-run default to
+    #: "cli_user" (--session-user), unauthenticated web access to "anonymous". An
+    #: account under either name would share their session directory and pass
+    #: every check made by name -- and registration is open to anyone.
+    RESERVED_USERNAMES = frozenset({"cli_user", "anonymous"})
+
     def create_user(self, user: UserCreate) -> UserInDB:
         """
         Create a new user.
@@ -104,8 +110,14 @@ class UserDatabase:
         Raises:
             ValueError: If username or email already exists
         """
-        # Check for existing user
-        if self.get_user_by_username(user.username):
+        if user.username.casefold() in self.RESERVED_USERNAMES:
+            raise ValueError(f"Username '{user.username}' is reserved")
+        # Case does not make a name another one: a user's sessions live in a
+        # directory named after it, and on Windows "Admin" and "admin" are one.
+        with self._get_connection() as conn:
+            taken = conn.execute("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE",
+                                 (user.username,)).fetchone()
+        if taken:
             raise ValueError(f"Username '{user.username}' already exists")
         if self.get_user_by_email(user.email):
             raise ValueError(f"Email '{user.email}' already exists")
