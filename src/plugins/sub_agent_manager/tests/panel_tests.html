@@ -83,7 +83,7 @@
     const raw = async () => (await (await fetch('/__stub/raw/s-1')).json()).text;
     const before = await raw();
     await go(`${BASE}/?session_id=s-1`);
-    await until('the sub-agents of s-1', () => statValue('total') === '6');
+    await until('the sub-agents of s-1', () => statValue('total') === '7');
     const count = async () => (await asked())['s-1'];
     for (const round of [1, 2]) {
       const asking = await count();
@@ -98,8 +98,8 @@
 
   await check('opened on a session, the panel counts its sub-agents by state and draws the open ones with what each is doing', async () => {
     await go(`${BASE}/?session_id=s-1`);
-    await until('the sub-agents of s-1', () => statValue('total') === '6');
-    const counts = statValue('running') === '2' && statValue('idle') === '1' && statValue('interrupted') === '1' && statValue('closed') === '2';
+    await until('the sub-agents of s-1', () => statValue('total') === '7');
+    const counts = statValue('running') === '2' && statValue('idle') === '2' && statValue('interrupted') === '1' && statValue('closed') === '2';
     const badge = (key) => card(key).querySelector('.pk-card-head .pk-badge').textContent.trim();
     const running = card('a').dataset.state === 'running' && badge('a') === 'Running' && card('a').querySelector('.pk-badge .pk-spinner')
       && card('a').querySelector('.sa-activity').textContent.trim() === 'Running tool: web_search'
@@ -114,14 +114,28 @@
     const phase = !$('#phase').hidden && $('#phase .pk-badge').textContent === 'planning'
       && $('#phase [data-part="agents"]').textContent === 'story_designer'
       && $('#phase [data-part="allowed"]').textContent === 'story_designer, research_agent, writer_agent';
-    return every({ shown: shown() === 'a,b,c,h', counts, running: Boolean(running), interrupted, idle, actions, phase });
+    return every({ shown: shown() === 'f,a,b,c,h', counts, running: Boolean(running), interrupted, idle, actions, phase });
+  });
+
+  await check('a card and its node in the map show the same messages and tokens, and none where none are known', async () => {
+    const tokens = (count, rest) => `${count.toLocaleString()} tokens ${rest}`;
+    const part = (key, name) => card(key).querySelector(`[data-part="${name}"]`)?.textContent;
+    const inCard = part('b', 'messages') === '45 messages' && part('b', 'tokens') === tokens(12000, '(6%)');
+    const none = !card('h').querySelector('[data-part="tokens"]');
+    tabTo('map');
+    const node = await until('the map', () => mapNode('b'));
+    const inNode = node.textContent.includes('45 messages') && node.textContent.includes(tokens(12000, '(6%)'));
+    // one level down: counted in the sub-index of b, not of the session
+    const compacted = mapNode('n').textContent.includes('· 0 messages ·') && mapNode('n').textContent.includes(tokens(4000, '(compacted since)'));
+    tabTo('list');
+    return every({ inCard, none, inNode, compacted });
   });
 
   await check('the filter shows the running ones or all, archived and ended included', async () => {
     setFilter('running');
     const running = shown() === 'a,c';
     setFilter('all');
-    const all = shown() === 'a,b,c,h,d,e' && card('d').querySelector('.pk-badge').textContent.trim() === 'Archived'
+    const all = shown() === 'f,a,b,c,h,d,e' && card('d').querySelector('.pk-badge').textContent.trim() === 'Archived'
       && card('e').querySelector('.pk-badge').textContent.trim() === 'Failed' && !act('d', 'archive') && !act('e', 'archive')
       && act('d', 'transcript');
     setFilter('running');
@@ -130,9 +144,9 @@
     }
     refreshNow();
     const none = await until('no running one', () => $('#agents .pk-empty')?.textContent.includes('No sub-agent matches') && $('#agents .pk-empty'));
-    const hidden = none.textContent.includes('6 hidden by the filter') && statValue('running') === '0';
+    const hidden = none.textContent.includes('7 hidden by the filter') && statValue('running') === '0';
     setFilter('open');
-    return every({ running, all, hidden, open: shown() === 'b,h' });
+    return every({ running, all, hidden, open: shown() === 'f,b,h' });
   });
 
   await check('a transcript opens in the drawer on its tail, earlier messages load above it, markup as text', async () => {
@@ -201,11 +215,11 @@
     const once = questions().length === 1 && asking.textContent.includes(ids.h) && act('h', 'archive').disabled;
     asking.querySelector('[data-index="0"]').click();  // Cancel
     await until('the button back', () => act('h', 'archive') && !act('h', 'archive').disabled);
-    const kept = shown() === 'b,h' && await stored('s-1', 'h') === 'interrupted' && doc().activeElement === act('h', 'archive');
+    const kept = shown() === 'f,b,h' && await stored('s-1', 'h') === 'interrupted' && doc().activeElement === act('h', 'archive');
     act('h', 'archive').click();
     asking = await until('the question again', () => questions()[0]);
     asking.querySelector('[data-index="1"]').click();
-    await until('the card gone', () => shown() === 'b');
+    await until('the card gone', () => shown() === 'f,b');
     return every({ second, once, kept, archived: await stored('s-1', 'h') === 'archived',
       counted: statValue('closed') === '5' && statValue('interrupted') === '0', focus: doc().activeElement === $('#show') });
   });
@@ -213,7 +227,7 @@
   await check('an archive on its way keeps its button disabled across redraws, and the other cards usable', async () => {
     await fetch('/__stub/spawn', { method: 'POST' });
     refreshNow();
-    await until('the new sub-agent', () => cards().length === 2);
+    await until('the new sub-agent', () => cards().length === 3);
     const fresh = cards()[0].dataset.id;
     document.cookie = `sa_slow=${ids.b}; path=/`;
     try {
@@ -272,7 +286,7 @@
         && $('#agents').textContent.trim() === '' && $('#phase').hidden;
       noCookies();
       refreshNow();
-      await until('the sub-agents again', () => statValue('total') === '8');
+      await until('the sub-agents again', () => statValue('total') === '9');
       return failed;
     } finally {
       noCookies();
@@ -291,7 +305,7 @@
       await sleep(300);
       refreshNow();  // overtakes it: the first answer coming in must not free the ticks while this one is on its way
       ticking = setInterval(tick, 200);
-      await until('the sub-agents while the ticks go on', () => statValue('total') === '8', 2300);
+      await until('the sub-agents while the ticks go on', () => statValue('total') === '9', 2300);
       return true;
     } finally {
       clearInterval(ticking);
@@ -371,14 +385,14 @@
 
   await check('cards drawn anew keep the keyboard focus', async () => {
     await go(`${BASE}/?session_id=s-1`);
-    await until('the sub-agents of s-1', () => statValue('total') === '8');
+    await until('the sub-agents of s-1', () => statValue('total') === '9');
     await autoOff();
     setFilter('all');
     const focused = act('d', 'transcript');
     focused.focus();
     await fetch('/__stub/spawn', { method: 'POST' });
     refreshNow();
-    await until('the spawned one', () => statValue('total') === '9');
+    await until('the spawned one', () => statValue('total') === '10');
     return doc().activeElement === act('d', 'transcript') && act('d', 'transcript') !== focused;
   });
 
@@ -388,7 +402,7 @@
     const before = act('d', 'transcript');
     await fetch('/__stub/spawn', { method: 'POST' });
     refreshNow();
-    await until('the list drawn anew', () => statValue('total') === '10');
+    await until('the list drawn anew', () => statValue('total') === '11');
     drawer().close();
     await sleep(100);
     return !drawer().open && act('d', 'transcript') !== before && doc().activeElement === act('d', 'transcript');
@@ -396,10 +410,10 @@
 
   await check('the auto refresh runs from the start and brings a new sub-agent', async () => {
     await go(`${BASE}/?session_id=s-1`);
-    await until('the sub-agents of s-1', () => statValue('total') === '10');
+    await until('the sub-agents of s-1', () => statValue('total') === '11');
     const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
     await fetch('/__stub/spawn', { method: 'POST' });
-    await until('the new one, brought by a tick', () => statValue('total') === '11', 14000);
+    await until('the new one, brought by a tick', () => statValue('total') === '12', 14000);
     return running;
   });
 
@@ -410,7 +424,7 @@
       && $('#show').hidden;  // the filter belongs to the list
     const root = $('#map .sa-root').textContent;
     const top = topOfMap();
-    // every instance's and every state, where the list shows this instance's open ones; a nested one is not at the top
+    // every instance's and every state, where the list shows the open ones; a nested one is not at the top
     const whole = top.includes('f') && top.includes('d') && top.includes('b') && !top.includes('n');
     const nested = kidsOf('b').join() === 'n' && mapNode('n').dataset.state === 'running'
       && mapNode('n').textContent.includes('Running tool: web_search') && mapNode('n').textContent.includes('writer_agent')
@@ -419,8 +433,8 @@
     setFilter('all');
     return every({ opens, root: root.includes('s-1') && root.includes('coordinator'), whole, nested,
       filterBack: !$('#show').hidden,
-      // the list of the same session, drawn and not empty, has neither the other instance's nor the nested one
-      listWithoutThem: cards().length > 0 && !['f', 'n'].some((key) => shown().split(',').includes(key)) });
+      // the list of the same session has the other instance's too, as the map does, and not the nested one
+      listLikeTheMap: shown().split(',').includes('f') && !shown().split(',').includes('n') });
   });
 
   await check('a node of the map opens the transcript of a sub-agent below the session', async () => {

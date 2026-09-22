@@ -10,9 +10,11 @@ Seeded under ``tmp_path``, instance ``sam_writer`` with phase filtering on and `
 and a task summary of markup; ``sub_writer_c`` reporting "Thinking..." from a run another process holds -- running,
 and not written interrupted by a panel; ``sub_writer_h`` interrupted; ``sub_writer_d`` archived;
 ``sub_writer_e`` failed; and
-``sub_other_f``, spawned by another manager instance, which this one does not list. Last used in that order, newest
-first. One level deeper, under ``sub_writer_b`` and by another instance as well: ``sub_writer_n``, running -- in the
-map, in no list. Session ``s-2``: ``sub_writer_g`` idle. Session ``s-3``: none.
+``sub_other_f`` idle, spawned by another manager instance and listed all the same. Newest first: ``sub_other_f``, then
+the others in the order named. One level deeper, under ``sub_writer_b`` and by another instance as well:
+``sub_writer_n``, running -- in the map, in no list. Session ``s-2``: ``sub_writer_g`` idle. Session ``s-3``: none.
+The usage tracker has one call for ``sub_writer_b`` (12,000 prompt tokens of a 200,000 window) and one for
+``sub_writer_n`` (4,000 of 100,000, compacted since); the others made none.
 
 Behind the panel's back: POST /__stub/spawn creates a sub-agent in ``s-1`` (idle, newest), POST /__stub/drop/{id}
 deletes a sub-agent's session file. GET /__stub/asked counts both calls of a refresh, per session -- the map under
@@ -33,6 +35,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_system.config.models import AgentConfig, AgentSystemConfig, ToolServerConfig
+from agent_system.plugins.tool_adapter import PluginToolAdapter, plugin_tool_registry
 from agent_system.tools.base import ToolServerRegistry
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.services.session_manager import SessionManager
@@ -124,6 +127,13 @@ def panel_app(tmp_path: Path) -> FastAPI:
     seeding = PLUGIN_FACTORY(NAME, AgentSystemConfig(), ToolServerConfig(**CONFIG))
     ids = asyncio.run(seed(seeding.server, SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))))
     assert len(set(ids.values())) == 9
+    from plugins.context_usage_tracker.tracker import UsageTracker
+    tracker = UsageTracker(storage_path=tmp_path / "usage" / "usage.json")
+    tracker.record_usage(agent_id="b", agent_name="writer_agent", session_id=ids["b"], total_tokens=13000,
+                         prompt_tokens=12000, completion_tokens=1000, context_window=200000)
+    tracker.record_usage(agent_id="n", agent_name="writer_agent", session_id=ids["n"], total_tokens=5000,
+                         prompt_tokens=4000, completion_tokens=1000, context_window=100000)
+    tracker.invalidate_session(ids["n"])
 
     plugin = PLUGIN_FACTORY(NAME, AgentSystemConfig(), ToolServerConfig(**CONFIG))  # served in the app's own event loop
     service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))
@@ -136,6 +146,7 @@ def panel_app(tmp_path: Path) -> FastAPI:
     app = FastAPI()
     app.state.session_service = service
     app.state.ids = ids
+    app.state.tracker = tracker
     asked: dict[str, int] = {}
     base = f"/plugins/{NAME}/sub-agents"
 
@@ -208,6 +219,8 @@ def run_panel(app: FastAPI) -> dict:
     """The page's results, the web endpoints reaching the app's session service as they reach the running app's."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(web_endpoints, "get_session_service", lambda: app.state.session_service)
+        patch.setitem(plugin_tool_registry.plugin_servers, "context_usage_tracker",
+                      PluginToolAdapter("context_usage_tracker", Mock(tracker=app.state.tracker)))
         return run_app_test_page(BROWSER, app, "tests/sub_agent_manager/panel_tests.html", timeout=PAGE_TIMEOUT)
 
 
@@ -219,6 +232,7 @@ def results(tmp_path_factory):
 EXPECTED = [
     'opening and refreshing the panel leaves the stored sub-agents of the session byte for byte as they were',
     'opened on a session, the panel counts its sub-agents by state and draws the open ones with what each is doing',
+    'a card and its node in the map show the same messages and tokens, and none where none are known',
     'the filter shows the running ones or all, archived and ended included',
     'a transcript opens in the drawer on its tail, earlier messages load above it, markup as text',
     'a transcript opened after another shows only the one opened last',

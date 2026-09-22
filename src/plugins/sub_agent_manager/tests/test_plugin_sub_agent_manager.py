@@ -836,7 +836,8 @@ async def test_the_agent_map_nests_a_sub_agents_own_sub_agents_under_it(tmp_path
     session it hangs under -- which is what the panel passes to read its transcript.
 
     Whoever spawned them: below the first level the manager instance is the sub-agent's own, so the map shows what
-    any instance created, where the list of the same session shows only this one's.
+    any instance created -- and the list of the same session its first level alike: the panel is one per instance,
+    and a list of this one's own stood empty beside a full map on every session spawning through another.
     """
     from unittest.mock import patch
 
@@ -862,7 +863,7 @@ async def test_the_agent_map_nests_a_sub_agents_own_sub_agents_under_it(tmp_path
     assert (nested["instance_id"], nested["parent_session_id"]) == (below, first)
     assert (nested["agent_type"], nested["current_activity"]) == ("writer_agent", "Running tool: web_search")
     assert root["children"][1]["children"] == [] and answer["truncated"] is False
-    assert [instance["instance_id"] for instance in listed["instances"]] == [first]
+    assert sorted(instance["instance_id"] for instance in listed["instances"]) == sorted([first, second])
 
 
 @pytest.mark.asyncio
@@ -964,3 +965,108 @@ async def test_the_agent_map_of_a_session_that_is_not_stored_is_that_session_alo
         answer = await SubAgentManagerWebFactory(server).get_agent_map(MagicMock(), session_id="s-unsaved")
     assert answer == {"root": {"instance_id": "s-unsaved", "title": None, "agent_type": None, "children": []},
                       "truncated": False}
+
+
+@pytest.mark.asyncio
+async def test_the_panel_hands_a_sub_agent_to_the_instance_that_spawned_it(tmp_path, monkeypatch):
+    """Shown by another instance's panel, a sub-agent is still answered by its own: its runs and its background job
+    live in the instance that spawned it. Asked through this one, its run read idle, and an archive left its job
+    unmarked -- the ending kept the result for a poll nobody makes, and rang the caller for it."""
+    from unittest.mock import patch
+
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+    from agent_system.plugins.tool_adapter import PluginToolAdapter, plugin_tool_registry
+    from plugins.sub_agent_manager.plugin import PLUGIN_FACTORY
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    service, server, manager = await _session_with_a_manager(tmp_path)
+    other = PLUGIN_FACTORY("sam_other", AgentSystemConfig(), ToolServerConfig(allowed_agents=["*"]))
+    monkeypatch.setitem(plugin_tool_registry.plugin_servers, "sam_other", PluginToolAdapter("sam_other", other))
+    own = await _spawn(manager, "s-1", "own")
+    theirs = await _spawn(manager, "s-1", "theirs", creator="sam_other")
+    other.server._running_agents.add(theirs)  # a run of the other instance, in this process
+    other.server._async_jobs[theirs] = {"status": "running"}
+    factory = SubAgentManagerWebFactory(server)
+
+    with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
+        listed = (await factory.get_sub_agents(MagicMock(), session_id="s-1"))["instances"]
+        mapped = (await factory.get_agent_map(MagicMock(), session_id="s-1"))["root"]["children"]
+        info = await factory.get_sub_agent(MagicMock(), agent_id=theirs, session_id="s-1", offset=None, limit=None)
+        archived = await factory.archive_sub_agent(MagicMock(), agent_id=theirs, session_id="s-1")
+
+    states = lambda entries: {entry["instance_id"]: entry["state"] for entry in entries}  # noqa: E731
+    assert states(listed) == states(mapped) == {own: "idle", theirs: "running"}
+    assert info["status"] == "running"
+    assert archived["status"] == "archived"
+    assert other.server._async_jobs[theirs].get("_archived") is True  # marked in the instance that holds the job
+
+
+@pytest.mark.asyncio
+async def test_a_creator_that_is_no_sub_agent_manager_leaves_the_sub_agent_to_this_one(tmp_path, monkeypatch):
+    """An entry naming a plugin that is registered but no sub-agent manager (a renamed instance, a hand-edited file)
+    is answered by the panel's own instance: handed to that plugin, the list and the map failed with a 500."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from agent_system.plugins.tool_adapter import PluginToolAdapter, plugin_tool_registry
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    service, server, manager = await _session_with_a_manager(tmp_path)
+    monkeypatch.setitem(plugin_tool_registry.plugin_servers, "not_a_sam",
+                        PluginToolAdapter("not_a_sam", SimpleNamespace(server=SimpleNamespace())))
+    stray = await _spawn(manager, "s-1", "stray", creator="not_a_sam")
+    factory = SubAgentManagerWebFactory(server)
+
+    with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
+        listed = (await factory.get_sub_agents(MagicMock(), session_id="s-1"))["instances"]
+        mapped = (await factory.get_agent_map(MagicMock(), session_id="s-1"))["root"]["children"]
+
+    assert [(entry["instance_id"], entry["state"]) for entry in listed] == [(stray, "idle")]
+    assert [(entry["instance_id"], entry["state"]) for entry in mapped] == [(stray, "idle")]
+
+
+@pytest.mark.asyncio
+async def test_the_list_and_the_map_show_the_messages_and_the_tokens_of_each_sub_agent(tmp_path, monkeypatch):
+    """The same two figures in both views: the messages from the parent's sub-index -- the transcript as last saved,
+    where the parent's own entry said 2 -- and the prompt tokens of the last call as the provider counted them, from
+    context_usage_tracker, with the window. A sub-agent that made no call has none; one compacted since says so."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from agent_system.plugins.tool_adapter import PluginToolAdapter, plugin_tool_registry
+    from plugins.context_usage_tracker.tracker import UsageTracker
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    service, server, manager = await _session_with_a_manager(tmp_path)
+    tracker = UsageTracker(storage_path=tmp_path / "usage" / "usage.json")
+    monkeypatch.setitem(plugin_tool_registry.plugin_servers, "context_usage_tracker",
+                        PluginToolAdapter("context_usage_tracker", SimpleNamespace(tracker=tracker)))
+    worked = await _spawn(manager, "s-1", "worked")
+    below = await _spawn(manager, worked, "below")
+    quiet = await _spawn(manager, "s-1", "quiet")
+    await manager.update_sub_session_metadata(parent_session_id="s-1", sub_session_id=worked, message_count=2)
+    for session_id, count in ((worked, 7), (below, 3)):  # each counted in the sub-index of the one above it
+        transcript = await service.session_manager.load_session("ada", session_id)
+        transcript["messages"] = [{"role": "user", "content": f"Question {i}"} for i in range(count)]
+        await service.session_manager.save_session(transcript)
+    tracker.record_usage(agent_id="w", agent_name="writer_agent", session_id=worked, total_tokens=13000,
+                         prompt_tokens=12000, completion_tokens=1000, context_window=200000)
+    tracker.record_usage(agent_id="b", agent_name="writer_agent", session_id=below, total_tokens=5000,
+                         prompt_tokens=4000, completion_tokens=1000, context_window=100000)
+    tracker.invalidate_session(below)
+    factory = SubAgentManagerWebFactory(server)
+
+    with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
+        listed = {entry["instance_id"]: entry
+                  for entry in (await factory.get_sub_agents(MagicMock(), session_id="s-1"))["instances"]}
+        mapped = {entry["instance_id"]: entry
+                  for entry in (await factory.get_agent_map(MagicMock(), session_id="s-1"))["root"]["children"]}
+    [nested] = mapped[worked]["children"]
+
+    figures = lambda entry: tuple(entry.get(key) for key in (  # noqa: E731
+        "message_count", "context_tokens", "context_window", "context_stale"))
+    assert figures(listed[worked]) == figures(mapped[worked]) == (7, 12000, 200000, False)
+    assert figures(nested) == (3, 4000, 100000, True)
+    assert figures(listed[quiet]) == figures(mapped[quiet])
+    assert figures(listed[quiet])[1:] == (None, None, None)
+

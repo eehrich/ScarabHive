@@ -1,6 +1,7 @@
-// Sub-Agents: the sub-agents this manager spawned in the session open in the chat (or the one a link names,
-// ?session_id=) -- what each is doing, its transcript, and archiving one. Two views of the same session: the map
-// (the whole tree, sub-agents of sub-agents included) and the list (this instance's own, with the actions).
+// Sub-Agents: the sub-agents of the session open in the chat (or the one a link names, ?session_id=), whichever
+// manager instance spawned them -- what each is doing, its transcript, and archiving one. Two views of the same
+// session: the map (the whole tree, sub-agents of sub-agents included) and the list (the level right below the
+// session, with the actions).
 import { api, html, render, icon, confirm, session } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
@@ -45,6 +46,16 @@ const empty = (name, title, text = '') =>
   html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
 const stat = (key, label, value) =>
   html`<div class="pk-stat" data-stat="${key}"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${number(value)}</div></div>`;
+
+/** The two figures the list and the map both show, empty where the server does not know one: the messages of its
+ * transcript as of its last save, and the tokens its last LLM call carried as the provider counted them -- with the
+ * share of the window, or said to be from before a compaction. */
+const messages = (agent) => (agent.message_count == null ? '' : `${number(agent.message_count)} messages`);
+function tokens(agent) {
+  if (!agent.context_tokens) return '';
+  const share = agent.context_window ? ` (${Math.round((100 * agent.context_tokens) / agent.context_window)}%)` : '';
+  return `${number(agent.context_tokens)} tokens${agent.context_stale ? ' (compacted since)' : share}`;
+}
 
 function ago(stamp) {
   if (!stamp) return 'never';
@@ -135,7 +146,8 @@ function card(agent) {
       ${badge('', agent.agent_type)}
     </div>
     <div class="pk-row pk-muted sa-meta">
-      <span>${number(agent.message_count)} messages</span>
+      ${messages(agent) && html`<span data-part="messages">${messages(agent)}</span>`}
+      ${tokens(agent) && html`<span data-part="tokens">${tokens(agent)}</span>`}
       <span title="${time(agent.last_used)}">used ${ago(agent.last_used)}</span>
     </div>
     ${agent.task_summary ? html`<p class="sa-task">${agent.task_summary}</p>` : ''}
@@ -188,7 +200,7 @@ const mapNode = (agent) => {
     data-session="${agent.parent_session_id}" data-state="${name}">
     <span class="pk-dot${kind ? ` pk-dot--${kind}` : ''}"></span>
     ${nodeBody(agent.task_summary || agent.agent_type || agent.instance_id,
-      [agent.agent_type, agent.instance_id, span(agent.created_at, agent.last_used), label],
+      [agent.agent_type, agent.instance_id, messages(agent), tokens(agent), span(agent.created_at, agent.last_used), label],
       name === 'running' ? agent.current_activity : '')}
   </button>`;
 };

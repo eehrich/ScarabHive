@@ -302,22 +302,42 @@ only with `show_completed`.
 **Sub-Agents** (category `agents`, one per manager instance — `sam_writer`,
 `sam_skills`, …) opens on the session open in the chat, or on the one a session
 link names (`?session_id=`). Without a session it says so and asks nothing. Two
-tabs over the same session: the **map** it opens on, and the **list**.
+tabs over the same session: the **map** it opens on, and the **list**. Both
+show what **any** manager instance spawned, so every instance's panel shows the
+same session alike; a transcript and an archive go to the instance that spawned
+the sub-agent, which holds its runs and its jobs. (The list used to show the
+panel's own instance only, and was empty beside a full map on every session
+whose agent spawns through another.)
+
+Both carry the same two figures per sub-agent, each left out where it is not
+known:
+
+- **messages** — its transcript's length as of its last save, from the
+  sub-index of its parent (`.subs.<parent>.index.json`, one small file per
+  parent, rewritten at every save of a sub-session). No transcript is read for
+  it. The count in the parent's entry is no substitute: it lags a run behind
+  and was measured wrong besides (0, 2 or 9 where the transcripts held 4
+  to 27).
+- **tokens** — what its last LLM call carried, as the provider counted it
+  (prompt tokens), with the share of the window, or "(compacted since)" once
+  the context was rewritten after that call. From `context_usage_tracker`,
+  whose database holds the calls of every process that runs it — the number the
+  chat shows for a session. Without that plugin, or before a first call,
+  there is none: an estimate of the panel's own would be a second number beside
+  that one.
 
 ### Map
 
 The session and everything below it, nested: a sub-agent's own sub-agents hang
 under it. A node names its state, what it was given to do, its agent type, its
-id and how long it was at it (creation to last use), and a click opens its
-transcript — read against its own parent, not against the session in the chat.
+id, its messages and tokens (above) and how long it was at it (creation to last
+use), and a click opens its transcript — read against its own parent, not
+against the session in the chat.
 
-Two deliberate differences to the list. It shows what **any** manager instance
-spawned: below the first level the instance is the sub-agent's own, so a branch
-left out for its name would be a map that lies. And it carries no message
-count: a node is read only when a stat on its sub-index says it has sub-agents
-at all, and the stored count lags a run behind (the list reads the transcript's
-own length instead). A node whose last sub-agent was *deleted* loses that
-sub-index with it and shows as the leaf it has become.
+A node is read only when a stat on its sub-index says it has sub-agents at all;
+a leaf's figures come from the sub-index above it and the tracker, not from its
+own file. A node whose last sub-agent was *deleted* loses that sub-index with it
+and shows as the leaf it has become.
 
 The walk is bounded three ways — the sub-agents it answers with (300), the
 sessions it reads (60; `load_session` reads the whole transcript with them) and
@@ -333,7 +353,8 @@ the panel says so too: a branch cut short looks exactly like a leaf otherwise.
   `interrupted` here, and stays so stored until `list` heals it.
 - **Phase:** with `phase_filtering` on, the session's phase and the agents it
   lets the tool spawn, by the tool's own rule.
-- **Cards:** state, id, agent type, messages, last use, task and activity.
+- **Cards:** state, id, agent type, messages, tokens, last use, task and
+  activity.
   The filter shows the running, idle and interrupted ones (default), the
   running ones, or all — it
   belongs to this tab; the map always shows the whole session.
@@ -348,8 +369,8 @@ Both refresh every 10 s while the panel is visible, whichever tab is showing.
 | Endpoint | Answer |
 |---|---|
 | `GET /plugins/<name>/` | the panel |
-| `GET /sub-agents?session_id=` | `{instances: [...], phase: {variable, current, agents, allowed_agents} \| null}` — every sub-agent, archived included, in `list`'s fields, read-only |
-| `GET /agent-map?session_id=` | `{root: {instance_id, title, agent_type, children: [...]}, truncated}` — the tree, every node carrying its `parent_session_id` and its own `children`, read-only |
+| `GET /sub-agents?session_id=` | `{instances: [...], phase: {variable, current, agents, allowed_agents} \| null}` — every sub-agent of the session, any instance's, archived included, in `list`'s fields with `message_count` (`null` where unknown) and `context_tokens`/`context_window`/`context_stale` (left out where unknown), read-only |
+| `GET /agent-map?session_id=` | `{root: {instance_id, title, agent_type, children: [...]}, truncated}` — the tree, every node carrying its `parent_session_id`, its own `children` and the list's figures, read-only |
 | `GET /sub-agents/{id}?session_id=&offset=&limit=` | the transcript window, as `info` pages it |
 | `DELETE /sub-agents/{id}?session_id=` | archived, as `delete` |
 
