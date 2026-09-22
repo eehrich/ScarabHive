@@ -171,14 +171,20 @@ def test_a_single_file_plugin_belongs_to_the_root_it_lies_in(tmp_path):
         "    return 'from-the-other-root'\n",
         encoding="utf-8")
 
-    found = discover_all_plugins(dirs=[root])
+    try:
+        found = discover_all_plugins(dirs=[root])
 
-    assert "lonely" in found, "fixture: the single-file plugin was not discovered at all"
-    assert "plugins_elsewhere.lonely" in sys.modules, "the module was not named after its root"
-    package = sys.modules.get("plugins_elsewhere")
-    assert package is not None and package.__path__ == [str(root.resolve())], \
-        "the root's package does not point at the root"
-    assert "plugins.lonely" not in sys.modules, "the module went into another root's package"
+        assert "lonely" in found, "fixture: the single-file plugin was not discovered at all"
+        assert "plugins_elsewhere.lonely" in sys.modules, "the module was not named after its root"
+        package = sys.modules.get("plugins_elsewhere")
+        assert package is not None and package.__path__ == [str(root.resolve())], \
+            "the root's package does not point at the root"
+        assert "plugins.lonely" not in sys.modules, "the module went into another root's package"
+    finally:
+        # The root is this run's tmp_path: left behind, the package would point a
+        # second run of this test at a directory that is gone.
+        for name in ("plugins_elsewhere.lonely", "plugins_elsewhere"):
+            sys.modules.pop(name, None)
 
 
 def test_a_shared_submodule_that_failed_is_retried(tmp_path, caplog):

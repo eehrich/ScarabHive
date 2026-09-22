@@ -83,6 +83,10 @@ _LOCK_BYTE = 1 << 30
 # holds is taken right away.
 _WAKE_PATIENCE = 0.5
 _RETRY_WAIT = 0.02  # waiting costs a thread here, not a core
+# A delete is through in microseconds, and this wait is spent under the store's
+# own guard: short, and often enough that twenty of them are still a fifth of a
+# retry.
+_DELETE_WAIT = 0.002
 _BINARY = getattr(os, "O_BINARY", 0)
 
 
@@ -275,14 +279,19 @@ def _open_locked(path: Path, attempts: int = 20) -> Optional[int]:
         try:
             fd = os.open(path, os.O_RDWR | os.O_CREAT | _BINARY)
         except PermissionError as exc:
-            refused = exc
             # Windows, while the file is on its way out: a probe found it held
             # by nobody and dropped it (_drop), and until that delete is through
             # the name can be opened by no one. Measured on one session with six
             # holders and two askers: 52 holds in six seconds were refused this
             # way -- and a refused hold does not stop the run, it lets it write
             # the session with nothing to keep a second run out.
-            time.sleep(_RETRY_WAIT)
+            #
+            # Windows only: POSIX deletes a name at once, so a refusal there is
+            # the directory's, and waiting would only put it off.
+            if os.name != "nt":
+                raise
+            refused = exc
+            time.sleep(_DELETE_WAIT)
             continue
         refused = None
         if not _lock(fd):
@@ -383,7 +392,10 @@ def _take(path: Path, session_id: str) -> int:
             # with six holders and two askers: 415 of some 3000 answers of
             # "running" were this stale. The lock attempt is the only thing that
             # can tell; asking cannot close the window, only narrow it.
-            fd = _open_locked(path)
+            try:
+                fd = _open_locked(path)
+            except OSError:
+                fd = None   # the file will not open: what is known is that somebody holds it
             if fd is not None:
                 return fd
             raise SessionBusy(session_id, state["agent"])

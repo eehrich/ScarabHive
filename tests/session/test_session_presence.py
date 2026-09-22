@@ -632,16 +632,22 @@ class TestTheWakeLog:
         the wake somebody would look for is the one that said something.
         """
         log = tmp_path / "agent-wake.log"
-        child = ("import sys\n"
-                 "for i in range(200): sys.stderr.write('%s line %d\\n' % ('{tag}', i))\n"
+        go = tmp_path / "go"
+        # Both wait for the same sign before they write: started one after the
+        # other they might not overlap at all, and the test would pass on a
+        # handle that cannot take two writers.
+        child = ("import os, sys, time\n"
+                 "while not os.path.exists(sys.argv[1]): time.sleep(0.005)\n"
+                 "for i in range(200): sys.stderr.write('%s line %d\\n' % (sys.argv[2], i))\n"
                  "sys.stderr.flush()\n")
         running = []
         for tag in ("first", "second"):
             errors = sp._append_handle(log)
             running.append(subprocess.Popen(
-                [sys.executable, "-c", child.replace("{tag}", tag)],
+                [sys.executable, "-c", child, str(go), tag],
                 stdout=subprocess.DEVNULL, stderr=errors))
             errors.close()
+        go.touch()
         for process in running:
             assert process.wait(timeout=60) == 0, "a writer did not finish"
         lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
