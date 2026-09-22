@@ -52,7 +52,7 @@
   // `return false` reports 'failed' and leaves the reader to guess which line it was.
   const need = (ok, why) => { if (!ok) throw new Error(why); return true; };
   // The chat's display preferences, as the shell hands them on from the Settings panel.
-  const CHAT_DEFAULTS = { fold_steps: 'at_end', thinking: 'collapsed', sub_agents: 'expanded' };
+  const CHAT_DEFAULTS = { fold_steps: 'at_end', thinking: 'collapsed', sub_agents: 'expanded', sub_agent_output: 'collapsed' };
   const choose = (chat) => win().dispatchEvent(new (win().CustomEvent)('preferences:changed',
     { detail: { chat: { ...CHAT_DEFAULTS, ...chat } } }));
   // A step section opened, if it is folded -- by its header, as a viewer does.
@@ -1538,6 +1538,21 @@
       need(!(!answer || answer.textContent !== 'Icons found.' || !answer.querySelector('b')), "!answer || answer.textContent !== 'Icons found.' || !answer.querySelector('b')");
       const own = box.querySelector(':scope > .container-section .response-text');
       need(!(!own || !own.textContent.includes('Done') || own.textContent.includes('Icons')), "!own || !own.textContent.includes('Done') || own.textContent.includes('Icons')");
+      // the sub-agent's answer starts folded (chat.sub_agent_output) under a header of its own;
+      // the caller's answer stays as it is
+      const answerBody = answer.closest('.assistant-text');
+      const answerSection = answerBody.parentElement;
+      const answerHeader = answerSection.querySelector(':scope > [data-toggle="response"]');
+      const answerOpen = () => answerBody.style.display !== 'none';
+      need(!answerOpen() && win().getComputedStyle(answerHeader).display !== 'none', "a sub-agent's answer does not start folded under its header");
+      need(own.closest('.assistant-text').style.display !== 'none', "the caller's answer was folded too");
+      choose({ sub_agent_output: 'expanded' });
+      need(answerOpen(), 'the setting did not open the sub-agent answer');
+      choose({});
+      need(!answerOpen(), 'the setting did not fold the sub-agent answer again');
+      answerHeader.click();
+      choose({});
+      need(answerOpen() && answerSection.dataset.touched === 'true', 'a sub-agent answer opened by hand was folded by the setting');
       // its header names it and says how it ended
       const header = sub.querySelector(':scope > .sub-run-header');
       need(!(!header.textContent.includes('skills_agent') || !header.textContent.includes('Research the icons')), "!header.textContent.includes('skills_agent') || !header.textContent.includes('Research the icons')");
@@ -1599,6 +1614,37 @@
       cookie('stub_stream', null);
       forgetRun();
       await loadShell();
+    }
+  });
+
+  await check('the chat keeps its end in view as it grows, until the viewer scrolls up, and again once they are back at the end', async () => {
+    // Several sub-agents streaming at once grew the chat faster than the "near the end"
+    // threshold in one frame: the chat stopped following for good.
+    const scroll = $('#chatScroll');
+    const smooth = scroll.style.scrollBehavior;
+    scroll.style.scrollBehavior = 'auto';   // the chat's smooth scroll would still be moving when a check looks
+    const frames = () => new Promise((resolve) => win().requestAnimationFrame(() => win().requestAnimationFrame(resolve)));
+    const atEnd = () => scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4;
+    const grow = () => { const tall = doc().createElement('div'); tall.className = 'follow-probe'; tall.style.height = '2000px'; $('#chat').appendChild(tall); };
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      await frames();
+      grow();
+      await until('the end followed', atEnd);
+      scroll.scrollTop = 0;
+      await frames();
+      grow();
+      await frames();
+      need(scroll.scrollTop === 0, 'the chat pulled a viewer who scrolled up back to the end');
+      scroll.scrollTop = scroll.scrollHeight;
+      await frames();
+      grow();
+      await until('the end followed again', atEnd);
+      return true;
+    } finally {
+      doc().querySelectorAll('.follow-probe').forEach((el) => el.remove());
+      scroll.style.scrollBehavior = smooth;   // the checks after this one get the chat as it is
     }
   });
 
@@ -3562,6 +3608,39 @@
     const posted = await (await stub('/__stub/posted')).json();
     return $$('#chat .msg.user').some((m) => m.textContent.includes('Keep going')) && !$('#chatWelcome')
       && posted.at(-1)?.task === 'Keep going' && !('session_id' in posted.at(-1));
+  });
+
+  await check('the session list reloads by its refresh button, and only by it', async () => {
+    await stub('/__stub/sessions', { session_id: 's-refreshed', title: 'Made elsewhere', has_children: false });
+    try {
+      await sleep(2000);   // long enough that a timer reloading the list would have fired
+      need(!sessionButton('s-refreshed', 'open'), 'the list reloaded by itself');
+      $('.sessions-head [data-act="refresh"]').click();
+      await until('the new session listed', () => sessionButton('s-refreshed', 'open'));
+      await fetch('/api/sessions/s-refreshed', { method: 'DELETE' });
+      $('.sessions-head [data-act="refresh"]').click();
+      await until('the deleted session gone', () => !sessionButton('s-refreshed', 'open'));
+      return true;
+    } finally {
+      await fetch('/api/sessions/s-refreshed', { method: 'DELETE' });
+    }
+  });
+
+  await check('the Stop button is red', async () => {
+    const probe = doc().createElement('div');
+    probe.style.background = 'var(--danger)';
+    doc().body.appendChild(probe);
+    const red = win().getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    need(red !== 'rgba(0, 0, 0, 0)', 'the danger colour does not resolve -- this check would compare nothing');
+    const stop = $('#stopBtn');
+    const shown = stop.style.display;
+    stop.style.display = 'inline-flex';
+    try {
+      return need(win().getComputedStyle(stop).backgroundColor === red, `Stop is ${win().getComputedStyle(stop).backgroundColor}, not ${red}`);
+    } finally {
+      stop.style.display = shown;
+    }
   });
 
   await check('a pick that fails before the stored session is restored leaves a start page', async () => {

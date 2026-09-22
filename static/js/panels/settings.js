@@ -51,7 +51,7 @@ $('profileForm').addEventListener('submit', async (event) => {
 
 // How the chat shows a run: kept with the account (PUT /auth/me/preferences), applied
 // at once. Each radio saves as it is clicked, the way the theme does -- a Save button
-// for three switches would be one more thing to forget.
+// for a handful of switches would be one more thing to forget.
 const chatRadios = [...document.querySelectorAll('#chatPreferences input[type="radio"]')];
 let preferences = null;
 

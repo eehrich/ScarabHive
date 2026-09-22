@@ -84,6 +84,8 @@ export class SessionManager {
     render(this.pane, html`
       <div class="sessions-head">
         <h2 class="pk-grow">Sessions</h2>
+        <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="refresh"
+                title="Reload the session list" aria-label="Reload the session list">${icon('refresh-cw', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="collapse-all"
                 title="Collapse all sub-sessions">${icon('chevrons-down-up', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--sm" data-act="new" title="New session">${icon('plus', { size: 'sm' })} New</button>
@@ -93,6 +95,9 @@ export class SessionManager {
     this.list = this.pane.querySelector('.sessions-list');
     this.pane.querySelector('[data-act="new"]').addEventListener('click', () => this.newConversation());
     this.pane.querySelector('[data-act="collapse-all"]').addEventListener('click', () => this.collapseAll());
+    // By hand only: the list is reloaded after the chat's own runs, not for what another
+    // process did meanwhile -- and a timer would reload it for nobody most of the time.
+    this.pane.querySelector('[data-act="refresh"]').addEventListener('click', () => this.loadSessions());
     this.pane.querySelector('input[type="search"]').addEventListener('input', (event) => {
       this.filter = event.target.value.trim().toLowerCase();
       this.render();

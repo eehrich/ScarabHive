@@ -5,6 +5,7 @@ tests are. Values are compared with the model's own defaults, not with literals:
 what the defaults ARE is a design choice that may move; that every key comes back
 filled in, and that a choice is kept per account, is the contract.
 """
+import json
 import sqlite3
 from contextlib import closing
 
@@ -118,6 +119,23 @@ def test_a_stored_choice_this_code_no_longer_knows_shows_the_defaults(client, db
     response = client.get("/auth/me/preferences", headers=_auth(client, "alice"))
     assert response.status_code == 200 and response.json() == DEFAULTS
     assert "no longer fit" in caplog.text, "the fallback happened without a word"
+
+
+def test_a_row_stored_before_a_key_existed_keeps_its_choices_and_gets_the_new_keys_default(
+        client, db, db_path, caplog):
+    """A key added later reaches accounts that saved before it: the row lacks it, nothing else.
+
+    The row has the keys users.db held before `sub_agent_output`, each with a value other
+    than its default: read as "no longer fits", the account would lose every one of them.
+    """
+    user = _user(db, "alice")
+    chosen = {key: OTHER[key] for key in ("fold_steps", "thinking", "sub_agents")}
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute("INSERT INTO user_preferences (user_id, data, updated_at) VALUES (?, ?, ?)",
+                     (user.id, json.dumps({"chat": chosen}), "2026-09-21T22:19:01+00:00"))
+    chat = client.get("/auth/me/preferences", headers=_auth(client, "alice")).json()["chat"]
+    assert chat == {**DEFAULTS["chat"], **chosen}, "the account's own choices were dropped"
+    assert "no longer fit" not in caplog.text
 
 
 def test_deleting_an_account_deletes_its_preferences(db, db_path):

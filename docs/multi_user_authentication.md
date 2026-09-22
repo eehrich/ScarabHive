@@ -328,13 +328,20 @@ werden mit 422 abgelehnt statt still gespeichert. Gespeichert in der Tabelle
 Konto. Ohne Anmeldung 401, ohne Authentifizierung gibt es den Endpunkt nicht.
 
 ```json
-{"chat": {"fold_steps": "at_end", "thinking": "collapsed", "sub_agents": "expanded"}}
+{"chat": {"fold_steps": "at_end", "thinking": "collapsed", "sub_agents": "expanded",
+          "sub_agent_output": "collapsed"}}
 ```
 
 - `fold_steps`: `at_end` (Steps klappen mit der Antwort zu), `at_next_step`
   (sobald der nächste beginnt), `never`
 - `thinking`: `collapsed` | `expanded`
 - `sub_agents`: `expanded` | `collapsed` (Sub-Agent-Läufe im Chat)
+- `sub_agent_output`: `collapsed` | `expanded` (die Antwort eines Sub-Agents in
+  seinem Lauf)
+
+Ein Schlüssel, der später dazukommt, erreicht auch Konten, die vorher gespeichert
+haben: ihrer Zeile fehlt er, sie liest sich mit seinem Default und behält alles,
+was sie gewählt hat.
 
 #### POST /auth/api-key
 Generate a new API key for the current user.

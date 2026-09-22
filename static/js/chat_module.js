@@ -69,32 +69,65 @@
     return formatTextWithLineBreaks(content);
   }
 
-  // Threshold (px) below the document end within which we still consider the
-  // user "at the bottom" and therefore follow new content. Above this, the
-  // user has scrolled up to read older content and we leave them alone.
-  const NEAR_BOTTOM_THRESHOLD_PX = 150;
-
   // The chat scrolls inside the shell's #chatScroll, not the page.
   function scroller() {
     return document.getElementById('chatScroll');
   }
 
-  function isNearBottom() {
+  // Whether the chat keeps its end in view. A scroll up and away from the end turns it
+  // off -- the viewer's, or a jump to something above; reaching the end turns it on again.
+  // Asking after every event how far the end was (within 150 px) lost it whenever several
+  // sub-agents streamed at once: one frame's growth outran the threshold, and from then
+  // on the distance only grew.
+  let following = true;
+
+  // Where the chat was left standing: a scroll that comes back from further up is
+  // somebody moving it, not content arriving (see watchFollow).
+  let lastTop = 0;
+
+  // Content growing never moves scrollTop, and content shrinking clamps it at the end:
+  // a position that came back from further up is somebody moving the chat.
+  function noteScroll() {
     const el = scroller();
-    return el.scrollTop + el.clientHeight >= el.scrollHeight - NEAR_BOTTOM_THRESHOLD_PX;
+    if (!el) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 4) following = true;
+    else if (el.scrollTop < lastTop) following = false;
+    lastTop = el.scrollTop;
   }
 
-  // force=true: scroll regardless of current position (e.g. user just sent a
-  // message, session just loaded - they expect to see the bottom).
-  // force=false (default): only scroll if already near the bottom. This keeps
-  // status events and streaming content from yanking the viewport away when
-  // the user has scrolled up.
+  // force: the viewer asked for the end and gets it, whatever they did in between.
+  function pinEnd(force = false) {
+    const el = scroller();
+    if (!el) return;
+    // Asked here, not only on the event: a pin waiting for its frame would otherwise
+    // undo a jump made in between before anything had seen it.
+    if (!force) noteScroll();
+    if (!following) return;
+    // The chat is styled to scroll smoothly (shell.css), and it keeps that here: pinned
+    // instantly instead, a session shown jumps straight past its stored sub-runs, and
+    // what their IntersectionObserver never saw stays unread.
+    el.scrollTop = el.scrollHeight;
+    lastTop = el.scrollTop;
+  }
+
+  // force=true: the viewer expects the end (sent a message, opened a session) and
+  // follows again. Otherwise only while following.
   function scrollBottom(force = false) {
-    if (!force && !isNearBottom()) return;
-    requestAnimationFrame(() => {
-      const el = scroller();
-      el.scrollTop = el.scrollHeight;
-    });
+    watchFollow();
+    if (force) following = true;
+    if (following) requestAnimationFrame(() => pinEnd(force));
+  }
+
+  let watching = false;
+
+  function watchFollow() {
+    const el = scroller();
+    const content = document.getElementById('chat');
+    if (watching || !el || !content) return;
+    watching = true;
+    lastTop = el.scrollTop;
+    el.addEventListener('scroll', noteScroll, { passive: true });
+    new ResizeObserver(() => pinEnd()).observe(content);
   }
 
   /**
@@ -1152,6 +1185,11 @@
         <div class="container-body assistant-text" style="display: block;"></div>
       </div>`);
     const response = host.querySelector(':scope > .container-section');
+    // A sub-agent's answer is its caller's material, not the conversation: folded or
+    // not as the viewer chose (chat.sub_agent_output), under a header of its own.
+    if (host.classList.contains('sub-run-body') && chatPrefs.sub_agent_output === 'collapsed') {
+      response.querySelector('.assistant-text').style.display = 'none';
+    }
     foldOnClick(response.querySelector('[data-toggle="response"]'));
     return {
       box: host,
@@ -2262,6 +2300,7 @@
     fold_steps: 'at_end',     // at_end | at_next_step | never
     thinking: 'collapsed',    // collapsed | expanded
     sub_agents: 'expanded',   // expanded | collapsed
+    sub_agent_output: 'collapsed',   // collapsed | expanded
   });
   let chatPrefs = { ...CHAT_PREFS_DEFAULTS };
 
@@ -2284,6 +2323,13 @@
     chatContainer.querySelectorAll('.sub-run:not([data-touched])').forEach((element) => {
       setFolded(element.querySelector(':scope > .sub-run-header'), element.querySelector(':scope > .sub-run-body'),
         chatPrefs.sub_agents === 'collapsed');
+    });
+    chatContainer.querySelectorAll('.sub-run-body > .container-section:not([data-touched])').forEach((section) => {
+      const body = section.querySelector(':scope > .assistant-text');
+      if (!body) return;
+      const open = chatPrefs.sub_agent_output !== 'collapsed';
+      body.style.display = open ? 'block' : 'none';
+      markOpen(section, open);
     });
   }
 
@@ -3132,8 +3178,7 @@
           rebindLiveBlock(blk);
         }
         renderRunEvent(blk, data);
-        // Auto-scroll to keep cursor visible
-        blk.t.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        scrollBottom();
         break;
       case 'thinking_complete':
         renderRunEvent(blk, data);

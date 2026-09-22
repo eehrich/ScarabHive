@@ -94,6 +94,10 @@ class ChatPreferences(BaseModel):
     thinking: Literal["collapsed", "expanded"] = "collapsed"
     # Whether a sub-agent's run, shown inside the call that started it, starts open.
     sub_agents: Literal["expanded", "collapsed"] = "expanded"
+    # Whether a sub-agent's answer, inside its run, is shown folded. Folded by default:
+    # several sub-agents streaming their answers at once turned the chat into a wall
+    # that kept moving under the reader.
+    sub_agent_output: Literal["collapsed", "expanded"] = "collapsed"
 
 
 class UserPreferences(BaseModel):

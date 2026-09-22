@@ -66,6 +66,11 @@
 /* The response has no chrome: the answer is the content. */
 .container-section:has(> [data-toggle="response"]) > .container-header { display: none; }
 .container-section:has(> [data-toggle="response"]) > .container-body { padding: 0; }
+/* A sub-agent's answer is not the conversation's: it folds under a header of its own, as
+   a step does -- folded by default (chat.sub_agent_output), so answers streaming in several
+   sub-agents at once do not push the chat about. */
+.sub-run-body > .container-section > [data-toggle="response"] { display: inline-flex; }
+.sub-run-body > .container-section:has(> [data-toggle="response"]) > .container-body { padding: var(--space-1) 0 0 var(--space-5); }
 
 /* One section per LLM call, built as the run goes. The steps sit above the answer and
    keep it in view: folded, a thirty-step run is thirty lines rather than thirty walls. */
@@ -84,7 +89,8 @@
 .thinking-toggle .pk-icon, .sub-run-header .toggle-arrow .pk-icon { transition: transform var(--duration-fast); }
 .thinking-toggle[aria-expanded="true"] .pk-icon,
 .sub-run-header[aria-expanded="true"] .toggle-arrow .pk-icon { transform: rotate(90deg); }
-.thinking-toggle:focus-visible, .sub-run-header:focus-visible, .step-section > .container-header:focus-visible {
+.thinking-toggle:focus-visible, .sub-run-header:focus-visible, .step-section > .container-header:focus-visible,
+.sub-run-body > .container-section > .container-header:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 
@@ -260,6 +266,11 @@
 }
 .composer-select:hover { background: var(--surface-3); color: var(--text-primary); }
 .composer-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Stop is red: the kit's danger button. Once a stop has an outcome the plain button comes
+   back, and its icon says how it ended -- on red, the red of a failed stop would vanish. */
+.stop-btn:not(.cancelled, .cancel-failed) {
+  --btn-bg: var(--danger); --btn-fg: var(--text-on-accent); --btn-border: transparent; --btn-bg-hover: var(--danger-hover);
+}
 .stop-btn.cancelling { opacity: 0.6; }
 .stop-btn.cancelled { --btn-fg: var(--ok); }
 .stop-btn.cancel-failed { --btn-fg: var(--danger); }
