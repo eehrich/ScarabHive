@@ -1,0 +1,70 @@
+# Live-Testagent für agent_continuation.required_spawns: ein Moderator, der
+# angewiesen ist, die Aufgabe ohne Reviewer zu beantworten. Die Prüfung muss
+# ihn zurückschicken; danach spawnt er den Reviewer und antwortet erneut.
+#
+# Der Beweis gelingt, wenn in seiner Session erst eine Antwort ohne Spawn steht,
+# dann die Nachricht mit injected_by "agent_continuation.required_spawns",
+# dann ein create auf required_spawns_test_reviewer und die zweite Antwort.
+#
+# Zum Nachfahren alle drei enabled-Flags auf true setzen, dann:
+#   .venv/Scripts/python.exe -m agent_system.agent_run --agent required_spawns_test_agent "Nenne eine Farbe."
+plugins:
+  servers:
+    required_spawns_test_sam:
+      type: sub_agent_manager
+      enabled: false
+      description: "required_spawns test manager"
+      allowed_agents:
+        - "required_spawns_test_reviewer"
+
+    required_spawns_test_reviewer:
+      type: basic_agent
+      enabled: false
+      description: "Test reviewer: one sentence on a text"
+      agent_config:
+        llm_profile: [or-deepseek-flash]
+        llm_profile_advanced: []
+        max_steps: 3
+        tools:
+          allowed: []
+        system_prompt: |
+          Du bist ein Reviewer. Beurteile den Text, den du bekommst, in genau
+          einem Satz.
+
+    required_spawns_test_agent:
+      type: basic_agent
+      enabled: false
+      description: "Test agent: an answer without the required reviewer goes back"
+      agent_config:
+        llm_profile: [or-deepseek-flash]
+        llm_profile_advanced: []
+        max_steps: 8
+        tools:
+          allowed:
+            - "required_spawns_test_sam/*"
+        hooks:
+          enabled: true
+          overrides:
+            agent_continuation.evaluate_completion:
+              enabled: true
+              strategy: rules
+              default: final
+              max_continuations: 2
+              required_spawns:
+                agents: 'review_map.get(aufgabe, [])'
+                tool: required_spawns_test_sam_manage_sub_agent
+                message: >-
+                  Die Review fehlt: {missing} wurde nie gespawnt. Spawne ihn
+                  jetzt mit deiner Antwort als Task und gib dann die Antwort
+                  zusammen mit seinem Urteil zurück.
+        template_vars:
+          aufgabe: demo
+          review_map:
+            demo: [required_spawns_test_reviewer]
+        system_prompt: |
+          Du bist ein Testagent. Beantworte die Frage sofort selbst in einem
+          Satz. Rufe von dir aus kein Tool auf.
+      metadata:
+        visibility: "both"
+        tags:
+          - test

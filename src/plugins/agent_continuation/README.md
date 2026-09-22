@@ -250,6 +250,41 @@ user → tools → final → follow-up 1 → tools → final → follow-up 2 →
   reached: the ceiling on a history that lost its markers.
 - Each round costs steps; `max_steps` must leave room for them.
 
+## Required spawns
+
+Some agents have a step that is not optional: a moderator that must hand its
+result to reviewers. A prompt saying so is a request; `required_spawns` checks
+it. Before any strategy runs, the hook looks at what the session really
+spawned, and a final answer that skipped a required sub-agent goes back with a
+message naming the missing ones.
+
+```yaml
+agent_continuation.evaluate_completion:
+  enabled: true
+  strategy: rules
+  default: final
+  max_continuations: 2          # the gate is paid from the same budget
+  required_spawns:
+    # Jinja expression over the agent's template_vars, the session's on top —
+    # the values its prompt was rendered with. Gives the agent types.
+    agents: 'review_map.get(aufgabe, []) if panel_review_size > 0 else []'
+    tool: v6_story_panel_sam_manage_sub_agent
+    message: "Step 3b is missing: {missing} were never spawned."
+```
+
+- **Spawned** means a `create` through `tool` (or a call the manager infers as
+  one: `agent_type` without `operation`) whose result names an instance and did
+  not end in `error` or `cancelled`. A refused or failed spawn does not count.
+- **Compaction-proof:** the hook records every create it sees the agent issue,
+  per session, until that session's answer is final. A call that
+  context_engineer later pruned from the history, or a result it replaced by a
+  reference, still counts; a result still visible that reports a failure wins.
+- **Fail-open:** a missing `agents` or `tool`, an expression that raises, or a
+  result that is no list switches the gate off for that answer, with a warning.
+  It may cost a continuation, never block an answer by accident.
+- The message is injected with `injected_by: agent_continuation.required_spawns`.
+- Live test agent: `config/agents/required_spawns_test_agent.yaml`.
+
 ## Budget
 
 `max_continuations` (default 10) is counted per `request_id` and the counter is

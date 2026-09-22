@@ -135,5 +135,8 @@ config:
       with optional keys: strategy, continue_message, default, rules,
       llm_prompt, max_continuations, followups, followups_on_continue,
       hybrid_fallback, decision_profile, decision_question,
-      decision_final_means, decision_continue_means, decision_threshold.
+      decision_final_means, decision_continue_means, decision_threshold,
+      required_spawns ({agents: jinja expression over the template vars
+      giving the agent types that must have been spawned, tool: the
+      sub-agent manager's tool name, message: text with {missing}).
       Agents that don't appear here use the global strategy/defaults.

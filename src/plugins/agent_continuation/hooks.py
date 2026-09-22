@@ -18,15 +18,25 @@ Rule Types
   or regex patterns if ``regex: true`` is set.
 * **min_length** — continue if response shorter than threshold.
 * **step_check** — continue if current step below minimum.
+
+Required spawns
+---------------
+``required_spawns`` is checked before any strategy: a final answer from an
+agent that never spawned a required sub-agent is sent back with a message
+naming the missing ones. The list is a Jinja expression over the session's
+template vars, so it can depend on the task (``aufgabe``) the agent works on.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+from jinja2.sandbox import SandboxedEnvironment
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.message_roles import opens_a_turn
@@ -46,6 +56,69 @@ _HYBRID_FALLBACKS = frozenset({"llm", "decision"})
 
 #: injected_by of a scripted follow-up message — how the plugin counts them.
 FOLLOWUP_MARKER = "agent_continuation.followup"
+#: injected_by of the message that asks for a missing required spawn.
+REQUIRED_SPAWNS_MARKER = "agent_continuation.required_spawns"
+
+_EXPRESSIONS = SandboxedEnvironment()
+
+
+def _context_vars(context: HookContext) -> Dict[str, Any]:
+    """The agent's template_vars with the session's vars on top — the values
+    the agent's own prompt was rendered with."""
+    agent = context.agent
+    out: Dict[str, Any] = dict(
+        getattr(getattr(agent, "agent_config", None), "template_vars", None) or {})
+    tracker = getattr(agent, "_session_tracker", None)
+    if tracker is not None and context.session_id:
+        out.update(tracker.get_session_template_vars(context.session_id) or {})
+    return out
+
+
+def _arguments(call: Any) -> Dict[str, Any]:
+    fn = (call or {}).get("function") or {}
+    raw = fn.get("arguments")
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _creates(tool_calls: Any, tool: str) -> Dict[str, str]:
+    """call id -> agent_type of every create through ``tool``. The manager
+    infers ``create`` when only ``agent_type`` is given, so a call without
+    ``operation`` counts too."""
+    out: Dict[str, str] = {}
+    for call in tool_calls or []:
+        if ((call or {}).get("function") or {}).get("name") != tool:
+            continue
+        args = _arguments(call)
+        operation = args.get("operation") or ("create" if args.get("agent_type") else None)
+        if operation == "create" and args.get("agent_type") and call.get("id"):
+            out[call["id"]] = str(args["agent_type"])
+    return out
+
+
+def _failed_calls(messages: List[Any], call_ids: set) -> set:
+    """The creates whose result is still visible and says the spawn did not
+    happen: no instance, or a run that ended in error or was cancelled. A
+    result compaction replaced by a reference proves nothing either way."""
+    failed = set()
+    for msg in messages:
+        call_id = getattr(msg, "tool_call_id", None)
+        if call_id not in call_ids:
+            continue
+        try:
+            result = json.loads(getattr(msg, "content", None) or "")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(result, dict) or result.get("type") in ("tool_result_ref", "archived_ref"):
+            continue
+        if not result.get("instance_id") or result.get("outcome") in ("error", "cancelled"):
+            failed.add(call_id)
+    return failed
 
 
 class AgentContinuationPlugin(SchemaBasedPluginHook):
@@ -87,6 +160,10 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
 
         # Per-request continuation counter  request_id → count
         self._continuation_counts: Dict[str, int] = {}
+        # session_id -> {call id: agent_type} of every create the hook saw the
+        # agent issue. Compaction may later drop those calls from the history
+        # the hook is shown; this record is why required_spawns still knows.
+        self._seen_creates: Dict[str, Dict[str, str]] = {}
 
         # Cached evaluator LLM instance (lazy)
         self._evaluator_llm: Any = None
@@ -263,6 +340,8 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         tool_calls = assistant.get("tool_calls")
         content: str = assistant.get("content") or ""
 
+        if tool_calls:
+            self._remember_creates(context, tool_calls)
         if tool_calls or not content.strip():
             # Has tool calls (loop continues anyway) or empty → skip
             logger.debug(
@@ -294,7 +373,34 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                 f"reached for request {request_id}"
             )
             self._continuation_counts.pop(request_id, None)
+            self._seen_creates.pop(context.session_id or "", None)
             return HookResult(success=True, modified=False)
+
+        # Before any strategy: a missing required spawn is not a judgement
+        # call, and no keyword may declare such an answer final.
+        missing = self._missing_spawns(agent_cfg, context)
+        if missing:
+            self._continuation_counts[request_id] = count + 1
+            spec = agent_cfg["required_spawns"]
+            message = str(spec.get("message") or
+                          "Required sub-agents were never spawned: {missing}. "
+                          "Spawn them and finish the step they belong to.")
+            message = message.replace("{missing}", ", ".join(missing))
+            logger.info(
+                f"[AgentContinuation] '{agent_name}' answered without spawning "
+                f"{missing} — sent back (#{count + 1})"
+            )
+            return HookResult(
+                success=True,
+                modified=False,
+                metadata={
+                    "continue": True,
+                    "continue_message": message,
+                    "continue_injected_by": REQUIRED_SPAWNS_MARKER,
+                    "continuation_count": count + 1,
+                    "continuation_reason": f"required spawns missing: {missing}",
+                },
+            )
 
         # Pick strategy (per-agent overrides global)
         strategy = agent_cfg.get("strategy") or self._strategy
@@ -421,7 +527,62 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
 
         # Final answer — clean up counter
         self._continuation_counts.pop(request_id, None)
+        self._seen_creates.pop(context.session_id or "", None)
         return HookResult(success=True, modified=False)
+
+    # ------------------------------------------------------------------
+    # Required spawns
+    # ------------------------------------------------------------------
+
+    def _remember_creates(self, context: HookContext, tool_calls: Any) -> None:
+        spec = self._get_agent_config(context).get("required_spawns")
+        if not isinstance(spec, dict) or not spec.get("tool") or not context.session_id:
+            return
+        creates = _creates(tool_calls, str(spec["tool"]))
+        if creates:
+            self._seen_creates.setdefault(context.session_id, {}).update(creates)
+
+    def _missing_spawns(self, agent_cfg: Dict[str, Any], context: HookContext) -> List[str]:
+        """Required agent types this session never spawned, in configured order.
+
+        ``required_spawns: {agents: <jinja expression>, tool: <tool name>,
+        message: <text with {missing}>}``. The expression sees the template
+        vars the agent's prompt sees, so the list follows the task. Every
+        misconfiguration answers "nothing missing" with a warning: this gate
+        may only ever cost a continuation, never block an answer by accident.
+        """
+        spec = agent_cfg.get("required_spawns")
+        if not spec:
+            return []
+        name = context.agent_name
+        if not isinstance(spec, dict) or not spec.get("agents") or not spec.get("tool"):
+            logger.warning(
+                f"[AgentContinuation] '{name}': required_spawns needs 'agents' "
+                f"and 'tool' — gate off")
+            return []
+        try:
+            required = _EXPRESSIONS.compile_expression(str(spec["agents"]))(
+                **_context_vars(context))
+        except Exception as e:  # noqa: BLE001 - a broken expression must not sink the answer
+            logger.warning(
+                f"[AgentContinuation] '{name}': required_spawns expression "
+                f"{spec['agents']!r} failed ({e}) — gate off")
+            return []
+        if isinstance(required, str):
+            required = [required]
+        if not isinstance(required, (list, tuple)):
+            if required:
+                logger.warning(
+                    f"[AgentContinuation] '{name}': required_spawns expression "
+                    f"gave {type(required).__name__}, not a list — gate off")
+            return []
+        messages = list(context.messages or [])
+        creates = dict(self._seen_creates.get(context.session_id or "", {}))
+        for msg in messages:
+            creates.update(_creates(getattr(msg, "tool_calls", None), str(spec["tool"])))
+        failed = _failed_calls(messages, set(creates))
+        spawned = {agent_type for call_id, agent_type in creates.items() if call_id not in failed}
+        return [str(a) for a in required if str(a) not in spawned]
 
     # ------------------------------------------------------------------
     # Scripted follow-ups
