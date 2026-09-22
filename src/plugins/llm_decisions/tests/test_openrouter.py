@@ -438,6 +438,21 @@ async def test_a_busy_endpoint_is_tried_again(monkeypatch):
     assert waited == [2.0, 4.0], "the wait between attempts does not grow"
 
 
+async def test_a_cloudflare_520_is_tried_again(monkeypatch):
+    """The endpoint sits behind Cloudflare, which answers 520 when the origin
+    misbehaves -- transient, and it killed a whole fan-out once because the
+    client raised on it instead of trying again."""
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda delay: real_sleep(0))
+    sent = []
+    with _respond(_response(status=520, text='{"error":{"code":520}}'),
+                  _response(), record=sent):
+        result = await _client(max_retries=2).decide(STATE, SAFE_TO_RUN)
+
+    assert len(sent) == 2, "the 520 was not tried again"
+    assert result["safe_to_run"].value == 0.05
+
+
 async def test_a_state_the_endpoint_cannot_take_is_refused():
     """A number is not content: the 400 would name the field, not the mistake."""
     sent = []

@@ -44,12 +44,12 @@ from agent_system.llm import hook_notify
 from agent_system.llm.tls import httpx_verify
 from plugins.llm_common import cancellation
 from plugins.llm_common.api_keys import resolve_api_key
+from plugins.llm_common.http_status import RETRYABLE_STATUS
 
 logger = logging.getLogger(__name__)
 
 #: The full endpoint: decisions do not live under /api/v1 (see the module docstring).
 DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
-_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 #: What a question's ``type`` may be, and which field of the answer decides.
 _DECIDING_FIELD = {"noul": "noul", "choice": "choice", "score": "score"}
 #: What the hooks see as the provider of these calls; also the name the
@@ -225,7 +225,7 @@ class DecisionsClient:
         for attempt in range(max(0, self.max_retries) + 1):
             try:
                 response = await self._post(payload, headers, cancellation_token)
-                if response.status_code in _RETRYABLE_STATUS:
+                if response.status_code in RETRYABLE_STATUS:
                     last_error = DecisionsError(f"HTTP {response.status_code}: {response.text[:300]}")
                 elif response.status_code >= 400:
                     raise DecisionsError(f"Decisions API error {response.status_code}: "

@@ -38,6 +38,7 @@ from agent_system.llm.tts import (
     notify_tts_request, notify_tts_response,
 )
 from plugins.llm_common.api_keys import resolve_api_key
+from plugins.llm_common.http_status import RETRYABLE_STATUS
 
 if TYPE_CHECKING:
     from agent_system.config.models import TTSModelConfig
@@ -47,7 +48,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 #: OpenAI PCM output contract; used when the response names no rate.
 DEFAULT_SAMPLE_RATE = 24000
-_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 #: OpenRouter rejects larger reference samples with a 400 (20 MiB base64).
 MAX_REFERENCE_BYTES = 15 * 1024 * 1024
 
@@ -196,7 +196,7 @@ class OpenAISpeechTTSClient(TTSClient):
             try:
                 async with httpx.AsyncClient(timeout=self.request_timeout, verify=httpx_verify()) as client:
                     response = await client.post(url, json=payload, headers=headers)
-                if response.status_code in _RETRYABLE_STATUS:
+                if response.status_code in RETRYABLE_STATUS:
                     last_error = httpx.HTTPStatusError(
                         f"HTTP {response.status_code}: {response.text[:300]}",
                         request=response.request, response=response)
