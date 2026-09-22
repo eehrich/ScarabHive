@@ -24,8 +24,8 @@ plugins:
       agent_config:
         # Running a command and quoting the failure verbatim is not a
         # reasoning task. Diagnosis belongs to the coder.
-        llm_profile: [or-deepseek-flash, or-gemini-flash, or-gpt-mini]
-        llm_profile_advanced: [or-deepseek-pro]
+        llm_profile: [structured, structured_fallback]
+        llm_profile_advanced: [code, code_fallback]
 
         llm_params:
           "*":

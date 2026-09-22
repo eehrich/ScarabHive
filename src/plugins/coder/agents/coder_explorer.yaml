@@ -22,7 +22,7 @@ plugins:
         # Search is finding-and-selecting work over a lot of text: a cheap
         # model with a large window beats an expensive one here, and the
         # answer is checkable (the coder opens the paths it names).
-        llm_profile: [or-gemini-flash, or-deepseek-flash, or-gpt-mini]
+        llm_profile: [structured, structured_fallback]
         llm_profile_advanced: []
 
         llm_params:

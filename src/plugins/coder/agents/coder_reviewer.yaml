@@ -26,8 +26,9 @@ plugins:
       agent_config:
         # Same chain as the coder: judging a change is not the cheaper half of
         # the work, so it does not get the cheaper model.
-        llm_profile: [or-claude-sonnet, or-gpt-full]
-        llm_profile_advanced: [claude-opus, or-claude-sonnet]
+        llm_profile: [code, code_fallback]
+        # Reached via use_advanced_model=true when a caller escalates.
+        llm_profile_advanced: [code_adv, code_adv_fallback]
 
         llm_params:
           "*":

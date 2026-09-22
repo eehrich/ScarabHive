@@ -439,11 +439,31 @@ llm_system:
       description: "Special LLM for coding tasks"
       max_steps: 500
 
+    code_fallback:
+      model_ref: openrouter-claude-sonnet
+      description: "Special LLM for coding tasks"
+      max_steps: 500      
+
+    code_adv:
+      model_ref: openrouter-kimi-k3
+      description: "Special LLM for coding tasks"
+      max_steps: 500
+
+    code_adv_fallback:
+      model_ref: openrouter-claude-opus
+      description: "Special LLM for coding tasks"
+      max_steps: 500    
+
     structured:
       model_ref: openrouter-deepseek-flash
       description: "Structured building work: workflows, configs, schemas"
       max_steps: 500
-            
+
+    structured_fallback:
+      model_ref: openrouter-gpt-luna
+      description: "Structured building work: workflows, configs, schemas"
+      max_steps: 500
+
     realtime:
       model_ref: gpt-realtime-2.1-mini
       description: "Realtime answers for medium tasks"
