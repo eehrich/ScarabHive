@@ -249,6 +249,12 @@ await manager.update_session_metadata(
 )
 ```
 
+`save_session` schreibt die Kopie des Aufrufers — bei den Metadaten aber gewinnt, was
+die Datei schon hat: `update_session_metadata` schreibt sie auch (etwa die Sub-Agents,
+die der Sub-Agent-Manager einträgt), und eine Kopie, die vor diesem Schreiben geladen
+wurde, nähme es sonst zurück. Einen Schlüssel, den die Datei noch nicht hat, übernimmt
+`save_session` aus der Kopie; einen vorhandenen ändert man mit `update_session_metadata`.
+
 ## UI Integration
 
 ### Session Sidebar

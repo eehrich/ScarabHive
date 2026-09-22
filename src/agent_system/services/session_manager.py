@@ -999,6 +999,12 @@ class SessionManager:
 
     async def save_session(self, session_data: Dict[str, Any]) -> None:
         """Save a session (update existing).
+
+        Metadata already in the file wins over the caller's: it is written by
+        ``update_session_metadata`` too, and a caller loaded its copy before this
+        lock -- written back whole, that copy dropped what was merged meanwhile.
+        A key the file does not have yet is taken from the caller; to change
+        one, use ``update_session_metadata``.
         
         Args:
             session_data: Complete session data dictionary
@@ -1020,6 +1026,14 @@ class SessionManager:
             # Update timestamp
             session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
             
+            # What update_session_metadata merged since the caller loaded its copy (a
+            # sub-agent linked during a checkpoint save) stays: the file's metadata wins.
+            try:
+                on_disk = (await self._read_session_file_async(path)).get("metadata") or {}
+            except (SessionNotFoundError, ValueError):
+                on_disk = {}  # nothing readable to keep: the caller's copy is all there is
+            session_data["metadata"] = {**session_data["metadata"], **on_disk}
+
             # Update metadata
             session_data["metadata"]["message_count"] = len(session_data["messages"])
             if session_data["messages"]:
