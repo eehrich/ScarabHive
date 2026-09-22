@@ -252,15 +252,19 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., ToolServer]]:
     for p in path.glob("*.py"):
         if p.name == "__init__.py":
             continue
-        pkg_name = "plugins"
+        # The directory this was found in, as the directory loop above names it:
+        # under the fixed name "plugins" a second discovery root would either
+        # take that package over or inherit its path, and every relative import
+        # of one root's plugins would then read the other root's files.
+        pkg_name = path.name
         try:
             if pkg_name not in sys.modules:
                 pkg_mod = types.ModuleType(pkg_name)
                 pkg_mod.__path__ = [str(path.resolve())]
                 sys.modules[pkg_name] = pkg_mod
         except Exception as e:
-            logger.debug(f"Failed to create plugins module structure: {e}")
-        spec = importlib.util.spec_from_file_location(f"plugins.{p.stem}", str(p))
+            logger.debug(f"Failed to create module structure for '{pkg_name}': {e}")
+        spec = importlib.util.spec_from_file_location(f"{pkg_name}.{p.stem}", str(p))
         if spec is None or spec.loader is None:
             continue
         mod = _already_loaded(spec.name, p)

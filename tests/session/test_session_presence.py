@@ -569,6 +569,87 @@ class TestTheAgentLoop:
         assert events == [False], "a run that saved nothing counts its input as delivered"
 
 
+class TestTakingTheLock:
+    """What a hold does while other processes take, drop and ask about the same file."""
+
+    def test_a_lock_file_being_deleted_does_not_refuse_the_hold(self, tmp_path, monkeypatch):
+        """Windows answers a delete in progress with a refusal, not with "gone".
+
+        A probe that finds the file held by nobody drops it (_drop), and a hold
+        opening the name at that moment is refused -- which does not stop the
+        run, it lets it write the session with nothing keeping a second run out.
+        Measured with six holders and two askers on one session: 52 holds in six
+        seconds were refused this way.
+        """
+        opened = []
+        real_open = os.open
+
+        def refuse_once(path, flags, *args, **kwargs):
+            if str(path).endswith(".lock") and not opened:
+                opened.append(path)
+                raise PermissionError(13, "being deleted")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(sp.os, "open", refuse_once)
+        presence = sp.SessionPresence(tmp_path)
+
+        assert presence.hold("s1", "u", "agent") is True, "the hold was refused, and the run would go on unheld"
+        assert opened, "fixture: the refusal never happened"
+        presence.release("s1", "u")
+
+    def test_a_holder_that_let_go_while_being_asked_about_is_not_reported_as_busy(
+            self, tmp_path, monkeypatch):
+        """Between the failed attempt and the answer the holder can let go.
+
+        Reported all the same, the caller is told the session is worked on
+        elsewhere while it is free -- measured, 415 of some 3000 answers of
+        "running" under six holders had gone stale by then.
+        """
+        real_open_locked = sp._open_locked
+        attempts = []
+
+        def busy_first(path, *args, **kwargs):
+            attempts.append(path)
+            return None if len(attempts) == 1 else real_open_locked(path, *args, **kwargs)
+
+        monkeypatch.setattr(sp, "_open_locked", busy_first)
+        monkeypatch.setattr(sp, "_probe", lambda path: {"status": "running", "agent": "someone"})
+        presence = sp.SessionPresence(tmp_path)
+
+        assert presence.hold("s1", "u", "agent") is True, "a session nobody holds was reported as busy"
+        assert len(attempts) == 2, "fixture: the second attempt never happened"
+        presence.release("s1", "u")
+
+
+class TestTheWakeLog:
+    """logs/agent-wake.log is where a wake that went wrong can be read afterwards."""
+
+    def test_two_wakes_writing_at_once_keep_every_line_of_both(self, tmp_path):
+        """Each wake hands its own handle to its child, and both append.
+
+        A handle that keeps an offset of its own lets the second wake write over
+        the first: measured on Windows, the first kept 0 of its 200 lines -- and
+        the wake somebody would look for is the one that said something.
+        """
+        log = tmp_path / "agent-wake.log"
+        child = ("import sys\n"
+                 "for i in range(200): sys.stderr.write('%s line %d\\n' % ('{tag}', i))\n"
+                 "sys.stderr.flush()\n")
+        running = []
+        for tag in ("first", "second"):
+            errors = sp._append_handle(log)
+            running.append(subprocess.Popen(
+                [sys.executable, "-c", child.replace("{tag}", tag)],
+                stdout=subprocess.DEVNULL, stderr=errors))
+            errors.close()
+        for process in running:
+            assert process.wait(timeout=60) == 0, "a writer did not finish"
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        for tag in ("first", "second"):
+            assert sum(1 for line in lines if line.startswith(tag)) == 200, \
+                f"{tag} wake lost lines: {len(lines)} in the log altogether"
+
+
 class TestAStoppedRun:
     """A run its user stopped: nothing starts its session again by itself. Measured in the
     user's test of 22.09.2026: a stop with a message appended mid-run and async sub-agents

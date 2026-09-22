@@ -55,7 +55,15 @@ import psutil
 from ..config.models import SessionPresenceConfig
 
 if os.name == "nt":
+    import ctypes
     import msvcrt
+
+    # A handle is a pointer: read back as the default c_int it would be cut in
+    # half on 64-bit, and the file the cut value names is not the one opened.
+    _CreateFileW = ctypes.windll.kernel32.CreateFileW
+    _CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+                             ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
+    _CreateFileW.restype = ctypes.c_void_p
 else:
     import fcntl
 
@@ -148,11 +156,39 @@ def _wake_log() -> Any:
     try:
         path = REPO_ROOT / "logs" / "agent-wake.log"
         path.parent.mkdir(parents=True, exist_ok=True)
-        return open(path, "ab")
+        return _append_handle(path)
     except OSError as exc:
         # A wake nobody can log is still a wake worth starting.
         logger.warning("Session presence: no wake log (%s); stderr is discarded", exc)
         return subprocess.DEVNULL
+
+
+#: CreateFileW, for a handle that appends (winnt.h, fileapi.h).
+_FILE_APPEND_DATA = 0x0004
+_FILE_SHARE_READ_WRITE = 0x0003
+_OPEN_ALWAYS = 4
+
+
+def _append_handle(path: Path) -> Any:
+    """A handle whose every write lands at the end, whatever other handles do.
+
+    Two overlapping wakes each open the log and hand their handle to a child.
+    On Windows ``open(path, "ab")`` asks for the general write right and keeps
+    its own offset, so the second wake writes over the first -- measured, the
+    first wake kept 0 of its 200 lines, and the log exists for exactly the wake
+    that went wrong. FILE_APPEND_DATA is the right that appends in the file
+    system instead, which is what the inherited handle carries into the child;
+    what the C runtime does to make "ab" look like appending stays behind in
+    this process. On POSIX O_APPEND is that guarantee already.
+    """
+    if os.name != "nt":
+        return open(path, "ab")
+    handle = _CreateFileW(str(path), _FILE_APPEND_DATA, _FILE_SHARE_READ_WRITE,
+                          None, _OPEN_ALWAYS, 0, None)
+    # INVALID_HANDLE_VALUE is -1, which comes back as the unsigned pointer it is.
+    if not handle or handle == (1 << (8 * ctypes.sizeof(ctypes.c_void_p))) - 1:
+        raise ctypes.WinError()
+    return os.fdopen(msvcrt.open_osfhandle(handle, os.O_APPEND), "wb")
 
 
 def spawn_wake(session_id: str, user_id: str, depth: int) -> tuple[int, float]:
@@ -229,12 +265,26 @@ def _open_locked(path: Path, attempts: int = 20) -> Optional[int]:
     """The lock file, created if missing, opened and locked by a new handle;
     None while another handle holds it.
 
-    Bounded on purpose: every attempt means the file was deleted between the
-    open and the lock, and a filesystem that keeps answering that way would
-    spin here forever instead of letting the run report it.
+    Bounded on purpose: every attempt means the file was deleted under this
+    one -- between the open and the lock, or while it was being opened -- and a
+    filesystem that keeps answering that way would spin here forever instead of
+    letting the run report it.
     """
+    refused = None
     for _ in range(attempts):
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | _BINARY)
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | _BINARY)
+        except PermissionError as exc:
+            refused = exc
+            # Windows, while the file is on its way out: a probe found it held
+            # by nobody and dropped it (_drop), and until that delete is through
+            # the name can be opened by no one. Measured on one session with six
+            # holders and two askers: 52 holds in six seconds were refused this
+            # way -- and a refused hold does not stop the run, it lets it write
+            # the session with nothing to keep a second run out.
+            time.sleep(_RETRY_WAIT)
+            continue
+        refused = None
         if not _lock(fd):
             os.close(fd)
             return None
@@ -243,6 +293,8 @@ def _open_locked(path: Path, attempts: int = 20) -> Optional[int]:
         # Deleted between the open and the lock (only POSIX deletes an open
         # file): that file no longer belongs to the session.
         _unlock_and_close(fd)
+    if refused is not None:
+        raise refused   # not a delete in progress after all: the file cannot be opened at all
     raise OSError(f"{path} is replaced faster than it can be locked")
 
 
@@ -324,6 +376,16 @@ def _take(path: Path, session_id: str) -> int:
             return fd
         state = _probe(path)
         if state and state["status"] == "running":
+            # Asked once more before it is reported: the holder may have let go
+            # between the attempt above and this answer, and then the session is
+            # free -- the caller would be told it is worked on elsewhere and a
+            # run would stay out of a session nobody has. Measured on one session
+            # with six holders and two askers: 415 of some 3000 answers of
+            # "running" were this stale. The lock attempt is the only thing that
+            # can tell; asking cannot close the window, only narrow it.
+            fd = _open_locked(path)
+            if fd is not None:
+                return fd
             raise SessionBusy(session_id, state["agent"])
         if time.monotonic() >= deadline:
             raise SessionBusy(session_id)

@@ -154,6 +154,33 @@ def test_a_single_file_plugin_does_not_take_a_packages_name(tmp_path):
         "the single-file plugin replaced the directory plugin's package in sys.modules"
 
 
+def test_a_single_file_plugin_belongs_to_the_root_it_lies_in(tmp_path):
+    """A discovery root that is not called "plugins" keeps its own package.
+
+    Under a fixed name the roots share one package: whichever is scanned first
+    decides where its __path__ points, and every relative import of the other
+    root's plugins then reads this one's files.
+    """
+    import sys
+
+    root = tmp_path / "plugins_elsewhere"
+    root.mkdir()
+    (root / "lonely.py").write_text(
+        "PLUGIN_NAME = 'lonely'\n"
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n"
+        "    return 'from-the-other-root'\n",
+        encoding="utf-8")
+
+    found = discover_all_plugins(dirs=[root])
+
+    assert "lonely" in found, "fixture: the single-file plugin was not discovered at all"
+    assert "plugins_elsewhere.lonely" in sys.modules, "the module was not named after its root"
+    package = sys.modules.get("plugins_elsewhere")
+    assert package is not None and package.__path__ == [str(root.resolve())], \
+        "the root's package does not point at the root"
+    assert "plugins.lonely" not in sys.modules, "the module went into another root's package"
+
+
 def test_a_shared_submodule_that_failed_is_retried(tmp_path, caplog):
     """Shared modules (writer_core and friends) are imported once per process
     and skipped afterwards via ``sys.modules``. A submodule whose import blew
