@@ -65,6 +65,17 @@ Example response:
 
 Notes:
 - The `wait` tool validates that `seconds` is >= 0.1 and <= `max_wait_seconds` (default 3600).
+- `wake: true` does not hold the turn: the call answers at once and the session
+  is woken when the time is up (60 s or more -- below that a woken turn, which
+  reads the whole conversation again, costs more than waiting). Where a wake
+  cannot reach the session -- presence off, a session already woken, a
+  sub-agent's session -- the call waits it out as before and says why in
+  `wake_note`.
+- **An armed wake is a sleeping task, nothing on disk**: a one-shot
+  `agent-cli run` ends with its turn, and a restart or a plugin reload before
+  the time is up drops the wake (logged as a warning). Nobody rings then, and
+  the session sits where it ended its turn. For a wait that must survive that,
+  wait without `wake`.
 - The plugin calls `await status.progress(...)` unconditionally to emit progress updates — callers should provide a status context that implements `progress` (the tool runtime does this).
 
 ### ping
@@ -100,11 +111,14 @@ Pauses execution for a specified duration while emitting periodic status updates
 Parameters:
 - `seconds` (number, required): Seconds to wait. Minimum: 0.1. Maximum: `max_wait_seconds` (configurable).
 - `message` (string, optional): Human-readable message included in status updates.
+- `wake` (boolean, optional): Answer at once and wake the session when the time is up.
 
 Returns: JSON object with fields:
 - `requested_seconds` (float)
-- `actual_seconds` (float)
+- `actual_seconds` (float, only when it waited here)
 - `user_message` (string|null)
+- `waiting` (true) and `note` when a wake was armed: end the turn, you are woken
+- `wake_note` (string) when a wake was asked for and it waited anyway: why
 
 Behavioral notes:
 - Emits `status.progress(...)` at start, periodically during the wait, and on completion.

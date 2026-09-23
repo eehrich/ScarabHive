@@ -10,6 +10,7 @@ import time
 from unittest.mock import AsyncMock
 from pathlib import Path
 
+from agent_system.tools.status import current_request_id
 from plugins.basic_operations.server import BasicOperationsServer
 from plugins.basic_operations.plugin import PLUGIN_FACTORY
 
@@ -359,3 +360,142 @@ class TestBasicOperationsIntegration:
         # 3. Final ping
         final_result = await server.call("basic_ops_ping", {})
         assert final_result["status"] == "success"
+
+class TestWaitWithWake:
+    """wait(wake=true): the session is woken instead of the turn held open."""
+
+    @staticmethod
+    def _recorder(monkeypatch, blocked=""):
+        from plugins.basic_operations import server as server_module
+        rings = []
+
+        async def wake(system_config, session_id, user_id, what="", still_needed=None, started_by=None):
+            rings.append((session_id, user_id, what, started_by))
+            return "woke_session"
+
+        monkeypatch.setattr(server_module, "wake_blocked", lambda *a: blocked)
+        monkeypatch.setattr(server_module, "wake_depth", lambda: 0)
+        monkeypatch.setattr(server_module, "wake_session", wake)
+        monkeypatch.setattr(server_module, "WAKE_MIN_SECONDS", 0.05)
+        return rings
+
+    @pytest.mark.asyncio
+    async def test_a_long_wait_answers_at_once_and_wakes_the_session(
+            self, mock_system_config, mock_server_config, monkeypatch):
+        rings = self._recorder(monkeypatch)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+
+        started = time.time()
+        current_request_id.set("run-7")
+        result = await server.call("basic_ops_wait", {
+            "seconds": 2, "message": "for the build", "wake": True,
+            "_session_id": "s1", "_user_id": "u1", "_status": AsyncMock(),
+        })
+
+        assert result["status"] == "success" and result["waiting"] is True
+        assert time.time() - started < 1, "the call waited instead of arming a wake"
+        assert "end your turn" in result["note"]
+
+        await asyncio.wait(server._wakes, timeout=10)
+        assert [(r[0], r[1]) for r in rings] == [("s1", "u1")]
+        assert "for the build" in rings[0][2]
+        # The run it belongs to: a run the user stopped rings nobody.
+        assert rings[0][3] == "run-7"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("blocked, depth, session, note", [
+        ("waking is switched off", 0, "s1", "waking is switched off"),
+        ("", 1, "s1", "itself woken"),
+        ("", 0, "", "no session"),
+    ])
+    async def test_a_session_that_cannot_be_woken_is_waited_out_here(
+            self, mock_system_config, mock_server_config, monkeypatch, blocked, depth, session, note):
+        from plugins.basic_operations import server as server_module
+        rings = self._recorder(monkeypatch, blocked=blocked)
+        monkeypatch.setattr(server_module, "wake_depth", lambda: depth)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+
+        result = await server.call("basic_ops_wait", {
+            "seconds": 0.1, "wake": True,
+            "_session_id": session, "_user_id": "u1", "_status": AsyncMock(),
+        })
+
+        assert result["actual_seconds"] >= 0.1 and result.get("waiting") is None
+        assert note in result["wake_note"] and rings == []
+
+    @pytest.mark.asyncio
+    async def test_a_short_wait_is_not_worth_a_turn(
+            self, mock_system_config, mock_server_config, monkeypatch):
+        """A woken turn reads the whole conversation again -- for seconds that is dearer than waiting."""
+        rings = self._recorder(monkeypatch)
+        from plugins.basic_operations import server as server_module
+        monkeypatch.setattr(server_module, "WAKE_MIN_SECONDS", 60.0)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+
+        result = await server.call("basic_ops_wait", {
+            "seconds": 0.1, "wake": True,
+            "_session_id": "s1", "_user_id": "u1", "_status": AsyncMock(),
+        })
+
+        assert result["actual_seconds"] >= 0.1 and rings == [] and not server._wakes
+        assert "60 s" in result["wake_note"]
+
+    @pytest.mark.asyncio
+    async def test_a_sub_agents_session_is_waited_out_here(
+            self, mock_system_config, mock_server_config, monkeypatch):
+        """wake_blocked leaves this out on purpose; the run that spawned a
+        sub-agent hands its result over, nobody wakes it."""
+        from plugins.basic_operations import server as server_module
+        rings = self._recorder(monkeypatch)
+
+        class SubAgentPresence:
+            def get(self, session_id, user_id):
+                return {"sub_agent": True}
+
+        monkeypatch.setattr(server_module, "presence_for", lambda cfg: SubAgentPresence())
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+
+        result = await server.call("basic_ops_wait", {
+            "seconds": 0.1, "wake": True,
+            "_session_id": "s1", "_user_id": "u1", "_status": AsyncMock(),
+        })
+
+        assert result["actual_seconds"] >= 0.1 and rings == []
+        assert result["wake_note"] == "a sub-agent's session is never woken"
+
+    @pytest.mark.asyncio
+    async def test_a_wait_of_exactly_the_floor_is_armed_and_says_so(
+            self, mock_system_config, mock_server_config, monkeypatch):
+        """The floor is the shortest wait worth a wake, not the first one above it."""
+        from plugins.basic_operations import server as server_module
+        self._recorder(monkeypatch)
+        monkeypatch.setattr(server_module, "WAKE_MIN_SECONDS", 60.0)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+        status = AsyncMock()
+
+        result = await server.call("basic_ops_wait", {
+            "seconds": 60, "message": None, "wake": True,
+            "_session_id": "s1", "_user_id": "u1", "_status": status,
+        })
+        try:
+            assert result["waiting"] is True
+            assert status.end.await_count == 1 and "waking the session" in status.end.await_args[0][0]
+        finally:
+            await server.stop_plugin()
+
+    @pytest.mark.asyncio
+    async def test_a_stopped_plugin_drops_its_armed_wakes(
+            self, mock_system_config, mock_server_config, monkeypatch):
+        """They live in this process; the log says so instead of asyncio."""
+        rings = self._recorder(monkeypatch)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+
+        await server.call("basic_ops_wait", {
+            "seconds": 1, "wake": True,
+            "_session_id": "s1", "_user_id": "u1", "_status": AsyncMock(),
+        })
+        assert len(server._wakes) == 1
+        await server.stop_plugin()
+
+        await asyncio.sleep(1.2)
+        assert rings == [] and not server._wakes

@@ -12,12 +12,18 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from agent_system.core.session_presence import presence_for, wake_blocked, wake_depth, wake_session
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.tools.status import current_request_id
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
+
+# Below this a wake costs more than it saves: the woken turn reads the whole
+# conversation again, while waiting here costs nothing but the seconds.
+WAKE_MIN_SECONDS = 60.0
 
 
 class BasicOperationsServer(SchemaBasedToolServer):
@@ -44,6 +50,8 @@ class BasicOperationsServer(SchemaBasedToolServer):
         # Extract configuration with sensible defaults from server_config
         self.max_wait_seconds = float(getattr(server_config, 'max_wait_seconds', 3600))
         self.default_update_interval = float(getattr(server_config, 'default_update_interval', 1.0))
+        # A task with no reference can be collected mid-sleep.
+        self._wakes: set[asyncio.Task] = set()
         
         logger.info(
             f"BasicOperations server '{name}' initialized - max_wait_seconds={self.max_wait_seconds}, "
@@ -56,6 +64,39 @@ class BasicOperationsServer(SchemaBasedToolServer):
             "name": self.name,
             "max_wait_seconds": self.max_wait_seconds
         }
+
+    async def _wake_refused(self, session_id: str, user_id: str) -> str:
+        """Why this session cannot be woken when the wait is over, or ""."""
+        if not session_id:
+            return "this call has no session to wake"
+        if wake_depth():
+            return "this run was itself woken and ends with its turn"
+        blocked = wake_blocked(self.system_config, session_id, user_id)
+        if blocked:
+            return blocked
+        # wake_blocked leaves this out on purpose (session_presence.py): reading
+        # it parses the session file, so it is asked here, off the loop.
+        presence = presence_for(self.system_config)
+        try:
+            state = await asyncio.to_thread(presence.get, session_id, user_id) if presence else None
+        except Exception as exc:  # noqa: BLE001 - an unreadable session is no reason to fail the wait
+            logger.warning("Could not tell whether session %s is a sub-agent's: %s", session_id, exc)
+            return ""
+        return "a sub-agent's session is never woken" if state and state.get("sub_agent") else ""
+
+    async def stop_plugin(self) -> None:
+        """An armed wake is nothing but a sleeping task: it goes with the
+        process. Named in the log, or it is only asyncio's "task destroyed"."""
+        for task in list(self._wakes):
+            task.cancel()
+            logger.warning("BasicOperations '%s': a wake was armed and is dropped with this process", self.name)
+        await asyncio.gather(*self._wakes, return_exceptions=True)
+
+    async def _wake_after(self, seconds: float, session_id: str, user_id: str,
+                          message: str, started_by: str) -> None:
+        await asyncio.sleep(seconds)
+        await wake_session(self.system_config, session_id, user_id,
+                           what=f"the wait is over: {message}", started_by=started_by)
 
     async def wait(self, params: dict[str, Any]) -> dict[str, Any]:
         """
@@ -81,6 +122,30 @@ class BasicOperationsServer(SchemaBasedToolServer):
             if update_interval <= 0:
                 return {"status": "error", "error": "Update interval must be positive"}
             
+            session_id = str(params.get("_session_id") or "")
+            user_id = str(params.get("_user_id") or "")
+            refused = ""
+            # A long wait need not hold the turn: the session can be woken when
+            # it is over. Only where a wake reaches it -- otherwise waiting here
+            # is the only thing that works.
+            if params.get("wake") and seconds >= WAKE_MIN_SECONDS:
+                refused = await self._wake_refused(session_id, user_id)
+                if not refused:
+                    task = asyncio.create_task(self._wake_after(
+                        seconds, session_id, user_id, str(message)[:60], current_request_id.get() or ""))
+                    self._wakes.add(task)
+                    task.add_done_callback(self._wakes.discard)
+                    await status.end(f"{message}: waking the session in {seconds:.1f}s")
+                    return {
+                        "status": "success",
+                        "waiting": True,
+                        "requested_seconds": seconds,
+                        "user_message": message,
+                        "note": f"end your turn now -- you are woken in {seconds:.0f} s. The wake lives in "
+                                f"this process: a one-shot agent-cli run, or a restart before the time is up, "
+                                f"drops it. Then nobody rings, and waiting without wake is the way.",
+                    }
+
             start_time = time.time()
             end_time = start_time + seconds
             
@@ -196,7 +261,10 @@ class BasicOperationsServer(SchemaBasedToolServer):
                 "message": "Wait completed successfully",
                 "requested_seconds": seconds,
                 "actual_seconds": elapsed,
-                "user_message": message
+                "user_message": message,
+                # Asked to be woken and waited anyway: say why, or the model reads this as a wake that worked.
+                **({"wake_note": refused or f"a wake needs at least {WAKE_MIN_SECONDS:.0f} s"}
+                   if params.get("wake") else {})
             }
             
         except ValueError as e:
