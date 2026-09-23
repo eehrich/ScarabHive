@@ -166,7 +166,7 @@ class N8nServer(SchemaBasedToolServer):
                            name, ", ".join(missing))
         if self.base_url.startswith("http://") and not any(
                 h in self.base_url for h in ("://localhost", "://127.0.0.1", "://[::1]")):
-            logger.warning("n8n at %s is plain HTTP: both keys travel unencrypted", self.base_url)
+            logger.info("n8n at %s is plain HTTP: both keys travel unencrypted", self.base_url)
 
     def get_template_vars(self) -> dict[str, Any]:
         """Knowledge tools need the MCP; every acting tool also needs the public
