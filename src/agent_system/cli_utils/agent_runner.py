@@ -123,11 +123,14 @@ def get_agent_with_llm_override(
         
         try:
             # Use factory function that properly handles batch mode
-            from ..llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
-            
+            from ..llm.factory import (agent_params_for_profile, create_llm_from_profile,
+                                       resolve_llm_config_for_agent)
+
             llm_override = create_llm_from_profile(
                 config=config,
                 llm_profile=llm_profile,
+                llm_params=agent_params_for_profile(
+                    getattr(agent, "agent_config", None), llm_profile),
             )
             
             # Get profile info for status display

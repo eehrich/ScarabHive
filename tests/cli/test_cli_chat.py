@@ -1442,6 +1442,19 @@ class TestSwitchModel:
             llm_params=llm_params)
         return ctx, tracker
 
+    def test_the_agents_own_params_survive_the_switch(self, monkeypatch):
+        """/model picks another model, not another agent: what the agent says
+        about every model it runs on ("*") has to reach the new client too,
+        and what was typed still wins over it."""
+        self._patch_factory(monkeypatch)
+        ctx, _ = self._ctx(llm_params={"max_tokens": 16384})
+        ctx.agent.agent_config = SimpleNamespace(
+            llm_params={"*": {"context_window": 200000, "max_tokens": 8000}})
+
+        _switch_model(ctx, "profile_b")
+
+        assert ctx.llm_override.params == {"context_window": 200000, "max_tokens": 16384},             ctx.llm_override.params
+
     def _patch_factory(self, monkeypatch, raises=None):
         import agent_system.llm.factory as factory
 

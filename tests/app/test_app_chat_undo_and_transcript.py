@@ -64,10 +64,10 @@ def _turn(question, answer):
             {"role": "assistant", "content": answer}]
 
 
-async def _stored(api, session_id="s1", messages=()):
+async def _stored(api, session_id="s1", messages=(), llm_profile="default"):
     session = await api.manager.create_session(
         user_id=USER, session_id=session_id, agent_name="chat_agent",
-        llm_profile="default")
+        llm_profile=llm_profile)
     session["messages"] = list(messages)
     await api.manager.save_session(session)
 
@@ -276,6 +276,49 @@ class TestContext:
 
         assert response.json()["last_call"] == {}
         assert response.json()["estimated"]["total"] > 0
+
+    async def test_the_window_is_the_one_this_session_runs_on(self, api):
+        """The model picked in the panel lives on the SESSION. Read off the
+        agent instead, the line stated the window of a model this session has
+        not used since -- next to a measurement counted against another one."""
+        from agent_system.config.models import LLMProfile
+
+        config = api.app.state.config
+        wide = config.llm_system.models[next(iter(config.llm_system.models))].model_copy(deep=True)
+        wide.context_window = 123456
+        config.llm_system.models["zz_wide"] = wide
+        config.llm_system.profiles["zz_wide"] = LLMProfile(model_ref="zz_wide")
+        await _stored(api, messages=[{"role": "user", "content": "frage"}],
+                      llm_profile="zz_wide")
+
+        async with _client(api.app) as client:
+            response = await client.get("/chat/context",
+                                        params={"session_id": "s1"}, timeout=30.0)
+
+        agent_window = getattr(getattr(api.app.state.agent, "llm", None), "context_window", 0)
+        assert agent_window != 123456, "fixture: the agent's own window is the one we look for"
+        assert response.json()["window"] == 123456, response.text
+
+    async def test_the_agents_own_cap_still_applies_to_it(self, api):
+        """llm_params are what the agent says about every model it runs on,
+        including one it did not choose itself -- so they decide what the
+        next call is really counted against."""
+        from agent_system.config.models import LLMProfile
+
+        config = api.app.state.config
+        wide = config.llm_system.models[next(iter(config.llm_system.models))].model_copy(deep=True)
+        wide.context_window = 123456
+        config.llm_system.models["zz_wide2"] = wide
+        config.llm_system.profiles["zz_wide2"] = LLMProfile(model_ref="zz_wide2")
+        api.app.state.agent.agent_config.llm_params = {"*": {"context_window": 4242}}
+        await _stored(api, messages=[{"role": "user", "content": "frage"}],
+                      llm_profile="zz_wide2")
+
+        async with _client(api.app) as client:
+            response = await client.get("/chat/context",
+                                        params={"session_id": "s1"}, timeout=30.0)
+
+        assert response.json()["window"] == 4242, response.text
 
     async def test_a_session_that_is_not_there(self, api):
         async with _client(api.app) as client:

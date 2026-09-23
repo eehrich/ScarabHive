@@ -90,6 +90,23 @@ def _create_batch_queue_manager_sync(config: AgentSystemConfig) -> Optional["Bat
     return manager
 
 
+def agent_params_for_profile(agent_config: Any, llm_profile: str,
+                            extra: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """The llm_params an override of *llm_profile* runs with, caller's last.
+
+    An override picks another MODEL, not another agent: what the agent says
+    about every model it runs on ("*" or flat) has to reach the override the
+    same way _create_fallback_llm carries it into a fallback. Dropped, the
+    agent's own settings were silently gone for that run -- measured on the
+    coder, whose context_window 200000 and prompt_cache_mode never reached a
+    profile picked in the panel, and whose calls were then counted against
+    the model's 272000 instead.
+    """
+    own = resolve_llm_params(getattr(agent_config, "llm_params", None), llm_profile) or {}
+    merged = {**own, **(extra or {})}
+    return merged or None
+
+
 def create_llm_from_profile(
     config: AgentSystemConfig,
     llm_profile: str,

@@ -1350,13 +1350,16 @@ def main() -> None:
 
             try:
                 # Use factory function that properly handles batch mode
-                from .llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
+                from .llm.factory import (agent_params_for_profile, create_llm_from_profile,
+                                          resolve_llm_config_for_agent)
                 from .config.models import AgentConfig
 
                 llm_override = create_llm_from_profile(
                     config=config,
                     llm_profile=effective_profile,
-                    llm_params=llm_params_override,
+                    # The agent's own params first, what was typed over them.
+                    llm_params=agent_params_for_profile(
+                        agent.agent_config, effective_profile, llm_params_override),
                 )
 
                 # Get profile info for logging

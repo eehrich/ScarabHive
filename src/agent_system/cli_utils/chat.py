@@ -2311,14 +2311,22 @@ def _build_profile(ctx: "_ChatContext", wanted: str) -> tuple[Any, str]:
     ``thinking_level=max`` typed at the start must not vanish on /model.
     Changes nothing, so an interrupt while it builds leaves the chat as it was.
     """
-    from ..llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
+    from ..llm.factory import (agent_params_for_profile, create_llm_from_profile,
+                               resolve_llm_config_for_agent)
     from ..config.models import AgentConfig
 
     system_config: Any = getattr(ctx.agent, "system_config", None)
     params = ctx.llm_params or None
     client = create_llm_from_profile(
-        config=system_config, llm_profile=wanted, llm_params=params)
+        config=system_config, llm_profile=wanted,
+        # /model picks another model, not another agent: the agent's own
+        # params stay, what was typed wins over them.
+        llm_params=agent_params_for_profile(
+            getattr(ctx.agent, "agent_config", None), wanted, params))
     resolved = resolve_llm_config_for_agent(system_config, AgentConfig(llm_profile=wanted))
+    # The label names what was TYPED over the profile; the agent's own params
+    # ride along either way and are not the switch the person is making. The
+    # identity fields it shows cannot be overridden, so they hold regardless.
     label = f"{wanted}:{resolved.spec.provider}/{resolved.spec.model}"
     if params:
         label += " +params(" + ",".join(f"{k}={v}" for k, v in params.items()) + ")"

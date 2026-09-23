@@ -1309,13 +1309,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
             try:
                 # Use factory function that properly handles batch mode
-                from .llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
+                from .llm.factory import (agent_params_for_profile, create_llm_from_profile,
+                                          resolve_llm_config_for_agent)
                 from .config.models import AgentConfig
 
                 llm_override = create_llm_from_profile(
                     config=live,
                     llm_profile=llm_profile,
-                    ssl_verify=getattr(live.network, "ssl_verify", None)
+                    ssl_verify=getattr(live.network, "ssl_verify", None),
+                    # The agent keeps its own llm_params on a profile it did
+                    # not choose itself (see agent_params_for_profile).
+                    llm_params=agent_params_for_profile(
+                        getattr(selected_agent, "agent_config", None), llm_profile),
                 )
 
                 # Get profile info for status display
@@ -2794,20 +2799,29 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         finally:
             _let_go(owner_agent, held, user_id)
 
+    async def _session_record(sid: str, user_id: str) -> dict:
+        """A stored session as it lies on disk, or {} when there is none.
+
+        One read for everything a handler wants off it -- its agent, the LLM
+        profile it runs on, its messages. Two helpers doing their own
+        load_session read the same file twice for one command.
+        """
+        if not _session_service or not _session_service.session_manager:
+            return {}
+        try:
+            record = await _session_service.session_manager.load_session(user_id, sid)
+        except Exception as e:
+            logging.getLogger(__name__).debug("No record for %s: %s", sid, e)
+            return {}
+        return record or {}
+
     async def _session_agent_name(sid: str, user_id: str) -> Optional[str]:
         """The agent a stored session ran with, or None while it has none.
 
         Read off the record, which is where a session's agent lives
         (cli_utils/session_defaults.py says the same for the terminal).
         """
-        if not _session_service or not _session_service.session_manager:
-            return None
-        try:
-            record = await _session_service.session_manager.load_session(user_id, sid)
-        except Exception as e:
-            logging.getLogger(__name__).debug("No agent name for %s: %s", sid, e)
-            return None
-        return (record or {}).get("agent_name") or None
+        return (await _session_record(sid, user_id)).get("agent_name") or None
 
     async def _drop_last_exchange_and_persist(owner_agent: Any, sid: str, user_id: str,
                                               force: bool = False) -> Any:
@@ -3492,26 +3506,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         never happened.
         """
         from .chat_actions import (
-            context_breakdown, live_context_window, measured_context)
+            context_breakdown, live_context_window, measured_context,
+            profile_context_window)
 
         current_user = await _enforce_endpoint_security(request)
         user_id = current_user.username if current_user else "anonymous"
-        ran_with = await _session_agent_name(session_id, user_id)
+        # One read: the agent it ran with, the profile its next call goes out
+        # on, and the conversation itself all live in the same record.
+        record = await _session_record(session_id, user_id)
+        ran_with = record.get("agent_name") or None
+        ran_profile = record.get("llm_profile") or None
         target_agent = _chat_agent(request, ran_with or agent_name)
         if target_agent is None:
             raise HTTPException(status_code=404, detail="no such agent")
         await _verify_session_owner(session_id, current_user,
                                     getattr(target_agent, "_session_tracker", None))
 
-        messages: list = []
-        if _session_service and _session_service.session_manager:
-            try:
-                record = await _session_service.session_manager.load_session(
-                    user_id, session_id)
-                messages = (record or {}).get("messages") or []
-            except Exception as e:
-                logging.getLogger(__name__).debug(
-                    "No stored messages for %s: %s", session_id, e)
+        messages: list = record.get("messages") or []
 
         prompt, tools = "", []
         try:
@@ -3526,9 +3537,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         return {
             "session_id": session_id,
             "agent_name": getattr(target_agent, "name", ran_with or ""),
-            # The window the NEXT call runs against; the measurement below
-            # carries the one IT was counted against.
-            "window": live_context_window(target_agent),
+            # The window the NEXT call runs against -- of the profile the
+            # SESSION is on, which is what a model picked in the panel
+            # changes; the agent's own client only answers without one. The
+            # measurement below carries the window IT was counted against.
+            "window": (profile_context_window(target_agent, ran_profile)
+                       or live_context_window(target_agent)),
             # What the provider counted, kept in its own box -- and only for a
             # session that HAS a record: the tracker is keyed by session id
             # alone, and an unpersisted id passes the ownership check.

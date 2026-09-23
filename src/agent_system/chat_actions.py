@@ -198,6 +198,34 @@ def live_context_window(agent: Any, llm_override: Any = None) -> int:
     return window if isinstance(window, int) and window > 0 else 0
 
 
+def profile_context_window(agent: Any, llm_profile: Optional[str]) -> int:
+    """The window of the profile a SESSION runs on, or 0 when nobody knows it.
+
+    A surface that lets the model be switched keeps that choice on the
+    session, not on the agent -- so agent.llm answers for a model this
+    session may not have used since. Measured on the coder: its own
+    llm_params cap it at 200000, while the panel had put the session on a
+    272000 profile and every call was counted against that.
+    """
+    config = getattr(agent, "system_config", None)
+    if not llm_profile or config is None:
+        return 0
+    try:
+        from .config.models import AgentConfig
+        from .llm.factory import agent_params_for_profile, resolve_llm_config_for_agent
+
+        resolved = resolve_llm_config_for_agent(
+            config,
+            AgentConfig(llm_profile=llm_profile,
+                        llm_params=agent_params_for_profile(
+                            getattr(agent, "agent_config", None), llm_profile)))
+        window = resolved.spec.context_window
+    except Exception:
+        logger.debug("No window for profile %s", llm_profile, exc_info=True)
+        return 0
+    return window if isinstance(window, int) and window > 0 else 0
+
+
 def context_breakdown(
     messages: Sequence[Any],
     *,

@@ -27,7 +27,7 @@ from agent_system.config.models import (
     LLMSystemConfig,
     resolve_llm_params,
 )
-from agent_system.llm.factory import resolve_llm_config_for_agent
+from agent_system.llm.factory import agent_params_for_profile, resolve_llm_config_for_agent
 
 
 def _system_config() -> AgentSystemConfig:
@@ -137,6 +137,97 @@ class TestAgentConfigValidation:
     def test_empty_dict_normalized_to_none(self):
         a = AgentConfig(llm_profile="x", llm_params={})
         assert a.llm_params is None
+
+
+class TestEveryRunOverrideCarriesThem:
+    """Anti-drift: the same line was missing at five call sites at once.
+
+    Every place in the core that builds the client a RUN goes out on --
+    the agent's own, its fallback, its advanced model, and the four
+    overrides (API, agent-cli, agent-run, agent runner) plus /model --
+    has to hand create_llm_from_profile the agent's llm_params. Listing
+    the call sites is the point: the hole was that one of them forgot,
+    and a scan finds the next one that does.
+
+    Not in here: the helper models plugins build for themselves (a
+    judge, a summarizer, an evaluator). Those do not run the agent's
+    conversation, so the agent's params are none of their business.
+    """
+
+    RUN_CLIENT_MODULES = (
+        "agent_system/app.py",
+        "agent_system/agent_cli.py",
+        "agent_system/agent_run.py",
+        "agent_system/cli_utils/chat.py",
+        "agent_system/cli_utils/agent_runner.py",
+        "agent_system/servers/agent/server.py",
+    )
+
+    #: What the value has to be built from. A bare ``llm_params=None`` or the
+    #: caller's typed params alone is the bug this test exists for -- the
+    #: keyword being PRESENT says nothing.
+    FROM_THE_AGENT = ("agent_params_for_profile", "agent_config")
+
+    def test_no_run_client_is_built_without_the_agents_llm_params(self):
+        import ast
+
+        src = Path(__file__).parent.parent.parent / "src"
+        without = []
+        per_module = {}
+        for relative in self.RUN_CLIENT_MODULES:
+            path = src / relative
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+                if name != "create_llm_from_profile":
+                    continue
+                per_module[relative] = per_module.get(relative, 0) + 1
+                passed = next((kw for kw in node.keywords if kw.arg == "llm_params"), None)
+                given = ast.get_source_segment(source, passed.value) if passed else ""
+                if not any(mark in (given or "") for mark in self.FROM_THE_AGENT):
+                    without.append(f"{relative}:{node.lineno} ({given or 'no llm_params'})")
+        # Every module in the list has to carry a call -- a stale entry would
+        # otherwise make the scan look wider than it is.
+        empty = [m for m in self.RUN_CLIENT_MODULES if not per_module.get(m)]
+        assert not empty, f"fixture: no create_llm_from_profile in {empty} -- the list went stale"
+        assert not without, ("these build a run's client without the agent's llm_params: "
+                             + ", ".join(without))
+
+
+class TestParamsOfAnOverriddenProfile:
+    """Ein Override waehlt ein anderes MODELL, nicht einen anderen Agenten.
+
+    Was der Agent ueber jedes Modell sagt ("*"/flach), muss ihn deshalb auch
+    auf ein Profil begleiten, das der Nutzer im Panel oder per /model waehlt
+    — so wie _create_fallback_llm es in den Fallback traegt. Ohne das fiel
+    der context_window-Deckel des coder lautlos weg, und seine Aufrufe
+    wurden gegen die 272000 des Modells gezaehlt statt gegen seine 200000.
+    """
+
+    def test_the_agents_star_params_reach_the_chosen_profile(self):
+        agent = AgentConfig(llm_profile=["test-profile"],
+                            llm_params={"*": {"context_window": 200000}})
+        assert agent_params_for_profile(agent, "fremdes-profil") == {"context_window": 200000}
+
+    def test_the_entry_of_that_profile_wins_over_the_star(self):
+        agent = AgentConfig(
+            llm_profile=["test-profile"], llm_profile_advanced=["advanced-profile"],
+            llm_params={"*": {"max_tokens": 8000}, "advanced-profile": {"max_tokens": 99}})
+        assert agent_params_for_profile(agent, "advanced-profile") == {"max_tokens": 99}
+
+    def test_what_the_caller_typed_wins_over_the_agents(self):
+        agent = AgentConfig(llm_profile=["test-profile"],
+                            llm_params={"*": {"max_tokens": 8000, "context_window": 200000}})
+        assert agent_params_for_profile(agent, "test-profile", {"max_tokens": 16384}) == {
+            "max_tokens": 16384, "context_window": 200000,
+        }
+
+    def test_an_agent_without_params_keeps_the_callers(self):
+        assert agent_params_for_profile(None, "test-profile", {"max_tokens": 7}) == {"max_tokens": 7}
+        assert agent_params_for_profile(None, "test-profile") is None
 
 
 class TestKeyedLlmParams:

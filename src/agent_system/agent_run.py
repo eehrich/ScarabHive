@@ -288,12 +288,14 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
 
             try:
                 # Use factory function that properly handles batch mode
-                from .llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
+                from .llm.factory import (agent_params_for_profile, create_llm_from_profile,
+                                          resolve_llm_config_for_agent)
                 from .config.models import AgentConfig
 
                 llm_override = create_llm_from_profile(
                     config=config,
                     llm_profile=llm_profile,
+                    llm_params=agent_params_for_profile(agent.agent_config, llm_profile),
                 )
 
                 # Get profile info for status display
