@@ -6,35 +6,30 @@ The **Decision Plugin** provides LLM agents in ScarabHive with direct access to 
 
 Unlike standard generative chat models that produce non-deterministic prose, decision models evaluate named questions against given content and return deterministic or calibrated numeric values (probabilities, scale points, categorical choices) without generating conversational text or tool calls.
 
-While the low-level provider interface lives in `src/plugins/llm_decisions` and `agent_system.llm.decisions`, agent tools did not previously expose this capability to running agents. The Decision Plugin bridges this gap by exposing high-level, resilient tools:
-
-1. **`evaluate_probabilities`**: Evaluates 1 context against $N$ questions and outputs calibrated probabilities ($p \in [0.0, 1.0]$) for each question (utilizing Jev's `noul` question type).
-2. **`evaluate_scores`**: Evaluates 1 context against $N$ scoring dimensions along ordered qualitative or quantitative scales (utilizing Jev's `score` question type).
+In real-world agent workflows, agents frequently need to evaluate large batches of context inputs (e.g., 50, 100, or 200 documents, snippets, tickets, or user messages) against the same questions or criteria. Rather than forcing the LLM to call the tool 200 times sequentially, the tools are designed **batch-first**:
+1. **`evaluate_probabilities`**: Evaluates a batch of context items against $N$ questions in parallel with bounded concurrency and outputs calibrated probabilities ($p \in [0.0, 1.0]$) for each item and question (utilizing Jev's `noul` question type).
+2. **`evaluate_scores`**: Evaluates a batch of context items against $N$ scoring dimensions along ordered qualitative or quantitative scales in parallel with bounded concurrency (utilizing Jev's `score` question type).
 
 ---
 
-## 2. Architecture & Seam Integration
+## 2. Architecture & Concurrency
 
 ```
 +-----------------------------------------------------------+
 | Agent Loop (LLM)                                         |
 +-----------------------------+-----------------------------+
-                              | Tool call (JSON)
+                              | Tool call with batch of items
                               v
 +-----------------------------------------------------------+
 | DecisionServer (SchemaBasedToolServer)                    |
 | - src/plugins/decision/server.py                          |
-| - Validates input (context length, question count/shape)  |
-| - Formats questions into Jev API schema                   |
-| - Reports status via StatusScope (start, progress, end)   |
+| - Validates batch items (max_batch_size, context lengths) |
+| - Validates questions / criteria                          |
+| - Manages async parallel execution via asyncio.Semaphore  |
+| - Updates status progress during batch                    |
+| - Collects results, token usage, cost, and errors         |
 +-----------------------------+-----------------------------+
-                              |
-                              v
-+-----------------------------------------------------------+
-| agent_system.llm.decisions.create_decisions_from_profile   |
-| (resolves profile e.g. "jev" -> DecisionsClient)          |
-+-----------------------------+-----------------------------+
-                              |
+                              | Parallel requests (bounded)
                               v
 +-----------------------------------------------------------+
 | DecisionsClient (src/plugins/llm_decisions/openrouter.py)  |
@@ -42,21 +37,24 @@ While the low-level provider interface lives in `src/plugins/llm_decisions` and 
 +-----------------------------------------------------------+
 ```
 
-### Profile Resolution
-The plugin retrieves the decision client via `create_decisions_from_profile(self.system_config, profile_name)`.
-- If `profile` is configured in `server_config`, it uses that profile name.
-- Otherwise, it falls back to `llm_system.default_decision_profile` (configured as `"jev"` in system configs).
-- The client instance is cached per profile on the server instance.
+### Concurrency & Resilience
+- Bounded concurrency via `asyncio.Semaphore(max_concurrency)` (default 10).
+- If individual items fail within a large batch, the tool records the error under `errors[item_id]` and continues processing remaining items (partial success).
+- Cancellation tokens are checked before starting each item and during the requests.
+- Status progress updates periodically as items complete.
 
 ---
 
 ## 3. Tool Specifications
 
 ### 3.1 `evaluate_probabilities`
-Evaluates binary or likelihood questions against the provided context.
+Evaluates binary or likelihood questions across a batch of context items.
 
 - **Inputs**:
-  - `context` (`string | object | array`, required): The text or structured object to be judged.
+  - `items` (`array`, required): List of items to evaluate. Each item can be:
+    - An object: `{"id": "doc1", "context": "..."}`
+    - A plain string (auto-assigned `id = "item_1"`, `"item_2"`, etc.)
+    *(Fallback: `context` parameter for single item)*.
   - `questions` (`array`, required): List of questions. Supported formats:
     - Simple string: `"Is this safe to run?"` (auto-assigned ID `q1`, `q2`, etc.).
     - Structured object:
@@ -64,71 +62,86 @@ Evaluates binary or likelihood questions against the provided context.
       - `question` (`string`, required): The instruction or question to judge.
       - `criteria_true` (`string`, optional): Clarification for what makes the answer true.
       - `criteria_false` (`string`, optional): Clarification for what makes the answer false.
+  - `max_concurrency` (`integer`, optional): Maximum concurrent requests (default from config).
+  - `include_details` (`boolean`, optional): Include raw distribution details per item (default: `false` to keep context small).
 - **Output**:
   ```json
   {
     "status": "success",
-    "probabilities": {
-      "is_safe": 0.98,
-      "requires_approval": 0.05
-    },
-    "details": {
-      "is_safe": {
-        "value": 0.98,
-        "question": "Is this safe to run?"
+    "results": {
+      "doc_1": {
+        "is_safe": 0.98,
+        "requires_approval": 0.05
+      },
+      "doc_2": {
+        "is_safe": 0.12,
+        "requires_approval": 0.89
       }
     },
-    "model": "typesafe/jev-1.13",
-    "cost": 0.000015,
-    "input_tokens": 340,
-    "output_tokens": 2
+    "summary": {
+      "total_items": 2,
+      "successful_items": 2,
+      "failed_items": 0,
+      "total_cost": 0.000030,
+      "total_input_tokens": 680,
+      "total_output_tokens": 4,
+      "model": "typesafe/jev-1.13"
+    }
   }
   ```
 
 ### 3.2 `evaluate_scores`
-Evaluates content along ordered scales for multiple criteria.
+Evaluates content along ordered scales for multiple criteria across a batch of context items.
 
 - **Inputs**:
-  - `context` (`string | object | array`, required): Content to score.
+  - `items` (`array`, required): List of items to evaluate (`{"id": "...", "context": "..."}` or strings).
   - `criteria` (`array`, required): List of criteria specifications:
     - `id` (`string`, optional): Identifier (e.g. `"code_quality"`).
-    - `question` (`string`, required): What to evaluate (e.g. `"Rate the readability and cleanliness of the code"`).
-    - `scale` (`array` of strings, optional): Ordered levels from lowest to highest. Minimum 2 levels. Defaults to `["1", "2", "3", "4", "5"]` if omitted.
+    - `question` (`string`, required): What to evaluate.
+    - `scale` (`array` of strings, optional): Ordered levels from lowest to highest. Defaults to `["1", "2", "3", "4", "5"]` if omitted.
+  - `max_concurrency` (`integer`, optional): Maximum concurrent requests.
+  - `include_details` (`boolean`, optional): Include distributions and scale legends per item (default: `false`).
 - **Output**:
   ```json
   {
     "status": "success",
-    "scores": {
-      "code_quality": 4.25
-    },
-    "details": {
-      "code_quality": {
-        "score": 4.25,
-        "scale": ["1", "2", "3", "4", "5"],
-        "probabilities": {"0": 0.0, "1": 0.0, "2": 0.05, "3": 0.65, "4": 0.30},
-        "confidence": 0.85
+    "results": {
+      "func_1": {
+        "quality": 4.5,
+        "readability": 3.8
+      },
+      "func_2": {
+        "quality": 2.1,
+        "readability": 1.9
       }
     },
-    "model": "typesafe/jev-1.13",
-    "cost": 0.000018
+    "summary": {
+      "total_items": 2,
+      "successful_items": 2,
+      "failed_items": 0,
+      "total_cost": 0.000032,
+      "total_input_tokens": 640,
+      "total_output_tokens": 4,
+      "model": "typesafe/jev-1.13"
+    }
   }
   ```
 
 ---
 
-## 4. Guardrails & Error Handling
+## 4. Configuration Options
 
-1. **Context Validation**:
-   - Must not be empty.
-   - Must not exceed `max_context_length` (default: 50,000 characters).
-2. **Question Count Validation**:
-   - Must provide at least 1 question / criterion.
-   - Must not exceed `max_questions` (default: 20) to prevent token exhaustion.
-3. **Scale Validation for Scores**:
-   - `scale` must contain at least 2 distinct levels.
-4. **Error Formatting**:
-   - Returns standard error dictionary on failure:
-     `{"status": "error", "error": "<actionable explanation>"}`.
-5. **Status Scope**:
-   - Exactly one `status.end` or `status.error`.
-   - Result message under 140 chars describing counts/IDs without pure filler words.
+In `config/plugins.yaml`:
+```yaml
+plugins:
+  servers:
+    decision:
+      type: decision
+      enabled: true
+      decision_profile: jev          # Default profile (falls back to system config)
+      max_batch_size: 250            # Maximum items evaluated in one batch tool call
+      max_concurrency: 10            # Maximum parallel OpenRouter calls
+      max_questions: 20              # Maximum questions/criteria per call
+      max_context_length: 50000      # Maximum context length in characters per item
+      default_scale: ["1", "2", "3", "4", "5"]
+```

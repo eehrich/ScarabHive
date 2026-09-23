@@ -1,0 +1,489 @@
+"""Tests for the Decision Tool Server Batch Capabilities."""
+
+from __future__ import annotations
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.tools.status import StatusPhase, get_status_bus
+from plugins.decision.server import DecisionServer
+from plugins.llm_decisions.openrouter import Answer, DecisionsResult
+
+
+def _make_server(**server_cfg_kwargs) -> DecisionServer:
+    system_cfg = MagicMock(spec=AgentSystemConfig)
+    server_cfg = MagicMock(spec=ToolServerConfig)
+    for k, v in server_cfg_kwargs.items():
+        setattr(server_cfg, k, v)
+    return DecisionServer("decision", system_cfg, server_cfg)
+
+
+async def _run_tool(server: DecisionServer, tool_name: str, params: dict):
+    bus = get_status_bus()
+    method = (
+        tool_name[len(server.name) + 1 :]
+        if tool_name.startswith(server.name + "_")
+        else tool_name
+    )
+    queue = await bus.subscribe(server=f"{server.name}.{method}()")
+    try:
+        result = await server.call_with_status(tool_name, params)
+    finally:
+        bus.unsubscribe(queue)
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+
+    closing = [e for e in events if e.phase in (StatusPhase.END, StatusPhase.ERROR)]
+    assert (
+        len(closing) == 1
+    ), f"{tool_name}: expected exactly one closing event, got {[(e.phase, e.message) for e in events]}"
+    return result, closing[0]
+
+
+@pytest.mark.asyncio
+async def test_server_init_config_defaults():
+    server = _make_server()
+    assert server.decision_profile is None
+    assert server.max_batch_size == 250
+    assert server.max_concurrency == 10
+    assert server.max_questions == 20
+    assert server.max_context_length == 50000
+    assert server.default_scale == ["1", "2", "3", "4", "5"]
+
+
+@pytest.mark.asyncio
+async def test_server_init_config_overrides():
+    server = _make_server(
+        decision_profile="custom_jev",
+        max_batch_size=50,
+        max_concurrency=4,
+        max_questions=5,
+        max_context_length=1000,
+        default_scale=["low", "high"],
+    )
+    assert server.decision_profile == "custom_jev"
+    assert server.max_batch_size == 50
+    assert server.max_concurrency == 4
+    assert server.max_questions == 5
+    assert server.max_context_length == 1000
+    assert server.default_scale == ["low", "high"]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_probabilities_batch_happy_path():
+    server = _make_server()
+    mock_client = MagicMock()
+
+    async def fake_decide(state, questions, **kwargs):
+        # Return probability depending on state content
+        val = 0.95 if "delete" in state else 0.15
+        return DecisionsResult(
+            answers={
+                "is_risky": Answer(name="is_risky", type="noul", value=val),
+            },
+            model="typesafe/jev-1.13",
+            provider="TypeSafe",
+            id="dec_batch",
+            input_tokens=100,
+            output_tokens=1,
+            cost=0.00001,
+            duration_ms=20.0,
+        )
+
+    mock_client.decide = AsyncMock(side_effect=fake_decide)
+    server._client = mock_client
+    server._cached_profile = None
+
+    params = {
+        "items": [
+            {"id": "cmd_1", "context": "delete temporary cache files"},
+            {"id": "cmd_2", "context": "list current directory files"},
+        ],
+        "questions": [
+            {
+                "id": "is_risky",
+                "question": "Is this action destructive or risky?",
+            }
+        ],
+    }
+
+    result, closing = await _run_tool(server, "decision_evaluate_probabilities", params)
+
+    assert result["status"] == "success"
+    assert "results" in result
+    assert result["results"]["cmd_1"]["is_risky"] == 0.95
+    assert result["results"]["cmd_2"]["is_risky"] == 0.15
+    assert result["summary"]["total_items"] == 2
+    assert result["summary"]["successful_items"] == 2
+    assert result["summary"]["failed_items"] == 0
+    assert result["summary"]["total_input_tokens"] == 200
+    assert result["summary"]["model"] == "typesafe/jev-1.13"
+
+    assert closing.phase is StatusPhase.END
+    assert "2 items evaluated" in closing.message
+    assert len(closing.message) <= 140
+
+
+@pytest.mark.asyncio
+async def test_evaluate_probabilities_single_item_backward_compatibility():
+    server = _make_server()
+    mock_client = MagicMock()
+    fake_result = DecisionsResult(
+        answers={"q1": Answer(name="q1", type="noul", value=0.88)},
+        model="typesafe/jev-1.13",
+        provider="TypeSafe",
+        id="d1",
+        input_tokens=50,
+        output_tokens=1,
+        cost=0.000005,
+        duration_ms=10.0,
+    )
+    mock_client.decide = AsyncMock(return_value=fake_result)
+    server._client = mock_client
+    server._cached_profile = None
+
+    # Calling with context instead of items
+    params = {
+        "context": "Single context text to evaluate",
+        "questions": ["Is this valid?"],
+    }
+    result, closing = await _run_tool(server, "decision_evaluate_probabilities", params)
+
+    assert result["status"] == "success"
+    assert result["summary"]["total_items"] == 1
+    assert result["results"]["item_1"]["q1"] == 0.88
+    # Backward compatibility convenience field
+    assert result["probabilities"]["q1"] == 0.88
+    assert closing.phase is StatusPhase.END
+
+
+@pytest.mark.asyncio
+async def test_evaluate_probabilities_plain_string_items():
+    server = _make_server()
+    mock_client = MagicMock()
+    fake_result = DecisionsResult(
+        answers={"q1": Answer(name="q1", type="noul", value=0.5)},
+        model="typesafe/jev-1.13",
+        provider="TypeSafe",
+        id="d1",
+        input_tokens=50,
+        output_tokens=1,
+        cost=0.000005,
+        duration_ms=10.0,
+    )
+    mock_client.decide = AsyncMock(return_value=fake_result)
+    server._client = mock_client
+    server._cached_profile = None
+
+    params = {
+        "items": ["First item text", "Second item text"],
+        "questions": ["Is this a test?"],
+    }
+    result, closing = await _run_tool(server, "decision_evaluate_probabilities", params)
+
+    assert result["status"] == "success"
+    assert "item_1" in result["results"]
+    assert "item_2" in result["results"]
+    assert result["summary"]["total_items"] == 2
+
+
+@pytest.mark.asyncio
+async def test_evaluate_probabilities_partial_success():
+    server = _make_server()
+    mock_client = MagicMock()
+
+    async def decide_with_partial_fail(state, questions, **kwargs):
+        if "error_trigger" in state:
+            raise RuntimeError("API timeout on this specific document")
+        return DecisionsResult(
+            answers={"q1": Answer(name="q1", type="noul", value=0.75)},
+            model="typesafe/jev-1.13",
+            provider="TypeSafe",
+            id="d1",
+            input_tokens=50,
+            output_tokens=1,
+            cost=0.000005,
+            duration_ms=10.0,
+        )
+
+    mock_client.decide = AsyncMock(side_effect=decide_with_partial_fail)
+    server._client = mock_client
+    server._cached_profile = None
+
+    params = {
+        "items": [
+            {"id": "doc_ok_1", "context": "Normal document 1"},
+            {"id": "doc_bad", "context": "This has error_trigger in it"},
+            {"id": "doc_ok_2", "context": "Normal document 2"},
+        ],
+        "questions": ["Is it clear?"],
+    }
+    result, closing = await _run_tool(server, "decision_evaluate_probabilities", params)
+
+    assert result["status"] == "partial_success"
+    assert result["summary"]["total_items"] == 3
+    assert result["summary"]["successful_items"] == 2
+    assert result["summary"]["failed_items"] == 1
+    assert "doc_ok_1" in result["results"]
+    assert "doc_ok_2" in result["results"]
+    assert "doc_bad" in result["errors"]
+    assert "API timeout" in result["errors"]["doc_bad"]
+
+    assert closing.phase is StatusPhase.END
+    assert "2/3 items evaluated (1 failed)" in closing.message
+
+
+@pytest.mark.asyncio
+async def test_evaluate_probabilities_all_fail():
+    server = _make_server()
+    mock_client = MagicMock()
+    mock_client.decide = AsyncMock(side_effect=RuntimeError("OpenRouter 503 Outage"))
+    server._client = mock_client
+    server._cached_profile = None
+
+    params = {
+        "items": [
+            {"id": "doc1", "context": "First document"},
+            {"id": "doc2", "context": "Second document"},
+        ],
+        "questions": ["Is it valid?"],
+    }
+    result, closing = await _run_tool(server, "decision_evaluate_probabilities", params)
+
+    assert result["status"] == "error"
+    assert "All 2 items failed" in result["error"]
+    assert "errors" in result
+    assert closing.phase is StatusPhase.ERROR
+
+
+@pytest.mark.asyncio
+async def test_evaluate_scores_batch_happy_path():
+    server = _make_server()
+    mock_client = MagicMock()
+
+    async def fake_score_decide(state, questions, **kwargs):
+        val = 4.5 if "clean" in state else 2.0
+        return DecisionsResult(
+            answers={
+                "cleanliness": Answer(
+                    name="cleanliness",
+                    type="score",
+                    value=val,
+                    confidence=0.9,
+                    probabilities={"0": 0.0, "1": 0.1, "2": 0.9},
+                )
+            },
+            model="typesafe/jev-1.13",
+            provider="TypeSafe",
+            id="dec_score_batch",
+            input_tokens=120,
+            output_tokens=2,
+            cost=0.000012,
+            duration_ms=25.0,
+        )
+
+    mock_client.decide = AsyncMock(side_effect=fake_score_decide)
+    server._client = mock_client
+    server._cached_profile = None
+
+    params = {
+        "items": [
+            {"id": "code_clean", "context": "clean and modular python code"},
+            {"id": "code_messy", "context": "messy monolithic script"},
+        ],
+        "criteria": [
+            {
+                "id": "cleanliness",
+                "question": "Rate the code cleanliness and modularity",
+                "scale": ["poor", "acceptable", "excellent"],
+            }
+        ],
+        "include_details": True,
+    }
+
+    result, closing = await _run_tool(server, "decision_evaluate_scores", params)
+
+    assert result["status"] == "success"
+    assert result["results"]["code_clean"]["cleanliness"] == 4.5
+    assert result["results"]["code_messy"]["cleanliness"] == 2.0
+    assert result["details"]["code_clean"]["cleanliness"]["scale"] == [
+        "poor",
+        "acceptable",
+        "excellent",
+    ]
+    assert result["summary"]["total_items"] == 2
+    assert closing.phase is StatusPhase.END
+    assert "2 items evaluated" in closing.message
+
+
+@pytest.mark.asyncio
+async def test_items_validation_errors():
+    server = _make_server(max_batch_size=2)
+
+    # Empty items
+    res, closing = await _run_tool(
+        server, "decision_evaluate_probabilities", {"items": [], "questions": ["Q1?"]}
+    )
+    assert res["status"] == "error"
+    assert "non-empty list" in res["error"]
+    assert closing.phase is StatusPhase.ERROR
+
+    # Exceeds max_batch_size
+    res, closing = await _run_tool(
+        server,
+        "decision_evaluate_probabilities",
+        {"items": ["A", "B", "C"], "questions": ["Q1?"]},
+    )
+    assert res["status"] == "error"
+    assert "exceeds maximum allowed" in res["error"]
+    assert closing.phase is StatusPhase.ERROR
+
+    # Duplicate item ID
+    res, closing = await _run_tool(
+        server,
+        "decision_evaluate_probabilities",
+        {
+            "items": [
+                {"id": "dup", "context": "Text 1"},
+                {"id": "dup", "context": "Text 2"},
+            ],
+            "questions": ["Q1?"],
+        },
+    )
+    assert res["status"] == "error"
+    assert "Duplicate item ID 'dup'" in res["error"]
+    assert closing.phase is StatusPhase.ERROR
+
+    # Invalid item format (not string or dict)
+    res, closing = await _run_tool(
+        server,
+        "decision_evaluate_probabilities",
+        {"items": [12345], "questions": ["Q1?"]},
+    )
+    assert res["status"] == "error"
+    assert "must be a string or object" in res["error"]
+    assert closing.phase is StatusPhase.ERROR
+
+    # Empty context inside item
+    res, closing = await _run_tool(
+        server,
+        "decision_evaluate_probabilities",
+        {"items": [{"id": "item1", "context": "   "}], "questions": ["Q1?"]},
+    )
+    assert res["status"] == "error"
+    assert "context validation error" in res["error"].lower()
+    assert closing.phase is StatusPhase.ERROR
+
+
+@pytest.mark.asyncio
+async def test_batch_concurrency_bounded():
+    server = _make_server(max_concurrency=2)
+    mock_client = MagicMock()
+
+    active_calls = 0
+    max_active_observed = 0
+
+    async def slow_decide(state, questions, **kwargs):
+        nonlocal active_calls, max_active_observed
+        active_calls += 1
+        max_active_observed = max(max_active_observed, active_calls)
+        await asyncio.sleep(0.05)
+        active_calls -= 1
+        return DecisionsResult(
+            answers={"q": Answer(name="q", type="noul", value=0.5)},
+            model="typesafe/jev-1.13",
+            provider="TypeSafe",
+            id="d",
+            input_tokens=10,
+            output_tokens=1,
+            cost=0.000001,
+            duration_ms=50.0,
+        )
+
+    mock_client.decide = AsyncMock(side_effect=slow_decide)
+    server._client = mock_client
+    server._cached_profile = None
+
+    params = {
+        "items": [f"Item {i}" for i in range(6)],
+        "questions": ["Q?"],
+        "max_concurrency": 2,
+    }
+    result, _ = await _run_tool(server, "decision_evaluate_probabilities", params)
+
+    assert result["status"] == "success"
+    assert result["summary"]["successful_items"] == 6
+    # Concurrency must not have exceeded 2
+    assert max_active_observed <= 2
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_question_and_criterion_ids():
+    server = _make_server()
+    mock_client = MagicMock()
+    fake_prob_result = DecisionsResult(
+        answers={"q1": Answer(name="q1", type="noul", value=0.9)},
+        model="typesafe/jev-1.13",
+        provider="TypeSafe",
+        id="d1",
+        input_tokens=10,
+        output_tokens=1,
+        cost=0.000001,
+        duration_ms=10.0,
+    )
+    fake_score_result = DecisionsResult(
+        answers={"c1": Answer(name="c1", type="score", value=4.0)},
+        model="typesafe/jev-1.13",
+        provider="TypeSafe",
+        id="d2",
+        input_tokens=10,
+        output_tokens=1,
+        cost=0.000001,
+        duration_ms=10.0,
+    )
+    mock_client.decide = AsyncMock(side_effect=[fake_prob_result, fake_score_result])
+    server._client = mock_client
+    server._cached_profile = None
+
+    # Whitespace question id -> defaults to q1
+    res_prob, _ = await _run_tool(
+        server,
+        "decision_evaluate_probabilities",
+        {"items": ["Context"], "questions": [{"id": "   ", "question": "Is valid?"}]},
+    )
+    assert res_prob["status"] == "success"
+    assert "q1" in res_prob["results"]["item_1"]
+
+    # Whitespace criterion id -> defaults to c1
+    res_score, _ = await _run_tool(
+        server,
+        "decision_evaluate_scores",
+        {"items": ["Context"], "criteria": [{"id": "   ", "question": "Rate quality"}]},
+    )
+    assert res_score["status"] == "success"
+    assert "c1" in res_score["results"]["item_1"]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_batch():
+    server = _make_server()
+    mock_client = MagicMock()
+    server._client = mock_client
+    server._cached_profile = None
+
+    token = MagicMock()
+    token.is_cancelled = True
+
+    params = {
+        "items": ["Item 1", "Item 2"],
+        "questions": ["Q?"],
+        "_cancellation_token": token,
+    }
+
+    with pytest.raises(asyncio.CancelledError):
+        await server.call_with_status("decision_evaluate_probabilities", params)

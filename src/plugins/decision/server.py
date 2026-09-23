@@ -1,12 +1,13 @@
 """Decision Tool Server implementation.
 
-Provides tools for LLMs to evaluate context against questions for
-calibrated probabilities (noul) and continuous scores on ordered scales (score)
+Provides batch-first tools for LLMs to evaluate context items against questions
+for calibrated probabilities (noul) and continuous scores on ordered scales (score)
 using decision models (e.g. TypeSafe Jev via OpenRouter).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence, Union
@@ -15,12 +16,15 @@ from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+    from plugins.llm_decisions.openrouter import DecisionsResult
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DEFAULT_SCALE = ["1", "2", "3", "4", "5"]
 DEFAULT_MAX_QUESTIONS = 20
 DEFAULT_MAX_CONTEXT_LENGTH = 50000
+DEFAULT_MAX_BATCH_SIZE = 250
+DEFAULT_MAX_CONCURRENCY = 10
 MAX_STATUS_MESSAGE_LEN = 140
 
 
@@ -32,7 +36,7 @@ def _cap_status_line(text: str, limit: int = MAX_STATUS_MESSAGE_LEN) -> str:
 
 
 class DecisionServer(SchemaBasedToolServer):
-    """Tool server exposing calibrated decision and scoring capabilities."""
+    """Tool server exposing calibrated batch decision and scoring capabilities."""
 
     def __init__(
         self,
@@ -45,11 +49,17 @@ class DecisionServer(SchemaBasedToolServer):
         self.decision_profile: Optional[str] = (
             getattr(server_config, "decision_profile", None) or None
         )
-        self.max_questions: int = int(
-            getattr(server_config, "max_questions", DEFAULT_MAX_QUESTIONS)
+        self.max_batch_size: int = max(
+            1, int(getattr(server_config, "max_batch_size", DEFAULT_MAX_BATCH_SIZE))
         )
-        self.max_context_length: int = int(
-            getattr(server_config, "max_context_length", DEFAULT_MAX_CONTEXT_LENGTH)
+        self.max_concurrency: int = max(
+            1, int(getattr(server_config, "max_concurrency", DEFAULT_MAX_CONCURRENCY))
+        )
+        self.max_questions: int = max(
+            1, int(getattr(server_config, "max_questions", DEFAULT_MAX_QUESTIONS))
+        )
+        self.max_context_length: int = max(
+            1, int(getattr(server_config, "max_context_length", DEFAULT_MAX_CONTEXT_LENGTH))
         )
         scale_cfg = getattr(server_config, "default_scale", None)
         if scale_cfg and isinstance(scale_cfg, list) and len(scale_cfg) >= 2:
@@ -62,6 +72,7 @@ class DecisionServer(SchemaBasedToolServer):
 
         logger.info(
             f"DecisionServer '{name}' initialized (profile={self.decision_profile or 'default'}, "
+            f"max_batch_size={self.max_batch_size}, max_concurrency={self.max_concurrency}, "
             f"max_questions={self.max_questions}, max_context_length={self.max_context_length})"
         )
 
@@ -120,21 +131,67 @@ class DecisionServer(SchemaBasedToolServer):
             pass
         return context, None
 
+    def _normalize_items(
+        self, params: dict[str, Any]
+    ) -> tuple[Optional[list[tuple[str, Any]]], Optional[str]]:
+        """Extract and validate the batch of items to evaluate."""
+        items_raw = params.get("items")
+        if items_raw is None and "context" in params:
+            items_raw = [{"id": "item_1", "context": params["context"]}]
+
+        if not items_raw or not isinstance(items_raw, list):
+            return None, "Items must be a non-empty list of context items."
+
+        if len(items_raw) > self.max_batch_size:
+            return (
+                None,
+                f"Batch size ({len(items_raw)}) exceeds maximum allowed ({self.max_batch_size}).",
+            )
+
+        seen_ids: set[str] = set()
+        normalized_items: list[tuple[str, Any]] = []
+
+        for idx, item in enumerate(items_raw):
+            if isinstance(item, str):
+                iid = f"item_{idx + 1}"
+                raw_ctx: Any = item
+            elif isinstance(item, dict):
+                iid = str(item.get("id") or f"item_{idx + 1}").strip()
+                if not iid:
+                    iid = f"item_{idx + 1}"
+                raw_ctx = item.get("context")
+            else:
+                return None, f"Item at index {idx} must be a string or object."
+
+            if iid in seen_ids:
+                return None, f"Duplicate item ID '{iid}' at index {idx}."
+            seen_ids.add(iid)
+
+            valid_ctx, ctx_err = self._validate_context(raw_ctx)
+            if ctx_err:
+                return None, f"Item '{iid}' context validation error: {ctx_err}"
+
+            normalized_items.append((iid, valid_ctx))
+
+        return normalized_items, None
+
     async def evaluate_probabilities(
         self, params: dict[str, Any]
     ) -> dict[str, Any]:
-        """Evaluate context against binary/likelihood questions returning probabilities."""
+        """Evaluate a batch of context items against binary/likelihood questions in parallel."""
         status = params.get("_status")
-        context_input = params.get("context")
         questions_raw = params.get("questions")
         cancellation_token = params.get("_cancellation_token")
         session_id = params.get("_session_id")
+        include_details = bool(params.get("include_details", False))
+        req_concurrency = params.get("max_concurrency")
 
-        context, ctx_err = self._validate_context(context_input)
-        if ctx_err:
+        items, items_err = self._normalize_items(params)
+        if items_err:
             if status is not None:
-                await status.error(_cap_status_line(f"Context validation error: {ctx_err}"))
-            return {"status": "error", "error": ctx_err}
+                await status.error(_cap_status_line(f"Items validation error: {items_err}"))
+            return {"status": "error", "error": items_err}
+        assert items is not None
 
         if not questions_raw or not isinstance(questions_raw, list):
             err_msg = "Questions must be a non-empty list."
@@ -155,7 +212,7 @@ class DecisionServer(SchemaBasedToolServer):
                 q_text = item.strip()
                 criteria = None
             elif isinstance(item, dict):
-                qid = str(item.get("id") or f"q{idx + 1}").strip()
+                qid = str(item.get("id") or "").strip() or f"q{idx + 1}"
                 q_text = str(item.get("question") or "").strip()
                 crit_true = str(item.get("criteria_true") or "").strip()
                 crit_false = str(item.get("criteria_false") or "").strip()
@@ -194,68 +251,178 @@ class DecisionServer(SchemaBasedToolServer):
                 await status.error(_cap_status_line(err_msg))
             return {"status": "error", "error": err_msg}
 
-        if status is not None:
-            await status.progress(_cap_status_line(f"Evaluating {len(questions_payload)} probabilities"))
+        concurrency = self.max_concurrency
+        if req_concurrency is not None:
+            try:
+                concurrency = min(max(1, int(req_concurrency)), self.max_concurrency)
+            except (ValueError, TypeError):
+                pass
+        semaphore = asyncio.Semaphore(concurrency)
 
-        try:
-            result = await client.decide(
-                state=context,
-                questions=questions_payload,
-                cancellation_token=cancellation_token,
-                session_id=session_id,
+        if status is not None:
+            await status.progress(
+                _cap_status_line(
+                    f"Evaluating {len(items)} items against {len(questions_payload)} questions"
+                )
             )
-        except Exception as e:
-            err_msg = f"Decision evaluation error: {e}"
+
+        completed_count = 0
+        progress_lock = asyncio.Lock()
+
+        async def _eval_item(
+            iid: str, ctx: Any
+        ) -> tuple[str, Optional[DecisionsResult], Optional[str]]:
+            nonlocal completed_count
+            if cancellation_token is not None and getattr(
+                cancellation_token, "is_cancelled", False
+            ):
+                raise asyncio.CancelledError("Evaluation cancelled by user")
+            outcome: tuple[str, Optional[DecisionsResult], Optional[str]]
+            async with semaphore:
+                if cancellation_token is not None and getattr(
+                    cancellation_token, "is_cancelled", False
+                ):
+                    raise asyncio.CancelledError("Evaluation cancelled by user")
+                try:
+                    res: DecisionsResult = await client.decide(
+                        state=ctx,
+                        questions=questions_payload,
+                        cancellation_token=cancellation_token,
+                        session_id=session_id,
+                    )
+                    outcome = (iid, res, None)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    outcome = (iid, None, str(exc))
+
+            async with progress_lock:
+                completed_count += 1
+                if status is not None and (
+                    completed_count == len(items)
+                    or completed_count % max(1, len(items) // 5) == 0
+                ):
+                    await status.progress(
+                        _cap_status_line(
+                            f"Evaluated {completed_count}/{len(items)} items"
+                        )
+                    )
+            return outcome
+
+        eval_tasks = [asyncio.create_task(_eval_item(iid, ctx)) for iid, ctx in items]
+        try:
+            batch_outcomes = await asyncio.gather(*eval_tasks)
+        except BaseException:
+            for t in eval_tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*eval_tasks, return_exceptions=True)
+            raise
+
+        results: dict[str, dict[str, float]] = {}
+        details: dict[str, dict[str, Any]] = {}
+        errors: dict[str, str] = {}
+        total_cost: float = 0.0
+        total_in_tokens: int = 0
+        total_out_tokens: int = 0
+        model_name: Optional[str] = None
+
+        for iid, res, err in batch_outcomes:
+            if err is not None:
+                errors[iid] = err
+                continue
+            assert res is not None
+            if model_name is None:
+                model_name = res.model
+            if res.cost is not None:
+                total_cost += res.cost
+            total_in_tokens += res.input_tokens
+            total_out_tokens += res.output_tokens
+
+            item_probs: dict[str, float] = {}
+            item_details: dict[str, Any] = {}
+            for qid, ans in res.answers.items():
+                item_probs[qid] = float(ans.value)
+                if include_details:
+                    item_details[qid] = {
+                        "value": float(ans.value),
+                        "type": ans.type,
+                        "confidence": ans.confidence,
+                        "probabilities": ans.probabilities,
+                    }
+            results[iid] = item_probs
+            if include_details:
+                details[iid] = item_details
+
+        success_count = len(results)
+        fail_count = len(errors)
+
+        if success_count == 0:
+            first_err = next(iter(errors.values()), "Unknown error")
+            err_msg = f"All {fail_count} items failed evaluation: {first_err}"
             if status is not None:
                 await status.error(_cap_status_line(err_msg))
-            return {"status": "error", "error": err_msg}
-
-        probabilities: dict[str, float] = {}
-        details: dict[str, dict[str, Any]] = {}
-        for qid, ans in result.answers.items():
-            probabilities[qid] = float(ans.value)
-            details[qid] = {
-                "value": float(ans.value),
-                "type": ans.type,
-                "confidence": ans.confidence,
-                "probabilities": ans.probabilities,
+            return {
+                "status": "error",
+                "error": err_msg,
+                "errors": errors,
             }
 
+        if fail_count > 0:
+            end_msg = f"{success_count}/{len(items)} items evaluated ({fail_count} failed)"
+            run_status = "partial_success"
+        else:
+            end_msg = f"{success_count} items evaluated ({len(questions_payload)} questions each)"
+            run_status = "success"
+
         if status is not None:
-            id_preview = ", ".join(list(probabilities.keys())[:3])
-            if len(probabilities) > 3:
-                id_preview += f" (+{len(probabilities) - 3} more)"
-            end_msg = f"{len(probabilities)} probabilities evaluated for {id_preview}"
             await status.end(
                 _cap_status_line(end_msg),
-                meta={"count": len(probabilities), "model": result.model},
+                meta={"count": success_count, "failed": fail_count, "model": model_name},
             )
 
-        return {
-            "status": "success",
-            "probabilities": probabilities,
-            "details": details,
-            "model": result.model,
-            "cost": result.cost,
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
+        resp: dict[str, Any] = {
+            "status": run_status,
+            "results": results,
+            "summary": {
+                "total_items": len(items),
+                "successful_items": success_count,
+                "failed_items": fail_count,
+                "total_cost": round(total_cost, 6),
+                "total_input_tokens": total_in_tokens,
+                "total_output_tokens": total_out_tokens,
+                "model": model_name,
+            },
         }
+        if errors:
+            resp["errors"] = errors
+        if include_details:
+            resp["details"] = details
+
+        # Convenience backward-compatibility for single item calls
+        if len(items) == 1 and success_count == 1:
+            first_id = items[0][0]
+            resp["probabilities"] = results[first_id]
+
+        return resp
 
     async def evaluate_scores(
         self, params: dict[str, Any]
     ) -> dict[str, Any]:
-        """Evaluate context against scoring dimensions returning continuous scale scores."""
+        """Evaluate a batch of context items against scoring dimensions in parallel."""
         status = params.get("_status")
-        context_input = params.get("context")
         criteria_raw = params.get("criteria")
         cancellation_token = params.get("_cancellation_token")
         session_id = params.get("_session_id")
+        include_details = bool(params.get("include_details", False))
+        req_concurrency = params.get("max_concurrency")
 
-        context, ctx_err = self._validate_context(context_input)
-        if ctx_err:
+        items, items_err = self._normalize_items(params)
+        if items_err:
             if status is not None:
-                await status.error(_cap_status_line(f"Context validation error: {ctx_err}"))
-            return {"status": "error", "error": ctx_err}
+                await status.error(_cap_status_line(f"Items validation error: {items_err}"))
+            return {"status": "error", "error": items_err}
+        assert items is not None
 
         if not criteria_raw or not isinstance(criteria_raw, list):
             err_msg = "Criteria must be a non-empty list."
@@ -279,7 +446,7 @@ class DecisionServer(SchemaBasedToolServer):
                     await status.error(_cap_status_line(f"Criterion format error: {err_msg}"))
                 return {"status": "error", "error": err_msg}
 
-            cid = str(item.get("id") or f"c{idx + 1}").strip()
+            cid = str(item.get("id") or "").strip() or f"c{idx + 1}"
             instruction = str(
                 item.get("question") or item.get("instruction") or ""
             ).strip()
@@ -327,50 +494,158 @@ class DecisionServer(SchemaBasedToolServer):
                 await status.error(_cap_status_line(err_msg))
             return {"status": "error", "error": err_msg}
 
-        if status is not None:
-            await status.progress(_cap_status_line(f"Evaluating {len(questions_payload)} scores"))
+        concurrency = self.max_concurrency
+        if req_concurrency is not None:
+            try:
+                concurrency = min(max(1, int(req_concurrency)), self.max_concurrency)
+            except (ValueError, TypeError):
+                pass
+        semaphore = asyncio.Semaphore(concurrency)
 
-        try:
-            result = await client.decide(
-                state=context,
-                questions=questions_payload,
-                cancellation_token=cancellation_token,
-                session_id=session_id,
+        if status is not None:
+            await status.progress(
+                _cap_status_line(
+                    f"Evaluating {len(items)} items against {len(questions_payload)} scores"
+                )
             )
-        except Exception as e:
-            err_msg = f"Decision evaluation error: {e}"
+
+        completed_count = 0
+        progress_lock = asyncio.Lock()
+
+        async def _eval_item(
+            iid: str, ctx: Any
+        ) -> tuple[str, Optional[DecisionsResult], Optional[str]]:
+            nonlocal completed_count
+            if cancellation_token is not None and getattr(
+                cancellation_token, "is_cancelled", False
+            ):
+                raise asyncio.CancelledError("Evaluation cancelled by user")
+            outcome: tuple[str, Optional[DecisionsResult], Optional[str]]
+            async with semaphore:
+                if cancellation_token is not None and getattr(
+                    cancellation_token, "is_cancelled", False
+                ):
+                    raise asyncio.CancelledError("Evaluation cancelled by user")
+                try:
+                    res: DecisionsResult = await client.decide(
+                        state=ctx,
+                        questions=questions_payload,
+                        cancellation_token=cancellation_token,
+                        session_id=session_id,
+                    )
+                    outcome = (iid, res, None)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    outcome = (iid, None, str(exc))
+
+            async with progress_lock:
+                completed_count += 1
+                if status is not None and (
+                    completed_count == len(items)
+                    or completed_count % max(1, len(items) // 5) == 0
+                ):
+                    await status.progress(
+                        _cap_status_line(
+                            f"Evaluated {completed_count}/{len(items)} items"
+                        )
+                    )
+            return outcome
+
+        eval_tasks = [asyncio.create_task(_eval_item(iid, ctx)) for iid, ctx in items]
+        try:
+            batch_outcomes = await asyncio.gather(*eval_tasks)
+        except BaseException:
+            for t in eval_tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*eval_tasks, return_exceptions=True)
+            raise
+
+        results: dict[str, dict[str, float]] = {}
+        details: dict[str, dict[str, Any]] = {}
+        errors: dict[str, str] = {}
+        total_cost: float = 0.0
+        total_in_tokens: int = 0
+        total_out_tokens: int = 0
+        model_name: Optional[str] = None
+
+        for iid, res, err in batch_outcomes:
+            if err is not None:
+                errors[iid] = err
+                continue
+            assert res is not None
+            if model_name is None:
+                model_name = res.model
+            if res.cost is not None:
+                total_cost += res.cost
+            total_in_tokens += res.input_tokens
+            total_out_tokens += res.output_tokens
+
+            item_scores: dict[str, float] = {}
+            item_details: dict[str, Any] = {}
+            for cid, ans in res.answers.items():
+                item_scores[cid] = float(ans.value)
+                if include_details:
+                    item_details[cid] = {
+                        "score": float(ans.value),
+                        "scale": scales_by_id.get(cid, self.default_scale),
+                        "confidence": ans.confidence,
+                        "probabilities": ans.probabilities,
+                        "legend": ans.legend,
+                    }
+            results[iid] = item_scores
+            if include_details:
+                details[iid] = item_details
+
+        success_count = len(results)
+        fail_count = len(errors)
+
+        if success_count == 0:
+            first_err = next(iter(errors.values()), "Unknown error")
+            err_msg = f"All {fail_count} items failed evaluation: {first_err}"
             if status is not None:
                 await status.error(_cap_status_line(err_msg))
-            return {"status": "error", "error": err_msg}
-
-        scores: dict[str, float] = {}
-        details: dict[str, dict[str, Any]] = {}
-        for cid, ans in result.answers.items():
-            scores[cid] = float(ans.value)
-            details[cid] = {
-                "score": float(ans.value),
-                "scale": scales_by_id.get(cid, self.default_scale),
-                "confidence": ans.confidence,
-                "probabilities": ans.probabilities,
-                "legend": ans.legend,
+            return {
+                "status": "error",
+                "error": err_msg,
+                "errors": errors,
             }
 
+        if fail_count > 0:
+            end_msg = f"{success_count}/{len(items)} items evaluated ({fail_count} failed)"
+            run_status = "partial_success"
+        else:
+            end_msg = f"{success_count} items evaluated ({len(questions_payload)} scores each)"
+            run_status = "success"
+
         if status is not None:
-            id_preview = ", ".join(list(scores.keys())[:3])
-            if len(scores) > 3:
-                id_preview += f" (+{len(scores) - 3} more)"
-            end_msg = f"{len(scores)} scores evaluated for {id_preview}"
             await status.end(
                 _cap_status_line(end_msg),
-                meta={"count": len(scores), "model": result.model},
+                meta={"count": success_count, "failed": fail_count, "model": model_name},
             )
 
-        return {
-            "status": "success",
-            "scores": scores,
-            "details": details,
-            "model": result.model,
-            "cost": result.cost,
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
+        resp: dict[str, Any] = {
+            "status": run_status,
+            "results": results,
+            "summary": {
+                "total_items": len(items),
+                "successful_items": success_count,
+                "failed_items": fail_count,
+                "total_cost": round(total_cost, 6),
+                "total_input_tokens": total_in_tokens,
+                "total_output_tokens": total_out_tokens,
+                "model": model_name,
+            },
         }
+        if errors:
+            resp["errors"] = errors
+        if include_details:
+            resp["details"] = details
+
+        # Convenience backward-compatibility for single item calls
+        if len(items) == 1 and success_count == 1:
+            first_id = items[0][0]
+            resp["scores"] = results[first_id]
+
+        return resp

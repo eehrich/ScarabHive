@@ -1,21 +1,31 @@
-# Decision Plugin Schema — Jev-based Probabilities and Scoring
+# Decision Plugin Schema — Jev-based Batch Probabilities and Scoring
 
 tools:
   - type: function
     function:
       name: "{{ name }}_evaluate_probabilities"
       description: |
-        Evaluate a piece of context/text against one or more binary/likelihood questions using a calibrated decision model (Jev).
-        Outputs calibrated probabilities (0.0 to 1.0) for each question.
+        Evaluate a batch of context items against one or more binary/likelihood questions in parallel using a calibrated decision model (Jev).
+        Outputs calibrated probabilities (0.0 to 1.0) per item for each question.
       parameters:
         type: object
         properties:
-          context:
-            type: string
-            description: "The content, statement, code snippet, or context to be evaluated."
+          items:
+            type: array
+            description: "List of items/contexts to evaluate in batch. Each item is an object with 'context' and optional 'id' (or a plain text string)."
+            items:
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: "Optional identifier for this context item (e.g. 'doc_1', 'comment_42'). Defaults to 'item_1', 'item_2', etc."
+                context:
+                  type: string
+                  description: "The content, statement, code snippet, or context to be evaluated."
+              required: ["context"]
           questions:
             type: array
-            description: "List of questions to evaluate against the context. Each item specifies the question text and an optional identifier or criteria."
+            description: "List of questions to evaluate against each context item. Each item specifies the question text and an optional identifier or criteria."
             items:
               type: object
               properties:
@@ -24,7 +34,7 @@ tools:
                   description: "Optional identifier for the question (e.g. 'is_safe', 'needs_review'). Defaults to 'q1', 'q2', etc."
                 question:
                   type: string
-                  description: "The question or instruction to evaluate against the context (e.g. 'Is this operation safe to perform?')."
+                  description: "The question or instruction to evaluate against each context (e.g. 'Is this operation safe to perform?')."
                 criteria_true:
                   type: string
                   description: "Optional explanation of what conditions make the question true."
@@ -32,24 +42,41 @@ tools:
                   type: string
                   description: "Optional explanation of what conditions make the question false."
               required: ["question"]
-        required: ["context", "questions"]
+          max_concurrency:
+            type: integer
+            description: "Optional maximum number of parallel evaluation calls (default from server config, e.g. 10)."
+          include_details:
+            type: boolean
+            default: false
+            description: "Whether to include raw confidence/distribution details in the result (default: false to minimize token footprint)."
+        required: ["items", "questions"]
         additionalProperties: false
 
   - type: function
     function:
       name: "{{ name }}_evaluate_scores"
       description: |
-        Evaluate a piece of context/text against one or more scoring dimensions using a calibrated decision model (Jev).
-        Outputs continuous score points along ordered scales (e.g. 1-5 or custom levels).
+        Evaluate a batch of context items against one or more scoring dimensions in parallel using a calibrated decision model (Jev).
+        Outputs continuous score points along ordered scales (e.g. 1-5 or custom levels) per item.
       parameters:
         type: object
         properties:
-          context:
-            type: string
-            description: "The content, statement, code snippet, or context to be scored."
+          items:
+            type: array
+            description: "List of items/contexts to evaluate in batch. Each item is an object with 'context' and optional 'id' (or a plain text string)."
+            items:
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: "Optional identifier for this context item (e.g. 'code_1', 'essay_42'). Defaults to 'item_1', 'item_2', etc."
+                context:
+                  type: string
+                  description: "The content, statement, code snippet, or context to be scored."
+              required: ["context"]
           criteria:
             type: array
-            description: "List of scoring dimensions/criteria to evaluate against the context."
+            description: "List of scoring dimensions/criteria to evaluate against each context."
             items:
               type: object
               properties:
@@ -65,13 +92,28 @@ tools:
                     type: string
                   description: "Ordered scale levels from lowest to highest (at least 2 levels). E.g. ['poor', 'fair', 'good', 'excellent'] or ['1', '2', '3', '4', '5']. Defaults to ['1', '2', '3', '4', '5'] if omitted."
               required: ["question"]
-        required: ["context", "criteria"]
+          max_concurrency:
+            type: integer
+            description: "Optional maximum number of parallel evaluation calls (default from server config, e.g. 10)."
+          include_details:
+            type: boolean
+            default: false
+            description: "Whether to include raw confidence/distribution details in the result (default: false to minimize token footprint)."
+        required: ["items", "criteria"]
         additionalProperties: false
 
 config:
   decision_profile:
     type: string
     description: "Decision profile name from llm_system.decision_profiles. If omitted or empty, llm_system.default_decision_profile is used."
+  max_batch_size:
+    type: integer
+    default: 250
+    description: "Maximum number of items allowed in a single batch evaluation call."
+  max_concurrency:
+    type: integer
+    default: 10
+    description: "Default maximum number of concurrent requests to the decision model."
   max_questions:
     type: integer
     default: 20
@@ -79,7 +121,7 @@ config:
   max_context_length:
     type: integer
     default: 50000
-    description: "Maximum character length of context string allowed."
+    description: "Maximum character length of context string allowed per item."
   default_scale:
     type: array
     items:
