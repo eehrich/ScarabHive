@@ -1136,6 +1136,11 @@ plugins:
       enabled: true
       description: "Audio file manipulation - cut segments from FLAC/MP3/WAV files"
       storage_path: "data/audio_ops"
+
+
+    decision:
+      type: decision
+      enabled: true      
  
 # ================================
 # Hook Configuration
