@@ -294,3 +294,43 @@ async def test_the_missing_file_message_names_the_file(
     assert result["status"] == "error"
     assert "gone.txt" in result["error"], result["error"]
     assert "None" not in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_the_closing_line_says_whether_a_file_was_replaced(
+        server, tmp_allowed_dir, mock_status):
+    """"Created" for a file that was not there, "Replaced" for one that was --
+    the file decides, not the request."""
+    target = tmp_allowed_dir / "report.txt"
+
+    await server.manage({"operation": "create", "path": str(target), "content": "first",
+                         "_status": mock_status})
+    assert mock_status.end.call_args[0][0].startswith(f"Created {target.name}")
+
+    await server.manage({"operation": "create", "path": str(target), "content": "second",
+                         "overwrite": True, "_status": mock_status})
+    assert mock_status.end.call_args[0][0].startswith(f"Replaced {target.name}")
+
+    free = tmp_allowed_dir / "not_there_yet.txt"
+    await server.manage({"operation": "create", "path": str(free), "content": "third",
+                         "overwrite": True, "_status": mock_status})
+    assert mock_status.end.call_args[0][0].startswith(f"Created {free.name}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path_is, error_type", [("file", "FileExistsError"), ("dir", "IsADirectoryError")])
+async def test_a_refused_create_closes_with_an_error(
+        server, tmp_allowed_dir, mock_status, path_is, error_type):
+    """A refusal returned as a dict must not close with a healthy line."""
+    target = tmp_allowed_dir / "taken"
+    if path_is == "dir":
+        target.mkdir()
+    else:
+        target.write_text("keep me")
+
+    result = await server.manage({"operation": "create", "path": str(target), "content": "new",
+                                  "_status": mock_status})
+
+    assert result["status"] == "error" and result["error_type"] == error_type
+    mock_status.end.assert_not_called()
+    mock_status.error.assert_called_once()

@@ -278,9 +278,10 @@ class FileOpsServer(SchemaBasedToolServer):
             }
 
     async def _manage_create(self, params: Dict[str, Any], status) -> Dict[str, Any]:
-        """Create operation: create new file with content."""
+        """Create operation: create a file, or replace it whole with overwrite."""
         path = params["path"]
         content = params.get("content")
+        overwrite = bool(params.get("overwrite", False))
 
         if content is None:
             return {
@@ -290,24 +291,25 @@ class FileOpsServer(SchemaBasedToolServer):
             }
 
         if status:
-            await status.progress(f"Creating: {Path(path).name}")
+            await status.progress(f"Writing: {Path(path).name}")
 
         safe_path = self.validator.validate_path(path)
 
         result = await self.operations.create_file_safe(
             safe_path,
             content=content,
-            overwrite=False,
+            overwrite=overwrite,
             create_dirs=True,
             encoding="utf-8"
         )
 
-        if status and result.get("status") == "success":
-            bytes_written = result.get("bytes_written", 0)
-            await status.end(f"Created {safe_path.name}: {bytes_written} bytes", meta={
-                "file": str(safe_path),
-                "bytes": bytes_written
-            })
+        # Whether a file was there is what "replaced" says -- the request only
+        # says whether it was allowed; a refusal must not close with a healthy line.
+        bytes_written = result.get("bytes_written", 0)
+        await _end_or_error(
+            status, result,
+            f"{'Replaced' if result.get('replaced') else 'Created'} {safe_path.name}: {bytes_written} bytes",
+            meta={"file": str(safe_path), "bytes": bytes_written})
 
         return result
 

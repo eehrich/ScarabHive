@@ -131,24 +131,34 @@ class FileOperations:
         encoding: str = "utf-8"
     ) -> Dict[str, Any]:
         """
-        Create a new file atomically.
+        Create a file atomically, or replace one whole with overwrite.
 
         Args:
             path: File path to create
             content: File content
-            overwrite: Allow overwriting existing file
+            overwrite: Replace the file if it exists (its mode is carried over)
             create_dirs: Auto-create parent directories
             encoding: Text encoding
 
         Returns:
-            Dict with status, file_path, bytes_written, created_dirs
+            Dict with status, file_path, bytes_written, created_dirs, replaced
+            (whether a file was there before -- the caller asked, this answers)
         """
         try:
-            # Check if file exists
-            if path.exists() and not overwrite:
+            # A directory first: overwrite is no way out of it, so advising it would mislead.
+            if path.is_dir():
                 return {
                     "status": "error",
-                    "error": f"File already exists: {path}. Use overwrite=true to replace.",
+                    "error": f"Is a directory, not a file: {path}",
+                    "error_type": "IsADirectoryError",
+                    "file_path": str(path)
+                }
+            existed = path.exists()
+            if existed and not overwrite:
+                return {
+                    "status": "error",
+                    "error": f"File already exists: {path}. Use overwrite=true to replace it, "
+                             f"or replace_string_in_file to edit part of it.",
                     "error_type": "FileExistsError",
                     "file_path": str(path)
                 }
@@ -166,6 +176,14 @@ class FileOperations:
                 async with aiofiles.open(temp_path, 'w', encoding=encoding, newline='') as f:
                     await f.write(content)
 
+                if existed:
+                    # The replacement is a new file: without this an executable
+                    # script comes back without its bit, a 0600 file world-readable.
+                    try:
+                        temp_path.chmod(path.stat().st_mode)
+                    except OSError as exc:
+                        logger.warning(f"Could not carry the mode of {path} over: {exc}")
+
                 # Atomic rename
                 temp_path.replace(path)
 
@@ -175,7 +193,8 @@ class FileOperations:
                     "status": "success",
                     "file_path": str(path),
                     "bytes_written": bytes_written,
-                    "created_dirs": created_dirs
+                    "created_dirs": created_dirs,
+                    "replaced": existed
                 }
 
             finally:

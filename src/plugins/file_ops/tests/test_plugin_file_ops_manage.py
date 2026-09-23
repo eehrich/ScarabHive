@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import gc
+import os
+from pathlib import Path
+
 import pytest
 from unittest.mock import Mock
 
@@ -89,9 +92,110 @@ async def test_manage_create_file_exists_fails(file_ops_server, tmp_allowed_dir)
 
     assert result["status"] == "error"
     assert "already exists" in result["error"].lower()
-    
+    # The refusal names the way out, in one call instead of delete + create.
+    assert "overwrite=true" in result["error"]
+
     # Original content preserved
     assert existing_file.read_text() == "Original content"
+
+
+@pytest.mark.asyncio
+async def test_manage_create_replaces_the_file_when_overwrite_is_set(file_ops_server, tmp_allowed_dir):
+    """One call replaces a file whole: no delete first."""
+    existing_file = tmp_allowed_dir / "existing.txt"
+    existing_file.write_text("Original content")
+
+    result = await file_ops_server.manage({
+        "operation": "create",
+        "path": str(existing_file),
+        "content": "New content",
+        "overwrite": True
+    })
+
+    assert result["status"] == "success"
+    assert existing_file.read_text() == "New content"
+    assert result["bytes_written"] == len("New content")
+    # The caller asked to be allowed to replace; this says whether it happened.
+    assert result["replaced"] is True
+
+
+@pytest.mark.asyncio
+async def test_manage_create_says_nothing_was_replaced_for_a_new_file(file_ops_server, tmp_allowed_dir):
+    """overwrite: true on a path that is free still creates, and says so."""
+    result = await file_ops_server.manage({
+        "operation": "create",
+        "path": str(tmp_allowed_dir / "fresh.txt"),
+        "content": "New content",
+        "overwrite": True
+    })
+
+    assert result["status"] == "success" and result["replaced"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overwrite", [False, True])
+async def test_manage_create_refuses_a_directory(file_ops_server, tmp_allowed_dir, overwrite):
+    """A directory is no file to replace, and overwrite is no way out of it:
+    the refusal must not send the model after that option."""
+    directory = tmp_allowed_dir / "a_directory"
+    directory.mkdir()
+    (directory / "keep.txt").write_text("keep me")
+
+    result = await file_ops_server.manage({
+        "operation": "create",
+        "path": str(directory),
+        "content": "New content",
+        "overwrite": overwrite
+    })
+
+    assert result["status"] == "error" and result["error_type"] == "IsADirectoryError"
+    assert "not a file" in result["error"] and "overwrite=true" not in result["error"]
+    assert directory.is_dir() and (directory / "keep.txt").read_text() == "keep me"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX mode bits to carry over")
+@pytest.mark.asyncio
+async def test_manage_create_keeps_the_mode_of_the_file_it_replaces(file_ops_server, tmp_allowed_dir):
+    """A rewritten script must stay executable, a 0600 file unreadable to others."""
+    script = tmp_allowed_dir / "deploy.sh"
+    script.write_text("#!/bin/sh\necho old\n")
+    script.chmod(0o755)
+
+    result = await file_ops_server.manage({
+        "operation": "create",
+        "path": str(script),
+        "content": "#!/bin/sh\necho new\n",
+        "overwrite": True
+    })
+
+    assert result["status"] == "success"
+    assert script.stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.asyncio
+async def test_manage_create_puts_the_old_mode_on_the_replacement(file_ops_server, tmp_allowed_dir, monkeypatch):
+    """What the test above checks by its effect, this one checks where there
+    are no POSIX mode bits to compare: the mode goes onto the temp file, before
+    it takes the old file's place."""
+    target = tmp_allowed_dir / "deploy.sh"
+    target.write_text("#!/bin/sh\necho old\n")
+    mode, seen = target.stat().st_mode, []
+    chmod = Path.chmod
+
+    def recording(self, new_mode, *args, **kwargs):
+        seen.append((self.name, new_mode))
+        return chmod(self, new_mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", recording)
+    result = await file_ops_server.manage({
+        "operation": "create",
+        "path": str(target),
+        "content": "#!/bin/sh\necho new\n",
+        "overwrite": True
+    })
+
+    assert result["status"] == "success"
+    assert seen == [("deploy.sh.tmp", mode)]
 
 
 @pytest.mark.asyncio

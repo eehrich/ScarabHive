@@ -30,6 +30,7 @@ tools:
       description: |
         File and directory management operations: create, delete, move, rename.
         All paths must be within allowed directories. Parent directories are auto-created for create operation.
+        To replace a file completely, use create with overwrite: true -- never delete and create again.
       parameters:
         type: object
         properties:
@@ -38,7 +39,7 @@ tools:
             enum: ["create", "delete", "move", "rename"]
             description: |
               Operation to perform:
-              - create: Create new file with content (fails if exists)
+              - create: Create file with content. Fails if it exists, unless overwrite is true -- that replaces the whole content in one call, no delete first.
               - delete: Delete file or empty directory
               - move: Move file/directory to new location
               - rename: Rename file/directory (same directory)
@@ -54,6 +55,10 @@ tools:
           new_name:
             type: string
             description: "New name without path (required for rename operation)"
+          overwrite:
+            type: boolean
+            default: false
+            description: "Replace the file if it exists, content and all (for create operation). Editing a part of a file is what replace_string_in_file is for."
           recursive:
             type: boolean
             default: false

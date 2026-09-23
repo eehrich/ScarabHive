@@ -81,6 +81,7 @@ Unified file/directory management: create, delete, move, rename.
 - `content` (string, conditional): File content (required for `create`)
 - `destination` (string, conditional): Destination path (required for `move`)
 - `new_name` (string, conditional): New name without path (required for `rename`)
+- `overwrite` (boolean, optional): Replace an existing file whole (for `create`, default: false)
 - `recursive` (boolean, optional): Allow recursive deletion of non-empty directories (default: false)
 
 **Create Example:**
@@ -97,7 +98,8 @@ Unified file/directory management: create, delete, move, rename.
 {
   "status": "success",
   "file_path": "/project/tmp/output.txt",
-  "bytes_written": 18
+  "bytes_written": 18,
+  "replaced": false
 }
 ```
 
@@ -169,7 +171,7 @@ Unified file/directory management: create, delete, move, rename.
 ```
 
 **Behavior Notes:**
-- `create`: Fails if file exists, auto-creates parent directories
+- `create`: Fails if the file exists unless `overwrite: true`, which replaces it whole in one call; auto-creates parent directories. A path that is a directory is refused.
 - `delete`: Fails for non-empty directories unless `recursive: true`
 - `move`: Fails if destination exists, auto-creates parent directories
 - `rename`: Fails if target name exists, keeps file in same directory
