@@ -1,0 +1,29 @@
+{
+  "eval_id": 2,
+  "eval_name": "eval-2-timing-fix",
+  "variant": "with_skill",
+  "expectations": [
+    {
+      "text": "Answer says to complete the .sdc beyond create_clock and mentions derive_pll_clocks / derive_clock_uncertainty / set_clock_groups / false_path / multicycle at least one.",
+      "passed": true,
+      "evidence": "derive_pll_clocks, derive_clock_uncertainty, set_clock_groups, set_false_path, set_multicycle_path"
+    },
+    {
+      "text": "Answer mentions set_input_delay / set_output_delay for I/O constraints.",
+      "passed": true,
+      "evidence": "set_input_delay, set_output_delay"
+    },
+    {
+      "text": "Answer advises to inspect report_timing and confirm the real path before rewriting RTL.",
+      "passed": true,
+      "evidence": "report_timing, path, verifizier, report"
+    },
+    {
+      "text": "Answer suggests RTL/timing-closure fixes: pipeline / register retiming / reduce logic depth / clock enable.",
+      "passed": true,
+      "evidence": "pipeline, pipe, logic depth, clock-enable, register"
+    }
+  ],
+  "pass_count": 4,
+  "total": 4
+}

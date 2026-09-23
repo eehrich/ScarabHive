@@ -1,0 +1,380 @@
+{
+  "metadata": {
+    "skill_name": "fpga-verilog-quartus",
+    "skill_path": "<path/to/skill>",
+    "executor_model": "<model-name>",
+    "analyzer_model": "<model-name>",
+    "timestamp": "2026-09-23T14:43:21Z",
+    "evals_run": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "runs_per_configuration": 3
+  },
+  "runs": [
+    {
+      "eval_id": 1,
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.8,
+        "passed": 4,
+        "failed": 1,
+        "total": 5,
+        "time_seconds": 0.0,
+        "tokens": 0,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "Answer includes a Verilog/SystemVerilog module definition (module ... endmodule) for the counter/7-segment design.",
+          "passed": false,
+          "evidence": "none of the expected markers found"
+        },
+        {
+          "text": "Answer includes .qsf assignments with set_global_assignment and TOP_LEVEL_ENTITY.",
+          "passed": true,
+          "evidence": "set_global_assignment, top_level_entity"
+        },
+        {
+          "text": "Answer includes an SDC timing constraint with create_clock.",
+          "passed": true,
+          "evidence": "create_clock"
+        },
+        {
+          "text": "Answer includes a testbench that drives the clock and/or reset (initial/timescale/#delay).",
+          "passed": true,
+          "evidence": "clk"
+        },
+        {
+          "text": "Answer accounts for the actual DE10-Lite board context (MAX 10 / Cyclone 10 LP / 10M50 / 50 MHz) rather than using a generic different device.",
+          "passed": true,
+          "evidence": "max 10, cyclone 10, 10m50, cyclone 10 lp"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 2,
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 4,
+        "failed": 0,
+        "total": 4,
+        "time_seconds": 0.0,
+        "tokens": 0,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "Answer says to complete the .sdc beyond create_clock and mentions derive_pll_clocks / derive_clock_uncertainty / set_clock_groups / false_path / multicycle at least one.",
+          "passed": true,
+          "evidence": "derive_pll_clocks, derive_clock_uncertainty, set_clock_groups, set_false_path, set_multicycle_path"
+        },
+        {
+          "text": "Answer mentions set_input_delay / set_output_delay for I/O constraints.",
+          "passed": true,
+          "evidence": "set_input_delay, set_output_delay"
+        },
+        {
+          "text": "Answer advises to inspect report_timing and confirm the real path before rewriting RTL.",
+          "passed": true,
+          "evidence": "report_timing, path, verifizier, report"
+        },
+        {
+          "text": "Answer suggests RTL/timing-closure fixes: pipeline / register retiming / reduce logic depth / clock enable.",
+          "passed": true,
+          "evidence": "pipeline, pipe, logic depth, clock-enable, register"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 3,
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 4,
+        "failed": 0,
+        "total": 4,
+        "time_seconds": 0.0,
+        "tokens": 0,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "Answer states the FPGA SDK for OpenCL must match Quartus (17.1 for 17.1).",
+          "passed": true,
+          "evidence": "17.1"
+        },
+        {
+          "text": "Answer explains the BSP is per-board and downloaded separately (Terasic) for the DE1-SoC.",
+          "passed": true,
+          "evidence": "bsp, board support, board support, terasic, separat, nicht im sdk"
+        },
+        {
+          "text": "Answer explains aoc compile (.cl to .aocx) and aocl program/install runtime.",
+          "passed": true,
+          "evidence": "aoc , aocl , .aocx, aocx"
+        },
+        {
+          "text": "Answer notes the separate OpenCL SDK license was removed in 17.1 (free/bundled; LM_LICENSE_FILE only pre-17.1).",
+          "passed": true,
+          "evidence": "lizenz, license, lm_license_file, entf, entf\u00e4llt, entfernt"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 4,
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 4,
+        "failed": 0,
+        "total": 4,
+        "time_seconds": 0.0,
+        "tokens": 0,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "Answer contrasts Quartus .qsf/.qpf with Vivado .xpr/.xdc project files.",
+          "passed": true,
+          "evidence": "quartus, vivado"
+        },
+        {
+          "text": "Answer explains UNISIM/Xilinx primitives map to Intel alternatives (altpll, altsyncram, altera_mf, lpm).",
+          "passed": true,
+          "evidence": "unisim, xilinxcorelib, altpll, altsyncram, altera_mf"
+        },
+        {
+          "text": "Answer notes IP cores (.xci vs .qip/Platform Designer) are not portable and must be regenerated.",
+          "passed": true,
+          "evidence": "regenerier, ip, platform designer, qsys"
+        },
+        {
+          "text": "Answer notes SDC timing is largely portable / uses create_clock, delays, false/multicycle paths.",
+          "passed": true,
+          "evidence": "create_clock, sdc, derive_pll, false_path"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 1,
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.8,
+        "passed": 4,
+        "failed": 1,
+        "total": 5,
+        "time_seconds": 0.0,
+        "tokens": 0,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "Answer includes a Verilog/SystemVerilog module definition (module ... endmodule) for the counter/7-segment design.",
+          "passed": false,
+          "evidence": "none of the expected markers found"
+        },
+        {
+          "text": "Answer includes .qsf assignments with set_global_assignment and TOP_LEVEL_ENTITY.",
+          "passed": true,
+          "evidence": "set_global_assignment, top_level_entity"
+        },
+        {
+          "text": "Answer includes an SDC timing constraint with create_clock.",
+          "passed": true,
+          "evidence": "create_clock"
+        },
+        {
+          "text": "Answer includes a testbench that drives the clock and/or reset (initial/timescale/#delay).",
+          "passed": true,
+          "evidence": "clk"
+        },
+        {
+          "text": "Answer accounts for the actual DE10-Lite board context (MAX 10 / Cyclone 10 LP / 10M50 / 50 MHz) rather than using a generic different device.",
+          "passed": true,
+          "evidence": "cyclone 10, cyclone 10 lp"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 2,
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 4,
+        "failed": 0,
+        "total": 4,
+        "time_seconds": 0.0,
+        "tokens": 0,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "Answer says to complete the .sdc beyond create_clock and mentions derive_pll_clocks / derive_clock_uncertainty / set_clock_groups / false_path / multicycle at least one.",
+          "passed": true,
+          "evidence": "derive_pll_clocks, derive_clock_uncertainty, set_clock_groups, set_false_path, set_multicycle_path"
+        },
+        {
+          "text": "Answer mentions set_input_delay / set_output_delay for I/O constraints.",
+          "passed": true,
+          "evidence": "set_input_delay, set_output_delay"
+        },
+        {
+          "text": "Answer advises to inspect report_timing and confirm the real path before rewriting RTL.",
+          "passed": true,
+          "evidence": "report_timing, path, check, report"
+        },
+        {
+          "text": "Answer suggests RTL/timing-closure fixes: pipeline / register retiming / reduce logic depth / clock enable.",
+          "passed": true,
+          "evidence": "pipeline, pipe, clock-enable, register"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 3,
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 4,
+        "failed": 0,
+        "total": 4,
+        "time_seconds": 0.0,
+        "tokens": 0,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "Answer states the FPGA SDK for OpenCL must match Quartus (17.1 for 17.1).",
+          "passed": true,
+          "evidence": "17.1"
+        },
+        {
+          "text": "Answer explains the BSP is per-board and downloaded separately (Terasic) for the DE1-SoC.",
+          "passed": true,
+          "evidence": "bsp, board support, board support, terasic, separat"
+        },
+        {
+          "text": "Answer explains aoc compile (.cl to .aocx) and aocl program/install runtime.",
+          "passed": true,
+          "evidence": "aoc , aocl , .aocx, aocx"
+        },
+        {
+          "text": "Answer notes the separate OpenCL SDK license was removed in 17.1 (free/bundled; LM_LICENSE_FILE only pre-17.1).",
+          "passed": true,
+          "evidence": "lizenz, license, lm_license_file, entf, entfernt, frei"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 4,
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 4,
+        "failed": 0,
+        "total": 4,
+        "time_seconds": 0.0,
+        "tokens": 0,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "Answer contrasts Quartus .qsf/.qpf with Vivado .xpr/.xdc project files.",
+          "passed": true,
+          "evidence": "quartus, vivado"
+        },
+        {
+          "text": "Answer explains UNISIM/Xilinx primitives map to Intel alternatives (altpll, altsyncram, altera_mf, lpm).",
+          "passed": true,
+          "evidence": "unisim, altpll, altsyncram, altera_mf"
+        },
+        {
+          "text": "Answer notes IP cores (.xci vs .qip/Platform Designer) are not portable and must be regenerated.",
+          "passed": true,
+          "evidence": "regenerier, nicht port, ip, platform designer, qsys"
+        },
+        {
+          "text": "Answer notes SDC timing is largely portable / uses create_clock, delays, false/multicycle paths.",
+          "passed": true,
+          "evidence": "create_clock, sdc, derive_pll, false_path"
+        }
+      ],
+      "notes": []
+    }
+  ],
+  "run_summary": {
+    "with_skill": {
+      "pass_rate": {
+        "mean": 0.95,
+        "stddev": 0.1,
+        "min": 0.8,
+        "max": 1.0
+      },
+      "time_seconds": {
+        "mean": 0.0,
+        "stddev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "tokens": {
+        "mean": 0.0,
+        "stddev": 0.0,
+        "min": 0,
+        "max": 0
+      }
+    },
+    "without_skill": {
+      "pass_rate": {
+        "mean": 0.95,
+        "stddev": 0.1,
+        "min": 0.8,
+        "max": 1.0
+      },
+      "time_seconds": {
+        "mean": 0.0,
+        "stddev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "tokens": {
+        "mean": 0.0,
+        "stddev": 0.0,
+        "min": 0,
+        "max": 0
+      }
+    },
+    "delta": {
+      "pass_rate": "+0.00",
+      "time_seconds": "+0.0",
+      "tokens": "+0"
+    }
+  },
+  "notes": []
+}

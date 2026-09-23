@@ -1,0 +1,67 @@
+{
+  "eval_id": 3,
+  "eval_name": "eval-3-opencl-alt",
+  "prompt": "Ich will OpenCL auf meinem DE1-SoC (Cyclone V) mit Quartus 17.1 nutzen. Welche aoc/aocl-Versionen und BSP brauch ich, und wie laeuft der Kernel-Compile?",
+  "assertions": [
+    {
+      "name": "version-lock-171",
+      "text": "Answer states the FPGA SDK for OpenCL must match Quartus (17.1 for 17.1).",
+      "check": "file_contains",
+      "files": [
+        "outputs"
+      ],
+      "patterns": [
+        "17.1",
+        "17\\.1"
+      ]
+    },
+    {
+      "name": "bsp-separat",
+      "text": "Answer explains the BSP is per-board and downloaded separately (Terasic) for the DE1-SoC.",
+      "check": "file_contains",
+      "files": [
+        "outputs"
+      ],
+      "patterns": [
+        "BSP",
+        "board support",
+        "Board Support",
+        "Terasic",
+        "separat",
+        "nicht im SDK"
+      ]
+    },
+    {
+      "name": "aoc-aoclx-flow",
+      "text": "Answer explains aoc compile (.cl to .aocx) and aocl program/install runtime.",
+      "check": "file_contains",
+      "files": [
+        "outputs"
+      ],
+      "patterns": [
+        "aoc ",
+        "aocl ",
+        ".aocx",
+        "aocx"
+      ]
+    },
+    {
+      "name": "lizenz-171",
+      "text": "Answer notes the separate OpenCL SDK license was removed in 17.1 (free/bundled; LM_LICENSE_FILE only pre-17.1).",
+      "check": "file_contains",
+      "files": [
+        "outputs"
+      ],
+      "patterns": [
+        "Lizenz",
+        "license",
+        "LM_LICENSE_FILE",
+        "entf",
+        "entfällt",
+        "entfernt",
+        "frei",
+        "gratis"
+      ]
+    }
+  ]
+}

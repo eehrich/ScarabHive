@@ -1,0 +1,35 @@
+{
+  "eval_id": 4,
+  "eval_name": "eval-4-sdcc-port",
+  "variant": "without_skill",
+  "expectations": [
+    {
+      "text": "Answer contrasts Quartus .qsf/.qpf with Vivado .xpr/.xdc project files.",
+      "passed": true,
+      "evidence": "quartus, vivado"
+    },
+    {
+      "text": "Answer explains UNISIM/Xilinx primitives map to Intel alternatives (altpll, altsyncram, altera_mf, lpm).",
+      "passed": true,
+      "evidence": "unisim, altpll, altsyncram, altera_mf"
+    },
+    {
+      "text": "Answer notes IP cores (.xci vs .qip/Platform Designer) are not portable and must be regenerated.",
+      "passed": true,
+      "evidence": "regenerier, nicht port, ip, platform designer, qsys"
+    },
+    {
+      "text": "Answer notes SDC timing is largely portable / uses create_clock, delays, false/multicycle paths.",
+      "passed": true,
+      "evidence": "create_clock, sdc, derive_pll, false_path"
+    }
+  ],
+  "pass_count": 4,
+  "total": 4,
+  "summary": {
+    "pass_rate": 1.0,
+    "passed": 4,
+    "failed": 0,
+    "total": 4
+  }
+}

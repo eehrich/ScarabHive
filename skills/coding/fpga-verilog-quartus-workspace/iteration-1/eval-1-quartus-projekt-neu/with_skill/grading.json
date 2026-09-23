@@ -1,0 +1,34 @@
+{
+  "eval_id": 1,
+  "eval_name": "eval-1-quartus-projekt-neu",
+  "variant": "with_skill",
+  "expectations": [
+    {
+      "text": "Answer includes a Verilog/SystemVerilog module definition (module ... endmodule) for the counter/7-segment design.",
+      "passed": false,
+      "evidence": "none of the expected markers found"
+    },
+    {
+      "text": "Answer includes .qsf assignments with set_global_assignment and TOP_LEVEL_ENTITY.",
+      "passed": true,
+      "evidence": "set_global_assignment, top_level_entity"
+    },
+    {
+      "text": "Answer includes an SDC timing constraint with create_clock.",
+      "passed": true,
+      "evidence": "create_clock"
+    },
+    {
+      "text": "Answer includes a testbench that drives the clock and/or reset (initial/timescale/#delay).",
+      "passed": true,
+      "evidence": "clk"
+    },
+    {
+      "text": "Answer accounts for the actual DE10-Lite board context (MAX 10 / Cyclone 10 LP / 10M50 / 50 MHz) rather than using a generic different device.",
+      "passed": true,
+      "evidence": "max 10, cyclone 10, 10m50, cyclone 10 lp"
+    }
+  ],
+  "pass_count": 4,
+  "total": 5
+}

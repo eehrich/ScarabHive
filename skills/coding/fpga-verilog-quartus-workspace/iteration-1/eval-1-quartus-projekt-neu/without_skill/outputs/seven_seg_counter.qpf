@@ -1,0 +1,2 @@
+# Quartus Prime project file for the DE10-Lite 7-segment counter.
+QUARTUS_PROJECT = "seven_seg_counter" REVISION = "seven_seg_counter" DATE = "09/23/2025" TIME = "12:00:00"
