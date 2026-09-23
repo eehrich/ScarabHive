@@ -32,6 +32,7 @@ that depth.
    - Timing constraints / timing-closure: `references/timing-sdc.md`.
    - Simulation / testbench: `references/simulation.md`.
    - IP (PLL, RAM, Platform Designer / Qsys): `references/quartus-basics.md` (IP section).
+   - Headless Qsys/Platform-Designer editing + adding your OWN Avalon-MM slave to a PCIe Hard IP (no GUI): `references/platform-designer-qsys.md`.
    - OpenCL / AOCL / OpenVINO (HLS-style acceleration, older Quartus & boards): `references/opencl-openvino.md`.
    - Automate the build/program with bundled scripts (create_project.tcl, compile.tcl, Makefile, program.tcl): `scripts/`.
 
