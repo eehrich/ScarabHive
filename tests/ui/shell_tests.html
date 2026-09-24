@@ -11,9 +11,14 @@
   // The real shell (index.html, shell.js, the chat scripts) against a stub
   // server, driven from outside: same origin, so this page reaches into it.
   const results = {};
+  // where the page is, for a page that never reports (tests/ui/browser.py)
+  const progress = (state) => fetch('/__progress', { method: 'POST', keepalive: true,
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) }).catch(() => {});
   const check = async (name, fn) => {
+    progress({ started: name });
     try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
     catch (error) { results[name] = `error: ${error && error.message}`; }
+    progress({ done: name });
   };
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   // A rendering update in the shell and time for what it sends: an IntersectionObserver
@@ -1764,6 +1769,63 @@
     }
   });
 
+  await check('a command typed mid-run answers where it was typed, and the run goes on below it', async () => {
+    // The run kept writing into its block ABOVE the note, so every command typed during
+    // a run stacked up at the bottom of the chat and the answer came above all of them.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'subrun');
+      $('#task').value = 'Get help';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-subrun', 3000);
+      const first = $$('#chat .msg.assistant').at(-1);
+      await until('call 2', () => first.querySelector(':scope > .steps > .step-section[data-step="2"]'), 3000);
+      const notesBefore = $$('#chat .msg.note').length;
+      $('#task').value = '/session';
+      $('#f').requestSubmit();
+      const note = await until('the command\'s note', () => $$('#chat .msg.note')[notesBefore], 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 8000);
+      const next = $$('#chat .msg.assistant').at(-1);
+      const after = (a, b) => Boolean(a.compareDocumentPosition(b) & win().Node.DOCUMENT_POSITION_FOLLOWING);
+      need(next !== first, 'the run did not move on below the note');
+      need(after(first, note) && after(note, next), 'the note is not between the run before it and the run after it');
+      return need(next.querySelector('.step-section[data-step="3"]'), 'the steps after the note did not go below it');
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a command typed while the run is still starting leaves no empty block above its note', async () => {
+    // Nothing had reached the run's block yet: moving on below the note would have left
+    // it standing empty above, and without its request id -- that goes to the last row.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'subrun');
+      cookie('stub_start_after', '1.5');  // the command comes before the run has said anything
+      const blocksBefore = $$('#chat .msg.assistant').length;
+      $('#task').value = 'Get help';
+      $('#f').requestSubmit();
+      await until('the run under way', () => win().chatModule.hasActiveRequest(), 3000);
+      $('#task').value = '/session';
+      $('#f').requestSubmit();
+      const note = await until('the note of the command', () => $$('#chat .msg.note').at(-1), 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 8000);
+      const blocks = $$('#chat .msg.assistant').slice(blocksBefore);
+      need(blocks.every((box) => box.innerText.trim()), 'an empty block was left standing');
+      const after = (a, b) => Boolean(a.compareDocumentPosition(b) & win().Node.DOCUMENT_POSITION_FOLLOWING);
+      return need(blocks.length && blocks.every((box) => after(note, box)), 'the run did not go on below the note');
+    } finally {
+      cookie('stub_stream', null);
+      cookie('stub_start_after', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
   await check('a session read back while its run still works keeps that run open', async () => {
     // Replaying folds a run as its answer would -- but the last run of a session read
     // back mid-run has not answered, and folded it would look finished.
@@ -2883,6 +2945,12 @@
       if (dotShown('s-1')) return false;
       if (!said('s-2')) return false;
       if (said('s-1')) return false;
+      // and names the agent, where the time would be: the one thing a run started from
+      // outside does not tell otherwise
+      const agent = mark('s-2').querySelector(':scope > .session-row > .session-agent');
+      need(agent.textContent === 'assistant' && getComputedStyle(agent).display !== 'none',
+        'the running session does not name its agent');
+      need(said('s-2').includes('assistant'), 'the word for a screen reader does not name the agent');
       // aria-busy says "being changed, skip me for now" -- and it sat on the element
       // that wraps the expanded sub-sessions, so a whole branch could go quiet for as
       // long as an agent worked in its parent.
@@ -2890,7 +2958,8 @@
       await stub('/__stub/active-runs', {});
       await until('the mark gone once the run ends',
         () => !mark('s-2').classList.contains('is-running'), 8000);
-      return !dotShown('s-2') && !said('s-2');
+      const agentGone = getComputedStyle(mark('s-2').querySelector('.session-agent')).display === 'none';
+      return !dotShown('s-2') && !said('s-2') && agentGone;
     } finally {
       await stub('/__stub/active-runs', {});
     }

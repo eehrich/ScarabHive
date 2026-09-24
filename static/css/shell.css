@@ -104,6 +104,11 @@ body.app {
 .session-running { display: none; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent, currentColor); }
 .session-item.is-running > .session-row > .session-running { display: block; animation: session-running-pulse 1.6s ease-in-out infinite; }
 @keyframes session-running-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+/* ...and which agent, where the timestamp would be: the agent is what tells a run you
+   started from one somebody else started */
+.session-agent { display: none; flex: 0 1 auto; max-width: 40%; font-size: var(--text-xs); color: var(--accent-text, var(--accent)); }
+.session-item.is-running > .session-row > .session-agent:not(:empty) { display: block; }
+.session-item.is-running > .session-row > .session-agent:not(:empty) ~ .session-meta { display: none; }
 /* A run can last hours; a dot pulsing all that time in the corner of the eye is a
    cost with no message. Anyone who asked for less motion gets a steady dot. */
 @media (prefers-reduced-motion: reduce) {
@@ -113,6 +118,8 @@ body.app {
 .session-row .session-actions { display: none; }
 .session-row:hover .session-actions, .session-row:focus-within .session-actions { display: flex; }
 .session-row:hover .session-meta, .session-row:focus-within .session-meta { display: none; }
+/* the agent's name gives way to the actions as the timestamp does (same weight as the rule showing it, and later) */
+.session-item.is-running > .session-row:is(:hover, :focus-within) > .session-agent:not(:empty) { display: none; }
 .session-expand { width: 20px; height: 20px; padding: 0; color: var(--text-muted); background: none; border: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .session-expand[aria-expanded="true"] .pk-icon { transform: rotate(90deg); }
 .session-expand-spacer { width: 20px; flex: none; }

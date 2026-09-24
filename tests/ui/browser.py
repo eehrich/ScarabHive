@@ -171,6 +171,13 @@ def run_app_test_page(browser: str, app: FastAPI, page: str, timeout: float = 12
         reported.set()
         return Response(status_code=204)
 
+    # A page that says which check it is in: a page that never reports then names
+    # the check it hung in, instead of a timeout that points at all of them.
+    @app.post("/__progress")
+    async def progress(request: Request):
+        box.update(await request.json())
+        return Response(status_code=204)
+
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     # ws="none": the websockets import warns about its legacy module, and the
@@ -184,7 +191,13 @@ def run_app_test_page(browser: str, app: FastAPI, page: str, timeout: float = 12
             if time.monotonic() > deadline or not thread.is_alive():
                 raise AssertionError("the test server did not start")
             time.sleep(0.05)
-        _open_headless(browser, f"http://127.0.0.1:{sock.getsockname()[1]}/{page}", reported, timeout)
+        try:
+            _open_headless(browser, f"http://127.0.0.1:{sock.getsockname()[1]}/{page}", reported, timeout)
+        except AssertionError as error:
+            if "started" not in box:
+                raise
+            raise AssertionError(f"{error}; it was in {box['started']!r} "
+                                 f"(the last one it finished: {box.get('done')!r})") from None
     finally:
         server.should_exit = True
         thread.join(timeout=30)

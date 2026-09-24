@@ -202,9 +202,10 @@
     const control = document.createElement('pk-refresh');
     control.setAttribute('interval', '0');
     document.body.appendChild(control);
-    const label = control.querySelector('[data-act="auto"]').textContent;
+    // off by default: the interval it would refresh at is in the title, the pill says off
+    const title = control.querySelector('[data-act="auto"]').title;
     control.remove();
-    return label === '5s';
+    return title.includes('5s');
   });
 
   await check('icon escapes its size', () => !String(pk.icon('bug', { size: '"><img src=x>' })).includes('<img'));
@@ -259,6 +260,34 @@
     frame.src = '/tests/ui/kit_shell_probe.html';
     document.body.appendChild(frame);
     setTimeout(() => resolve(false), 5000);  // a call held for good
+  }));
+
+  await check('a tick missed while the panel was out of sight is caught up once it is back', () => new Promise((resolve) => {
+    // Nothing happened on coming back: the panel showed what it knew when it went away
+    // until its next tick, and a click on refresh looked like what made auto-refresh work.
+    let frame;
+    const done = (ok) => { if (frame) frame.remove(); resolve(ok); };
+    window.addEventListener('message', async function onReady(event) {
+      if (!frame || event.source !== frame.contentWindow || (event.data || {}).type !== 'pk:ready') return;
+      window.removeEventListener('message', onReady);
+      const panel = frame.contentWindow;
+      panel.postMessage({ type: 'pk:init', theme: 'light', visible: false, session: null }, location.origin);
+      await new Promise((r) => setTimeout(r, 50));
+      const timer = panel.startTicking(1000);
+      await new Promise((r) => setTimeout(r, 1300));      // one tick, while hidden
+      const whileHidden = panel.ticks;
+      panel.postMessage({ type: 'pk:visibility', visible: true }, location.origin);
+      await new Promise((r) => setTimeout(r, 150));       // long before the next tick
+      const onReturn = panel.ticks;
+      await new Promise((r) => setTimeout(r, 150));
+      const once = panel.ticks;
+      timer.stop();
+      done(whileHidden === 0 && onReturn === 1 && once === 1);
+    });
+    frame = document.createElement('iframe');
+    frame.src = '/tests/ui/kit_shell_probe.html';
+    document.body.appendChild(frame);
+    setTimeout(() => done(false), 6000);
   }));
 
   await check('a menu opens at its button', async () => {
@@ -690,9 +719,13 @@
     localStorage.removeItem(`pk.refresh:${location.pathname}`);  // the pause above was remembered: this is a viewer who chose nothing
     const plain = document.createElement('pk-refresh');
     document.body.appendChild(plain);
-    const plainOff = !plain.auto.running && plain.querySelector('[data-act="auto"]').getAttribute('aria-pressed') === 'false';
+    const plainToggle = plain.querySelector('[data-act="auto"]');
+    const plainOff = !plain.auto.running && plainToggle.getAttribute('aria-pressed') === 'false';
+    // off says off, not the interval it would refresh at: by tint alone a paused panel
+    // looked like one whose refresh was broken
+    const saysOff = !/\d/.test(plainToggle.textContent) && /\d/.test(toggle.title);
     plain.remove();
-    return startedOn && stopped && plainOff;
+    return startedOn && stopped && plainOff && saysOff;
   });
 
   await check('pk-refresh remembers the viewer\'s interval and pause per page', async () => {
@@ -704,8 +737,10 @@
       document.body.appendChild(control);
       return control;
     };
+    const off = (label) => !/\d/.test(label);  // the pill of a paused timer says off, in the page's language
     const state = (control) => ({
       label: control.querySelector('[data-act="auto"]').textContent,
+      interval: control.choice.interval,
       pressed: control.querySelector('[data-act="auto"]').getAttribute('aria-pressed'),
       running: control.auto.running,
       checked: [...control.querySelectorAll('[data-interval][aria-pressed="true"]')].map((item) => item.dataset.interval).join(),
@@ -741,10 +776,10 @@
       && opened && picked.label === '1m' && picked.running && picked.checked === '60' && picked.closed
       && restored.label === '1m' && restored.running && restored.pressed === 'true'
       && restored.steps === '5,10,15,30,60,off'  // the page's own 15s stays on offer next to the viewer's 1m
-      && !paused.running && paused.checked === 'off' && paused.label === '1m' && paused.closed
-      && !stillPaused.running && stillPaused.label === '1m' && stillPaused.pressed === 'false'
+      && !paused.running && paused.checked === 'off' && off(paused.label) && paused.interval === 60 && paused.closed
+      && !stillPaused.running && off(stillPaused.label) && stillPaused.interval === 60 && stillPaused.pressed === 'false'
       && resumed.on === true && resumed.interval === 60
-      && brokenState.label === '10s' && !brokenState.running;
+      && off(brokenState.label) && brokenState.interval === 10 && !brokenState.running;
   });
 
   await check('a side pane gets the width the viewer last dragged it to, keeps a new one per pane, and resizes at its corner', async () => {

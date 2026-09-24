@@ -148,6 +148,7 @@ export class SessionManager {
             : html`<span class="session-expand-spacer"></span>`}
           <button type="button" class="session-open pk-truncate" data-act="open" title="${session.title || 'Untitled'}">${session.title || 'Untitled'}</button>
           <span class="session-running" title="An agent is working in this session" aria-hidden="true"></span>
+          <span class="session-agent pk-truncate" aria-hidden="true"></span>
           <span class="session-running-said pk-sr-only"></span>
           <span class="session-meta">${relative(session.updated_at)}</span>
           <span class="session-actions">
@@ -222,10 +223,19 @@ export class SessionManager {
    */
   markActive() {
     this.list.querySelectorAll('.session-item').forEach((item) => {
-      const running = this.active.has(item.dataset.id);
+      const entry = this.active.get(item.dataset.id);
+      const running = Boolean(entry);
       item.classList.toggle('is-running', running);
-      const said = item.querySelector(':scope > .session-row > .session-running-said');
-      if (said) said.textContent = running ? 'An agent is working in this session' : '';
+      // WHICH agent: the server names it, and a run started from outside -- a book on
+      // the server, a woken session -- is exactly the one nobody knows the agent of.
+      const agent = (entry && entry.agent_name) || '';
+      const row = item.querySelector(':scope > .session-row');
+      const label = row && row.querySelector(':scope > .session-agent');
+      if (label) label.textContent = agent;
+      const said = row && row.querySelector(':scope > .session-running-said');
+      if (said) said.textContent = !running ? '' : agent ? `${agent} is working in this session` : 'An agent is working in this session';
+      const dot = row && row.querySelector(':scope > .session-running');
+      if (dot) dot.title = agent ? `${agent} is working in this session` : 'An agent is working in this session';
     });
   }
 
@@ -347,7 +357,7 @@ export class SessionManager {
   }
 
   /**
-   * Rename without asking — the chat's `/rename <title>` already has one.
+   * Rename without asking — the chat's `/title <text>` already has one.
    *
    * The write and the two refreshes live here rather than at each caller:
    * the pencil and the command have to leave the list in the same state,

@@ -130,7 +130,7 @@ from agent_system.ui.routes import router
 from tests.ui.browser import find_browser, run_app_test_page
 
 BROWSER = find_browser()
-PAGE_TIMEOUT = 300
+PAGE_TIMEOUT = 480  # 150-odd checks run to ~300 s on this machine, and a loaded one needs room
 # the whole page runs in the first test's fixture: pytest's default of 120 s would cut it off
 pytestmark = [pytest.mark.skipif(BROWSER is None, reason="no Chromium-based browser installed"),
               pytest.mark.timeout(PAGE_TIMEOUT + 60)]
@@ -1139,8 +1139,10 @@ def stub_app() -> FastAPI:
                    "saving": "r-saving", "saving-drops": "r-saving-dropped", "reasons": "r-reasons",
                    "steps": "r-steps", "subrun": "r-subrun"}
         if ending in started:
-            return started_stream(started[ending], body.get("session_id", ""), ending,
-                                  start_after=1.5 if ending == "late-start-drops" else 0)
+            # stub_start_after: a run whose start event is late -- the chat has sent it and
+            # waits, and nothing of it has reached the page yet
+            late = 1.5 if ending == "late-start-drops" else float(request.cookies.get("stub_start_after") or 0)
+            return started_stream(started[ending], body.get("session_id", ""), ending, start_after=late)
         return run_stream()
 
     @app.post("/run")
@@ -1588,6 +1590,8 @@ EXPECTED = [
     'steps stay open while the run works and fold once it has answered; one opened by hand stays open',
     "a sub-agent's run stays in the step that started it and shows its own steps, one level in",
     'a message appended mid-run moves the run on to a new block, and its answer folds the steps of both',
+    'a command typed mid-run answers where it was typed, and the run goes on below it',
+    'a command typed while the run is still starting leaves no empty block above its note',
     'a session read back while its run still works keeps that run open',
     "a session read back shows what its sub-agents did under the calls that started them, read when it comes into view",
     "a sub-session that could not be read is read again for its next run",

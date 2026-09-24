@@ -41,6 +41,7 @@ EXPECTED = [
     "a frame that is not the shell answers dialogs itself",
     "tabs rendered later still switch",
     "the handshake delivers early calls and visibility",
+    "a tick missed while the panel was out of sight is caught up once it is back",
     "a page with unsaved input asks before it is left, until it is saved",
     "withBusy guards every control of a NodeList",
     "api refuses latest for a raw response",

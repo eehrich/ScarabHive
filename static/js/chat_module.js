@@ -155,10 +155,23 @@
     msgDiv.appendChild(pre);
     row.appendChild(msgDiv);
     chatContainer.appendChild(row);
+    runGoesOnBelow();
     // force: a note answers something the user just typed. Honouring
     // "only scroll when already at the bottom" would hide the reply to their
     // own keystroke whenever they had scrolled up.
     scrollBottom(true);
+  }
+
+  /**
+   * A note written while a run is going: the run's next step goes below it, as it does
+   * below a message appended mid-run. Without this the run kept writing into its block
+   * ABOVE the note, so every command typed during a run stacked up at the bottom of the
+   * chat until the run ended -- and its answer arrived above all of them.
+   *
+   * Not at once: the step that is streaming would be torn in two (see the append path).
+   */
+  function runGoesOnBelow() {
+    if (chatModule.activeRun()) pendingAppendRebind = true;
   }
 
   /**
@@ -177,6 +190,7 @@
     msgDiv.appendChild(body);
     row.appendChild(msgDiv);
     chatContainer.appendChild(row);
+    runGoesOnBelow();
     scrollBottom(true);
   }
 
@@ -443,16 +457,16 @@
   }
 
   /**
-   * `/rename <title>` -- the title the session list shows.
+   * `/title <text>` -- the title the session list shows.
    *
    * Through the session pane, not with a PATCH of its own: the pencil in
    * that list does the same write, and the list and the header have to end
    * up in the same state whichever one did it.
    */
-  async function cmdRename(container, payload) {
+  async function cmdTitle(container, payload) {
     const title = (payload || '').trim();
     if (!title) {
-      addNote(container, 'Usage: /rename <title>');
+      addNote(container, 'Usage: /title <text>');
       return;
     }
     if (!currentSessionId) {
@@ -688,11 +702,15 @@
   }
 
   async function cmdResume(container, payload) {
-    const id = (payload || '').trim();
-    if (!id) {
-      addNote(container, 'Usage: /resume <session-id>   (/sessions lists them)');
+    const typed = (payload || '').trim();
+    if (!typed) {
+      addNote(container, 'Usage: /resume <id or title>   (/sessions lists them)');
       return;
     }
+    // Ids are machine-made and cannot be renamed, so a person may type the
+    // title they gave the session instead -- resolved by the server, by the
+    // same rule the terminal follows (SessionManager.resolve_session_ref).
+    const id = (await getJSON('/api/sessions/resolve?ref=' + encodeURIComponent(typed))).session_id;
     if (!window.sessionManager || typeof window.sessionManager.loadSession !== 'function') {
       addNote(container, 'Session switching is not available in this window.');
       return;
@@ -995,7 +1013,7 @@
     const handlers = {
       sessions: function () { return cmdSessions(container, payload); },
       resume: function () { return cmdResume(container, payload); },
-      rename: function () { return cmdRename(container, payload); },
+      title: function () { return cmdTitle(container, payload); },
       agent: function () { return cmdAgent(container, payload); },
       vars: function () { return cmdVars(container, payload); },
       tools: function () { return cmdTools(container, payload); },
@@ -2293,10 +2311,6 @@
   // to its end with its events ignored: closing it would cut the end of its request short (a run with files saves
   // there, a message's request saves once more and releases the run). `ended`: it was read to its end.
   let followedStream = null;
-  // Block object the live stream consumer renders into (same object identity
-  // as the blk passed to handleSSEEvent). Mid-run appends rebind its fields to
-  // a fresh block so the agent's reaction renders below the injected message.
-  let activeStreamBlk = null;
 
   // While init checks whether a run of this tab is still going, the composer is held: a
   // message would start a second run beside it (see followRun).
@@ -3126,6 +3140,15 @@
   // Shared SSE event handler for both EventSource and manual fetch() parsing
   // Module-level so it can be used by both normal requests and a run reattached after a reload
   function handleSSEEvent(data, blk) {
+    // A note came while nothing of this run was on the page yet (it was still starting):
+    // the block itself goes below the note before anything is drawn into it. Waiting for
+    // the next step, as for a run already under way, would leave the run's first status
+    // lines above the note -- and a new block below them. It also stays the chat's last
+    // row, which is where its request id is put once it is known.
+    if (pendingAppendRebind && blk.row && !blk.box.innerText.trim()) {
+      pendingAppendRebind = false;
+      chatContainer.appendChild(blk.row);
+    }
     switch (data.type) {
       case 'start':
         run.requestId = data.request_id;
@@ -3567,21 +3590,6 @@
         // teleport the in-flight answer below the injected message.
         // handleSSEEvent performs the rebind when the next step starts.
         pendingAppendRebind = true;
-        if (activeStreamBlk && activeStreamBlk.status) {
-          // Visible confirmation — without it the UI looks stalled until the
-          // agent's current step finishes and the reaction starts.
-          // phase 'end' renders a persistent completed (✓) row; the synthetic
-          // unique request_id keeps it from mutating the agent's own
-          // operation row (operationKey = request_id in addStatusEvent).
-          addStatusEvent(activeStreamBlk.status, {
-            type: 'status',
-            phase: 'end',
-            message: 'Message delivered to the running agent — it reacts at its next step',
-            request_id: `${requestId}_user_append_${Date.now()}`,
-            timestamp: new Date().toISOString()
-          });
-          scrollBottom();
-        }
         // back to Stop for the emptied input -- unless the run ended while the append was on its way
         updateActionButton();
         stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
@@ -3594,7 +3602,6 @@
       // No active request: start a new request
       showWorkingElsewhere(false);   // as in attachRun: a run of this page's own takes the chat
       const blk = addAssistantBlock(chatContainer);
-      activeStreamBlk = blk;
       runActive = true; updateActionButton();  // -> Stop (empty input)
       stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
       stopBtn.disabled = false;
@@ -3898,7 +3905,6 @@
       // mark would linger for seconds and a check on it would measure the timer.
       showWorkingElsewhere(false);
       const blk = addAssistantBlock(chatContainer);
-      activeStreamBlk = blk;
       runActive = true; updateActionButton();
       stopBtn.disabled = false;
       stopBtn.setAttribute('title', 'Stop');
@@ -3910,6 +3916,7 @@
       window.sessionManager.setCurrentSession(session);
       currentSessionId = session;
       run = { requestId, sessionId: session, over: false };
+      pendingAppendRebind = false;  // set for the run followed before, not this one
       // Only request_id: the backend uses the job's agent. No token in the URL either:
       // the server does not accept one, and the access_token cookie goes along.
       // catch_up=skip&seen=N: the session was just loaded and already carries the run's

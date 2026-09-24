@@ -87,6 +87,13 @@ function load(sessions, options) {
     navigator: { clipboard: {} },
     console,
     fetch: async (url, init) => {
+      // What the page asks on its own -- the viewer's preferences at load, whether
+      // the open session works somewhere -- is not what a command asked: counted,
+      // every "asked nothing but X" here failed on requests no command made.
+      const own = ['/auth/me/preferences', '/api/sessions/active'];
+      if (own.includes(String(url).split('?')[0])) {
+        return { ok: true, status: 200, json: async () => ({ chat: {}, active: {} }) };
+      }
       calls.push(url);
       if (init && init.body) bodies.push(JSON.parse(init.body));
       const answer = (settings.answers || {})[String(url).split('?')[0]];
@@ -130,6 +137,13 @@ function load(sessions, options) {
     setTimeout, clearTimeout, setInterval, clearInterval,
     requestAnimationFrame: (fn) => setTimeout(fn, 0),
     sessionStorage: store, localStorage: store,
+    // The module builds one at load (stored sub-runs, the run stream). A vm
+    // context has no web globals, so without this every test here failed to
+    // load the module -- red since 2a0fe5a28 (19.09.2026).
+    AbortController, AbortSignal,
+    // The chat keeps its end in view with one once it scrolls (a5b1b35f7): every
+    // note scrolls, so without it every command here threw on its first note.
+    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
   });
   vm.runInNewContext(fs.readFileSync(MODULE, 'utf8'), sandbox,
     { filename: 'chat_module.js' });
@@ -275,24 +289,24 @@ test('/context without a session says so instead of asking the server', async ()
   assert.ok(notesOf(container).join('\n').includes('No session yet'));
 });
 
-test('/rename goes through the session list, not a PATCH of its own', async () => {
+test('/title goes through the session list, not a PATCH of its own', async () => {
   const { chatModule, container, acted, calls } = load([], { session: 'sid7' });
-  await chatModule.runCommand('rename', 'Blitter umbauen');
+  await chatModule.runCommand('title', 'Blitter umbauen');
   assert.deepStrictEqual(acted, ['rename:sid7:Blitter umbauen']);
   assert.deepStrictEqual(calls, [], 'it wrote past the session list');
   assert.ok(notesOf(container).join('\n').includes('Title: Blitter umbauen'));
 });
 
-test('/rename without a title gets the usage line', async () => {
+test('/title without a text gets the usage line', async () => {
   const { chatModule, container, acted } = load([], { session: 'sid7' });
-  await chatModule.runCommand('rename', '   ');
+  await chatModule.runCommand('title', '   ');
   assert.deepStrictEqual(acted, [], 'it renamed with nothing');
-  assert.ok(notesOf(container).join('\n').includes('Usage: /rename <title>'));
+  assert.ok(notesOf(container).join('\n').includes('Usage: /title <text>'));
 });
 
 test('a rename that failed is not reported as done', async () => {
   const { chatModule, container } = load([], { session: 'sid7', renameFails: true });
-  await chatModule.runCommand('rename', 'Neu');
+  await chatModule.runCommand('title', 'Neu');
   const note = notesOf(container).join('\n');
   assert.ok(note.includes('was not renamed'), note);
   assert.ok(!note.includes('Title: Neu'), note);
