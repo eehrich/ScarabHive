@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional
 from agent_system.servers.agent.schema_based import SchemaBasedAgent
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.tools.base import ToolServerRegistry
-from agent_system.llm.factory import create_llm_from_profile
+from agent_system.llm.factory import agent_params_for_profile, create_llm_from_profile
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +78,13 @@ class BasicAgent(SchemaBasedAgent):
                 # today, and silently wrong the moment this agent is pointed at
                 # an OpenRouter profile. The profile here comes from a runtime
                 # tool argument, so that moment is one config line away.
+                #
+                # And with the agent's own llm_params: the argument picks another
+                # MODEL, not another agent, so what the agent says about every
+                # model it runs on ("*") holds here as it does for a fallback.
                 llm_override = create_llm_from_profile(
-                    self.system_config, llm_profile_name)
+                    self.system_config, llm_profile_name,
+                    llm_params=agent_params_for_profile(self.agent_config, llm_profile_name))
 
                 # Create profile info for logging
                 profile = self.system_config.llm_system.profiles[llm_profile_name]

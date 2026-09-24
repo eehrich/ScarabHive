@@ -152,6 +152,39 @@ class TestBasicAgentMultiProfile:
         call_kwargs = mock_run_events_spy.call_args[1]
         assert call_kwargs["llm_override"] is not None
 
+    async def test_a_profile_picked_by_the_argument_keeps_the_agents_own_params(
+            self, mock_system_config, mock_registry, monkeypatch):
+        """The llm_profile argument picks another MODEL, not another agent.
+
+        Built without the agent's llm_params, the override dropped what the agent
+        says about every model it runs on -- the coder's context_window and
+        prompt_cache_mode were gone the same way on the API's override path.
+        """
+        import plugins.basic_agent.server as server_mod
+
+        seen = []
+
+        def record(config, profile, **kwargs):
+            seen.append((profile, kwargs.get("llm_params")))
+            return Mock()
+
+        monkeypatch.setattr(server_mod, "create_llm_from_profile", record)
+        agent_config = AgentConfig(llm_profile=["normal", "think"],
+                                   llm_params={"*": {"context_window": 4242}})
+        server_config = ToolServerConfig(type="basic_agent", enabled=True, agent_config=agent_config)
+        agent = BasicAgent("test_agent", mock_system_config, server_config, mock_registry)
+
+        async def run_events(*args, **kwargs):
+            yield {"type": "final", "summary": "done"}
+
+        agent.run_events = run_events
+        await agent.execute_task({"task": "Test task", "llm_profile": "think"})
+
+        assert seen, "fixture: no override was built"
+        assert seen[-1][0] == "think"
+        assert (seen[-1][1] or {}).get("context_window") == 4242, \
+            "the agent's own llm_params did not reach the profile the argument picked"
+
     @pytest.mark.asyncio
     async def test_execute_task_with_invalid_profile(self, mock_system_config, mock_registry):
         """Test execute_task with invalid profile returns error."""
