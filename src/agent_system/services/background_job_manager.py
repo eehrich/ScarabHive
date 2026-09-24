@@ -426,7 +426,9 @@ class BackgroundJobManager:
             await asyncio.sleep(force_timeout)
             async with self._lock:
                 job = self._jobs.get(request_id)
-                if job and job.status == JobStatus.RUNNING:
+                # A mirror's task is only its relay: cancelling it would not stop the
+                # run, only the pages following it, while the run goes on to its end.
+                if job and job.status == JobStatus.RUNNING and not job.mirror:
                     logger.warning(
                         "[BACKGROUND_JOB] Force-cancelling task for %s "
                         "after timeout", request_id,

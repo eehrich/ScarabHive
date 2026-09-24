@@ -597,18 +597,21 @@ async def get_session(
                 if live:
                     from agent_system.services.session_service import _msg_to_dict, _add_estimated_tokens
                     messages = [_msg_to_dict(m) for m in live]
+                    # How much of the run's stream these messages already account for, so a
+                    # client attaching next can ask the run to skip just that much. Without
+                    # it the reconnect either replays turns the client has (duplicates) or
+                    # drops the buffer whole -- which loses whatever the run emitted between
+                    # this response and the attach, up to and including its final answer.
+                    # Read right after the messages, before the await below: what the run
+                    # sends meanwhile would count as seen without being in them.
+                    events_seen = await _events_emitted(owner_request_id)
                     # The panel sums estimated_tokens and counts how many messages carried
                     # one; the persisted path adds them, so the live one has to as well or
                     # the token figure reads 0 for exactly the sessions worth watching.
                     # Off the loop, as there: the estimator probes media files.
                     await asyncio.to_thread(_add_estimated_tokens, messages)
                     session["messages"] = messages
-                    # How much of the run's stream these messages already account for, so a
-                    # client attaching next can ask the run to skip just that much. Without
-                    # it the reconnect either replays turns the client has (duplicates) or
-                    # drops the buffer whole -- which loses whatever the run emitted between
-                    # this response and the attach, up to and including its final answer.
-                    session["live_events_seen"] = await _events_emitted(owner_request_id)
+                    session["live_events_seen"] = events_seen
 
         # Inject live runtime template_vars from the agent's session tracker.
         # save_session persists context_vars only after messages are committed

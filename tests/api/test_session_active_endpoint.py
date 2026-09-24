@@ -724,6 +724,32 @@ async def test_the_live_answer_says_how_far_the_runs_stream_has_come(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_what_the_run_sends_after_its_messages_were_read_is_not_counted_as_seen(tmp_path, monkeypatch):
+    """The token estimate runs off the loop, after the messages were read; whatever
+    the run sends meanwhile is not in them. Counted as seen, the client skips it."""
+    from agent_system.services import session_service
+
+    manager, session_id = await _saved_session(tmp_path)
+    agent = await _agent_running(session_id, "r-1", [ChatMessage(role="user", content="in flight")])
+    jobs, release = await _manager_with([{"request_id": "r-1", "user_id": "ada", "session_id": session_id}])
+    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: jobs)
+
+    def the_run_goes_on(messages):
+        jobs._jobs["r-1"].events_emitted = 9
+
+    monkeypatch.setattr(session_service, "_add_estimated_tokens", the_run_goes_on)
+    try:
+        jobs._jobs["r-1"].events_emitted = 7
+        answer = await session_endpoints.get_session(
+            session_id, current_user=_User("ada"), session_manager=manager,
+            default_agent=None, tool_registry=_Registry(an_agent=agent))
+        assert jobs._jobs["r-1"].events_emitted == 9, "fixture: the estimate never ran"
+        assert answer["live_events_seen"] == 7
+    finally:
+        await _stop(jobs, release)
+
+
+@pytest.mark.asyncio
 async def test_a_run_with_no_job_names_no_number(tmp_path, monkeypatch):
     """A /run carrying files streams inline and cannot be reconnected to, so
     there is nothing for a number to be used for -- and none to be had."""

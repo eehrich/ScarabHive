@@ -107,6 +107,74 @@ async def test_a_run_started_through_run_can_be_followed_while_it_works(tmp_path
     assert response.json()["summary"] == "done", "the caller of /run lost its answer to the mirror"
 
 
+async def test_a_forced_stop_leaves_the_mirror_to_the_run(tmp_path, monkeypatch):
+    """A forced cancel ends a job's task after its grace. A mirror's task is only
+    its relay: ending it stops nobody's run, only the pages following it."""
+    from agent_system import app as app_mod
+
+    _disable_auth(monkeypatch)
+    monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+    app = app_mod.build_app()
+    request_id = f"mirror{uuid.uuid4().hex[:10]}"
+    go = _a_run_that_waits(monkeypatch, f"s{uuid.uuid4().hex[:10]}")
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        run = asyncio.create_task(client.post("/run", json={"task": "a book", "request_id": request_id},
+                                              timeout=60.0))
+        try:
+            job = await _job_of(request_id)
+            await get_background_job_manager().cancel_job(request_id, force_timeout=0.05)
+            await asyncio.sleep(0.05)
+            assert job.status == JobStatus.RUNNING, "a forced stop ended the mirror of a run that goes on"
+        finally:
+            go.set()
+        response = await run
+
+    assert response.status_code == 200, response.text
+
+
+async def test_a_second_run_under_a_running_id_is_refused(tmp_path, monkeypatch):
+    """The id check before a run cannot rule out one that got past it at the same
+    time; the job is where the two meet, and the second one is refused there
+    without starting its agent or letting go of the first one's ownership."""
+    from agent_system import app as app_mod
+    from agent_system.core.request_context import (
+        get_request_user, register_request_user, release_request_user_tree)
+
+    _disable_auth(monkeypatch)
+    monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+    app = app_mod.build_app()
+    request_id = f"mirror{uuid.uuid4().hex[:10]}"
+    # as if the second request had passed the check in the same moment as the first
+    monkeypatch.setattr(app_mod, "_validate_client_request_id", lambda rid: asyncio.sleep(0, rid))
+    started = []
+
+    async def run_events(self, task, **kwargs):
+        started.append(task)
+        yield {"type": "final", "summary": "second", "request_id": kwargs.get("request_id")}
+
+    monkeypatch.setattr(Agent, "run_events", run_events)
+    first_done = asyncio.Event()
+
+    async def first_run():
+        await first_done.wait()
+        yield {"type": "end"}
+
+    manager = get_background_job_manager()
+    await manager.create_job(request_id=request_id, user_id="first", agent_name="a",
+                             session_id=None, agent_runner=first_run)
+    register_request_user(request_id, "first")
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/run", json={"task": "a book", "request_id": request_id}, timeout=60.0)
+        assert response.status_code == 409, response.text
+        assert not started, "a second agent started under a running id"
+        assert get_request_user(request_id, default=None) == "first", "the refused run let go of the first one's id"
+    finally:
+        first_done.set()
+        release_request_user_tree(request_id)
+
+
 async def test_a_finished_run_from_run_is_not_offered_as_a_finished_job(tmp_path, monkeypatch):
     """writer_jobs' reconcile marks a book row done on a finished job's status with
     the job's keys; a /run's caller had its answer, and its row must be resumed, not

@@ -722,8 +722,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         answer does not go through its queue, which a page that attaches would
         otherwise take events from.
 
-        Returns None when the id is running as a job already: the run goes on as it
-        did before, unmirrored, rather than not at all.
+        A job running under the id already is refused with a 409, as /events does:
+        _validate_client_request_id cannot rule out a request that got past it at
+        the same time, and two agents under one id cannot be told apart.
         """
         feed: asyncio.Queue = asyncio.Queue()
 
@@ -737,8 +738,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 session_id=session_id, agent_runner=relay, llm_profile=llm_profile,
                 mirror=True)
         except DuplicateRequestIdError:
-            logger.warning("[RUN] %s is a running job already; not mirrored", request_id)
-            return None
+            logger.warning("[RUN] refused duplicate request_id=%s -- a job is already running under it", request_id)
+            raise HTTPException(status_code=409, detail="request_id is already running")
 
         def put(event: Any) -> None:
             # the session a run creates comes with its start event; the job needs
@@ -1868,24 +1869,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if not task:
                 raise HTTPException(status_code=400, detail="Missing 'task' in request")
 
-            # Register request ownership for status stream security -- AFTER
-            # all validations and right before the try whose finally releases
-            # it. Registered earlier, every 4xx above leaked the entry.
-            register_request_user(request_id, user_id)
-            # Session presence (core/session_presence.py): held through the save
-            # after the run, so no woken run has its turn overwritten.
-            refusal, held = await _claim_session(selected_agent, session_id, user_id, force)
-            if refusal:
-                release_request_user_tree(request_id)
-                raise HTTPException(status_code=409, detail=refusal)
-
-            mirror = None
+            # Mirrored into a job, so a page can follow the run (see _mirror_run_as_job).
+            # First: a second run under a running id is refused before it takes the
+            # id's ownership or the session.
+            mirror = await _mirror_run_as_job(
+                request_id, user_id, selected_agent.name, session_id,
+                llm_profile or selected_agent.agent_config.default_llm_profile)
+            held = None
             try:
-                # Mirrored into a job, so a page can follow the run (see _mirror_run_as_job).
-                # Inside the try: whatever it throws, the session and the request id are let go.
-                mirror = await _mirror_run_as_job(
-                    request_id, user_id, selected_agent.name, session_id,
-                    llm_profile or selected_agent.agent_config.default_llm_profile)
+                # Register request ownership for status stream security -- AFTER
+                # all validations and inside the try whose finally releases it.
+                # Registered earlier, every 4xx above leaked the entry.
+                register_request_user(request_id, user_id)
+                # Session presence (core/session_presence.py): held through the save
+                # after the run, so no woken run has its turn overwritten.
+                refusal, held = await _claim_session(selected_agent, session_id, user_id, force)
+                if refusal:
+                    raise HTTPException(status_code=409, detail=refusal)
                 # Pass LLM override to collect_final_result
                 result = await collect_final_result(
                     selected_agent, task,
@@ -1893,7 +1893,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     session_id=session_id,
                     llm_override=llm_override,
                     llm_profile_info_override=llm_profile_info,
-                    on_event=mirror.put if mirror else None,
+                    on_event=mirror.put,
                 )
 
                 # Format summary from Markdown to HTML for web display
@@ -1925,8 +1925,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 return result
             finally:
-                if mirror:
-                    mirror.close()
+                mirror.close()
                 _let_go(selected_agent, held, user_id)
                 # Cleanup: release request + derived sub-request ids (tool
                 # suffixes, sub-agents) from the ownership map
