@@ -169,9 +169,10 @@
    * chat until the run ended -- and its answer arrived above all of them.
    *
    * Not at once: the step that is streaming would be torn in two (see the append path).
+   * A message appended mid-run outranks it: the server reads that one, a note it never sees.
    */
   function runGoesOnBelow() {
-    if (chatModule.activeRun()) pendingAppendRebind = true;
+    if (chatModule.activeRun() && !pendingAppendRebind) pendingAppendRebind = 'note';
   }
 
   /**
@@ -2376,6 +2377,8 @@
   // (thinking_delta re-renders the full accumulated text into whatever block
   // blk points at), teleporting the in-flight answer below the injected
   // message and letting the post-drain step overwrite it.
+  // 'message' for a message appended to the run, 'note' for a note written meanwhile
+  // (runGoesOnBelow): the server answers the one and never sees the other.
   let pendingAppendRebind = false;
 
   // Move the live stream to a fresh assistant block (appended at the end of the
@@ -3145,7 +3148,8 @@
     // the next step, as for a run already under way, would leave the run's first status
     // lines above the note -- and a new block below them. It also stays the chat's last
     // row, which is where its request id is put once it is known.
-    if (pendingAppendRebind && blk.row && !blk.box.innerText.trim()) {
+    // Empty by structure, not by innerText: that lays the page out on every event.
+    if (pendingAppendRebind && blk.row && !blk.steps.hasChildNodes() && !blk.t.hasChildNodes()) {
       pendingAppendRebind = false;
       chatContainer.appendChild(blk.row);
     }
@@ -3216,6 +3220,13 @@
         scrollBottom();
         break;
       case 'thinking_complete':
+        // A model that does not stream hands over the whole answer here: nothing of it
+        // is above a note written while it worked, so it goes below. (Not for an
+        // appended message: this answer is not the reply to it.)
+        if (pendingAppendRebind === 'note' && data.step !== blk.streamStep && data.assistant && data.assistant.content) {
+          pendingAppendRebind = false;
+          rebindLiveBlock(blk);
+        }
         renderRunEvent(blk, data);
         break;
       case 'thinking':
@@ -3282,10 +3293,11 @@
         break;
       case 'final':
         run.over = true;
-        if (pendingAppendRebind) {
+        if (pendingAppendRebind === 'message') {
           // Edge (e.g. max-steps): the run finalizes without another step. The
           // final would be suppressed against the old block's non-empty content
           // — render it into a fresh block below the injected message instead.
+          // Not after a note: the answer is in the block already, and would be twice.
           pendingAppendRebind = false;
           rebindLiveBlock(blk);
         }
@@ -3589,7 +3601,7 @@
         // accumulated text into whatever block blk points at, which would
         // teleport the in-flight answer below the injected message.
         // handleSSEEvent performs the rebind when the next step starts.
-        pendingAppendRebind = true;
+        pendingAppendRebind = 'message';
         // back to Stop for the emptied input -- unless the run ended while the append was on its way
         updateActionButton();
         stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');

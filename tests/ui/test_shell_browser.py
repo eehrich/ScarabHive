@@ -53,7 +53,10 @@ sub-agent counting ITS steps, a row whose parent is never sent, and two calls to
 one tool that open no scope at all; with ``subrun`` a run ``r-subrun`` starts an
 async sub-agent in its first call whose run -- relayed as ``sub_run`` -- reports
 mostly while the third call waits for it, starts a grandchild, and pauses 1.5 s
-in the second call. GET/PUT /auth/me/preferences keep the account's display
+in the second call; with ``last-answer`` a run ``r-last-answer`` streams its one
+answer with a 1.5 s pause in the middle, and with ``last-answer-whole`` a run
+``r-last-answer-whole`` has it arrive whole after that pause, as from a model that
+does not stream. GET/PUT /auth/me/preferences keep the account's display
 preferences, checked by the real model (PUTs at /__stub/preference-puts, POST
 /__stub/preferences/reset); with the cookie ``stub_preferences=fails`` every PUT
 fails, ``slow`` answers after 0.4 s, and ``fails-once`` does too and refuses the
@@ -793,6 +796,23 @@ def stub_app() -> FastAPI:
                              "request_id": request_id, "message": "completed (2 steps)", "meta": {}})
                 yield event({"type": "end"})
                 return
+            if ending in ("last-answer", "last-answer-whole"):
+                # One call, the run's last, with a pause while its answer is on the way:
+                # what a command typed in that pause meets.
+                answer = "The answer."
+                streams = ending == "last-answer"
+                yield event({"type": "thinking", "step": 1})
+                if streams:
+                    yield event({"type": "thinking_delta", "step": 1, "delta": "The ", "accumulated": "The "})
+                await asyncio.sleep(1.5)
+                if streams:
+                    yield event({"type": "thinking_delta", "step": 1, "delta": "answer.", "accumulated": answer})
+                yield event({"type": "thinking_complete", "step": 1, "assistant": {"content": answer}})
+                yield event({"type": "thinking", "step": 1, "assistant": {"content": answer, "tool_calls": []}})
+                yield event({"type": "thinking", "content": answer})  # the simplified one: no step
+                yield event({"type": "final", "summary": answer})
+                yield event({"type": "end"})
+                return
             if ending == "subrun":
                 async for chunk in subrun_stream(request_id):
                     yield chunk
@@ -1137,7 +1157,8 @@ def stub_app() -> FastAPI:
                    "late-drops": "r-late-dropped", "question-drops": "r-question-dropped", "closes": "r-closed",
                    "ending": "r-ending", "late-start-drops": "r-late-started", "answered": "r-answered",
                    "saving": "r-saving", "saving-drops": "r-saving-dropped", "reasons": "r-reasons",
-                   "steps": "r-steps", "subrun": "r-subrun"}
+                   "steps": "r-steps", "subrun": "r-subrun", "last-answer": "r-last-answer",
+                   "last-answer-whole": "r-last-answer-whole"}
         if ending in started:
             # stub_start_after: a run whose start event is late -- the chat has sent it and
             # waits, and nothing of it has reached the page yet
@@ -1592,6 +1613,7 @@ EXPECTED = [
     'a message appended mid-run moves the run on to a new block, and its answer folds the steps of both',
     'a command typed mid-run answers where it was typed, and the run goes on below it',
     'a command typed while the run is still starting leaves no empty block above its note',
+    'a command typed while the last answer is on its way leaves that answer once, streamed or whole',
     'a session read back while its run still works keeps that run open',
     "a session read back shows what its sub-agents did under the calls that started them, read when it comes into view",
     "a sub-session that could not be read is read again for its next run",

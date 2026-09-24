@@ -118,7 +118,7 @@ body.app {
 .session-row .session-actions { display: none; }
 .session-row:hover .session-actions, .session-row:focus-within .session-actions { display: flex; }
 .session-row:hover .session-meta, .session-row:focus-within .session-meta { display: none; }
-/* the agent's name gives way to the actions as the timestamp does (same weight as the rule showing it, and later) */
+/* the agent's name gives way to the actions as the timestamp does (outweighs the rule showing it) */
 .session-item.is-running > .session-row:is(:hover, :focus-within) > .session-agent:not(:empty) { display: none; }
 .session-expand { width: 20px; height: 20px; padding: 0; color: var(--text-muted); background: none; border: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .session-expand[aria-expanded="true"] .pk-icon { transform: rotate(90deg); }

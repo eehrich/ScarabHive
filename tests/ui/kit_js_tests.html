@@ -279,10 +279,12 @@
       panel.postMessage({ type: 'pk:visibility', visible: true }, location.origin);
       await new Promise((r) => setTimeout(r, 150));       // long before the next tick
       const onReturn = panel.ticks;
-      await new Promise((r) => setTimeout(r, 150));
+      await new Promise((r) => setTimeout(r, 700));       // past the old beat's tick at 2 s
       const once = panel.ticks;
+      await new Promise((r) => setTimeout(r, 400));       // past the new beat's, a second after the return
+      const beatGoesOn = panel.ticks;
       timer.stop();
-      done(whileHidden === 0 && onReturn === 1 && once === 1);
+      done(whileHidden === 0 && onReturn === 1 && once === 1 && beatGoesOn === 2);
     });
     frame = document.createElement('iframe');
     frame.src = '/tests/ui/kit_shell_probe.html';
@@ -723,7 +725,7 @@
     const plainOff = !plain.auto.running && plainToggle.getAttribute('aria-pressed') === 'false';
     // off says off, not the interval it would refresh at: by tint alone a paused panel
     // looked like one whose refresh was broken
-    const saysOff = !/\d/.test(plainToggle.textContent) && /\d/.test(toggle.title);
+    const saysOff = !/\d/.test(plainToggle.textContent) && /\d/.test(plainToggle.title);
     plain.remove();
     return startedOn && stopped && plainOff && saysOff;
   });

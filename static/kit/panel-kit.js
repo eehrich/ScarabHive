@@ -670,10 +670,13 @@ export function autoRefresh(fn, ms) {
     missed = !isVisible();
     if (!missed) fn();
   };
-  // once, however many ticks went by: it is the panel's state that is late, not a count
+  // once, however many ticks went by: it is the panel's state that is late, not a count.
+  // The beat starts over from here, or a tick due a moment later would load it all again.
   const catchUp = () => {
     if (!missed) return;
     missed = false;
+    clearInterval(timer);
+    timer = setInterval(tick, period);
     fn();
   };
   return {

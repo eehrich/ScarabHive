@@ -1826,6 +1826,41 @@
     }
   });
 
+  await check('a command typed while the last answer is on its way leaves that answer once, streamed or whole', async () => {
+    // The note sent the run on to a new block at its final event, which drew the answer
+    // there again: once above the note, once below it. A model that does not stream
+    // hands the answer over whole -- nothing of it was above the note, so it goes below.
+    const after = (a, b) => Boolean(a.compareDocumentPosition(b) & win().Node.DOCUMENT_POSITION_FOLLOWING);
+    for (const [stream, begun] of [
+      ['last-answer', (box) => box.querySelector('.response-text.streaming')],
+      ['last-answer-whole', (box) => box.querySelector(':scope > .steps > .step-section[data-step="1"]')],
+    ]) {
+      try {
+        sessionButton('s-1', 'open').click();
+        await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+        cookie('stub_stream', stream);
+        $('#task').value = 'Get help';
+        $('#f').requestSubmit();
+        await until(`${stream}: its run`, () => win().chatModule.hasActiveRequest(), 3000);
+        const first = $$('#chat .msg.assistant').at(-1);
+        await until(`${stream}: its call under way`, () => begun(first), 3000);
+        const notesBefore = $$('#chat .msg.note').length;
+        $('#task').value = '/session';
+        $('#f').requestSubmit();
+        const note = await until(`${stream}: the command's note`, () => $$('#chat .msg.note')[notesBefore], 3000);
+        await until(`${stream}: its end`, () => !win().chatModule.hasActiveRequest(), 8000);
+        const answers = $$('#chat .msg.assistant .response-text').filter((el) => el.textContent.includes('The answer.'));
+        need(answers.length === 1, `${stream}: the answer is there ${answers.length} times`);
+        if (stream === 'last-answer-whole') need(after(note, answers[0]), 'the answer that came whole is above the note');
+      } finally {
+        cookie('stub_stream', null);
+        forgetRun();
+        await loadShell();
+      }
+    }
+    return true;
+  });
+
   await check('a session read back while its run still works keeps that run open', async () => {
     // Replaying folds a run as its answer would -- but the last run of a session read
     // back mid-run has not answered, and folded it would look finished.
