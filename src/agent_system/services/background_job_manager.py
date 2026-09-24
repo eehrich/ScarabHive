@@ -77,6 +77,11 @@ class BackgroundJob:
     llm_profile: Optional[str] = None
     # The run has sent its answer (ANSWER_EVENTS) and only finishes now: saves, session-end hooks
     answered: bool = False
+    # A mirror of a run someone else collects (POST /run): pages follow it like any job, but
+    # the answer went to that caller, not through here -- so once it is over, the status
+    # endpoint does not offer it as proof that the run finished (writer_jobs' reconcile
+    # takes a finished job's status as "done" and would bury a book run it should resume).
+    mirror: bool = False
     # How many items the run has handed to the queue, counted from the first -- its events, and
     # the end marker as the last. NOT the queue's length: the buffer drops its oldest when it
     # fills, and this keeps counting. It is what lets a client that has already seen the run's
@@ -226,6 +231,7 @@ class BackgroundJobManager:
         session_id: Optional[str],
         agent_runner: Callable[[], Any],  # async generator function
         llm_profile: Optional[str] = None,
+        mirror: bool = False,
     ) -> BackgroundJob:
         """Create and start a new background job.
         
@@ -332,6 +338,7 @@ class BackgroundJobManager:
                 task=task,
                 event_queue=event_queue,
                 llm_profile=llm_profile,
+                mirror=mirror,
             )
             own_job = job
             self._jobs[request_id] = job

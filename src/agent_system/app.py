@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio  # noqa: F401 - used in nested closures in event_stream() and lifespan
+import types
 from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
@@ -709,6 +710,44 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except SessionBusy as busy:
             logging.getLogger(__name__).warning("%s; this run keeps it unheld", busy)
             return None
+
+    async def _mirror_run_as_job(request_id: str, user_id: str, agent_name: str,
+                                 session_id: Optional[str], llm_profile: Optional[str]):
+        """A BackgroundJob that shows a run somebody else collects, or None.
+
+        POST /run answers its caller from collect_final_result and made no job, so
+        nothing could follow such a run: not the chat (it attaches to a session's
+        job), not a second page. writer_jobs starts every book that way. The job
+        takes the events as they pass (``put``) and reads for nobody -- the caller's
+        answer does not go through its queue, which a page that attaches would
+        otherwise take events from.
+
+        Returns None when the id is running as a job already: the run goes on as it
+        did before, unmirrored, rather than not at all.
+        """
+        feed: asyncio.Queue = asyncio.Queue()
+
+        async def relay():
+            while (event := await feed.get()) is not None:
+                yield event
+
+        try:
+            job = await get_background_job_manager().create_job(
+                request_id=request_id, user_id=user_id, agent_name=agent_name,
+                session_id=session_id, agent_runner=relay, llm_profile=llm_profile,
+                mirror=True)
+        except DuplicateRequestIdError:
+            logger.warning("[RUN] %s is a running job already; not mirrored", request_id)
+            return None
+
+        def put(event: Any) -> None:
+            # the session a run creates comes with its start event; the job needs
+            # it to be found by session (/api/sessions/active)
+            if isinstance(event, dict) and event.get("type") == "start" and event.get("session_id"):
+                job.actual_session_id = event["session_id"]
+            feed.put_nowait(event)
+
+        return types.SimpleNamespace(put=put, close=lambda: feed.put_nowait(None))
 
     def _let_go(target_agent: Any, sid: Optional[str], user_id: str) -> None:
         """Let go of a held session; input that came in for it wakes it."""
@@ -1840,14 +1879,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 release_request_user_tree(request_id)
                 raise HTTPException(status_code=409, detail=refusal)
 
+            mirror = None
             try:
+                # Mirrored into a job, so a page can follow the run (see _mirror_run_as_job).
+                # Inside the try: whatever it throws, the session and the request id are let go.
+                mirror = await _mirror_run_as_job(
+                    request_id, user_id, selected_agent.name, session_id,
+                    llm_profile or selected_agent.agent_config.default_llm_profile)
                 # Pass LLM override to collect_final_result
                 result = await collect_final_result(
                     selected_agent, task,
                     request_id=request_id,
                     session_id=session_id,
                     llm_override=llm_override,
-                    llm_profile_info_override=llm_profile_info
+                    llm_profile_info_override=llm_profile_info,
+                    on_event=mirror.put if mirror else None,
                 )
 
                 # Format summary from Markdown to HTML for web display
@@ -1879,6 +1925,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 return result
             finally:
+                if mirror:
+                    mirror.close()
                 _let_go(selected_agent, held, user_id)
                 # Cleanup: release request + derived sub-request ids (tool
                 # suffixes, sub-agents) from the ownership map
@@ -2552,6 +2600,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # First check BackgroundJobManager for more accurate status
         job_manager = get_background_job_manager()
         job = await job_manager.get_job(request_id)
+        # A finished MIRROR (POST /run) answers as if there had been no job: its
+        # caller had the answer, and "completed" with the job's keys is what the
+        # writer reconcile takes as proof that a book run is done.
+        if job and job.mirror and job.status != JobStatus.RUNNING:
+            job = None
         if job:
             return {
                 "request_id": request_id,
