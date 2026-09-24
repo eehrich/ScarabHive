@@ -527,6 +527,10 @@ async def test_after_a_swap_the_failed_override_is_no_fallback(system_config):
 
     def build(profile):
         built.append(profile)
+        if profile == "big":
+            # The agent's own primary is an override's first fallback: it fails
+            # too, so the swap lands on 'small'.
+            return _ServerErrorLLM("big", 1_000_000)
         return small if profile == "small" else _ScriptedLLM(profile, 1_000_000)
 
     agent = _agent(system_config, _ScriptedLLM("big", 1_000_000), max_steps=3,

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from ....core.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
 from ....core.request_context import register_request_user
 from .server_resolution import resolve_longest_prefix
+from ....llm.caller_llm import context_for_tool
 from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ....tools.integration import get_tool_integration
@@ -184,6 +185,7 @@ class ToolExecutionManager:
         user_id: str | None = None,
         status_forwarder: Optional[StatusEventForwarder] = None,
         assistant_message: Optional[ChatMessage] = None,
+        llm_profile: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute tools in parallel while streaming status events in real-time.
 
@@ -198,6 +200,9 @@ class ToolExecutionManager:
                              to avoid race conditions with concurrent requests)
             assistant_message: The message whose tool calls these are: it is stamped with the
                              id each tool runs under (ChatMessage.tool_request_ids)
+            llm_profile: The profile the run was switched to, None when it runs its own
+                             configuration. Each tool call runs in a context holding it, so a
+                             sub-agent the tool starts can follow it (llm/caller_llm.py).
 
         Yields:
             Dict with either:
@@ -337,7 +342,10 @@ class ToolExecutionManager:
 
                 task = asyncio.create_task(
                     self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id, session_id, user_id,
-                                              main_request_id=original_request_id)
+                                              main_request_id=original_request_id),
+                    # Its own context copy, holding the run's profile: set here, it
+                    # cannot leak into the run or a sibling call.
+                    context=context_for_tool(llm_profile),
                 )
                 tasks.append(task)
                 task_tool_info[task] = (tc, tool_name, openai_tool_name)

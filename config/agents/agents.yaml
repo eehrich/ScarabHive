@@ -53,6 +53,10 @@ plugins:
       description: "Agent that uses skills"
 
       agent_config:
+        # A fork of itself does the caller's work: it runs on whatever LLM the
+        # calling run was switched to (/model, --llm, llm_profile), not on the
+        # default below.
+        inherit_parent_llm: true
         tools:
           allowed:
             - "+skills/*"
@@ -100,6 +104,9 @@ plugins:
 
       agent_config:
         llm_profile: [or-gemini-flash, or-gemini-flash-lite, or-claude-sonnet]
+        # Needs a model that reads media: not the caller's, whatever it runs
+        # (skills_agent, which this inherits from, follows its caller).
+        inherit_parent_llm: false
         tools:
           allowed:
 

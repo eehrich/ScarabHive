@@ -159,6 +159,18 @@ class ResolvedLLM:
     batch_provider: Optional[str] = None
 
 
+def _stamp_profile(client: Any, profile: str) -> None:
+    """Which profile *client* runs: a run switched to it hands that to its
+    sub-agents (llm/caller_llm.py). A client that takes no attributes (a
+    provider plugin's slotted object) still runs -- it just passes nothing on.
+    """
+    try:
+        client.profile_name = profile
+    except AttributeError:
+        logger.debug("LLM client %s takes no profile_name; sub-agents will not inherit it",
+                     type(client).__name__)
+
+
 def _build_client(
     config: AgentSystemConfig,
     agent_config: AgentConfig,
@@ -180,6 +192,7 @@ def _build_client(
         ssl_verify = getattr(config.network, "ssl_verify", None) if config.network else None
 
     underlying_client = registry.build_client(resolved.spec, ssl_verify=ssl_verify)
+    _stamp_profile(underlying_client, resolved.profile_name)
 
     if resolved.is_batch and resolved.batch_provider:
         queue_manager = get_batch_queue_manager()
@@ -192,13 +205,15 @@ def _build_client(
                     from .batch.batch_client import BatchLLMClient
                     logger.info("Wrapping LLM client with batch support: model=%s, provider=%s",
                                 resolved.model_ref, resolved.batch_provider)
-                    return BatchLLMClient(
+                    batch_client = BatchLLMClient(
                         underlying_client=underlying_client,
                         queue_manager=queue_manager,
                         batch_provider_config=provider_config,
                         model_name=resolved.spec.model,
                         batch_provider=resolved.batch_provider,
                     )
+                    _stamp_profile(batch_client, resolved.profile_name)
+                    return batch_client
         logger.warning(
             "Batch mode requested for model %s but batch system not available. "
             "Falling back to sync mode.",

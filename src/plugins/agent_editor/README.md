@@ -44,7 +44,8 @@ Revert / Save. A banner says what a restart or a
 config reload would apply, with a **Reload config** button when a reload applies something. Tabs:
 
 - **General** — enabled, base, description; visibility, category, tags.
-- **Model** — the model chain (primary and fallbacks) and the advanced chain; `fallback_recovery_seconds`,
+- **Model** — the model chain (primary and fallbacks) and the advanced chain; `inherit_parent_llm` (run as a
+  sub-agent on the model the calling run was switched to — `docs/config_based_agents.md`); `fallback_recovery_seconds`,
   `llm_params`.
 - **Run** — the core's run settings, key by key: `max_steps`; auto-escalation (`auto_escalate_on_stuck`,
   `escalate_error_streak`, `escalate_rounds`, `escalate_max_calls`, with a note when it cannot run: no advanced chain,

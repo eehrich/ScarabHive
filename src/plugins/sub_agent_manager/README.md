@@ -259,6 +259,10 @@ caller's prompt may legitimately ask for advanced continues (synthesis,
 stuck), and each of those would be a premium call over the whole accumulated
 context. Unlisted types keep the plain `allow_advanced_model` behaviour.
 
+Both vetoes filter that argument only. A sub-agent with
+`agent_config.inherit_parent_llm` follows a caller that was switched to
+another profile, a premium one included (`docs/config_based_agents.md`).
+
 ## Reading a transcript
 
 `info` returns the **tail** by default — the most recent messages, which is

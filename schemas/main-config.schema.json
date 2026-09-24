@@ -146,6 +146,11 @@
           "default": null,
           "title": "Llm Profile Advanced"
         },
+        "inherit_parent_llm": {
+          "default": false,
+          "title": "Inherit Parent Llm",
+          "type": "boolean"
+        },
         "llm_profile_fallbacks": {
           "anyOf": [
             {

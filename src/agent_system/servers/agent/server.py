@@ -447,6 +447,7 @@ class Agent(ToolServer):
         "escalate_max_calls",
         "escalate_error_streak",
         "fallback_recovery_seconds",
+        "inherit_parent_llm",
     )
 
     def reload_config(self, server_config: Any) -> dict:
@@ -568,6 +569,53 @@ class Agent(ToolServer):
         except Exception as e:
             logger.warning("[%s] could not build escalation LLM: %s", self.name, e)
             return None
+
+    def _llm_from_caller(self) -> Optional[tuple[LLMClient, str]]:
+        """(client, profile info) for a run on the caller's LLM, else None.
+
+        Only for an agent that asks for it (agent_config.inherit_parent_llm) and
+        only when the calling run was switched to a profile (llm/caller_llm.py).
+        Built like any override: the agent keeps its own llm_params for the
+        profile, its own chain stays the fallback. A profile this config does
+        not know leaves the agent on its own chain, with a warning -- a caller
+        on a model the sub-agent cannot run must not cost the call.
+        """
+        if not (self.agent_config and self.agent_config.inherit_parent_llm):
+            return None
+        from ...llm.caller_llm import caller_llm_profile
+        profile = caller_llm_profile()
+        if not profile:
+            return None
+        try:
+            from ...config.models import AgentConfig
+            from ...llm.factory import (agent_params_for_profile, create_llm_from_profile,
+                                        resolve_llm_config_for_agent)
+            ssl_verify = getattr(self.system_config, "network", None)
+            client = create_llm_from_profile(
+                config=self.system_config, llm_profile=profile,
+                ssl_verify=ssl_verify.ssl_verify if ssl_verify else None,
+                llm_params=agent_params_for_profile(self.agent_config, profile))
+            spec = resolve_llm_config_for_agent(self.system_config, AgentConfig(llm_profile=profile)).spec
+        except Exception as e:
+            logger.warning("[%s] cannot run on the caller's LLM profile %r, runs its own: %s",
+                           self.name, profile, e)
+            return None
+        logger.info("[%s] runs on the caller's LLM profile %s", self.name, profile)
+        return client, f"{profile}:{spec.provider}/{spec.model} (from caller)"
+
+    def _profile_to_hand_down(self, llm_override: Optional[LLMClient]) -> Optional[str]:
+        """The profile this run hands to the sub-agents its tools start: the one
+        it was switched to, else None. An override on the agent's own primary
+        profile (--llm-params alone, a web pick of the same profile) switched
+        nothing -- unless the run followed its caller onto it: that switch came
+        from above and goes on down.
+        """
+        from ...llm.caller_llm import caller_llm_profile
+        profile = getattr(llm_override, "profile_name", None)
+        if (profile and self.agent_config and profile == self.agent_config.default_llm_profile
+                and profile != caller_llm_profile()):
+            return None
+        return profile
 
     def _extract_profile_info(self, config, agent_name: str, llm_kwargs: dict) -> str:
         """Extract profile information for status display."""
@@ -1445,6 +1493,14 @@ class Agent(ToolServer):
                 except Exception as e:
                     logger.error(f"Failed to create LLM override for use_advanced_model: {e}")
                     # Continue with default LLM
+
+        # The caller's LLM (agent_config.inherit_parent_llm): after the choices
+        # made for this very run, which win over it -- an override passed in, or
+        # use_advanced_model where the agent has an advanced chain to go to.
+        if llm_override is None:
+            from_caller = self._llm_from_caller()
+            if from_caller is not None:
+                llm_override, llm_profile_info_override = from_caller
 
         # Create and start status forwarder BEFORE entering status_scope context managers
         # This ensures the forwarder is subscribed to status_bus before any START events are generated
@@ -2372,6 +2428,20 @@ class Agent(ToolServer):
                     # The override the swap replaced failed too: not a fallback.
                     failed_override = llm_profile_info_override.split(":", 1)[0]
                     profiles = [p for p in profiles if p != failed_override]
+                if llm_override is not None and self.agent_config:
+                    # On an override the agent's own primary is not the run's
+                    # base: fallback_chain() leaves it out as the active model,
+                    # yet it is the first fallback -- with a one-entry chain the
+                    # only one.
+                    own_primary = (self.agent_config.advanced_llm_profile
+                                   if use_advanced_model and self.agent_config.advanced_llm_profile
+                                   else self.agent_config.default_llm_profile)
+                    override_profile = (llm_profile_info_override.split(":", 1)[0]
+                                        if llm_profile_info_override
+                                        else getattr(llm_override, "profile_name", None))
+                    if own_primary and own_primary not in profiles and own_primary not in (
+                            active_profile_override, override_profile):
+                        profiles.insert(0, own_primary)
                 if use_advanced_model and profiles:
                     logger.debug(
                         f"[{self.name}] use_advanced_model=True — fallback "
@@ -3301,6 +3371,9 @@ class Agent(ToolServer):
                     user_id=user_id,
                     status_forwarder=context.status_forwarder,
                     assistant_message=assistant_msg,
+                    # What this run was switched to, for the sub-agents its
+                    # tools start (agent_config.inherit_parent_llm).
+                    llm_profile=self._profile_to_hand_down(llm_override),
                 ):
                     if item.get("type") == "status":
                         # Yield status events in real-time during tool execution

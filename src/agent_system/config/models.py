@@ -654,6 +654,17 @@ class AgentConfig(BaseModel):
     # letzte Sicherheitsnetz: ist die eigene Kette bei Fallbacks erschöpft, wird
     # die jeweils andere Kette komplett durchprobiert (fallback_chain()).
     llm_profile_advanced: Optional[List[str]] = None
+    # Run on the caller's LLM (opt-in): when the run that starts this agent was
+    # switched to another profile than its agent's own (API llm_profile, the
+    # web chat's model picker, CLI --llm, the chat's /model, use_advanced_model
+    # -- or it followed its own caller this way), this agent runs on that
+    # profile too, with its own llm_params for it; its chain stays the
+    # fallback, its own primary first. Without such a switch it runs its own
+    # chain. A choice made for this very run wins: an override
+    # passed to it, or use_advanced_model. Any plugin that starts sub-agents
+    # inside a tool call gets this without doing anything (llm/caller_llm.py);
+    # a run started later in another process does not.
+    inherit_parent_llm: bool = False
     # ENTFERNT (alte Semantik [std_fallback, adv_fallback]) — Migration:
     # scripts/migrate_llm_profiles.py. Absichtlich als Feld behalten, damit
     # unmigrierte yamls LAUT beim Laden scheitern statt still falsch zu laufen.
