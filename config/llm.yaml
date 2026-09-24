@@ -420,7 +420,12 @@ llm_system:
       max_steps: 500
             
     think:
-      model_ref: openrouter-deepseek-pro
+      # V4.1 Flash statt Pro (24.09.2026): Pro kaufte nichts. Am Writer
+      # gemessen (412 Reviewer-Befunde): Pro 21,7 % Phantome gegen 29,0 %
+      # bei V4-Flash, p = 0,094 -- das Intervall schliesst die Null ein --,
+      # und netto 1,90 $ je Buch mehr. V4.1 Flash liegt ueber dem gemessenen
+      # V4-Flash und unter dem Preis von Pro.
+      model_ref: openrouter-deepseek-latest-flash
       description: "Advanced model for complex reasoning (batch)"
       max_steps: 500
       

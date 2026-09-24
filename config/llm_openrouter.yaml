@@ -246,16 +246,31 @@ llm_system:
         - deepinfra
         allow_fallbacks: false
 
-    # V4.1 Flash ist teurer als V4; gepinnt auf die zwei guenstigen Anbieter.
-    # KEIN quantizations-Filter: Fireworks nennt keine Quantisierung und
-    # fiele sonst heraus.
+    # V4.1 Flash (alias_target 24.09.2026: deepseek/deepseek-v4.1-flash).
+    # Teurer als V4-Flash, billiger als Pro -- und seit 24.09. laeuft keine
+    # Kette mehr auf Pro: dieses Modell traegt jetzt auch `think`,
+    # `llm_writer_thinking`, den amiga_coder und die debate_forum-Panels.
+    # Die Pro-Knoten und -Profile stehen weiter da, benutzt sie nur niemand.
+    #
+    # Gepinnt auf die zwei guenstigsten fp8-Anbieter, $/M in/out/cache-read
+    # (OpenRouter-Endpunkte 24.09.2026):
+    #   deepinfra  0.140 / 0.420 / 0.0042
+    #   streamlake 0.199 / 0.794 / 0.0040
+    # Billiger sind nur fp4 (openinference/relace 0.100/0.500) und Anbieter
+    # ohne genannte Quantisierung (morph 0.128/0.510, wafer 0.099/0.600 --
+    # dessen cache-read 0.06 frisst den Vorteil bei unserem wiederholten
+    # Kontext wieder auf). fireworks (0.220/0.660) war der alte Zwilling und
+    # ist teurer als streamlake; der quantizations-Filter, der ihn frueher
+    # herausgehalten haette, kann damit wieder stehen.
     openrouter-deepseek-latest-flash:
       extends: openrouter-deepseek
       model: ~deepseek/deepseek-flash-latest
       provider_routing:
         order:
         - deepinfra
-        - fireworks
+        - streamlake
+        quantizations:
+        - fp8
         allow_fallbacks: false
 
 
