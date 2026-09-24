@@ -1428,6 +1428,46 @@ class SessionManager:
         # It is stat work like the read, so it belongs in the same thread.
         return await asyncio.to_thread(read_and_shape)
 
+    async def resolve_session_ref(self, user_id: str, ref: str) -> Optional[str]:
+        """The session ``ref`` names: an id, or the TITLE of one.
+
+        A session id is machine-made (``2332j2kj22k``) and cannot be renamed:
+        it is the key the usage tracker, the message debugger, the context
+        stores, the sub-session indexes and the presence locks all file their
+        rows under. The name a person remembers is the title, so the title is
+        what they may type -- ``--session "FPGA Quartus"`` and ``/resume
+        FPGA Quartus`` find the same session the id would.
+
+        An existing id always wins over a title that looks like one. Then an
+        exact title -- where several sessions carry the same one (a pipeline
+        writes hundreds of "Bewerte Kapitel 3"), the most recently updated is
+        meant, because that is the one its person worked in. A prefix counts
+        only when it names exactly ONE session: ``--session build`` creates a
+        session called "build" unless a single stored title starts that way,
+        and joining a stranger's conversation because the first letters
+        matched is worse than starting a new one. None when nothing matches.
+        """
+        ref = (ref or "").strip()
+        if not ref:
+            return None
+        if self.belongs_to(user_id, ref):
+            return ref
+        wanted = ref.casefold()
+        rows = await self.list_sessions(user_id)
+
+        def newest(matches: list) -> Optional[str]:
+            if not matches:
+                return None
+            best = max(matches, key=lambda r: str(r.get("updated_at") or ""))
+            return best.get("session_id")
+
+        titled = [(r, str(r.get("title") or "").strip().casefold()) for r in rows]
+        exact = newest([r for r, title in titled if title == wanted])
+        if exact:
+            return exact
+        starting = [r for r, title in titled if title.startswith(wanted)]
+        return starting[0].get("session_id") if len(starting) == 1 else None
+
     async def rename_session(self, user_id: str, session_id: str, new_title: str) -> None:
         """Rename a session.
         

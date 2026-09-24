@@ -68,6 +68,9 @@ class TestParsing:
         ("/exit", "exit"), ("/quit", "exit"), ("/q", "exit"),
         ("/new", "new"), ("/sessions", "sessions"), ("/hist", "history"),
         ("/?", "help"), ("/H", "help"),
+        # It names the TITLE -- and that name is what /resume takes, because
+        # an id cannot be renamed (SessionManager.resolve_session_ref).
+        ("/title", "title"),
     ])
     def test_aliases_resolve(self, line, expected):
         assert parse_chat_command(line)[0] == expected

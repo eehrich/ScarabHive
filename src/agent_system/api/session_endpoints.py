@@ -498,6 +498,27 @@ async def list_session_children(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+@session_router.get("/resolve", response_model=Dict[str, Any])
+async def resolve_session(
+    ref: str = "",
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """The id of the session ``ref`` names -- an id, or a session's TITLE.
+
+    Before "/{session_id}", or that route would take "resolve" for an id.
+    The rule itself lives in SessionManager.resolve_session_ref, so the chat
+    in the browser finds a session by the name its person gave it exactly as
+    the terminal does.
+    """
+    user_id = current_user.username if current_user else "anonymous"
+    found = await session_manager.resolve_session_ref(user_id, ref)
+    if not found:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"no session called {ref!r}")
+    return {"session_id": found}
+
+
 @session_router.get("/{session_id}")
 async def get_session(
     session_id: str,

@@ -1416,12 +1416,12 @@ def _report_what_stays_behind(ctx: "_ChatContext", previous: str) -> None:
     """Say what the session being left takes with it, and what waits here.
 
     Both ways out of a session pass here (`/new`, `/agent` and `/resume`): a
-    title typed with `/rename` before the first message has no record to go
+    title typed with `/title` before the first message has no record to go
     into and dies with the session -- and losing it without a word looks like
     a bug. Queued attachments do NOT die; they are simply easy to forget
     once the chat says "New session".
 
-    What it does NOT say is whether that title reached the disk. A /rename of
+    What it does NOT say is whether that title reached the disk. A /title of
     a session that HAS a record writes it and keeps ctx.session_title only so
     a later save cannot put the old name back -- "nothing written yet" was a
     plain lie about that session.
@@ -2826,10 +2826,10 @@ async def _resume_last_session(ctx: _ChatContext, previous: str) -> bool:
     return await _resume_into(ctx, session_id, previous)
 
 
-async def _rename_current_session(ctx: _ChatContext, title: str) -> bool:
+async def _set_session_title(ctx: _ChatContext, title: str) -> bool:
     """Give the open session a title, the one `/sessions` shows."""
     if not title:
-        print("Usage: /rename <title>")
+        print("Usage: /title <text>")
         return False
     if ctx.was_new_session or ctx.session_manager is None:
         # Nothing on disk yet: the title rides along with the first save,
@@ -2878,6 +2878,13 @@ async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
     tools and prompt, and the next save wrote this agent's name over its
     record. Its own profile is switched to, as ``--session <id>`` would.
     """
+    # Typed by a person, so it may be the title they gave the session with
+    # /title -- ids are machine-made and cannot be renamed.
+    if ctx.session_manager is not None:
+        named = await ctx.session_manager.resolve_session_ref(ctx.session_user, session_id)
+        if named and named != session_id:
+            print(f"Session '{session_id}': {named}")
+            session_id = named
     system_config = getattr(ctx.agent, "system_config", None)
     stored_agent, stored_llm = await session_defaults(
         ctx.session_manager, ctx.session_user, session_id, system_config)
@@ -2915,7 +2922,7 @@ async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
         print(f"No session '{session_id}' for user '{ctx.session_user}'.")
         return False
     # The title belonged to the session being left -- from --session-title or
-    # from a /rename it never got to write. Named, then dropped.
+    # from a /title it never got to write. Named, then dropped.
     _report_what_stays_behind(ctx, ctx.session_id)
     ctx.session_id = session_id
     ctx.was_new_session = False
@@ -3604,9 +3611,9 @@ def run_chat_loop(
                             editor.reseed(_history_seed(ctx))
                         print(f"Resumed session: {ctx.session_id}")
                     continue
-                if command == "rename":
-                    _run_interruptible(loop, _rename_current_session(ctx, payload),
-                                       "/rename")
+                if command == "title":
+                    _run_interruptible(loop, _set_session_title(ctx, payload),
+                                       "/title")
                     continue
                 if command == "agent":
                     if not _switch_agent(ctx, payload):

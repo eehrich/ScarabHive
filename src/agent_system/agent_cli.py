@@ -1214,6 +1214,22 @@ def main() -> None:
     # Keep references to session_manager for CLI use
     session_manager = init_service.session_manager
 
+    # What --session names is an id or the TITLE of a session: ids are
+    # machine-made and cannot be renamed (SessionManager.resolve_session_ref).
+    # Resolved HERE, before anything reads it -- the session's own agent and
+    # LLM profile are looked up by it a few lines down, and presence holds it
+    # before the session is ever loaded. Resolved later, the run would take
+    # the config's default agent, hold a lock under the typed name and write
+    # that agent over the record of the session it then loaded.
+    _typed_session = getattr(args, "session_id", None)
+    if _typed_session and session_manager is not None:
+        _named = run_async(session_manager.resolve_session_ref(
+            getattr(args, "session_user", "cli_user"), _typed_session))
+        if _named and _named != _typed_session:
+            # stderr: stdout carries the task result
+            print(f"Session '{_typed_session}': {_named}", file=sys.stderr)
+            args.session_id = _named
+
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     logger.info("Servers registered: %s", ", ".join(registry.list()))
 

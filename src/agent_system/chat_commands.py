@@ -61,13 +61,16 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("sessions", ("/sessions",), "list recent sessions (0 = all)",
                 usage="/sessions [count]"),
     ChatCommand("resume", ("/resume",),
-                "continue an earlier session; bare takes the last one you left",
-                usage="/resume [id]"),
+                "continue an earlier session by id or title; bare takes the last one",
+                usage="/resume [id|title]"),
     # Both surfaces, and both through what that surface already has: the
     # browser renames through its session list and switches through its agent
     # selector, so the command and the widget next to it cannot disagree.
-    ChatCommand("rename", ("/rename",), "name this session (shown in /sessions)",
-                usage="/rename <title>"),
+    # A session id cannot be renamed -- it is the key half a dozen stores file
+    # their rows under -- so the title IS the name: /resume and --session take
+    # it (SessionManager.resolve_session_ref).
+    ChatCommand("title", ("/title",), "name this session -- /resume takes that name",
+                usage="/title <text>"),
     ChatCommand("agent", ("/agent",),
                 "agent of this chat: bare lists, a name switches (starts a new session)",
                 usage="/agent [name]"),

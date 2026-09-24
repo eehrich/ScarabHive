@@ -82,7 +82,9 @@ agent-cli run "What's in this image?" --attach screenshot.png
                                 instead of reporting a missing request
 --max-steps N                   Step budget for this run (overrides the
                                 agent's max_steps; this process only)
---session ID                    Continue an existing session
+--session ID|TITEL              Continue an existing session -- ihre ID oder der
+                                Titel, den ihr `/title` gegeben hat (unbekannt:
+                                legt eine Session mit dieser ID an)
 --session-title TEXT            Title for the new session
 --list-sessions [COUNT]         List this user's sessions, one line each
                                 (default 20, 0 = all; no sub-agent sessions).
@@ -171,8 +173,8 @@ Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
 | `/new` | Start a fresh session (the current one stays saved) |
 | `/session` | Show the current session and the command that resumes it |
 | `/sessions [count]` | List this user's sessions, one line each (default 20, `0` = all). Sub-agent sessions are left out — they outnumber the real ones ten to one |
-| `/resume [id]` | Continue an earlier session without leaving the chat; ohne ID die letzte, die dieser Nutzer verlassen hat. Wie `--session <id>`: die Session läuft auf ihrem eigenen LLM weiter. Eine Session eines anderen Agenten wird abgelehnt, mit dem Befehl, der sie fortsetzt — in diesem Chat liefe sie mit fremden Tools und fremdem Prompt, und das nächste Speichern schriebe diesen Agenten in ihren Datensatz. Dasselbe, wenn sich ihr LLM hier nicht starten lässt (fehlender Schlüssel): sonst liefe sie auf dem Profil dieses Chats, und das Speichern überschriebe ihre eigene Wahl |
-| `/rename <title>` | Der Session einen Namen geben — den, den `/sessions` zeigt. Eine Session ohne ersten Turn hat noch keinen Datensatz; dort geht der Titel mit dem ersten Speichern mit |
+| `/resume [id\|titel]` | Continue an earlier session without leaving the chat; ohne Argument die letzte, die dieser Nutzer verlassen hat. Statt der ID geht auch der Titel: IDs sind maschinell (`2332j2kj22k`) und lassen sich **nicht** umbenennen — sie sind der Schlüssel, unter dem Usage-Tracker, Message-Debugger, Kontext-Speicher, Sub-Session-Indizes und Presence-Locks ihre Zeilen führen. Mehrere Sessions mit demselben Titel: die zuletzt benutzte; ein Präfix reicht. Wie `--session <id>`: die Session läuft auf ihrem eigenen LLM weiter. Eine Session eines anderen Agenten wird abgelehnt, mit dem Befehl, der sie fortsetzt — in diesem Chat liefe sie mit fremden Tools und fremdem Prompt, und das nächste Speichern schriebe diesen Agenten in ihren Datensatz. Dasselbe, wenn sich ihr LLM hier nicht starten lässt (fehlender Schlüssel): sonst liefe sie auf dem Profil dieses Chats, und das Speichern überschriebe ihre eigene Wahl |
+| `/title <text>` | Der Session einen Namen geben — den, den `/sessions` zeigt, und unter dem `/resume` und `--session` sie wiederfinden. Eine Session ohne ersten Turn hat noch keinen Datensatz; dort geht der Titel mit dem ersten Speichern mit |
 | `/agent [name]` | Agent dieses Chats — ohne Argument listet es die Agenten der Konfiguration, mit Argument wird gewechselt. Der Wechsel startet **immer eine neue Session**: eine Session trägt den Agenten, mit dem sie lief, und unter einem anderen liefe sie mit fremden Tools und fremdem Prompt. Der neue Agent läuft auf seinem eigenen LLM, ein `/model` davor gilt für ihn nicht |
 | `/vars [KEY=VALUE ...]` | Template variables of this session — bare lists them, `unset KEY` removes one, `clear` empties. The same variables `--vars` fills. A change reaches the agent on its next step and is written to the session file at once, so a removal survives `/resume` |
 | `/model [profile]`, `/llm` | LLM dieser Session — ohne Argument listet es die Profile und markiert das laufende, mit Argument wird gewechselt. Gilt ab der nächsten Nachricht und wird sofort in die Session geschrieben, ein späteres `--session <id>` startet also darauf — auch wenn der Chat gleich danach endet. Eine Session ohne erste Nachricht hat noch keinen Datensatz; dort landet die Wahl mit dem ersten Speichern. `--llm-params` gehen mit |
@@ -212,7 +214,7 @@ reachable as `/<plugin>:<command>`. See `docs/plugin_commands_design.md`.
 
 **In the browser** the same commands run, from the same catalogue and the same
 parser — `/sessions`, `/resume`, `/tools`, `/costs`, `/history`, `/last`,
-`/vars`, `/rename`, `/agent`, `/undo`, `/retry`, `/export` und `/context`
+`/vars`, `/title`, `/agent`, `/undo`, `/retry`, `/export` und `/context`
 answer from the API (`/agents/<name>/tools`, `/api/sessions`, `/chat/vars`,
 `/chat/undo`, `/chat/transcript`, `/chat/context`) instead of from the local
 agent. `/vars`
@@ -241,7 +243,7 @@ ja den Datensatz. Eine Session, in der gerade ein Lauf arbeitet, wird dabei
 abgelehnt (409), nicht unter ihm weggeschnitten — im Browser `/undo force`,
 für den Fall, dass das Schloss die Leiche eines abgestürzten Prozesses ist.
 
-`/rename` und `/agent` gehen im Browser durch die Widgets, die es schon hat —
+`/title` und `/agent` gehen im Browser durch die Widgets, die es schon hat —
 die Session-Liste und den Agenten-Selektor —, damit das Kommando und der
 Knopf daneben nicht auseinanderlaufen. `/export` lädt dort herunter statt zu
 schreiben: einen Pfad auf der Platte des Servers kann der Browser nicht

@@ -567,3 +567,52 @@ class TestListSessions:
         marked = [l for l in out.splitlines() if l.startswith(" *")]
         assert len(marked) == 1 and " s1 " in marked[0], out
         assert "Continue one with: --session <id>" in out
+
+
+class TestResumeByTitle:
+    """`--session` takes the name a person gave the session, not just its id.
+
+    A session id is machine-made (`2332j2kj22k`) and cannot be renamed -- it
+    is the key the usage tracker, the message debugger, the context stores,
+    the sub-session indexes and the presence locks file their rows under. So
+    the title is the name, resolved in SessionManager.resolve_session_ref.
+    """
+
+    def _titled(self, cli_env, title, session_id):
+        loop = asyncio.new_event_loop()
+        try:
+            session = loop.run_until_complete(cli_env.manager.create_session(
+                user_id="cli_user", session_id=session_id, title=title,
+                agent_name=STORED_AGENT, llm_profile=STORED_PROFILE))
+            loop.run_until_complete(cli_env.manager.save_session(session))
+        finally:
+            loop.close()
+        cli_env.manager.clear_cache()
+
+    def test_a_title_continues_the_session_it_belongs_to(self, cli_env, monkeypatch):
+        self._titled(cli_env, "FPGA Quartus", "2332j2kj22k")
+
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter",
+                           "--session", "FPGA Quartus"])
+
+        assert cli_env.saved.get("session_id") == "2332j2kj22k", (
+            "the title was taken for an id of its own")
+        # Resolved too late, the run takes the config default agent, holds a
+        # lock under the typed name and writes that agent over the record --
+        # the "survived exactly one resume" bug, by another door.
+        assert cli_env.saved.get("agent_name") == STORED_AGENT, (
+            "the session was continued with another agent")
+        assert cli_env.saved.get("llm_profile") == STORED_PROFILE
+
+    def test_an_id_still_wins_over_a_title_that_looks_like_one(self, cli_env, monkeypatch):
+        self._titled(cli_env, "s1", "9kk9kk9kk9")
+
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1"])
+
+        assert cli_env.saved.get("session_id") == "s1"
+
+    def test_a_name_nobody_gave_still_starts_a_session_under_it(self, cli_env, monkeypatch):
+        """Unchanged behaviour: `--session fpga` is how a readable id is made."""
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "fpga"])
+
+        assert cli_env.saved.get("session_id") == "fpga"

@@ -3463,6 +3463,14 @@ class TestResumeBringsTheSessionAlong:
             llm_system=SimpleNamespace(profiles={"profile_a": None, "profile_b": None}))
 
         class _Manager:
+            #: What a person types is an id or the TITLE of a session; the real
+            #: one looks it up (SessionManager.resolve_session_ref). Here every
+            #: id is its own, except the one name this fixture gave away.
+            titles = {"Der Blitter": "s2"}
+
+            async def resolve_session_ref(self, user_id, ref):
+                return self.titles.get(ref, ref)
+
             async def load_session(self, user_id, session_id):
                 return {"agent_name": stored_agent, "llm_profile": stored_llm}
 
@@ -3495,6 +3503,19 @@ class TestResumeBringsTheSessionAlong:
         out = capsys.readouterr().out
         assert "belongs to writer" in out
         assert "--session s2 --agent writer" in out
+
+    async def test_a_title_continues_the_session_it_belongs_to(self, monkeypatch, capsys):
+        """Ids are machine-made and cannot be renamed, so /resume takes the
+        name the person gave the session with /title."""
+        from agent_system.cli_utils.chat import _resume_session
+
+        ctx, loads = self._ctx(monkeypatch, "coder", "profile_b")
+
+        assert await _resume_session(ctx, "Der Blitter") is True
+
+        assert loads == ["s2"], "the title was taken for an id of its own"
+        assert ctx.session_id == "s2"
+        assert "Der Blitter" in capsys.readouterr().out, "it did not say which session it took"
 
     async def test_it_continues_on_its_own_llm(self, monkeypatch):
         from agent_system.cli_utils.chat import _resume_session
@@ -4159,7 +4180,7 @@ class TestCompletion:
 
         values = self._values(ctx, "/re", skills=["writer"])
 
-        assert "/resume" in values and "/rename" in values
+        assert "/resume" in values and "/title" in values
         assert "/compact" in values, "the agent's own commands are missing"
         assert "/writer" in values, "skills are missing"
 
@@ -4508,7 +4529,7 @@ class TestRename:
         loop = asyncio.new_event_loop()
         try:
             assert loop.run_until_complete(
-                chat._rename_current_session(ctx, "Blitter umbauen")) is True
+                chat._set_session_title(ctx, "Blitter umbauen")) is True
         finally:
             loop.close()
 
@@ -4532,7 +4553,7 @@ class TestRename:
         loop = asyncio.new_event_loop()
         try:
             assert loop.run_until_complete(
-                chat._rename_current_session(ctx, "Neu")) is False
+                chat._set_session_title(ctx, "Neu")) is False
         finally:
             loop.close()
 
@@ -4552,7 +4573,7 @@ class TestRename:
         loop = asyncio.new_event_loop()
         try:
             assert loop.run_until_complete(
-                chat._rename_current_session(ctx, "Neue Sache")) is True
+                chat._set_session_title(ctx, "Neue Sache")) is True
         finally:
             loop.close()
 
@@ -4565,11 +4586,11 @@ class TestRename:
         ctx = _completion_ctx(monkeypatch)
         loop = asyncio.new_event_loop()
         try:
-            assert loop.run_until_complete(chat._rename_current_session(ctx, "")) is False
+            assert loop.run_until_complete(chat._set_session_title(ctx, "")) is False
         finally:
             loop.close()
 
-        assert "Usage: /rename" in capsys.readouterr().out
+        assert "Usage: /title" in capsys.readouterr().out
 
 
 class TestSwitchAgent:
@@ -4881,7 +4902,7 @@ class TestWhatALeftSessionTakesWithIt:
     """Both ways out of a session pass the same note."""
 
     def test_resume_names_the_title_it_drops(self, monkeypatch, capsys):
-        """A /rename before the first message parks the title on the context;
+        """A /title before the first message parks the title on the context;
         the session it named has no record to write it into. /new says so --
         /resume dropped it without a word."""
         import agent_system.cli_utils.chat as chat
