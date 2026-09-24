@@ -407,6 +407,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # sweep consults this one before deleting anything (reserved BEFORE
         # mkdir, released after registration).
         self._creating: set[str] = set()
+        # One summary client per llm profile (tool_result_summary_profile).
+        self._summary_llms: dict[str, Any] = {}
 
         self.apply_config(None)
 
@@ -681,6 +683,59 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             **{k: v for k, v in overrides.items() if k not in PLUGIN_LEVEL_KEYS},
         })
 
+    def _summarizer(self, context: HookContext, cfg: CompactionConfig):
+        """What writes the summary of a long tool result, or None for none.
+
+        The engine knows nothing of profiles or clients; it calls this. Every
+        failure ends as None there, and the result is stored all the same.
+        """
+        profile = cfg.tool_result_summary_profile
+        if not profile or cfg.tool_result_summary_from <= 0:
+            return None
+        system_config = getattr(getattr(context, "agent", None), "system_config", None)
+        if system_config is None:
+            return None
+        # Asked here, not in the call: without a client there is no summary,
+        # and a selection made on one that cannot be built would take every
+        # long result out of the conversation for a pointer nobody writes.
+        llm = self._summary_llm(system_config, profile)
+        if llm is None:
+            return None
+        token = getattr(context, "cancellation_token", None)
+
+        async def summarize(text: str, tool_name: str) -> str | None:
+            from datetime import datetime as _dt
+            from agent_system.llm.models import ChatMessage
+            prompt = (f"Summarize what this {tool_name} result says, for another agent that must act on it "
+                      f"without seeing the original. Keep every decision, number, name, path and open "
+                      f"question; drop repetition and ceremony. No preamble, no markdown headings.\n\n{text}")
+            # The time limit is the engine's, for the whole round: it knows how
+            # many results share it. The token ends the call when the user
+            # stops the turn.
+            answer = await llm.chat(
+                messages=[ChatMessage(role="user", content=prompt, timestamp=_dt.now())],
+                cancellation_token=token)
+            return answer if isinstance(answer, str) else str(answer)
+
+        return summarize
+
+    def _summary_llm(self, system_config: Any, profile: str):
+        """One client per profile, kept for the life of the plugin -- a failure
+        too: a profile that does not resolve would otherwise be rebuilt, and
+        logged, for every single result."""
+        if profile in self._summary_llms:
+            return self._summary_llms[profile]
+        try:
+            from agent_system.llm.factory import create_llm_from_profile
+            ssl_verify = getattr(getattr(system_config, "network", None), "ssl_verify", None)
+            client = create_llm_from_profile(system_config, profile, ssl_verify=ssl_verify)
+        except Exception as exc:  # noqa: BLE001 - no summary is not a failed compaction
+            logger.warning("[ContextEngineer] no summary client for profile %r, none will be written: %s",
+                           profile, exc)
+            client = None
+        self._summary_llms[profile] = client
+        return client
+
     def _get_session_components(self, session_id: str,
                                 overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         """Get or create session-scoped components.
@@ -845,6 +900,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # plugin-level attributes here ignored an agent's own thresholds at
             # the gate, before the strategy that honours them was ever asked.
             cfg = strategy.config
+            # Before the gate asks what arrives: whether a long result is worth
+            # a summary is part of that question, and the LLM layer is reached
+            # through the agent of THIS call, while the strategy outlives it.
+            strategy.summarize = self._summarizer(context, cfg)
 
             # Get actual or estimated token usage (prefer actual from usage_tracker)
             current_tokens, reading_is_whole = self._read_tokens(context, messages_as_dicts, strategy)

@@ -29,9 +29,10 @@ import hashlib
 import json
 import logging
 import os
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field, fields
-from typing import Any, Iterator, NamedTuple
+from typing import Any, Awaitable, Callable, Iterator, NamedTuple
 
 from agent_system.llm.message_roles import is_input, opens_a_turn
 from agent_system.utils.multimodal_tool_content import extract_inline_media
@@ -75,6 +76,13 @@ class CompactionConfig:
     # A NEW tool result larger than this share of the model's context window is
     # stored on arrival, below every threshold (Pre-Layer T). 0 disables it.
     tool_result_max_window_share: float = 0.25
+    # A NEW tool result of this many tokens is stored on arrival AND a cheap
+    # model writes what it says into the placeholder -- for a hand-over to an
+    # expensive agent, which pays for every token of a long answer it was handed.
+    # The full text stays in the store and is read back with the read tool.
+    # 0 disables it; without summary_profile nothing is summarized.
+    tool_result_summary_from: int = 0
+    tool_result_summary_profile: str = ""
 
     # Message archival settings
     archive_after_turns: int = 10    # Archive messages older than N turns
@@ -255,6 +263,66 @@ ARCHIVED_REF_TYPE = "archived_ref"
 #: switch the exemption off and bring the retrieval loop back. The answer
 #: identifying itself survives any renaming.
 RETRIEVAL_MARKER = "retrieval_result"
+
+
+#: Where a wrapped answer keeps its prose: a sub-agent result
+#: ({"instance_id","status","result"}), an untrusted wrapper ({"untrusted":
+#: true, "content": …}, which the tools put INSIDE "result" or "data"), a file
+#: read, a plain answer.
+_PROSE_FIELDS = ("result", "content", "text", "output", "answer", "data")
+#: How deep a wrapper may be nested before its prose stops counting as prose.
+_PROSE_DEPTH = 3
+#: What the summarizing model is shown, what may come back, how short that has
+#: to be to be a summary at all, and how much of the wrapper the prose must be
+#: (below that the other fields carry their own facts -- a build result's
+#: status and exit code next to its log -- and a summary of the prose alone
+#: would drop them).
+SUMMARY_INPUT_CHARS = 60_000
+SUMMARY_CHARS = 1_200
+SUMMARY_MAX_SHARE = 0.5
+SUMMARY_WRAPPER_SHARE = 0.8
+#: All the summaries of one round together, well short of the hook's budget,
+#: and the least that is worth starting a call with.
+SUMMARY_ROUND_S = 20.0
+SUMMARY_MIN_CALL_S = 1.0
+
+
+def _prose_of(content: str) -> str | None:
+    """The text worth summarizing in a tool result, or None when there is none.
+
+    A structured result is read back whole; a summary of it would be a second,
+    lossy shape of the same data. A wrapper around prose -- what a sub-agent
+    hands its caller -- is worth exactly its prose.
+    """
+    stripped = content.strip()
+    if not stripped.startswith(("{", "[")):
+        return content
+    try:
+        data = json.loads(stripped)
+    except ValueError:
+        return content            # looked like JSON, is not: prose after all
+    prose = _wrapped_prose(data, _PROSE_DEPTH)
+    if prose is None or len(prose) < len(content) * SUMMARY_WRAPPER_SHARE:
+        # Not a wrapper around prose but a result that HAS prose in it: a build
+        # result's log sits next to its status, error and exit code, and a
+        # summary written from the log alone would drop them.
+        return None
+    return prose
+
+
+def _wrapped_prose(data: Any, depth: int) -> str | None:
+    """The prose a wrapper holds. The tools nest them: a sub-agent's answer
+    arrives as {"result": {"untrusted": true, "content": "…"}}."""
+    if not isinstance(data, dict) or depth <= 0:
+        return None
+    for key in _PROSE_FIELDS:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        inner = _wrapped_prose(value, depth - 1)
+        if inner is not None:
+            return inner
+    return None
 
 
 def _is_retrieval_result(message: dict[str, Any]) -> bool:
@@ -499,7 +567,8 @@ class LayeredCompactionStrategy:
         core_memory: CoreMemory,
         archival_memory: ArchivalMemory,
         config: CompactionConfig | None = None,
-        media_store: MediaStore | None = None
+        media_store: MediaStore | None = None,
+        summarize: Callable[[str, str], Awaitable[str | None]] | None = None
     ):
         """Initialize the compaction strategy.
 
@@ -509,12 +578,19 @@ class LayeredCompactionStrategy:
             archival_memory: Archive for old messages
             config: Compaction configuration
             media_store: Optional store for inline media before compaction
+            summarize: (content, tool_name) -> summary for a stored result, or
+                None for none. The hook builds it; the engine stays free of the
+                LLM layer and of system_config.
         """
         self.tool_store = tool_store
         self.core_memory = core_memory
         self.archival_memory = archival_memory
         self.config = config or CompactionConfig()
         self.media_store = media_store
+        self.summarize = summarize
+        #: Seconds left for the summaries of the current round. Pre-Layer T
+        #: resets it per round; a direct call gets the full one.
+        self._summary_budget = SUMMARY_ROUND_S
         #: Set per run by ``compact``; pre-set so a directly called layer
         #: cannot fail on a missing attribute instead of storing the media.
         #: It is a SHARED pot, not a private one — ``_store_inline_media`` says
@@ -735,10 +811,12 @@ class LayeredCompactionStrategy:
         # sent; neither the thresholds nor the hysteresis hold it back.
         arrivals = self.oversized_arrivals(result.modified_messages, context_window)
         if arrivals:
+            # One budget for the whole round, spent by the summaries in it.
+            self._summary_budget = SUMMARY_ROUND_S
             estimated = 0
             for i in arrivals:
                 msg = result.modified_messages[i]
-                reference = await self._store_tool_result(msg, msg["content"])
+                reference = await self._store_tool_result(msg, msg["content"], on_arrival=True)
                 result.modified_messages[i] = {**msg, "content": reference}
                 result.tool_results_stored += 1
                 estimated += (estimate_content_tokens(msg["content"])
@@ -1643,28 +1721,100 @@ class LayeredCompactionStrategy:
         retrieval answer is exempt for the reason Layer 1 gives.
         """
         share = self.config.tool_result_max_window_share
-        if not context_window or share <= 0:
+        window_limit = context_window * share if context_window and share > 0 else None
+        summarizing = self.summarize is not None and self.config.tool_result_summary_from > 0
+        if window_limit is None and not summarizing:
             return []
-        limit = context_window * share
-        return [i for i in _arrival_indices(messages)
-                if messages[i].get("role") == "tool"
-                and isinstance(messages[i].get("content"), str)
-                and not _is_retrieval_result(messages[i])
-                and estimate_content_tokens(messages[i]["content"]) > limit]
+        picked = []
+        for i in _arrival_indices(messages):
+            message = messages[i]
+            content = message.get("content")
+            if (message.get("role") != "tool" or not isinstance(content, str)
+                    or _is_retrieval_result(message)):
+                continue
+            # Over the share: out of the window's way, as before. Over the
+            # summary floor: only what a summary can actually replace -- taking
+            # a structured result out for a pointer nobody summarizes would
+            # cost the next agent a read call instead of saving it one.
+            if window_limit is not None and estimate_content_tokens(content) > window_limit:
+                picked.append(i)
+            elif summarizing and self._summary_prose(content) is not None:
+                picked.append(i)
+        return picked
 
-    async def _store_tool_result(self, msg: dict[str, Any], content: str) -> str:
-        """Store one tool result and return the placeholder that replaces it."""
+    def _summary_prose(self, content: str) -> str | None:
+        """The text a summary would be written from, if one is due for this
+        result at all: prose, and enough of it to be worth a model."""
+        floor = self.config.tool_result_summary_from
+        if floor <= 0:
+            return None
+        text = _prose_of(content)
+        if text is None or estimate_content_tokens(text) < floor:
+            return None
+        return text
+
+    async def _store_tool_result(self, msg: dict[str, Any], content: str,
+                                 on_arrival: bool = False) -> str:
+        """Store one tool result and return the placeholder that replaces it.
+
+        ``on_arrival`` is Pre-Layer T's call, the one result of the round the
+        model has not seen yet. Layer 1 comes through here too, with the whole
+        history at once: a summary per result there would be dozens of model
+        calls in one hook, and the hook's budget ends the compaction for all
+        of them (hooks/registry.py). What Layer 1 stores keeps its preview.
+        """
         # A bare ref+token_count gives the model nothing to decide what to
         # find= for — it can only page blindly. A cheap preview (no LLM call)
         # is enough to point it at find=.
         preview = " ".join(content.split())[:200]
+        written = await self._written_summary(msg, content) if on_arrival else None
         return await asyncio.to_thread(
             self.tool_store.store_and_reference,
             tool_call_id=msg.get("tool_call_id", ""),
             tool_name=msg.get("name", "unknown"),
             content=content,
-            summary=preview,
+            summary=written or preview,
+            inline_summary=written,
         )
+
+    async def _written_summary(self, msg: dict[str, Any], content: str) -> str | None:
+        """What a cheap model says this result contains, or None for the preview.
+
+        Only prose is worth it: a structured result is read back whole, and a
+        summary of JSON would be a second, lossy shape of the same thing.
+        """
+        # The profile decides whether there IS a summarizer (the hook builds
+        # none without one); _summary_prose decides what is worth one, and it
+        # is the same question the selection asked.
+        text = self._summary_prose(content) if self.summarize is not None else None
+        if text is None or self._summary_budget < SUMMARY_MIN_CALL_S:
+            # The budget is the ROUND's, not the call's: several results arrive
+            # together (a fan-out to sub-agents is this feature's own case), and
+            # the hook that runs all of this is dropped whole when its own
+            # budget ends -- with the storing every other result was due.
+            return None
+        started = time.monotonic()
+        try:
+            # Only the head of it: the result Pre-Layer T exists for can be a
+            # whole book, and the cheap call would be the run's dearest.
+            head = text[:SUMMARY_INPUT_CHARS]
+            if len(text) > SUMMARY_INPUT_CHARS:
+                head += "\n[… the rest is only in the stored result]"
+            answer = await asyncio.wait_for(
+                self.summarize(head, str(msg.get("name") or "unknown")), timeout=self._summary_budget)
+        except Exception as exc:  # noqa: BLE001 - CancelledError is not an Exception and stays
+            logger.warning("Summary of a %s result failed, keeping the preview: %s", msg.get("name"), exc)
+            return None
+        finally:
+            self._summary_budget -= time.monotonic() - started
+        summary = " ".join(str(answer or "").split())
+        if not summary or len(summary) > len(text) * SUMMARY_MAX_SHARE:
+            # Measured BEFORE the cap: a model that echoes instead of
+            # summarizing would otherwise pass as a summary of everything it
+            # did not write -- a prefix of the result, cut mid-word, resent for
+            # the rest of the session.
+            return None
+        return summary[:SUMMARY_CHARS] + ("…" if len(summary) > SUMMARY_CHARS else "")
 
     async def _apply_layer1(self, result: CompactionResult, bytes_exceeded: bool = False) -> None:
         """Layer 1: Reversible compaction.

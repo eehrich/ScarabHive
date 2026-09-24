@@ -207,7 +207,8 @@ class ToolResultStore:
         tool_name: str,
         content: str,
         session_id: str | None = None,
-        summary: str | None = None
+        summary: str | None = None,
+        inline_summary: str | None = None
     ) -> str:
         """Store tool result and return compact reference.
         
@@ -217,7 +218,9 @@ class ToolResultStore:
             content: Full tool output content
             session_id: Session ID for isolation
             summary: Optional summary of the content
-            
+            inline_summary: Summary to put INTO the placeholder, for a caller
+                that paid an LLM for it (see the note at the return)
+
         Returns:
             Compact reference string to replace content in context
         """
@@ -287,14 +290,22 @@ class ToolResultStore:
         # here is resent on EVERY future turn, forever — not a one-time cost.
         # 'summary' is stored (for list() to show on demand) but kept out of
         # what gets resent unconditionally.
+        #
+        # ``inline_summary`` is the one exception, and it is the same trade made
+        # the other way: a caller that had a model write a few hundred tokens
+        # about twenty thousand wants exactly those resent instead of a pointer
+        # the next model must page through. Only that caller pays it.
         import json
-        return json.dumps({
+        reference = {
             "type": "tool_result_ref",
             "tool_name": tool_name,
             "ref_id": short_id,
             "content_hash": content_hash,
             "token_count": token_count,
-        })
+        }
+        if inline_summary:
+            reference["summary"] = inline_summary
+        return json.dumps(reference)
     
     @_synchronized
     def retrieve(self, reference_id: str) -> ToolResultEntry | None:
