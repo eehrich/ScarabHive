@@ -618,6 +618,15 @@ llm_system:
       description: "Local model for privacy and offline usage"
       max_steps: 500
 
+    # Was vorhandenen Text verdichtet, statt etwas zu entscheiden: ein langes
+    # Tool-Ergebnis auf dem Weg zu einem teuren Agenten, ein alter Teil eines
+    # Gespraechs. Billig und schnell. Die Plugins nennen dieses PROFIL, nicht
+    # ein Modell — welches Modell es ist, steht nur hier.
+    summarizer:
+      model_ref: openrouter-gemini-flash-lite
+      description: "Cheap fast model that condenses existing text (context_engineer)"
+      max_steps: 500
+
   default_profile: or-deepseek-flash
 
   # =============================================================================

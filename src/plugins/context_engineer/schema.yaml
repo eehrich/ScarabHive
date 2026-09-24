@@ -244,8 +244,13 @@ config:
 
   tool_result_summary_profile:
     type: string
-    default: ""
-    description: "The llm_profile that writes those summaries (a cheap fast one, e.g. or-gemini-flash-lite). Empty: nothing is summarized, whatever tool_result_summary_from says. Every summarized result goes to that profile's provider, file contents included -- pick one you trust with what the agent reads."
+    default: "summarizer"
+    description: "The llm_profile that writes those summaries -- a NAME from config/llm.yaml, which is where the model behind it is chosen and changed. 'summarizer' ships as a cheap fast profile. Empty: nothing is summarized, whatever tool_result_summary_from says. Every summarized result goes to that profile's provider, file contents included -- pick one you trust with what the agent reads."
+
+  tool_result_summary_tools:
+    type: array
+    default: []
+    description: "Which tools' results may be summarized, as name patterns (fnmatch, e.g. [\"sub_agent_manager_*\", \"coding_cli_*\"]). The tool name carries the instance prefix. Empty (default) means every tool -- right for an agent that only takes hand-overs, wrong for one that also reads files with the same hook, because a long file would arrive as a summary it has to read back. Per agent via hooks.overrides."
 
   # Tool Result Clearing (Legacy - kept for compatibility)
 

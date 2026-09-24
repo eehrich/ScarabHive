@@ -74,11 +74,12 @@ def _messages(content, name="sub_agent_manager_wait"):
             _result(content, name)]
 
 
-async def _engineer(plugin, session_id, messages, window=WINDOW):
+async def _engineer(plugin, session_id, messages, window=WINDOW, overrides=None):
     agent = SimpleNamespace(system_config=SimpleNamespace(network=SimpleNamespace(ssl_verify=True)))
     result = await plugin.engineer_context(HookContext(
         hook_type=HookType.PRE_LLM_CALL, request_id=f"req-{session_id}", session_id=session_id,
-        messages=messages, llm=SimpleNamespace(context_window=window), agent=agent))
+        messages=messages, llm=SimpleNamespace(context_window=window), agent=agent,
+        hook_config=overrides or {}))
     assert result.success, result.error
     return [m for m in result.context.messages
             if getattr(m, "injected_by", None) != hooks_mod._RESTORATION_MARKER]
@@ -438,3 +439,165 @@ def _is_reference(message):
         return json.loads(message.content).get("type") == TOOL_RESULT_REF_TYPE
     except (TypeError, ValueError, AttributeError):
         return False
+
+
+# --- Which tools a summary may replace -------------------------------------
+#
+# Empty means every tool, and for an agent that only takes hand-overs that is
+# right. One that also reads files through the same hook would get a summary
+# where it asked for the file -- a turn spent instead of saved.
+
+SUMMARY_TOOLS = "tool_result_summary_tools"
+
+
+@pytest.mark.asyncio
+async def test_a_tool_the_patterns_do_not_name_keeps_its_result_whole(plugin, llm):
+    out = await _engineer(plugin, "unnamed", _messages(LONG_PROSE, name="file_ops_read"),
+                          overrides={SUMMARY_TOOLS: ["sub_agent_manager_*"]})
+
+    assert out[-1].content == LONG_PROSE and llm.prompts == []
+
+
+@pytest.mark.asyncio
+async def test_a_named_tool_is_summarized_as_before(plugin, llm):
+    out = await _engineer(plugin, "named", _messages(LONG_PROSE),
+                          overrides={SUMMARY_TOOLS: ["sub_agent_manager_*", "coding_cli_*"]})
+
+    assert _reference(out[-1])["summary"] == SUMMARY
+
+
+@pytest.mark.asyncio
+async def test_no_patterns_means_every_tool(plugin, llm):
+    """The default, and what the feature shipped as."""
+    out = await _engineer(plugin, "all", _messages(LONG_PROSE, name="file_ops_read"))
+
+    assert _reference(out[-1])["summary"] == SUMMARY
+
+
+@pytest.mark.asyncio
+async def test_one_pattern_written_as_a_string_is_not_read_letter_by_letter(plugin, llm):
+    """A bare string in YAML is the likely slip. Iterating it would match its
+    CHARACTERS -- and a pattern ending in "*" would still match everything
+    through that one character, which is why this one names the tool exactly."""
+    out = await _engineer(plugin, "string", _messages(LONG_PROSE),
+                          overrides={SUMMARY_TOOLS: "sub_agent_manager_wait"})
+
+    assert _reference(out[-1])["summary"] == SUMMARY
+
+
+@pytest.mark.asyncio
+async def test_one_pattern_as_a_string_still_EXCLUDES_the_tools_it_does_not_name(plugin, llm):
+    """The inclusion case alone cannot see the difference: a string that is
+    dropped instead of split becomes an empty list, and empty means every tool
+    -- the named tool would be summarized either way."""
+    out = await _engineer(plugin, "stringout", _messages(LONG_PROSE, name="file_ops_read"),
+                          overrides={SUMMARY_TOOLS: "sub_agent_manager_wait"})
+
+    assert out[-1].content == LONG_PROSE and llm.prompts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("patterns", [["sub_agent_manager_*"], ["*"], 3],
+                         ids=["named", "wildcard", "unreadable"])
+async def test_a_result_without_a_tool_name_is_never_summarized_under_patterns(
+        plugin, llm, patterns, request):
+    """A session restored mid tool-turn carries no name (model_dump drops it).
+    No pattern an operator could write names that result, so once they name
+    tools at all it stays whole -- including under "*", and including under the
+    fallback an unreadable value drops to, whose empty pattern would otherwise
+    match the empty name exactly."""
+    messages = _messages(LONG_PROSE)
+    messages[-1].name = None
+    out = await _engineer(plugin, f"noname-{request.node.callspec.id}", messages,
+                          overrides={SUMMARY_TOOLS: patterns})
+
+    assert out[-1].content == LONG_PROSE and llm.prompts == []
+
+
+@pytest.mark.asyncio
+async def test_patterns_are_matched_case_sensitively_on_every_platform(plugin, llm):
+    """fnmatch lowercases both sides on Windows and nowhere else. A camelCase
+    tool name would then be filtered one way on a developer's machine and the
+    other way on the server -- and a filter that lets a tool through in
+    production only is the leak this key exists to prevent."""
+    out = await _engineer(plugin, "case", _messages(LONG_PROSE, name="firecrawl_scrapeUrl"),
+                          overrides={SUMMARY_TOOLS: ["firecrawl_scrapeurl"]})
+
+    assert out[-1].content == LONG_PROSE and llm.prompts == []
+
+
+@pytest.mark.asyncio
+async def test_the_default_profile_exists_in_the_shipped_llm_config():
+    """The plugin names a profile, never a model -- so the name has to be
+    there. A default pointing at nothing would fail silently: no client, no
+    summarizer, no selection, and every long result simply stays whole."""
+    from agent_system.config.settings import load_settings
+    from plugins.context_engineer.compaction import CompactionConfig
+
+    name = CompactionConfig().tool_result_summary_profile
+    profiles = getattr(load_settings().llm_system, "profiles", None) or {}
+    assert name in profiles, (
+        f"{name!r} is the shipped default of tool_result_summary_profile "
+        f"but no such profile is in config/llm.yaml")
+
+
+@pytest.mark.asyncio
+async def test_a_result_stored_for_the_window_is_still_not_summarized(plugin, llm):
+    """The two reasons to store are independent: the share takes a result out
+    because it does not fit, and that is no permission to summarize a tool the
+    patterns do not name. Selection cannot be the only place that asks --
+    a share-picked result reaches the decision without it."""
+    out = await _engineer(plugin, "shared", _messages(LONG_PROSE, name="file_ops_read"),
+                          window=4_000,   # share 0.25 -> stored from 1k tokens on
+                          overrides={SUMMARY_TOOLS: ["sub_agent_manager_*"]})
+
+    reference = _reference(out[-1])       # stored: it did not fit the window
+    assert "summary" not in reference and llm.prompts == []
+    assert _stored(plugin, "shared", reference) == LONG_PROSE
+
+
+@pytest.mark.asyncio
+async def test_a_pattern_list_that_is_no_list_summarizes_nothing_and_breaks_nothing(plugin, llm):
+    """Two things must hold, and they pull in opposite directions.
+
+    A list is ITERATED at the use site: a number there raises inside the hook,
+    and a failed hook drops the WHOLE compaction -- every result of that turn
+    stays in the context until it outgrows the provider. So it must not crash.
+
+    But it must not fall back to the empty list either: empty means EVERY tool.
+    An operator writes this key to keep results away from another provider, and
+    a typo would hand them over."""
+    out = await _engineer(plugin, "scalar", _messages(LONG_PROSE), overrides={SUMMARY_TOOLS: 3})
+
+    assert out[-1].content == LONG_PROSE and llm.prompts == []
+
+
+@pytest.mark.asyncio
+async def test_a_mapping_of_patterns_is_not_read_as_its_keys(plugin, llm):
+    """Iterating a mapping yields its KEYS, so a wrong shape would quietly
+    filter by them -- no error anywhere, and a tool the operator never named
+    would be summarized because it happens to be a key. Written as a mapping,
+    this one names exactly the tool it must NOT let through."""
+    out = await _engineer(plugin, "mapping", _messages(LONG_PROSE, name="file_ops_read"),
+                          overrides={SUMMARY_TOOLS: {"file_ops_read": True}})
+
+    assert out[-1].content == LONG_PROSE and llm.prompts == []
+
+
+def test_a_field_with_a_default_factory_falls_back_to_its_factory(monkeypatch, tmp_path):
+    """Without the factory the fallback is dataclasses.MISSING -- truthy and
+    not iterable. Today only schema.yaml's `default: []` keeps it away, and
+    nothing checks that the key is still there."""
+    from dataclasses import MISSING, fields
+    from plugins.context_engineer.compaction import CompactionConfig
+
+    factory_fields = [f.name for f in fields(CompactionConfig) if f.default_factory is not MISSING]
+    assert factory_fields, "this test guards the default_factory path; nothing uses one anymore"
+
+    impl = ContextEngineerPlugin(PLUGIN_DIR, stats_history=[])
+    impl._storage_base = tmp_path
+    monkeypatch.setattr(impl, "get_config", lambda: {})   # no schema defaults to lean on
+    impl.apply_config({})
+
+    for name in factory_fields:
+        assert getattr(impl, name) == [], f"{name} fell back to {getattr(impl, name)!r}"

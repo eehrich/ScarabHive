@@ -15,7 +15,7 @@ import shutil
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, fields
+from dataclasses import MISSING, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -456,8 +456,15 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # Compaction settings: one attribute per dataclass field, defaults from
         # the dataclass itself so there is no second copy of them anywhere.
         for f in fields(CompactionConfig):
+            # A field with a default_factory has no `default` -- it holds
+            # MISSING, which is truthy and not iterable. Running the factory
+            # is what the dataclass constructor does; this loop sets the
+            # attributes itself and has to do the same. (Before, the one list
+            # field was saved from MISSING only by schema.yaml happening to
+            # carry `default: []`.)
+            fallback = f.default_factory() if f.default_factory is not MISSING else f.default
             setattr(self, f.name, _coerce(merged[f.name], f.type, f.name)
-                    if f.name in merged else f.default)
+                    if f.name in merged else fallback)
 
         # Plugin-level settings — the ones with no CompactionConfig field.
         # PLUGIN_LEVEL_KEYS must list exactly these, or unknown_config_keys()

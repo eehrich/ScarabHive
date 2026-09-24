@@ -32,6 +32,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field, fields
+from fnmatch import fnmatchcase
 from typing import Any, Awaitable, Callable, Iterator, NamedTuple
 
 from agent_system.llm.message_roles import is_input, opens_a_turn
@@ -80,9 +81,16 @@ class CompactionConfig:
     # model writes what it says into the placeholder -- for a hand-over to an
     # expensive agent, which pays for every token of a long answer it was handed.
     # The full text stays in the store and is read back with the read tool.
-    # 0 disables it; without summary_profile nothing is summarized.
+    # 0 disables it -- that count is the switch. The profile is a NAME from
+    # config/llm.yaml, never a model: which model condenses text is the
+    # operator's to configure and to change when a cheaper one appears.
     tool_result_summary_from: int = 0
-    tool_result_summary_profile: str = ""
+    tool_result_summary_profile: str = "summarizer"
+    # Which tools' results a summary may replace, as fnmatch patterns over the
+    # tool name ("sub_agent_manager_*"). Empty = every tool, which is what a
+    # hand-over agent wants; an agent that also READS files with the same hook
+    # names the hand-over tools here, so its file reads arrive whole.
+    tool_result_summary_tools: list[str] = field(default_factory=list)
 
     # Message archival settings
     archive_after_turns: int = 10    # Archive messages older than N turns
@@ -166,7 +174,12 @@ def _coerce(value: Any, type_name: str, field_name: str) -> Any:
     A value that cannot be coerced is passed through UNCHANGED rather than
     dropped: a wrong type is the operator's to see, and silently substituting
     a default here would be the same disappearing act this module exists to
-    stop.
+    The exception is ``list[str]``, which is ITERATED at its use site: passing
+    a number through raises there and costs the whole compaction. A value of
+    that type is therefore dropped instead -- with a warning, and to a pattern
+    that matches nothing rather than to the empty list, which the use site
+    reads as "everything". An absent value (``None``) is not that case: it is
+    the key left blank, and it yields the empty list the default already is.
     """
     try:
         if type_name == "bool":
@@ -177,6 +190,31 @@ def _coerce(value: Any, type_name: str, field_name: str) -> Any:
             return int(value)
         if type_name == "float":
             return float(value)
+        if type_name == "list[str]":
+            # A single pattern written as a plain string is the likely slip,
+            # and iterating a str would match its CHARACTERS.
+            if isinstance(value, str):
+                return [p.strip() for p in value.split(",") if p.strip()]
+            if isinstance(value, (list, tuple)):
+                return [str(v) for v in value]
+            if value is None:
+                return []
+            # Everything else is dropped rather than passed through, against
+            # this function's own rule: a list is ITERATED at the use site, so
+            # a number there raises inside the hook and the whole compaction is
+            # lost -- silently, until the context outgrows the provider. A
+            # mapping would be worse: it iterates its keys and filters by them
+            # without a word.
+            #
+            # It is dropped to a pattern that matches NOTHING, not to the empty
+            # list: empty means "every tool" at the use site, so an unreadable
+            # filter would turn into the most permissive one there is. The
+            # operator who writes this key writes it to keep results away from
+            # another provider; a typo must not hand them over.
+            logger.warning(
+                "[ContextEngineer] config '%s' = %r is not a list of strings; "
+                "nothing is summarized until it is one", field_name, value)
+            return [MATCHES_NO_TOOL]
     except (TypeError, ValueError):
         logger.warning(
             "[ContextEngineer] config '%s' = %r is not a %s; using it as-is",
@@ -272,6 +310,11 @@ RETRIEVAL_MARKER = "retrieval_result"
 _PROSE_FIELDS = ("result", "content", "text", "output", "answer", "data")
 #: How deep a wrapper may be nested before its prose stops counting as prose.
 _PROSE_DEPTH = 3
+#: What an unreadable filter falls back to: the empty pattern, which matches no
+#: NAMED tool, while a nameless result is turned away by the use site's own
+#: check. The empty LIST cannot serve here -- it means "every tool" and would
+#: turn a typo into the most permissive filter there is.
+MATCHES_NO_TOOL = ""
 #: What the summarizing model is shown, what may come back, how short that has
 #: to be to be a summary at all, and how much of the wrapper the prose must be
 #: (below that the other fields carry their own facts -- a build result's
@@ -1738,15 +1781,27 @@ class LayeredCompactionStrategy:
             # cost the next agent a read call instead of saving it one.
             if window_limit is not None and estimate_content_tokens(content) > window_limit:
                 picked.append(i)
-            elif summarizing and self._summary_prose(content) is not None:
+            elif summarizing and self._summary_prose(content, message.get("name")) is not None:
                 picked.append(i)
         return picked
 
-    def _summary_prose(self, content: str) -> str | None:
+    def _summary_prose(self, content: str, tool_name: str | None) -> str | None:
         """The text a summary would be written from, if one is due for this
-        result at all: prose, and enough of it to be worth a model."""
+        result at all: the right tool, prose, and enough of it to be worth a
+        model."""
         floor = self.config.tool_result_summary_from
+        patterns = self.config.tool_result_summary_tools
         if floor <= 0:
+            return None
+        # No patterns = every tool. With patterns, a result has to be NAMED to
+        # pass: a nameless one (a session restored mid tool-turn carries no
+        # name) can be matched by no pattern the operator could write, and
+        # summarizing what they did not name is what this key exists to stop.
+        # fnmatchcase, not fnmatch: fnmatch lowercases both sides on Windows
+        # and nowhere else, so a camelCase tool name would be filtered one way
+        # on a developer's machine and the other way on the server.
+        if patterns and not (tool_name
+                             and any(fnmatchcase(tool_name, p) for p in patterns)):
             return None
         text = _prose_of(content)
         if text is None or estimate_content_tokens(text) < floor:
@@ -1786,7 +1841,8 @@ class LayeredCompactionStrategy:
         # The profile decides whether there IS a summarizer (the hook builds
         # none without one); _summary_prose decides what is worth one, and it
         # is the same question the selection asked.
-        text = self._summary_prose(content) if self.summarize is not None else None
+        text = (self._summary_prose(content, msg.get("name"))
+                if self.summarize is not None else None)
         if text is None or self._summary_budget < SUMMARY_MIN_CALL_S:
             # The budget is the ROUND's, not the call's: several results arrive
             # together (a fan-out to sub-agents is this feature's own case), and
