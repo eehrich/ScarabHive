@@ -123,6 +123,16 @@ elsewhere (its request tree going down, the process shutting down) and an
 archiving to make room — both happen behind the caller's back, and it is asleep
 over a job it has not heard the end of.
 
+The ringing stops once the ending is read -- wherever it is read. The entry in the
+job's process says so for a reader there; a caller woken into a run of its own
+reads the stored state instead, where this process's entry says nothing. So an
+ending the bell rings for is stored `ending_unread`, and a reader of the stored
+state hands it over (poll and wait, a `continue` reopening the instance, the
+caller's `delete`); the bell asks both (`_ending_still_unread`, which the core
+awaits between rings). It used to ring on over an ending read elsewhere, up to its
+budget, and the marker of the last ring woke a second, paid run when that caller's
+turn let go. An ending that could not be stored has only its entry to go by.
+
 A wake that cannot be delivered is logged and costs the caller a poll, never the
 job: the run's ending is recorded before anyone is told about it. A caller woken
 into a process of its own reads that stored ending, so the job's entry in this

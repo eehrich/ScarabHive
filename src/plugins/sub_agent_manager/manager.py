@@ -648,6 +648,7 @@ class SubAgentManager:
                 current_activity=None,
                 activity_updated_at=None,
                 error=None,  # an earlier run's: a later failure that stores none would report it
+                ending_unread=None,  # continued, the caller has it: the bell of the job's process stops
             )
 
     async def update_sub_session_metadata(

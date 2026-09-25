@@ -2121,6 +2121,8 @@ class TestCancelReachesABlockingRun:
                    and fields["current_activity"] is None for fields in written), written
         # nor an earlier run's error: a later failure that stores none would report it
         assert any("error" in fields and fields["error"] is None for fields in written), written
+        # continued, the caller has the ending: the bell of the job's process stops
+        assert any("ending_unread" in fields and fields["ending_unread"] is None for fields in written), written
 
     @pytest.mark.asyncio
     async def test_a_continue_refused_as_already_running_touches_nothing(self, server):
@@ -2922,24 +2924,116 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         # held by the caller's own turn: the one case the guard is asked in at all
         self.presence(monkeypatch, guards=guards, state="delivered_next_step")
         agent = SlowAgent()
-        TestCancelReachesABlockingRun.wire(server, agent)
+        session_service = TestCancelReachesABlockingRun.wire(server, agent)
+        entries = self.stored_entries(server, session_service)
         await self.start(server, wake_when_done=True)
         await self.run_to_end(server, agent)
 
         still_needed, = guards
-        assert still_needed is not None and still_needed() is True, \
+        assert entries["sub_slow"].get("ending_unread") is True, entries
+        assert still_needed is not None and await still_needed() is True, \
             "the ending is sitting there unread -- the ringing has to go on"
 
         await server.manage_sub_agent(
             {"operation": "poll", "instance_id": "sub_slow", "_session_id": "parent1"})
 
-        assert still_needed() is False, "it rings on after the caller read the result itself"
+        assert await still_needed() is False, "it rings on after the caller read the result itself"
 
         # And a fresh job under the same id -- what a `continue` on the instance leaves behind --
         # is not an unread ending either: asking only whether SOMETHING is there would ring on
         # over it, and that second ring starts a second woken run.
         server._async_jobs["sub_slow"] = {"instance_id": "sub_slow", "status": "running"}
-        assert still_needed() is False, "any job under that id counted as an ending nobody read"
+        assert await still_needed() is False, "any job under that id counted as an ending nobody read"
+
+    @staticmethod
+    def stored_entries(server, session_service) -> dict:
+        """The parent's stored sub-agent entries as the manager writes them, and as a load reads
+        them back -- what a process other than this one sees."""
+        entries: dict = {}
+
+        async def write(parent_session_id, sub_session_id, **fields):
+            entries.setdefault(sub_session_id, {}).update(fields)
+            return True
+        server._get_manager().update_sub_session_metadata = AsyncMock(side_effect=write)
+        load = session_service.session_manager.load_session
+        loaded = load.side_effect
+
+        async def with_entries(user_id, session_id, *args, **kwargs):
+            data = await loaded(user_id, session_id, *args, **kwargs)
+            return {**data, "metadata": {"sub_agents": entries}} if session_id == "parent1" else data
+        load.side_effect = with_entries
+        return entries
+
+    @pytest.mark.asyncio
+    async def test_a_reading_in_another_process_stops_the_ringing(self, server, monkeypatch):
+        """A caller woken into a run of its own reads the ending from the stored state, where this
+        process's entry says nothing. The ringing went on to its budget, and the marker of its last
+        ring woke a second, paid run once that caller's turn let go."""
+        guards = []
+        self.presence(monkeypatch, guards=guards, state="delivered_next_step")
+        agent = SlowAgent()
+        session_service = TestCancelReachesABlockingRun.wire(server, agent)
+        entries = self.stored_entries(server, session_service)
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+        still_needed, = guards
+
+        load = session_service.session_manager.load_session
+        entries["sub_slow"].pop("ending_unread")  # a whole-file save of another process ate the mark
+        assert await still_needed() is True, "a lost mark read as handed over, and the news was lost"
+        assert load.await_args.kwargs.get("bypass_cache") is True, "the cache can miss a write of another process"
+
+        entries["sub_slow"]["ending_unread"] = None  # the other process handed it over
+
+        assert await still_needed() is False, "it rang on over an ending read elsewhere"
+        assert "sub_slow" not in server._async_jobs, "nobody reads this entry any more"
+
+    @pytest.mark.asyncio
+    async def test_an_ending_that_could_not_be_stored_has_only_its_entry(self, server):
+        """Nothing stored says it is unread -- asking the stored state would stop the ringing for an
+        ending nobody has read."""
+        server._async_jobs["sub_x"] = {"instance_id": "sub_x", "status": "completed", "_awaiting_poll": True}
+        manager = Mock()
+        manager._session_service.session_manager.load_session = AsyncMock(return_value={"metadata": {}})
+
+        assert await server._ending_still_unread("sub_x", manager, "parent1", "u1", stored=False) is True
+        assert await server._ending_still_unread("sub_x", None, "parent1", "u1", stored=True) is True
+
+    @pytest.mark.asyncio
+    async def test_an_ending_nobody_waits_for_is_not_stored_unread(self, server, monkeypatch):
+        """No bell, no mark: only a caller that asked to be woken is asked about."""
+        self.presence(monkeypatch)
+        agent = SlowAgent()
+        session_service = TestCancelReachesABlockingRun.wire(server, agent)
+        entries = self.stored_entries(server, session_service)
+        await self.start(server)
+        await self.run_to_end(server, agent)
+
+        assert "ending_unread" not in entries["sub_slow"], entries
+
+    @pytest.mark.asyncio
+    async def test_a_poll_from_the_stored_state_hands_the_ending_over(self, server, monkeypatch):
+        """The reader without the entry -- a woken caller in its own process -- clears the stored
+        mark, which is what the bell of the job's process asks. A poll of one whose ending nobody
+        waits for writes nothing."""
+        monkeypatch.setattr(sam_server, "presence_for", lambda config: None)
+        unread = [{"instance_id": "sub_done", "agent_type": "worker", "status": "active", "ending_unread": True}]
+        manager = TestAFinishedJobDoesNotStayInMemory.stored(server, unread, [{"role": "assistant", "content": "done"}])
+        await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+        manager.update_sub_session_metadata.assert_awaited_once_with(
+            parent_session_id="parent1", sub_session_id="sub_done", ending_unread=None)
+
+        failed = [{"instance_id": "sub_done", "agent_type": "worker", "status": "failed", "ending_unread": True}]
+        manager = TestAFinishedJobDoesNotStayInMemory.stored(server, [], [])
+        manager.list_sub_sessions = AsyncMock(side_effect=[[], [], failed])
+        await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+        manager.update_sub_session_metadata.assert_awaited_once_with(
+            parent_session_id="parent1", sub_session_id="sub_done", ending_unread=None)
+
+        manager = TestAFinishedJobDoesNotStayInMemory.stored(
+            server, [{**unread[0], "ending_unread": None}], [{"role": "assistant", "content": "done"}])
+        await server._handle_poll({"instance_id": "sub_done", "_session_id": "parent1"})
+        manager.update_sub_session_metadata.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_wait_hands_back_no_bookkeeping_of_ours(self, server, monkeypatch):
@@ -3343,6 +3437,9 @@ class TestAFinishedJobDoesNotStayInMemory:
         await self.archive(server, "sub_done")
 
         assert "sub_done" not in server._async_jobs
+        # and hands the ending over in the stored state: the caller is done with it
+        written = server._get_manager().update_sub_session_metadata.await_args.kwargs
+        assert written["status"] == "archived" and "ending_unread" in written and written["ending_unread"] is None
 
     @pytest.mark.asyncio
     async def test_archiving_leaves_a_running_job_alone(self, server):

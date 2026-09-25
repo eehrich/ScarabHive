@@ -1465,7 +1465,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         parent_session_id=parent_session_id,
                         sub_session_id=sub_id,
                         status="archived",
-                        archived_at=datetime.now(UTC).isoformat()
+                        archived_at=datetime.now(UTC).isoformat(),
+                        ending_unread=None,  # the caller's own: it is done with the ending
                     )
                     if not written:
                         # It gives up quietly (parent unreadable, no sub_agents metadata, id not
@@ -1938,6 +1939,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         job["task_handle"] = None
 
             parent_session_id = params.get("_session_id")
+            # Whoever reads this ending may run in another process -- a caller woken into a run of its
+            # own -- where this entry says nothing. So the stored ending says it is unread, until a
+            # reader of the stored state hands it over (`_hand_over`); the bell asks that too.
+            rings = bool(params.get("wake_when_done") and parent_session_id and not ended_by_caller
+                         and job is not None)
             written = False
             # A run still going that holds the instance owns what the sub-session's metadata says:
             # a continue that took the slot before this job's run began, which then fails as
@@ -1953,6 +1959,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         parent_session_id=parent_session_id,
                         sub_session_id=instance_id,
                         **stored,
+                        **({"ending_unread": True} if rings else {}),
                     ) is not False
             except Exception as persist_error:
                 logger.warning(f"Failed to persist {job_status} status for {instance_id}: {persist_error}")
@@ -1991,11 +1998,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         #     each of those is a caller awake and handling the ending itself.
         # Ringing anyway is not free even once: the marker a ring leaves behind turns into a whole
         # woken run when the caller's turn ends.
-        if params.get("wake_when_done") and parent_session_id and not ended_by_caller \
-                and job is not None:
+        if rings and parent_session_id:
             return functools.partial(
-                self._wake_parent, instance_id, parent_session_id, manager, params, stored=written,
-                still_needed=lambda: self._ending_is_unread(instance_id))
+                self._wake_parent, instance_id, parent_session_id, manager, params, stored=written)
         return None
 
     async def _async_started_message(self, params: dict[str, Any], parent_session_id: str,
@@ -2073,9 +2078,52 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         job = self._async_jobs.get(instance_id)
         return bool(job and job.get("_awaiting_poll"))
 
+    async def _ending_still_unread(self, instance_id: str, manager: Optional[SubAgentManager],
+                                   parent_session_id: str, user_id: str, stored: bool) -> bool:
+        """`_ending_is_unread`, and for an ending stored unread, the stored state too -- the guard
+        the bell hands the core.
+
+        A caller woken into a run of its own reads the ending from the stored state, where this
+        process's entry says nothing. The ringing went on over a read ending, up to its budget,
+        and the marker its last ring left woke a second, paid run once that caller's turn let go.
+        Its reading clears the stored mark (`_hand_over`), and then the entry here goes too:
+        nobody reads it any more. An ending that could not be stored has only the entry.
+
+        A load that fails raises: the core logs it and rings on, which costs at most a woken run.
+        """
+        if not self._ending_is_unread(instance_id):
+            return False
+        if not stored or manager is None:
+            return True
+        # From the file: a hand-over by another process that lands within one mtime tick of this
+        # process's last read or write of the parent is invisible to the cache.
+        parent = await manager._session_service.session_manager.load_session(
+            user_id, parent_session_id, bypass_cache=True)
+        entry = ((parent.get("metadata") or {}).get("sub_agents") or {}).get(instance_id) or {}
+        # Handed over is an explicit None. A mark that is not there at all was lost -- a whole-file
+        # save of the parent by another process can eat the write that stored it -- and stopping
+        # then loses the news; ringing on costs at most a woken run.
+        if entry.get("ending_unread", True):
+            return True
+        async with self._async_jobs_lock:
+            job = self._async_jobs.get(instance_id)
+            if job is not None and job.get("_awaiting_poll"):
+                del self._async_jobs[instance_id]
+        return False
+
+    @staticmethod
+    async def _hand_over(manager: SubAgentManager, parent_session_id: str, instance_id: str) -> None:
+        """Clear the stored "unread" of an ending just handed to its caller from the stored state --
+        the mark the bell of the process that ran the job asks for (`_ending_still_unread`)."""
+        try:
+            await manager.update_sub_session_metadata(
+                parent_session_id=parent_session_id, sub_session_id=instance_id, ending_unread=None)
+        except Exception as error:  # the answer is given; the bell rings on, which costs a woken run
+            logger.debug(f"Could not mark the ending of {instance_id} read: {error}")
+
     async def _wake_parent(self, instance_id: str, parent_session_id: str,
                            manager: Optional[SubAgentManager], params: dict[str, Any],
-                           *, still_needed: Callable[[], bool], stored: bool = False) -> None:
+                           *, stored: bool = False) -> None:
         """Tell the session that started this job to look: it may have ended its turn over it.
 
         Waking is core (`core/session_presence.wake_session`), and so is the REPEATING, which is
@@ -2093,8 +2141,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         instance takes it too, and so does the caller's own `delete`. In each of those the caller
         is demonstrably awake and working, which is when the ringing should stop.
 
-        The guard is handed over by `_finish_job`: it is the one place that has the job entry as
-        the ending left it.
+        The guard is `_ending_still_unread`; whether the ending was stored (`stored`) is decided by
+        `_finish_job`, the one place that has the job entry as the ending left it.
 
         A background job lives in the process that started it. That is the API, where the job runs
         on after the turn that asked for it, and `agent-cli chat`, whose prompt waits on the same
@@ -2117,7 +2165,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             state = await wake_session(
                 self.system_config, parent_session_id, user_id,
                 what=f"sub-agent {instance_id}",
-                still_needed=still_needed,
+                still_needed=functools.partial(
+                    self._ending_still_unread, instance_id, manager, parent_session_id, user_id, stored),
                 # The run that asked for the job, by the id of its create call. Asked instead, the
                 # core reads the ringing task's current request -- a job still carries its sub-agent's
                 # there, and a stopped sub-agent read as a stopped caller that is never woken.
@@ -2386,6 +2435,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                             "error": ("Its run was cut off: the process running it ended before the "
                                       "run did. Read how far it got with 'info', or 'continue' it."),
                         }
+                    if stored.get("ending_unread"):
+                        await self._hand_over(manager, parent_session_id, instance_id)
                     result = await self._stored_result(manager, user_id, instance_id)
                     if status:
                         await status.end(f"Poll: {instance_id} completed")
@@ -2416,6 +2467,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 if aborted:
                     sub_agent = aborted[0]
                     job_status = sub_agent.get("status") if isinstance(sub_agent, dict) else sub_agent.status
+                    if isinstance(sub_agent, dict) and sub_agent.get("ending_unread"):
+                        await self._hand_over(manager, parent_session_id, instance_id)
                     if status:
                         await status.error(f"Poll: {instance_id} {job_status}")
                     return {
