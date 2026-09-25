@@ -1250,7 +1250,9 @@ class SessionManager:
 
         Refuses to overwrite a session that is live again: two sessions under
         one id is corruption, and the caller has to see it rather than lose
-        whichever copy loses the race.
+        whichever copy loses the race. Live under ANOTHER user counts too --
+        archiving freed the id, create_session checks every user for it, and
+        the cache and every owner lookup here assume one owner per id.
 
         Raises:
             ValueError: If the session data is invalid or the session is live.
@@ -1264,6 +1266,8 @@ class SessionManager:
             path = self._get_session_path(user_id, session_id)
             if path.exists():
                 raise ValueError(f"Session {session_id} is live -- refusing to overwrite it")
+            if self._session_id_exists_globally(session_id):
+                raise ValueError(f"Session {session_id} is live for another user -- refusing a second one")
 
             await self._atomic_write_async(path, session_data)
             self._cache[session_id] = (session_data, time.time())

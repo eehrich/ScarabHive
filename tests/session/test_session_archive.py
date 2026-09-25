@@ -1592,3 +1592,20 @@ async def test_an_index_held_by_another_process_is_an_answer_not_a_hang(
     # it is the registration that failed.
     assert (_user_dir(sm) / "root_idx1.json").exists()
     assert (_user_dir(sm) / "root_idx2.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_session_id_another_user_holds_meanwhile_is_not_reinstated_beside_it(sm):
+    """Archiving frees the id. Reinstated beside another user's session of that id, the two
+    shared the cache and every owner lookup, which assume one owner per id: the second
+    user's loads failed with a permission error while the first one's was cached."""
+    session = await sm.create_session(user_id=USER, title="archived")
+    archived = await sm.load_session(USER, session["session_id"])
+    await sm.delete_session(USER, session["session_id"], create_backup=False)
+    # another user's session under the same id -- a custom id, or their own archive restored first
+    await sm.reinstate_session({**archived, "user_id": "someone_else", "title": "theirs now"})
+    assert (sm.storage_path / "someone_else" / f"{session['session_id']}.json").exists(), "fixture"
+
+    with pytest.raises(ValueError, match="another user"):
+        await sm.reinstate_session(archived)
+    assert not (_user_dir(sm) / f"{session['session_id']}.json").exists()
