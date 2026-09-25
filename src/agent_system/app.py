@@ -1348,27 +1348,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 llm_profile = default_profile
 
             try:
-                # Use factory function that properly handles batch mode
-                from .llm.factory import (agent_params_for_profile, create_llm_from_profile,
-                                          resolve_llm_config_for_agent)
-                from .config.models import AgentConfig
-
-                llm_override = create_llm_from_profile(
-                    config=live,
-                    llm_profile=llm_profile,
-                    ssl_verify=getattr(live.network, "ssl_verify", None),
-                    # The agent keeps its own llm_params on a profile it did
-                    # not choose itself (see agent_params_for_profile).
-                    llm_params=agent_params_for_profile(
-                        getattr(selected_agent, "agent_config", None), llm_profile),
-                )
-
-                # Get profile info for status display
-                temp_agent_config = AgentConfig(llm_profile=llm_profile)
-                resolved = resolve_llm_config_for_agent(live, temp_agent_config)
-                model = resolved.spec.model
-                provider = resolved.spec.provider
-                llm_profile_info = f"{llm_profile}:{provider}/{model}"
+                from .llm.factory import override_for_profile
+                llm_override, llm_profile_info = override_for_profile(
+                    live, getattr(selected_agent, "agent_config", None), llm_profile)
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
                 raise HTTPException(status_code=500, detail=f"Failed to apply LLM profile: {str(e)}")

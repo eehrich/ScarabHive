@@ -346,3 +346,17 @@ class TestAgentRunOwnsTheToolIntegration:
         with pytest.raises(SystemExit):
             _run(session_id="s1")
         assert ended == ["shutdown_tools"], "a failed run left the plugins running"
+
+
+class TestAnUnknownProfile:
+    def test_it_is_refused_with_the_profiles_there_are(self, run_env, capsys):
+        """The message is the configuration's answer, not wrapped in a second
+        "failed to apply" around it -- it lists what --llm can take instead."""
+        with pytest.raises(SystemExit) as stopped:
+            _run(llm_profile="gone")
+
+        assert stopped.value.code == 1
+        err = capsys.readouterr().err
+        assert "LLM profile 'gone' not found" in err, err
+        assert "Failed to apply" not in err, err
+        assert STORED_PROFILE in err and AGENT_DEFAULT_PROFILE in err, err

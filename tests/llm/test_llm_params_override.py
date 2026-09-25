@@ -143,11 +143,13 @@ class TestEveryRunOverrideCarriesThem:
     """Anti-drift: the same line was missing at five call sites at once.
 
     Every place in the core that builds the client a RUN goes out on --
-    the agent's own, its fallback, its advanced model, and the four
-    overrides (API, agent-cli, agent-run, agent runner) plus /model --
-    has to hand create_llm_from_profile the agent's llm_params. Listing
-    the call sites is the point: the hole was that one of them forgot,
-    and a scan finds the next one that does.
+    the agent's own, its fallback, its advanced model, and the overrides
+    (API, agent-cli, agent-run, /model, a caller's switch) -- has to hand
+    create_llm_from_profile the agent's llm_params. The overrides go through
+    llm.factory.override_for_profile, which takes the agent's config by
+    construction; a call to it has to pass one. Listing the call sites is
+    the point: the hole was that one of them forgot, and a scan finds the
+    next one that does.
 
     Not in here: the helper models plugins build for themselves (a
     judge, a summarizer, an evaluator). Those do not run the agent's
@@ -159,8 +161,8 @@ class TestEveryRunOverrideCarriesThem:
         "agent_system/agent_cli.py",
         "agent_system/agent_run.py",
         "agent_system/cli_utils/chat.py",
-        "agent_system/cli_utils/agent_runner.py",
         "agent_system/servers/agent/server.py",
+        "agent_system/llm/factory.py",
     )
 
     #: What the value has to be built from. A bare ``llm_params=None`` or the
@@ -182,6 +184,16 @@ class TestEveryRunOverrideCarriesThem:
                 if not isinstance(node, ast.Call):
                     continue
                 name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+                if name == "override_for_profile":
+                    per_module[relative] = per_module.get(relative, 0) + 1
+                    # (config, agent_config, profile, ...): the agent's config
+                    # is the second argument, and None would carry nothing.
+                    passed = (node.args[1] if len(node.args) > 1 else
+                              next((kw.value for kw in node.keywords if kw.arg == "agent_config"), None))
+                    given = ast.get_source_segment(source, passed) if passed is not None else ""
+                    if not given or given == "None" or "agent_config" not in given:
+                        without.append(f"{relative}:{node.lineno} ({given or 'no agent_config'})")
+                    continue
                 if name != "create_llm_from_profile":
                     continue
                 per_module[relative] = per_module.get(relative, 0) + 1
@@ -192,7 +204,7 @@ class TestEveryRunOverrideCarriesThem:
         # Every module in the list has to carry a call -- a stale entry would
         # otherwise make the scan look wider than it is.
         empty = [m for m in self.RUN_CLIENT_MODULES if not per_module.get(m)]
-        assert not empty, f"fixture: no create_llm_from_profile in {empty} -- the list went stale"
+        assert not empty, f"fixture: no run client built in {empty} -- the list went stale"
         assert not without, ("these build a run's client without the agent's llm_params: "
                              + ", ".join(without))
 

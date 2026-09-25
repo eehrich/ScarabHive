@@ -551,13 +551,8 @@ class Agent(ToolServer):
             advanced_profile = self.agent_config.advanced_llm_profile if self.agent_config else None
             if not advanced_profile or advanced_profile == self.agent_config.default_llm_profile:
                 return None
-            from ...llm.factory import create_llm_from_profile
-            ssl_verify = getattr(self.system_config, "network", None)
-            ssl_verify = ssl_verify.ssl_verify if ssl_verify else None
-            client = create_llm_from_profile(
-                config=self.system_config, llm_profile=advanced_profile,
-                ssl_verify=ssl_verify,
-                llm_params=self.agent_config.llm_params if self.agent_config else None)
+            from ...llm.factory import override_for_profile
+            client, _ = override_for_profile(self.system_config, self.agent_config, advanced_profile)
             if hasattr(client, "set_app_title"):
                 client.set_app_title(self.name)
             if self._hook_manager:
@@ -587,21 +582,14 @@ class Agent(ToolServer):
         if not profile:
             return None
         try:
-            from ...config.models import AgentConfig
-            from ...llm.factory import (agent_params_for_profile, create_llm_from_profile,
-                                        resolve_llm_config_for_agent)
-            ssl_verify = getattr(self.system_config, "network", None)
-            client = create_llm_from_profile(
-                config=self.system_config, llm_profile=profile,
-                ssl_verify=ssl_verify.ssl_verify if ssl_verify else None,
-                llm_params=agent_params_for_profile(self.agent_config, profile))
-            spec = resolve_llm_config_for_agent(self.system_config, AgentConfig(llm_profile=profile)).spec
+            from ...llm.factory import override_for_profile
+            client, label = override_for_profile(self.system_config, self.agent_config, profile)
         except Exception as e:
             logger.warning("[%s] cannot run on the caller's LLM profile %r, runs its own: %s",
                            self.name, profile, e)
             return None
         logger.info("[%s] runs on the caller's LLM profile %s", self.name, profile)
-        return client, f"{profile}:{spec.provider}/{spec.model} (from caller)"
+        return client, f"{label} (from caller)"
 
     def _profile_to_hand_down(self, llm_override: Optional[LLMClient]) -> Optional[str]:
         """The profile this run hands to the sub-agents its tools start: the one
@@ -1460,7 +1448,7 @@ class Agent(ToolServer):
 
         # Handle use_advanced_model if no llm_override provided
         if use_advanced_model and not llm_override:
-            from agent_system.llm.factory import create_llm_from_profile
+            from agent_system.llm.factory import override_for_profile
 
             # Ketten-Semantik: Advanced-Modell = llm_profile_advanced[0].
             # Keine Advanced-Kette konfiguriert oder advanced == default
@@ -1471,23 +1459,8 @@ class Agent(ToolServer):
                 advanced_profile = None
             if advanced_profile:
                 try:
-                    # Get SSL verify setting
-                    ssl_verify = getattr(self.system_config.network, 'ssl_verify', None)
-
-                    # Create LLM client override using factory
-                    llm_override = create_llm_from_profile(
-                        config=self.system_config,
-                        llm_profile=advanced_profile,
-                        ssl_verify=ssl_verify,
-                        llm_params=self.agent_config.llm_params if self.agent_config else None,
-                    )
-
-                    # Create profile info for logging
-                    profile = self.system_config.llm_system.profiles[advanced_profile]
-                    model_ref = profile.model_ref
-                    model_config = self.system_config.llm_system.models[model_ref]
-                    llm_profile_info_override = f"{advanced_profile}:{model_config.provider}/{model_config.model}"
-
+                    llm_override, llm_profile_info_override = override_for_profile(
+                        self.system_config, self.agent_config, advanced_profile)
                     logger.info(f"use_advanced_model=True mapped to profile: {llm_profile_info_override}")
 
                 except Exception as e:

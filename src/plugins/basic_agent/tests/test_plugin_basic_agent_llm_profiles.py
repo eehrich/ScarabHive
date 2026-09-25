@@ -160,15 +160,15 @@ class TestBasicAgentMultiProfile:
         says about every model it runs on -- the coder's context_window and
         prompt_cache_mode were gone the same way on the API's override path.
         """
-        import plugins.basic_agent.server as server_mod
+        from agent_system.llm import factory
 
         seen = []
 
-        def record(config, profile, **kwargs):
-            seen.append((profile, kwargs.get("llm_params")))
+        def record(config, llm_profile, **kwargs):
+            seen.append((llm_profile, kwargs.get("llm_params")))
             return Mock()
 
-        monkeypatch.setattr(server_mod, "create_llm_from_profile", record)
+        monkeypatch.setattr(factory, "create_llm_from_profile", record)
         agent_config = AgentConfig(llm_profile=["normal", "think"],
                                    llm_params={"*": {"context_window": 4242}})
         server_config = ToolServerConfig(type="basic_agent", enabled=True, agent_config=agent_config)

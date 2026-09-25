@@ -279,33 +279,13 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         llm_override = None
         llm_profile_info = None
         if llm_profile and config.llm_system and config.llm_system.profiles:
-            if llm_profile not in config.llm_system.profiles:
-                error_msg = f"LLM profile '{llm_profile}' not found in configuration."
-                available_profiles = sorted(config.llm_system.profiles.keys())
-                if available_profiles:
-                    error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
-                raise ValueError(error_msg)
-
+            from .llm.factory import UnknownLLMProfile, override_for_profile
             try:
-                # Use factory function that properly handles batch mode
-                from .llm.factory import (agent_params_for_profile, create_llm_from_profile,
-                                          resolve_llm_config_for_agent)
-                from .config.models import AgentConfig
-
-                llm_override = create_llm_from_profile(
-                    config=config,
-                    llm_profile=llm_profile,
-                    llm_params=agent_params_for_profile(agent.agent_config, llm_profile),
-                )
-
-                # Get profile info for status display
-                temp_agent_config = AgentConfig(llm_profile=llm_profile)
-                resolved = resolve_llm_config_for_agent(config, temp_agent_config)
-                model = resolved.spec.model
-                provider = resolved.spec.provider
-                llm_profile_info = f"{llm_profile}:{provider}/{model}"
-
+                llm_override, llm_profile_info = override_for_profile(
+                    config, agent.agent_config, llm_profile)
                 logger.info(f"Using LLM override: {llm_profile_info}")
+            except UnknownLLMProfile:
+                raise   # a ValueError whose message lists the profiles there are
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
                 raise ValueError(f"Failed to apply LLM profile '{llm_profile}': {str(e)}")

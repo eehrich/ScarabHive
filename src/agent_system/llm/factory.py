@@ -141,6 +141,50 @@ def create_llm_from_profile(
     return _build_client(config, temp_agent_config, ssl_verify)
 
 
+class UnknownLLMProfile(ValueError):
+    """A run was switched to a profile the configuration does not have."""
+
+    def __init__(self, profile: str, available: Any = ()) -> None:
+        self.profile = profile
+        self.available = sorted(available)
+        message = f"LLM profile '{profile}' not found in configuration."
+        if self.available:
+            message += "\n\nAvailable profiles:\n  " + "\n  ".join(self.available)
+        super().__init__(message)
+
+
+def override_for_profile(
+    config: AgentSystemConfig,
+    agent_config: Any,
+    profile: str,
+    params: Optional[Dict[str, Any]] = None,
+) -> tuple[LLMClient, str]:
+    """(client, label) for a run of an agent switched to LLM *profile*.
+
+    The one way every entry point builds a switch -- the API's llm_profile,
+    the CLI's --llm, the chat's /model, use_advanced_model, a caller's switch
+    a sub-agent follows. The switch picks another MODEL, not another agent:
+    the agent's own llm_params for the profile apply, *params* (typed for this
+    run) over them. The label is what status lines and the session show,
+    ``profile:provider/model``, plus ``+params(...)`` for what was typed; the
+    agent's own params are not the switch and stay out of it.
+
+    Raises UnknownLLMProfile for a profile the configuration does not have;
+    the caller turns that into its own answer (an HTTP status, an exit code).
+    """
+    profiles = (config.llm_system.profiles if config.llm_system else None) or {}
+    if profile not in profiles:
+        raise UnknownLLMProfile(profile, profiles)
+    client = create_llm_from_profile(
+        config=config, llm_profile=profile,
+        llm_params=agent_params_for_profile(agent_config, profile, params))
+    spec = resolve_llm_config_for_agent(config, AgentConfig(llm_profile=profile)).spec
+    label = f"{profile}:{spec.provider}/{spec.model}"
+    if params:
+        label += " +params(" + ",".join(f"{k}={v}" for k, v in params.items()) + ")"
+    return client, label
+
+
 
 @dataclass
 class ResolvedLLM:

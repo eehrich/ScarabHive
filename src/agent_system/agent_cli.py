@@ -1365,31 +1365,10 @@ def main() -> None:
             _exit_on_unknown_profile(config, effective_profile)
 
             try:
-                # Use factory function that properly handles batch mode
-                from .llm.factory import (agent_params_for_profile, create_llm_from_profile,
-                                          resolve_llm_config_for_agent)
-                from .config.models import AgentConfig
+                from .llm.factory import override_for_profile
 
-                llm_override = create_llm_from_profile(
-                    config=config,
-                    llm_profile=effective_profile,
-                    # The agent's own params first, what was typed over them.
-                    llm_params=agent_params_for_profile(
-                        agent.agent_config, effective_profile, llm_params_override),
-                )
-
-                # Get profile info for logging
-                temp_agent_config = AgentConfig(llm_profile=effective_profile)
-                resolved = resolve_llm_config_for_agent(config, temp_agent_config)
-                model = resolved.spec.model
-                provider = resolved.spec.provider
-                llm_profile_info = f"{effective_profile}:{provider}/{model}"
-                if llm_params_override:
-                    _params_str = ",".join(
-                        f"{k}={v}" for k, v in llm_params_override.items()
-                    )
-                    llm_profile_info += f" +params({_params_str})"
-
+                llm_override, llm_profile_info = override_for_profile(
+                    config, agent.agent_config, effective_profile, llm_params_override)
                 logger.info(f"Using LLM override: {llm_profile_info}")
                 vprint(f"[cli] Using LLM profile: {llm_profile_info}")
             except Exception as e:

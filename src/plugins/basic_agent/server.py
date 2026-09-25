@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional
 from agent_system.servers.agent.schema_based import SchemaBasedAgent
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.tools.base import ToolServerRegistry
-from agent_system.llm.factory import agent_params_for_profile, create_llm_from_profile
+from agent_system.llm.factory import override_for_profile
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +71,9 @@ class BasicAgent(SchemaBasedAgent):
                 }
 
             try:
-                # create_llm_from_profile, not the raw registry: it forwards EVERY
-                # resolved field. Hand-listing the arguments dropped
+                # override_for_profile (create_llm_from_profile underneath), not
+                # the raw registry: it forwards EVERY resolved field.
+                # Hand-listing the arguments dropped
                 # thinking_level, max_tokens, safety_settings, service_tier and
                 # provider_routing — invisible for the profiles configured
                 # today, and silently wrong the moment this agent is pointed at
@@ -82,15 +83,8 @@ class BasicAgent(SchemaBasedAgent):
                 # And with the agent's own llm_params: the argument picks another
                 # MODEL, not another agent, so what the agent says about every
                 # model it runs on ("*") holds here as it does for a fallback.
-                llm_override = create_llm_from_profile(
-                    self.system_config, llm_profile_name,
-                    llm_params=agent_params_for_profile(self.agent_config, llm_profile_name))
-
-                # Create profile info for logging
-                profile = self.system_config.llm_system.profiles[llm_profile_name]
-                model_ref = profile.model_ref
-                model_config = self.system_config.llm_system.models[model_ref]
-                llm_profile_info = f"{llm_profile_name}:{model_config.provider}/{model_config.model}"
+                llm_override, llm_profile_info = override_for_profile(
+                    self.system_config, self.agent_config, llm_profile_name)
 
                 logger.info(f"Using LLM profile override: {llm_profile_info}")
 
