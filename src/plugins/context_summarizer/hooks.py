@@ -976,14 +976,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             # the hand-rolled call never did.
             from agent_system.llm.factory import create_llm_from_profile
 
-            ssl_verify = None
-            try:
-                ssl_verify = system_config.network.ssl_verify
-            except Exception:
-                pass
-
-            self._summarizer_llm = create_llm_from_profile(
-                system_config, self.llm_profile, ssl_verify=ssl_verify)
+            self._summarizer_llm = create_llm_from_profile(system_config, self.llm_profile)
 
             logger.info(
                 f"[ContextSummarizer] Created LLM instance with profile '{self.llm_profile}' "

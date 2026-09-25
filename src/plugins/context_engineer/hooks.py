@@ -734,8 +734,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             return self._summary_llms[profile]
         try:
             from agent_system.llm.factory import create_llm_from_profile
-            ssl_verify = getattr(getattr(system_config, "network", None), "ssl_verify", None)
-            client = create_llm_from_profile(system_config, profile, ssl_verify=ssl_verify)
+            client = create_llm_from_profile(system_config, profile)
         except Exception as exc:  # noqa: BLE001 - no summary is not a failed compaction
             logger.warning("[ContextEngineer] no summary client for profile %r, none will be written: %s",
                            profile, exc)

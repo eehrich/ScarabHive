@@ -298,14 +298,10 @@ class Agent(ToolServer):
                         "model": resolved.spec.model,
                     })
 
-                    # Get SSL verify setting
-                    ssl_verify = getattr(system_config, "network").ssl_verify if getattr(system_config, "network", None) else None
-
                     # Use factory function that properly handles batch mode
                     self.llm = create_llm_from_profile(
                         config=system_config,
                         llm_profile=self.agent_config.default_llm_profile,
-                        ssl_verify=ssl_verify,
                         llm_params=self.agent_config.llm_params,
                     )
                 except Exception as e:
@@ -648,8 +644,6 @@ class Agent(ToolServer):
         try:
             from ...llm.factory import create_llm_from_profile
 
-            ssl_verify = getattr(self.system_config, "network").ssl_verify if getattr(self.system_config, "network", None) else None
-
             # Fallbacks laufen mit DERSELBEN llm_params-Semantik wie das
             # Primaermodell — create_llm_from_profile loest die profil-
             # gekeyten Params selbst auf ("*"/flat fuer die ganze Kette,
@@ -657,7 +651,6 @@ class Agent(ToolServer):
             fallback_llm = create_llm_from_profile(
                 config=self.system_config,
                 llm_profile=fallback_profile,
-                ssl_verify=ssl_verify,
                 llm_params=self.agent_config.llm_params if self.agent_config else None,
             )
             fallback_llm.set_app_title(self.name)
@@ -1766,6 +1759,20 @@ class Agent(ToolServer):
         except Exception as e:
             logger.warning("Session presence: releasing %s failed: %s", session_id, e)
 
+    async def _take_in_late_messages(self, request_id: str, session_id: Optional[str],
+                                     messages: List[ChatMessage]) -> List[ChatMessage]:
+        """Messages appended too late for the run to act on, into its conversation.
+
+        The live copy is refreshed with them: it was taken at the run's final, and the
+        session load serves it until the run's job has ended -- without them the chat
+        showed the turn with the message missing that its note said was kept.
+        """
+        held = len(messages)
+        messages = await self._session_tracker.drain_appended_messages(request_id, messages)
+        if len(messages) > held:
+            self._set_live_messages(session_id, messages.copy())
+        return messages
+
     async def _finalize_request(
         self,
         request_id: str,
@@ -1812,7 +1819,7 @@ class Agent(ToolServer):
         # entry. They are answered by the next run on this session.
         if messages is not None:
             try:
-                messages = await self._session_tracker.drain_appended_messages(request_id, messages)
+                messages = await self._take_in_late_messages(request_id, session_id, messages)
             except Exception as e:
                 logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
 
