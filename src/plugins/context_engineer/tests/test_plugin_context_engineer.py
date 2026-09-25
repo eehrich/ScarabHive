@@ -1,7 +1,9 @@
 """Tests for context_engineer plugin components."""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -2617,38 +2619,260 @@ class TestPreLayerPRecoverability:
         assert got == [m["content"] for m in messages], (
             "the batch came back out of order")
 
+    def test_index_batch_stays_quiet_without_a_vector_store(self, tmp_path, caplog):
+        """Semantic search is off by default, so this is the ordinary case.
+
+        Reaching the store anyway would not break anything -- _index_semantic
+        catches everything -- but it would log an error per archived batch for
+        the rest of the process, and an error log nobody can act on is how a
+        real one gets missed.
+        """
+        archive = ArchivalMemory(tmp_path / "archive.db", session_id="t")
+        assert archive._vector_store is None, "this test needs an archive with no index"
+
+        ids, documents, metadatas = archive.store_many_unindexed(
+            [{"role": "user", "content": "eine Nachricht"}])
+        with caplog.at_level(logging.ERROR):
+            archive.index_batch(ids, documents, metadatas)
+
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR], (
+            "indexing without a vector store logged an error")
+        assert archive._db.execute(
+            "SELECT COUNT(*) FROM archived_messages").fetchone()[0] == 1
+
+    def test_index_batch_reports_a_refused_batch_as_not_indexed(self, tmp_path):
+        """_index_semantic swallows the store's exception, by design: the rows
+        are committed and a failed embedding must not propagate into a caller
+        that would keep an over-long conversation. So the ANSWER is the only
+        thing left that can tell a background task the truth -- without it the
+        task logs "indexed N" for a batch the store refused."""
+        class RefusingStore:
+            def add(self, **kwargs):
+                raise RuntimeError("vector store is down")
+
+        archive = ArchivalMemory(tmp_path / "archive.db", session_id="t")
+        archive.enable_semantic_search = True
+        archive._vector_store = RefusingStore()
+
+        ids, documents, metadatas = archive.store_many_unindexed(
+            [{"role": "user", "content": "eine Nachricht"}])
+
+        assert archive.index_batch(ids, documents, metadatas) is False
+        assert archive._db.execute(
+            "SELECT COUNT(*) FROM archived_messages").fetchone()[0] == 1, (
+            "the rows must survive a refused embedding")
+
     @pytest.mark.asyncio
-    async def test_huge_batch_still_archives_but_skips_the_vector_index(
+    async def test_no_background_task_when_there_is_no_index_to_fill(
         self, strategy, monkeypatch
     ):
-        """A runaway prune must not stall the request on embeddings.
+        """Semantic search is off by default. Spawning a task then would log
+        "indexed N" for work nobody did -- and a false success line is how a
+        real failure gets missed."""
+        from plugins.context_engineer import compaction as compaction_mod
+
+        strat, archival = strategy
+        monkeypatch.setattr(compaction_mod, "_SEMANTIC_INDEX_MAX_BATCH", 5)
+        assert not archival.enable_semantic_search
+
+        # A spy, not `_index_tasks`: that set is emptied by the done callback, so
+        # it is just as empty after a task ran as when none was made.
+        started: list[str] = []
+        monkeypatch.setattr(strat, "_index_in_background",
+                            lambda ids, docs, metas, caller: started.append(caller))
+
+        result = await strat.compact(self._conversation(12), current_tokens=100)
+
+        assert started == [], "a task was started with nothing to index"
+        stored = archival._db.execute(
+            "SELECT COUNT(*) FROM archived_messages").fetchone()[0]
+        assert stored == result.messages_pruned > 0, "the rows must go in regardless"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_indexing_leaves_a_record(self, strategy, monkeypatch, caplog):
+        """A one-shot CLI run cancels every pending task when its loop closes
+        (agent_run, agent-cli, chat all gather-and-cancel). CancelledError is a
+        BaseException, so an `except Exception` misses it and the batch dies
+        without a word -- restoring the half-indexed archive silently, which is
+        worse than the skip it replaced, because the log said "indexing".
+        """
+        import time as _time
+        from plugins.context_engineer import compaction as compaction_mod
+
+        strat, archival = strategy
+        monkeypatch.setattr(compaction_mod, "_SEMANTIC_INDEX_MAX_BATCH", 1)
+        archival.enable_semantic_search = True
+
+        def slow(ids, documents, metadatas):
+            _time.sleep(0.2)
+            return True
+
+        archival.index_batch = slow
+        strat._index_in_background(["a", "b", "c"], ["d1", "d2", "d3"], [{}, {}, {}],
+                                   "Pre-Layer P")
+        task = next(iter(strat._index_tasks))
+
+        with caplog.at_level(logging.WARNING):
+            await asyncio.sleep(0)          # let it reach the first chunk
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("was cancelled after" in m for m in messages), (
+            f"a cancelled indexing said nothing: {messages}")
+
+    @pytest.mark.asyncio
+    async def test_a_closed_session_stops_the_indexing_without_blaming_the_store(
+        self, strategy, monkeypatch, caplog
+    ):
+        """An eviction closes the archive under a task that runs for a minute.
+        Reporting a refused batch then points the operator at a vector store
+        that is perfectly fine."""
+        from plugins.context_engineer import compaction as compaction_mod
+
+        strat, archival = strategy
+        monkeypatch.setattr(compaction_mod, "_SEMANTIC_INDEX_MAX_BATCH", 1)
+        archival.enable_semantic_search = True
+        archival.index_batch = lambda ids, documents, metadatas: True
+
+        strat._index_in_background(["a", "b"], ["d1", "d2"], [{}, {}], "Pre-Layer P")
+        archival.close()                      # the session is evicted meanwhile
+        with caplog.at_level(logging.INFO):
+            await asyncio.gather(*strat._index_tasks)
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("the session was closed" in m for m in messages), messages
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR], (
+            f"a closed session was reported as an indexing failure: {messages}")
+
+    @pytest.mark.asyncio
+    async def test_an_eviction_inside_a_chunk_does_not_blame_the_store(
+        self, strategy, monkeypatch, caplog
+    ):
+        """Asking once, before the chunk, is not enough: a chunk is seconds of
+        embedding and the loop is free during it, so the eviction lands INSIDE
+        it. index_batch then reports a refused batch because the store is gone,
+        and the operator is pointed at a vector store that is perfectly fine."""
+        from plugins.context_engineer import compaction as compaction_mod
+
+        strat, archival = strategy
+        monkeypatch.setattr(compaction_mod, "_SEMANTIC_INDEX_MAX_BATCH", 1)
+        archival.enable_semantic_search = True
+
+        def close_midway(ids, documents, metadatas):
+            archival.close()      # what an eviction does while this chunk runs
+            return False          # ...and what index_batch then reports
+
+        archival.index_batch = close_midway
+        strat._index_in_background(["a", "b"], ["d1", "d2"], [{}, {}], "Pre-Layer P")
+        with caplog.at_level(logging.INFO):
+            await asyncio.gather(*strat._index_tasks)
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("the session was closed" in m for m in messages), messages
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR], (
+            f"an eviction mid-chunk was reported as an indexing failure: {messages}")
+
+    def test_the_index_slot_is_per_event_loop(self):
+        """An asyncio primitive binds to the loop it first WAITS on and raises
+        in any other. agent-cli, chat and each test build their own loop, so a
+        module-level semaphore would hold until two batches overlap and then
+        raise inside a task, where the error is only a log line.
+
+        The semaphores are compared as OBJECTS, not by id(): the first one is
+        freed when its loop goes, and the second is then likely allocated at the
+        same address -- measured, it collides about one run in five.
+        """
+        from plugins.context_engineer.compaction import _index_slot
+
+        async def take():
+            async with _index_slot():
+                return _index_slot()
+
+        from plugins.context_engineer.compaction import _index_slots
+
+        first = asyncio.run(take())
+        second = asyncio.run(take())       # a different loop; must not raise
+
+        assert first is not second, "both loops shared one semaphore"
+        # And the dictionary is WEAK-keyed: a plain dict would pass the line
+        # above and keep one entry per closed loop for the life of the process
+        # -- one per CLI run, one per test.
+        assert len(_index_slots) == 0, (
+            f"{len(_index_slots)} slots outlived their loops")
+
+    @pytest.mark.asyncio
+    async def test_huge_batch_archives_in_the_request_and_indexes_afterwards(
+        self, strategy, monkeypatch
+    ):
+        """A runaway prune must not stall the request on embeddings -- and must
+        not leave the archive half indexed either.
 
         ~17 ms of embedding per message against 0.02 ms for the row: 4682
-        messages are 0.08 s as rows and 80 s with the index. The rows and FTS
-        go in regardless — recoverability is never the thing that gets dropped.
+        messages are 0.08 s as rows and 80 s with the index. So the rows go in
+        now and the embedding follows in the background. Skipping it was the
+        older answer, and it cost every later similarity search the half it
+        never searched, silently.
         """
         from plugins.context_engineer import compaction as compaction_mod
 
         strat, archival = strategy
         monkeypatch.setattr(compaction_mod, "_SEMANTIC_INDEX_MAX_BATCH", 5)
-        seen: list[bool] = []
-        original = archival.store_many
+        archival.enable_semantic_search = True
+        indexed: list[str] = []
 
-        def spy(messages, session_id=None, index_semantic=None):
-            seen.append(index_semantic)
-            return original(messages, session_id, index_semantic)
+        def spy(ids, documents, metadatas):
+            indexed.extend(ids)
+            return True
 
-        archival.store_many = spy
+        archival.index_batch = spy
+
         result = await strat.compact(self._conversation(12), current_tokens=100)
 
-        assert seen and seen[0] is False, (
-            f"a batch past the cap still asked for semantic indexing: {seen}")
-        # ...and the content is in the archive all the same.
         assert result.messages_pruned > 0
         stored = archival._db.execute(
             "SELECT COUNT(*) FROM archived_messages").fetchone()[0]
         assert stored == result.messages_pruned, (
             f"{result.messages_pruned} pruned but only {stored} archived")
+        # NOT asserted: that `indexed` is still empty here. The task starts at
+        # the next suspension point, which may well be inside this same
+        # compaction -- the docstring of _index_in_background says so. What must
+        # hold is that a TASK does the work, not the caller's critical path.
+        assert strat._index_tasks, "nothing was scheduled to index the batch"
+
+        await asyncio.gather(*strat._index_tasks)
+
+        assert len(indexed) == stored, (
+            f"{stored} archived, {len(indexed)} indexed -- a similarity search "
+            f"would answer over part of the archive without saying so")
+        assert len(set(indexed)) == len(indexed), "a chunk was indexed twice"
+
+    @pytest.mark.asyncio
+    async def test_a_failing_chunk_stops_the_indexing_and_says_so(
+        self, strategy, monkeypatch, caplog
+    ):
+        """The rows are committed before the first chunk is embedded, so a
+        vector store that is down costs similarity search on those entries and
+        nothing else. It must not take the turn, and it must not take the loop."""
+        from plugins.context_engineer import compaction as compaction_mod
+
+        strat, archival = strategy
+        monkeypatch.setattr(compaction_mod, "_SEMANTIC_INDEX_MAX_BATCH", 5)
+
+        archival.enable_semantic_search = True
+        archival.index_batch = lambda ids, documents, metadatas: False   # what a down store reports
+        result = await strat.compact(self._conversation(12), current_tokens=100)
+        with caplog.at_level(logging.ERROR):
+            await asyncio.gather(*strat._index_tasks)  # never raises out of the task
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("indexing stopped after" in m for m in messages), (
+            f"a down vector store was reported as a finished index: {messages}")
+
+        stored = archival._db.execute(
+            "SELECT COUNT(*) FROM archived_messages").fetchone()[0]
+        assert stored == result.messages_pruned > 0
 
     @pytest.mark.asyncio
     async def test_layer3_keeps_the_summary_on_archive_refs(self, tmp_path):

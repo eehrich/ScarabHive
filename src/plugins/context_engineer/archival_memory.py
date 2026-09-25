@@ -391,8 +391,7 @@ class ArchivalMemory:
     def store_many(
         self,
         messages: list[dict[str, Any]],
-        session_id: str | None = None,
-        index_semantic: bool | None = None
+        session_id: str | None = None
     ) -> list[str]:
         """Store many messages in ONE transaction. Returns ids, input order.
 
@@ -401,11 +400,9 @@ class ArchivalMemory:
         same rows written in a single transaction. Pre-Layer P archives whole
         blocks at once and cannot pay per-message commits.
 
-        ``index_semantic=False`` skips the VectorStore. The rows and the FTS
-        index are written either way, so the content stays listable and
-        findable by keyword; only vector similarity would miss it. Callers use
-        this when a batch is large enough that embedding it would stall the
-        request (embedding dominates: 80 s of the same 4682-message batch).
+        Embeds the batch before returning, so it costs its embedding
+        (~17 ms/message). A caller that cannot pay that inside a request takes
+        ``store_many_unindexed`` and schedules ``index_batch`` itself.
 
         NOT synchronized itself: the connection work is, the embedding must not
         be (see ``_index_semantic``).
@@ -413,10 +410,49 @@ class ArchivalMemory:
         if not messages:
             return []
 
-        ids, documents, metadatas = self._store_many_rows(messages, session_id)
-        if index_semantic is not False and self.enable_semantic_search and self._vector_store:
-            self._index_semantic(ids, documents, metadatas)
+        ids, documents, metadatas = self.store_many_unindexed(messages, session_id)
+        self.index_batch(ids, documents, metadatas)
         return ids
+
+    def store_many_unindexed(
+        self,
+        messages: list[dict[str, Any]],
+        session_id: str | None = None
+    ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+        """The rows of ``store_many``, with the embedding left to the caller.
+
+        For a batch too large to embed inside a request: the content is durable
+        and readable by ref the moment this returns, and the caller hands
+        ``index_batch`` the triple whenever it can afford the seconds. Skipping
+        the embedding instead would leave the archive half indexed, and a
+        similarity search over half an archive answers without saying so.
+
+        Until the embedding lands, ``search`` reaches these rows only while the
+        vector index answers nothing at all -- its text fallback fires on an
+        empty answer, not on a thin one.
+        """
+        return self._store_many_rows(messages, session_id)
+
+    def index_batch(
+        self,
+        ids: list[str],
+        documents: list[str],
+        metadatas: list[dict[str, Any]]
+    ) -> bool:
+        """Embed an already stored batch. True when it is in the index.
+
+        Reports instead of raising, because the rows are committed before this
+        runs: a failed embedding costs similarity search on those entries, never
+        the content, and must not propagate into a caller that would then keep
+        an over-long conversation. A background caller that logs "indexed" on a
+        swallowed failure is the reason this returns anything at all.
+
+        False also means "nothing to index" -- no vector store, semantic search
+        off, no ids. Neither is an error, and neither is "indexed" either.
+        """
+        if not (ids and self.enable_semantic_search and self._vector_store):
+            return False
+        return self._index_semantic(ids, documents, metadatas)
 
     @_synchronized
     def _store_many_rows(
@@ -492,7 +528,7 @@ class ArchivalMemory:
         ids: list[str],
         documents: list[str],
         metadatas: list[dict[str, Any]]
-    ) -> None:
+    ) -> bool:
         """Feed a stored batch to the VectorStore. NOT synchronized, on purpose.
 
         Embedding a full batch costs ~17 ms per message — up to several seconds
@@ -509,10 +545,12 @@ class ArchivalMemory:
                 documents=documents,
                 metadatas=metadatas
             )
+            return True
         except Exception as e:
             # The rows are already committed — a failed index costs similarity
             # search on these entries, not the content.
-            logger.error(f"Failed to add batch to VectorStore: {e}")
+            logger.error(f"Failed to add batch of {len(ids)} to VectorStore: {e}")
+            return False
 
     def search(
         self,
@@ -680,10 +718,14 @@ class ArchivalMemory:
 
             if not results or not results.get("ids") or not results["ids"]:
                 # Nothing indexed does not mean nothing archived: the vector
-                # index starts empty after the move to the shared store, and
-                # batches above the semantic cap are only ever FTS-indexed.
-                # Answering [] here hid rows that sit in archive.db; the text
-                # index has them.
+                # index starts empty after the move to the shared store, and a
+                # large batch is embedded in the background, so rows can be
+                # older than their vectors. Answering [] here hid rows that sit
+                # in archive.db; the text index has them.
+                #
+                # Only on an EMPTY answer, which is the limit of this fallback:
+                # once anything is indexed, a not-yet-embedded row is invisible
+                # here even though _search_text would find it.
                 return self._search_text(query, session_id, limit)
             
             # Fetch full messages from SQLite.
@@ -893,6 +935,20 @@ class ArchivalMemory:
         
         return f"{role.title()} message (empty)"
     
+    @property
+    def is_open(self) -> bool:
+        """Whether this archive still has its connections.
+
+        Asked by work that outlives the request that started it: a background
+        embedding runs for up to a minute, and a session evicted meanwhile
+        closes the stores under it. Without this the next chunk would report a
+        refused batch, and the log would blame the vector store.
+
+        Deliberately NOT ``@_synchronized``: it is read from the event loop, and
+        this lock is held across seconds of another session's embedding.
+        """
+        return self._db is not None
+
     @_synchronized
     def close(self) -> None:
         """Close database connections."""

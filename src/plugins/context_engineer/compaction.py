@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import time
+import weakref
 from collections import defaultdict
 from dataclasses import dataclass, field, fields
 from fnmatch import fnmatchcase
@@ -491,11 +492,32 @@ class _MediaPick(NamedTuple):
     reason: str
 
 
-#: Above this many messages in one prune, the archive is written WITHOUT the
-#: vector index (see _archive_pruned). Measured: ~17 ms per message of embedding
-#: against 0.02 ms for the row itself, and the largest of 1000 production prunes
-#: was 11 messages — so this only ever trips on a runaway loop.
+#: How many messages are embedded in one go. Above this, a prune stores its rows
+#: inside the request and the embedding follows in the background, chunk by chunk
+#: (see _archive_pruned). Measured: ~17 ms per message of embedding against
+#: 0.02 ms for the row itself, and the largest of 1000 production prunes was 11
+#: messages — so the background path only ever trips on a runaway loop. It used
+#: to SKIP the index there, which left the archive half indexed: a similarity
+#: search then answers over half of it without saying so.
 _SEMANTIC_INDEX_MAX_BATCH = 200
+
+#: One background embedding at a time, per event loop -- see the comment in
+#: ``_index_in_background`` for why there is a bound at all. Per loop and not
+#: per module, because an asyncio primitive binds to the loop it first WAITS on
+#: and raises in any other: uncontended, `acquire` never reaches that check, so
+#: a module-level semaphore would work on every loop until two batches overlap
+#: and then raise inside a task, where the failure is one log line. The API has
+#: one loop per process, but agent-cli, chat and every test build their own.
+_index_slots: weakref.WeakKeyDictionary[Any, asyncio.Semaphore] = weakref.WeakKeyDictionary()
+
+
+def _index_slot() -> asyncio.Semaphore:
+    """The one-at-a-time slot of the running loop."""
+    loop = asyncio.get_running_loop()
+    slot = _index_slots.get(loop)
+    if slot is None:
+        slot = _index_slots[loop] = asyncio.Semaphore(1)
+    return slot
 
 
 def _ref_type(message: dict[str, Any]) -> str | None:
@@ -640,6 +662,9 @@ class LayeredCompactionStrategy:
         #: so out loud the first time anything lands in it.
         self._current_session_id = _SHARED_SESSION_ID
         self._warned_shared_session = False
+        #: Background embeddings of oversized archived batches. Held because an
+        #: unreferenced task can be garbage collected while it runs.
+        self._index_tasks: set[asyncio.Task[None]] = set()
     
     def _add_media_hint_to_content(
         self,
@@ -2520,7 +2545,7 @@ class LayeredCompactionStrategy:
 
         # Placeholders are skipped inside: their body is already in a store, and
         # archiving a pointer would only produce a pointer to a pointer.
-        if not await self._archive_pruned(leaving.modified_messages):
+        if not await self._archive_pruned(leaving.modified_messages, caller):
             logger.warning(
                 f"{caller}: skipping the removal of {len(selected)} messages — "
                 f"the archive write failed and dropping them would destroy them"
@@ -2559,7 +2584,7 @@ class LayeredCompactionStrategy:
             if loose_picks:
                 await self._evict_media(loose, loose_picks, store=True)
                 result.media_bytes_saved += loose.media_bytes_saved
-            if not await self._archive_pruned(extra_messages):
+            if not await self._archive_pruned(extra_messages, caller):
                 logger.error(
                     f"{caller}: {extra} messages removed by the sequence fix "
                     f"could not be archived and are lost"
@@ -2568,7 +2593,7 @@ class LayeredCompactionStrategy:
         self._leave_prune_notice(messages, len(removed))
         return len(removed)
 
-    async def _archive_pruned(self, removed: list[dict[str, Any]]) -> bool:
+    async def _archive_pruned(self, removed: list[dict[str, Any]], caller: str) -> bool:
         """Write pruned messages to the archive. True when they are safe to drop.
 
         Placeholders are skipped — their body is already stored and archiving
@@ -2599,28 +2624,123 @@ class LayeredCompactionStrategy:
         # as rows and 80 s with the vector index. In steady state that never
         # matters (the largest of 1000 production prunes was 11 messages), but a
         # model that emits a runaway tool_call batch produces exactly the huge
-        # first prune where a stall would hurt most. Beyond the cap the rows and
-        # the FTS index still go in — the content stays listable and findable by
-        # keyword, only vector similarity misses it — and the log says so.
-        index_semantic = len(payload) <= _SEMANTIC_INDEX_MAX_BATCH
-        if not index_semantic:
-            logger.warning(
-                f"Pre-Layer P: {len(payload)} messages exceed the semantic-index "
-                f"batch cap of {_SEMANTIC_INDEX_MAX_BATCH}; archiving them "
-                f"without vector indexing (list and keyword search still find them)"
-            )
-
+        # first prune where a stall would hurt most. Past the cap the rows go in
+        # here and the embedding follows in a background task.
         try:
-            await asyncio.to_thread(
-                self.archival_memory.store_many, payload, None, index_semantic
-            )
+            if len(payload) <= _SEMANTIC_INDEX_MAX_BATCH:
+                await asyncio.to_thread(self.archival_memory.store_many, payload, None)
+                return True
+            # Too large to embed inside this request -- but NOT a reason to leave
+            # it out of the index. A half-indexed archive answers every
+            # similarity search without saying which half it searched. The rows
+            # go in now (durable, keyword-searchable), the embedding follows in
+            # the background.
+            ids, documents, metadatas = await asyncio.to_thread(
+                self.archival_memory.store_many_unindexed, payload, None)
+            if self.archival_memory.enable_semantic_search:
+                self._index_in_background(ids, documents, metadatas, caller)
             return True
         except Exception as e:  # noqa: BLE001 - see docstring
             logger.error(
-                f"Pre-Layer P: archiving {len(payload)} pruned messages failed, "
+                f"{caller}: archiving {len(payload)} pruned messages failed, "
                 f"keeping them in the conversation instead of destroying them: {e}"
             )
             return False
+
+    def _index_in_background(
+        self,
+        ids: list[str],
+        documents: list[str],
+        metadatas: list[dict[str, Any]],
+        caller: str,
+    ) -> None:
+        """Embed a large archived batch after the request it belongs to.
+
+        In chunks, and each chunk in a thread: embedding is ~17 ms per message,
+        so a runaway batch is a minute of work that must not sit in the hook's
+        budget and must not hold the event loop either. The task is kept in a
+        set -- an unreferenced task can be garbage collected mid-run -- and a
+        failure costs similarity search on those entries, never the content.
+
+        It starts at the next suspension point, which can still be inside this
+        same compaction; "background" means "not in the caller's critical path",
+        not "after the response". What it does NOT survive is the loop closing
+        under it, and it says so in the log when that happens.
+        """
+        async def run() -> None:
+            done = 0
+            try:
+                # One batch at a time across the whole process. The vector
+                # store holds its lock across the embedding, and every chunk
+                # occupies a default-executor thread while it waits -- the same
+                # pool every foreground `to_thread` uses, including other
+                # sessions' archiving. Unbounded, a handful of runaway prunes
+                # would move the stall from this request into theirs.
+                chunk = _SEMANTIC_INDEX_MAX_BATCH   # read once: two reads can disagree
+                async with _index_slot():
+                    for start in range(0, len(ids), chunk):
+                        end = start + chunk
+                        if not self.archival_memory.is_open:
+                            logger.info("%s: indexing of %d archived messages stopped at "
+                                        "%d -- the session was closed", caller, len(ids), done)
+                            return
+                        indexed = await asyncio.to_thread(
+                            self.archival_memory.index_batch,
+                            ids[start:end], documents[start:end], metadatas[start:end])
+                        if not indexed and not self.archival_memory.is_open:
+                            # Asked AGAIN, because a chunk is seconds long and
+                            # the loop is free during it: an eviction lands
+                            # inside the chunk, and index_batch then reports a
+                            # refused batch because the store is gone. Blaming
+                            # the vector store for a shutdown is what the check
+                            # above exists to avoid -- once before is not enough.
+                            logger.info("%s: indexing of %d archived messages stopped at "
+                                        "%d -- the session was closed", caller, len(ids), done)
+                            return
+                        # The text of a finished chunk is not needed again, and
+                        # the whole payload is held by this closure until the
+                        # task ends -- which, behind the one slot, can be
+                        # several batches' worth of waiting.
+                        # ponytail: frees the RUNNING task's text as it goes;
+                        # queued tasks still hold theirs. Re-read the rows by id
+                        # instead if a host ever queues enough to matter.
+                        documents[start:end] = [""] * (end - start)
+                        if not indexed:
+                            # index_batch reports rather than raises: the rows
+                            # are committed, so this costs similarity search on
+                            # the rest of the batch and nothing else. Saying
+                            # "indexed" here is what made the old skip
+                            # invisible.
+                            logger.error(
+                                "%s: indexing stopped after %d of %d archived messages; "
+                                "the rest is still listed by list(section='history') and "
+                                "readable by ref, but a filter search that uses the vector "
+                                "index will not reach it", caller, done, len(ids))
+                            return
+                        done = min(end, len(ids))
+            except asyncio.CancelledError:
+                # A one-shot CLI run cancels every pending task when its loop
+                # closes (agent_run, agent-cli, chat), and CancelledError is a
+                # BaseException -- caught here only to leave a record, because
+                # silence would restore exactly the half-indexed archive this
+                # path exists to prevent.
+                logger.warning(
+                    "%s: indexing of %d archived messages was cancelled after %d (process "
+                    "ending?); the rest is still listed and readable by ref, but a filter "
+                    "search that uses the vector index will not reach it",
+                    caller, len(ids), done)
+                raise
+            except Exception as exc:  # noqa: BLE001 — the rows are committed
+                logger.error("%s: indexing %d archived messages failed at %d (they stay "
+                             "listed and readable by ref): %s", caller, len(ids), done, exc)
+                return
+            logger.info("%s: indexed %d archived messages in the background", caller, done)
+
+        task = asyncio.create_task(run())
+        self._index_tasks.add(task)
+        task.add_done_callback(self._index_tasks.discard)
+        logger.info("%s: %d archived messages are being indexed in the background; they "
+                    "are already listed and readable by ref", caller, len(ids))
 
     def _leave_prune_notice(
         self, messages: list[dict[str, Any]], removed: int
