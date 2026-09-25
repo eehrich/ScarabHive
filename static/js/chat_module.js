@@ -2422,6 +2422,8 @@
   let sessionLoads = 0;
   // The session loaded last, as the server sent it (live_events_seen for a run followed from it).
   let shownSession = null;
+  // The load whose run a reload has joined itself (followRun): that load's own join stays out.
+  let joinedLoad = null;
 
   // The run of this tab a reload follows again: its request and the session it runs in.
   // sessionStorage, not localStorage, so each tab has its own.
@@ -2567,12 +2569,12 @@
    * of the few connections a browser keeps to a server all that time. Coming back to
    * the session loads it again and joins the run from there.
    *
-   * Not a new chat's run, named or not: its session reaches the list (which is read
-   * from disk) only with the run's first save, and closed, nothing here would ever
-   * ask for it again -- it is read to its end, and the list read again then. And not
-   * before the server has named a run (no start so far): its stream is read on for
-   * the start (namedAfterLettingGo), which a Stop clicked before it waits for, and a
-   * run of a session the list knows is closed there.
+   * A new chat's run too: its session reaches the list (which is read from disk)
+   * only with the run's first save, so the session pane is told to look for a session
+   * it does not know (awaitListing) -- read to its end instead, it held the connection
+   * all the same. Not before the server has named a run (no start so far): its stream
+   * is read on for the start (namedAfterLettingGo), which a Stop clicked before it
+   * waits for, and closed there.
    *
    * A reload of this tab does NOT follow it: showing another session lets the stored
    * run go (leaveLostRun), or the reload would open the session left behind rather
@@ -2584,9 +2586,10 @@
     followedStream = null;
     const source = currentEventSource;
     currentEventSource = null;
-    if (run.requestId && stream?.inSession !== false) {
+    if (run.requestId) {
       try { stream?.stop?.(); } catch { /* a stream already finishing needs no stopping */ }
-    } else if (!run.requestId && stream) {
+      window.sessionManager.awaitListing(run.sessionId);   // if the list does not have it yet
+    } else if (stream) {
       // Read on for the start that names it (readEvents): a Stop clicked before it is sent then.
       stream.untilStart = { cancel: Boolean(run.stopWhenStarted) };
     }
@@ -2595,8 +2598,8 @@
   }
 
   // A run let go of before its start, now named by it: a Stop clicked meanwhile is sent, and
-  // a run of a session the list knows is closed there -- coming back to that session joins it.
-  // A new chat's is read on to its end, when the list is read again.
+  // the stream closed -- coming back to its session joins the run; a session the list does
+  // not have yet (a new chat's) is looked for until it has.
   function namedAfterLettingGo(stream, start) {
     const { cancel } = stream.untilStart;
     stream.untilStart = null;
@@ -2604,9 +2607,8 @@
       markStopping(start.request_id);
       cancelRun(start.request_id, { force: false }).catch((error) => console.error('Failed to cancel request:', error));
     }
-    if (stream.inSession) {
-      try { stream.stop?.(); } catch { /* a stream already finishing needs no stopping */ }
-    }
+    try { stream.stop?.(); } catch { /* a stream already finishing needs no stopping */ }
+    window.sessionManager.awaitListing(start.session_id);
   }
 
   /**
@@ -2767,8 +2769,10 @@
         // it saves and runs its end hooks belongs to the run, not to its last call.
         view.openStep = null;
         // Only when nothing streamed: a streamed answer is already in the box, and
-        // this is the same text.
-        if (!view.t.innerHTML || view.t.innerHTML.trim() === '') {
+        // this is the same text -- as is one the session load showed (answerLoaded: a run
+        // joined past its answer's stream). A reconnect's note in the box is no answer.
+        if (!view.answerLoaded
+            && (!view.t.innerHTML.trim() || view.t.querySelector(':scope > .reconnect-info'))) {
           showAnswer(view, data.summary || data.content || '', data.content_format || 'text');
         }
         settleView(view);
@@ -3108,6 +3112,12 @@
     await attachStoredSubRuns(session, [view]);
   }
 
+  /** Whether a conversation ends in an answer: an assistant turn with words and no tool calls. */
+  function endsInAnswer(messages) {
+    const last = messages?.[messages.length - 1];
+    return last?.role === 'assistant' && Boolean(last.content) && !last.tool_calls?.length;
+  }
+
   /**
    * What the tools answered to the calls of `messages[index]`, by call id: the answers that
    * follow it, up to the next LLM call. Not by id alone across the session -- a provider
@@ -3281,7 +3291,7 @@
         
         updateRequestId();
 
-        // Show reconnect info in response area
+        // Show reconnect info in response area (taken down at the run's end if nothing took its place)
         showSection(blk.t);
         // Both escaped: last_status is a plugin's status line and carries
         // tool arguments the model chose ("Searching: <query>").
@@ -3389,6 +3399,12 @@
         run.over = true;
         blk.streamEnded = true;   // this block's stream, not the run followed since (placeStatus)
         pendingAppendRebind = false;
+        // A reconnect's note nothing took the place of -- a run joined past its answer, which
+        // the load shows: it said "running", and would stand under that answer for good.
+        if (blk.t.children.length === 1 && blk.t.firstElementChild.classList.contains('reconnect-info')) {
+          blk.t.replaceChildren();
+          blk.t.closest('.container-section').style.display = 'none';
+        }
         // Before the stream goes: whatever is still open stops being updated
         // the moment it closes, so the row has to say so rather than freeze.
         markOpenScopesUnfinished();
@@ -3437,8 +3453,9 @@
     scrollBottom();
   }
 
-  // Public init function that wires the chat form behavior
-  chatModule.init = function () {
+  // Public init function that wires the chat form behavior. `agentsLoaded`: the selector's
+  // lists, which a session opened after a reload is checked against (read-only or not).
+  chatModule.init = function (agentsLoaded) {
     const chatForm = document.getElementById('f');
     const taskInput = taskInputEl = document.getElementById('task');
     runBtn = document.getElementById('runBtn');
@@ -3633,10 +3650,12 @@
         // accumulated text into whatever block blk points at, which would
         // teleport the in-flight answer below the injected message.
         // handleSSEEvent performs the rebind when the next step starts.
+        // Not in a session opened, or loaded again, while the message was on its way: the run
+        // the chat follows there is another one, or joined past the message.
+        if (shown.load !== sessionLoads || shown.session !== currentSessionId) return;
         if (run.requestId === requestId && run.over) {
-          // its answer came while the message was on its way: no step is left to rebind at --
-          // said where it was written, not in a session opened meanwhile
-          if (shown.load === sessionLoads && shown.session === currentSessionId) addNote(chatContainer, LATE_MESSAGE);
+          // its answer came while the message was on its way: no step is left to rebind at
+          addNote(chatContainer, LATE_MESSAGE);
           return;
         }
         pendingAppendRebind = 'message';
@@ -3754,7 +3773,7 @@
       // `stop` ENDS the connection, where letting go of a finished run only stops
       // reading it (see letGoOfRunningRun).
       const runAbort = new AbortController();
-      const stream = { stop: () => runAbort.abort(), inSession: Boolean(postBody.session_id) };
+      const stream = { stop: () => runAbort.abort() };
       try {
         followedStream = stream;
         const response = await fetch('/events', {
@@ -3830,10 +3849,14 @@
      *
      * Its session is opened first and the run followed from where that load stands: the
      * run's buffer holds the run alone, and nothing of the turns before it -- the chat came
-     * back with the run and none of the conversation. A session whose first step is still
-     * going is not on disk yet: then the run is all there is, and its buffer replays it.
+     * back with the run and none of the conversation. That load's own join
+     * (attachRunOfOpenSession) then stays out -- or a run that ended before it had its
+     * answer was joined a second time. Opened only once the agent list is in: a sub-agent's
+     * session is read-only when its agent is not in it, and read before the list, every
+     * one was. A session whose first step is still going is not on disk yet: then the run
+     * is all there is, and its buffer replays it.
      */
-    async function followRun() {
+    async function followRun(agentsLoaded) {
       const stored = storedRun();
       if (!stored) return;
       holding = true;
@@ -3853,11 +3876,14 @@
           unmarkStopping(stored.requestId);  // over: it takes no message, mark or no mark
           return;
         }
+        await agentsLoaded;
         const shown = await window.sessionManager.loadSession(stored.sessionId, { quiet: true });
         if (shown) {
           if (!chatModule.hasActiveRequest()) {
+            joinedLoad = sessionLoads;
             attachRun(stored, { catchUp: 'skip', seen: shownSession?.live_events_seen,
-              answered: Boolean(shownSession?.live_run_answered) });
+              answered: Boolean(shownSession?.live_run_answered),
+              answerLoaded: endsInAnswer(shownSession?.messages) });
           }
         } else if (shown === false) {
           attachRun(stored);   // not there to load; null is a session picked meanwhile, which wins
@@ -3868,7 +3894,8 @@
       }
     }
 
-    function attachRun({ requestId, sessionId: session }, { catchUp = 'replay', seen = null, answered = false } = {}) {
+    function attachRun({ requestId, sessionId: session },
+                       { catchUp = 'replay', seen = null, answered = false, answerLoaded = false } = {}) {
       // The live run takes the chat -- after a reload, over a session that was not there to
       // load (a read-only one too: the run's session takes messages). A chat that shows that
       // session keeps it.
@@ -3886,6 +3913,8 @@
       // mark would linger for seconds and a check on it would measure the timer.
       showWorkingElsewhere(false);
       const blk = addAssistantBlock(chatContainer);
+      // The session load shows the run's answer already: its final is not shown a second time.
+      blk.answerLoaded = answerLoaded;
       runActive = true; updateActionButton();
       readyStop();
 
@@ -3998,6 +4027,9 @@
       // events already on screen, is the one to join by. This one would replay the
       // events in between a second time.
       if (load !== sessionLoads) return;
+      // The reload that made this load has joined its run itself (followRun): ended since,
+      // the run would be joined twice.
+      if (!join && load === joinedLoad) return;
       // Held by another process (a woken run): nothing to attach to, only to wait for.
       // A session just opened is watched as one whose run has ended is, or the turn
       // shows only on the next load; the watch itself asks with a `join`.
@@ -4017,13 +4049,18 @@
       // session just loaded carries the run's live messages, so it skips; a run
       // that started AFTER this page was watching has been seen by nobody, and
       // replaying it is the only way its turn reaches the screen at all.
+      //
+      // Whether the load shows the run's answer is the load's to say: the run's live
+      // conversation takes its answer only after the post-LLM hooks, the stream sends it
+      // before them -- so a load in between counts the answer as seen without showing it.
       attachRun({ requestId: active.request_id, sessionId },
-        { ...(join || { catchUp: 'skip', seen: session.live_events_seen }), answered: Boolean(active.answered) });
+        { ...(join || { catchUp: 'skip', seen: session.live_events_seen }), answered: Boolean(active.answered),
+          answerLoaded: !join && endsInAnswer(session.messages) });
     }
 
     chatModule.followRunOfOpenSession = attachRunOfOpenSession;
 
-    return followRun();
+    return followRun(agentsLoaded);
   };
   
   // Where a failure puts its reason, the answer's own place: shown AND open. The setting

@@ -81,6 +81,8 @@ export class SessionManager {
     this.active = new Map();
     /** counted up by every activity poll; an older poll's answer is dropped */
     this.activityPolls = 0;
+    /** new chats' sessions the chat let go of before the list had them (awaitListing) */
+    this.unlisted = new Set();
     render(this.pane, html`
       <div class="sessions-head">
         <h2 class="pk-grow">Sessions</h2>
@@ -277,7 +279,9 @@ export class SessionManager {
    */
   async refreshActivity() {
     if (document.visibilityState !== 'visible') return;
-    const ids = this.visibleIds();
+    const unlisted = [...this.unlisted];
+    // those first: past the cap, the server answers for the first ids only
+    const ids = [...unlisted, ...this.visibleIds()].slice(0, ACTIVITY_POLL_MAX_IDS);
     if (!ids.length) return;
     const poll = ++this.activityPolls;
     const data = await api(`/api/sessions/active?ids=${encodeURIComponent(ids.join(','))}`,
@@ -288,6 +292,25 @@ export class SessionManager {
     if (poll !== this.activityPolls) return;
     this.active = new Map(Object.entries(data.active || {}));
     this.markActive();
+    if (unlisted.length) await this.lookForUnlisted(unlisted);
+  }
+
+  /**
+   * The session of a run the chat let go of, if the pane does not know it -- a new chat's,
+   * which the list (read from disk) has only once its run has saved it. Nothing else would
+   * read the list again, so the activity tick does, until the session is listed -- or its
+   * run is over and one more read did not list it (a run that ended before any save).
+   */
+  awaitListing(id) {
+    if (id && !this.byId.has(id)) this.unlisted.add(id);
+  }
+
+  async lookForUnlisted(ids) {
+    const over = ids.filter((id) => !this.active.has(id));
+    await this.loadSessions();
+    for (const id of ids) {
+      if (over.includes(id) || this.byId.has(id)) this.unlisted.delete(id);
+    }
   }
 
   /** Start the activity poll. The shell owns the cadence, as it does for health. */

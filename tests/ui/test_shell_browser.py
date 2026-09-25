@@ -79,7 +79,8 @@ the tool's answer as the JSON string a session stores, and the call that
 answered; every other session carries two plain messages. A session added through
 /__stub/sessions may carry ``delay`` (seconds to answer), ``trickle`` (headers
 at once, the body after that many seconds), ``fails`` (its load fails),
-``delete_delay`` and ``delete_fails`` (how many deletes of it fail);
+``delete_delay`` and ``delete_fails`` (how many deletes of it fail), ``hidden_for`` (seconds
+until its run saves it: neither listed nor loadable before);
 ``session-query:<id>`` collects the raw query string of every load of it, which
 is how a test says that the chat's load and the DELETE of a session stay the
 same URL. The
@@ -110,7 +111,12 @@ was. ``stub_stream=left-unnamed`` is ``ending``
 under a run id of its own, ``r-left-unnamed``, and ``left-unnamed-known`` the same under
 ``r-left-unnamed-known``. ``stub_append_after=<s>`` answers an append that much later.
 ``stub_stream=left-named-new`` (``r-left-named-new``) is ``ending`` with its answer 3 s after
-its start. ``stub_stream=slimmed`` (``r-slimmed``) sends an answer delta without its ``accumulated``, as
+its start. Started in a new chat, those two runs name a session of their own
+(``s-left-unnamed``, ``s-left-named-new``) that is in /api/sessions/active from the run's start
+and in the list once the run has saved it (0.5 s and 8 s after its start) -- whatever the
+browser does with the stream, as a job on the server goes on. ``r-live-late-final`` brings
+its final answer 3 s after the reconnect, with no step before it; ``reconnects:<id>`` counts
+the reconnects to a run. ``stub_stream=slimmed`` (``r-slimmed``) sends an answer delta without its ``accumulated``, as
 the server's buffer keeps one a newer delta supersedes, and that newer one 3 s later. With ``stub_stream=end-then-open`` a run
 ``r-end-then-open`` brings its final answer and end, and its connection stays open two
 seconds more, as the server's does while it saves.
@@ -975,6 +981,16 @@ def stub_app() -> FastAPI:
         yield status("coordinator", f"{rid}_001", "end", "completed (3 steps)", rid, 1)
         yield event({"type": "end"})
 
+    async def new_chat_run(session_id: str, request_id: str, start_after: float, lasts: float):
+        """A new chat's run as the server has it, whatever the browser does with its stream:
+        running in /api/sessions/active from its start, its session in the list once saved."""
+        await asyncio.sleep(start_after)
+        active_runs[session_id] = request_id
+        await asyncio.sleep(lasts)
+        sessions[:] = [s for s in sessions if s["session_id"] != session_id]
+        sessions.append({**sessions[0], "session_id": session_id, "title": "Started in a new chat"})
+        active_runs.pop(session_id, None)
+
     def refused_stream(after: float = 0):
         async def stream():  # a refusal the way app.py's event streams send one: `error`, and the stream closes
             yield ":ok\n\n"
@@ -987,6 +1003,7 @@ def stub_app() -> FastAPI:
     @app.get("/events")
     async def reattach(request_id: str = "", session_id: str = "", catch_up: str = "", seen: str = ""):
         hits[f"catch-up:{request_id}"] = f"{catch_up or 'replay'}/{seen or '-'}"
+        hits[f"reconnects:{request_id}"] = hits.get(f"reconnects:{request_id}", 0) + 1
         # As app.py does: only a job can be reconnected to, and a run without one
         # answers 409 -- which is what `attachable` in /api/sessions/active exists
         # to keep a client from walking into. Read from the same table the active
@@ -1021,6 +1038,10 @@ def stub_app() -> FastAPI:
                 await asyncio.sleep(0.5)
                 yield event({"type": "final", "content": "Done"})
                 await asyncio.sleep(0.5)
+            elif request_id == "r-live-late-final":  # its final answer 3 s on, with no step before it
+                await asyncio.sleep(3)
+                yield event({"type": "final", "content": "Done later"})
+                yield event({"type": "end"})
             elif request_id == "r-live-answered":  # the final answer, then the save and the hooks take 3 s
                 await asyncio.sleep(0.5)
                 yield event({"type": "final", "content": "Done"})
@@ -1192,7 +1213,12 @@ def stub_app() -> FastAPI:
             # stub_start_after: a run whose start event is late -- the chat has sent it and
             # waits, and nothing of it has reached the page yet
             late = 1.5 if ending == "late-start-drops" else float(request.cookies.get("stub_start_after") or 0)
-            return started_stream(started[ending], body.get("session_id", ""),
+            session_id = body.get("session_id", "")
+            if not session_id and ending in ("left-unnamed", "left-named-new"):
+                session_id = f"s-{ending}"
+                asyncio.get_running_loop().create_task(
+                    new_chat_run(session_id, started[ending], late, 0.5 if ending == "left-unnamed" else 8))
+            return started_stream(started[ending], session_id,
                                   "left-unnamed" if ending == "left-unnamed-known" else ending, start_after=late)
         return run_stream()
 
@@ -1347,6 +1373,9 @@ def stub_app() -> FastAPI:
     @app.post("/__stub/sessions")
     async def add_session(request: Request):
         added = {**sessions[0], **await request.json()}
+        # hidden_for: a run's session not saved yet -- not listed, and not there to load
+        if "hidden_for" in added:
+            added["saved_at"] = asyncio.get_running_loop().time() + added.pop("hidden_for")
         # added again, it replaces what it was, where it was
         at = next((i for i, s in enumerate(sessions) if s["session_id"] == added["session_id"]), None)
         if at is None:
@@ -1398,7 +1427,8 @@ def stub_app() -> FastAPI:
 
     @app.get("/api/sessions/hierarchy")
     async def hierarchy(request: Request):
-        listed = list(sessions)  # the list as it is when asked
+        # the list as it is when asked, without what is not saved yet
+        listed = [s for s in sessions if s.get("saved_at", 0) <= asyncio.get_running_loop().time()]
         if request.cookies.get("stub_list") == "held":
             return held({"sessions": listed, "root_count": len(listed)})
         if request.cookies.get("stub_list") == "broken":
@@ -1407,14 +1437,25 @@ def stub_app() -> FastAPI:
 
     @app.get("/api/sessions")
     async def sessions_flat(request: Request):
-        """The plain list the /sessions chat command reads. With
-        ``stub_cmd_list=held`` it is held open until POST /__stub/lists/release --
-        which is how a test keeps a slash command running while it does something
-        else."""
+        """The plain list of every session. With ``stub_cmd_list=held`` it is held open
+        until POST /__stub/lists/release, as /listing is."""
         listed = list(sessions)
         if request.cookies.get("stub_cmd_list") == "held":
             return held(listed)
         return listed
+
+    @app.get("/api/sessions/listing")
+    async def sessions_for_chat(request: Request, count: str = ""):
+        """What the /sessions chat command reads (the terminal's listing). With
+        ``stub_cmd_list=held`` it is held open until POST /__stub/lists/release --
+        which is how a test keeps a slash command running while it does something
+        else. Declared before /api/sessions/{session_id}, as in the real app."""
+        listed = list(sessions)
+        limit = int(count) if count.isdigit() and int(count) > 0 else len(listed)
+        body = {"sessions": listed[:limit], "total": len(listed), "left_out": 0, "most_left_out": None}
+        if request.cookies.get("stub_cmd_list") == "held":
+            return held(body)
+        return body
 
     # Which sessions an agent is working in. Declared BEFORE /api/sessions/{session_id},
     # as in the real app: FastAPI matches in order, and the parameterised route would
@@ -1479,7 +1520,7 @@ def stub_app() -> FastAPI:
             await asyncio.sleep(1)
         found = next((s for s in [*sessions, *(child for kids in children.values() for child in kids)]
                       if s["session_id"] == session_id), None)
-        if found is None:
+        if found is None or found.get("saved_at", 0) > asyncio.get_running_loop().time():
             raise HTTPException(status_code=404)
         if not found.get("trickle"):
             slow = found.get("slow_on") == hits[f"session:{session_id}"]
@@ -1615,14 +1656,19 @@ EXPECTED = [
     'a click back to the session whose run is followed wins over a click before it still loading',
     'Stop clicked before the run is named stops it once it is',
     'a message the run no longer took before its answer is said so, and the answer shows once',
-    'a new chat left before its run is named is read to its end',
+    'a new chat left before its run is named is closed at its start, and listed once saved',
+    'a run followed again after a reload before its session was saved is listed once it is, when left',
     'a run of a known session left before its start is closed once named',
-    'a new chat left after its run is named is read to its end too',
+    'a new chat left after its run is named is closed too, and listed once saved',
     'Stop clicked before the run is named stops it though its session is left before its start',
     'a message whose confirmation comes after the run answered is said to wait for the next run',
     'a run followed again after a reload past its answer is shown as answered',
     'the note on a late message stays out of a session opened before its confirmation',
+    "a message confirmed once the chat follows another session's run leaves that run alone",
     'an answer delta the server slimmed leaves the answer shown so far standing',
+    "a run followed again after a reload that ends before the session's own join answers is joined once",
+    'a run joined past its streamed answer shows that answer when the load did not have it',
+    'an answer the load showed is neither shown again nor left under a reconnect note',
     'a run followed again after a reload comes back with the conversation before it',
     'a run works on while another session is read, and the chat picks it up again on return',
     'leaving a session with a file run does not cut that run short',
@@ -1694,6 +1740,7 @@ EXPECTED = [
     'a message a run takes only after its stream has ended leaves the controls idle',
     'while it checks whether a run is still going after a reload, the composer is held',
     'a read-only session picked while a run reattaches after a reload leaves the run writable',
+    'a sub-agent session followed again after a reload is writable when its agent comes in the list late',
     'the layout comes back after a reload',
     'the sub-agent panel shows the session the shell restores after a reload',
     'from the launcher a panel a link sent somewhere starts over, one that went there itself stays',

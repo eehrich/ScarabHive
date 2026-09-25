@@ -318,7 +318,8 @@ async function start() {
   const selectors = window.selectorModule.init();  // a restored sub-session checks its agent against the list
   new Picker();
   window.fileUploadModule.init();
-  const reattached = window.chatModule.init();  // a run still going from before the reload comes back first
+  // a run still going from before the reload comes back first -- its session opened once the agents are known
+  const reattached = window.chatModule.init(selectors);
 
   await Promise.all([loadCatalog(), sessions.loadSessions(), pollHealth(), selectors, reattached]);
   workspace.restore();
