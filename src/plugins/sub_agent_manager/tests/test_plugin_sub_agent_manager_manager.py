@@ -38,6 +38,49 @@ def manager(mock_session_service, mock_registry):
     return SubAgentManager(mock_session_service, mock_registry)
 
 
+def test_two_processes_do_not_start_counting_at_the_same_id(monkeypatch):
+    """Parallel agent-cli runs of a batch start within one second; seeded from the time of day, they counted
+    through the same ids."""
+    import time
+
+    from plugins.sub_agent_manager import manager as sam_manager
+
+    monkeypatch.setattr(time, "time", lambda: 1_758_000_000.0)  # one and the same second for every process
+
+    assert len({sam_manager._first_counter() for _ in range(3)}) == 3
+
+
+@pytest.mark.asyncio
+async def test_the_first_id_counts_on_from_where_the_process_started(manager, monkeypatch):
+    from plugins.sub_agent_manager import manager as sam_manager
+
+    monkeypatch.setattr(SubAgentManager, "_class_counter", None)  # a process that has made no id yet
+    monkeypatch.setattr(sam_manager, "_first_counter", lambda: 4_812_000)
+
+    assert await manager._generate_instance_id("worker", None) == "sub_worker_4812001"
+    assert await manager._generate_instance_id("worker", None) == "sub_worker_4812002"
+
+
+@pytest.mark.asyncio
+async def test_one_archiving_makes_room_at_both_limits(mock_session_service, mock_registry):
+    """At the session's limit and the type's at once, the oldest of the type makes room under both. The session's
+    limit was checked first: it archived the oldest of any type, and with the type still full, a second one."""
+    manager = SubAgentManager(mock_session_service, mock_registry, max_nesting_depth=5,
+                              max_sub_agents_per_type=3, max_sub_agents_per_session=10, auto_archive_on_limit=True)
+    existing = {f"s{i}": {"agent_type": "planner" if i < 7 else "reviewer", "status": "active",
+                          "created_at": f"2026-01-01T0{i}:00:00+00:00"} for i in range(10)}
+    archived: list[str] = []
+
+    async def archive(parent_session_id, sub_session_id):
+        archived.append(sub_session_id)
+        return True
+    manager._archive_sub_agent = archive
+
+    await manager._make_room("parent123", existing, "reviewer")
+
+    assert archived == ["s7"], "the oldest reviewer alone"
+
+
 @pytest.mark.asyncio
 async def test_a_create_for_an_agent_that_is_not_there_archives_nothing(mock_session_service):
     """At the limit, making room archives the oldest sub-agent -- one the caller may be waiting on.

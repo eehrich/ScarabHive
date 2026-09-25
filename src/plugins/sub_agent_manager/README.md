@@ -185,10 +185,16 @@ Two more that are not limits but guards:
   checkpoint) is not held off by it, and no longer needs to be: `save_session`
   lets the metadata already in the file win (`b579f62fe`), so a checkpoint
   does not write an older `sub_agents` back.
-* **Instance ids do not collide across parents or restarts.** The counter is
-  class-level (shared by every manager instance) behind a class lock, and
-  seeded from the time of day rather than zero, so a restart does not re-issue
-  the ids of the session still on disk.
+* **Instance ids stay apart across parents, processes and restarts.** The
+  counter is class-level (shared by every manager instance) and starts at random
+  in each process, so two processes land on one id only by chance; an id already
+  on disk is skipped. It started at the time of day, and processes started in the
+  same second -- the parallel agent-cli runs of a batch -- counted through the
+  same ids.
+* **One archiving makes room at both limits.** At the type's limit the oldest of
+  that type goes, which frees a place under the session's limit too; the
+  session's limit was checked first, archived the oldest of any type, and with
+  the type still full a second one.
 * **A finished run answers with its own words, job or no job.** The background
   job holds the result text only until somebody reads it, and after a restart
   or an archiving there is none at all. `poll` then reads the last thing the

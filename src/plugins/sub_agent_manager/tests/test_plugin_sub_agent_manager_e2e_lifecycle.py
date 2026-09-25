@@ -493,8 +493,8 @@ async def test_create_sub_session_retries_on_cross_process_collision(
     between our uniqueness-check and our create_session. The retry-loop must
     regenerate a new id and succeed instead of bubbling the error.
 
-    Simulates the multi-process race that hits when 5 parallel agent-cli
-    runs all start their _class_counter at the same value.
+    Simulates the multi-process race: two processes land on one id by chance
+    (each starts its _class_counter at random, see _first_counter).
     """
     # Create coordinator
     coord_id = "coord_collision_test"
