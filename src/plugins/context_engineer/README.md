@@ -99,25 +99,23 @@ print(entry.content)  # Full content
 > und `list`/`read` bedienen ihn ohnehin schon.
 ### Archival Memory (`archival_memory.py`)
 
-Searchable archive of conversation history using SQLite FTS5 for text search and optional VectorStore for semantic search (supports ChromaDB and sqlite-vec backends).
+Searchable archive of conversation history using SQLite FTS5 for text search and optional VectorStore for semantic search (supports ChromaDB and sqlite-vec backends). With semantic search on, `search()` asks BOTH and fuses the two rankings (reciprocal rank fusion): a message both agree on ranks first, and one only the text index knows -- not embedded yet, or never, after a refused or cancelled batch -- still gets the place its text rank earns. The text half demands every word of the query there: fusion weighs by rank alone, and a row that matched only a common word would otherwise take a slot at the weight of a real hit. When the vector index has nothing for the session at all, the search is the broad text search (any word), exactly as without semantic search. Asked alone, the vector index answered over the part it held and never said which part that was.
 
 ```python
+from pathlib import Path
+
 from plugins.context_engineer.archival_memory import ArchivalMemory
 
 archive = ArchivalMemory(Path("archive.db"), session_id="session_123")
+messages = [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
 
-# Archive a message
-archive.store_message(
-    role="assistant",
-    content="The Python code processes data in batches...",
-    turn_number=42
-)
+# Archive a message, or many in one transaction
+entry_id = archive.store({"role": "assistant",
+                          "content": "The Python code processes data in batches..."})
+ids = archive.store_many(messages)
 
-# Search text
-results = archive.search_text("batch processing", limit=5)
-
-# Semantic search (uses VectorStore - ChromaDB or sqlite-vec)
-results = archive.search_semantic("how to handle large datasets", limit=5)
+# Search: text index, fused with the vector index when semantic search is on
+results = archive.search("batch processing", limit=5)
 ```
 
 ### Layered Compaction (`compaction.py`)
@@ -138,7 +136,7 @@ Progressive compression strategy that applies increasingly aggressive techniques
 - Only the current round (after the last assistant message the model wrote) is touched: messages a request already carried and their reasoning artifacts stay as they were sent. The one block of our own is the restoration section, appended as a `developer` turn at the END (it used to sit behind the system prompt, where rebuilding it invalidated the cached prefix behind it); it explains how to read a stored result: it gains its "Tool Results" section when a session stores its first one, and for an agent whose calls normally skip the hook (no always-on media compaction) it is inserted whenever the hook runs — the same as on a Layer 1 run.
 
 **Pre-Layer P (message count, off by default):**
-- Past `max_messages`, the oldest messages are archived and removed until `max_messages_prune_to` remain (0 = half the limit). No LLM call; the agent finds them again through the retrieval tools. With `enable_semantic_search` on, a prune larger than 200 messages writes its rows inside the request and embeds them in a background task, in chunks of 200, one batch at a time per loop: they are listable and keyword-searchable at once, similarity search reaches them a little later. The old answer was to skip the index there, and a half-indexed archive answers every similarity search over half of itself without saying so. Three things end an embedding early, and each says so in the log: a vector store that refuses a chunk, a session evicted under the task, and a one-shot CLI run whose loop closes while it is still going (the API's loop lives as long as the process). Without semantic search no embedding happens at any size and no task is started. What was not embedded is still listed by `list(section='history')` and readable by its ref; a `list(filter=…)` that uses the vector index reaches it only while that index answers nothing at all, because the text fallback fires on an empty answer, not on a thin one.
+- Past `max_messages`, the oldest messages are archived and removed until `max_messages_prune_to` remain (0 = half the limit). No LLM call; the agent finds them again through the retrieval tools. With `enable_semantic_search` on, a prune larger than 200 messages writes its rows inside the request and embeds them in a background task, in chunks of 200, one batch at a time per loop: they are listed, readable by ref and found by their words at once; search by meaning reaches them a little later. The old answer was to skip the index there, and a half-indexed archive answers every similarity search over half of itself without saying so. Three things end an embedding early, and each says so in the log: a vector store that refuses a chunk, a session evicted under the task, and a one-shot CLI run whose loop closes while it is still going (the API's loop lives as long as the process). Without semantic search no embedding happens at any size and no task is started. What was not embedded is still readable by its ref and found by a filter whose every word it contains; not by meaning.
 - It is a hysteresis: each prune breaks the prompt cache, the next one comes about `max_messages - max_messages_prune_to` messages later (`min_tokens_between_compactions` can hold it longer). `200` / `100` breaks at most once per 100 messages; `max_messages_prune_to` equal to the limit prunes whenever the list is over it.
 - The task (first user message), the last user message, system messages and the round the model has not seen yet stay. Among the oldest messages placeholders go before real content; the choice stops before the newer half of what stays (a tool-call unit at that edge still leaves whole).
 

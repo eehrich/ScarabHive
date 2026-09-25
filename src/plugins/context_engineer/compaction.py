@@ -2104,11 +2104,13 @@ class LayeredCompactionStrategy:
         # Archive collected messages — in conversation order: the archive
         # timestamps each row as it is written, and the history listing follows
         # them. A set iterates in hash order once the indices outgrow its table.
-        for i in sorted(indices_to_archive):
+        # One batch, not one store() per message: see _store_batch for why a
+        # row-by-row write left duplicates behind on failure.
+        ordered = sorted(indices_to_archive)
+        archive_ids = await self._store_batch([messages[i] for i in ordered], "Layer 2")
+        for i, archive_id in zip(ordered, archive_ids, strict=True):
             msg = messages[i]
             original_role = msg.get("role", "system")
-            # Wrap sync SQLite operation in thread pool
-            archive_id = await asyncio.to_thread(self.archival_memory.store, msg)
             
             # Create compact reference as JSON (preserves structure, valid for tool messages)
             summary = self.archival_memory._generate_summary(msg)
@@ -2627,18 +2629,7 @@ class LayeredCompactionStrategy:
         # first prune where a stall would hurt most. Past the cap the rows go in
         # here and the embedding follows in a background task.
         try:
-            if len(payload) <= _SEMANTIC_INDEX_MAX_BATCH:
-                await asyncio.to_thread(self.archival_memory.store_many, payload, None)
-                return True
-            # Too large to embed inside this request -- but NOT a reason to leave
-            # it out of the index. A half-indexed archive answers every
-            # similarity search without saying which half it searched. The rows
-            # go in now (durable, keyword-searchable), the embedding follows in
-            # the background.
-            ids, documents, metadatas = await asyncio.to_thread(
-                self.archival_memory.store_many_unindexed, payload, None)
-            if self.archival_memory.enable_semantic_search:
-                self._index_in_background(ids, documents, metadatas, caller)
+            await self._store_batch(payload, caller)
             return True
         except Exception as e:  # noqa: BLE001 - see docstring
             logger.error(
@@ -2646,6 +2637,35 @@ class LayeredCompactionStrategy:
                 f"keeping them in the conversation instead of destroying them: {e}"
             )
             return False
+
+    async def _store_batch(self, payload: list[dict[str, Any]], caller: str) -> list[str]:
+        """Archive a batch in ONE transaction; ids in input order.
+
+        The embedding goes inline while the batch is small and into the
+        background past the cap -- too large to embed inside this request, but
+        NOT a reason to leave it out of the index: a half-indexed archive answers
+        every similarity search without saying which half it searched.
+
+        One transaction is also what makes a failure clean. Writing row by row
+        committed the rows before the one that failed; the caller then kept the
+        messages, and the next compaction archived them AGAIN -- every retry a
+        second copy in the archive and a second hit in every search. (The
+        rollback that makes a failed WRITE clean too is in _store_many_rows.)
+
+        ponytail: a hook timeout that lands inside this call still duplicates:
+        the worker thread commits (and embeds, up to the cap) regardless, the
+        placeholders are never built, and the next pass archives the batch
+        again. The largest measured Layer 2 pass takes 1.2 s end to end against
+        the hook's 60; closing it for good needs a dedup key in the archive
+        schema, if that window is ever seen.
+        """
+        if len(payload) <= _SEMANTIC_INDEX_MAX_BATCH:
+            return await asyncio.to_thread(self.archival_memory.store_many, payload, None)
+        ids, documents, metadatas = await asyncio.to_thread(
+            self.archival_memory.store_many_unindexed, payload, None)
+        if self.archival_memory.enable_semantic_search:
+            self._index_in_background(ids, documents, metadatas, caller)
+        return ids
 
     def _index_in_background(
         self,
@@ -2713,9 +2733,8 @@ class LayeredCompactionStrategy:
                             # invisible.
                             logger.error(
                                 "%s: indexing stopped after %d of %d archived messages; "
-                                "the rest is still listed by list(section='history') and "
-                                "readable by ref, but a filter search that uses the vector "
-                                "index will not reach it", caller, done, len(ids))
+                                "the rest is readable by ref and found by a filter whose "
+                                "every word it contains, not by meaning", caller, done, len(ids))
                             return
                         done = min(end, len(ids))
             except asyncio.CancelledError:
@@ -2726,13 +2745,13 @@ class LayeredCompactionStrategy:
                 # path exists to prevent.
                 logger.warning(
                     "%s: indexing of %d archived messages was cancelled after %d (process "
-                    "ending?); the rest is still listed and readable by ref, but a filter "
-                    "search that uses the vector index will not reach it",
-                    caller, len(ids), done)
+                    "ending?); the rest is readable by ref and found by a filter whose "
+                    "every word it contains, not by meaning", caller, len(ids), done)
                 raise
             except Exception as exc:  # noqa: BLE001 — the rows are committed
-                logger.error("%s: indexing %d archived messages failed at %d (they stay "
-                             "listed and readable by ref): %s", caller, len(ids), done, exc)
+                logger.error("%s: indexing %d archived messages failed at %d (they are "
+                             "readable by ref, and found by a filter whose every word they "
+                             "contain): %s", caller, len(ids), done, exc)
                 return
             logger.info("%s: indexed %d archived messages in the background", caller, done)
 
@@ -2740,7 +2759,7 @@ class LayeredCompactionStrategy:
         self._index_tasks.add(task)
         task.add_done_callback(self._index_tasks.discard)
         logger.info("%s: %d archived messages are being indexed in the background; they "
-                    "are already listed and readable by ref", caller, len(ids))
+                    "are already readable by ref and found by their words", caller, len(ids))
 
     def _leave_prune_notice(
         self, messages: list[dict[str, Any]], removed: int
