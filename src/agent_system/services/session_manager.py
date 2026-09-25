@@ -1432,7 +1432,8 @@ class SessionManager:
         # It is stat work like the read, so it belongs in the same thread.
         return await asyncio.to_thread(read_and_shape)
 
-    async def resolve_session_ref(self, user_id: str, ref: str) -> Optional[str]:
+    async def resolve_session_ref(self, user_id: str, ref: str, *,
+                                  others: Optional[list] = None) -> Optional[str]:
         """The session ``ref`` names: an id, or the TITLE of one.
 
         A session id is machine-made (``2332j2kj22k``) and cannot be renamed:
@@ -1450,6 +1451,17 @@ class SessionManager:
         session called "build" unless a single stored title starts that way,
         and joining a stranger's conversation because the first letters
         matched is worse than starting a new one. None when nothing matches.
+
+        *others*, when given, receives the ids of the other sessions that
+        carry the same exact title -- so the caller can say it took the newest
+        of several instead of letting the choice pass unseen.
+
+        Titles are looked up among the TOP-LEVEL sessions only, the ones the
+        listings show and /title names: a sub-agent's title is the first 100
+        characters of its task, repeated pipeline tasks share them by the
+        hundred, and a title typed by a person must neither land in one of
+        those nor count them as namesakes the listing then cannot show. An id
+        still reaches any session, sub-agents' included.
         """
         ref = (ref or "").strip()
         if not ref:
@@ -1457,7 +1469,7 @@ class SessionManager:
         if self.belongs_to(user_id, ref):
             return ref
         wanted = ref.casefold()
-        rows = await self.list_sessions(user_id)
+        rows = await self.list_root_sessions(user_id)
 
         def newest(matches: list) -> Optional[str]:
             if not matches:
@@ -1466,8 +1478,11 @@ class SessionManager:
             return best.get("session_id")
 
         titled = [(r, str(r.get("title") or "").strip().casefold()) for r in rows]
-        exact = newest([r for r, title in titled if title == wanted])
+        same = [r for r, title in titled if title == wanted]
+        exact = newest(same)
         if exact:
+            if others is not None:
+                others.extend(r.get("session_id") for r in same if r.get("session_id") != exact)
             return exact
         starting = [r for r, title in titled if title.startswith(wanted)]
         return starting[0].get("session_id") if len(starting) == 1 else None

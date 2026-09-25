@@ -33,7 +33,7 @@ from .cli_utils.session_defaults import (
     session_defaults,
 )
 from .cli_utils.attachments import greedy_attach_hint, sort_attachments
-from .cli_utils.session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
+from .cli_utils.session_listing import DEFAULT_LIMIT, parse_listing, print_sessions
 from .cli_utils.common import (
     set_color_mode,
     status_subscriber,
@@ -169,14 +169,19 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
             session_manager = SessionManager(storage_path=str(storage_path))
 
-            limit, complaint = parse_limit(list_sessions)
+            # Every session, pipeline runs included: which agents the chat
+            # offers is in the configuration, and this listing deliberately
+            # reads none -- a config that does not load must not hide it.
+            # `all` is taken without a complaint, it is what this lists anyway.
+            limit, _, complaint = parse_listing(list_sessions)
             if complaint:
-                print(f"Ignoring '{complaint}': --list-sessions takes a count.")
+                print(f"Ignoring '{complaint}': --list-sessions takes a count or 'all'.")
             await print_sessions(
                 session_manager, session_user,
                 limit=limit,
                 current_session_id=session_id,
-                more_hint="--list-sessions <count>, --list-sessions 0 for all",
+                more_hint="--list-sessions <count>, --list-sessions 0 for no limit",
+                # <id>: agent-run takes --session as it is, titles are agent-cli's
                 footer="Continue one with: --session <id>",
             )
             return
@@ -581,8 +586,9 @@ Examples:
         nargs="?",
         const="",
         default=None,
-        metavar="COUNT",
-        help=f"List this user's sessions, one line each (default {DEFAULT_LIMIT}, 0 = all). "
+        metavar="COUNT|all",
+        help=f"List this user's sessions, one line each (default {DEFAULT_LIMIT}, 0 = no limit; "
+             "'all' is taken, this lists everything anyway). "
              "Sub-agent sessions are not listed."
     )
 

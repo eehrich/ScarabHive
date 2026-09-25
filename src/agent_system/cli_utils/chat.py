@@ -41,7 +41,8 @@ from .common import (
     supports_color,
 )
 from .attachments import sort_attachments
-from .session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
+from .session_listing import (DEFAULT_LIMIT, in_chat_selector, newest_of, parse_listing,
+                              print_sessions)
 from .session_defaults import session_defaults
 from ..core.session_presence import WAKE_TASK, SessionBusy, note_stop, presence_for
 from .agent_runner import wake_message
@@ -1349,8 +1350,13 @@ class _ChatContext:
                  template_vars: Optional[dict] = None,
                  llm_params: Optional[dict] = None,
                  session_title: Optional[str] = None,
-                 attachments: Sequence[str] = ()) -> None:
+                 attachments: Sequence[str] = (),
+                 runtime: Any = None) -> None:
         self.agent = agent
+        # The Runtime this process bootstrapped: which agents are meant for
+        # chat (/sessions). Held here, not read from Runtime.last_started --
+        # an in-process pipeline that bootstraps its own would swap that.
+        self.runtime = runtime
         self.entry_name = entry_name
         self.session_service = session_service
         self.session_manager = session_manager
@@ -2780,6 +2786,21 @@ def _last_session(ctx: _ChatContext) -> Optional[dict]:
     return next(iter(_resumable_sessions(ctx)), None)
 
 
+async def _named_session(ctx: _ChatContext, typed: str) -> str:
+    """The session id *typed* names -- a person may type the title they gave
+    the session with /title, since ids are machine-made and cannot be renamed.
+    """
+    if ctx.session_manager is None:
+        return typed
+    others: list = []
+    named = await ctx.session_manager.resolve_session_ref(
+        ctx.session_user, typed, others=others)
+    if named and named != typed:
+        print(f"Session '{typed}': {named}{newest_of(others, '/sessions all')}")
+        return named
+    return typed
+
+
 async def _resume_into(ctx: _ChatContext, session_id: str, previous: str) -> bool:
     """Take *session_id* over, and let go of whichever session is left behind.
 
@@ -2787,7 +2808,12 @@ async def _resume_into(ctx: _ChatContext, session_id: str, previous: str) -> boo
     must not be pulled out from under it -- and the release is in a
     ``finally``: a Ctrl-C lands inside the load, and a hold taken there and
     never given back locks the session for the rest of the process.
+
+    A title is turned into its id before anything is held: holding the words
+    typed left the session itself unlocked, skipped the busy check, and kept
+    a lock file named after the title until the process ended.
     """
+    session_id = await _named_session(ctx, session_id)
     if not _hold_session(ctx, session_id):
         return False  # another process runs it: the chat stays where it is
     switched = False
@@ -2812,9 +2838,20 @@ async def _resume_last_session(ctx: _ChatContext, previous: str) -> bool:
 
 
 async def _set_session_title(ctx: _ChatContext, title: str) -> bool:
-    """Give the open session a title, the one `/sessions` shows."""
+    """Give the open session a title, the one `/sessions` shows -- bare, say it."""
     if not title:
-        print("Usage: /title <text>")
+        # The title waiting for the first save, else the one on disk:
+        # ctx.session_title is dropped once a save has written it.
+        current = ctx.session_title
+        if current is None and not ctx.was_new_session and ctx.session_manager is not None:
+            try:
+                record = await ctx.session_manager.load_session(ctx.session_user, ctx.session_id)
+                current = (record or {}).get("title")
+            except Exception:  # noqa: BLE001 -- a missing line, not the end of the chat
+                logger.debug("No title for %s", ctx.session_id, exc_info=True)
+        print(f"Title: {' '.join(current.split())}" if current
+              else "This session has no title yet.")
+        print("Usage: /title <text>   (/resume and --session take it)")
         return False
     if ctx.was_new_session or ctx.session_manager is None:
         # Nothing on disk yet: the title rides along with the first save,
@@ -2835,12 +2872,12 @@ async def _set_session_title(ctx: _ChatContext, title: str) -> bool:
 
 
 async def _list_sessions(ctx: _ChatContext, payload: str = "") -> None:
-    """Show this user's own sessions -- `/sessions [count]`, 0 for all."""
-    limit, complaint = parse_limit(payload, DEFAULT_LIMIT)
+    """Show this user's own sessions -- `/sessions [count|all]`, 0 for no limit."""
+    limit, everything, complaint = parse_listing(payload, DEFAULT_LIMIT)
     if complaint:
         # Same voice as /history next door: a discarded argument that still
         # prints a plausible listing is indistinguishable from a honoured one.
-        print(f"Usage: /sessions [count]   (got: {complaint})")
+        print(f"Usage: /sessions [count|all]   (got: {complaint})")
         return
     # What it printed is what the completion and a bare /resume read -- taken
     # from the listing it already did, not from a second walk of the index.
@@ -2848,8 +2885,11 @@ async def _list_sessions(ctx: _ChatContext, payload: str = "") -> None:
         ctx.session_manager, ctx.session_user,
         limit=limit,
         current_session_id=ctx.session_id,
-        more_hint="/sessions <count>, /sessions 0 for all",
-        footer="Use /resume <id> to continue one.",
+        more_hint="/sessions <count>, /sessions 0 for no limit",
+        footer="Use /resume <id or title> to continue one.",
+        # Which agents are meant for chat -- and this chat's own, whatever it is.
+        shown=None if everything else in_chat_selector(ctx.runtime, keep=(ctx.entry_name,)),
+        everything_hint="/sessions all",
     )
     if listed:
         ctx.recent_sessions = listed
@@ -2863,13 +2903,6 @@ async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
     tools and prompt, and the next save wrote this agent's name over its
     record. Its own profile is switched to, as ``--session <id>`` would.
     """
-    # Typed by a person, so it may be the title they gave the session with
-    # /title -- ids are machine-made and cannot be renamed.
-    if ctx.session_manager is not None:
-        named = await ctx.session_manager.resolve_session_ref(ctx.session_user, session_id)
-        if named and named != session_id:
-            print(f"Session '{session_id}': {named}")
-            session_id = named
     system_config = getattr(ctx.agent, "system_config", None)
     stored_agent, stored_llm = await session_defaults(
         ctx.session_manager, ctx.session_user, session_id, system_config)
@@ -3381,6 +3414,7 @@ def run_chat_loop(
     llm_params: Optional[dict] = None,
     session_title: Optional[str] = None,
     attachments: Sequence[str] = (),
+    runtime: Any = None,
 ) -> None:
     """The chat REPL. Drives one event loop for its whole lifetime.
 
@@ -3404,6 +3438,7 @@ def run_chat_loop(
         show_status=show_status, session_manager=session_manager,
         template_vars=template_vars, llm_params=llm_params,
         session_title=session_title, attachments=attachments,
+        runtime=runtime,
     )
     ansi = supports_color()
     renderer = ChatRenderer(ansi=ansi)

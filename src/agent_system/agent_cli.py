@@ -53,7 +53,8 @@ from .cli_utils.session_defaults import (
 )
 from .cli_utils.agent_runner import wake_message
 from .cli_utils.attachments import greedy_attach_hint, sort_attachments
-from .cli_utils.session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
+from .cli_utils.session_listing import (DEFAULT_LIMIT, in_chat_selector, newest_of,
+                                       parse_limit, parse_listing, print_sessions)
 from .cli_utils.session_archive_cli import (
     build_archive, print_archived, run_restore, run_sweep,
 )
@@ -653,9 +654,10 @@ def main() -> None:
         # what the store_true version did. parse_limit sorts the count from the
         # task text afterwards.
         p.add_argument("--list-sessions", dest="list_sessions", nargs="?",
-                       const="", default=None, metavar="COUNT",
-                       help=f"List this user's sessions, one line each (default {DEFAULT_LIMIT}, 0 = all). "
-                            "Sub-agent sessions are not listed.")
+                       const="", default=None, metavar="COUNT|all",
+                       help=f"List this user's sessions, one line each (default {DEFAULT_LIMIT}, "
+                            "0 = no limit). Only agents the chat offers; 'all' adds the runs "
+                            "pipelines started. Sub-agent sessions are not listed.")
         # Same nargs="?" reasoning as --list-sessions above: argparse fills an
         # optional's slot from the next token before converting it.
         p.add_argument("--list-archived", dest="list_archived", nargs="?",
@@ -1223,11 +1225,13 @@ def main() -> None:
     # that agent over the record of the session it then loaded.
     _typed_session = getattr(args, "session_id", None)
     if _typed_session and session_manager is not None:
+        _others: list = []
         _named = run_async(session_manager.resolve_session_ref(
-            getattr(args, "session_user", "cli_user"), _typed_session))
+            getattr(args, "session_user", "cli_user"), _typed_session, others=_others))
         if _named and _named != _typed_session:
             # stderr: stdout carries the task result
-            print(f"Session '{_typed_session}': {_named}", file=sys.stderr)
+            print(f"Session '{_typed_session}': {_named}{newest_of(_others, '--list-sessions all')}",
+                  file=sys.stderr)
             args.session_id = _named
 
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
@@ -1299,15 +1303,18 @@ def main() -> None:
     if list_sessions is not None:
         session_user = getattr(args, "session_user", "cli_user")
         vprint(f"[cli] listing sessions for user: {session_user}")
-        limit, complaint = parse_limit(list_sessions)
+        limit, everything, complaint = parse_listing(list_sessions)
         if complaint:
-            print(f"Ignoring '{complaint}': --list-sessions takes a count.")
+            print(f"Ignoring '{complaint}': --list-sessions takes a count or 'all'.")
         run_async(print_sessions(
             session_manager, session_user,
             limit=limit,
             current_session_id=getattr(args, "session_id", None),
-            more_hint="--list-sessions <count>, --list-sessions 0 for all",
-            footer="Continue one with: --session <id>",
+            more_hint="--list-sessions <count>, --list-sessions 0 for no limit",
+            footer="Continue one with: --session <id or title>",
+            shown=None if everything else in_chat_selector(init_service.runtime,
+                                                           keep=(entry_name,)),
+            everything_hint="--list-sessions all",
         ))
         return
 
@@ -1952,6 +1959,7 @@ def main() -> None:
                 session_title=getattr(args, "session_title", None),
                 attachments=[path for group in sorted_attachments.values()
                              for path in group],
+                runtime=init_service.runtime,
             )
             result = {}
         elif getattr(args, "raw", False):

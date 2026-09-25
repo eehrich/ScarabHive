@@ -58,7 +58,7 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
                 usage="/exit, /quit, /q", surfaces=(CLI,)),
     ChatCommand("new", ("/new",), "start a fresh session (current one stays saved)"),
     ChatCommand("session", ("/session",), "show the current session and how to resume it"),
-    ChatCommand("sessions", ("/sessions",), "list recent sessions (0 = all)",
+    ChatCommand("sessions", ("/sessions",), "list recent sessions (0 = no limit)",
                 usage="/sessions [count]"),
     ChatCommand("resume", ("/resume",),
                 "continue an earlier session by id or title; bare takes the last one",

@@ -248,6 +248,60 @@ class TestTheLine:
         assert short.index("T") == long.index("T")
 
 
+class TestWhatTheListingLeavesOut:
+    def test_all_is_every_session_without_a_limit(self):
+        from agent_system.cli_utils.session_listing import parse_listing
+
+        assert parse_listing("all") == (0, True, None)
+        assert parse_listing(" ALL ") == (0, True, None)
+        assert parse_listing("5") == (5, False, None)
+        assert parse_listing("weiter")[2] == "weiter"
+
+    def test_the_selector_is_the_runtimes_visibility(self):
+        from types import SimpleNamespace as NS
+
+        from agent_system.cli_utils.session_listing import in_chat_selector
+
+        decls = {"coder": NS(visibility="ui"), "helper": NS(visibility="both"),
+                 "v4_scorer": NS(visibility="private"), "sam_tool": NS(visibility="tool")}
+        shown = in_chat_selector(NS(describe=decls.get))
+        # a session without an agent name cannot be judged, so it is shown
+        assert [n for n in ("coder", "helper", "v4_scorer", "sam_tool", "renamed", "")
+                if shown(n)] == ["coder", "helper", ""]
+        assert in_chat_selector(None) is None, "no runtime -- nothing may be filtered"
+
+    def test_the_agent_this_chat_runs_on_is_always_shown(self):
+        """`--agent` and `/agent` reach tool and private agents the panel does
+        not offer -- the conversation being had must not vanish from its own
+        listing."""
+        from types import SimpleNamespace as NS
+
+        from agent_system.cli_utils.session_listing import in_chat_selector
+
+        shown = in_chat_selector(NS(describe={"sam_tool": NS(visibility="tool")}.get),
+                                 keep=("sam_tool",))
+        assert shown("sam_tool")
+
+    def test_the_footer_stays_within_the_line_budget(self, capsys):
+        import asyncio
+        from types import SimpleNamespace as NS
+
+        from agent_system.cli_utils.session_listing import print_sessions
+
+        # five-digit counts both -- the widest the footer gets
+        rows = [{"session_id": f"b{i}", "agent_name": "v4_continuity_scorer_bench_contA_26156",
+                 "updated_at": "2026-09-25T00:00:00+00:00"} for i in range(12000)]
+
+        async def listing(user_id):
+            return rows
+
+        asyncio.run(print_sessions(NS(list_root_sessions=listing), "cli_user",
+                                   shown=lambda name: False,
+                                   everything_hint="--list-sessions all"))
+        footer = [line for line in capsys.readouterr().out.splitlines() if "not meant" in line]
+        assert footer and len(footer[0]) <= 100, footer
+
+
 class TestAgentRunWiring:
     """`--list-sessions` used to be a store_true flag.
 
@@ -303,11 +357,18 @@ class TestAgentRunWiring:
         assert recorded["limit"] == DEFAULT_LIMIT
         assert "Ignoring 'was laeuft?'" in capsys.readouterr().out
 
+    def test_all_is_taken_not_ignored(self, monkeypatch, recorded, capsys):
+        # agent-run lists every session anyway -- "all" must not be read as
+        # a task text and answered with the default twenty
+        self._run(monkeypatch, ["agent-run", "--list-sessions", "all"])
+        assert recorded["limit"] == 0
+        assert "Ignoring" not in capsys.readouterr().out
+
     def test_the_footer_and_the_hint_reach_the_listing(self, monkeypatch,
                                                        recorded):
         self._run(monkeypatch, ["agent-run", "--list-sessions"])
         assert recorded["footer"] == "Continue one with: --session <id>"
-        assert "--list-sessions 0 for all" in recorded["more_hint"]
+        assert "--list-sessions 0 for no limit" in recorded["more_hint"]
 
     def test_the_session_being_continued_is_the_marked_one(self, monkeypatch,
                                                            recorded):
