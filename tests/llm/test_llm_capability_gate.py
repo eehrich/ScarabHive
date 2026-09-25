@@ -73,18 +73,46 @@ class TestTheGateStaysOutOfWhatItDoesNotKnow:
 
 
 class TestEveryEntryPointAsks:
-    """Three ways in, one gate. The wiring is what was missing, not the check."""
+    """Several ways in, one gate. The wiring is what was missing, not the check.
 
-    @pytest.mark.parametrize("module", [
+    An entry point asks through utils.multimodal_processor.message_with_attachments,
+    which asks the gate itself (tests/other/test_message_with_attachments.py),
+    or -- until the command line moves onto it -- calls the gate directly.
+    """
+
+    ENTRY_POINTS = [
         "src/agent_system/app.py",
         "src/agent_system/agent_cli.py",
         "src/agent_system/agent_run.py",
-    ])
+        "src/agent_system/cli_utils/chat.py",
+    ]
+
+    @pytest.mark.parametrize("module", ENTRY_POINTS)
     def test_the_entry_point_calls_the_gate(self, module):
         src = (REPO_ROOT / module).read_text(encoding="utf-8")
-        assert "ensure_model_supports(" in src, (
+        assert "message_with_attachments(" in src or "ensure_model_supports(" in src, (
             f"{module} attaches media without asking whether the model can "
             f"take it")
+
+    def test_no_module_builds_the_message_past_the_gate(self):
+        """Every module under src/ that builds a multimodal message itself asks
+        the gate in the same file -- a list of known entry points would miss the
+        next one. Per file, not per function: the command line keeps its own
+        copy until it moves onto message_with_attachments."""
+        import re
+
+        builder = re.compile(r"\bcreate_multimodal_message(?:_extended)?\(")
+        scanned, past = 0, []
+        for path in (REPO_ROOT / "src").rglob("*.py"):
+            if path.name == "multimodal_processor.py" or "tests" in path.parts:
+                continue
+            src = path.read_text(encoding="utf-8", errors="replace")
+            scanned += 1
+            if builder.search(src) and "ensure_model_supports(" not in src:
+                past.append(str(path.relative_to(REPO_ROOT)))
+        assert scanned > 100, f"fixture: only {scanned} modules scanned"
+        assert not past, ("these build a multimodal message without asking whether the model "
+                          f"can take it -- use message_with_attachments: {past}")
 
 
 class TestTheMultimodalShorthandIsGone:

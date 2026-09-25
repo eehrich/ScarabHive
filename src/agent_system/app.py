@@ -1125,6 +1125,31 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
             return f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
 
+    async def _open_session_for_run(selected_agent, user_id: str, session_id: Optional[str],
+                                    llm_profile: Optional[str]) -> bool:
+        """SessionService.open_for_run for /run and /events; whether the session
+        existed. 403 for another user's session; without an id there is nothing
+        to open -- the run creates its session and names it in the start event.
+
+        While a run of this process has the session, the tracker holds that
+        run's state -- a session it has not saved yet reads as new, and must
+        not be reset under it (in_use). Another user's such run answers 403:
+        the metadata this writes would hand them its session.
+        """
+        if not session_id:
+            return False
+        running = (await get_background_job_manager().active_sessions()).get(session_id)
+        if running is not None and running.get("user_id") not in (None, user_id):
+            raise HTTPException(status_code=403,
+                                detail=f"Permission denied: session {session_id} belongs to another user")
+        try:
+            return await _session_service.open_for_run(
+                selected_agent, user_id, session_id,
+                llm_profile or selected_agent.agent_config.default_llm_profile,
+                in_use=running is not None)
+        except SessionPermissionError as e:
+            raise HTTPException(status_code=403, detail=f"Permission denied: {e}")
+
     def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None):
         """Get agent instance with optional overrides.
 
@@ -1652,40 +1677,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
 
-        # Load existing session if session_id provided
-        session_exists = False
-        if session_id and _session_service:
-            try:
-                session_exists, msg_count = await _session_service.load_and_restore_session(
-                    selected_agent, user_id, session_id
-                )
-            except SessionPermissionError as e:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Permission denied: {e}"
-                )
-
-        # CRITICAL: Always set/update session metadata (even for existing sessions)
-        # This ensures user_id is available for tool execution AND respects llm_profile overrides
-        if session_id:
-            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
-            selected_agent._session_tracker.set_session_metadata(session_id, {
-                "user_id": user_id,
-                "agent_name": selected_agent.name,
-                "llm_profile": effective_llm_profile
-            })
-            
-            # CRITICAL: Initialize session template_vars from agent_config for NEW sessions
-            # This ensures initial values (like workflow_phase: "planning") are available
-            # without requiring explicit set_context calls
-            if not session_exists:
-                # Copy initial template_vars from agent_config to session-scoped vars
-                if (hasattr(selected_agent, 'agent_config') and 
-                    selected_agent.agent_config and 
-                    selected_agent.agent_config.template_vars):
-                    initial_vars = selected_agent.agent_config.template_vars.copy()
-                    selected_agent._session_tracker.set_session_template_vars(session_id, initial_vars)
-                    logger.debug(f"[SESSION] Initialized session template_vars from agent_config: {list(initial_vars.keys())}")
+        session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile)
 
         from .servers.agent.result_utils import collect_final_result
 
@@ -1758,12 +1750,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # Process uploaded files for multimodal input
         from .utils.multimodal_processor import (
-            create_multimodal_message_extended,
-            ImageProcessingError, 
-            AudioProcessingError, 
-            TextFileProcessingError,
-            detect_file_type
-        )
+            AttachmentRejected, detect_file_type, message_with_attachments)
         import tempfile
         from pathlib import Path
 
@@ -1819,30 +1806,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logger.debug("Saved uploaded file %s (%d bytes) -> %s [%s]", 
                            upload_file.filename, len(content), temp_path, file_type)
 
-            # One check for every entry point that attaches media — the CLI and
-            # agent_run ask the same function.
-            from .llm.capabilities import ensure_model_supports
-            problem = ensure_model_supports(
-                capability_model_name(llm_override, selected_agent),
-                images=len(image_paths or []),
-                audio=len(audio_paths or []))
-            if problem:
-                raise HTTPException(status_code=400, detail=problem)
-
-            # Create multimodal message with all file types
+            if not task and not (image_paths or audio_paths or text_paths):
+                raise HTTPException(status_code=400, detail="Missing 'task' in request")
+            # The check against the model this run uses, then the build: the
+            # step every entry point that attaches media shares.
             try:
-                multimodal_msg = create_multimodal_message_extended(
-                    text=task,
-                    image_paths=image_paths if image_paths else None,
-                    audio_paths=audio_paths if audio_paths else None,
-                    text_file_paths=text_paths if text_paths else None
-                )
-                logger.info(
-                    "Created multimodal message with %d image(s), %d audio(s), %d text file(s)", 
-                    len(image_paths), len(audio_paths), len(text_paths)
-                )
-            except (ImageProcessingError, AudioProcessingError, TextFileProcessingError) as e:
-                logger.exception("File processing failed while creating multimodal message: %s", e)
+                multimodal_msg = message_with_attachments(
+                    task, {"image": image_paths, "audio": audio_paths, "text": text_paths},
+                    llm_override, selected_agent)
+            except AttachmentRejected as e:
+                # A file that failed to process carries its cause; that one may
+                # be a server fault (a codec, a bug) and keeps its traceback.
+                logger.warning("Attachments refused: %s", e, exc_info=e.__cause__ is not None)
                 raise HTTPException(status_code=400, detail=str(e))
 
             # Stream events for multimodal message (same as /events endpoint)
@@ -2096,33 +2071,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             )
 
         # NORMAL PATH: For new requests, do full setup
-        # Get agent with LLM override
-        selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
-
-        # Load existing session if session_id provided (only for new jobs)
-        session_exists = False
-        if session_id and _session_service:
-            try:
-                session_exists, msg_count = await _session_service.load_and_restore_session(
-                    selected_agent, user_id, session_id
-                )
-            except SessionPermissionError as e:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Permission denied: {e}"
-                )
-
-        # CRITICAL: Always set/update session metadata (even for existing sessions)
-        # This ensures user_id is available for tool execution AND respects llm_profile overrides
-        # load_and_restore_session sets metadata from disk, but we need to override with current request's llm_profile
-        if session_id:
-            # Use override llm_profile if provided, otherwise agent's default
-            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
-            selected_agent._session_tracker.set_session_metadata(session_id, {
-                "user_id": user_id,
-                "agent_name": selected_agent.name,
-                "llm_profile": effective_llm_profile
-            })
+        try:
+            selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
+            session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile)
+        except HTTPException:
+            # Registered above for the status stream; no run follows to release it.
+            release_request_user_tree(request_id)
+            raise
 
         async def event_stream():
             # Check if server is already shutting down

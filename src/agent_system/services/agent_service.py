@@ -398,7 +398,7 @@ class AgentService:
         logger.debug("Creating multimodal message: task_length=%d, images=%d", len(task), len(images))
         
         try:
-            from agent_system.utils.multimodal_processor import create_multimodal_message, ImageProcessingError
+            from agent_system.utils.multimodal_processor import AttachmentRejected, message_with_attachments
             import tempfile
             from pathlib import Path
             
@@ -412,10 +412,9 @@ class AgentService:
                     temp_path.write_bytes(img_bytes)
                     temp_files.append(str(temp_path))
                 
-                # Create multimodal message
-                message = create_multimodal_message(task, temp_files)
-                logger.debug("Multimodal message created with %d images", len(temp_files))
-                return message
+                # Through the gate every entry point shares: the agent's model
+                # is asked whether it takes images before they are built in.
+                return message_with_attachments(task, {"image": temp_files}, None, self.agent)
                 
             finally:
                 # Cleanup temp files
@@ -425,7 +424,7 @@ class AgentService:
                     except Exception as cleanup_error:
                         logger.warning("Failed to cleanup temp file: %s, error=%s", temp_file, cleanup_error)
                         
-        except ImageProcessingError as e:
+        except AttachmentRejected as e:
             logger.error("Image processing failed: %s", e)
             raise RuntimeError(f"Image processing failed: {e}") from e
         except Exception as e:

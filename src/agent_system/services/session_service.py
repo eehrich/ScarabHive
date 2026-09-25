@@ -200,6 +200,33 @@ class SessionService:
             logger.error(f"[SESSION] Failed to load session {session_id}: {e}", exc_info=True)
             return False, 0
 
+    async def open_for_run(self, agent, user_id: str, session_id: str, llm_profile: str,
+                           in_use: bool = False) -> bool:
+        """Ready *session_id* on *agent* for a run; returns whether it existed.
+
+        A stored session is restored (conversation, its context_vars). A new
+        one starts from nothing -- whatever this process still holds under the
+        id (a first save that failed) is not it: no conversation, no vars, no
+        start mark -- on the agent's template_vars. *in_use*: a run of this
+        process has the session, so what the tracker holds is that run's
+        unsaved state and stays as it is. Either way the metadata names this
+        run: user, agent, *llm_profile*.
+
+        One step for /run, /events, agent-cli and agent-run. Written out per
+        entry point, a new session got the agent's template_vars in three of
+        five. Raises SessionPermissionError for another user's session.
+        """
+        exists, _ = await self.load_and_restore_session(agent, user_id, session_id)
+        tracker = agent._session_tracker
+        if not exists and not in_use:
+            tracker.discard_session(session_id)
+            own_vars = getattr(getattr(agent, "agent_config", None), "template_vars", None)
+            if own_vars:
+                tracker.set_session_template_vars(session_id, dict(own_vars))
+        tracker.set_session_metadata(session_id, {
+            "user_id": user_id, "agent_name": agent.name, "llm_profile": llm_profile})
+        return exists
+
     async def save_session(
         self,
         agent,
