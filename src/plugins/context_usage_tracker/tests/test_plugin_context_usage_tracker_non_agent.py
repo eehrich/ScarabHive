@@ -145,11 +145,24 @@ class TestWhatItMustNotCount:
 
     @pytest.mark.asyncio
     async def test_a_failed_call_is_not_spend(self, hooks):
-        """Clients report retries and failures through the same hook."""
+        """Clients report retries and failures through the same hook -- without
+        a usage, which is what keeps them out (llm_decisions pins that side)."""
         await hooks.track_non_agent_usage(
-            a_response(error="[RETRY 1/3] ReadTimeout: timed out"))
+            a_response(error="[RETRY 1/3] ReadTimeout: timed out", usage=None))
 
         assert snapshots(hooks) == []
+
+    @pytest.mark.asyncio
+    async def test_an_answer_refused_after_it_was_billed_is_spend(self, hooks):
+        """The decisions client refuses an answer it cannot use (a question left
+        unanswered) -- after the call was billed. It reports that failure WITH
+        the usage the answer carried, and dropping it would hide real spend."""
+        await hooks.track_non_agent_usage(a_response(
+            error="DecisionsError: Decisions API left urgency unanswered"))
+
+        recorded = snapshots(hooks)
+        assert len(recorded) == 1, "a billed call vanished because it ended in an error"
+        assert recorded[0]["cost"] == pytest.approx(DECISIONS_USAGE["cost"])
 
     @pytest.mark.asyncio
     async def test_a_response_without_usage_is_not_a_row(self, hooks):
@@ -222,10 +235,11 @@ class TestTheRealDispatchers:
     @pytest.mark.asyncio
     async def test_a_decisions_call_arrives_through_its_own_client(self, hooks):
         """End to end: the client's notification, the registry, this hook."""
-        from plugins.llm_decisions import openrouter
+        from plugins.llm_decisions import system_one
 
-        await self._with_hook_registered(hooks, lambda: openrouter._notify_response(
-            model="~typesafe/jev-latest", url=openrouter.DECISIONS_URL,
+        await self._with_hook_registered(hooks, lambda: system_one._notify_response(
+            provider=system_one.OPENROUTER.provider,
+            model="~typesafe/jev-latest", url=system_one.OPENROUTER.url,
             session_id="session_7", duration_ms=812.0,
             usage={"input_tokens": 120, "output_tokens": 4, "cost": 1.5e-05},
             data={"answers": {"is_final": True}}))

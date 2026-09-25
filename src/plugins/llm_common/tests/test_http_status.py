@@ -10,10 +10,10 @@ from plugins.llm_common.http_status import RETRYABLE_STATUS
 
 
 def test_every_client_shares_the_one_retry_list():
-    from plugins.llm_decisions import openrouter
+    from plugins.llm_decisions import system_one
     from plugins.llm_openai_compat import openai_speech_client
 
-    for module in (openrouter, openai_speech_client):
+    for module in (system_one, openai_speech_client):
         assert module.RETRYABLE_STATUS is RETRYABLE_STATUS, (
             f"{module.__name__} carries its own retry list again")
 

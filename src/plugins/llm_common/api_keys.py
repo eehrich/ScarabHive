@@ -32,6 +32,8 @@ from urllib.parse import urlparse
 _HOST_KEYS = {
     "openrouter.ai": "OPENROUTER_API_KEY",
     "api.openai.com": "OPENAI_API_KEY",
+    # the variable TypeSafe's own SDKs read (decision models, llm_decisions)
+    "api.typesafe.ai": "TYPESAFE_API_KEY",
 }
 #: Local endpoints (LM Studio, vLLM, llama.cpp, an Ollama box on the LAN)
 #: speak the OpenAI wire format and usually ignore the key entirely. Keeping
@@ -70,7 +72,7 @@ def key_var_for(base_url: str) -> Optional[str]:
 
 def resolve_api_key(
     api_key: Optional[str], base_url: Optional[str], *,
-    default_base_url: str, provider: str,
+    default_base_url: str, provider: str, local_fallback: bool = True,
 ) -> tuple[str, str]:
     """Return ``(api_key, effective_base_url)`` for an OpenAI-compatible client.
 
@@ -78,10 +80,21 @@ def resolve_api_key(
     fallback follows the endpoint. Raises ValueError naming BOTH the variable
     that was looked for and the host it was meant for; "OPENAI_API_KEY is
     required" while the request goes to openrouter.ai is the confusing half.
+
+    ``local_fallback=False`` is for a client whose wire is NOT OpenAI's: the
+    local fallback exists because a local OpenAI-compatible server takes any
+    key, and a local server of another wire has no use for the OpenAI secret
+    -- nor should a missing one stop it. Such a local endpoint without an
+    ``api_key`` gets ``""``: no key, and the caller sends no Authorization.
     """
     effective_url = base_url or default_base_url
     if api_key:
         return api_key, effective_url
+    hostname = (urlparse(effective_url).hostname or "").lower()
+    # `hostname and`: a url without a scheme parses to no hostname, and "" has
+    # no dot -- it would pass as local and fail at every call instead of here.
+    if not local_fallback and hostname and _is_local(hostname):
+        return "", effective_url
     wanted = key_var_for(effective_url)
     if wanted is None:
         raise ValueError(

@@ -1,4 +1,4 @@
-"""Client for OpenRouter's Decisions API -- a questionnaire, not a conversation.
+"""Client for the System One wire -- a questionnaire, not a conversation.
 
 A decision model (TypeSafe's Jev is the first) answers NAMED QUESTIONS about a
 piece of content and returns typed answers with probabilities. There is no
@@ -9,11 +9,26 @@ reason, with their own contract (``agent_system/llm/tts.py``). Why this lives
 in its own package and not in ``llm_openrouter`` or ``llm_openai_compat``:
 see the README beside this file.
 
-The wire, measured against OpenRouter's OpenAPI document (2026-09-20)::
+The wire is TypeSafe's ("System One"). Two of its hosts were measured with
+one questionnaire (2026-09-25); TypeSafe's own is taken from its API
+reference -- there was no key here to call it::
 
-    POST https://openrouter.ai/api/alpha/decisions
+    POST <url>
     {"model": ..., "state": <str|dict|list>, "questions": {<name>: {...}}}
-    -> {"id", "model", "provider", "answers": {<name>: {...}}, "usage": {...}}
+    -> {"model", "answers": {<name>: {...}}, "usage": {...}}   (+ "id", "provider")
+
+    OpenRouter  /api/alpha/decisions and /api/v1/systemone: the same body back
+                from both, ``id``, ``provider`` and ``usage.cost`` included
+    TypeSafe    https://api.typesafe.ai/v1/systemone -- per their reference:
+                model, answers, usage{input_tokens, output_tokens}, no cost
+    laya-serve  /v1/systemone on a local Laya (Apache-2.0 weights): the same
+                answers plus fields of its own this client leaves alone
+                (answer_confidence, action, routing); ``model`` is always
+                "laya-rl-agent", and ``usage`` carries no cost
+
+So one client, and what differs per host is data (``Host``): the provider name
+the hooks and the tracker book a call under, the default endpoint, and whether
+the host takes OpenRouter's ``session_id``.
 
 Three question types, and their ``criteria`` differ in SHAPE -- the one thing
 that turns into an HTTP 400 at runtime, so ``check_questions`` refuses it here:
@@ -22,12 +37,14 @@ that turns into an HTTP 400 at runtime, so ``check_questions`` refuses it here:
     choice  one named option; criteria {option: what it means}
     score   a point on an ordered scale; criteria [lowest, ..., highest]
 
-The endpoint is NOT under ``/api/v1`` like everything else at OpenRouter, so
-this client takes a full URL rather than a base_url. ``/api/alpha/`` also says
-what it is: the shape may change, and it is pinned in one place here.
+The endpoint is NOT under ``/api/v1`` at OpenRouter, and laya-serve lives
+wherever it was started, so this client takes a full URL rather than a
+base_url. ``/api/alpha/`` also says what it is: the shape may change, and it is
+pinned in one place here.
 
-The answer carries its own ``cost`` -- no entry in llm_pricing.yaml is needed
-or would be used.
+Where the answer carries a ``cost`` it is the price -- no entry in
+llm_pricing.yaml is needed or would be used. Where it carries none, the cost is
+None: unknown, not free.
 """
 
 from __future__ import annotations
@@ -48,15 +65,34 @@ from plugins.llm_common.http_status import RETRYABLE_STATUS
 
 logger = logging.getLogger(__name__)
 
-#: The full endpoint: decisions do not live under /api/v1 (see the module docstring).
-DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 #: What a question's ``type`` may be, and which field of the answer decides.
 _DECIDING_FIELD = {"noul": "noul", "choice": "choice", "score": "score"}
-#: What the hooks see as the provider of these calls; also the name the
-#: API key is resolved under.
-_PROVIDER = "openrouter_decisions"
 
 State = Union[str, Mapping[str, Any], Sequence[Any]]
+
+
+@dataclass(frozen=True)
+class Host:
+    """What one host of the wire needs that the others do not.
+
+    ``provider`` is the name in the manifest's ``provides_decisions``, and the
+    name the hooks, the debugger and the usage tracker book a call under -- a
+    local Laya booked as OpenRouter would be spend that happened elsewhere.
+    ``url`` is the whole default endpoint, nothing is appended to it.
+    ``takes_session_id``: OpenRouter documents ``session_id`` for grouping its
+    logs; TypeSafe's reference lists model, state and questions only, and a
+    field a host does not document is not sent there.
+    """
+
+    provider: str
+    url: str
+    takes_session_id: bool
+
+
+OPENROUTER = Host("openrouter_decisions", "https://openrouter.ai/api/alpha/decisions", True)
+#: TypeSafe's own endpoint, and the wire laya-serve speaks: a local Laya is this
+#: host with the url of the machine it runs on.
+SYSTEM_ONE = Host("systemone_decisions", "https://api.typesafe.ai/v1/systemone", False)
 
 
 @dataclass(frozen=True)
@@ -96,7 +132,17 @@ class DecisionsResult:
 
 
 class DecisionsError(RuntimeError):
-    """The endpoint refused the request or could not be reached."""
+    """The endpoint refused the request, could not be reached, or answered with
+    something this client cannot use.
+
+    ``usage`` is set in that last case when the answer carried one -- the call
+    was billed all the same, and a caller adding up spend must count it:
+    ``{"input_tokens", "output_tokens", "cost"}``, cost None when unreported.
+    """
+
+    def __init__(self, message: str, usage: Optional[dict] = None) -> None:
+        super().__init__(message)
+        self.usage = usage
 
 
 class DecisionsClient:
@@ -106,22 +152,24 @@ class DecisionsClient:
         self,
         model: str,
         api_key: Optional[str] = None,
-        url: str = DECISIONS_URL,
+        url: Optional[str] = None,
         request_timeout: int = 60,
         max_retries: int = 2,
+        host: Host = OPENROUTER,
     ) -> None:
+        self.host = host
+        self.url = url or host.url
         # The key follows the ENDPOINT, not the provider name (api_keys.py): it is
         # matched against the host of the url actually called, so pointing this
-        # client at a proxy does NOT send the OpenRouter secret there. One gap,
-        # and it is api_keys.py's deliberate one, not this client's: a host
-        # WITHOUT A DOT counts as local (`_is_local`), and a local host gets
-        # OPENAI_API_KEY. So `http://decisions-proxy:9000/...` -- a compose
-        # service name -- travels with that key. Give such an endpoint its own
-        # api_key in the config rather than relying on the fallback.
-        self.api_key, _ = resolve_api_key(api_key, url, default_base_url=DECISIONS_URL,
-                                          provider=_PROVIDER)
+        # client at a proxy does NOT send the OpenRouter secret there. A LOCAL
+        # endpoint (a host without a dot, a private address) gets no key at all
+        # unless the config names one: api_keys.py would hand it OPENAI_API_KEY,
+        # which suits a local OpenAI-compatible server and not this wire. A
+        # local laya-serve takes any request unless it runs with LAYA_API_KEY,
+        # and then answers 401 -- the config's api_key is the place for it.
+        self.api_key, _ = resolve_api_key(api_key, self.url, default_base_url=host.url,
+                                          provider=host.provider, local_fallback=False)
         self.model = model
-        self.url = url
         self.request_timeout = request_timeout
         self.max_retries = max_retries
 
@@ -186,8 +234,9 @@ class DecisionsClient:
         """Answer ``questions`` about ``state``.
 
         ``state`` is the content to judge: a plain string (a command, a ticket,
-        a diff) or a JSON object when the parts have names. ``session_id`` only
-        groups requests in OpenRouter's own logging; it never reaches the model.
+        a diff) or a JSON object when the parts have names. ``session_id``
+        groups the call in the hooks, and at OpenRouter also in their own
+        logging; it never reaches the model.
         """
         self.check_questions(questions)
         if isinstance(state, (bytes, bytearray)) or not isinstance(state, (str, Mapping, Sequence)):
@@ -198,23 +247,29 @@ class DecisionsClient:
             raise ValueError("A decisions request needs a state -- the content to judge")
 
         payload: dict[str, Any] = {"model": self.model, "state": state, "questions": dict(questions)}
-        if session_id:
+        if session_id and self.host.takes_session_id:
             payload["session_id"] = session_id
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:  # a local endpoint without a configured key gets none
+            headers["Authorization"] = f"Bearer {self.api_key}"
         started = time.time()
         # Decision calls never pass through the per-agent hook wiring, so they
         # dispatch to the global registry themselves -- exactly as the TTS
         # clients do, and for the same reason: without it the debugger and the
         # latency capture are blind to a whole class of calls.
-        await _notify_request(model=self.model, url=self.url, payload=payload, session_id=session_id)
+        await _notify_request(provider=self.host.provider, model=self.model, url=self.url,
+                              payload=payload, session_id=session_id)
         try:
             return await self._attempts(payload, headers, questions, started, cancellation_token, session_id)
         except BaseException as e:
             # EVERY exit says how it ended, the user's cancel included: a request
             # the debugger never sees an answer to is how a whole class of calls
             # went missing once before (agent_system/llm/tts.py).
-            await _notify_response(model=self.model, url=self.url, session_id=session_id,
-                                   duration_ms=(time.time() - started) * 1000,
+            # A refused answer that said what it cost goes out WITH that usage:
+            # the tracker books an error row only when it was billed.
+            await _notify_response(provider=self.host.provider, model=self.model, url=self.url,
+                                   session_id=session_id, duration_ms=(time.time() - started) * 1000,
+                                   usage=getattr(e, "usage", None),
                                    error=f"{type(e).__name__}: {e}", finish_reason="error")
             raise
 
@@ -233,7 +288,7 @@ class DecisionsClient:
                 else:
                     result = self._to_result(response, started, questions)
                     await _notify_response(
-                        model=self.model, url=self.url, session_id=session_id,
+                        provider=self.host.provider, model=self.model, url=self.url, session_id=session_id,
                         duration_ms=result.duration_ms, served_by=result.model,
                         usage={"input_tokens": result.input_tokens, "output_tokens": result.output_tokens,
                                "cost": result.cost},
@@ -246,7 +301,7 @@ class DecisionsClient:
                 logger.warning("Decisions attempt %d/%d failed (%s) -- retrying in %.0fs",
                                attempt + 1, self.max_retries + 1, last_error, delay)
                 await _notify_response(
-                    model=self.model, url=self.url, session_id=session_id,
+                    provider=self.host.provider, model=self.model, url=self.url, session_id=session_id,
                     duration_ms=(time.time() - started) * 1000,
                     error=f"[RETRY {attempt + 1}/{self.max_retries + 1}] "
                           f"{type(last_error).__name__}: {last_error}", finish_reason="retry")
@@ -282,6 +337,14 @@ class DecisionsClient:
             raise DecisionsError(
                 f"Decisions API answered {response.status_code} with {type(data).__name__}, not an object "
                 f"({str(data)[:200]}) -- model={self.model}")
+        usage = data.get("usage") or {}
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        cost = None if usage.get("cost") is None else float(usage["cost"])
+        # An answer refused below was billed all the same: the error carries what
+        # it cost, when the answer said so at all.
+        billed = ({"input_tokens": input_tokens, "output_tokens": output_tokens, "cost": cost}
+                  if usage else None)
         answers = {}
         for name, answer in (data.get("answers") or {}).items():
             kind = answer.get("type")
@@ -294,7 +357,7 @@ class DecisionsClient:
                 # would read as "the model did not answer that question".
                 raise DecisionsError(
                     f"Decisions answer {name!r} has type {kind!r} with no usable value ({answer!r}) "
-                    f"-- this client knows {', '.join(sorted(_DECIDING_FIELD))}")
+                    f"-- this client knows {', '.join(sorted(_DECIDING_FIELD))}", usage=billed)
             answers[name] = Answer(
                 name=name, type=kind, value=answer[field],
                 confidence=answer.get("confidence"),
@@ -308,8 +371,7 @@ class DecisionsClient:
             # model nor what it did answer.
             raise DecisionsError(
                 f"Decisions API left {', '.join(sorted(unanswered))} unanswered "
-                f"(answered: {', '.join(sorted(answers)) or 'nothing'}) -- model={self.model}")
-        usage = data.get("usage") or {}
+                f"(answered: {', '.join(sorted(answers)) or 'nothing'}) -- model={self.model}", usage=billed)
         return DecisionsResult(
             answers=answers,
             # The served model, not the one asked for: an alias (~typesafe/jev-latest)
@@ -317,9 +379,9 @@ class DecisionsClient:
             model=data.get("model") or self.model,
             provider=data.get("provider"),
             id=data.get("id"),
-            input_tokens=int(usage.get("input_tokens") or 0),
-            output_tokens=int(usage.get("output_tokens") or 0),
-            cost=None if usage.get("cost") is None else float(usage["cost"]),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost=cost,
             duration_ms=(time.time() - started) * 1000,
         )
 
@@ -331,19 +393,19 @@ class DecisionsClient:
 # usage -- which is exactly the half that could NOT be shared.
 
 
-async def _notify_request(*, model: str, url: str, payload: dict,
+async def _notify_request(*, provider: str, model: str, url: str, payload: dict,
                           session_id: Optional[str] = None) -> None:
     await hook_notify.notify_request(
-        provider=_PROVIDER, model=model, url=url, payload=payload,
+        provider=provider, model=model, url=url, payload=payload,
         session_id=session_id or "")
 
 
-async def _notify_response(*, model: str, url: str, duration_ms: float, data: Optional[dict] = None,
-                           usage: Optional[dict] = None, served_by: Optional[str] = None,
-                           session_id: Optional[str] = None,
+async def _notify_response(*, provider: str, model: str, url: str, duration_ms: float,
+                           data: Optional[dict] = None, usage: Optional[dict] = None,
+                           served_by: Optional[str] = None, session_id: Optional[str] = None,
                            error: Optional[str] = None, finish_reason: Optional[str] = None) -> None:
     await hook_notify.notify_response(
-        provider=_PROVIDER, model=model, url=url, duration_ms=duration_ms,
+        provider=provider, model=model, url=url, duration_ms=duration_ms,
         response_data=data, usage=usage, session_id=session_id or "",
         error=error, finish_reason=finish_reason,
         # where the debugger reads the backend a gateway routed to

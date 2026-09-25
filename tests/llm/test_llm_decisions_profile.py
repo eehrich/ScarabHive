@@ -53,7 +53,7 @@ class TestRegistryDispatch:
         """The whole seam end to end, and the half that silently rots: a
         factory that drops request_timeout or max_retries builds a client
         that works -- with someone else's numbers."""
-        from plugins.llm_decisions.openrouter import DecisionsClient
+        from plugins.llm_decisions.system_one import DecisionsClient
         config = _config(jev=DecisionModelConfig(
             provider="openrouter_decisions", model="typesafe/jev-1.13",
             api_key="sk-test", request_timeout=7, max_retries=5))
@@ -78,12 +78,18 @@ class TestRegistryDispatch:
 
         assert client.url == "https://proxy.internal/decisions"
 
-    def test_no_url_means_the_providers_own_endpoint(self):
-        from plugins.llm_decisions.openrouter import DECISIONS_URL
-        config = _config(jev=DecisionModelConfig(
-            provider="openrouter_decisions", model="jev", api_key="sk-test"))
+    @pytest.mark.parametrize("provider, host", [("openrouter_decisions", "OPENROUTER"),
+                                                ("systemone_decisions", "SYSTEM_ONE")])
+    def test_no_url_means_the_providers_own_endpoint(self, provider, host):
+        """Both providers build one client; the host each hands it is the
+        difference -- its endpoint, and the name its calls are booked under."""
+        from plugins.llm_decisions import system_one
+        config = _config(jev=DecisionModelConfig(provider=provider, model="jev", api_key="sk-test"))
 
-        assert create_decisions_from_profile(config, "jev").url == DECISIONS_URL
+        client = create_decisions_from_profile(config, "jev")
+
+        assert client.host is getattr(system_one, host)
+        assert client.url == client.host.url and client.host.provider == provider
 
 
 class TestProfileResolution:

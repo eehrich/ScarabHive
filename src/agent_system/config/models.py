@@ -240,8 +240,9 @@ class DecisionModelConfig(BaseModel):
     (TypeSafe's Jev behind OpenRouter's ``/api/alpha/decisions`` is the first).
     It therefore does not belong in ``models``: nothing here can serve
     ``chat()``, and an entry there would be offered to every agent as a chat
-    model and checked for a per-token price it does not have — the answer
-    reports its own cost.
+    model and checked for a per-token price it does not have. OpenRouter's
+    answer carries its cost; one that carries none (a local Laya, TypeSafe
+    direct) is priced by the usage tracker from llm_pricing.yaml, by model.
 
     The shape of ``TTSModelConfig`` minus its voice, for the same reason: a
     non-chat client needs a connection and nothing from the chat knobs.

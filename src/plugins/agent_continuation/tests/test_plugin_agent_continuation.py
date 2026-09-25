@@ -1649,7 +1649,7 @@ class _FakeClient:
         # that same static check here is what turns the assertions below from
         # "the hook built the dict the test watched it build" into "the hook
         # built a dict the endpoint accepts".
-        from plugins.llm_decisions.openrouter import DecisionsClient
+        from plugins.llm_decisions.system_one import DecisionsClient
         DecisionsClient.check_questions(questions)
         self.calls.append({"state": state, "questions": questions,
                            "session_id": session_id})

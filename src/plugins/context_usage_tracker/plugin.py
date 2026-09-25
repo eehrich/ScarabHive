@@ -207,13 +207,12 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
         try:
             if context.agent is not None:
                 return HookResult(success=True, modified=False, context=context)
-            if context.llm_error:
-                # A retry or a failed call: the client reports those through the
-                # same hook, and a failure that never billed must not appear as
-                # spend. A retry that LATER succeeds is reported again, without
-                # the error, and that is the call that gets counted.
-                return HookResult(success=True, modified=False, context=context)
-
+            # No usage, no row. That is also what keeps a retry or a failed call
+            # out: the clients report those through the same hook WITHOUT a
+            # usage, a failure that never billed must not appear as spend, and a
+            # retry that LATER succeeds is reported again, and counted then. A
+            # failure WITH a usage is an answer the client refused after it was
+            # billed (llm_decisions) -- spend all the same, so it is booked.
             usage = context.llm_usage or {}
             if not usage:
                 return HookResult(success=True, modified=False, context=context)

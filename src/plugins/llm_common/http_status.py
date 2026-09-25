@@ -10,10 +10,13 @@ They belong next to the classic 429/50x because leaving them out is not a
 missing retry but a hard failure: the client raises, and a caller that fans
 out loses the whole series to one flaky call. Measured on the decisions
 endpoint (2026-09-23): a 520 under six concurrent calls, dead on the spot.
+
+529 is "overloaded": TypeSafe's API reference names it beside 429 as the one
+to retry with backoff, and Anthropic uses the code the same way.
 """
 from __future__ import annotations
 
 __all__ = ["RETRYABLE_STATUS"]
 
-#: Worth another attempt: rate limit, origin 5xx, and Cloudflare's 52x range.
-RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
+#: Worth another attempt: rate limit, origin 5xx, Cloudflare's 52x range, overload.
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529})
