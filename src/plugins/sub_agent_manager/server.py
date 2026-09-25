@@ -218,15 +218,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         self.phase_variable = phase_config.get('phase_variable', 'workflow_phase')
         self.phase_agents = phase_config.get('phase_agents', {})
 
-        # Min result length per agent type: auto-retry if result is too short.
-        # Config: {"v5b_synopsis_writer": 500, "v5b_beat_generator": 50}
-        self._min_result_length_by_agent: dict[str, int] = dict(
-            getattr(server_config, 'min_result_length_by_agent', {}) or {}
-        )
-        self._min_result_retries: int = int(
-            getattr(server_config, 'min_result_retries', 2)
-        )
-
         # Track running sub-agent instances to prevent concurrent execution
         # Format: {sub_session_id: True}
         self._running_agents: set[str] = set()
@@ -304,10 +295,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         _upd("phase_filtering_enabled", phase_config.get('enabled', False))
         _upd("phase_variable", phase_config.get('phase_variable', 'workflow_phase'))
         _upd("phase_agents", phase_config.get('phase_agents', {}))
-
-        _upd("_min_result_length_by_agent",
-             dict(getattr(server_config, 'min_result_length_by_agent', {}) or {}))
-        _upd("_min_result_retries", int(getattr(server_config, 'min_result_retries', 2)))
 
         if changes:
             logger.info(
@@ -653,9 +640,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
     ) -> str:
         """One run of a sub-agent, from its first event to its last, and the text it ends with.
 
-        Every caller runs a sub-agent the same way -- create, continue, the retry for a result that
-        came back too short, and the background job -- so they share this. What the callers do
-        differ in is what happens around the run, not inside it.
+        Every caller runs a sub-agent the same way -- create, continue and the background job --
+        so they share this. What the callers do differ in is what happens around the run, not
+        inside it.
 
         `run` is the entry in `_blocking_runs`: with one, a cancel that arrived while the run was
         still being prepared reaches the request as soon as it exists. A background job has none;
@@ -898,7 +885,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 # Mark as running -- and cancellable from here on, not only once the run has begun
                 self._take_slot(sub_session_id)
                 run = self._blocking_runs[sub_session_id] = {
-                    "agent": None, "request_id": None, "parent_session_id": parent_session_id, "cancelled": False}
+                    "agent": None, "request_id": None, "parent_session_id": parent_session_id}
 
             # False while the stored status knows nothing of how this run ends (_store_blocking_abort)
             settled = False
@@ -938,49 +925,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     use_advanced_model=use_advanced_model, run=run,
                 )
 
-                # -- Min result length guard: auto-retry with continue if too short --
-                min_len = self._min_result_length_by_agent.get(agent_name, 0)
-                if min_len > 0 and result_text and not result_text.startswith(("Error:", "Cancelled:")) and len(result_text) < min_len:
-                    # a retry gets a request id of its own, which a cancel of the caller (by id prefix) never
-                    # reached: the token of this tool call says whether that happened
-                    caller_token = params.get("_cancellation_token")
-                    for retry_attempt in range(self._min_result_retries):
-                        if (run["cancelled"] or result_text.startswith("Cancelled:")  # a stopped run tries no more
-                                or (caller_token is not None and caller_token.is_cancelled)):
-                            break
-                        logger.warning(
-                            "Sub-agent %s result too short (%d < %d chars), auto-retry %d/%d",
-                            agent_name, len(result_text), min_len,
-                            retry_attempt + 1, self._min_result_retries,
-                        )
-                        if status:
-                            await status.progress(
-                                f"⚠ {agent_name} result too short ({len(result_text)} chars), retrying..."
-                            )
-                        retry_req_id = f"{sub_request_id}_minlen_{retry_attempt}"
-                        _register_request_user(retry_req_id, user_id)
-                        run["request_id"] = retry_req_id
-                        retry_result = await self._consume_run(
-                            agent, manager,
-                            parent_session_id=parent_session_id, instance_id=sub_session_id,
-                            task="Deine Antwort war unvollständig oder leer. Vervollständige deine Antwort.",
-                            request_id=retry_req_id, run=run,
-                        )
-                        if retry_result and len(retry_result) >= min_len:
-                            result_text = retry_result
-                            logger.info(
-                                "Sub-agent %s retry %d succeeded (%d chars)",
-                                agent_name, retry_attempt + 1, len(result_text),
-                            )
-                            break
-                        if retry_result:
-                            result_text = retry_result  # Use latest even if still short
-                    if len(result_text) < min_len:
-                        logger.warning(
-                            "Sub-agent %s still too short after %d retries (%d chars, min=%d)",
-                            agent_name, self._min_result_retries, len(result_text), min_len,
-                        )
-
                 # Save session with messages after execution
                 user_id = manager._extract_user_id(parent_session_id, params)
                 # Get actual LLM profile from agent configuration
@@ -1006,10 +950,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 settled = True
 
                 if status:
-                    # result_text carries the outcome ("Error: ..."/"Cancelled: ...")
-                    # -- the same predicate the retry gate above uses. The end
-                    # line reported "Created ..." either way, so an aborted run
-                    # was the green line that stayed in the WebUI.
+                    # result_text carries the outcome ("Error: ..."/"Cancelled: ...").
+                    # The end line reported "Created ..." either way, so an aborted
+                    # run was the green line that stayed in the WebUI.
                     if _outcome_status(result_text) != "completed":
                         await status.error(
                             f"Sub-agent {sub_session_id} ({agent_name}): "
@@ -1127,7 +1070,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 # Mark as running -- and cancellable from here on, not only once the run has begun
                 self._take_slot(instance_id)
                 run = self._blocking_runs[instance_id] = {
-                    "agent": None, "request_id": None, "parent_session_id": parent_session_id, "cancelled": False}
+                    "agent": None, "request_id": None, "parent_session_id": parent_session_id}
 
             # True while the stored status knows nothing of this run: before the reopen it still tells
             # the last one's ending, and a reopen refused at a limit leaves it at that
@@ -2742,12 +2685,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     if status_ctx:
                         await status_ctx.error(f"Cancel: {instance_id} not found")
                     return {"status": "error", "error": "Instance not found"}
-                # no further retries either -- set before the await, the run goes on meanwhile
-                asked_before, run["cancelled"] = run["cancelled"], True
                 if run["request_id"] is None:
                     run["early"] = True  # still being prepared: the run stops itself at its first event
                 elif not await run["agent"].cancel_request(run["request_id"]):
-                    run["cancelled"] = asked_before  # an answer that failed changes nothing
                     if status_ctx:
                         await status_ctx.error(f"Cancel: {instance_id} is already ending its run")
                     return {"status": "error", "error": f"Instance '{instance_id}' is already ending its run"}
