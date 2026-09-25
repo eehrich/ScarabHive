@@ -109,7 +109,7 @@ class SessionService:
         self.checkpoint_interval_seconds = checkpoint_interval_seconds
         # session_id -> asyncio.Task running the checkpoint loop
         self._checkpoint_tasks: Dict[str, asyncio.Task] = {}
-        # session_id -> the lock its saves take in turn (_save_lock)
+        # session_id -> the lock its writes take in turn (save_lock)
         self._save_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
 
     async def load_and_restore_session(
@@ -237,11 +237,15 @@ class SessionService:
             "user_id": user_id, "agent_name": agent.name, "llm_profile": llm_profile})
         return exists
 
-    def _save_lock(self, session_id: str) -> asyncio.Lock:
-        """One save of *session_id* at a time. The run's own save and a
-        checkpoint overlap -- the loop runs through the whole run -- and each
-        reads the title to write before it writes: the later one has to see
-        what the earlier wrote."""
+    def save_lock(self, session_id: str) -> asyncio.Lock:
+        """One write of *session_id* at a time: its saves, and a rename
+        (update_session). The run's own save and a checkpoint overlap -- the
+        loop runs through the whole run -- and each reads the record and the
+        title to write before it writes: the later one has to see what the
+        earlier wrote, a rename included. Writers that load, change and save
+        the record without it (task_switch's context vars, sub_agent_manager's
+        refresh of a sub-session's inherited vars) can still lose a rename
+        landing in between."""
         lock = self._save_locks.get(session_id)
         if lock is None:
             lock = self._save_locks[session_id] = asyncio.Lock()
@@ -249,8 +253,8 @@ class SessionService:
 
     async def save_session(self, agent, user_id: str, session_id: str, agent_name: str, llm_profile: str,
                            was_new_session: bool, title: Optional[str] = None) -> bool:
-        """_save_session, one save of the session at a time (_save_lock)."""
-        async with self._save_lock(session_id):
+        """_save_session, one write of the session at a time (save_lock)."""
+        async with self.save_lock(session_id):
             return await self._save_session(agent, user_id, session_id, agent_name, llm_profile,
                                             was_new_session, title)
 
@@ -398,7 +402,7 @@ class SessionService:
 
             # Save back
             await self.session_manager.save_session(session_data)
-            await self._title_saved(agent, actual_user_id, session_id, carried)
+            self._title_written(agent, session_id, carried)
 
             logger.debug(f"[SESSION] Session {session_id} saved with {len(messages_dicts)} messages")
             return True
@@ -420,25 +424,14 @@ class SessionService:
         title = tracker.title_to_write(session_id) if hasattr(tracker, "title_to_write") else None
         return title if isinstance(title, str) else None
 
-    async def _title_saved(self, agent, user_id: str, session_id: str, written: Optional[str]) -> None:
+    @staticmethod
+    def _title_written(agent, session_id: str, written: Optional[str]) -> None:
         """After a save: the carried title it wrote is let go, so a rename after
-        it is not put back. One carried while the save ran -- a /title as the
-        record was being created -- is newer: written now, not left for the
-        run's next save."""
+        it is not put back. One carried meanwhile stays for the next save: a
+        run's own carry has a save after it, and a rename's waits (save_lock)."""
         tracker = getattr(agent, "_session_tracker", None)
-        if not hasattr(tracker, "title_written"):
-            return
-        if written:
+        if written and hasattr(tracker, "title_written"):
             tracker.title_written(session_id, written)
-        later = self._title_to_write(agent, session_id)
-        try:
-            while later and later != written:
-                await self.session_manager.rename_session(user_id, session_id, later)
-                tracker.title_written(session_id, later)
-                written, later = later, self._title_to_write(agent, session_id)
-        except Exception as err:  # noqa: BLE001 -- the save went through; the title waits for the next
-            logger.warning("[SESSION] %s saved, but its title %r was not written: %s -- the next save writes it",
-                           session_id, later, err)
 
     def _extract_session_title(self, messages_dicts: List[Dict[str, Any]]) -> str:
         """
@@ -469,8 +462,8 @@ class SessionService:
     # ------------------------------------------------------------------
 
     async def checkpoint_session(self, agent, user_id: str, session_id: str) -> bool:
-        """_checkpoint_session, in turn with the session's other saves (_save_lock)."""
-        async with self._save_lock(session_id):
+        """_checkpoint_session, in turn with the session's other writes (save_lock)."""
+        async with self.save_lock(session_id):
             return await self._checkpoint_session(agent, user_id, session_id)
 
     async def _checkpoint_session(self, agent, user_id: str, session_id: str) -> bool:
@@ -547,7 +540,7 @@ class SessionService:
                 session_data["context_vars"] = existing
 
             await self.session_manager.save_session(session_data)
-            await self._title_saved(agent, actual_user_id, session_id, carried)
+            self._title_written(agent, session_id, carried)
             logger.debug(
                 f"[CHECKPOINT] Session {session_id}: persisted {len(safe_messages)} safe messages "
                 f"(trimmed from {len(messages_dicts)})"

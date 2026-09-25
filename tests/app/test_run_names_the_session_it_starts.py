@@ -13,6 +13,8 @@ agent's own save. Everything from the endpoint to the file is the real code.
 """
 from __future__ import annotations
 
+import contextlib
+
 import httpx
 import pytest
 
@@ -181,26 +183,6 @@ class TestTheTitleIsWrittenOnce:
         await Agent._save_session_to_disk(agent, "s1")
         assert (await manager.load_session("u", "s1"))["title"] == "Neuer Name"
 
-    async def test_a_title_carried_while_the_first_save_runs_is_written_too(self, tmp_path):
-        """A /title as the record is being created finds none and is carried:
-        newer than the one that save writes -- written right after, not
-        dropped with it."""
-        agent, tracker, manager = self._agent(tmp_path)
-        tracker.carry_title("s1", TITLE)
-        tracker.set_session_messages("s1", [ChatMessage(role="user", content="hallo")])
-        save = manager.save_session
-
-        async def save_while_a_title_comes(session_data):
-            manager.save_session = save
-            tracker.carry_title("s1", "Copper-Liste")  # the PATCH that found no record
-            await save(session_data)
-
-        manager.save_session = save_while_a_title_comes
-        assert await Agent._save_session_to_disk(agent, "s1") is True
-
-        assert (await manager.load_session("u", "s1"))["title"] == "Copper-Liste"
-        assert tracker.title_to_write("s1") is None, "written, and still waiting to be written"
-
     async def test_a_first_run_that_saved_nothing_leaves_its_title_to_the_next(self, tmp_path):
         """The run started (the browser has the id) and ended without a save: the
         next message's run opens the session afresh -- and still writes it."""
@@ -224,27 +206,6 @@ class TestTheTitleIsWrittenOnce:
 
         assert (await manager.load_session("bob", "s1"))["title"] == "bobs Frage"
 
-    async def test_a_title_that_cannot_be_written_after_the_save_waits_for_the_next(self, tmp_path):
-        """The save went through: it says so -- the session-end hooks go by it --
-        and the title it could not write stays for the next save."""
-        agent, tracker, manager = self._agent(tmp_path)
-        tracker.carry_title("s1", TITLE)
-        tracker.set_session_messages("s1", [ChatMessage(role="user", content="hallo")])
-        save = manager.save_session
-
-        async def save_while_a_title_comes(session_data):
-            manager.save_session = save
-            tracker.carry_title("s1", "Copper-Liste")
-            await save(session_data)
-
-        async def rename_fails(*args):
-            raise OSError("disk full")
-
-        manager.save_session = save_while_a_title_comes
-        manager.rename_session = rename_fails
-        assert await Agent._save_session_to_disk(agent, "s1") is True, "a written save reported as failed"
-        assert tracker.title_to_write("s1") == "Copper-Liste"
-
     async def test_a_checkpoint_waits_for_the_save_it_would_overlap(self, tmp_path):
         """The checkpoint loop runs through the whole run, the run's own save
         within it: each reads the title before it writes, so one at a time."""
@@ -256,12 +217,14 @@ class TestTheTitleIsWrittenOnce:
         await manager.save_session(record)
         tracker.set_session_messages("s1", [ChatMessage(role="user", content="hallo"),
                                             ChatMessage(role="assistant", content="ok")])
-        save, gate, writes = manager.save_session, asyncio.Event(), []
+        save, gate, overlapping, writes = manager.save_session, asyncio.Event(), asyncio.Event(), []
 
         async def slow_save(session_data):
             writes.append("in")
             if len(writes) == 1:
                 await gate.wait()
+            else:
+                overlapping.set()
             await save(session_data)
             writes.append("out")
 
@@ -270,8 +233,9 @@ class TestTheTitleIsWrittenOnce:
         while not writes:
             await asyncio.sleep(0)
         checkpoint = asyncio.ensure_future(agent._session_service.checkpoint_session(agent, "u", "s1"))
-        for _ in range(20):
-            await asyncio.sleep(0)
+        # every chance to write while the save holds the session -- by time, not by turns
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(overlapping.wait(), 0.5)
         gate.set()
         assert await run_save is True and await checkpoint is True, "fixture: a save wrote nothing"
 

@@ -1433,8 +1433,8 @@ def _report_what_stays_behind(ctx: "_ChatContext", previous: str) -> None:
     plain lie about that session.
     """
     if ctx.session_title:
-        print(f"(the title '{ctx.session_title}' stays with {previous} -- "
-              f"the session you are going to starts unnamed)")
+        # Nothing about the session gone to: /resume goes to one with a title of its own.
+        print(f"(the title '{ctx.session_title}' stays with {previous})")
     if ctx.attachments:
         print(f"({len(ctx.attachments)} attachment(s) stay queued for the "
               f"next message -- /attach clear drops them)")

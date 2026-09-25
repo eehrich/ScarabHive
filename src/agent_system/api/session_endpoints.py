@@ -7,6 +7,7 @@ Provides CRUD endpoints for managing user conversation sessions.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -901,35 +902,39 @@ async def update_session(
 
         # Update title if provided
         if request.title is not None:
-            # A record can be there before its run's first save (a sub-agent's
-            # parent record): the title that run carries would put the old name
-            # back. Replaced BEFORE the rename -- a save finishing in between
-            # would write the old one and let go of it.
-            await _carry_title_to_run(session_id, user_id, request.title,
-                                      tool_registry, default_agent, waiting_only=True)
-            # The rename names the session from then on: a title an agent still
-            # carries from a run that never wrote it (its first save failed, it
-            # ran on another agent) would put an older name back at that
-            # agent's next save. Read now -- one a PATCH carries during the
-            # rename is newer and stays; the caller's run has this one.
-            older = [(tracker, title) for tracker, title in
-                     _titles_carried(session_id, tool_registry, default_agent)
-                     if title != request.title.strip()]
-            try:
-                await session_manager.rename_session(
-                    user_id,
-                    session_id,
-                    request.title
-                )
-            except SessionNotFoundError:
-                # Not written yet: its first run is still going -- the run
-                # writes the title with its first save.
-                if not await _carry_title_to_run(session_id, user_id, request.title,
-                                                 tool_registry, default_agent):
-                    raise
-            else:
-                for tracker, title in older:
-                    tracker.title_written(session_id, title)  # only if still that one
+            # In turn with the session's saves (SessionService.save_lock): a
+            # rename landing while one runs is written over by the copy that
+            # save loaded -- a /title during a run's first save, or any later.
+            from agent_system.app import _session_service  # the app imports this module
+            async with (_session_service.save_lock(session_id) if _session_service is not None
+                        else contextlib.nullcontext()):
+                # A record can be there before its run's first save (a
+                # sub-agent's parent record): the title that run carries would
+                # put the old name back with that save.
+                await _carry_title_to_run(session_id, user_id, request.title,
+                                          tool_registry, default_agent, waiting_only=True)
+                # The rename names the session from then on: a title an agent
+                # still carries from a run that never wrote it (its first save
+                # failed, it ran on another agent) would put an older name back
+                # at that agent's next save. The caller's run has this one.
+                older = [(tracker, title) for tracker, title in
+                         _titles_carried(session_id, tool_registry, default_agent)
+                         if title != request.title.strip()]
+                try:
+                    await session_manager.rename_session(
+                        user_id,
+                        session_id,
+                        request.title
+                    )
+                except SessionNotFoundError:
+                    # Not written yet: its first run is still going -- the run
+                    # writes the title with its first save.
+                    if not await _carry_title_to_run(session_id, user_id, request.title,
+                                                     tool_registry, default_agent):
+                        raise
+                else:
+                    for tracker, title in older:
+                        tracker.title_written(session_id, title)  # only if still that one
 
         # Update other metadata if provided
         metadata_updates = {}

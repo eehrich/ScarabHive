@@ -76,7 +76,12 @@ function load(sessions, options) {
   const calls = [];
   const bodies = [];
   const acted = [];
-  const store = { getItem() { return null; }, setItem() {}, removeItem() {} };
+  const updated = [];  // sessions a run's start named to the session list
+  const headers = [];  // what the header was set to, id:title
+  // What the tab keeps: two loads share it when a test reloads the page.
+  const kept = settings.storage || {};
+  const store = { getItem(key) { return key in kept ? kept[key] : null; },
+                  setItem(key, value) { kept[key] = String(value); }, removeItem(key) { delete kept[key]; } };
   const listeners = {};
   const window = {
     document,
@@ -105,7 +110,9 @@ function load(sessions, options) {
       if (init && init.body) {
         bodies.push(init.body instanceof FormData ? Object.fromEntries(init.body) : JSON.parse(init.body));
       }
-      const answer = (settings.answers || {})[String(url).split('?')[0]];
+      let answer = (settings.answers || {})[String(url).split('?')[0]];
+      // a list answers call by call, the last one from then on
+      if (Array.isArray(answer)) answer = answer.length > 1 ? answer.shift() : answer[0];
       if (answer && answer.sse) {
         // A run's stream: the events, once, then its end.
         const text = answer.sse.map((event) => 'data: ' + JSON.stringify(event) + '\n\n').join('');
@@ -147,7 +154,10 @@ function load(sessions, options) {
           window.dispatchEvent({ type: 'session:loaded',
             detail: { session: { session_id: id, messages: [] } } });
         }
+        // false: nothing there to load (a new session before its first save)
+        return settings.loadReturns;
       },
+      setCurrentSession() {},
       newConversation: async () => {
         acted.push('new');
         // The real one returns undefined either way: it starts a session, or
@@ -155,8 +165,12 @@ function load(sessions, options) {
         if (settings.newConversationRefused) return;
         window.dispatchEvent({ type: 'session:new', detail: {} });
       },
+      onSessionUpdated: (id) => updated.push(id),
+      setCurrent: (id, title) => headers.push(id + ':' + title),
       renameTo: async (id, title) => {
         acted.push('rename:' + id + ':' + title);
+        // held back until the test lets it through: a PATCH still on its way
+        if (settings.renameUntil && settings.renameUntil[title]) await settings.renameUntil[title];
         return settings.renameFails !== true;
       },
     },
@@ -204,7 +218,7 @@ function load(sessions, options) {
     });
   }
   return { chatModule, container: document.getElementById('chat'), calls, bodies,
-           acted, input: document.getElementById('task'), window,
+           acted, updated, headers, input: document.getElementById('task'), window,
            // What the page does with the Run button: submit the form with the input's text.
            send: async (text) => {
              document.getElementById('task').value = text;
@@ -493,7 +507,7 @@ test('a bare /title during the first run names what its first save writes', asyn
 
 test('a /title typed while the first message starts goes to its session by name', async () => {
   const gate = held();
-  const { chatModule, acted, bodies, send } = load([], { answers: {
+  const { chatModule, acted, bodies, container, send } = load([], { answers: {
     '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
   await chatModule.runCommand('title', 'Blitter umbauen');
   const sent = send('hallo');
@@ -504,6 +518,248 @@ test('a /title typed while the first message starts goes to its session by name'
   assert.strictEqual(bodies[0].session_title, 'Blitter umbauen');
   // the server keeps it for the run's first save -- lost at the start before
   assert.deepStrictEqual(acted, ['rename:new1:Copper-Liste']);
+  await tick();
+  await chatModule.runCommand('title', '');
+  const notes = notesOf(container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'Title: Copper-Liste', notes.join('\n'));
+});
+
+test('a /title typed while the first message starts that could not be written leaves the one that went out', async () => {
+  const gate = held();
+  const { chatModule, container, send } = load([], { renameFails: true, answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  const sent = send('hallo');
+  await tick();
+  await chatModule.runCommand('title', 'Copper-Liste');
+  gate.open();
+  await sent;
+  await tick();
+  assert.ok(notesOf(container).join('\n').includes(
+    "(the title 'Copper-Liste' was not written -- the session keeps 'Blitter umbauen')"), notesOf(container).join('\n'));
+  await chatModule.runCommand('title', '');
+  const notes = notesOf(container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'Title: Blitter umbauen', notes.join('\n'));
+});
+
+test('a refused rename answered after the chat went elsewhere says nothing there', async () => {
+  const gate = held();
+  const renamed = held();
+  const { chatModule, container, send, window } = load([], { renameFails: true,
+    renameUntil: { 'Copper-Liste': renamed.until }, answers: {
+      '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  const sent = send('hallo');
+  await tick();
+  await chatModule.runCommand('title', 'Copper-Liste');
+  gate.open();
+  await sent;
+  window.dispatchEvent({ type: 'session:loaded', detail: { session: { session_id: 's9', messages: [] } } });
+  renamed.open();
+  await tick();
+  const note = notesOf(container).join('\n');
+  assert.ok(!note.includes("'Copper-Liste' was not written"), 'said in another session\'s chat: ' + note);
+});
+
+test('a refused rename still says so when the list got the session meanwhile', async () => {
+  const gate = held();
+  const renamed = held();
+  const { chatModule, container, send, window } = load([], { renameFails: true,
+    renameUntil: { 'Copper-Liste': renamed.until }, answers: {
+      '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  const sent = send('hallo');
+  await tick();
+  await chatModule.runCommand('title', 'Copper-Liste');
+  gate.open();
+  await sent;
+  // the list has the session -- the title kept beside it not yet let go of
+  window.sessionManager.byId.set('new1', { title: 'Blitter umbauen' });
+  renamed.open();
+  await tick();
+  const note = notesOf(container).join('\n');
+  // the list has the session: what it keeps is the list's, maybe renamed since
+  assert.ok(note.includes("(the title 'Copper-Liste' was not written)"), note);
+});
+
+test('a /title after the start stands over an older rename still on its way', async () => {
+  const gate = held();
+  const renamed = held();
+  const { chatModule, container, send } = load([], { renameUntil: { 'Copper-Liste': renamed.until }, answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  const sent = send('hallo');
+  await tick();
+  await chatModule.runCommand('title', 'Copper-Liste');
+  gate.open();
+  await sent;
+  await chatModule.runCommand('title', 'Zweiter Name');  // the session is there: renamed at once
+  renamed.open();
+  await tick();
+  await chatModule.runCommand('title', '');
+  const notes = notesOf(container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'Title: Zweiter Name', notes.join('\n'));
+});
+
+test('a rename answered late does not undo another session\'s title', async () => {
+  const gateA = held();
+  const gateB = held();
+  const renamedA = held();
+  const renamedB = held();
+  const { chatModule, container, send, window } = load([], {
+    renameUntil: { 'Copper-Liste': renamedA.until, 'Zweiter Name': renamedB.until }, answers: { '/events': [
+      { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gateA.until },
+      { sse: [{ type: 'start', request_id: 'r2', session_id: 'new2' }], until: gateB.until }] } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  const sentA = send('hallo');
+  await tick();
+  await chatModule.runCommand('title', 'Copper-Liste');
+  gateA.open();
+  await sentA;  // new1 started: its rename is on its way
+  window.dispatchEvent({ type: 'session:new', detail: { chosen: true } });
+  const sentB = send('ganz andere Sache');
+  await tick();
+  await chatModule.runCommand('title', 'Zweiter Name');
+  gateB.open();
+  await sentB;  // new2 started: its rename is on its way too
+  renamedA.open();
+  await tick();
+  renamedB.open();
+  await tick();
+  await chatModule.runCommand('title', '');
+  const notes = notesOf(container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'Title: Zweiter Name', notes.join('\n'));
+});
+
+test('a bare /title while the first message starts names the title that went with it', async () => {
+  const gate = held();
+  const { chatModule, container, send } = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  const sent = send('hallo');
+  await tick();
+  await chatModule.runCommand('title', '');
+  gate.open();
+  await sent;
+  const notes = notesOf(container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'Title: Blitter umbauen', notes.join('\n'));
+});
+
+test('the header names a titled first run while the session list does not have it', async () => {
+  const { chatModule, headers, send } = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  await send('hallo');
+  assert.deepStrictEqual(headers, ['new1:Blitter umbauen']);
+});
+
+test('a message into a titled first run\'s session keeps its title in the header', async () => {
+  const gate = held();
+  const { chatModule, headers, send, window } = load([], { answers: { '/events': [
+    { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] }, { sse: [], until: gate.until }] } });
+  // as the real pane does: the header from its list, which does not have the session yet
+  window.sessionManager.messageWritten = (id) => window.sessionManager.setCurrent(id, undefined);
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  await send('hallo');
+  const next = send('weiter');  // sent: its run is starting
+  await tick();
+  assert.strictEqual(headers[headers.length - 1], 'new1:Blitter umbauen', headers.join(', '));
+  await send('noch was');  // held until that run has started
+  assert.strictEqual(headers[headers.length - 1], 'new1:Blitter umbauen', headers.join(', '));
+  gate.open();
+  await next;
+});
+
+test('a reload during the first run still knows its title', async () => {
+  const storage = {};
+  const first = load([], { storage, answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await first.chatModule.runCommand('title', 'Blitter umbauen');
+  await first.send('hallo');
+  // the page again, in the session the run started -- the list has no record of it yet
+  const again = load([], { storage, session: 'new1' });
+  await again.chatModule.runCommand('title', '');
+  const notes = notesOf(again.container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'Title: Blitter umbauen', notes.join('\n'));
+});
+
+test('a reload during the first run shows its title in the header again', async () => {
+  // the run this tab followed, still going; its session has no record to load yet
+  const storage = { activeRequestId: 'r1', activeRequestSession: 'new1',
+                    unlistedSessionTitles: JSON.stringify({ new1: { title: 'Blitter umbauen' } }) };
+  const { acted, headers } = load([], { storage, loadReturns: false, answers: {
+    '/api/requests/r1/status': { status: 'running' } } });
+  for (let i = 0; i < 10 && !headers.length; i++) await tick();
+  assert.deepStrictEqual(acted, ['load:new1'], 'fixture: the reload did not look for the run\'s session');
+  assert.deepStrictEqual(headers, ['new1:Blitter umbauen']);
+});
+
+test('the header keeps the title a listed session has', async () => {
+  // the first run's title, kept -- the session renamed in the list since
+  const storage = { unlistedSessionTitles: JSON.stringify({ sid7: { title: 'Blitter umbauen' } }) };
+  const { headers, send, updated } = load([], { storage, session: 'sid7', title: 'Neuer Name', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' }] } } });
+  await send('weiter');
+  assert.deepStrictEqual(updated, ['sid7'], 'fixture: the run did not start');
+  assert.deepStrictEqual(headers, []);
+});
+
+test('a title the session list has is not kept beside it', async () => {
+  const storage = {};
+  const { chatModule, send, window } = load([], { storage, answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  await send('hallo');
+  assert.ok(JSON.parse(storage.unlistedSessionTitles).new1, 'fixture: the first run\'s title was not kept');
+  // the first save is done: the list has the session -- renamed elsewhere since
+  window.sessionManager.byId.set('new1', { title: 'Anderswo umbenannt' });
+  await chatModule.runCommand('title', '');
+  assert.strictEqual(JSON.parse(storage.unlistedSessionTitles).new1, undefined);
+});
+
+test('renaming a listed session keeps no title beside the list', async () => {
+  const storage = {};
+  const { chatModule } = load([], { storage, session: 'sid7', title: 'alt' });
+  await chatModule.runCommand('title', 'neu');
+  assert.ok(!('unlistedSessionTitles' in storage), JSON.stringify(storage));
+});
+
+test('the first run\'s title is its session\'s only', async () => {
+  const { chatModule, container, send, window } = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  await send('hallo');
+  window.dispatchEvent({ type: 'session:loaded', detail: { session: { session_id: 's2', messages: [] } } });
+  await chatModule.runCommand('title', '');
+  const notes = notesOf(container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'This session has no title yet.', notes.join('\n'));
+});
+
+test('a stored session that could not be shown lets go of a title typed for the message on its way', async () => {
+  const gate = held();
+  const { chatModule, container, bodies, send, window } = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
+  const sent = send('hallo');
+  await tick();
+  await chatModule.runCommand('title', 'Copper-Liste');
+  window.dispatchEvent({ type: 'session:new', detail: { chosen: false } });
+  gate.open();
+  await sent;
+  assert.ok(notesOf(container).join('\n').includes(
+    "(the title 'Copper-Liste' was not written -- the chat left before"), notesOf(container).join('\n'));
+  await send('ganz andere Sache');
+  assert.ok(!('session_title' in bodies[1]), 'went with an unrelated message: ' + JSON.stringify(bodies[1]));
+});
+
+test('opening a stored session drops the waiting title with a word', async () => {
+  const { chatModule, container, window } = load([], {});
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  window.dispatchEvent({ type: 'session:loaded', detail: { session: { session_id: 's9', messages: [] } } });
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes("(the title 'Blitter umbauen' was not written -- no message went out)"), note);
+  await chatModule.runCommand('title', '');
+  const notes = notesOf(container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'This session has no title yet.', notes.join('\n'));
 });
 
 test('leaving while the first message starts says the title went with it', async () => {
@@ -594,11 +850,13 @@ test('a first message with a file the server refused gives its title back too', 
 });
 
 test('a message into a session sends no title', async () => {
-  const { chatModule, bodies, send } = load([], { session: 'sid7', answers: {
+  const { bodies, send, updated } = load([], { session: 'sid7', answers: {
     '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' }] } } });
   await send('weiter');
   assert.strictEqual(bodies[0].session_id, 'sid7');
   assert.ok(!('session_title' in bodies[0]), JSON.stringify(bodies[0]));
+  // the start went on past the title's settling: the session list was told
+  assert.deepStrictEqual(updated, ['sid7']);
 });
 
 test('a bare /title says the stored title, and how to set one', async () => {

@@ -14,6 +14,7 @@ an id and the answer is a 404 about a session nobody asked for.
 """
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from types import SimpleNamespace as NS
 
@@ -293,35 +294,6 @@ async def test_a_run_on_another_agent_is_found_on_that_agent(api, account, heade
     assert default._session_tracker.title_to_write("s-new") is None
 
 
-async def test_a_save_finishing_right_after_the_rename_writes_the_new_title(
-        api, account, headers, monkeypatch):
-    """The run's save can finish between the PATCH's rename and anything after
-    it: the title that run carries is replaced before the rename, or that save
-    writes the old one over it and lets go of it."""
-    from agent_system.llm.models import ChatMessage
-    from agent_system.services.session_service import SessionService
-
-    app, manager = api
-    agent = app.state.agent
-    await _titled(manager, account[1], "Coordinator Session", "s-new")
-    agent._session_tracker.carry_title("s-new", "Blitter umbauen")
-    agent._session_tracker.set_session_messages("s-new", [ChatMessage(role="user", content="hallo")])
-    _running(monkeypatch, {"s-new": {"user_id": account[1], "agent_name": agent.name}})
-    rename, service = manager.rename_session, SessionService(manager)
-
-    async def rename_then_the_run_saves(user_id, session_id, title):
-        await rename(user_id, session_id, title)
-        assert await service.save_session(agent, account[1], "s-new", agent.name, "p", False), \
-            "fixture: the run's save wrote nothing"
-
-    monkeypatch.setattr(manager, "rename_session", rename_then_the_run_saves)
-    response = await _patch(app, headers, "/api/sessions/s-new", {"title": "Copper-Liste"})
-
-    assert response.status_code == 200, response.text
-    assert (await manager.load_session(account[1], "s-new"))["title"] == "Copper-Liste"
-    assert agent._session_tracker.title_to_write("s-new") is None
-
-
 async def test_a_rename_drops_the_older_titles_agents_still_carry(api, account, headers, monkeypatch):
     """Carried by runs that never wrote them -- a failed first save, a run on
     another agent: the rename is the name now, or their next save puts one back."""
@@ -348,52 +320,51 @@ async def test_a_rename_drops_the_older_titles_agents_still_carry(api, account, 
     assert other._session_tracker.title_to_write("s-old") is None
 
 
-async def test_two_quick_renames_during_the_first_save_end_on_the_later(api, account, headers, monkeypatch):
-    """PATCH B and PATCH C while the run's first save has created the record and
-    not yet written it: that save writes its old title, then the newest one
-    carried -- which B, finishing after C, must not have dropped as older."""
+async def test_a_title_during_the_first_save_is_not_written_over(api, account, headers, monkeypatch):
+    """The first message carried no title; /title comes while the run's first
+    save has created the record and not yet written it. The rename waits for
+    that save -- landing in between, the save wrote the copy it had loaded
+    (named after the first message) over it, and the PATCH had said 200."""
     import asyncio
 
+    from agent_system import app as app_mod
     from agent_system.llm.models import ChatMessage
     from agent_system.services.session_service import SessionService
 
     app, manager = api
     agent, user = app.state.agent, account[1]
+    service = SessionService(manager)
+    monkeypatch.setattr(app_mod, "_session_service", service)  # the one every run saves through
     tracker = agent._session_tracker
     tracker.set_session_metadata("s1", {"user_id": user, "agent_name": agent.name, "llm_profile": "p"})
-    tracker.carry_title("s1", "T0")
     tracker.set_session_messages("s1", [ChatMessage(role="user", content="hallo")])
     _running(monkeypatch, {"s1": {"user_id": user, "agent_name": agent.name}})
     save, rename = manager.save_session, manager.rename_session
-    run_inside, run_writes, b_inside, b_renames = (asyncio.Event() for _ in range(4))
+    run_inside, run_writes, renamed = asyncio.Event(), asyncio.Event(), asyncio.Event()
     saves = []
 
     async def held_save(session_data):
         saves.append(session_data.get("title"))
-        if len(saves) == 1:  # the run's own write
+        if len(saves) == 1:  # the run's own write, named after the first message
             run_inside.set()
             await run_writes.wait()
         await save(session_data)
 
-    async def held_rename(user_id, session_id, title):
-        if title == "B":
-            b_inside.set()
-            await b_renames.wait()
+    async def seen_rename(user_id, session_id, title):
+        renamed.set()
         await rename(user_id, session_id, title)
 
     monkeypatch.setattr(manager, "save_session", held_save)
-    monkeypatch.setattr(manager, "rename_session", held_rename)
-    run_save = asyncio.ensure_future(
-        SessionService(manager).save_session(agent, user, "s1", agent.name, "p", True))
+    monkeypatch.setattr(manager, "rename_session", seen_rename)
+    run_save = asyncio.ensure_future(service.save_session(agent, user, "s1", agent.name, "p", True))
     await run_inside.wait()
-    assert saves == ["T0"], f"fixture: the run's save is not writing its title: {saves}"
-    patch_b = asyncio.ensure_future(_patch(app, headers, "/api/sessions/s1", {"title": "B"}))
-    await b_inside.wait()
-    assert (await _patch(app, headers, "/api/sessions/s1", {"title": "C"})).status_code == 200
-    b_renames.set()
-    assert (await patch_b).status_code == 200
+    assert saves == ["hallo"], f"fixture: the run's save is not writing: {saves}"
+    patch = asyncio.ensure_future(_patch(app, headers, "/api/sessions/s1", {"title": "Blitter umbauen"}))
+    # every chance to rename while the save is under way -- by time, not by turns
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(renamed.wait(), 0.5)
     run_writes.set()
     assert await run_save is True
+    assert (await patch).status_code == 200
 
-    assert (await manager.load_session(user, "s1"))["title"] == "C"
-    assert tracker.title_to_write("s1") is None
+    assert (await manager.load_session(user, "s1"))["title"] == "Blitter umbauen"

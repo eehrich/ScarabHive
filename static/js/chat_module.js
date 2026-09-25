@@ -455,11 +455,52 @@
   // when the chat goes to another session first.
   // `firstMessageOut`: that message is out and its run has not started --
   // {title} it took along, null for none.
-  // `unlistedTitle`: {sessionId, title} the new session's first save writes,
-  // for a bare /title while the session list does not have it.
+  // `unlistedTitles`: session id -> {title} its first save writes, for a bare
+  // /title and the header while the session list does not have it -- kept for
+  // this tab, so a reload during that run still knows it.
+  const UNLISTED_TITLES_KEY = 'unlistedSessionTitles';
   let pendingTitle = null;
   let firstMessageOut = null;
-  let unlistedTitle = null;
+  let unlistedTitles = (() => {
+    try { return JSON.parse(sessionStorage.getItem(UNLISTED_TITLES_KEY)) || {}; } catch { return {}; }
+  })();
+
+  function nameUnlisted(sessionId, title) {
+    if (listed(sessionId)) return;  // the list has its title
+    unlistedTitles = { ...unlistedTitles, [sessionId]: { title } };
+    sessionStorage.setItem(UNLISTED_TITLES_KEY, JSON.stringify(unlistedTitles));
+  }
+
+  function listed(sessionId) {
+    const pane = window.sessionManager;
+    return Boolean(pane && pane.byId && pane.byId.get(sessionId));
+  }
+
+  // The title the session list does not have yet -- let go of once the list
+  // has the session: from then on its entry is what to show.
+  function unlistedTitleOf(sessionId) {
+    const unlisted = unlistedTitles[sessionId];
+    if (!unlisted) return null;
+    if (!listed(sessionId)) return unlisted.title;
+    unlistedTitles = { ...unlistedTitles };
+    delete unlistedTitles[sessionId];
+    sessionStorage.setItem(UNLISTED_TITLES_KEY, JSON.stringify(unlistedTitles));
+    return null;
+  }
+
+  // The header reads the session list, which has a new session only after its
+  // first save: until then it shows the title that save writes.
+  function headerTitle(sessionId) {
+    const pane = window.sessionManager;
+    const title = unlistedTitleOf(sessionId);
+    if (title && pane && typeof pane.setCurrent === 'function') pane.setCurrent(sessionId, title);
+  }
+
+  // A message written into the session: the pane sets the header from its list.
+  function messageWritten(sessionId) {
+    window.sessionManager.messageWritten(sessionId);
+    headerTitle(sessionId);
+  }
 
   /**
    * `/title <text>` -- the title the session list shows.
@@ -476,7 +517,7 @@
       // would then not find.
       const pane = window.sessionManager;
       const entry = currentSessionId && pane && pane.byId && pane.byId.get(currentSessionId);
-      const unlisted = unlistedTitle && unlistedTitle.sessionId === currentSessionId ? unlistedTitle.title : null;
+      const unlisted = currentSessionId ? unlistedTitleOf(currentSessionId) : null;
       const named = pendingTitle || (firstMessageOut && firstMessageOut.title) || (entry ? entry.title : unlisted);
       addNote(container, (named ? 'Title: ' + named : 'This session has no title yet.') +
         '\nUsage: /title <text>   (/resume takes it)');
@@ -493,7 +534,7 @@
     }
     const sessionId = currentSessionId;
     const done = await window.sessionManager.renameTo(sessionId, title);
-    if (done) unlistedTitle = { sessionId, title };
+    if (done) nameUnlisted(sessionId, title);
     addNote(container, done ? 'Title: ' + title : 'The session was not renamed.');
   }
 
@@ -3280,7 +3321,8 @@
         if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
           window.sessionManager.onSessionUpdated(currentSessionId);
         }
-        
+        headerTitle(currentSessionId);
+
         updateRequestId();
         break;
       case 'reconnect':
@@ -3603,7 +3645,7 @@
               ? 'The request is finishing -- the message stays here; send it once it has.'
               : 'The request is being stopped -- the message stays here; send it once it has.');
         // still written into this session: a pick, New or a delete waiting for the run leaves it where it is
-        window.sessionManager.messageWritten(currentSessionId);
+        messageWritten(currentSessionId);
         return;
       }
 
@@ -3617,7 +3659,7 @@
       const sent = addUser(chatContainer, displayText, filesByType.images, filesByType.audio, filesByType.text);
       // The message belongs to this chat's session: a session still loading must not take its
       // place, and a delete waiting for the session's run keeps it.
-      window.sessionManager.messageWritten(currentSessionId);
+      messageWritten(currentSessionId);
       clearInput(taskInput);
       // The input is consumed -- everything below is the run itself, during
       // which the user must be able to type the next message.
@@ -3946,6 +3988,7 @@
       // so no pick or restore takes its place.
       window.sessionManager.setCurrentSession(session);
       currentSessionId = session;
+      headerTitle(session);
       run = { requestId, sessionId: session, over: false };
       pendingAppendRebind = false;  // set for the run followed before, not this one
       // Past its answer (the server says so), only finishing: as after its final. Joined from
@@ -4437,21 +4480,22 @@
   // own session:new / session:loaded handlers, which clear the conversation:
   // the note belongs to the one the chat goes to. A session:new nobody chose
   // (the stored session could not be shown) leaves the chat the new one it was:
-  // a title typed there waits on -- a first message on its way is let go of all
-  // the same.
+  // a title typed there waits on -- unless a first message was on its way, which
+  // is let go of all the same, and the title with it.
   function dropPendingTitle(event) {
     const unchosen = Boolean(event && event.type === 'session:new' && event.detail && event.detail.chosen === false);
+    const keep = unchosen && !firstMessageOut;
     const chat = document.getElementById('chat');
-    if (pendingTitle && !unchosen) {
+    if (pendingTitle && !keep) {
       addNote(chat, '(the title \'' + pendingTitle + '\' was not written -- ' + (firstMessageOut
         ? 'the chat left before the session your message is starting was there)'
-        : 'no message went out; the session you are going to starts unnamed)'));
+        : 'no message went out)'));
     } else if (firstMessageOut && firstMessageOut.title) {
       // before the run's start: the server may still refuse the message
       addNote(chat, '(the title \'' + firstMessageOut.title
         + '\' went out with your message: a session the server starts for it is named so)');
     }
-    if (!unchosen) pendingTitle = null;
+    if (!keep) pendingTitle = null;
     firstMessageOut = null;
   }
 
@@ -4476,11 +4520,24 @@
   function settlePendingTitle(sessionId) {
     if (!firstMessageOut) return;  // not the start of this chat's first message
     const typedSince = pendingTitle;
-    const title = typedSince || firstMessageOut.title;
+    const sent = firstMessageOut.title;
     pendingTitle = null;
     firstMessageOut = null;
-    if (title) unlistedTitle = { sessionId, title };
-    if (typedSince && window.sessionManager) window.sessionManager.renameTo(sessionId, typedSince);
+    if (sent) nameUnlisted(sessionId, sent);
+    if (!typedSince || !window.sessionManager) return;
+    // named only once it is written: a refused rename leaves the one that went out
+    const shown = unlistedTitles[sessionId];
+    window.sessionManager.renameTo(sessionId, typedSince).then((done) => {
+      const now = listed(sessionId) ? null : unlistedTitles[sessionId];  // none: nothing named, or the list has the session since
+      if (now && now !== shown) return;  // named again since: that one stands
+      if (done) {
+        nameUnlisted(sessionId, typedSince);
+      } else if (currentSessionId === sessionId) {
+        // the title it keeps is the list's once the list has it -- maybe renamed since
+        addNote(document.getElementById('chat'), '(the title \'' + typedSince + '\' was not written'
+          + (now ? ' -- the session keeps \'' + now.title + '\')' : ')'));
+      }
+    });
   }
   window.addEventListener('session:new', dropPendingTitle);
   window.addEventListener('session:loaded', dropPendingTitle);
