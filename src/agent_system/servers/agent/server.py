@@ -949,6 +949,24 @@ class Agent(ToolServer):
     #: The note rides on this many of the last steps.
     _STEP_BUDGET_NOTE_LAST_STEPS = 2
 
+    @staticmethod
+    def _output_cap_note(completion_tokens: Optional[int]) -> ChatMessage:
+        """What the run tells a model whose answer the output cap cut off.
+
+        The RUN speaks (developer), as for the step budget: a person did not
+        write this, and injected_by keeps it from counting as a turn.
+        """
+        at = f" ({completion_tokens} tokens)" if completion_tokens else ""
+        return ChatMessage(
+            role=DEVELOPER,
+            content=(f"Your last answer was cut off at the output limit{at}. Everything after the cut is "
+                     "lost, including any tool call you were writing -- nothing of it was executed. Do not "
+                     "send it again in one piece: write a large file in parts (create it, then add section "
+                     "by section), or keep the answer shorter."),
+            timestamp=datetime.now(timezone.utc),
+            injected_by="agent.output_cap",
+        )
+
     @classmethod
     def _step_budget_note(cls, step: int, max_steps: int) -> Optional[ChatMessage]:
         """A note on the steps left, for the last steps of a run; else None.
@@ -2267,6 +2285,13 @@ class Agent(ToolServer):
         prev_step_all_errored = False     # was the IMMEDIATELY preceding step an all-error tool step?
         max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
         max_consecutive_empty = 2    # Break after 2 consecutive empty responses
+        # Text answers cut off at the output cap in a row, each sent back with a
+        # note (see _output_cap_note) -- only where the agent opted in
+        # (agent_config.output_cap_notes): for an agent whose product is its
+        # text the cut-off text is still the reply, and a model that loops
+        # until a 120k cap must not be sent back for two more rounds of it.
+        consecutive_cut_off = 0
+        max_cut_off_notes = int(getattr(self.agent_config, "output_cap_notes", 0) or 0)
 
         # Create a request-scoped loop detector.
         # Each request gets its own detector so concurrent requests on the
@@ -3157,6 +3182,10 @@ class Agent(ToolServer):
             # onto the fallback profile and discards output that is
             # usually still usable — the same trade-off the incomplete_stream
             # branch settles the same way.
+            # "In a row" means answers: one that ended on its own -- a tool call
+            # of a model now writing in parts included -- starts the count again.
+            if finish_reason != "length":
+                consecutive_cut_off = 0
             if finish_reason == "length" and (content or tool_calls):
                 logger.warning(
                     "[%s] Answer truncated at the output cap (finish_reason=length, "
@@ -3571,6 +3600,26 @@ class Agent(ToolServer):
             if len(messages) > pre_drain_count and not final_call:
                 context.messages = messages
                 self._set_live_messages(session_id, messages.copy())
+                consecutive_no_tool_calls = 0
+                continue
+
+            # Cut off at the output cap with no tool call left: not an answer.
+            # The call the model was writing is lost, and the text before it --
+            # "now the engine, the big file:" -- is an announcement. Measured in a
+            # coder session: three calls in a row stopped at 16384 tokens, each
+            # ended the run as if that were its reply, and the user had to push
+            # three times. The run goes on with a note saying what happened --
+            # where the agent opted in (output_cap_notes), not on the final
+            # call, and not past that many in a row.
+            if (finish_reason == "length" and content and content.strip() and not final_call
+                    and consecutive_cut_off < max_cut_off_notes):
+                consecutive_cut_off += 1
+                usage = (llm_out or {}).get("usage") or {}
+                messages.append(self._output_cap_note(usage.get("completion_tokens")))
+                context.messages = messages
+                await status_worker.progress(
+                    "answer cut off at the output limit -- asked to continue in parts",
+                    meta={"step": step + 1, "cut_off": consecutive_cut_off})
                 consecutive_no_tool_calls = 0
                 continue
 

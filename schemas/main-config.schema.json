@@ -285,6 +285,11 @@
           "default": 2,
           "title": "Escalate Error Streak",
           "type": "integer"
+        },
+        "output_cap_notes": {
+          "default": 0,
+          "title": "Output Cap Notes",
+          "type": "integer"
         }
       },
       "title": "AgentConfig",

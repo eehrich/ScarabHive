@@ -722,6 +722,13 @@ class AgentConfig(BaseModel):
     escalate_rounds: int = 2          # steps to stay on the advanced model per trigger
     escalate_max_calls: int = 6       # total advanced calls allowed per run (budget)
     escalate_error_streak: int = 2    # trigger after N consecutive all-error tool steps
+    # How often in a row a TEXT answer cut off at the output cap (finish_reason
+    # length, no tool call left) is sent back with a note instead of delivered
+    # as the reply. 0 delivers it, as always -- right for an agent whose product
+    # is its text, and for a model that loops until the cap. For an agent that
+    # works through tool calls the cut is typically a lost call writing a large
+    # file (measured in the coder: three in a row, each ending the run).
+    output_cap_notes: int = 0
 
     @field_validator("system_template")
     @classmethod
