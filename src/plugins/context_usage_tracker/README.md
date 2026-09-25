@@ -48,3 +48,15 @@ In the launcher under **Context**; a session's info button offers it too, opened
 
 Under `/plugins/context_usage_tracker/`: `GET usage?session_id=` (latest snapshot, agent totals, statistics),
 `GET history?last_n=&session_id=&agent_id=`, `POST clear`, `GET /` (the panel).
+
+Who sees what: the tracker records calls by session id and keeps no owner, so a session is held against its owner
+as the app knows it -- a run of this process that has the session names its user (its first turn is not on disk
+yet), otherwise the session store answers under the viewer (the signed-in user, else `anonymous`, the rule of
+`/sessions`). A user gets her own sessions' figures; another user's session answers empty. Every session at once
+(no `session_id`, the panel's **All sessions**) and `POST clear` are for an admin; anyone else gets 403. With
+authentication off, one person uses the instance and sees everything. Without a session store in the process the
+answer is 503, not an empty page.
+
+Known gap: the rows carry no owner. An id that another user's DELETED session had, taken for a new session of one's
+own, brings that user's old calls along. Closing it belongs to the per-user separation of plugin data
+(`docs/multiuser_datentrennung_konzept.md`: the data in the user's own path, not a `WHERE` on an owner column).
