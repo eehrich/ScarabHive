@@ -838,6 +838,48 @@ async def get_session_messages(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+async def _carry_title_to_run(session_id: str, user_id: str, title: str, registry, default_agent,
+                              *, waiting_only: bool = False) -> bool:
+    """Hand *title* to the run that holds *session_id* -- the caller's own run
+    only. Its next save writes it (SessionService), as agent-cli writes a /title
+    typed during the first turn once it is saved. ``waiting_only``: only in
+    place of a title that run carries already."""
+    title = (title or "").strip()
+    if not title or default_agent is None:
+        return False
+    jobs = get_background_job_manager()
+    info = (await jobs.active_sessions()).get(session_id)
+    if not info or info.get("user_id") != user_id:
+        return False
+    # A run started without an agent name has "default" on its job
+    from agent_system.app import resolve_agent_for_request  # the app imports this module
+    agent = await resolve_agent_for_request(info.get("request_id"), jobs, registry, default_agent,
+                                            info.get("agent_name"))
+    tracker = getattr(agent, "_session_tracker", None)
+    if tracker is None or (waiting_only and tracker.title_to_write(session_id) is None):
+        return False
+    tracker.carry_title(session_id, title)
+    return True
+
+
+def _titles_carried(session_id: str, registry, default_agent) -> list:
+    """(tracker, title) for every agent of this process that carries a title
+    for *session_id* -- from a run that has not written it."""
+    agents = [default_agent]  # registered too, unless its name was taken
+    for name in (registry.list() if registry is not None else []):
+        try:
+            agents.append(registry.get(name))
+        except KeyError:
+            continue
+    carried = []
+    for agent in agents:
+        tracker = getattr(agent, "_session_tracker", None)
+        title = tracker.title_to_write(session_id) if hasattr(tracker, "title_to_write") else None
+        if isinstance(title, str):
+            carried.append((tracker, title))
+    return carried
+
+
 @session_router.put("/{session_id}")
 @session_router.patch("/{session_id}")
 async def update_session(
@@ -845,6 +887,8 @@ async def update_session(
     request: UpdateSessionRequest,
     current_user: Optional[User] = Depends(get_optional_user),
     session_manager=Depends(get_session_manager),
+    default_agent=Depends(get_agent_optional),
+    tool_registry=Depends(get_tool_registry),
 ):
     """Update session metadata (title, agent, LLM profile, or tags)."""
     # session_manager injected via dependency
@@ -857,11 +901,35 @@ async def update_session(
 
         # Update title if provided
         if request.title is not None:
-            await session_manager.rename_session(
-                user_id,
-                session_id,
-                request.title
-            )
+            # A record can be there before its run's first save (a sub-agent's
+            # parent record): the title that run carries would put the old name
+            # back. Replaced BEFORE the rename -- a save finishing in between
+            # would write the old one and let go of it.
+            await _carry_title_to_run(session_id, user_id, request.title,
+                                      tool_registry, default_agent, waiting_only=True)
+            # The rename names the session from then on: a title an agent still
+            # carries from a run that never wrote it (its first save failed, it
+            # ran on another agent) would put an older name back at that
+            # agent's next save. Read now -- one a PATCH carries during the
+            # rename is newer and stays; the caller's run has this one.
+            older = [(tracker, title) for tracker, title in
+                     _titles_carried(session_id, tool_registry, default_agent)
+                     if title != request.title.strip()]
+            try:
+                await session_manager.rename_session(
+                    user_id,
+                    session_id,
+                    request.title
+                )
+            except SessionNotFoundError:
+                # Not written yet: its first run is still going -- the run
+                # writes the title with its first save.
+                if not await _carry_title_to_run(session_id, user_id, request.title,
+                                                 tool_registry, default_agent):
+                    raise
+            else:
+                for tracker, title in older:
+                    tracker.title_written(session_id, title)  # only if still that one
 
         # Update other metadata if provided
         metadata_updates = {}

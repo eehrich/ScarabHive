@@ -449,6 +449,18 @@
       '\nUse /resume <id or title> to continue one.');
   }
 
+  // A /title typed before the first message: there is no session to rename
+  // yet, so the title goes out with that message (session_title) and the
+  // run's first save writes it -- as agent-cli does. Dropped, with a word,
+  // when the chat goes to another session first.
+  // `firstMessageOut`: that message is out and its run has not started --
+  // {title} it took along, null for none.
+  // `unlistedTitle`: {sessionId, title} the new session's first save writes,
+  // for a bare /title while the session list does not have it.
+  let pendingTitle = null;
+  let firstMessageOut = null;
+  let unlistedTitle = null;
+
   /**
    * `/title <text>` -- the title the session list shows.
    *
@@ -464,22 +476,24 @@
       // would then not find.
       const pane = window.sessionManager;
       const entry = currentSessionId && pane && pane.byId && pane.byId.get(currentSessionId);
-      const named = entry && entry.title;
-      addNote(container, (!currentSessionId ? 'No session yet.'
-        : named ? 'Title: ' + named : 'This session has no title yet.') +
+      const unlisted = unlistedTitle && unlistedTitle.sessionId === currentSessionId ? unlistedTitle.title : null;
+      const named = pendingTitle || (firstMessageOut && firstMessageOut.title) || (entry ? entry.title : unlisted);
+      addNote(container, (named ? 'Title: ' + named : 'This session has no title yet.') +
         '\nUsage: /title <text>   (/resume takes it)');
       return;
     }
     if (!currentSessionId) {
-      addNote(container, 'No session yet -- it is created with your first message, ' +
-        'and can be named after that.');
+      pendingTitle = title;
+      addNote(container, 'Title: ' + title + '   (written with the first message)');
       return;
     }
     if (!window.sessionManager || typeof window.sessionManager.renameTo !== 'function') {
       addNote(container, 'Renaming is not available in this window.');
       return;
     }
-    const done = await window.sessionManager.renameTo(currentSessionId, title);
+    const sessionId = currentSessionId;
+    const done = await window.sessionManager.renameTo(sessionId, title);
+    if (done) unlistedTitle = { sessionId, title };
     addNote(container, done ? 'Title: ' + title : 'The session was not renamed.');
   }
 
@@ -3252,6 +3266,7 @@
         run.requestId = data.request_id;
         run.sessionId = data.session_id;
         currentSessionId = data.session_id;
+        settlePendingTitle(currentSessionId);
         // Stop was clicked before the run had an id to be cancelled by
         if (run.stopWhenStarted) {
           run.stopWhenStarted = false;
@@ -3695,6 +3710,9 @@
         // Add current session ID if exists (to continue existing session)
         if (currentSessionId) {
           formData.append('session_id', currentSessionId);
+        } else {
+          const title = titleForFirstMessage();
+          if (title) formData.append('session_title', title);  // names the session this message starts
         }
 
         // NO abort handle on purpose. POST /run runs the agent INLINE in its SSE
@@ -3749,6 +3767,7 @@
           // and the run stored for a reload is another one.
           if (followedStream === stream) {
             followedStream = null;
+            firstMessageOver();
             endRun();
           } else if (stream.ended) {
             window.sessionManager.loadSessions();  // let go of and read to its end: the run has saved its session
@@ -3766,6 +3785,10 @@
       // Build POST body
       const postBody = { task: task };
       if (currentSessionId) postBody.session_id = currentSessionId;
+      else {
+        const title = titleForFirstMessage();
+        if (title) postBody.session_title = title;  // names the session this message starts
+      }
       if (selectedAgent) postBody.agent_name = selectedAgent;
       if (selectedLLMProfile) postBody.llm_profile = selectedLLMProfile;
 
@@ -3835,6 +3858,7 @@
         // The run is over for this chat; a lost one stays stored for a reload to follow.
         if (followedStream === stream) {
           followedStream = null;
+          firstMessageOver();
           endRun(lost);
         } else if (stream.ended) {
           window.sessionManager.loadSessions();  // let go of and read to its end: the run has saved its session
@@ -4407,6 +4431,59 @@
   chatModule.hasActiveRequest = function() {
     return followedStream !== null || currentEventSource !== null;
   };
+
+  // A title waiting for the first message goes when the chat goes to another
+  // session first -- said, as agent-cli says it. Registered after the chat's
+  // own session:new / session:loaded handlers, which clear the conversation:
+  // the note belongs to the one the chat goes to. A session:new nobody chose
+  // (the stored session could not be shown) leaves the chat the new one it was:
+  // a title typed there waits on -- a first message on its way is let go of all
+  // the same.
+  function dropPendingTitle(event) {
+    const unchosen = Boolean(event && event.type === 'session:new' && event.detail && event.detail.chosen === false);
+    const chat = document.getElementById('chat');
+    if (pendingTitle && !unchosen) {
+      addNote(chat, '(the title \'' + pendingTitle + '\' was not written -- ' + (firstMessageOut
+        ? 'the chat left before the session your message is starting was there)'
+        : 'no message went out; the session you are going to starts unnamed)'));
+    } else if (firstMessageOut && firstMessageOut.title) {
+      // before the run's start: the server may still refuse the message
+      addNote(chat, '(the title \'' + firstMessageOut.title
+        + '\' went out with your message: a session the server starts for it is named so)');
+    }
+    if (!unchosen) pendingTitle = null;
+    firstMessageOut = null;
+  }
+
+  // A first message goes out: the waiting title with it (session_title).
+  function titleForFirstMessage() {
+    firstMessageOut = { title: pendingTitle };
+    pendingTitle = null;
+    return firstMessageOut.title;
+  }
+
+  // The chat is done with its first message's stream: a run that never started
+  // (refused, unreachable) leaves its title waiting for the next message.
+  function firstMessageOver() {
+    if (!firstMessageOut) return;
+    pendingTitle = pendingTitle || firstMessageOut.title;
+    firstMessageOut = null;
+  }
+
+  // The start of the run a first message began: the title that went out with
+  // it is the run's now; one typed since goes to the session by name (the
+  // server keeps it for the run's first save -- there is no record yet).
+  function settlePendingTitle(sessionId) {
+    if (!firstMessageOut) return;  // not the start of this chat's first message
+    const typedSince = pendingTitle;
+    const title = typedSince || firstMessageOut.title;
+    pendingTitle = null;
+    firstMessageOut = null;
+    if (title) unlistedTitle = { sessionId, title };
+    if (typedSince && window.sessionManager) window.sessionManager.renameTo(sessionId, typedSince);
+  }
+  window.addEventListener('session:new', dropPendingTitle);
+  window.addEventListener('session:loaded', dropPendingTitle);
 
 })(window);
 

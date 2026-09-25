@@ -688,6 +688,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logging.getLogger(__name__).warning("%s; this run keeps it unheld", busy)
             return None
 
+    def _carry_title(target_agent: Any, event: dict, title: Optional[str]) -> None:
+        """A title the caller gave the session a run starts: handed to the run
+        at its start event -- the one that names a new session -- and written
+        by its first save (SessionService), as agent-cli writes a /title typed
+        before the first message. Only text is a title: a JSON number or a
+        file part of that name is not one."""
+        if not isinstance(title, str) or not title.strip():
+            return
+        if event.get("type") == "start" and event.get("session_id"):
+            target_agent._session_tracker.carry_title(event["session_id"], title.strip())
+
     async def _mirror_run_as_job(request_id: str, user_id: str, agent_name: str,
                                  session_id: Optional[str], llm_profile: Optional[str]):
         """A BackgroundJob that shows a run somebody else collects, or None.
@@ -1565,6 +1576,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         session_id: Optional[str] = Query(default=None),
         agent_name: Optional[str] = Query(default=None),
         llm_profile: Optional[str] = Query(default=None),
+        session_title: Optional[str] = Query(default=None),
         force: bool = Query(default=False)
     ):
         """Run agent with optional multimodal input (text + images).
@@ -1578,6 +1590,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent_name: Optional agent to use instead of default
         - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
+        - session_title: Optional title for the session, written with its first save
         
         Security:
         - Requires authentication when auth.enabled=true
@@ -1621,6 +1634,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     agent_name = body.get('agent_name')
                 if not llm_profile and 'llm_profile' in body:
                     llm_profile = body.get('llm_profile')
+                if not session_title and 'session_title' in body:
+                    session_title = body.get('session_title')
                 if 'request_id' in body:
                     client_request_id = body.get('request_id')
                 # Session presence: run a session another process holds anyway
@@ -1650,6 +1665,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 agent_name = form.get('agent_name')
             if not llm_profile and 'llm_profile' in form:
                 llm_profile = form.get('llm_profile')
+            if not session_title and 'session_title' in form:
+                session_title = form.get('session_title')
             if 'request_id' in form:
                 client_request_id = form.get('request_id')
             force = force or str(form.get('force') or "").lower() in ("1", "true", "yes")
@@ -1696,6 +1713,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
 
         session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile)
+        if session_exists:
+            session_title = None  # it names a session the run creates, not one it continues
 
         from .servers.agent.result_utils import collect_final_result
 
@@ -1721,6 +1740,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 refusal, held = await _claim_session(selected_agent, session_id, user_id, force)
                 if refusal:
                     raise HTTPException(status_code=409, detail=refusal)
+                def on_event(event: dict) -> Any:
+                    _carry_title(selected_agent, event, session_title)
+                    return mirror.put(event)
+
                 # Pass LLM override to collect_final_result
                 result = await collect_final_result(
                     selected_agent, task,
@@ -1728,7 +1751,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     session_id=session_id,
                     llm_override=llm_override,
                     llm_profile_info_override=llm_profile_info,
-                    on_event=mirror.put,
+                    on_event=on_event,
                 )
 
                 # Format summary from Markdown to HTML for web display
@@ -1866,6 +1889,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             if not held:
                                 held = _hold_fresh_session(
                                     selected_agent, actual_session_id, user_id)
+                            _carry_title(selected_agent, event, session_title)
 
                         # CRITICAL: Always set/update session metadata (even for existing sessions)
                         # This ensures user_id is available for tool execution AND respects llm_profile overrides
@@ -1976,6 +2000,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         llm_profile: Optional[str] = None,
         request_id: Optional[str] = None,
         force: bool = False,
+        session_title: Optional[str] = None,
     ):
         """Shared implementation for GET/POST /events endpoints.
 
@@ -2097,6 +2122,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Registered above for the status stream; no run follows to release it.
             release_request_user_tree(request_id)
             raise
+        if session_exists:
+            session_title = None  # it names a session the run creates, not one it continues
 
         async def event_stream():
             # Check if server is already shutting down
@@ -2125,6 +2152,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     task, request_id, actual_session_id, 
                     llm_override=llm_override, llm_profile_info_override=llm_profile_info
                 ):
+                    # Here, not where the stream is read: the run waits at this
+                    # event until it is passed on, so no save of it comes first.
+                    _carry_title(selected_agent, ev, session_title)
                     yield ev
             
             try:
@@ -2237,6 +2267,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         llm_profile: Optional[str] = Query(default=None),
         request_id: Optional[str] = Query(default=None),
         force: bool = Query(default=False),
+        session_title: Optional[str] = Query(default=None),
     ):
         """Stream agent events for a task (GET).
 
@@ -2245,6 +2276,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent or agent_name: Optional agent to use
         - llm_profile: Optional LLM profile override
+        - session_title: Optional title for the session, written with its first save
         - request_id: Optional request ID — reconnects if it matches a
           running job, otherwise the new run is keyed under it (parity
           with POST /run; the guards of _validate_client_request_id apply)
@@ -2261,6 +2293,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             llm_profile=llm_profile,
             request_id=request_id,
             force=force,
+            session_title=session_title,
         )
 
     @app.post("/events")
@@ -2272,6 +2305,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent_name: Optional agent to use
         - llm_profile: Optional LLM profile override
+        - session_title: Optional title for the session, written with its first save
         - request_id: Optional request ID — reconnects if it matches a
           running job, otherwise the new run is keyed under it (parity
           with POST /run; the guards of _validate_client_request_id apply)
@@ -2291,6 +2325,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             llm_profile=body.get("llm_profile"),
             request_id=body.get("request_id"),
             force=bool(body.get("force")),
+            session_title=body.get("session_title"),
         )
 
     async def _refuse_foreign_request(request_id: str, current_user: Any, *, reaches_below: bool = False) -> None:

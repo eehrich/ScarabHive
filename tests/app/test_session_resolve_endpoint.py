@@ -92,6 +92,12 @@ def _runtime(**visibility):
     return NS(describe=lambda name: NS(visibility=visibility[name]) if name in visibility else None)
 
 
+async def _patch(app, headers, url, body):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://test") as client:
+        return await client.patch(url, json=body, headers=headers, timeout=30.0)
+
+
 async def _get(app, headers, url):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url="http://test") as client:
@@ -188,3 +194,206 @@ async def test_a_count_that_is_not_one_is_refused(api, headers):
         response = await _get(app, headers, f"/api/sessions/listing?count={typed}")
         assert response.status_code == 400, (typed, response.text)
         assert typed in response.json()["detail"]
+
+
+def _running(monkeypatch, sessions):
+    """What the job manager reports running: session id -> owner and agent."""
+    from agent_system.services.background_job_manager import BackgroundJobManager
+
+    async def active_sessions(self):
+        return sessions
+
+    monkeypatch.setattr(BackgroundJobManager, "active_sessions", active_sessions)
+
+
+async def test_a_title_for_a_session_its_first_run_has_not_written_waits_for_that_run(
+        api, account, headers, monkeypatch):
+    """/title during the first run: no record to rename yet -- the run writes it
+    with its first save, as agent-cli writes it once the turn is saved."""
+    app, _ = api
+    agent = app.state.agent
+    _running(monkeypatch, {"s-new": {"user_id": account[1], "agent_name": agent.name}})
+
+    response = await _patch(app, headers, "/api/sessions/s-new", {"title": "Blitter umbauen"})
+
+    assert response.status_code == 200, response.text
+    assert agent._session_tracker.title_to_write("s-new") == "Blitter umbauen"
+
+
+async def test_another_users_running_session_is_not_named(api, account, headers, monkeypatch):
+    app, _ = api
+    agent = app.state.agent
+    _running(monkeypatch, {"s-bob": {"user_id": "bob", "agent_name": agent.name}})
+
+    response = await _patch(app, headers, "/api/sessions/s-bob", {"title": "meins"})
+
+    assert response.status_code == 404, response.text
+    assert agent._session_tracker.title_to_write("s-bob") is None
+
+
+async def test_a_run_started_without_an_agent_name_is_found_too(api, account, headers, monkeypatch):
+    """/events without an agent name puts "default" on its job: the default agent's run."""
+    app, _ = api
+    agent = app.state.agent
+    _running(monkeypatch, {"s-new": {"user_id": account[1], "agent_name": "default", "request_id": "r-new"}})
+
+    response = await _patch(app, headers, "/api/sessions/s-new", {"title": "Blitter umbauen"})
+
+    assert response.status_code == 200, response.text
+    assert agent._session_tracker.title_to_write("s-new") == "Blitter umbauen"
+
+
+async def test_a_record_written_before_the_first_save_is_renamed_for_the_run_too(
+        api, account, headers, monkeypatch):
+    """A sub-agent's parent record can be there before the run saves: renamed,
+    and the title the run carries goes with it -- or that save puts it back."""
+    app, manager = api
+    agent = app.state.agent
+    await _titled(manager, account[1], "Coordinator Session", "s-new")
+    agent._session_tracker.carry_title("s-new", "Blitter umbauen")
+    _running(monkeypatch, {"s-new": {"user_id": account[1], "agent_name": agent.name}})
+
+    response = await _patch(app, headers, "/api/sessions/s-new", {"title": "Copper-Liste"})
+
+    assert response.status_code == 200, response.text
+    assert (await manager.load_session(account[1], "s-new"))["title"] == "Copper-Liste"
+    assert agent._session_tracker.title_to_write("s-new") == "Copper-Liste"
+
+
+async def test_a_rename_hands_a_run_no_title_it_did_not_carry(api, account, headers, monkeypatch):
+    """Renaming a session its run goes on in: the record has it, the run's save
+    keeps it -- a title handed to the run would outlive a later rename."""
+    app, manager = api
+    agent = app.state.agent
+    await _titled(manager, account[1], "alt", "s-old")
+    _running(monkeypatch, {"s-old": {"user_id": account[1], "agent_name": agent.name}})
+
+    response = await _patch(app, headers, "/api/sessions/s-old", {"title": "neu"})
+
+    assert response.status_code == 200, response.text
+    assert agent._session_tracker.title_to_write("s-old") is None
+
+
+async def test_a_run_on_another_agent_is_found_on_that_agent(api, account, headers, monkeypatch):
+    """The browser names its agent: the title goes to that agent's run, not the default one's."""
+    from agent_system.servers.agent.server import Agent
+
+    app, _ = api
+    default = app.state.agent
+    registry = app.state.tool_registry
+    other = next((agent for agent in map(registry.get, registry.list())
+                  if isinstance(agent, Agent) and agent is not default), None)
+    assert other is not None, "fixture: no second agent in the registry"
+    _running(monkeypatch, {"s-new": {"user_id": account[1], "agent_name": other.name, "request_id": "r-x"}})
+
+    response = await _patch(app, headers, "/api/sessions/s-new", {"title": "Blitter umbauen"})
+
+    assert response.status_code == 200, response.text
+    assert other._session_tracker.title_to_write("s-new") == "Blitter umbauen"
+    assert default._session_tracker.title_to_write("s-new") is None
+
+
+async def test_a_save_finishing_right_after_the_rename_writes_the_new_title(
+        api, account, headers, monkeypatch):
+    """The run's save can finish between the PATCH's rename and anything after
+    it: the title that run carries is replaced before the rename, or that save
+    writes the old one over it and lets go of it."""
+    from agent_system.llm.models import ChatMessage
+    from agent_system.services.session_service import SessionService
+
+    app, manager = api
+    agent = app.state.agent
+    await _titled(manager, account[1], "Coordinator Session", "s-new")
+    agent._session_tracker.carry_title("s-new", "Blitter umbauen")
+    agent._session_tracker.set_session_messages("s-new", [ChatMessage(role="user", content="hallo")])
+    _running(monkeypatch, {"s-new": {"user_id": account[1], "agent_name": agent.name}})
+    rename, service = manager.rename_session, SessionService(manager)
+
+    async def rename_then_the_run_saves(user_id, session_id, title):
+        await rename(user_id, session_id, title)
+        assert await service.save_session(agent, account[1], "s-new", agent.name, "p", False), \
+            "fixture: the run's save wrote nothing"
+
+    monkeypatch.setattr(manager, "rename_session", rename_then_the_run_saves)
+    response = await _patch(app, headers, "/api/sessions/s-new", {"title": "Copper-Liste"})
+
+    assert response.status_code == 200, response.text
+    assert (await manager.load_session(account[1], "s-new"))["title"] == "Copper-Liste"
+    assert agent._session_tracker.title_to_write("s-new") is None
+
+
+async def test_a_rename_drops_the_older_titles_agents_still_carry(api, account, headers, monkeypatch):
+    """Carried by runs that never wrote them -- a failed first save, a run on
+    another agent: the rename is the name now, or their next save puts one back."""
+    from agent_system.servers.agent.server import Agent
+
+    app, manager = api
+    default = app.state.agent
+    registry = app.state.tool_registry
+    other = next((agent for agent in map(registry.get, registry.list())
+                  if isinstance(agent, Agent) and agent is not default), None)
+    assert other is not None, "fixture: no second agent in the registry"
+    # the default agent is not registered when a server took its name
+    names = [name for name in registry.list() if registry.get(name) is not default]
+    monkeypatch.setattr(registry, "list", lambda: names)
+    await _titled(manager, account[1], "zweiter Versuch", "s-old")
+    default._session_tracker.carry_title("s-old", "T-first")
+    other._session_tracker.carry_title("s-old", "T-other")
+    _running(monkeypatch, {})
+
+    response = await _patch(app, headers, "/api/sessions/s-old", {"title": "X-renamed"})
+
+    assert response.status_code == 200, response.text
+    assert default._session_tracker.title_to_write("s-old") is None
+    assert other._session_tracker.title_to_write("s-old") is None
+
+
+async def test_two_quick_renames_during_the_first_save_end_on_the_later(api, account, headers, monkeypatch):
+    """PATCH B and PATCH C while the run's first save has created the record and
+    not yet written it: that save writes its old title, then the newest one
+    carried -- which B, finishing after C, must not have dropped as older."""
+    import asyncio
+
+    from agent_system.llm.models import ChatMessage
+    from agent_system.services.session_service import SessionService
+
+    app, manager = api
+    agent, user = app.state.agent, account[1]
+    tracker = agent._session_tracker
+    tracker.set_session_metadata("s1", {"user_id": user, "agent_name": agent.name, "llm_profile": "p"})
+    tracker.carry_title("s1", "T0")
+    tracker.set_session_messages("s1", [ChatMessage(role="user", content="hallo")])
+    _running(monkeypatch, {"s1": {"user_id": user, "agent_name": agent.name}})
+    save, rename = manager.save_session, manager.rename_session
+    run_inside, run_writes, b_inside, b_renames = (asyncio.Event() for _ in range(4))
+    saves = []
+
+    async def held_save(session_data):
+        saves.append(session_data.get("title"))
+        if len(saves) == 1:  # the run's own write
+            run_inside.set()
+            await run_writes.wait()
+        await save(session_data)
+
+    async def held_rename(user_id, session_id, title):
+        if title == "B":
+            b_inside.set()
+            await b_renames.wait()
+        await rename(user_id, session_id, title)
+
+    monkeypatch.setattr(manager, "save_session", held_save)
+    monkeypatch.setattr(manager, "rename_session", held_rename)
+    run_save = asyncio.ensure_future(
+        SessionService(manager).save_session(agent, user, "s1", agent.name, "p", True))
+    await run_inside.wait()
+    assert saves == ["T0"], f"fixture: the run's save is not writing its title: {saves}"
+    patch_b = asyncio.ensure_future(_patch(app, headers, "/api/sessions/s1", {"title": "B"}))
+    await b_inside.wait()
+    assert (await _patch(app, headers, "/api/sessions/s1", {"title": "C"})).status_code == 200
+    b_renames.set()
+    assert (await patch_b).status_code == 200
+    run_writes.set()
+    assert await run_save is True
+
+    assert (await manager.load_session(user, "s1"))["title"] == "C"
+    assert tracker.title_to_write("s1") is None

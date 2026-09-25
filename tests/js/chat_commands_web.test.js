@@ -25,13 +25,19 @@ function makeElement() {
     className: '',
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     appendChild(child) { this.children.push(child); return child; },
-    addEventListener() {}, removeEventListener() {},
+    // Kept, so a test can do what the page does: submit the form.
+    addEventListener(type, fn) { (this.listeners = this.listeners || {})[type] = fn; },
+    removeEventListener() {},
     querySelector() { return makeElement(); }, querySelectorAll() { return []; },
     getAttribute() { return null; }, setAttribute() {}, insertAdjacentHTML() {},
     scrollIntoView() {}, focus() {}, remove() {}, closest() { return null; },
     // A real element has these, and the code under test uses them: an input
     // says it changed, and the export link is clicked to start the download.
     dispatchEvent() {}, click() {},
+    // What a run's block reaches for as it is built (its folds); a fresh stub each time will do.
+    get nextElementSibling() { return makeElement(); },
+    hasChildNodes() { return this.children.length > 0; },
+    get parentElement() { return makeElement(); },
   };
   return el;
 }
@@ -95,13 +101,29 @@ function load(sessions, options) {
         return { ok: true, status: 200, json: async () => ({ chat: {}, active: {} }) };
       }
       calls.push(url);
-      if (init && init.body) bodies.push(JSON.parse(init.body));
+      // A form (a message with files) as its fields, a JSON body as its object.
+      if (init && init.body) {
+        bodies.push(init.body instanceof FormData ? Object.fromEntries(init.body) : JSON.parse(init.body));
+      }
       const answer = (settings.answers || {})[String(url).split('?')[0]];
+      if (answer && answer.sse) {
+        // A run's stream: the events, once, then its end.
+        const text = answer.sse.map((event) => 'data: ' + JSON.stringify(event) + '\n\n').join('');
+        let read = false;
+        return { ok: true, status: 200, body: { getReader: () => ({ read: async () => {
+          if (read) return { done: true, value: undefined };
+          // held back until the test lets it through: the run has not started yet
+          if (answer.until) await answer.until;
+          read = true;
+          return { done: false, value: new TextEncoder().encode(text) };
+        } }) } };
+      }
       if (answer && answer.fails) {
         // The status matters: /undo tells a 409 (the session is running) from
         // anything else, and offers the way past it only for that one.
         return { ok: false, status: answer.status || 500, statusText: 'Boom',
-                 json: async () => ({ detail: answer.fails }) };
+                 json: async () => ({ detail: answer.fails }),
+                 text: async () => JSON.stringify({ detail: answer.fails }) };
       }
       return {
         ok: true, status: 200,
@@ -110,6 +132,12 @@ function load(sessions, options) {
       };
     },
     sessionManager: {
+      isBeingDeleted: () => false,
+      getCurrentSessionId: () => settings.session || null,
+      // a new chat's session the chat lets go of before the list has it (shell/sessions.js)
+      awaitListing() {},
+      loadSessions: async () => {},
+      messageWritten: () => {},
       // What the session list holds for each session, stored title included.
       byId: new Map(settings.title ? [[settings.session, { title: settings.title }]] : []),
       loadSession: async (id) => {
@@ -138,6 +166,12 @@ function load(sessions, options) {
       setAgent: (name) => { acted.push('setAgent:' + name); return settings.setAgentFails !== true; },
     },
     slashCommands: { helpLines() { return []; }, catalogue: {}, attach() {}, close() {} },
+    // A file waiting to go out with the next message, when a test asks for one.
+    fileUploadModule: settings.files ? {
+      hasValidFiles: () => true, getFiles: () => ['pic.png'], removeFiles() {},
+      // an image: its preview is an object URL, which the stub has (a text file's needs FileReader)
+      getFilesByType: () => ({ images: [{ name: 'pic.png' }], audio: [], text: [] }),
+    } : undefined,
   };
   window.window = window;
 
@@ -149,7 +183,7 @@ function load(sessions, options) {
     // The module builds one at load (stored sub-runs, the run stream). A vm
     // context has no web globals, so without this every test here failed to
     // load the module -- red since 2a0fe5a28 (19.09.2026).
-    AbortController, AbortSignal,
+    AbortController, AbortSignal, TextDecoder, FormData,
     // The chat keeps its end in view with one once it scrolls (a5b1b35f7): every
     // note scrolls, so without it every command here threw on its first note.
     ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
@@ -170,7 +204,12 @@ function load(sessions, options) {
     });
   }
   return { chatModule, container: document.getElementById('chat'), calls, bodies,
-           acted, input: document.getElementById('task') };
+           acted, input: document.getElementById('task'), window,
+           // What the page does with the Run button: submit the form with the input's text.
+           send: async (text) => {
+             document.getElementById('task').value = text;
+             await document.getElementById('f').listeners.submit({ preventDefault() {} });
+           } };
 }
 
 function sessionsFixture(count) {
@@ -187,6 +226,15 @@ function listingOf(count, extra) {
   return Object.assign({ sessions: sessionsFixture(count), total: count, left_out: 0,
                          most_left_out: null }, extra || {});
 }
+
+/** A stream held back until `open()`: the time a run takes to start. */
+function held() {
+  let open;
+  const until = new Promise((resolve) => { open = resolve; });
+  return { until, open };
+}
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const tests = [];
 function test(name, fn) { tests.push([name, fn]); }
@@ -372,10 +420,185 @@ test('a bare /title of a session without one says so -- not the header\'s "Untit
   assert.ok(!note.includes('Title:'), note);
 });
 
-test('a bare /title before the first message says there is no session', async () => {
-  const { chatModule, container } = load([], {});
+// Before the first message there is no session to rename: the title waits,
+// goes out with that message and is written by the run's first save -- as in
+// agent-cli, where `/title` then answers "(written with the first message)".
+test('a /title before the first message waits for it, as in the terminal', async () => {
+  const { chatModule, container, acted, calls } = load([], {});
+  await chatModule.runCommand('title', 'Blitter umbauen');
   await chatModule.runCommand('title', '');
-  assert.ok(notesOf(container).join('\n').includes('No session yet.'));
+  assert.deepStrictEqual(acted, [], 'it renamed a session that is not there');
+  assert.deepStrictEqual(calls, []);
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes('Title: Blitter umbauen   (written with the first message)'), note);
+  assert.ok(note.split('Title: Blitter umbauen').length === 3, 'a bare /title did not show it: ' + note);
+});
+
+test('the first message takes the waiting title along, and the run has it from then', async () => {
+  const { chatModule, container, bodies, send, window } = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  await send('hallo');
+  assert.strictEqual(bodies[0].task, 'hallo');
+  assert.strictEqual(bodies[0].session_title, 'Blitter umbauen');
+  assert.strictEqual(bodies[0].session_id, undefined);
+  // handed over at the start: leaving the new session later has nothing to say about it
+  window.dispatchEvent({ type: 'session:new', detail: {} });
+  const note = notesOf(container).join('\n');
+  assert.ok(!note.includes('(the title'), note);
+});
+
+test('a first message the server refused gives its title back to the next one', async () => {
+  const { chatModule, container, bodies, send } = load([], { answers: {
+    '/events': { fails: 'Boom', status: 500 } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  await send('hallo');
+  await chatModule.runCommand('title', '');
+  const notes = notesOf(container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'Title: Blitter umbauen', notes.join('\n'));
+  await send('nochmal');
+  assert.strictEqual(bodies[1].session_title, 'Blitter umbauen');
+});
+
+test('leaving after a /title typed while the first message starts says that one was not written', async () => {
+  const gate = held();
+  const { chatModule, container, send, window } = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  const sent = send('hallo');
+  await tick();
+  await chatModule.runCommand('title', 'Copper-Liste');
+  window.dispatchEvent({ type: 'session:new', detail: { chosen: true } });
+  gate.open();
+  await sent;
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes("(the title 'Copper-Liste' was not written -- the chat left before"), note);
+  assert.ok(!note.includes('no message went out'), 'a message went out: ' + note);
+});
+
+test('a bare /title during the first run names what its first save writes', async () => {
+  const { chatModule, container, send } = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  await send('hallo');
+  // the list has no record of new1 until that save
+  await chatModule.runCommand('title', '');
+  let notes = notesOf(container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'Title: Blitter umbauen', notes.join('\n'));
+  await chatModule.runCommand('title', 'Copper-Liste');
+  await chatModule.runCommand('title', '');
+  notes = notesOf(container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'Title: Copper-Liste', notes.join('\n'));
+});
+
+test('a /title typed while the first message starts goes to its session by name', async () => {
+  const gate = held();
+  const { chatModule, acted, bodies, send } = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  const sent = send('hallo');
+  await tick();
+  await chatModule.runCommand('title', 'Copper-Liste');
+  gate.open();
+  await sent;
+  assert.strictEqual(bodies[0].session_title, 'Blitter umbauen');
+  // the server keeps it for the run's first save -- lost at the start before
+  assert.deepStrictEqual(acted, ['rename:new1:Copper-Liste']);
+});
+
+test('leaving while the first message starts says the title went with it', async () => {
+  const gate = held();
+  const { chatModule, container, send, window } = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  const sent = send('hallo');
+  await tick();
+  window.dispatchEvent({ type: 'session:new', detail: { chosen: true } });
+  gate.open();
+  await sent;
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes("(the title 'Blitter umbauen' went out with your message: a session the server starts for it is named so)"), note);
+  assert.ok(!note.includes('was not written'), 'the run writes it -- "not written" was untrue: ' + note);
+});
+
+test('leaving while a first message with a file starts says the same', async () => {
+  const gate = held();
+  const { chatModule, container, send, window } = load([], { files: true, answers: {
+    '/run': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  const sent = send('lies das');
+  await tick();
+  window.dispatchEvent({ type: 'session:new', detail: { chosen: true } });
+  gate.open();
+  await sent;
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes("went out with your message: a session the server starts for it is named so)"), note);
+});
+
+test('a stored session that could not be shown lets go of a first message on its way too', async () => {
+  // the chat let go of the run: nothing waits for its start any more
+  const gate = held();
+  const { chatModule, container, send, window } = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }], until: gate.until } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  const sent = send('hallo');
+  await tick();
+  window.dispatchEvent({ type: 'session:new', detail: { chosen: false } });
+  gate.open();
+  await sent;
+  assert.ok(notesOf(container).join('\n').includes("went out with your message: a session the server starts for it is named so)"), notesOf(container).join('\n'));
+  await chatModule.runCommand('title', '');
+  const notes = notesOf(container);
+  assert.strictEqual(notes[notes.length - 1].split('\n')[0], 'This session has no title yet.', notes.join('\n'));
+});
+
+test('a stored session that could not be shown keeps the waiting title', async () => {
+  // session:new nobody chose: the chat stays the new one it was
+  const { chatModule, container, window } = load([], {});
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  window.dispatchEvent({ type: 'session:new', detail: { chosen: false } });
+  await chatModule.runCommand('title', '');
+  const note = notesOf(container).join('\n');
+  assert.ok(!note.includes('was not written'), note);
+  assert.ok(note.split('Title: Blitter umbauen').length === 3, 'dropped: ' + note);
+});
+
+test('a waiting title is dropped with a word when the chat goes elsewhere first', async () => {
+  const { chatModule, container, window } = load([], {});
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  window.dispatchEvent({ type: 'session:new', detail: {} });
+  await chatModule.runCommand('title', '');
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes("(the title 'Blitter umbauen' was not written"), note);
+  assert.ok(note.includes('This session has no title yet.'), 'it was kept: ' + note);
+});
+
+test('a first message with a file takes the waiting title along too', async () => {
+  // Sent as a form to /run, not as JSON to /events: the other of the two ways out.
+  const { chatModule, bodies, calls, send } = load([], { files: true, answers: {
+    '/run': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  await send('lies das');
+  assert.strictEqual(calls[0], '/run');
+  assert.strictEqual(bodies[0].session_title, 'Blitter umbauen');
+  assert.ok(!('session_id' in bodies[0]), JSON.stringify(bodies[0]));
+});
+
+test('a first message with a file the server refused gives its title back too', async () => {
+  const { chatModule, bodies, send } = load([], { files: true, answers: {
+    '/run': { fails: 'Boom', status: 500 } } });
+  await chatModule.runCommand('title', 'Blitter umbauen');
+  await send('lies das');
+  await send('nochmal');
+  assert.strictEqual(bodies[1].session_title, 'Blitter umbauen');
+});
+
+test('a message into a session sends no title', async () => {
+  const { chatModule, bodies, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' }] } } });
+  await send('weiter');
+  assert.strictEqual(bodies[0].session_id, 'sid7');
+  assert.ok(!('session_title' in bodies[0]), JSON.stringify(bodies[0]));
 });
 
 test('a bare /title says the stored title, and how to set one', async () => {
