@@ -9,12 +9,18 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from agent_system.auth.models import User
 from agent_system.auth.dependencies import get_current_active_user, get_optional_user
 from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_tool_registry
+from agent_system.cli_utils.session_listing import (
+    in_chat_selector,
+    most_left_out,
+    parse_listing,
+    split_for_chat,
+)
 from agent_system.services.background_job_manager import get_background_job_manager
 
 logger = logging.getLogger(__name__)
@@ -513,11 +519,50 @@ async def resolve_session(
     the terminal does.
     """
     user_id = current_user.username if current_user else "anonymous"
-    found = await session_manager.resolve_session_ref(user_id, ref)
+    others: List[str] = []
+    found = await session_manager.resolve_session_ref(user_id, ref, others=others)
     if not found:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"no session called {ref!r}")
-    return {"session_id": found}
+    # A title several sessions share was answered with the newest of them;
+    # the others are named so the caller can say that it chose.
+    return {"session_id": found, "others": others}
+
+
+@session_router.get("/listing", response_model=Dict[str, Any])
+async def list_sessions_for_chat(
+    request: Request,
+    count: str = "",
+    agent: str = "",
+    current: str = "",
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """The chat's ``/sessions [count|all]``: top-level sessions, newest first.
+
+    Only those of agents meant for chat -- the rule and the functions are the
+    terminal's (cli_utils.session_listing), so both chats list the same.
+    ``agent`` is the one the chat runs on and ``current`` the session it is
+    in: both stay whatever their agent. The runs left out are counted, with
+    the agent most of them ran on; ``count=all`` lists every one.
+    """
+    limit, everything, complaint = parse_listing(count)
+    if complaint is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"count must be a number or 'all', got {complaint!r}")
+    user_id = current_user.username if current_user else "anonymous"
+    sessions = await session_manager.list_root_sessions(user_id)
+    shown = None if everything else in_chat_selector(
+        getattr(request.app.state, "runtime", None), keep=(agent,))
+    listable, left_out = split_for_chat(sessions, shown, current or None)
+    listed = listable if limit <= 0 else listable[:limit]
+    most = most_left_out(left_out)
+    return {
+        "sessions": [_session_node(s) for s in listed],
+        "total": len(listable),
+        "left_out": len(left_out),
+        "most_left_out": {"agent": most[0], "count": most[1]} if most else None,
+    }
 
 
 @session_router.get("/{session_id}")

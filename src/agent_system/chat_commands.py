@@ -58,8 +58,9 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
                 usage="/exit, /quit, /q", surfaces=(CLI,)),
     ChatCommand("new", ("/new",), "start a fresh session (current one stays saved)"),
     ChatCommand("session", ("/session",), "show the current session and how to resume it"),
-    ChatCommand("sessions", ("/sessions",), "list recent sessions (0 = no limit)",
-                usage="/sessions [count]"),
+    ChatCommand("sessions", ("/sessions",),
+                "list recent sessions of the agents meant for chat (0 = no limit, all = every one)",
+                usage="/sessions [count|all]"),
     ChatCommand("resume", ("/resume",),
                 "continue an earlier session by id or title; bare takes the last one",
                 usage="/resume [id|title]"),
@@ -69,8 +70,8 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     # A session id cannot be renamed -- it is the key half a dozen stores file
     # their rows under -- so the title IS the name: /resume and --session take
     # it (SessionManager.resolve_session_ref).
-    ChatCommand("title", ("/title",), "name this session -- /resume takes that name",
-                usage="/title <text>"),
+    ChatCommand("title", ("/title",), "name this session, bare shows the name -- /resume takes it",
+                usage="/title [text]"),
     ChatCommand("agent", ("/agent",),
                 "agent of this chat: bare lists, a name switches (starts a new session)",
                 usage="/agent [name]"),

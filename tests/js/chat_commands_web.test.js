@@ -1,4 +1,4 @@
-// The browser's half of `/sessions [count]`, exercised against a DOM stub.
+// The browser's half of the chat commands, exercised against a DOM stub.
 //
 // The count is advertised by the SHARED command catalogue (chat_commands.py),
 // which both surfaces render -- the browser prints it in /help and in the
@@ -110,7 +110,16 @@ function load(sessions, options) {
       };
     },
     sessionManager: {
-      loadSession: async (id) => { acted.push('load:' + id); },
+      // What the session list holds for each session, stored title included.
+      byId: new Map(settings.title ? [[settings.session, { title: settings.title }]] : []),
+      loadSession: async (id) => {
+        acted.push('load:' + id);
+        // The real one announces the switch; the chat learns its session there.
+        if (settings.loads) {
+          window.dispatchEvent({ type: 'session:loaded',
+            detail: { session: { session_id: id, messages: [] } } });
+        }
+      },
       newConversation: async () => {
         acted.push('new');
         // The real one returns undefined either way: it starts a session, or
@@ -173,59 +182,117 @@ function sessionsFixture(count) {
   }));
 }
 
+/** What GET /api/sessions/listing answers: the server reads, filters and counts. */
+function listingOf(count, extra) {
+  return Object.assign({ sessions: sessionsFixture(count), total: count, left_out: 0,
+                         most_left_out: null }, extra || {});
+}
+
 const tests = [];
 function test(name, fn) { tests.push([name, fn]); }
 
-test('a bare /sessions lists the same default the terminal does', async () => {
-  const { chatModule, container, calls } = load(sessionsFixture(25));
+// The count (a number, 0, `all`), the filter and the tally are the server's --
+// the terminal's own functions (tests/app/test_session_resolve_endpoint.py).
+// What is left here: what the browser sends, and what it makes of the answer.
+test('a bare /sessions asks the shared listing and prints what it says', async () => {
+  const { chatModule, container, calls } = load([], {
+    answers: { '/api/sessions/listing': listingOf(20, { total: 25 }) } });
   await chatModule.runCommand('sessions', '');
   const note = notesOf(container).join('\n');
   assert.ok(note.includes('Sessions (20 of 25):'), note);
-  assert.ok(note.includes('... 5 more'), note);
-  // The stub answers every url with the fixture, so without this the endpoint
-  // could be renamed away and all six tests would still pass -- the browser
-  // would answer /sessions with a 404, or with a healthy-looking 'No sessions
-  // yet.' for a payload shape it never asked for.
-  assert.deepStrictEqual(calls, ['/api/sessions']);
+  // 0 lifts the limit and `all` the filter: two words, two meanings
+  assert.ok(note.includes('... 5 more -- /sessions <count>, /sessions 0 for no limit'), note);
+  // The stub answers by path, so without this the route could be renamed away
+  // and every test here would still pass on the answer it was handed.
+  assert.deepStrictEqual(calls, ['/api/sessions/listing?count=&agent=coder&current=']);
 });
 
-test('a typed count reaches the listing', async () => {
-  const { chatModule, container } = load(sessionsFixture(25));
-  await chatModule.runCommand('sessions', '3');
+test('the count, this chat\'s agent and its session reach the server', async () => {
+  const { chatModule, calls } = load([], { session: 'sid7',
+    answers: { '/api/sessions/listing': listingOf(3) } });
+  await chatModule.runCommand('sessions', 'all');
+  assert.deepStrictEqual(calls, ['/api/sessions/listing?count=all&agent=coder&current=sid7']);
+});
+
+test('the runs left out are counted, with the way to see them', async () => {
+  const { chatModule, container } = load([], { answers: { '/api/sessions/listing':
+    listingOf(2, { left_out: 4562, most_left_out: { agent: 'v4_chapter_scorer', count: 1412 } }) } });
+  await chatModule.runCommand('sessions', '');
   const note = notesOf(container).join('\n');
-  assert.ok(note.includes('Sessions (3 of 25):'), note);
-  assert.ok(note.includes('sid2'), note);
-  assert.ok(!note.includes('sid3'), 'the count was not honoured: ' + note);
+  assert.ok(note.includes('(4562 more on agents not meant for chat, most v4_chapter_scorer 1412 ' +
+    '-- /sessions all)'), note);
 });
 
-test('0 means all of them, as the help says', async () => {
-  const { chatModule, container } = load(sessionsFixture(25));
-  await chatModule.runCommand('sessions', '0');
+test('a listing whose every row was left out says so, not "No sessions yet."', async () => {
+  const { chatModule, container } = load([], { answers: { '/api/sessions/listing':
+    listingOf(0, { left_out: 3, most_left_out: { agent: 'v4_chapter_scorer', count: 3 } }) } });
+  await chatModule.runCommand('sessions', '');
   const note = notesOf(container).join('\n');
-  assert.ok(note.includes('Sessions (25 of 25):'), note);
-  assert.ok(!note.includes('more --'), note);
+  assert.ok(note.includes('(3 more on agents not meant for chat'), note);
+  assert.ok(!note.includes('No sessions yet.'), note);
 });
 
-test('a count that is not a count gets the usage line, not a listing', async () => {
-  const { chatModule, container, calls } = load(sessionsFixture(25));
+test('a server error is not taken for a bad count', async () => {
+  const { chatModule, container } = load([], { answers: { '/api/sessions/listing':
+    { fails: 'index gone', status: 500 } } });
+  await chatModule.runCommand('sessions', '');
+  const note = notesOf(container).join('\n');
+  assert.ok(!note.includes('Usage:'), 'a broken server was blamed on the typing: ' + note);
+  assert.ok(note.includes('index gone'), note);
+});
+
+test('a count the server refuses gets the usage line, not a listing', async () => {
+  const { chatModule, container } = load([], { answers: { '/api/sessions/listing':
+    { fails: "count must be a number or 'all', got '2o'", status: 400 } } });
   await chatModule.runCommand('sessions', '2o');
   const note = notesOf(container).join('\n');
-  assert.ok(note.includes('Usage: /sessions [count]   (got: 2o)'), note);
+  assert.ok(note.includes('Usage: /sessions [count|all]   (got: 2o)'), note);
   assert.ok(!note.includes('Sessions ('), 'it listed anyway: ' + note);
-  assert.deepStrictEqual(calls, [], 'it asked the server before reading the argument');
-});
-
-test('a negative count is not read as all of them', async () => {
-  const { chatModule, container } = load(sessionsFixture(25));
-  await chatModule.runCommand('sessions', '-1');
-  const note = notesOf(container).join('\n');
-  assert.ok(note.includes('Usage: /sessions [count]'), note);
 });
 
 test('an empty store says so', async () => {
-  const { chatModule, container } = load([]);
+  const { chatModule, container } = load([], { answers: { '/api/sessions/listing': listingOf(0) } });
   await chatModule.runCommand('sessions', '');
   assert.ok(notesOf(container).join('\n').includes('No sessions yet.'));
+});
+
+test('a title several sessions share resumes the newest and says it chose', async () => {
+  const { chatModule, container, calls, acted } = load([], { session: 'sid1', loads: true,
+    answers: { '/api/sessions/resolve': { session_id: 'sid2', others: ['sid0', 'sid1b'] } } });
+  await chatModule.runCommand('resume', 'Der Blitter');
+  assert.strictEqual(calls[0], '/api/sessions/resolve?ref=Der%20Blitter');
+  assert.deepStrictEqual(acted, ['load:sid2']);
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes('Resumed session: sid2   (the newest of 3 with this title'), note);
+});
+
+test('a resume that did not switch is not reported as done', async () => {
+  // loadSession returns quietly when the viewer cancels the "run still
+  // active" dialog -- the chat must still be on its old session to say so.
+  const { chatModule, container, acted } = load([], { session: 'sid1',
+    answers: { '/api/sessions/resolve': { session_id: 'sid2', others: [] } } });
+  await chatModule.runCommand('resume', 'sid2');
+  assert.deepStrictEqual(acted, ['load:sid2']);
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes('was not loaded'), note);
+  assert.ok(!note.includes('Resumed session'), note);
+});
+
+test('a bare /resume takes the newest listed session that is not this one', async () => {
+  const { chatModule, container, calls, acted } = load([], { session: 'sid0', loads: true,
+    answers: { '/api/sessions/listing': listingOf(2) } });
+  await chatModule.runCommand('resume', '');
+  assert.strictEqual(calls[0], '/api/sessions/listing?count=2&agent=coder&current=sid0');
+  assert.deepStrictEqual(acted, ['load:sid1'], 'it resumed the session it was already on');
+  assert.ok(notesOf(container).join('\n').includes('Resumed session: sid1'));
+});
+
+test('a bare /resume with nothing earlier says so', async () => {
+  const { chatModule, container, acted } = load([], { session: 'sid0',
+    answers: { '/api/sessions/listing': listingOf(1) } });
+  await chatModule.runCommand('resume', '');
+  assert.deepStrictEqual(acted, []);
+  assert.ok(notesOf(container).join('\n').includes('No earlier session to continue'));
 });
 
 test('/context names what is filling the window, biggest first', async () => {
@@ -297,11 +364,27 @@ test('/title goes through the session list, not a PATCH of its own', async () =>
   assert.ok(notesOf(container).join('\n').includes('Title: Blitter umbauen'));
 });
 
-test('/title without a text gets the usage line', async () => {
-  const { chatModule, container, acted } = load([], { session: 'sid7' });
+test('a bare /title of a session without one says so -- not the header\'s "Untitled"', async () => {
+  const { chatModule, container } = load([], { session: 'sid7' });
+  await chatModule.runCommand('title', '');
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes('This session has no title yet.'), note);
+  assert.ok(!note.includes('Title:'), note);
+});
+
+test('a bare /title before the first message says there is no session', async () => {
+  const { chatModule, container } = load([], {});
+  await chatModule.runCommand('title', '');
+  assert.ok(notesOf(container).join('\n').includes('No session yet.'));
+});
+
+test('a bare /title says the stored title, and how to set one', async () => {
+  const { chatModule, container, acted } = load([], { session: 'sid7', title: 'Blitter umbauen' });
   await chatModule.runCommand('title', '   ');
   assert.deepStrictEqual(acted, [], 'it renamed with nothing');
-  assert.ok(notesOf(container).join('\n').includes('Usage: /title <text>'));
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes('Title: Blitter umbauen'), note);
+  assert.ok(note.includes('Usage: /title <text>'), note);
 });
 
 test('a rename that failed is not reported as done', async () => {

@@ -413,32 +413,40 @@
   // ---------------------------------------------------------------------
 
   async function cmdSessions(container, payload) {
-    // The count is advertised by the shared command catalogue, which both
-    // surfaces render -- so it has to mean the same here as in agent-cli:
-    // a number, 0 for all, anything else the usage line (as /history does).
+    // Read, filtered and counted by the server with the terminal's own
+    // functions (GET /api/sessions/listing): a count, 0 or `all`, the agents
+    // meant for chat, this chat's agent and session always -- one rule for
+    // both chats, not a second copy of it here.
     const raw = (payload || '').trim();
-    if (raw && !/^\+?\d+$/.test(raw)) {
-      addNote(container, 'Usage: /sessions [count]   (got: ' + raw + ')');
+    let listing;
+    try {
+      listing = await getJSON('/api/sessions/listing?count=' + encodeURIComponent(raw) +
+        '&agent=' + encodeURIComponent(currentAgentName() || '') +
+        '&current=' + encodeURIComponent(currentSessionId || ''));
+    } catch (error) {
+      if (error.status !== 400) throw error;
+      addNote(container, 'Usage: /sessions [count|all]   (got: ' + raw + ')');
       return;
     }
-    const limit = raw ? parseInt(raw, 10) : 20;
-    const sessions = await getJSON('/api/sessions');
-    if (!sessions.length) {
+    const shown = listing.sessions;
+    if (!shown.length && !listing.left_out) {
       addNote(container, 'No sessions yet.');
       return;
     }
-    const shown = limit <= 0 ? sessions : sessions.slice(0, limit);
     const lines = shown.map(function (s) {
       const marker = s.session_id === currentSessionId ? '*' : ' ';
       const count = String(s.message_count || 0).padStart(4);
       return ' ' + marker + ' ' + s.session_id + '  ' + count + ' msg  ' +
         (s.agent_name || '?') + '  ' + oneLine(s.title || 'Untitled', 48);
     });
-    const rest = sessions.length - shown.length;
-    addNote(container, 'Sessions (' + shown.length + ' of ' + sessions.length + '):\n' +
+    const rest = listing.total - shown.length;
+    const most = listing.most_left_out;
+    addNote(container, 'Sessions (' + shown.length + ' of ' + listing.total + '):\n' +
       lines.join('\n') +
-      (rest > 0 ? '\n   ... ' + rest + ' more -- /sessions <count>, /sessions 0 for all' : '') +
-      '\nUse /resume <id> to continue one.');
+      (rest > 0 ? '\n   ... ' + rest + ' more -- /sessions <count>, /sessions 0 for no limit' : '') +
+      (most ? '\n   (' + listing.left_out + ' more on agents not meant for chat, most ' +
+        most.agent + ' ' + most.count + ' -- /sessions all)' : '') +
+      '\nUse /resume <id or title> to continue one.');
   }
 
   /**
@@ -451,7 +459,15 @@
   async function cmdTitle(container, payload) {
     const title = (payload || '').trim();
     if (!title) {
-      addNote(container, 'Usage: /title <text>');
+      // The stored title, as the session list has it -- not the header's,
+      // which reads 'Untitled' for a session without one, a name /resume
+      // would then not find.
+      const pane = window.sessionManager;
+      const entry = currentSessionId && pane && pane.byId && pane.byId.get(currentSessionId);
+      const named = entry && entry.title;
+      addNote(container, (!currentSessionId ? 'No session yet.'
+        : named ? 'Title: ' + named : 'This session has no title yet.') +
+        '\nUsage: /title <text>   (/resume takes it)');
       return;
     }
     if (!currentSessionId) {
@@ -688,14 +704,33 @@
 
   async function cmdResume(container, payload) {
     const typed = (payload || '').trim();
+    let id;
+    let chose = '';
     if (!typed) {
-      addNote(container, 'Usage: /resume <id or title>   (/sessions lists them)');
-      return;
+      // Bare: the newest session /sessions lists that is not this one. Any
+      // chat agent's -- the browser switches the agent with the session,
+      // where the terminal is bound to its own.
+      const listing = await getJSON('/api/sessions/listing?count=2' +
+        '&agent=' + encodeURIComponent(currentAgentName() || '') +
+        '&current=' + encodeURIComponent(currentSessionId || ''));
+      const last = listing.sessions.find(function (s) { return s.session_id !== currentSessionId; });
+      if (!last) {
+        addNote(container, 'No earlier session to continue. /sessions lists them.');
+        return;
+      }
+      id = last.session_id;
+      addNote(container, 'Resuming ' + id + ' -- ' + oneLine(last.title || 'Untitled', 60));
+    } else {
+      // Ids are machine-made and cannot be renamed, so a person may type the
+      // title they gave the session instead -- resolved by the server, by the
+      // same rule the terminal follows (SessionManager.resolve_session_ref).
+      const found = await getJSON('/api/sessions/resolve?ref=' + encodeURIComponent(typed));
+      id = found.session_id;
+      // A title several sessions share names the newest, and says it chose.
+      const others = found.others || [];
+      chose = others.length ? '   (the newest of ' + (others.length + 1) +
+        ' with this title -- /sessions all lists every id)' : '';
     }
-    // Ids are machine-made and cannot be renamed, so a person may type the
-    // title they gave the session instead -- resolved by the server, by the
-    // same rule the terminal follows (SessionManager.resolve_session_ref).
-    const id = (await getJSON('/api/sessions/resolve?ref=' + encodeURIComponent(typed))).session_id;
     if (!window.sessionManager || typeof window.sessionManager.loadSession !== 'function') {
       addNote(container, 'Session switching is not available in this window.');
       return;
@@ -714,7 +749,7 @@
     // the next message continues. It is set by the session:loaded handler,
     // which loadSession dispatches synchronously before it returns.
     if (currentSessionId === id) {
-      addNote(container, 'Resumed session: ' + id);
+      addNote(container, 'Resumed session: ' + id + chose);
     } else {
       addNote(container, 'Session ' + id + ' was not loaded -- the switch was cancelled or failed.');
     }

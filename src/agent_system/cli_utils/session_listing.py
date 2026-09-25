@@ -129,6 +129,30 @@ def parse_listing(value: Any, default: int = DEFAULT_LIMIT) -> tuple[int, bool, 
     return limit, False, complaint
 
 
+def split_for_chat(sessions: list, shown: Optional[Callable[[str], bool]],
+                   current_session_id: Optional[str] = None) -> tuple[list, list]:
+    """``(listable, left_out)``: what a listing shows, and the runs it only counts.
+
+    Without *shown* (no filter, or ``all``) nothing is left out. The session
+    the chat is in stays whatever its agent: it is marked, and a listing
+    without its own "*" row misstates where the person is. Shared by the
+    terminal's listing and ``GET /api/sessions/listing``.
+    """
+    if shown is None:
+        return list(sessions), []
+    listable, left_out = [], []
+    for s in sessions:
+        kept = s.get("session_id") == current_session_id or shown(s.get("agent_name") or "")
+        (listable if kept else left_out).append(s)
+    return listable, left_out
+
+
+def most_left_out(left_out: list) -> Optional[tuple[str, int]]:
+    """The agent most of the left-out runs ran on, and how many -- None for none."""
+    top = Counter(s.get("agent_name") or "?" for s in left_out).most_common(1)
+    return top[0] if top else None
+
+
 def _when(raw: Any) -> str:
     """The timestamp in LOCAL time -- the store keeps UTC.
 
@@ -205,15 +229,7 @@ async def print_sessions(
         print(f"No sessions for user '{user_id}'.")
         return []
 
-    listable, left_out = list(sessions), []
-    if shown is not None:
-        # The session this chat is in stays whatever its agent: it is marked,
-        # and a listing without its own "*" row misstates where the person is.
-        def listed(s: dict) -> bool:
-            return (s.get("session_id") == current_session_id
-                    or shown(s.get("agent_name") or ""))
-        listable = [s for s in sessions if listed(s)]
-        left_out = [s for s in sessions if not listed(s)]
+    listable, left_out = split_for_chat(sessions, shown, current_session_id)
     printed = listable if limit <= 0 else listable[:limit]
     print(f"Sessions for '{user_id}' ({len(printed)} of {len(listable)}):")
     for entry in printed:
@@ -221,11 +237,12 @@ async def print_sessions(
     rest = len(listable) - len(printed)
     if rest > 0 and more_hint:
         print(f"   ... {rest} more -- {more_hint}")
-    if left_out:
+    most = most_left_out(left_out)
+    if most:
         # One line within the budget: how many, the agent most of them ran on,
         # and the word that lists them. The agent gives way, as a session
         # line's title does -- five-digit counts ran to 102 columns.
-        (agent, count), = Counter(s.get("agent_name") or "?" for s in left_out).most_common(1)
+        agent, count = most
         head = f"   ({len(left_out)} more on agents not meant for chat, most "
         tail = f" {count}" + (f" -- {everything_hint}" if everything_hint else "") + ")"
         room = max(0, min(_AGENT_WIDTH, _LINE_BUDGET - len(head) - len(tail)))
