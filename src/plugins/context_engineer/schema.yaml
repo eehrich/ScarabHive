@@ -250,7 +250,7 @@ config:
   tool_result_summary_tools:
     type: array
     default: []
-    description: "Which tools' results may be summarized, as name patterns (fnmatch, e.g. [\"sub_agent_manager_*\", \"coding_cli_*\"]). The tool name carries the instance prefix. Empty (default) means every tool -- right for an agent that only takes hand-overs, wrong for one that also reads files with the same hook, because a long file would arrive as a summary it has to read back. Per agent via hooks.overrides."
+    description: "Which tools' results may be summarized, as name patterns (fnmatch, e.g. [\"*_manage_sub_agent\", \"coding_cli_*\"]). The tool name starts with the instance name: coder_sam_manage_sub_agent. A key left blank per agent keeps the plugin value. Empty (default) means every tool -- right for an agent that only takes hand-overs, wrong for one that also reads files with the same hook, because a long file would arrive as a summary it has to read back. Per agent via hooks.overrides."
 
   # Tool Result Clearing (Legacy - kept for compatibility)
 

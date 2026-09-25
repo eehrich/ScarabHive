@@ -685,9 +685,13 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             logger.warning(
                 "[ContextEngineer] agent override keys that only plugins.yaml can "
                 "set, ignored per agent: %s", ", ".join(plugin_level))
+        # A key left blank (None) sets nothing and keeps the plugin's value.
+        # Read as a value, a blank tool_result_summary_tools became the empty
+        # list -- every tool -- over the plugin's own patterns.
         return compaction_config_from({
             **{f.name: getattr(self, f.name) for f in fields(CompactionConfig)},
-            **{k: v for k, v in overrides.items() if k not in PLUGIN_LEVEL_KEYS},
+            **{k: v for k, v in overrides.items()
+               if k not in PLUGIN_LEVEL_KEYS and v is not None},
         })
 
     def _summarizer(self, context: HookContext, cfg: CompactionConfig):

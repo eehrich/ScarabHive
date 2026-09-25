@@ -515,11 +515,17 @@ async def test_a_result_without_a_tool_name_is_never_summarized_under_patterns(
 
 
 @pytest.mark.asyncio
-async def test_patterns_are_matched_case_sensitively_on_every_platform(plugin, llm):
+async def test_patterns_are_matched_case_sensitively_on_every_platform(plugin, llm, monkeypatch):
     """fnmatch lowercases both sides on Windows and nowhere else. A camelCase
     tool name would then be filtered one way on a developer's machine and the
     other way on the server -- and a filter that lets a tool through in
-    production only is the leak this key exists to prevent."""
+    production only is the leak this key exists to prevent.
+
+    fnmatch is given the Windows case folding here, so the test tells the two
+    apart on every platform: on Linux fnmatch folds nothing and would pass."""
+    import fnmatch
+    from types import SimpleNamespace as NS
+    monkeypatch.setattr(fnmatch, "os", NS(path=NS(normcase=str.lower)))
     out = await _engineer(plugin, "case", _messages(LONG_PROSE, name="firecrawl_scrapeUrl"),
                           overrides={SUMMARY_TOOLS: ["firecrawl_scrapeurl"]})
 
@@ -601,3 +607,20 @@ def test_a_field_with_a_default_factory_falls_back_to_its_factory(monkeypatch, t
 
     for name in factory_fields:
         assert getattr(impl, name) == [], f"{name} fell back to {getattr(impl, name)!r}"
+
+
+
+@pytest.mark.asyncio
+async def test_a_key_left_blank_per_agent_keeps_the_plugins_patterns(plugin, llm):
+    """YAML reads `tool_result_summary_tools:` with nothing under it -- every
+    entry commented out -- as None. Taken as a value, that was the empty list,
+    and the empty list means every tool: the agent's blank line opened the
+    filter the plugin had set."""
+    # The whole plugin config again: apply_config resets what it is not given.
+    plugin.apply_config({"tool_result_summary_from": 500, "tool_result_summary_profile": "cheap",
+                         SUMMARY_TOOLS: ["*_manage_sub_agent"]})
+
+    out = await _engineer(plugin, "blank", _messages(LONG_PROSE, name="file_ops_read"),
+                          overrides={SUMMARY_TOOLS: None})
+
+    assert out[-1].content == LONG_PROSE and llm.prompts == []

@@ -1021,34 +1021,45 @@ class VectorStore:
         """Add documents to sqlite-vec collection."""
         self._ensure_sqlite_vec_table(collection)
         conn = self._get_sqlite_conn()
-        
-        for i, item_id in enumerate(ids):
-            # Get or compute embedding
-            if embeddings and i < len(embeddings):
-                emb = embeddings[i]
-            elif documents and i < len(documents):
-                emb = self._compute_embedding(documents[i])
-            else:
-                raise VectorStoreError(f"No document or embedding for id {item_id}")
-            
-            # Get document and metadata
-            doc = documents[i] if documents and i < len(documents) else None
-            meta = metadatas[i] if metadatas and i < len(metadatas) else None
-            
-            # Upsert vector
-            conn.execute(
-                f"INSERT OR REPLACE INTO vec_{collection}(item_id, embedding) VALUES (?, ?)",
-                (item_id, self._serialize_embedding(emb))
-            )
-            
-            # Upsert metadata
-            import json
-            conn.execute(
-                f"INSERT OR REPLACE INTO meta_{collection}(item_id, document, metadata) VALUES (?, ?, ?)",
-                (item_id, doc, json.dumps(meta) if meta else None)
-            )
-        
-        conn.commit()
+
+        try:
+            for i, item_id in enumerate(ids):
+                # Get or compute embedding
+                if embeddings and i < len(embeddings):
+                    emb = embeddings[i]
+                elif documents and i < len(documents):
+                    emb = self._compute_embedding(documents[i])
+                else:
+                    raise VectorStoreError(f"No document or embedding for id {item_id}")
+
+                # Get document and metadata
+                doc = documents[i] if documents and i < len(documents) else None
+                meta = metadatas[i] if metadatas and i < len(metadatas) else None
+
+                # Upsert vector. vec0 refuses INSERT OR REPLACE on an id it
+                # already holds ("UNIQUE constraint failed", sqlite_vec 0.1.6):
+                # a re-add raised where ChromaDB's upsert replaces. Removed
+                # first, it replaces here too.
+                conn.execute(f"DELETE FROM vec_{collection} WHERE item_id = ?", (item_id,))
+                conn.execute(
+                    f"INSERT INTO vec_{collection}(item_id, embedding) VALUES (?, ?)",
+                    (item_id, self._serialize_embedding(emb))
+                )
+
+                # Upsert metadata
+                import json
+                conn.execute(
+                    f"INSERT OR REPLACE INTO meta_{collection}(item_id, document, metadata) VALUES (?, ?, ?)",
+                    (item_id, doc, json.dumps(meta) if meta else None)
+                )
+
+            conn.commit()
+        except BaseException:
+            # sqlite3 leaves the implicit transaction open on an error: the
+            # items before the failing one would be saved by whatever commits
+            # on this connection next.
+            conn.rollback()
+            raise
     
     def _sqlite_vec_query(
         self,

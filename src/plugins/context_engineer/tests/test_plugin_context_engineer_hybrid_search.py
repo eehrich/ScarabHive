@@ -179,3 +179,57 @@ def test_fusion_lifts_what_both_lists_agree_on():
 
     assert [m.id for m in _fused([M("a"), M("b"), M("c")], [M("x"), M("b")], limit=3)] \
         == ["b", "a", "x"]
+
+
+OTHER = "Das Gegenstueck traegt die Kennung QS-4712 und liegt im Regal C."
+
+
+def test_an_or_in_the_filter_joins_instead_of_being_a_word(tmp_path):
+    """Quoted like a word, the OR became one the every-word half demanded: no row
+    holds "or", that half found nothing, and neither unembedded marker came back."""
+    archive, ids = _archive(tmp_path, [FILLER] * 10 + [MARKER, OTHER])
+    archive._vector_store = PartialIndex(known_ids=ids[:10])
+
+    found = [m.content for m in archive.search("QS-4711 OR QS-4712", session_id="s", limit=5)]
+
+    assert MARKER in found and OTHER in found, [c[:30] for c in found]
+
+
+def test_a_not_never_turns_into_a_search_for_what_it_excludes(tmp_path):
+    """NOT is not offered (the vector half cannot exclude), and dropping only
+    the operator would look for its word: exactly the rows meant to go."""
+    archive, _ = _archive(tmp_path, [MARKER, OTHER])
+
+    found = [m.content for m in archive.search("NOT QS-4712", session_id="s",
+                                                limit=5, use_semantic=False)]
+
+    assert OTHER not in found, [c[:30] for c in found]
+
+
+def test_an_and_in_the_broad_search_is_not_a_word_either(tmp_path):
+    """Without semantic search every word is ORed; an AND there was one more word
+    to match -- and the row holding only "Regal" came back beside the right one."""
+    archive, _ = _archive(tmp_path, [MARKER, "Im Regal liegt heute nichts."])
+
+    found = [m.content for m in archive.search("Regal AND Kennung", session_id="s",
+                                                limit=5, use_semantic=False)]
+
+    assert found == [MARKER], [c[:30] for c in found]
+
+
+@pytest.mark.parametrize("query, every_word, expected", [
+    ("a b", True, '"a" AND "b"'),
+    ("a b", False, '"a" OR "b"'),
+    ("a OR b c", True, '"a" OR "b" AND "c"'),
+    # Nothing on one side to join: FTS5 would reject the whole query.
+    ("OR a AND", True, '"a"'),
+    ("a NOT b c", True, '"a" AND "c"'),
+    # Nothing but operators: nothing to join either, so they are the words.
+    ("OR", True, '"OR"'),
+    # Only capitals are FTS5 operators; a lowercase "or" is a word.
+    ("a or b", True, '"a" AND "or" AND "b"'),
+])
+def test_the_fts5_query_keeps_spelled_out_operators(tmp_path, query, every_word, expected):
+    archive = ArchivalMemory(tmp_path / "archive.db", session_id="s")
+
+    assert archive._escape_fts5_query(query, every_word) == expected

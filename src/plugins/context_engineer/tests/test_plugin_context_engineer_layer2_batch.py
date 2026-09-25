@@ -98,11 +98,11 @@ def test_a_failed_write_leaves_nothing_pending_for_the_next_commit(tmp_path):
         def __init__(self):
             self.inserts = 0
 
-        def executemany(self, *args):
+        def execute(self, *args):
             self.inserts += 1
             if self.inserts == 2:
                 raise sqlite3.OperationalError("database or disk is full")
-            return real.executemany(*args)
+            return real.execute(*args)
 
         def __getattr__(self, name):
             return getattr(real, name)
@@ -203,3 +203,101 @@ async def test_a_pass_past_the_chunk_embeds_in_the_background(tmp_path, monkeypa
     archived = sum(1 for m in result.modified_messages if _archived(m))
     assert started == [(archived, "Layer 2")], started
     assert _rows(archival) == archived
+
+
+@pytest.mark.asyncio
+async def test_a_pass_lost_after_its_write_leaves_no_second_copy(tmp_path, monkeypatch):
+    """The hook's timeout cancels the compaction while the worker thread is
+    still writing. The thread commits anyway, the placeholders are lost with the
+    pass, the messages stay -- and the next pass archives them again. With a
+    random id per row that was a second copy of each."""
+    import asyncio
+    import threading
+
+    strategy, archival = _strategy(tmp_path)
+    real = archival.store_many
+    release, written = threading.Event(), threading.Event()
+
+    def slow_store_many(*args):
+        release.wait(5)
+        try:
+            return real(*args)
+        finally:
+            written.set()
+
+    monkeypatch.setattr(archival, "store_many", slow_store_many)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            strategy.compact(_conversation(6), current_tokens=10, force=True), timeout=0.2)
+    release.set()
+    assert await asyncio.to_thread(written.wait, 5), "fixture: the lost write never ran"
+    lost = _rows(archival)
+    assert lost, "fixture: the lost pass must have committed its rows"
+
+    monkeypatch.setattr(archival, "store_many", real)
+    result = await strategy.compact(_conversation(6), current_tokens=10, force=True)
+
+    refs = [json.loads(m["content"])["ref_id"]
+            for m in result.modified_messages if _archived(m)]
+    assert len(refs) == lost, "fixture: the retry must archive the same messages"
+    assert _rows(archival) == lost, (
+        f"{_rows(archival)} rows after the retry, {lost} before it: every message "
+        f"of the lost pass is in the archive twice")
+    assert all(archival.get(ref) is not None for ref in refs)
+
+
+@pytest.mark.parametrize("write", ["store", "store_many"])
+def test_archiving_the_same_message_again_adds_nothing(tmp_path, write):
+    """Nor to the text index: an FTS entry per write would find the row twice."""
+    _, archival = _strategy(tmp_path)
+    message = {"role": "user", "content": "Kennung QS-4711"}
+
+    if write == "store":
+        first, again = archival.store(message), archival.store(message)
+    else:
+        (first,), (again,) = archival.store_many([message]), archival.store_many([message])
+
+    assert first == again
+    assert _rows(archival) == 1
+    assert archival._db.execute(
+        "SELECT COUNT(*) FROM archived_fts WHERE archived_fts MATCH '\"4711\"'"
+    ).fetchone()[0] == 1
+
+
+def test_a_repeated_batch_hands_back_every_row_to_embed(tmp_path):
+    """A lost pass past the embedding cap wrote its rows and never scheduled
+    their embedding. The retry is the only chance to, so the rows that were
+    already there come back for the index too, not only the new ones."""
+    _, archival = _strategy(tmp_path)
+    messages = [{"role": "user", "content": f"Nachricht {i}"} for i in range(3)]
+    ids, _, _ = archival.store_many_unindexed(messages)
+
+    again, documents, metadatas = archival.store_many_unindexed(messages)
+
+    assert again == ids and len(documents) == len(metadatas) == 3
+
+
+def test_a_message_keeps_its_entry_after_its_reasoning_was_stripped(tmp_path):
+    """A model switch strips reasoning_details from the whole session before
+    the hooks run. Hashed along, the retry of a lost pass came back under new
+    ids -- and wrote the message a second time."""
+    _, archival = _strategy(tmp_path)
+    answered = {"role": "assistant", "content": "Die Antwort",
+                "reasoning_details": [{"type": "reasoning.encrypted", "data": "x"}],
+                "served_by": "anthropic"}
+    stripped = {"role": "assistant", "content": "Die Antwort",
+                "reasoning_content": "gekuerzt", "rd_orphaned": True}
+
+    assert archival.store_many([answered]) == archival.store_many([stripped])
+    assert _rows(archival) == 1
+
+
+def test_identical_messages_of_one_batch_keep_their_own_rows(tmp_path):
+    """Two "ok" in one pass are two turns -- and the vector store refuses a
+    batch that names one id twice."""
+    _, archival = _strategy(tmp_path)
+    message = {"role": "tool", "content": "ok"}
+
+    ids = archival.store_many([message, dict(message)])
+
+    assert len(set(ids)) == 2 and _rows(archival) == 2

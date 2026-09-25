@@ -88,7 +88,7 @@ class CompactionConfig:
     tool_result_summary_from: int = 0
     tool_result_summary_profile: str = "summarizer"
     # Which tools' results a summary may replace, as fnmatch patterns over the
-    # tool name ("sub_agent_manager_*"). Empty = every tool, which is what a
+    # tool name ("*_manage_sub_agent"). Empty = every tool, which is what a
     # hand-over agent wants; an agent that also READS files with the same hook
     # names the hand-over tools here, so its file reads arrive whole.
     tool_result_summary_tools: list[str] = field(default_factory=list)
@@ -175,6 +175,8 @@ def _coerce(value: Any, type_name: str, field_name: str) -> Any:
     A value that cannot be coerced is passed through UNCHANGED rather than
     dropped: a wrong type is the operator's to see, and silently substituting
     a default here would be the same disappearing act this module exists to
+    stop.
+
     The exception is ``list[str]``, which is ITERATED at its use site: passing
     a number through raises there and costs the whole compaction. A value of
     that type is therefore dropped instead -- with a warning, and to a pattern
@@ -508,11 +510,16 @@ _SEMANTIC_INDEX_MAX_BATCH = 200
 #: a module-level semaphore would work on every loop until two batches overlap
 #: and then raise inside a task, where the failure is one log line. The API has
 #: one loop per process, but agent-cli, chat and every test build their own.
+#: Weak keys alone do not let a loop go: a semaphore that ever had a waiter
+#: holds the loop it bound to, so its entry holds its own key. ``_index_slot``
+#: drops the closed ones.
 _index_slots: weakref.WeakKeyDictionary[Any, asyncio.Semaphore] = weakref.WeakKeyDictionary()
 
 
 def _index_slot() -> asyncio.Semaphore:
     """The one-at-a-time slot of the running loop."""
+    for closed in [loop for loop in _index_slots if loop.is_closed()]:
+        del _index_slots[closed]
     loop = asyncio.get_running_loop()
     slot = _index_slots.get(loop)
     if slot is None:
@@ -2652,12 +2659,10 @@ class LayeredCompactionStrategy:
         second copy in the archive and a second hit in every search. (The
         rollback that makes a failed WRITE clean too is in _store_many_rows.)
 
-        ponytail: a hook timeout that lands inside this call still duplicates:
-        the worker thread commits (and embeds, up to the cap) regardless, the
-        placeholders are never built, and the next pass archives the batch
-        again. The largest measured Layer 2 pass takes 1.2 s end to end against
-        the hook's 60; closing it for good needs a dedup key in the archive
-        schema, if that window is ever seen.
+        A hook timeout inside this call cannot be rolled back -- the worker
+        thread commits regardless, and the placeholders are lost with the pass.
+        The ids are derived from the messages for that (see _entry_id): the
+        next pass writes onto the same rows instead of beside them.
         """
         if len(payload) <= _SEMANTIC_INDEX_MAX_BATCH:
             return await asyncio.to_thread(self.archival_memory.store_many, payload, None)

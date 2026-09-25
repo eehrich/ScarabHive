@@ -14,6 +14,7 @@ Key features:
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import logging
 import sqlite3
@@ -66,6 +67,32 @@ def _message_text(message: dict[str, Any]) -> str:
             arguments = json.dumps(arguments, ensure_ascii=False, default=str)
         calls.append(f"[Tool call {function.get('name') or 'unknown'}] {arguments}".rstrip())
     return "\n".join(filter(None, [text, *calls]))
+
+
+def _entry_id(session_id: str, message: dict[str, Any], occurrence: int = 0) -> str:
+    """The archive id OF a message: the same message archived twice is one row.
+
+    A compaction whose hook times out inside the write loses its placeholders,
+    while the worker thread still commits the rows; the messages stay in the
+    conversation and the next pass archives them again. With a random id that
+    was a second copy of each, in the archive and in every search. Derived from
+    the message, the retry lands on the rows the lost pass wrote (INSERT OR
+    IGNORE) and its placeholders point at them.
+
+    Only what the row keeps is hashed. The rest of a message is the
+    provider's and changes between two passes: a model switch strips
+    ``reasoning_details`` from the whole session before the hooks run, and the
+    retry would have come back under new ids.
+
+    ``occurrence`` keeps identical messages of ONE batch apart -- the vector
+    store refuses a batch that names an id twice. Identical messages of two
+    different batches share a row: the same text, so every placeholder still
+    reads back what it replaced.
+    """
+    key = json.dumps([session_id, occurrence, message.get("role", "unknown"),
+                      _message_text(message), message.get("tool_call_id"),
+                      message.get("name")], default=str, ensure_ascii=False)
+    return f"arch_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
 
 
 def _synchronized(method):
@@ -335,12 +362,8 @@ class ArchivalMemory:
         Returns (entry_id, document to embed, vector metadata) for the caller
         to index once the lock is released.
         """
-        import uuid
-        
         session_id = session_id or self.session_id or "default"
-        
-        # Generate ID
-        entry_id = f"arch_{uuid.uuid4().hex[:12]}"
+        entry_id = _entry_id(session_id, message)
         
         # Extract message fields
         role = message.get("role", "unknown")
@@ -376,8 +399,8 @@ class ArchivalMemory:
         # Insert into SQLite -- rolled back on failure for the reason
         # _store_many_rows gives: a row left pending is saved by the next commit.
         try:
-            self._db.execute("""
-                INSERT INTO archived_messages
+            inserted = self._db.execute("""
+                INSERT OR IGNORE INTO archived_messages
                 (id, role, content, summary, timestamp, session_id, token_count,
                  metadata, tool_call_id, tool_name)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -392,13 +415,15 @@ class ArchivalMemory:
                 json.dumps(metadata) if metadata else None,
                 tool_call_id,
                 tool_name
-            ))
+            )).rowcount
 
-            # Update FTS index
-            self._db.execute("""
-                INSERT INTO archived_fts (id, summary, content, session_id)
-                VALUES (?, ?, ?, ?)
-            """, (entry_id, summary, content, session_id))
+            # Update FTS index -- not for a row that was already there (see
+            # _entry_id), or search finds it twice.
+            if inserted:
+                self._db.execute("""
+                    INSERT INTO archived_fts (id, summary, content, session_id)
+                    VALUES (?, ?, ?, ?)
+                """, (entry_id, summary, content, session_id))
 
             self._db.commit()
         except BaseException:
@@ -493,12 +518,10 @@ class ArchivalMemory:
     ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
         """The connection half of ``store_many``: rows + FTS in one transaction."""
 
-        import uuid
-
         session_id = session_id or self.session_id or "default"
 
         # One timestamp per ROW, not one per batch. get_session_messages orders
-        # by `timestamp ASC, id ASC` and the id is a random uuid — with a shared
+        # by `timestamp ASC, id ASC` and the id is a hash — with a shared
         # timestamp the whole batch comes back in random order, and the prune
         # breadcrumb points the agent straight at that listing. The offsets keep
         # the conversation order of the input.
@@ -511,10 +534,15 @@ class ArchivalMemory:
         ids: list[str] = []
         documents: list[str] = []
         metadatas: list[dict[str, Any]] = []
+        occurrences: dict[str, int] = {}
 
         for position, message in enumerate(messages):
             now = stamps[position]
-            entry_id = f"arch_{uuid.uuid4().hex[:12]}"
+            entry_id = _entry_id(session_id, message)
+            occurrence = occurrences.get(entry_id, 0)
+            occurrences[entry_id] = occurrence + 1
+            if occurrence:
+                entry_id = _entry_id(session_id, message, occurrence)
             role = message.get("role", "unknown")
             content = _message_text(message)
             summary = self._generate_summary(message)
@@ -539,17 +567,23 @@ class ArchivalMemory:
             metadatas.append({"session_id": session_id, "role": role,
                               "timestamp": now})
 
+        # Row by row inside the one transaction: only a row that is really new
+        # gets its FTS entry (see _entry_id). The cost of the batch was the
+        # commits, never the statements.
+        inserted = 0
         try:
-            self._db.executemany("""
-                INSERT INTO archived_messages
-                (id, role, content, summary, timestamp, session_id, token_count,
-                 metadata, tool_call_id, tool_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, rows)
-            self._db.executemany("""
-                INSERT INTO archived_fts (id, summary, content, session_id)
-                VALUES (?, ?, ?, ?)
-            """, fts_rows)
+            for row, fts_row in zip(rows, fts_rows):
+                if self._db.execute("""
+                    INSERT OR IGNORE INTO archived_messages
+                    (id, role, content, summary, timestamp, session_id, token_count,
+                     metadata, tool_call_id, tool_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, row).rowcount:
+                    inserted += 1
+                    self._db.execute("""
+                        INSERT INTO archived_fts (id, summary, content, session_id)
+                        VALUES (?, ?, ?, ?)
+                    """, fts_row)
             self._db.commit()
         except BaseException:
             # sqlite3 opens a transaction implicitly and never closes it on an
@@ -563,7 +597,10 @@ class ArchivalMemory:
                 self._db.rollback()
             raise
 
-        logger.debug(f"Archived {len(ids)} messages in one transaction")
+        logger.debug(f"Archived {len(ids)} messages in one transaction, {inserted} new")
+        # All of them to embed, the ones already there too: a pass lost past the
+        # cap wrote its rows but never scheduled their embedding. The vector
+        # store upserts, so a row embedded before is only embedded again.
         return ids, documents, metadatas
 
     def _index_semantic(
@@ -661,29 +698,52 @@ class ArchivalMemory:
         - Special operators: AND, OR, NOT, NEAR, *
         - Punctuation: . - : @ # etc.
         
-        Strategy: Wrap each word in double quotes to treat as literal.
+        Strategy: Wrap each word in double quotes to treat as literal --
+        except AND and OR written in capitals, which stay operators. NOT is not
+        offered: the vector half of a search cannot exclude anything, so it
+        would promise what half the answer does not keep. The word after it is
+        left out instead -- looked for, it would find exactly what was meant
+        to be excluded.
         """
         import re
         
+        # OR for broader matching; AND where a row must hold all of them.
+        default = ' AND ' if every_word else ' OR '
         # Split on whitespace, wrap each token in quotes
         # This makes FTS5 treat each word as a literal phrase
         tokens = query.split()
-        
-        # Escape any double quotes within tokens
-        escaped_tokens = []
+        # A filter made of nothing but operators is looked for as its words.
+        operators = any(t not in ("AND", "OR", "NOT") for t in tokens)
+        parts: list[str] = []
+        operator = default
+        leave_out = False
         for token in tokens:
+            # An operator the filter spells out is one (FTS5 counts only the
+            # capitals). Quoted like a word, "QS-4711 OR QS-4712" asked the
+            # every-word search for rows holding "or" too, and found nothing.
+            # One with no term before or after it has nothing to join.
+            if operators and token in ("AND", "OR"):
+                operator = f" {token} "
+                continue
+            if operators and token == "NOT":
+                leave_out = True
+                continue
             # Remove/escape problematic chars
             # FTS5 doesn't like bare punctuation
             cleaned = re.sub(r'[^\w\s]', ' ', token).strip()
-            if cleaned:
-                escaped_tokens.append(f'"{cleaned}"')
-        
-        if not escaped_tokens:
+            if cleaned and leave_out:
+                leave_out = False
+            elif cleaned:
+                if parts:
+                    parts.append(operator)
+                parts.append(f'"{cleaned}"')
+                operator = default
+
+        if not parts:
             # Fallback: just return original with dangerous chars removed
             return re.sub(r'[^\w\s]', ' ', query).strip()
-        
-        # OR for broader matching; AND where a row must hold all of them.
-        return (' AND ' if every_word else ' OR ').join(escaped_tokens)
+
+        return ''.join(parts)
     
     @_synchronized
     def _search_text(
@@ -702,12 +762,8 @@ class ArchivalMemory:
         FTS5 here matches whole words, without stemming; only when it finds
         nothing at all does the LIKE below look for the query as a substring
         (so "Pruefstueck" finds "Pruefstuecks" then, and not while any row
-        holds the exact word).
-
-        ponytail: a query that spells out OR is taken literally in every_word
-        mode -- "QS-4711 OR QS-4712" asks for rows holding the word "or" as
-        well. The measured filters are single words; honour an explicit OR if
-        agents start writing them.
+        holds the exact word). AND and OR in capitals are operators; see
+        _escape_fts5_query for NOT.
         """
         # Escape query for FTS5 syntax safety
         fts_query = self._escape_fts5_query(query, every_word)

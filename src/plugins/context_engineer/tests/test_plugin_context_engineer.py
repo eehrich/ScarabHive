@@ -523,8 +523,10 @@ class TestArchivalMemory:
              "tool_call_id": "call_1", "name": "such_tool"},
         ]
 
-        single = [archive.store(m) for m in messages]
-        batch = archive.store_many(messages)
+        # Two sessions: the id is derived from the message, so the same one
+        # stored twice in ONE session is one row -- nothing left to compare.
+        single = [archive.store(m, session_id="one") for m in messages]
+        batch = archive.store_many(messages, session_id="many")
 
         assert len(batch) == 3 and all(b.startswith("arch_") for b in batch)
         cols = "role, content, summary, token_count, metadata, tool_call_id, tool_name"
@@ -2801,6 +2803,32 @@ class TestPreLayerPRecoverability:
         # -- one per CLI run, one per test.
         assert len(_index_slots) == 0, (
             f"{len(_index_slots)} slots outlived their loops")
+
+    def test_a_loop_that_waited_for_the_slot_is_let_go_once_closed(self):
+        """The case the test above cannot see: a semaphore that ever had a
+        waiter holds the loop it bound to, so its entry keeps its own weak key
+        alive -- one closed loop kept per contended CLI run or test."""
+        from plugins.context_engineer.compaction import _index_slot, _index_slots
+
+        async def contend():
+            slot = _index_slot()
+            async with slot:
+                waiter = asyncio.ensure_future(slot.acquire())
+                await asyncio.sleep(0)          # it waits: the loop is bound
+            await waiter
+            slot.release()
+            return asyncio.get_running_loop()
+
+        loop = asyncio.new_event_loop()
+        contended = loop.run_until_complete(contend())
+        loop.close()
+
+        async def later():
+            _index_slot()
+
+        asyncio.run(later())
+
+        assert contended not in _index_slots, "a closed loop is still held"
 
     @pytest.mark.asyncio
     async def test_huge_batch_archives_in_the_request_and_indexes_afterwards(
