@@ -468,6 +468,30 @@ async def test_restore_refuses_to_overwrite_a_live_session(sm, archive):
 
 
 @pytest.mark.asyncio
+async def test_a_tree_with_an_id_another_user_holds_is_not_restored_in_part(sm, archive):
+    """reinstate_session refuses an id another user holds. Met on the way, it left the root
+    and a child back, the rest only in the zip -- and every retry stopped at the same child."""
+    await _make_tree(sm, "root_ou", ["kid_ou1", "kid_ou2"])
+    _age(sm, ["root_ou", "kid_ou1", "kid_ou2"], days=60)
+    await archive.archive_user(USER)
+    # Another user's session under a child's id, written from outside: in this process
+    # the tombstone refuses the id to anybody.
+    (sm.storage_path / "someone_else").mkdir(parents=True, exist_ok=True)
+    (sm.storage_path / "someone_else" / "kid_ou2.json").write_text(
+        json.dumps({
+            "session_id": "kid_ou2", "user_id": "someone_else", "created_at": "2026-09-01T00:00:00+00:00",
+            "updated_at": "2026-09-01T00:00:00+00:00", "title": "theirs", "agent_name": "a",
+            "llm_profile": "p", "messages": [], "metadata": {},
+        }), encoding="utf-8")
+
+    with pytest.raises(ArchiveError, match="another user's now"):
+        await archive.restore(USER, "root_ou")
+
+    assert not (_user_dir(sm) / "root_ou.json").exists(), "the tree came back in part"
+    assert len(await archive.list_archived(USER)) == 1
+
+
+@pytest.mark.asyncio
 async def test_restoring_something_that_was_never_archived(sm, archive):
     with pytest.raises(ArchiveNotFound, match="No archived session"):
         await archive.restore(USER, "nope")

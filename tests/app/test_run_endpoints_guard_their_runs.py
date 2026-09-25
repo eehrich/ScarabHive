@@ -2,7 +2,9 @@
 
 - Status, cancel and a mid-run append are given nothing but a request id. Anyone
   signed in who learned one could read another user's run, stop it, or put words
-  into it -- which the run then acts on with its owner's tools.
+  into it -- which the run then acts on with its owner's tools. An id reaches more
+  than a run of its own -- a sub-run belongs to its caller, a cancel stops every
+  run whose id extends it -- and is refused for any of those.
 - A message appended to a session a run of this process has goes to that run, or
   is refused. Written into the session beside the run, it was answered "appended"
   and gone at the run's next save.
@@ -69,7 +71,7 @@ def app(tmp_path, monkeypatch):
     return app_mod.build_app()
 
 
-async def _a_waiting_job(owner, session_id=None, agent_name="default"):
+async def _a_waiting_job(owner, session_id=None, agent_name="default", request_id=None):
     """A job of ``owner`` that runs until the returned event is set."""
     done = asyncio.Event()
 
@@ -77,7 +79,7 @@ async def _a_waiting_job(owner, session_id=None, agent_name="default"):
         yield {"type": "status", "message": "working"}
         await done.wait()
 
-    request_id = f"guard{uuid.uuid4().hex[:10]}"
+    request_id = request_id or f"guard{uuid.uuid4().hex[:10]}"
     await get_background_job_manager().create_job(
         request_id=request_id, user_id=owner, agent_name=agent_name,
         session_id=session_id, agent_runner=runner)
@@ -238,6 +240,64 @@ async def test_a_request_without_a_job_is_still_its_owners(app, user):
         status = await client.get(f"/api/requests/{request_id}/status", headers=_headers(user))
         cancel = await client.post(f"/api/requests/{request_id}/cancel", headers=_headers(user))
     assert (status.status_code, cancel.status_code) == (403, 403), (status.text, cancel.text)
+
+
+async def test_a_sub_run_of_another_users_run_is_theirs_too(app, user):
+    # A background sub-agent: its id is its caller's and `_…`, and the owner map forgets it
+    # when its caller's turn ends -- it works on. A cancel of a segment of that id, which
+    # nothing ever registered, stops every sub-agent of that call.
+    from agent_system.core.cancellation import get_cancellation_manager
+
+    request_id, done = await _a_waiting_job(owner=f"not-{user[1]}")
+    sub_run = f"{request_id}_001_async_abc123"
+    token = get_cancellation_manager().create_token(sub_run)
+    try:
+        async with _client(app) as client:
+            status = await client.get(f"/api/requests/{sub_run}/status", headers=_headers(user))
+            cancel = await client.post(f"/api/requests/{request_id}_001_async/cancel", headers=_headers(user))
+        assert (status.status_code, cancel.status_code) == (403, 403), (status.text, cancel.text)
+        assert not token.is_cancelled, "another user's sub-agent was stopped"
+    finally:
+        done.set()
+        get_cancellation_manager().unregister_request(sub_run)
+
+
+async def test_an_id_that_reaches_another_users_run_below_it_is_refused(app, user):
+    # A caller may choose a run's id, `_` included: a cancel of what it extends -- an id
+    # known to nobody -- stops it. A run with a job, and one without (a /run carrying files).
+    from agent_system.core.request_context import register_request_user, release_request_user
+
+    above = f"guard{uuid.uuid4().hex[:10]}"
+    _, done = await _a_waiting_job(owner=f"not-{user[1]}", request_id=f"{above}_1")
+    jobless = f"nojob{uuid.uuid4().hex[:10]}"
+    register_request_user(f"{jobless}_1", f"not-{user[1]}")
+    try:
+        async with _client(app) as client:
+            cancels = [await client.post(f"/api/requests/{rid}/cancel", headers=_headers(user))
+                       for rid in (above, jobless)]
+        assert [c.status_code for c in cancels] == [403, 403], [c.text for c in cancels]
+    finally:
+        done.set()
+        release_request_user(f"{jobless}_1")
+
+
+async def test_ones_own_run_is_read_and_written_to_whatever_runs_below_its_id(app, user, monkeypatch):
+    # Status and append act on the id itself; only a cancel reaches the runs below it.
+    mine, done_mine = await _a_waiting_job(owner=user[1])
+    _, done_theirs = await _a_waiting_job(owner=f"not-{user[1]}", request_id=f"{mine}_1")
+
+    async def append_user_message(self, rid, content):
+        return True
+
+    monkeypatch.setattr(Agent, "append_user_message", append_user_message)
+    try:
+        async with _client(app) as client:
+            status = await client.get(f"/api/requests/{mine}/status", headers=_headers(user))
+            append = await client.post(f"/events/{mine}/append", headers=_headers(user), json={"content": "and this"})
+        assert (status.status_code, append.status_code) == (200, 200), (status.text, append.text)
+    finally:
+        done_mine.set()
+        done_theirs.set()
 
 
 async def test_a_message_through_a_finished_requests_session_reaches_the_run_on_the_default_agent(

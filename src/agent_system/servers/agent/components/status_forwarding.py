@@ -186,9 +186,8 @@ class StatusEventForwarder:
             return
         copied = dict(event)
         if isinstance(copied.get("assistant"), dict):
-            # The API renders the answer in it to HTML, in place, when this is
-            # delivered -- which can be long after the run yielded it, and the run
-            # goes on using that dict (thinking_complete's is the one it keeps).
+            # Delivered to every reader, long after the run yielded it -- and the
+            # run goes on using that dict (thinking_complete's is the one it keeps).
             copied["assistant"] = dict(copied["assistant"])
         envelope = {
             "type": "sub_run",

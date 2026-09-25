@@ -912,9 +912,13 @@ class SessionArchive:
                 f"else ({', '.join(strangers[:3])}) -- not restoring it"
             )
 
-        conflicts, done = [], []
+        conflicts, done, taken = [], [], []
         for data in sessions:
             if not self._session_manager.belongs_to(user_id, data["session_id"]):
+                # Another user's now (a custom id, their own archive restored first):
+                # reinstate_session refuses it -- asked here, before the tree is half back.
+                if self._session_manager._session_id_exists_globally(data["session_id"]):
+                    taken.append(data["session_id"])
                 continue
             if await self._is_the_same_session(user_id, data):
                 done.append(data["session_id"])
@@ -924,6 +928,11 @@ class SessionArchive:
             raise ArchiveError(
                 f"{len(conflicts)} session(s) of this tree are live again "
                 f"({', '.join(conflicts[:3])}) -- refusing to overwrite them"
+            )
+        if taken:
+            raise ArchiveError(
+                f"{len(taken)} session id(s) of this tree are another user's now "
+                f"({', '.join(taken[:3])}) -- not restoring it"
             )
 
         for data in sessions:

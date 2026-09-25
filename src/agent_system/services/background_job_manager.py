@@ -309,8 +309,8 @@ class BackgroundJobManager:
             if delta is not None:
                 # An answer delta carries the whole answer so far, so the one before it of
                 # the same step says nothing a reader of both still needs but its own
-                # ``delta`` (agent-cli adds those up). Held whole, a thousand of them were
-                # every prefix of the answer: a 30k-character answer, 20M characters per job.
+                # ``delta``. Held whole, a thousand of them were every prefix of the
+                # answer: a 30k-character answer, 20M characters per job.
                 key = (event.get("run_id"), delta.get("step"))
                 at = latest_answer_delta.get(key, -1) - (own_job.events_emitted - len(own_job.events))
                 if at >= 0:

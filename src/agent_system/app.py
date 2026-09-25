@@ -12,13 +12,14 @@ from urllib.parse import urlparse
 from datetime import datetime  # noqa: F401 - used in health endpoint
 from .utils.id import short_id
 from agent_system.utils import yaml_io
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 import uvicorn
 from fastapi import FastAPI, Request, Query, Header, HTTPException, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 from fastapi.staticfiles import StaticFiles
 
@@ -120,6 +121,23 @@ async def _parse_json_body(request: Request) -> Any:
             status_code=400,
             detail="Invalid JSON body: could not be parsed"
         )
+
+
+def _sse_response(stream, **kwargs) -> StreamingResponse:
+    """A streaming response whose generator is closed as soon as its client has gone.
+
+    Starlette cancels a response whose client went away but never closes its body
+    generator. Caught at a yield -- in the middle of a send, or at a stream's
+    farewell line -- the generator waited there for the garbage collector, and its
+    ``finally`` with it: the job's reader count, the run's session save, its hold on
+    the session, the request's owner entries.
+    """
+    async def close() -> None:
+        # A coroutine function: handed `stream.aclose` itself, Starlette takes it for a plain
+        # callable, calls it in a thread -- and the awaitable it returns is never awaited.
+        await stream.aclose()
+
+    return StreamingResponse(stream, background=BackgroundTask(close), **kwargs)
 
 # Shutdown event for graceful stream termination
 _shutdown_event: Optional[asyncio.Event] = None
@@ -1906,7 +1924,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
 
             stream_owns_cleanup = True
-            return StreamingResponse(event_stream(), media_type="text/event-stream")
+            return _sse_response(event_stream(), media_type="text/event-stream")
 
         except HTTPException:
             raise
@@ -2061,10 +2079,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     reconnect_payload["last_status"] = existing_job.last_status_message
                 yield f"data: {json.dumps(reconnect_payload, ensure_ascii=False)}\n\n"
 
-                async for line in _sse_lines(existing_job, reconnect_agent, cursor):
-                    yield line
+                async with aclosing(_sse_lines(existing_job, reconnect_agent, cursor)) as lines:
+                    async for line in lines:
+                        yield line
 
-            return StreamingResponse(
+            return _sse_response(
                 reconnect_event_stream(),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -2157,8 +2176,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     })
 
             try:
-                async for line in _sse_lines(job, selected_agent, 0, take_the_session):
-                    yield line
+                async with aclosing(_sse_lines(job, selected_agent, 0, take_the_session)) as lines:
+                    async for line in lines:
+                        yield line
             except asyncio.CancelledError:
                 # SSE connection cancelled (client disconnect)
                 # Send cancellation event to client (if possible)
@@ -2201,7 +2221,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 if job.status != JobStatus.RUNNING:
                     release_request_user_tree(request_id)
 
-        return StreamingResponse(
+        return _sse_response(
             event_stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -2273,18 +2293,38 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             force=bool(body.get("force")),
         )
 
-    def _refuse_foreign_request(request_id: str, job: Optional[BackgroundJob], current_user: Any) -> None:
-        """403 unless the request is the caller's own, or the caller is an admin.
+    async def _refuse_foreign_request(request_id: str, current_user: Any, *, reaches_below: bool = False) -> None:
+        """403 unless every run the request id reaches is the caller's own, or the caller is an admin.
 
         A request id is all these endpoints are given. Without this, anyone signed in
         who learned one could read another user's run, stop it, or put words into it --
-        which the run then acts on with its owner's tools. A request nobody is known to
+        which the run then acts on with its owner's tools.
+
+        An id may be nobody's and still be somebody's run: a sub-run is named by its
+        caller's id and `_…`, and forgotten by the owner map when its caller's turn ends,
+        while it may work on -- so the owner is that of the nearest known run at or above
+        the id. A cancel (``reaches_below``) stops every run whose id extends the one
+        given, so there every known run below it counts too. A request nobody is known to
         own (a restart forgot it) is left alone: nothing of anybody's is reached through it.
         """
         if current_user is None or getattr(current_user, "role", None) == "admin":
             return
-        owner = job.user_id if job is not None else get_request_user(request_id, default=None)
-        if owner is not None and owner != current_user.username:
+        job_manager = get_background_job_manager()
+        owners = set()
+        parts = request_id.split("_")
+        for n in range(len(parts), 0, -1):
+            above = "_".join(parts[:n])
+            job = await job_manager.get_job(above)
+            owner = job.user_id if job is not None else get_request_user(above, default=None)
+            if owner is not None:
+                owners.add(owner)
+                break
+        if reaches_below:
+            below = f"{request_id}_"
+            owners.update(user for rid, user in list(_request_user_map.items()) if rid.startswith(below))
+            owners.update(job["user_id"] for job in await job_manager.get_all_jobs(include_completed=True)
+                          if job["request_id"].startswith(below))
+        if owners - {current_user.username}:
             raise HTTPException(status_code=403, detail="Access denied to this request")
 
     @app.get("/api/requests/{request_id}/status")
@@ -2298,7 +2338,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # First check BackgroundJobManager for more accurate status
         job_manager = get_background_job_manager()
         job = await job_manager.get_job(request_id)
-        _refuse_foreign_request(request_id, job, await _enforce_endpoint_security(request))
+        await _refuse_foreign_request(request_id, await _enforce_endpoint_security(request))
         # A finished MIRROR (POST /run) answers as if there had been no job: its
         # caller had the answer, and "completed" with the job's keys is what the
         # writer reconcile takes as proof that a book run is done.
@@ -2389,8 +2429,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             "Cancel request received for request_id=%s (force=%s)",
             request_id, force,
         )
-        _refuse_foreign_request(request_id, await get_background_job_manager().get_job(request_id),
-                                await _enforce_endpoint_security(request))
+        await _refuse_foreign_request(request_id, await _enforce_endpoint_security(request), reaches_below=True)
         success = await get_background_job_manager().cancel_job(
             request_id, force_timeout=5.0 if force else 0.0,
         )
@@ -2496,7 +2535,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         target_agent = await resolve_agent_for_request(
             request_id, get_background_job_manager(), _app_registry, agent
         )
-        _refuse_foreign_request(request_id, await get_background_job_manager().get_job(request_id), current_user)
+        await _refuse_foreign_request(request_id, current_user)
 
         logger.debug("Append request received for request_id=%s (agent=%s): %.120s",
                      request_id, target_agent.name, content)
