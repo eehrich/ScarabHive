@@ -39,6 +39,16 @@ Codex is phase 2.
    become progress lines, at most one a second: the latest, with `(+N)` for
    the others. After that the call answers with the run id, and the session is
    woken when the run ends.
+
+   For the viewer the run is a sub-run, shown the way a sub-agent is
+   (`live.py`): its stream becomes `sub_run` events under
+   `<call>_sub_<id>` — a box under the call in the chat, with Claude Code's
+   steps, its text and every tool call as a line with arguments and result —
+   and each tool call a status line under `<run>_NNN`, which the terminal
+   shows indented. This goes on after the call has answered, as long as the
+   run that made the call is streaming; a run another instance took over has
+   no viewer. The box is not stored: after a reload the run is read with
+   `coding_cli_get_run`.
 5. The run has an owner: the plugin instance that started it. The owner
    watches it (time limit, a stop left on disk, end), commits everything left
    in the worktree on the branch — its git keeps to the git directory the
