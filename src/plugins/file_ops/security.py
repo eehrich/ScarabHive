@@ -29,6 +29,8 @@ for this plugin is not.
 from __future__ import annotations
 
 import logging
+import os
+import re
 from pathlib import Path
 from typing import List
 
@@ -44,6 +46,25 @@ class SecurityError(PathSandboxDenied):
     ``error_type: "SecurityError"`` to the model, and that string is part of
     the model-facing contract.
     """
+
+
+#: Git Bash writes a Windows drive as its letter: `/e/Projects/x` is E:\Projects\x.
+_GIT_BASH_DRIVE = re.compile(r"^/([a-zA-Z])(/.*)?$")
+
+
+def from_git_bash(path: str) -> str:
+    """On Windows, `/e/...` as the drive path it stands for; any other path as given.
+
+    The coder's shell is Git Bash: every `pwd` and error message hands the model
+    paths of that form, and the sandbox read them as a folder `e` on the root
+    of the current drive -- outside every allowed directory.
+    """
+    if os.name != "nt" or not isinstance(path, str):
+        return path
+    match = _GIT_BASH_DRIVE.match(path)
+    if match is None:
+        return path
+    return f"{match.group(1).upper()}:{match.group(2) or '/'}"
 
 
 class PathValidator:
@@ -80,6 +101,7 @@ class PathValidator:
             SecurityError: path is unsafe or outside allowed directories
             FileNotFoundError: ``must_exist`` and the path does not exist
         """
+        path = from_git_bash(path)
         try:
             resolved = self._sandbox.resolve(path)
         except PathSandboxDenied as exc:

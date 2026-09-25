@@ -11,6 +11,35 @@ from agent_system.paths import launch_dir
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from .security import PathValidator, SecurityError
+
+
+def _int_param(params: Dict[str, Any], key: str, default: Any) -> Any:
+    """A whole-number parameter, or a ValueError that says which and how.
+
+    The framework does not check arguments against the schema, and models send
+    numbers as text: `offset: "1480, "` reached `offset > 0` and failed with
+    "'>' not supported between 'str' and 'int'" -- an error that names neither
+    the parameter nor the fix.
+    """
+    value = params.get(key)
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        raise ValueError(f"{key}: a whole number, got {value!r}")
+    if isinstance(value, int):
+        return value
+    text = str(value).strip(" ,")
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        number = float(text)
+    except ValueError:
+        number = None
+    if number is not None and number.is_integer():
+        return int(number)
+    raise ValueError(f"{key}: a whole number, got {value!r}")
 from .operations import FileOperations
 from .search import FileSearchEngine
 
@@ -140,10 +169,10 @@ class FileOpsServer(SchemaBasedToolServer):
         try:
             file_path = params["filePath"]
             # Copilot uses 1-indexed offset
-            offset = params.get("offset", 0)
+            offset = _int_param(params, "offset", 0)
             if offset > 0:
                 offset -= 1  # Convert 1-indexed to 0-indexed for internal use
-            limit = params.get("limit")
+            limit = _int_param(params, "limit", None)
             encoding = "utf-8"  # Always UTF-8
 
             if status:
@@ -504,7 +533,7 @@ class FileOpsServer(SchemaBasedToolServer):
                 recursive=recursive,
                 pattern=pattern,
                 include_hidden=include_hidden,
-                max_results=params.get("max_results", 200),
+                max_results=_int_param(params, "max_results", 200),
                 include_ignored=params.get("include_ignored", False),
                 excludes=self.search_engine._search_backend_options()["excludes"],
             )
@@ -557,7 +586,7 @@ class FileOpsServer(SchemaBasedToolServer):
 
         try:
             pattern = params["pattern"]
-            max_results = params.get("max_results", 50)
+            max_results = _int_param(params, "max_results", 50)
             include_ignored = params.get("include_ignored", False)
 
             if status:
@@ -597,8 +626,8 @@ class FileOpsServer(SchemaBasedToolServer):
             is_regex = params.get("is_regex", False)
             include_pattern = params.get("include_pattern")
             case_sensitive = params.get("case_sensitive", False)
-            max_results = params.get("max_results", 100)
-            context_lines = params.get("context_lines", 2)
+            max_results = _int_param(params, "max_results", 100)
+            context_lines = _int_param(params, "context_lines", 2)
             include_ignored = params.get("include_ignored", False)
 
             if status:
@@ -647,7 +676,7 @@ class FileOpsServer(SchemaBasedToolServer):
 
         try:
             query = params["query"]
-            max_results = params.get("max_results", 10)
+            max_results = _int_param(params, "max_results", 10)
             filter_pattern = params.get("filter_pattern")
 
             if status:
