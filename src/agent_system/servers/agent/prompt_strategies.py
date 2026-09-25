@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, TYPE_CHECKING
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from jinja2 import Template
 import logging
 
@@ -32,6 +33,10 @@ class PromptContext:
     current_step: int  # Current step number (1-indexed, updated per-step)
     agent_instance: Any  # The actual agent instance for hook calls
     session_template_vars: Optional[Dict[str, Any]] = None  # Session-scoped vars (override agent_config)
+    # Plugin types with an enabled instance, and the enabled external MCP
+    # servers -- the installation, not this agent's allowlist (that is tools).
+    plugins: list[str] = field(default_factory=list)
+    mcp_servers: list[str] = field(default_factory=list)
 
 
 def build_context_values(context: PromptContext) -> Dict[str, Any]:
@@ -39,9 +44,29 @@ def build_context_values(context: PromptContext) -> Dict[str, Any]:
 
     Module-level (not a method) because skills are rendered by PromptRenderer,
     which is not a PromptStrategy — and this never needed ``self``.
+
+    A prompt can branch on what is there:
+      * ``tools`` -- what THIS agent may call: server names, tool names and
+        ``server.tool`` for external MCP tools. ``has_tool(pattern)`` asks it
+        with fnmatch patterns, because tool names carry the instance name
+        (``has_tool('*_manage_sub_agent')``, ``has_tool('github.*')``).
+      * ``plugins`` -- plugin types installed and switched on, whether this
+        agent may use them or not (``'writer_pipeline_v4' in plugins``).
+      * ``mcp_servers`` -- external MCP servers switched on.
+    None of them may change between two steps: the system prompt is the
+    cached prefix. So they come from configuration, never from a live state
+    such as a connection.
     """
+    tools = context.available_tools
+
+    def has_tool(pattern: str) -> bool:
+        return any(fnmatchcase(name, pattern) for name in tools)
+
     context_vals = {
-        "tools": context.available_tools,
+        "tools": tools,
+        "has_tool": has_tool,
+        "plugins": context.plugins,
+        "mcp_servers": context.mcp_servers,
         "max_steps": context.max_steps,
         "current_step": context.current_step
     }

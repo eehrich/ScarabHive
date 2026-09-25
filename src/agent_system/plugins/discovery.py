@@ -414,6 +414,24 @@ def default_plugin_dirs() -> list[Path]:
     return source_dirs
 
 
+def _add_plugins(plugins: Dict[str, Callable[..., ToolServer]],
+                 found: Dict[str, Callable[..., ToolServer]], source: str) -> None:
+    """Add *found* to *plugins*; a type already there keeps its first source.
+
+    The plugin type is a plugin's id: ``type:`` in plugins.yaml names it, and
+    a prompt asks for it in ``plugins``. Two sources with the same type used to
+    resolve silently to whichever was discovered last.
+    """
+    for name, factory in found.items():
+        existing = plugins.get(name)
+        if existing is None:
+            plugins[name] = factory
+        elif existing is not factory:
+            logger.warning(
+                "Plugin type '%s' is provided twice; keeping the first, ignoring the one from %s",
+                name, source)
+
+
 def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = ENTRYPOINT_GROUP) -> Dict[str, Callable[..., ToolServer]]:
     """Discover plugins from filesystem directories and entry points.
 
@@ -446,15 +464,14 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = ENTRYP
             if not p.exists():
                 # skip non-existing dirs silently
                 continue
-            discovered = discover_plugins(p)
-            plugins.update(discovered)
+            _add_plugins(plugins, discover_plugins(p), str(p))
         except Exception as e:
             logger.warning(f"Error discovering plugins in {raw}: {e}", exc_info=True)
 
     # entry point plugins
     try:
         eps = discover_entrypoint_plugins(group=group)
-        plugins.update(eps)
+        _add_plugins(plugins, eps, f"entry point group '{group}'")
     except Exception as e:
         logger.warning(f"Error discovering entrypoint plugins from group '{group}': {e}", exc_info=True)
 

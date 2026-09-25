@@ -448,6 +448,38 @@ The following variables are automatically available in all templates:
 
 Custom `template_vars` are merged with these built-in variables. **Custom variables take precedence** if there's a name conflict.
 
+#### Was installiert ist: `tools`, `has_tool()`, `plugins`, `mcp_servers`
+
+Ein Prompt kann danach verzweigen, was vorhanden ist:
+
+| Variable | Inhalt |
+|----------|--------|
+| `tools` | Was **dieser Agent** aufrufen darf, nach Allow- und Block-Mustern: Server-Namen, Tool-Namen und `server.tool` für Tools externer MCP-Server |
+| `has_tool(muster)` | `tools` per fnmatch-Muster gefragt, Groß-/Kleinschreibung zählt. Tool-Namen tragen den Instanznamen (`coder_sam_manage_sub_agent`), darum Muster: `has_tool('*_manage_sub_agent')`, `has_tool('github.*')` |
+| `plugins` | Plugin-Typen, die installiert **und** eingeschaltet sind (mindestens eine Instanz mit `enabled: true`) — unabhängig davon, ob dieser Agent sie benutzen darf |
+| `mcp_servers` | Externe MCP-Server mit `enabled: true` in `config/mcp_servers.yaml` (nur, wenn das `mcp_client`-Plugin läuft) |
+
+```jinja
+{% if has_tool('*_manage_sub_agent') %}
+Große Teilaufgaben gibst du an Sub-Agents ab.
+{% else %}
+Du arbeitest allein; teile große Aufgaben in Schritte.
+{% endif %}
+{% if 'writer_pipeline_v4' in plugins %}Das Buch-System ist installiert.{% endif %}
+```
+
+Die **Plugin-ID ist der Plugin-Typ** — der Ordnername, derselbe, der in
+`plugins.yaml` unter `type:` steht. Kommt ein Typ in zwei Plugin-Verzeichnissen
+vor, gewinnt der erste, und der Start meldet es.
+
+`plugins` und `mcp_servers` kommen aus der Konfiguration, nie aus einem
+Live-Zustand: ein MCP-Server, der gerade nicht verbunden ist, steht trotzdem in
+`mcp_servers`. Sonst änderte sich der System-Prompt zwischen zwei Schritten und
+mit ihm der Cache-Prefix. `tools` wird einmal pro Lauf ermittelt und hält
+innerhalb des Laufs still; die Tools eines MCP-Servers, der beim Start des Laufs
+nicht verbunden war, fehlen darin — `has_tool('github.*')` fragt also, ob der
+Agent sie **jetzt** hat, `'github' in mcp_servers`, ob sie vorgesehen sind.
+
 **Keep the system prompt stable.** It is re-rendered before every step and is the
 start of the prompt the provider caches; a value that differs from one call to
 the next re-bills the whole conversation behind it, on every call. So no

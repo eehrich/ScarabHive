@@ -139,13 +139,16 @@ class PluginToolRegistry:
     def discover_plugins(self, plugin_dirs: List[str]) -> None:
         """Discover plugins from directories"""
         # Import here to avoid circular dependency
-        from .discovery import discover_plugins
+        from .discovery import _add_plugins, discover_plugins
 
         for plugin_dir in plugin_dirs:
             path = Path(plugin_dir)
             if path.exists() and path.is_dir():
                 factories = discover_plugins(path)
-                self.plugin_factories.update(factories)
+                # The Runtime's rule: the first source of a type wins. With
+                # update() here, a server this path builds (one the Runtime
+                # did not) would get the other plugin of the same name.
+                _add_plugins(self.plugin_factories, factories, str(path))
                 logger.info(f"Discovered {len(factories)} plugins from {plugin_dir}")
 
     def register_existing_plugin_instance(self, name: str, plugin_instance, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:

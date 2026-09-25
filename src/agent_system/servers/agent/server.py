@@ -1063,14 +1063,32 @@ class Agent(ToolServer):
             max_steps=max_steps,
             current_step=current_step,
             agent_instance=self,  # Pass self for hook access
-            session_template_vars=session_template_vars  # Session-scoped vars (override agent_config)
+            session_template_vars=session_template_vars,  # Session-scoped vars (override agent_config)
+            plugins=self._enabled_plugin_types(),
+            mcp_servers=self._enabled_mcp_servers(),
         )
         return renderer.render(context)
+
+    def _enabled_plugin_types(self) -> list[str]:
+        """Plugin types installed and switched on (see ToolServerRegistry)."""
+        plugin_types = getattr(getattr(self, "registry", None), "plugin_types", None)
+        return plugin_types() if callable(plugin_types) else []
+
+    def _enabled_mcp_servers(self) -> list[str]:
+        """External MCP servers switched on, sorted -- not which are connected:
+        a connection comes and goes, and the prompt must not change with it."""
+        manager = getattr(self, "_tool_integration_manager", None)
+        integration = getattr(manager, "tool_integration", None)
+        if integration is None:
+            return []
+        return sorted(integration.configured_external_servers)
 
     async def get_current_system_prompt(self) -> str:
         """Async: render current system prompt (diagnostics endpoint)."""
         try:
-            usable_tools, _, _ = await self.list_usable_tools()  # Ignore patterns for prompt display
+            # Expanded as the run expands it, or `tools` in the prompt reads
+            # server names here and tool names in every step that is sent.
+            _schemas, usable_tools = await self._schemas_for(*await self.list_usable_tools())
         except Exception as e:
             logger.warning(f"Failed to list usable tools for system prompt: {e}", exc_info=True)
             usable_tools = []
@@ -1284,9 +1302,7 @@ class Agent(ToolServer):
           and asking for it twice means awaiting list_tools() on every
           registered server a second time.
         """
-        usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
-        tools_schema = await self._schemas_for(
-            usable_tools, allowed_patterns, blocked_patterns)
+        tools_schema, usable_tools = await self._schemas_for(*await self.list_usable_tools())
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
         system_msg, _ = self._render_prompts(
             usable_tools, max_steps, current_step=0, session_id=session_id)
@@ -1294,19 +1310,22 @@ class Agent(ToolServer):
 
     async def _schemas_for(self, usable_tools: list[str],
                            allowed_patterns: Optional[list[str]],
-                           blocked_patterns: Optional[list[str]]) -> list[Dict[str, Any]]:
-        """The LLM schemas for an ALREADY discovered set of tools."""
+                           blocked_patterns: Optional[list[str]]
+                           ) -> tuple[list[Dict[str, Any]], list[str]]:
+        """The LLM schemas for an ALREADY discovered set of tools, and the
+        tool names after expansion and filtering -- what a run renders as
+        ``tools``."""
         schema_builder = ToolSchemaBuilder(
             agent_name=self.name,
             tool_integration_manager=self._tool_integration_manager,
             server_getter_func=self._get_server_from_any_registry,
         )
-        tools_schema, _mapping, _usable, _display = await schema_builder.build_schemas(
+        tools_schema, _mapping, usable, _display = await schema_builder.build_schemas(
             usable_tools,
             allowed_patterns=allowed_patterns,
             blocked_patterns=blocked_patterns,
         )
-        return list(tools_schema)
+        return list(tools_schema), usable
 
     async def build_llm_tool_schemas(self) -> list[Dict[str, Any]]:
         """The tool schemas this agent hands the model, exactly as they go out.
@@ -1324,8 +1343,8 @@ class Agent(ToolServer):
         what a token count needs is the rest, and the parameters are usually
         the larger half of both.
         """
-        usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
-        return await self._schemas_for(usable_tools, allowed_patterns, blocked_patterns)
+        schemas, _usable = await self._schemas_for(*await self.list_usable_tools())
+        return schemas
 
     async def _list_usable_tools_with_details(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
         """Return detailed info about tools this agent CAN USE (name + description).
@@ -1566,10 +1585,10 @@ class Agent(ToolServer):
         6. Validate LLM availability
         7. Initialize tool integration
         8. Discover usable tools
-        9. Render system prompts
-        10. Load session history
-        11. Execute session start hooks
-        12. Build tool schemas
+        9. Build tool schemas (the expanded tool list the prompt renders)
+        10. Render system prompts
+        11. Load session history
+        12. Execute session start hooks
 
         Args:
             task: User task description
@@ -1619,6 +1638,24 @@ class Agent(ToolServer):
         # Get tools this agent can use (filtered by agent_config)
         # Returns tuple: (tools, allowed_patterns, blocked_patterns)
         usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
+
+        # Build tool schemas using ToolSchemaBuilder
+        # Pass allowed_patterns and blocked_patterns so they can be applied AFTER tools are expanded
+        # Before the first render: `tools` in the prompt is the EXPANDED list
+        # from here on, as in every step's re-render. Rendered from the
+        # server-level list, the first prompt branched differently from the
+        # ones sent (the session-start hooks saw that one).
+        schema_builder = ToolSchemaBuilder(
+            agent_name=self.name,
+            tool_integration_manager=self._tool_integration_manager,
+            server_getter_func=self._get_server_from_any_registry
+        )
+
+        tools_schema, tool_name_mapping, usable_tools, display_tools = await schema_builder.build_schemas(
+            usable_tools,
+            allowed_patterns=allowed_patterns,
+            blocked_patterns=blocked_patterns
+        )
 
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
@@ -1678,20 +1715,6 @@ class Agent(ToolServer):
 
         # Track live messages for this session (request-scoped)
         self._set_live_messages(session_id, messages.copy())
-
-        # Build tool schemas using ToolSchemaBuilder
-        # Pass allowed_patterns and blocked_patterns so they can be applied AFTER tools are expanded
-        schema_builder = ToolSchemaBuilder(
-            agent_name=self.name,
-            tool_integration_manager=self._tool_integration_manager,
-            server_getter_func=self._get_server_from_any_registry
-        )
-
-        tools_schema, tool_name_mapping, usable_tools, display_tools = await schema_builder.build_schemas(
-            usable_tools,
-            allowed_patterns=allowed_patterns,
-            blocked_patterns=blocked_patterns
-        )
 
         # Track current tool schemas per-session for token estimation by hooks
         self._set_live_tools_schema(session_id, tools_schema)

@@ -183,7 +183,8 @@ async def test_the_prompt_and_the_schemas_describe_the_same_tools():
 
     # At the seam, because whether the tools SHOW in the prompt is the
     # template's business -- the default one names none. What must hold is
-    # that the renderer is handed the very list the schemas were built from.
+    # that the renderer is handed the very list the schema build produced:
+    # the servers AND the tools they expanded to, as every step renders it.
     given = []
     original = agent._render_prompts
 
@@ -196,5 +197,5 @@ async def test_the_prompt_and_the_schemas_describe_the_same_tools():
     _prompt, schemas = await agent.describe_context_inputs()
 
     assert [s["function"]["name"] for s in schemas] == ["hybrid_tool"]
-    assert given == [["hybrid"]], (
+    assert given == [["hybrid", "hybrid_tool"]], (
         f"the prompt was rendered from another discovery: {given}")
