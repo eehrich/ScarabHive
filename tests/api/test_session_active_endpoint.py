@@ -510,16 +510,20 @@ async def test_a_run_past_its_answer_says_so(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _job_with_buffer(emitted, buffered):
-    """A job that has sent ``emitted`` items and still holds the last ``buffered``."""
+    """A job that has sent ``emitted`` events and still holds the last ``buffered`` (numbered from 0)."""
+    from collections import deque
     from agent_system.services.background_job_manager import BackgroundJob
-    queue = asyncio.Queue(maxsize=1000)
-    for i in range(buffered):
-        queue.put_nowait({"n": i})
-    return BackgroundJob(request_id="r", user_id="u", agent_name="a", session_id="s",
-                         task=None, event_queue=queue, events_emitted=emitted)
+    return BackgroundJob(request_id="r", user_id="u", agent_name="a", session_id="s", task=None,
+                         events=deque({"n": i} for i in range(emitted - buffered, emitted)),
+                         events_emitted=emitted)
 
 
-def test_the_catch_up_skips_exactly_what_the_client_already_holds():
+def _numbers(job, cursor):
+    events, _ = job.events_from(cursor)
+    return [event["n"] for event in events]
+
+
+def test_the_catch_up_reads_on_exactly_from_what_the_client_already_holds():
     """The whole point of the number.
 
     Dropping the buffer WHOLE also threw away everything the run emitted between
@@ -527,35 +531,32 @@ def test_the_catch_up_skips_exactly_what_the_client_already_holds():
     answer fell in there the viewer never saw it and got a "connection lost"
     notice on a run that had finished cleanly.
     """
-    # 10 sent, the buffer holds all 10, the client saw the first 6: skip 6, keep 4.
-    assert _job_with_buffer(emitted=10, buffered=10).catch_up_skip(6) == 6
-    # Nothing seen: nothing skipped -- that is the plain replay.
-    assert _job_with_buffer(emitted=10, buffered=10).catch_up_skip(0) == 0
-    # Seen everything the run has sent: the whole buffer goes.
-    assert _job_with_buffer(emitted=10, buffered=10).catch_up_skip(10) == 10
+    # 10 sent, the buffer holds all 10, the client saw the first 6: it gets 6..9.
+    assert _numbers(_job_with_buffer(emitted=10, buffered=10), 6) == [6, 7, 8, 9]
+    # Nothing seen: everything -- that is the plain replay.
+    assert _numbers(_job_with_buffer(emitted=10, buffered=10), 0) == list(range(10))
+    # Seen everything the run has sent: nothing, and it reads on from there.
+    assert _job_with_buffer(emitted=10, buffered=10).events_from(10) == ([], 10)
 
 
 def test_the_catch_up_counts_from_the_run_not_from_the_buffer():
     """The buffer drops its oldest when it fills, so its first entry is not the
-    run's first event. Counting within the buffer would skip from the wrong end."""
-    # 100 sent, only the last 10 still held (items 91..100), client saw 95.
-    # Items 91..95 are already on its screen -- five of them -- and 96..100 are not.
-    assert _job_with_buffer(emitted=100, buffered=10).catch_up_skip(95) == 5
+    run's first event. Counting within the buffer would start at the wrong place."""
+    # 100 sent, only the last 10 still held (90..99), the client saw 95 (0..94).
+    assert _numbers(_job_with_buffer(emitted=100, buffered=10), 95) == [95, 96, 97, 98, 99]
 
 
-def test_a_client_the_buffer_has_outrun_skips_nothing_and_keeps_its_gap():
-    """Seen 80, but the buffer starts at 91: items 81..90 were pushed out while
-    nobody was reading. Nothing in the buffer is on the client's screen, so
-    nothing is skipped -- and the gap stays, which only the next session load
-    closes. Skipping the buffer whole here would widen it instead."""
-    assert _job_with_buffer(emitted=100, buffered=10).catch_up_skip(80) == 0
-    assert _job_with_buffer(emitted=100, buffered=10).catch_up_skip(3) == 0
-    assert _job_with_buffer(emitted=10, buffered=10).catch_up_skip(-5) == 0
+def test_a_client_the_buffer_has_outrun_gets_all_it_holds_and_keeps_its_gap():
+    """Seen 80, but the buffer starts at 90: 80..89 were pushed out while nobody
+    was reading. Nothing in the buffer is on the client's screen, so it gets all of
+    it -- and the gap stays, which only the next session load closes."""
+    assert _numbers(_job_with_buffer(emitted=100, buffered=10), 80) == list(range(90, 100))
+    assert _numbers(_job_with_buffer(emitted=100, buffered=10), 3) == list(range(90, 100))
 
 
 @pytest.mark.asyncio
 async def test_the_count_keeps_counting_past_the_buffers_size():
-    """``events_emitted`` is not the queue's length: the buffer drops its oldest
+    """``events_emitted`` is not the buffer's length: the buffer drops its oldest
     when it fills, and the number has to keep meaning 'which event this was'."""
     manager = BackgroundJobManager()
     started, release = asyncio.Event(), asyncio.Event()
@@ -571,11 +572,11 @@ async def test_the_count_keeps_counting_past_the_buffers_size():
                                    session_id="s1", agent_runner=runner)
     try:
         await asyncio.wait_for(started.wait(), timeout=10)
-        assert job.event_queue.qsize() == size, "fixture: the buffer never filled, nothing was dropped"
+        assert len(job.events) == size, "fixture: the buffer never filled, nothing was dropped"
         assert job.events_emitted == size + 25
-        # The buffer holds the last `size` of them, so its first entry is number 26.
-        assert job.catch_up_skip(25) == 0, "the client is behind what the buffer still holds"
-        assert job.catch_up_skip(30) == 5
+        # The buffer holds the last `size` of them, so its first entry is number 25.
+        assert _numbers(job, 0)[0] == 25, "the client is behind what the buffer still holds"
+        assert _numbers(job, 30)[0] == 30
     finally:
         release.set()
         job.task.cancel()
@@ -586,23 +587,49 @@ async def test_the_count_keeps_counting_past_the_buffers_size():
 
 
 @pytest.mark.asyncio
-async def test_the_end_marker_is_counted_so_the_two_numbers_line_up():
-    """The marker is not an event, but it takes a place in the queue. Counted, the
-    length and the count mean the same items; uncounted, the arithmetic is one out
-    and the catch-up drops one real event too many."""
+async def test_every_reader_of_a_run_gets_every_event():
+    """A queue handed each event to ONE reader: a second tab on the same run, or the
+    chat beside writer_jobs' own stream, took every other event, the answer among
+    them. Two readers, each from the start, each reading to the end."""
     manager = BackgroundJobManager()
+    go = asyncio.Event()
 
     async def runner():
-        yield {"type": "status", "n": 1}
-        yield {"type": "final", "n": 2}
+        await go.wait()
+        for i in range(20):
+            yield {"type": "status", "n": i}
+            await asyncio.sleep(0)
+        yield {"type": "final", "n": 20}
 
     job = await manager.create_job(request_id="r1", user_id="u1", agent_name="a",
                                    session_id="s1", agent_runner=runner)
+
+    async def read():
+        return [event["n"] async for event in job.follow(0, keepalive=0.5) if event is not None]
+
+    readers = [asyncio.create_task(read()) for _ in range(2)]
+    await asyncio.sleep(0.05)
+    go.set()
+    first, second = await asyncio.wait_for(asyncio.gather(*readers), timeout=10)
+    assert first == second == list(range(21)), (first, second)
+
+
+@pytest.mark.asyncio
+async def test_the_job_notes_the_runs_state_with_nobody_reading():
+    """What a reconnect is told -- the session a run created, its last status -- is
+    noted as the events pass, not by whoever happens to read them: a mirrored
+    POST /run has no reader at all."""
+    manager = BackgroundJobManager()
+
+    async def runner():
+        yield {"type": "start", "session_id": "made-by-the-run"}
+        yield {"type": "status", "message": "working on chapter 3"}
+
+    job = await manager.create_job(request_id="r1", user_id="u1", agent_name="a",
+                                   session_id=None, agent_runner=runner)
     await asyncio.wait_for(job.task, timeout=10)
-    assert job.event_queue.qsize() == 3, "fixture: two events and the marker"
-    assert job.events_emitted == 3
-    # A client that saw both events skips both -- and not the marker, which ends the stream.
-    assert job.catch_up_skip(2) == 2
+    assert job.actual_session_id == "made-by-the-run"
+    assert job.last_status_message == "working on chapter 3"
 
 
 # ---------------------------------------------------------------------------
@@ -1062,3 +1089,75 @@ async def test_the_query_that_asks_for_the_tree_is_the_one_the_panel_sends(tmp_p
         plain = client.get("/api/sessions/root")
         assert plain.status_code == 200, plain.text
         assert plain.json()["descendants_context_vars"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_has_let_go_of_its_lock_is_served_live_while_its_job_runs(tmp_path, monkeypatch):
+    """The run releases its lock BEFORE its save and its session-end hooks, and its job runs on.
+
+    Read off disk then, the saved turn came with no count of what the run had sent, and the
+    chat, joining the job, replayed the whole run below it: the turn twice.
+    """
+    manager, session_id = await _saved_session(tmp_path)
+    agent = await _agent_running(session_id, "r-1", [
+        ChatMessage(role="user", content="the turn before"),
+        ChatMessage(role="assistant", content="answered that one"),
+        ChatMessage(role="user", content="this turn"),
+        ChatMessage(role="assistant", content="its answer"),
+    ])
+    agent._session_tracker.register_request("r-1", session_id, {})   # as the run does when it starts
+    await agent._session_tracker.release_session_lock(session_id, "r-1")   # _finalize_request, before the save
+    assert not agent._session_tracker.check_session_locked(session_id)[0], "fixture: the lock is still held"
+    jobs, release = await _manager_with([{"request_id": "r-1", "user_id": "ada", "session_id": session_id}])
+    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: jobs)
+    try:
+        jobs._jobs["r-1"].events_emitted = 12
+        jobs._jobs["r-1"].answered = True
+        answer = await session_endpoints.get_session(
+            session_id, current_user=_User("ada"), session_manager=manager,
+            default_agent=None, tool_registry=_Registry(an_agent=agent))
+        assert [m["content"] for m in answer["messages"]] == [
+            "the turn before", "answered that one", "this turn", "its answer"]
+        assert (answer.get("live_events_seen"), answer.get("live_run_answered")) == (12, True), \
+            "the load does not say how much of the run it already shows"
+    finally:
+        await _stop(jobs, release)
+
+
+@pytest.mark.asyncio
+async def test_a_job_the_sessions_agent_does_not_run_leaves_its_old_live_state_unread(tmp_path, monkeypatch):
+    """The live state an agent keeps outlives its runs: the session's agent still holds a run's
+    from before, and the job now holding the session runs elsewhere (a switch of agent). Read,
+    that state came with the new job's count -- and the chat skipped the new run's first events.
+    """
+    manager, session_id = await _saved_session(tmp_path)
+    agent = await _agent_running(session_id, "r-old", [ChatMessage(role="user", content="left over")])
+    agent._session_tracker.register_request("r-old", session_id, {})
+    await agent._session_tracker.release_session_lock(session_id, "r-old")
+    jobs, release = await _manager_with([{"request_id": "r-new", "user_id": "ada", "session_id": session_id,
+                                           "agent_name": "another_agent"}])
+    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: jobs)
+    try:
+        jobs._jobs["r-new"].events_emitted = 5
+        answer = await session_endpoints.get_session(
+            session_id, current_user=_User("ada"), session_manager=manager,
+            default_agent=None, tool_registry=_Registry(an_agent=agent))
+        assert [m["content"] for m in answer["messages"]] == ["the turn before", "answered that one"]
+        assert "live_events_seen" not in answer, answer.get("live_events_seen")
+    finally:
+        await _stop(jobs, release)
+
+
+@pytest.mark.asyncio
+async def test_a_message_taken_in_at_the_runs_end_is_in_what_a_load_is_served():
+    """_finalize_request takes in messages appended too late for the run, after the live copy
+    was taken at its final -- and a load is served that copy until the run's job has ended."""
+    session_id = "s-late"
+    agent = await _agent_running(session_id, "r-1", [ChatMessage(role="user", content="the question"),
+                                                      ChatMessage(role="assistant", content="the answer")])
+    working = list(agent.get_live_messages(session_id))   # the run's own list; the live copy is another
+    agent._session_tracker._active_requests["r-1"] = {"appended": [ChatMessage(role="user", content="one more thing")]}
+    working = await agent._take_in_late_messages("r-1", session_id, working)
+    assert [m.content for m in working][-1] == "one more thing", "fixture: nothing was taken in"
+    assert [m.content for m in agent.get_live_conversation(session_id)] == [
+        "the question", "the answer", "one more thing"]

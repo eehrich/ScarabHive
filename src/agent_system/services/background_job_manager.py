@@ -9,11 +9,13 @@ allowing:
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Optional
 
 from agent_system.core.cancellation import get_cancellation_manager
 
@@ -25,6 +27,34 @@ logger = logging.getLogger(__name__)
 # The events that end a run's answer, as the chat reads them too: after them the run only finishes. An `error` is
 # none, as in the chat, which keeps such a run stoppable until its end.
 ANSWER_EVENTS = ("final", "cancelled")
+
+
+def _answer_delta(event: Any) -> Optional[dict[str, Any]]:
+    """The answer delta ``event`` is, or carries as a sub-run's ``sub_run`` envelope; else None."""
+    if not isinstance(event, dict):
+        return None
+    inner = event.get("event") if event.get("type") == "sub_run" else event
+    return inner if isinstance(inner, dict) and inner.get("type") == "thinking_delta" else None
+
+
+def _keep_only_the_end(events: deque[Any]) -> None:
+    """Drop every buffered event before the run's last answer -- or, without one, its last error."""
+    def last(kinds: tuple[str, ...]) -> int:
+        return max((i for i, e in enumerate(events) if isinstance(e, dict) and e.get("type") in kinds),
+                   default=-1)
+
+    end = last(ANSWER_EVENTS)
+    if end < 0:
+        end = last(("error",))
+    for _ in range(end if end >= 0 else len(events)):
+        events.popleft()
+
+
+def _without_answer_so_far(event: dict[str, Any]) -> dict[str, Any]:
+    """A copy of an answer delta, or of its sub_run envelope, without ``accumulated``."""
+    if event.get("type") == "sub_run":
+        return {**event, "event": _without_answer_so_far(event["event"])}
+    return {key: value for key, value in event.items() if key != "accumulated"}
 
 
 class DuplicateRequestIdError(RuntimeError):
@@ -59,7 +89,11 @@ class BackgroundJob:
     agent_name: str
     session_id: Optional[str]
     task: asyncio.Task[Any]
-    event_queue: asyncio.Queue[Any]
+    # The run's events, the newest of them (create_job bounds it), for every reader alike:
+    # each reads from its own place (``follow``) and nobody takes anything out. A queue
+    # handed each event to ONE reader -- a second tab, or the chat beside writer_jobs' own
+    # stream, took every other event, the answer among them.
+    events: deque[Any] = field(default_factory=deque)
     status: JobStatus = JobStatus.RUNNING
     result: Optional[dict[str, Any]] = None
     error_message: Optional[str] = None
@@ -82,34 +116,49 @@ class BackgroundJob:
     # endpoint does not offer it as proof that the run finished (writer_jobs' reconcile
     # takes a finished job's status as "done" and would bury a book run it should resume).
     mirror: bool = False
-    # How many items the run has handed to the queue, counted from the first -- its events, and
-    # the end marker as the last. NOT the queue's length: the buffer drops its oldest when it
-    # fills, and this keeps counting. It is what lets a client that has already seen the run's
-    # first N events say so, so the reconnect can skip exactly those and no more.
+    # How many events the run has sent, counted from the first. NOT the buffer's length: the
+    # buffer drops its oldest when it fills, and this keeps counting. Event number n (from 0)
+    # is the one a reader at ``n`` gets next -- which is how a client that has already seen
+    # the run's first N events says so, and is sent exactly the rest.
     events_emitted: int = 0
+    # Woken whenever an event arrives or the run ends.
+    changed: asyncio.Condition = field(default_factory=asyncio.Condition, repr=False)
 
-    def catch_up_skip(self, seen: int) -> int:
-        """How many of the buffered items a client that already holds the run's first ``seen``
-        events may be sent past.
+    def events_from(self, cursor: int) -> tuple[list[Any], int]:
+        """The buffered events from number ``cursor`` on, and the number to read on from.
 
-        The buffer keeps the LAST ``qsize`` of the ``events_emitted`` items, the oldest having
-        been pushed out as it filled, so its first entry is item number
-        ``events_emitted - qsize + 1`` and the client wants everything after number ``seen``.
-
-        Both ends are held: never more than the buffer holds, and never less than nothing. A
-        client that has seen nothing (``seen`` 0, or a reconnect that names no number) skips
-        nothing, which is the replay this reconnect did before it could be told; one that has
-        seen everything the run has sent skips the buffer whole. And one the buffer has
-        OUTRUN -- its oldest pushed out past what the client had seen -- skips nothing: none
-        of what is left is on its screen. Its gap stays, and only its next session load
-        closes it; skipping here would widen it.
-
-        Read before the reconnect answer goes out, not after: answering hands control back to
-        the event loop, and what the run puts in the queue meanwhile has not been seen.
+        What the buffer has dropped is gone: a reader that far behind starts at the oldest it
+        still holds, and its gap stays -- only its next session load closes it. A cursor past
+        the run's last event comes back as that event's number.
         """
-        buffered = self.event_queue.qsize()
-        first_buffered = self.events_emitted - buffered + 1
-        return max(0, min(buffered, seen - first_buffered + 1))
+        first_buffered = self.events_emitted - len(self.events)
+        skip = max(0, cursor - first_buffered)
+        return list(itertools.islice(self.events, skip, None)), self.events_emitted
+
+    async def follow(self, cursor: int = 0, keepalive: float = 10.0) -> AsyncIterator[Any]:
+        """Every event from number ``cursor`` on as the run sends it, until the run has ended.
+
+        None each time ``keepalive`` seconds pass without one: the stream's cue to say it is
+        still there, as a proxy closes a line that stays quiet.
+        """
+        while True:
+            events, cursor = self.events_from(cursor)
+            for event in events:
+                yield event
+            if events:
+                continue
+            if self.status != JobStatus.RUNNING:
+                return
+            async with self.changed:
+                try:
+                    await asyncio.wait_for(
+                        self.changed.wait_for(
+                            lambda: self.events_emitted > cursor or self.status != JobStatus.RUNNING),
+                        keepalive)
+                    continue
+                except asyncio.TimeoutError:
+                    pass
+            yield None
 
 
 class BackgroundJobManager:
@@ -119,9 +168,9 @@ class BackgroundJobManager:
     are interrupted. Key features:
     
     - Jobs run in background asyncio tasks
-    - Events are buffered in queues for client consumption
+    - Events are buffered per job, and every reader gets all of them
     - Multiple SSE clients can attach to the same job
-    - Old completed jobs are automatically cleaned up
+    - Finished jobs let go of their buffer but how the run ended (start_cleanup_task, from the app's lifespan)
     
     Usage:
         manager = BackgroundJobManager()
@@ -135,17 +184,15 @@ class BackgroundJobManager:
             agent_runner=my_async_generator
         )
         
-        # Read events from job.event_queue
-        while True:
-            event = await job.event_queue.get()
-            if event is None:
-                break
-            process(event)
+        # Read its events, from the first, until the run ends
+        async for event in job.follow():
+            if event is not None:   # None: nothing for a while
+                process(event)
     """
     
     # Maximum events to buffer per job (prevents memory leak)
     MAX_EVENT_BUFFER = 1000
-    # How long to keep completed jobs before cleanup (seconds)
+    # How long a finished job keeps all of its buffered events (seconds); see _cleanup_old_jobs
     COMPLETED_JOB_TTL = 300  # 5 minutes
     
     def __init__(self) -> None:
@@ -192,10 +239,6 @@ class BackgroundJobManager:
                 pass
             self._cleanup_task = None
     
-    async def cleanup_loop(self) -> None:
-        """Periodically clean up old completed jobs. Public API for starting cleanup."""
-        await self._cleanup_loop_impl()
-    
     async def _cleanup_loop_impl(self) -> None:
         """Internal cleanup loop implementation."""
         while True:
@@ -208,20 +251,23 @@ class BackgroundJobManager:
                 logger.warning(f"Error in job cleanup: {e}")
     
     async def _cleanup_old_jobs(self) -> None:
-        """Remove completed jobs older than TTL."""
+        """Finished jobs past COMPLETED_JOB_TTL keep only how their run ended.
+
+        The job itself stays until the process ends: writer_jobs asks for it long after.
+        A story_design retry reconnects under the same id and reads the run's answer, and
+        reconcile takes a stale run's status from it -- with the job gone, the retry
+        started the whole run again. What is let go is the rest of its event buffer.
+        ponytail: records are kept for good, each with its task and its final answer; drop
+        them by age once their number matters, but not before writer_jobs' longest retry
+        backoff.
+        """
         now = time.time()
         async with self._lock:
-            to_remove = []
-            for request_id, job in self._jobs.items():
-                if job.status != JobStatus.RUNNING:
-                    if job.completed_at and (now - job.completed_at) > self.COMPLETED_JOB_TTL:
-                        # Only remove if no SSE clients connected
-                        if job.sse_client_count == 0:
-                            to_remove.append(request_id)
-            
-            for request_id in to_remove:
-                del self._jobs[request_id]
-                logger.debug(f"[JOB_CLEANUP] Removed completed job {request_id}")
+            for job in self._jobs.values():
+                if (job.status != JobStatus.RUNNING and job.completed_at
+                        and now - job.completed_at > self.COMPLETED_JOB_TTL
+                        and job.sse_client_count == 0):   # not under a reader's feet
+                    _keep_only_the_end(job.events)
     
     async def create_job(
         self,
@@ -244,10 +290,8 @@ class BackgroundJobManager:
             llm_profile: Optional LLM profile override
             
         Returns:
-            BackgroundJob instance with task and event_queue
+            BackgroundJob instance with its task and its events
         """
-        event_queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=self.MAX_EVENT_BUFFER)
-
         # The job object THIS wrapper owns, assigned below under the lock.
         # The wrapper must never write through ``self._jobs[request_id]``:
         # should the dict ever hold a different job for this id, writing
@@ -255,28 +299,47 @@ class BackgroundJobManager:
         # a lying status on a live run. (``is not None`` is for the type
         # checker: the assignment happens before the task can first run.)
         own_job: Optional[BackgroundJob] = None
+        # (sub-run id or None, step) -> the number of that step's latest answer delta
+        latest_answer_delta: dict[tuple[Any, Any], int] = {}
+
+        async def publish(event: Any) -> None:
+            """Hand an event to every reader, and note what a reconnect is told about the run."""
+            assert own_job is not None
+            delta = _answer_delta(event)
+            if delta is not None:
+                # An answer delta carries the whole answer so far, so the one before it of
+                # the same step says nothing a reader of both still needs but its own
+                # ``delta`` (agent-cli adds those up). Held whole, a thousand of them were
+                # every prefix of the answer: a 30k-character answer, 20M characters per job.
+                key = (event.get("run_id"), delta.get("step"))
+                at = latest_answer_delta.get(key, -1) - (own_job.events_emitted - len(own_job.events))
+                if at >= 0:
+                    # a copy: a reader may be holding the event, and it is the run's
+                    own_job.events[at] = _without_answer_so_far(own_job.events[at])
+                latest_answer_delta[key] = own_job.events_emitted
+            if isinstance(event, dict):
+                kind = event.get("type")
+                if kind in ANSWER_EVENTS:
+                    own_job.answered = True
+                # the session a run creates comes with its start event: the job is
+                # found by it from then on (/api/sessions/active, a reconnect)
+                elif kind == "start" and event.get("session_id"):
+                    own_job.actual_session_id = event["session_id"]
+                elif kind == "status" and event.get("message"):
+                    own_job.last_status_message = event["message"]
+            own_job.events.append(event)   # the buffer drops its oldest once full
+            # Counted whether or not an older one had to go: the number says which event
+            # this was, not how many are still held.
+            own_job.events_emitted += 1
+            async with own_job.changed:
+                own_job.changed.notify_all()
 
         async def job_wrapper() -> None:
             """Wrapper that runs the agent and captures events/errors."""
             try:
                 async for event in agent_runner():
-                    if own_job is not None and isinstance(event, dict) and event.get("type") in ANSWER_EVENTS:
-                        own_job.answered = True
-                    # Put event in queue (non-blocking, drop old if full)
-                    try:
-                        event_queue.put_nowait(event)
-                    except asyncio.QueueFull:
-                        # Queue full - drop oldest event and add new one
-                        try:
-                            event_queue.get_nowait()
-                            event_queue.put_nowait(event)
-                        except asyncio.QueueEmpty:
-                            pass
-                    # Counted whether or not it had to push an older one out: the number
-                    # says which event this was, not how many are still waiting.
-                    if own_job is not None:
-                        own_job.events_emitted += 1
-                
+                    await publish(event)
+
                 # Mark as completed
                 async with self._lock:
                     if own_job is not None:
@@ -292,26 +355,21 @@ class BackgroundJobManager:
                         logger.info(f"[BACKGROUND_JOB] Job {request_id} was cancelled")
                 raise
             except Exception as e:
+                logger.error(f"[BACKGROUND_JOB] Job {request_id} failed: {e}", exc_info=True)
+                # Said on the stream too: a run that fails outside its own error handling
+                # sends no error and no end, and its readers only saw the stream stop.
+                await publish({"type": "error", "request_id": request_id, "message": str(e)})
                 async with self._lock:
                     if own_job is not None:
                         own_job.status = JobStatus.FAILED
                         own_job.error_message = str(e)
                         own_job.completed_at = time.time()
-                        logger.error(f"[BACKGROUND_JOB] Job {request_id} failed: {e}", exc_info=True)
             finally:
-                # Signal end to any waiting consumers
-                try:
-                    event_queue.put_nowait(None)
-                    # Counted like an event although it is not one: what reads the count
-                    # against the queue's length (the reconnect's catch-up) needs the two
-                    # to mean the same items, and the marker occupies a place in the queue.
-                    # No client ever reports having seen it -- it only arrives once the run
-                    # is over, and then there is nothing left to catch up on.
-                    if own_job is not None:
-                        own_job.events_emitted += 1
-                except asyncio.QueueFull:
-                    pass
-        
+                # The run is over: every reader waiting for more hears it
+                if own_job is not None:
+                    async with own_job.changed:
+                        own_job.changed.notify_all()
+
         # Check-and-register in ONE lock block. The callers' own duplicate
         # guard (app.py's _validate_client_request_id) is a check-then-act
         # with a wide window — it runs in the request handler while
@@ -336,7 +394,7 @@ class BackgroundJobManager:
                 agent_name=agent_name,
                 session_id=session_id,
                 task=task,
-                event_queue=event_queue,
+                events=deque(maxlen=self.MAX_EVENT_BUFFER),
                 llm_profile=llm_profile,
                 mirror=mirror,
             )
@@ -584,42 +642,12 @@ class BackgroundJobManager:
             job = self._jobs.get(request_id)
             if job is not None and job.status == JobStatus.RUNNING:
                 return True
-
-        try:
-            from agent_system.servers.agent.server import Agent as _Agent
-        except Exception:  # noqa: BLE001
-            logger.debug(
-                "[BACKGROUND_JOB] Agent class import failed during "
-                "status walk — registry walk skipped",
-            )
-            _Agent = None  # type: ignore[assignment]
-
-        if _Agent is not None and self._agent_registry is not None:
+        for server in self._agent_servers():
             try:
-                names = self._agent_registry.list()
-            except Exception:  # noqa: BLE001
-                names = []
-            for name in names:
-                try:
-                    srv = self._agent_registry.get(name)
-                except Exception:  # noqa: BLE001
-                    continue
-                if not isinstance(srv, _Agent):
-                    continue
-                try:
-                    active = srv._request_manager.get_active_requests()
-                except Exception:  # noqa: BLE001
-                    continue
-                if request_id in active:
+                if request_id in server._request_manager.get_active_requests():
                     return True
-
-        if self._default_agent is not None:
-            try:
-                active = self._default_agent._request_manager.get_active_requests()
-                if request_id in active:
-                    return True
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:  # noqa: BLE001 -- an agent without a request manager runs nothing here
+                continue
         return False
 
     async def active_sessions(self) -> dict[str, dict[str, Any]]:
@@ -708,7 +736,7 @@ class BackgroundJobManager:
                     "completed_at": job.completed_at,
                     "error": job.error_message,
                     "sse_clients": job.sse_client_count,
-                    "events_buffered": job.event_queue.qsize(),
+                    "events_buffered": len(job.events),
                 })
             return jobs
     

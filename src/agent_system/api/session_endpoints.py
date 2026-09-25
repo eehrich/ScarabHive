@@ -36,21 +36,22 @@ _ACTIVE_IDS_LIMIT = 200
 _DESCENDANT_READS_AT_ONCE = 16
 
 
-async def _events_emitted(request_id: Optional[str]) -> Optional[int]:
-    """How many events the run behind ``request_id`` has sent so far, or None.
+async def _run_progress(request_id: Optional[str]) -> tuple[Optional[int], bool]:
+    """How many events the run behind ``request_id`` has sent so far, and whether it has answered.
 
-    None for a run with no background job -- a ``/run`` carrying files, a
+    (None, False) for a run with no background job -- a ``/run`` carrying files, a
     sub-agent's run. Those stream inline and cannot be reconnected to anyway, so
-    there is nothing for the number to be used for.
+    there is nothing for the numbers to be used for. Both read at one moment: the
+    answer a client skips past is the one this says was sent.
     """
     if not request_id:
-        return None
+        return None, False
     try:
         job = await get_background_job_manager().get_job(request_id)
     except Exception as err:  # noqa: BLE001 -- a missing job manager is not a failed session load
         logger.debug("Could not read the event count for %s: %s", request_id, err)
-        return None
-    return job.events_emitted if job is not None else None
+        return None, False
+    return (job.events_emitted, job.answered) if job is not None else (None, False)
 
 
 async def _build_descendants_context_vars(
@@ -577,14 +578,23 @@ async def get_session(
         # and gated on the session lock rather than on the live state being
         # present: that state outlives the run it belongs to.
         #
-        # The lock is the gate, and it is a hair narrower than it looks: the run
-        # releases it just BEFORE its final save, so for the length of that write
-        # this falls back to disk and shows the previous turn. The next load is
-        # right. Named rather than papered over -- closing it means moving the
-        # release past the save, which is the run's lifecycle, not this endpoint's.
+        # The lock alone is too narrow a gate: the run releases it just BEFORE its
+        # final save and its session-end hooks, and its job runs on until those are
+        # done -- an LLM call, for lessons_learned. A load then read the turn off
+        # disk with no count of what the run had sent (during the save, the turn
+        # before it), and the chat, joining the job, replayed the whole run below
+        # it: the turn twice. So a run the tracker maps to this session counts as
+        # in flight while its job runs. Its live state is its conversation: the
+        # session's next run sets its own only once it holds the lock.
         if session_agent is not None and hasattr(session_agent, "_session_tracker"):
+            tracker = session_agent._session_tracker
             try:
-                is_running, owner_request_id = session_agent._session_tracker.check_session_locked(session_id)
+                is_running, owner_request_id = tracker.check_session_locked(session_id)
+                if not is_running:
+                    running = (await get_background_job_manager().active_sessions()).get(session_id) or {}
+                    if (running.get("attachable")
+                            and tracker.get_session_for_request(running["request_id"]) == session_id):
+                        is_running, owner_request_id = True, running["request_id"]
             except Exception as lock_err:
                 logger.debug(f"Could not read the session lock for {session_id}: {lock_err}")
                 is_running, owner_request_id = False, None
@@ -604,7 +614,9 @@ async def get_session(
                     # this response and the attach, up to and including its final answer.
                     # Read right after the messages, before the await below: what the run
                     # sends meanwhile would count as seen without being in them.
-                    events_seen = await _events_emitted(owner_request_id)
+                    # Whether those include its answer goes with them: a client joining past
+                    # the answer is sent nothing that says the run has answered.
+                    events_seen, answered = await _run_progress(owner_request_id)
                     # The panel sums estimated_tokens and counts how many messages carried
                     # one; the persisted path adds them, so the live one has to as well or
                     # the token figure reads 0 for exactly the sessions worth watching.
@@ -612,6 +624,7 @@ async def get_session(
                     await asyncio.to_thread(_add_estimated_tokens, messages)
                     session["messages"] = messages
                     session["live_events_seen"] = events_seen
+                    session["live_run_answered"] = answered
 
         # Inject live runtime template_vars from the agent's session tracker.
         # save_session persists context_vars only after messages are committed

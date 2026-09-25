@@ -46,6 +46,9 @@ This mirrors the steering behavior of CLI coding agents.
 | Run finished, `fallback=session` (default) | message appended to the persisted session (stored, but only answered by the next run): `200 {"status": "appended", "session_id": ...}` |
 | Run finished, `fallback=none` | `404` — caller should start a new request with the message as task |
 | `?session_id=...` query | append directly to a session (ownership-checked), ignores `fallback` |
+| Session, die ein Lauf dieses Prozesses gerade hat (`?session_id=`, `fallback=session`, `POST /sessions/{id}/append`) | die Nachricht geht an diesen Lauf, auf dem Agenten, auf dem er läuft, auch ohne Job (`200`); nimmt er keine mehr an, weil er gerade abschließt, `409`. Neben den Lauf in die Session geschrieben, war sie „appended“ und beim nächsten Speichern des Laufs weg. |
+| Request eines anderen Nutzers | `403` (Admins ausgenommen); ebenso Status und Cancel |
+| Session, die der Lauf eines anderen Nutzers gerade hat | `403` — auch solange sie noch nicht gespeichert ist: den Besitzer nennt dann nur der Lauf |
 
 The web frontend uses `fallback=none`: on 404 the message goes back into the
 input, and sending it again starts a new request -- it is never stored unanswered,
@@ -53,11 +56,14 @@ and never stored twice.
 
 ## Frontend rendering
 
-On a successful append, `chat_module.js` rebinds the live stream's block object
-(`activeStreamBlk`, same object identity as the `blk` passed to
-`handleSSEEvent`) to a fresh assistant block — the agent's reaction renders
-**below** the injected user message instead of into the previous block (same
-in-place rebind pattern as the `continuation` event handler).
+Nach einem angenommenen Append zieht `chat_module.js` den Lauf beim **nächsten
+Schritt** in einen neuen Block unter der Nachricht um (`pendingAppendRebind`,
+`rebindLiveBlock`: dasselbe Block-Objekt, das `handleSSEEvent` hält) — nicht sofort,
+sonst risse der Schritt, der gerade streamt, in zwei Teile. Antwortet der Lauf ohne
+weiteren Schritt, kam die Nachricht zu spät: die Antwort bleibt, wo sie ist, und
+eine Notiz sagt, dass die Nachricht in der Session liegt und der nächste Lauf sie
+beantwortet. Eine Notiz, die der Chat selbst schreibt (ein Befehl mitten im Lauf),
+setzt denselben Umzug in Gang (`'note'` statt `'message'`), aber nie bei `final`.
 
 ## Key code
 
