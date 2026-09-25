@@ -291,3 +291,21 @@ def test_a_name_that_is_no_agent_lists_the_agents_and_exits_1(stubbed_cli, monke
     assert refused.value.code == 1
     err = capsys.readouterr().err
     assert "no_such_agent_here" in err and "Available agents" in err, err
+
+
+def test_an_error_no_event_showed_is_named_after_the_run(stubbed_cli, monkeypatch, capsys):
+    """An exception out of the run has no event: collect_final_result puts it
+    into the errors, and the block after the run is where it shows -- next to
+    the errors the stream showed as they came, which it does not repeat."""
+    async def run_events(self, task, **kwargs):
+        yield {"type": "error", "message": "the model said no"}
+        raise RuntimeError("the store went away")
+
+    monkeypatch.setattr(AgentStub, "run_events", run_events)
+    monkeypatch.setattr("sys.argv", ["agent-cli", "--no-status", "run", "do it"])
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "the store went away" in out, "an error without an event was never shown"
+    assert out.count("the model said no") == 1, out
