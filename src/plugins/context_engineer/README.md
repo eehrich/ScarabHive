@@ -346,6 +346,10 @@ visible (`<pk-refresh>`). The compaction history is the hook's in-memory list (t
 | `GET /plugins/context_engineer/history?session_id=&limit=100` | `{events, stats}`: the newest `limit` (1–1000) compactions of the session (all without `session_id`), newest first as the hook records them; `stats` = `events`, `tokens_saved`, `average_reduction` (percent, `null` without events), `media_always_compacted`, `media_deduplicated`, `media_compacted_after_event` over every event asked for |
 | `GET /plugins/context_engineer/session?session_id=` | `{tool_results: {count, tokens}, archived: {count, tokens}, core_memory: {facts: [{content, category, importance}], tokens, max_tokens}}`; `archived` counts the messages tagged with the session (what `list` reaches); a session without a directory holds nothing; a store that cannot be read → 503 with the reason |
 
+Who sees what (`agent_system/auth/session_access.py`, the rule of the usage tracker too): a user her own sessions --
+another user's answers as a session without compactions and without stores. Every session at once is an admin's
+(403 otherwise); with authentication off, everything is shown.
+
 `session_id` must match `^[A-Za-z0-9_-]+$` (422 otherwise): it names the session's directory. The endpoints only read:
 the stores are opened read-only and the core memory file is parsed, not loaded — nothing creates a session's files or
 registers the session with the hook.

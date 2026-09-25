@@ -53,6 +53,15 @@ def hybrid_plugin(tmp_path):
     return MessageDebuggerHybridPlugin("message_debugger", system_config, server_config)
 
 
+@pytest.fixture(autouse=True)
+def _an_admin_asks(monkeypatch):
+    """These test what the endpoints answer; that only an admin may ask is
+    test_plugin_message_debugger_access.py."""
+    import plugins.message_debugger.web_endpoints as endpoints
+
+    monkeypatch.setattr(endpoints, "require_everything", lambda *args: None)
+
+
 @pytest.fixture
 def web_factory(db, hybrid_plugin):
     """Create MessageDebuggerWebFactory instance with DB."""

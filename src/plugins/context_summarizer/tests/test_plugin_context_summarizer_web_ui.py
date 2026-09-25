@@ -3,8 +3,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from agent_system.auth.dependencies import get_optional_user
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.context_summarizer.plugin import PLUGIN_FACTORY
+from tests.session_owners import admin
 
 
 @pytest.fixture
@@ -14,8 +16,11 @@ def plugin():
 
 @pytest.fixture
 def client(plugin):
+    """An admin looks: these test what the endpoints answer; who may see which session is
+    test_plugin_context_summarizer_access.py."""
     app = FastAPI()
     app.include_router(plugin.get_web_router())
+    app.dependency_overrides[get_optional_user] = admin
     return TestClient(app)
 
 

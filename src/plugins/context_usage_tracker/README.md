@@ -49,7 +49,8 @@ In the launcher under **Context**; a session's info button offers it too, opened
 Under `/plugins/context_usage_tracker/`: `GET usage?session_id=` (latest snapshot, agent totals, statistics),
 `GET history?last_n=&session_id=&agent_id=`, `POST clear`, `GET /` (the panel).
 
-Who sees what: the tracker records calls by session id and keeps no owner, so a session is held against its owner
+Who sees what (`agent_system/auth/session_access.py`, shared with the context summarizer and engineer): the tracker
+records calls by session id and keeps no owner, so a session is held against its owner
 as the app knows it -- a run of this process that has the session names its user (its first turn is not on disk
 yet), otherwise the session store answers under the viewer (the signed-in user, else `anonymous`, the rule of
 `/sessions`). A user gets her own sessions' figures; another user's session answers empty. Every session at once
