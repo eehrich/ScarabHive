@@ -1442,7 +1442,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             session_service = self._extract_session_service(params)
             manager = self._get_manager(session_service, registry)
             user_id = manager._extract_user_id(parent_session_id, params)
-            session_manager = manager._session_service.session_manager
 
             # Process each instance
             results: list[dict[str, Any]] = []
@@ -1453,31 +1452,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             
             for sub_id in ids_to_delete:
                 try:
-                    # Verify ownership
+                    # The lookup continue and info make: an id of another session or user, or none
+                    # a session can have, is not found -- and was a bare ValueError from the panel.
                     try:
-                        sub_session_data = await session_manager.load_session(user_id, sub_id)
-                    except (FileNotFoundError, SessionNotFoundError):
-                        results.append({
-                            "instance_id": sub_id,
-                            "status": "error",
-                            "error": f"Sub-agent '{sub_id}' not found"
-                        })
-                        continue
-
-                    parent_link = sub_session_data.get("parent_session", {}).get("session_id")
-                    if parent_link != parent_session_id:
-                        logger.debug(
-                            "Delete ownership mismatch for %s: parent_link=%s, expected=%s",
-                            sub_id, parent_link, parent_session_id,
-                        )
-                        results.append({
-                            "instance_id": sub_id,
-                            "status": "error",
-                            "error": (
-                                f"Sub-agent '{sub_id}' does not belong to current session "
-                                f"(actual_parent={parent_link}, caller={parent_session_id})"
-                            ),
-                        })
+                        sub_session_data = await self._callers_sub_session(
+                            manager, user_id, parent_session_id, sub_id)
+                    except CallerMistake as mistake:
+                        results.append({"instance_id": sub_id, "status": "error", "error": str(mistake)})
                         continue
 
                     # Get agent type for status message
@@ -2848,7 +2829,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             return False
         return state in ("running", "waking")
 
-    async def _shown_status(self, metadata: dict[str, Any], user_id: Callable[[], str]) -> str:
+    async def _shown_status(self, metadata: dict[str, Any], user_id: Callable[[], str],
+                            *, ask_runs: bool = True) -> str:
         """running, idle, or how the last run ended -- a sub-agent's state as the model and the
         injected list name it.
 
@@ -2860,13 +2842,16 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
         The injected list asks this before every LLM call: the lock is a probe of one file, and
         `user_id` is found only when one is asked (it scans the session directories).
+
+        `ask_runs` False answers from the entry alone: the panel's rule for an entry whose sub-session
+        is not the viewer's (web_endpoints.own_sub_sessions).
         """
         stored = metadata.get("status")
         if stored not in ("active", "running", "pending"):
             return stored or "unknown"
         instance_id = metadata.get("instance_id", "")
-        if self.is_agent_running(instance_id) \
-                or await self._runs_in_another_process(instance_id, user_id()):
+        if ask_runs and (self.is_agent_running(instance_id)
+                         or await self._runs_in_another_process(instance_id, user_id())):
             return "running"
         if stored == "active" and not _left_mid_run(metadata):
             return "idle"

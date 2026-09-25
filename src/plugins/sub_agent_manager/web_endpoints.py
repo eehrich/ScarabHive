@@ -4,10 +4,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from agent_system.auth.dependencies import get_optional_user
+from agent_system.auth.models import User
 from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
 
@@ -23,6 +25,27 @@ SESSION = Query(..., description="The parent session whose sub-agents")
 MAP_NODES = 300
 MAP_READS = 60
 MAP_DEPTH = 20
+
+
+def viewer(current_user: Optional[User]) -> str:
+    """Whose sessions the request may see -- the rule of ``/sessions``. Every lookup below goes by it: a session of
+    another user is simply not found. The panel used to ask the session directories whose session an id is, and
+    answered anyone who named one -- its sub-agents, their transcripts, and an archive of them."""
+    return current_user.username if current_user else "anonymous"
+
+
+def hers(sessions, user_id: str, session_id: str) -> bool:
+    """Whether ``session_id`` is one of the viewer's sessions -- a stat, before anything is looked up about it. An id
+    no session can have is not (``belongs_to`` says so)."""
+    return sessions.belongs_to(user_id, session_id)
+
+
+def own_sub_sessions(sessions, user_id: str, instance_ids) -> set[str]:
+    """The ids among ``instance_ids`` that are the viewer's own sessions -- the ones whose figures and runs the panel
+    looks up. A session's entries are its user's to write (PATCH /sessions): one naming another user's sub-agent had
+    that one's tokens and whether it runs looked up by the bare id. It is shown as its entry says, as one whose
+    sub-session was deleted behind it is -- the two look alike, so neither says whether an id exists elsewhere."""
+    return {instance_id for instance_id in instance_ids if hers(sessions, user_id, instance_id)}
 
 
 def get_session_service():
@@ -125,17 +148,25 @@ class SubAgentManagerWebFactory:
         server = getattr(plugin, "server", plugin)  # the hybrid plugin holds the tool server
         return server if isinstance(server, SubAgentManagerServer) else self.server
 
-    async def _owner_of(self, session_id: str, agent_id: str):
-        """``_spawned_by`` for a sub-agent named by id, read from the entry its parent ``session_id`` holds."""
-        manager = self.server._get_manager(get_session_service())
+    @staticmethod
+    def _require_hers(user_id: str, *session_ids: str) -> None:
+        """Not found, unless every one is the viewer's session: the tool's lookups behind these ask by the id alone."""
+        sessions = get_session_service().session_manager
+        if not all(hers(sessions, user_id, session_id) for session_id in session_ids):
+            raise HTTPException(status_code=404, detail="Sub-agent not found")
+
+    async def _owner_of(self, session_id: str, agent_id: str, user_id: str):
+        """``_spawned_by`` for a sub-agent named by id, read from the entry its parent ``session_id`` holds -- under the
+        viewer, as the list reads: a directory scan could meet another user's copy of an id two directories hold."""
         try:
-            listed = await manager.list_sub_sessions(parent_session_id=session_id, include_completed=True)
+            parent = await get_session_service().session_manager.load_session(user_id, session_id)
         except Exception as error:  # the handler asked next reads the same session, and says what is wrong
             logger.debug("No entry for %s under %s: %s", agent_id, session_id, error)
             return self.server
-        return self._spawned_by(next((entry for entry in listed if entry.get("instance_id") == agent_id), {}))
+        return self._spawned_by(((parent.get("metadata") or {}).get("sub_agents") or {}).get(agent_id) or {})
 
-    async def get_sub_agents(self, request: Request, session_id: str = SESSION) -> dict[str, Any]:
+    async def get_sub_agents(self, request: Request, session_id: str = SESSION,
+                             current_user: Optional[User] = Depends(get_optional_user)) -> dict[str, Any]:
         """Every sub-agent of the session, archived ones included, and the workflow phase.
 
         Whichever manager instance spawned it, as the map shows them: the panel is one per instance, and a list of this
@@ -148,14 +179,22 @@ class SubAgentManagerWebFactory:
         crash left behind, marking a sub-agent nobody has in hand interrupted. A panel is a viewer -- it refreshes
         every ten seconds, of its own accord, in whichever process happens to serve it -- so it writes nothing."""
         session_service = get_session_service()
-        manager = self.server._get_manager(session_service)
+        sessions = session_service.session_manager
+        user_id = viewer(current_user)
+        if not hers(sessions, user_id, session_id):  # not hers, or not saved yet
+            return {"instances": [], "phase": await self._phase(session_service, user_id, session_id)}
         try:
-            stored = await manager.list_sub_sessions(parent_session_id=session_id, include_completed=True)
+            # By the viewer, as the map reads it: `list_sub_sessions` finds the owner by scanning the directories,
+            # and took whichever copy of an id it met first.
+            parent = await sessions.load_session(user_id, session_id)
         except Exception as error:
             raise HTTPException(status_code=500, detail=str(error)) from error
-        user_id = manager._extract_user_id(session_id)
-        counts = await message_counts(session_service.session_manager, user_id, session_id)
-        context = await context_of([metadata["instance_id"] for metadata in stored])
+        stored = sorted(({**metadata, "instance_id": instance_id} for instance_id, metadata
+                         in ((parent.get("metadata") or {}).get("sub_agents") or {}).items()),
+                        key=lambda metadata: metadata.get("last_used") or "", reverse=True)
+        mine = own_sub_sessions(sessions, user_id, [metadata["instance_id"] for metadata in stored])
+        counts = await message_counts(sessions, user_id, session_id)
+        context = await context_of(sorted(mine))
         instances = []
         for metadata in stored:
             instance_id = metadata["instance_id"]
@@ -163,10 +202,10 @@ class SubAgentManagerWebFactory:
                 "instance_id", "agent_type", "status", "created_at", "last_used", "task_summary", "current_activity",
                 "activity_updated_at")} | {"message_count": counts.get(instance_id), **context.get(instance_id, {}),
                                            "state": await self._spawned_by(metadata)._shown_status(
-                                               metadata, lambda: user_id)})
-        return {"instances": instances, "phase": await self._phase(session_service, session_id)}
+                                               metadata, lambda: user_id, ask_runs=instance_id in mine)})
+        return {"instances": instances, "phase": await self._phase(session_service, user_id, session_id)}
 
-    async def _phase(self, session_service, session_id: str) -> dict[str, Any] | None:
+    async def _phase(self, session_service, user_id: str, session_id: str) -> dict[str, Any] | None:
         """The phase the session is in and the agents it lets this instance spawn -- the rule of
         ``_get_phase_allowed_agents``, read from the session's stored context vars. None without phase filtering."""
         server = self.server
@@ -174,19 +213,17 @@ class SubAgentManagerWebFactory:
             return None
         current = None
         try:
-            session_manager = session_service.session_manager
-            owner = await session_manager._find_session_owner_async(session_id)
-            if owner:
-                stored = await session_manager.load_session(owner, session_id)
-                current = (stored.get("context_vars") or {}).get(server.phase_variable)
-        except Exception as error:  # a session not saved yet has no phase
+            stored = await session_service.session_manager.load_session(user_id, session_id)
+            current = (stored.get("context_vars") or {}).get(server.phase_variable)
+        except Exception as error:  # a session not saved yet, or not the viewer's, has no phase
             logger.debug("No phase for session %s: %s", session_id, error)
         phases = server.phase_agents
         spawnable = (phases.get(current) or phases.get("_default") or server.allowed_agents) if current else server.allowed_agents
         return {"variable": server.phase_variable, "current": current, "agents": list(spawnable),
                 "allowed_agents": list(server.allowed_agents)}
 
-    async def get_agent_map(self, request: Request, session_id: str = SESSION) -> dict[str, Any]:
+    async def get_agent_map(self, request: Request, session_id: str = SESSION,
+                            current_user: Optional[User] = Depends(get_optional_user)) -> dict[str, Any]:
         """The session and everything below it, nested: each sub-agent carries the sub-agents it spawned itself.
 
         It shows what ANY manager instance spawned, as the list does: below the first level the spawning instance is
@@ -195,9 +232,8 @@ class SubAgentManagerWebFactory:
         sub-index of the node above it, and the context of its last call (``context_of``).
         """
         session_service = get_session_service()
-        manager = self.server._get_manager(session_service)
         sessions = session_service.session_manager
-        user_id = manager._extract_user_id(session_id)
+        user_id = viewer(current_user)
         remaining = MAP_NODES
         reads = MAP_READS
         truncated = False
@@ -244,7 +280,8 @@ class SubAgentManagerWebFactory:
                     "instance_id": instance_id, "parent_session_id": parent_id,
                     "message_count": counts.get(instance_id),
                     "state": await self._spawned_by(metadata)._shown_status(
-                        {**metadata, "instance_id": instance_id}, lambda: user_id),
+                        {**metadata, "instance_id": instance_id}, lambda: user_id,
+                        ask_runs=instance_id in own_sub_sessions(sessions, user_id, [instance_id])),
                     "children": await branch(instance_id, depth - 1)}
                 shown.append(node)
                 nodes.append(node)
@@ -256,7 +293,8 @@ class SubAgentManagerWebFactory:
             logger.debug("No session %s to map: %s", session_id, error)
             root = {}
         children = await branch(session_id, MAP_DEPTH, stored=root or None)
-        context = await context_of([node["instance_id"] for node in shown])  # in one go, off the loop
+        # in one go, off the loop, and of her own only (`own_sub_sessions`)
+        context = await context_of(sorted(own_sub_sessions(sessions, user_id, [node["instance_id"] for node in shown])))
         for node in shown:
             node.update(context.get(node["instance_id"], {}))
         return {"root": {"instance_id": session_id, "title": root.get("title"),
@@ -264,17 +302,24 @@ class SubAgentManagerWebFactory:
                 "truncated": truncated}
 
     async def get_sub_agent(self, request: Request, agent_id: str, session_id: str = SESSION,
-                            offset: int | None = Query(None, ge=0), limit: int | None = Query(None, ge=1)) -> dict[str, Any]:
+                            offset: int | None = Query(None, ge=0), limit: int | None = Query(None, ge=1),
+                            current_user: Optional[User] = Depends(get_optional_user)) -> dict[str, Any]:
         """A sub-agent's transcript, paged as the tool's ``info`` pages it: the tail without an offset. Answered by the
         instance that spawned it (``_spawned_by``)."""
-        owner = await self._owner_of(session_id, agent_id)
+        user_id = viewer(current_user)
+        self._require_hers(user_id, session_id, agent_id)
+        owner = await self._owner_of(session_id, agent_id, user_id)
         return answered(await owner._handle_info({
-            "_session_id": session_id, "_session_service": get_session_service(), "instance_id": agent_id,
-            "offset": offset, "limit": limit}))
+            "_session_id": session_id, "_session_service": get_session_service(), "_user_id": user_id,
+            "instance_id": agent_id, "offset": offset, "limit": limit}))
 
-    async def archive_sub_agent(self, request: Request, agent_id: str, session_id: str = SESSION) -> dict[str, Any]:
+    async def archive_sub_agent(self, request: Request, agent_id: str, session_id: str = SESSION,
+                                current_user: Optional[User] = Depends(get_optional_user)) -> dict[str, Any]:
         """Archive a sub-agent, as the tool's ``delete`` does -- the delete of the instance that spawned it, which holds
         its job (``_spawned_by``)."""
-        owner = await self._owner_of(session_id, agent_id)
+        user_id = viewer(current_user)
+        self._require_hers(user_id, session_id, agent_id)
+        owner = await self._owner_of(session_id, agent_id, user_id)
         return answered(await owner._handle_delete({
-            "_session_id": session_id, "_session_service": get_session_service(), "instance_id": agent_id}))
+            "_session_id": session_id, "_session_service": get_session_service(), "_user_id": user_id,
+            "instance_id": agent_id}))

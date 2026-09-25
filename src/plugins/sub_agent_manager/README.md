@@ -332,6 +332,17 @@ the sub-agent, which holds its runs and its jobs. (The list used to show the
 panel's own instance only, and was empty beside a full map on every session
 whose agent spawns through another.)
 
+It shows its viewer's own sessions only, by the rule of `/sessions` (the signed-in
+user, else `anonymous`), and reads them under that user. A session of another
+user shows no sub-agents and maps to itself alone, and a transcript or an archive
+of one is not found: each asks first whether the session and the sub-agent are
+the viewer's (`belongs_to`, a stat). Figures and whether one runs are looked up
+for her own sub-sessions only — a session's metadata is its user's to write, and
+an entry naming another user's sub-agent had those looked up by the bare id. It
+is shown as its entry says, as one whose sub-session was deleted is, so neither
+tells whether an id exists elsewhere. The panel used to ask the session
+directories whose a session id is, and answered anyone who named one.
+
 Both carry the same two figures per sub-agent, each left out where it is not
 known:
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -34,6 +35,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from agent_system.auth.dependencies import get_optional_user
 from agent_system.config.models import AgentConfig, AgentSystemConfig, ToolServerConfig
 from agent_system.plugins.tool_adapter import PluginToolAdapter, plugin_tool_registry
 from agent_system.tools.base import ToolServerRegistry
@@ -144,6 +146,8 @@ def panel_app(tmp_path: Path) -> FastAPI:
         return instance_id in elsewhere
     plugin.server._runs_in_another_process = runs_elsewhere
     app = FastAPI()
+    # the viewer the app's auth would name: every lookup of the panel goes by her
+    app.dependency_overrides[get_optional_user] = lambda: SimpleNamespace(username=USER)
     app.state.session_service = service
     app.state.ids = ids
     app.state.tracker = tracker

@@ -365,6 +365,17 @@ class TestAMistakenCallIsNoErrorInTheLog:
         assert faults == [] and len(refusals) == 2, caplog.text
 
     @pytest.mark.asyncio
+    async def test_a_delete_of_an_id_no_session_can_have_is_not_found(
+            self, server, session_service, sub_agent_manager, sub_session):
+        """The lookup continue and info make: a label or a quoted id is not found, and the answer names the ids
+        that would have worked. It answered with load_session's bare "Invalid session ID format"."""
+        real_sub_id, _ = sub_session
+        result = await server._handle_delete(_params("Auditor B", session_service))
+
+        assert result["status"] == "error", result
+        assert result["error"].startswith("Sub-agent 'Auditor B' not found.") and real_sub_id in result["error"], result
+
+    @pytest.mark.asyncio
     async def test_a_continue_on_another_sessions_instance(
             self, server, session_service, session_manager, sub_agent_manager, sub_session, caplog):
         await session_manager.create_session(
