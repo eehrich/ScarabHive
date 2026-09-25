@@ -678,3 +678,24 @@ llm_system:
       model_ref: openrouter-qwen-tts
       description: "Qwen Audio 3.0 TTS Flash via OpenRouter speech API"
 
+  # =============================================================================
+  # DECISION MODELS (local) - a questionnaire, not a conversation
+  # =============================================================================
+  # Jev via OpenRouter and default_decision_profile live in llm_openrouter.yaml;
+  # both decision_models sections are merged. Client: src/plugins/llm_decisions.
+  decision_models:
+    laya:
+      provider: systemone_decisions
+      model: laya-multilingual        # the checkpoint laya-serve runs: laya (= english),
+                                      # laya-multilingual, laya-typed-decisions. An
+                                      # unknown name is NOT refused there, it is
+                                      # routed by script -- so name one.
+      url: http://127.0.0.1:8788/v1/systemone   # a local laya-serve; its own default
+                                                # port 8000 is this API's
+      # api_key: ${LAYA_API_KEY}      # only if laya-serve runs with LAYA_API_KEY;
+      #                               # without one a local url gets no key at all
+
+  decision_profiles:
+    laya:
+      model_ref: laya
+      description: "Laya, open weights on a local laya-serve - measured blind to German language errors (README of llm_decisions)"
