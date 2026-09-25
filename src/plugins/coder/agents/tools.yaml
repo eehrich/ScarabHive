@@ -133,10 +133,13 @@ plugins:
           - 'git clean -'
         allow_command_chains: true
       platform:
-        # Start where the sandbox is. Without this the shell opens at the repo
-        # root, so a test run happens somewhere other than where the code the
-        # agent may touch actually lives.
-        initial_cwd: data/workspace
+        # The repository root: the base coder_fs resolves relative paths
+        # against, so one relative path names one file in both tools. Started
+        # in data/workspace, the shell read every path the file tools gave it
+        # one level too deep -- measured 12 wrong paths in 7 of 9 real coder
+        # sessions (data\workspace\data\workspace\dodge.html, `cd
+        # data/workspace/backlog` from inside data/workspace).
+        initial_cwd: "."
       limits:
         max_output_size_kb: 60
         default_timeout_seconds: 300

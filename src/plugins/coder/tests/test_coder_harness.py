@@ -356,3 +356,55 @@ def test_prompts_carry_no_per_call_template_variables(config, agent):
         f"{agent} prompt renders per-call variables {volatile}; put anything "
         "that changes per turn into an injection hook, not the template"
     )
+
+
+# ── Claude Code, where it is installed ─────────────────────────────────────
+
+def _rendered_coder_prompt(config, tools):
+    from agent_system.servers.agent.prompt_strategies import PromptContext, PromptRenderer
+
+    ctx = PromptContext(agent_name="coder", agent_config=_agent_config(config, "coder"),
+                        system_config=config, available_tools=tools, max_steps=300,
+                        current_step=0, agent_instance=object())
+    rendered, _ = PromptRenderer().render(ctx)
+    return rendered
+
+
+def test_the_claude_code_section_is_there_exactly_when_the_tool_is(config):
+    """Rendered for a coder that has coding_cli's tools, and not a word of it
+    for one without Claude Code -- a section naming a tool the agent lacks
+    spends a turn on a call that cannot succeed."""
+    with_tool = _rendered_coder_prompt(config, ["coding_cli", "coding_cli_run_task", "coding_cli_get_run"])
+    without = _rendered_coder_prompt(config, ["coder_fs", "coder_fs_read_file"])
+
+    assert "## Claude Code" in with_tool and "git apply" in with_tool
+    assert "Claude Code" not in without and "coding_cli" not in without
+
+
+def test_the_coder_is_sent_back_when_its_answer_is_cut_off(config):
+    """Measured: three calls in a row lost the tool call writing a whole file
+    at the output cap, and the announcement before it ended the run."""
+    assert _agent_config(config, "coder").output_cap_notes == 2
+
+
+def test_the_coder_may_call_claude_code(config):
+    allowed = _agent_config(config, "coder").tools.allowed
+    for tool in ("coding_cli_run_task", "coding_cli_get_run", "coding_cli_cancel_run"):
+        assert tool_matches_patterns(tool, "coding_cli", allowed), tool
+    assert config.plugins.servers["coding_cli"].enabled
+
+
+def test_one_relative_path_names_one_file_in_the_shell_and_the_file_tools(config):
+    """The shell started in data/workspace while coder_fs resolved from the
+    repository root: every path the file tools gave the model was one level
+    too deep in the shell (12 times in 7 of 9 real coder sessions)."""
+    from plugins.file_ops.plugin import PLUGIN_FACTORY as FILE_OPS
+    from plugins.terminal.plugin import PLUGIN_FACTORY as TERMINAL
+
+    shell = TERMINAL(name="coder_shell", system_config=config,
+                     server_config=config.plugins.servers["coder_shell"])
+    files = FILE_OPS(name="coder_fs", system_config=config,
+                     server_config=config.plugins.servers["coder_fs"])
+    relative = "data/workspace/some_project/app.py"
+
+    assert Path(shell.executor.initial_cwd) / relative == files.validator.validate_path(relative)
