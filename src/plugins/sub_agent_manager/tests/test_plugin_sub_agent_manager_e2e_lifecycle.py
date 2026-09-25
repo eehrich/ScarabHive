@@ -16,7 +16,7 @@ from agent_system.services.session_manager import SessionManager
 from agent_system.services.session_service import SessionService
 from agent_system.tools.base import ToolServerRegistry
 from agent_system.config.models import AgentConfig
-from plugins.sub_agent_manager.manager import SubAgentManager
+from plugins.sub_agent_manager.manager import CallerMistake, SubAgentManager
 
 
 @pytest.fixture
@@ -326,8 +326,8 @@ async def test_e2e_max_nesting_depth_enforcement(
         initial_message="Level 3"
     )
     
-    # Level 4: Should fail (exceeds max depth)
-    with pytest.raises(ValueError, match="Maximum nesting depth"):
+    # Level 4: Should fail (exceeds max depth) -- a limit's refusal, logged as one, not as a crash
+    with pytest.raises(CallerMistake, match="Maximum nesting depth"):
         await manager.create_sub_session(
             parent_session_id=level3_id,
             agent_type="agent_l4",

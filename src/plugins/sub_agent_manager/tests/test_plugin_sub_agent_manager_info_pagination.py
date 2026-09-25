@@ -492,7 +492,9 @@ class TestAMistakenCallIsNoErrorInTheLog:
             self, server, session_service, sub_session, caplog):
         """The counter-proof on continue: the stored sub-agent's type is no longer registered."""
         sub_id, _ = sub_session
-        params = _params(sub_id, session_service, message="go on", _agent=Mock(registry=Mock(get=Mock(return_value=None))))
+        # as the real registry answers a name it does not know
+        registry = Mock(get=Mock(side_effect=KeyError("web_research_agent")))
+        params = _params(sub_id, session_service, message="go on", _agent=Mock(registry=registry))
         with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
             result = await server._handle_continue(params)
 

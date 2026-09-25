@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from plugins.sub_agent_manager.manager import SubAgentLimitReached, SubAgentManager
+from plugins.sub_agent_manager.manager import CallerMistake, SubAgentLimitReached, SubAgentManager
 
 
 @pytest.fixture
@@ -36,6 +36,30 @@ import re
 def manager(mock_session_service, mock_registry):
     """Create SubAgentManager instance."""
     return SubAgentManager(mock_session_service, mock_registry)
+
+
+@pytest.mark.asyncio
+async def test_a_create_for_an_agent_that_is_not_there_archives_nothing(mock_session_service):
+    """At the limit, making room archives the oldest sub-agent -- one the caller may be waiting on.
+    A misspelled type did that first and failed afterwards; the real registry raises KeyError for a
+    name it does not know, so the check behind it never even ran."""
+    from agent_system.tools.base import ToolServerRegistry
+
+    manager = SubAgentManager(mock_session_service, ToolServerRegistry(), max_nesting_depth=5,
+                              max_sub_agents_per_type=1, max_sub_agents_per_session=1,
+                              auto_archive_on_limit=True)
+    mock_session_service.session_manager.load_session = AsyncMock(return_value={
+        "session_id": "parent123", "depth": 1,
+        "metadata": {"sub_agents": {"sub_research_1": {
+            "agent_type": "web_research", "status": "active",
+            "created_at": "2026-01-01T08:00:00+00:00"}}}})
+    manager._write_sub_agent = AsyncMock(return_value=True)
+
+    with pytest.raises(CallerMistake, match="not found in registry"):
+        await manager.create_sub_session(parent_session_id="parent123", agent_type="planer_typo",
+                                         initial_message="x")
+
+    assert manager._write_sub_agent.await_args_list == [], "archived before the agent was known"
 
 
 @pytest.mark.asyncio

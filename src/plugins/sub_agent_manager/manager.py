@@ -38,6 +38,12 @@ def _parent_lock(parent_session_id: str) -> asyncio.Lock:
     return lock
 
 
+class CallerMistake(ValueError):
+    """A call naming a sub-agent that is not there, not the caller's, or busy, or an agent that
+    cannot be spawned. The model is answered and can correct it; the manager did nothing wrong.
+    Logged as an error, with a traceback, it read like a crash in the server log."""
+
+
 class SubAgentLimitReached(ValueError):
     """No room for one more active sub-agent: a limit is reached, and nothing was archived to make
     some. A ValueError still, for every caller that catches those."""
@@ -224,23 +230,27 @@ class SubAgentManager:
         budget = self.max_nesting_depth if inherited is None else min(inherited, self.max_nesting_depth)
 
         if budget < 1:
-            raise ValueError(
+            raise CallerMistake(  # a limit's refusal, not a fault
                 f"Maximum nesting depth exceeded: session {parent_session_id} "
                 f"(depth {parent_depth}) has no levels left below it "
                 f"(max_nesting_depth={self.max_nesting_depth}, inherited budget={inherited})"
             )
 
-        await self._make_room(parent_session_id,
-                              parent_data.get("metadata", {}).get("sub_agents", {}), agent_type)
-
-        # Get actual agent to extract llm_profile (check before id generation)
-        agent = self._registry.get(agent_type)
+        # The agent before the room for it: making room archives the oldest sub-agent, and a
+        # misspelled type archived one the caller may be waiting on, then failed.
+        try:
+            agent = self._registry.get(agent_type)
+        except KeyError:  # the registry raises for a name it does not know
+            agent = None
         if not agent:
-            raise ValueError(f"Agent type '{agent_type}' not found in registry")
+            raise CallerMistake(f"Agent type '{agent_type}' not found in registry")
 
         agent_llm_profile = agent.agent_config.default_llm_profile if hasattr(agent, 'agent_config') else None
         if not agent_llm_profile:
             raise ValueError(f"Agent '{agent_type}' has no agent_config.llm_profile")
+
+        await self._make_room(parent_session_id,
+                              parent_data.get("metadata", {}).get("sub_agents", {}), agent_type)
 
         # Generate unique instance ID + create session.
         #

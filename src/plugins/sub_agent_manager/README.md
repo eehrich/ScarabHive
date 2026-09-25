@@ -124,7 +124,10 @@ archiving to make room — both happen behind the caller's back, and it is aslee
 over a job it has not heard the end of.
 
 A wake that cannot be delivered is logged and costs the caller a poll, never the
-job: the run's ending is recorded before anyone is told about it.
+job: the run's ending is recorded before anyone is told about it. And the bell
+rings outside what turns a cancel into an ending: a shutdown that cancels a job
+while it rings — up to five minutes, while the caller's session is held — used
+to record a second ending, *cancelled* over the finished one, and ring again.
 
 ## Limits and the guards behind them
 
@@ -163,7 +166,13 @@ Two more that are not limits but guards:
 
 * **No concurrent run of the same instance.** `_running_agents` plus a lock;
   a second `create`/`continue` on a busy instance is refused rather than
-  interleaved into one transcript.
+  interleaved into one transcript. A run of another process counts too: a
+  woken coordinator continues from a process of its own, while the job it
+  continues may still run in the API. `continue` asks the lock beside the
+  sub-session (`core/session_presence.py`) as `list` does, and refuses — two
+  runs on one transcript each saved their own, the later over the other. A
+  refusal of a busy, missing or foreign instance is the caller's mistake and
+  logged at INFO; a slot no running task holds is a leak and logged as an error.
 * **The manager writes a parent's sub-agent entries one at a time.** An entry
   is written whole, and a limit is a count that a spawn reads and then fills; a
   lock per parent session holds both. The creates of a fan-out are counted one
@@ -189,7 +198,11 @@ Two more that are not limits but guards:
   answer "not found" about a run it started itself. A run **cut off in a tool
   call** has no answer to give — neither the empty step nor the sentence a model
   narrates before working ("let me look at the configuration first"), which
-  handed over as a result reads as the sub-agent's finding.
+  handed over as a result reads as the sub-agent's finding. Nor has a run that
+  **nobody finished**: a process that dies mid-run leaves the sub-agent's
+  activity behind, and `list` calls that one *interrupted*. `poll` answers the
+  same — *interrupted*, and no result — where it used to hand the transcript
+  of a half-done run over as *completed*; `wait_all` counts it as failed.
 * **A run this process has no job for is not finished by that.** A blocking run
   never had a job here, a job lives in the process that started it, and a woken
   coordinator polls from a process of its own — so `poll` asks both questions

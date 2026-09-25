@@ -8,7 +8,7 @@ import functools
 import logging
 import weakref
 from datetime import UTC, datetime
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, List, Optional
 
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
@@ -21,7 +21,7 @@ from agent_system.llm.token_utils import extract_text_from_content
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
 
-from plugins.sub_agent_manager.manager import SubAgentLimitReached, SubAgentManager
+from plugins.sub_agent_manager.manager import CallerMistake, SubAgentLimitReached, SubAgentManager
 
 logger = logging.getLogger(__name__)
 
@@ -98,12 +98,6 @@ def _left_mid_run(metadata: dict[str, Any]) -> bool:
     written, ended = _stamp(metadata.get("activity_updated_at")), _stamp(metadata.get("last_used"))
     return bool(metadata.get("current_activity")) and written is not None \
         and (ended is None or written > ended)
-
-
-class CallerMistake(ValueError):
-    """A call naming a sub-agent that is not there, not the caller's, or busy. The model is
-    answered and can correct it; the manager did nothing wrong. Logged as an error, with a
-    traceback, it read like a crash in the server log."""
 
 
 def _log_failure(operation: str, error: Exception) -> None:
@@ -1051,7 +1045,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 logger.debug(f"Released running lock for sub-agent {sub_session_id}")
 
         except Exception as e:
-            logger.exception(f"Error in create_sub_agent: {e}")
+            _log_failure("create_sub_agent", e)
             if status:
                 await status.error(f"Failed to create sub-agent: {str(e)}")
             return {
@@ -1103,10 +1097,29 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
             # Get agent type from session data
             agent_type = sub_session_data.get("agent_name") or ""
-            agent = registry.get(agent_type)
+            try:
+                agent = registry.get(agent_type)
+            except KeyError:  # the registry raises for a name it does not know
+                agent = None
             if not agent:
                 raise ValueError(f"Agent type '{agent_type}' not found")
             use_advanced_model = self._continue_use_advanced(agent_type, use_advanced_model)
+
+            # A run holds the lock beside the sub-session for as long as it lasts: one of another
+            # process -- a coordinator woken into a process of its own continues an instance whose
+            # job still runs in the API -- or one of this process that is still finishing: a run
+            # that ended on an error or a cancel saves its transcript after the slot is let go
+            # (the agent's own finally, run once the stream it stopped reading is dropped). The
+            # slots know neither, and two runs on one transcript each save their own, the later
+            # one over the other.
+            if instance_id not in self._running_agents \
+                    and await self._runs_in_another_process(instance_id, user_id):
+                where = ("is still finishing its last run"
+                         if presence_for(self.system_config).held_here(instance_id, user_id)
+                         else "is already running in another process")
+                raise CallerMistake(
+                    f"Sub-agent '{instance_id}' {where}. "
+                    "Wait for it with 'wait' or 'poll' before you continue it.")
 
             # Check if sub-agent is already running (prevent concurrent execution)
             # CRITICAL: Use single try-finally to ensure _running_agents is ALWAYS cleaned up
@@ -1156,8 +1169,10 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         parent_session_id=parent_session_id,
                     )
                 except Exception as e:
+                    # None, not {}: `_prepare_agent` then reads the sub-session's own snapshot.
+                    # An empty dict rendered the prompt with no vars at all.
                     logger.warning(f"Could not restore context_vars for continued sub-agent: {e}")
-                    context_vars = {}
+                    context_vars = None
 
                 user_id = await self._prepare_agent(
                     agent, manager, session_service, params,
@@ -1601,9 +1616,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
     def _release_slot(self, instance_id: str) -> None:
         """Let go of the instance's running slot -- unless another run still going holds it. A job
-        ends twice when a cancel reaches it while it rings its caller (`_finish_job`), and the slot
-        it let go of the first time may by then belong to the continue that caller started: freed
-        again, a second continue ran beside it on the same transcript. Under `_running_lock`."""
+        whose run finds its instance already running -- a continue took the slot first -- ends
+        without having held it (`_finish_job`): freeing the slot then let a second continue run
+        beside the first on the same transcript. Under `_running_lock`."""
         holder = self._slot_holder(instance_id)
         if holder is not None and holder is not asyncio.current_task():
             return
@@ -1906,9 +1921,15 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         manager: Optional[SubAgentManager] = None,
         drop_task: bool = False,
         **fields: Any,
-    ) -> None:
+    ) -> Optional[Callable[[], Awaitable[None]]]:
         """How a background job ends -- one place, whichever of the three ways led here: the run
         came back, the task was cancelled from outside, or it raised.
+
+        It records the ending and hands back the bell for the session that asked to be woken, or
+        None: rung by the caller once the ending is recorded, outside whatever turns a cancel into
+        an ending (`_execute_async_job`). Rung in here, a cancel while it rang -- a shutdown takes
+        minutes of it while the caller's session is held -- was recorded as a second ending:
+        "cancelled" stored over a finished job, and rung again.
 
         Each has to leave the same two traces, because two readers ask different sources. A poll
         while this process lives reads the job in memory; a poll after a restart reads the stored
@@ -1953,9 +1974,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
             parent_session_id = params.get("_session_id")
             written = False
-            # A run still going that holds the instance -- the continue its caller started after the
-            # first ending -- owns what the sub-session's metadata says. A second ending (a cancel
-            # while this job rang) stored "cancelled" over it, and `list` dropped the running one.
+            # A run still going that holds the instance owns what the sub-session's metadata says:
+            # a continue that took the slot before this job's run began, which then fails as
+            # already running. Its "failed" stored over that run, and `list` dropped the running one.
             holder = self._slot_holder(instance_id)
             superseded = holder is not None and holder is not asyncio.current_task()
             try:
@@ -1984,11 +2005,12 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         + ("" if instance_id not in self._async_jobs else ", awaiting result poll"))
         finally:
             # The RUN is over here, on every path that reaches this method, so the slot it held
-            # goes now -- before the bell, not after it: the ringing below can last minutes, and
+            # goes now -- before the bell, not after it: the ringing that follows (in
+            # `_execute_async_job`, once this has returned it) can last minutes, and
             # held that long the instance answers "already running" to the `continue` the woken
             # caller makes, and `list` reports a run that ended long ago. Here and nowhere else:
-            # released again after the bell, it took the slot of the run that continue started --
-            # as a second ending would, but `_release_slot` leaves a slot another run holds alone.
+            # released again after the bell, it took the slot of the run that continue started.
+            # And `_release_slot` leaves a slot another run holds alone.
             # And in a finally: an ending cut short (a second cancel) kept the slot for good.
             async with self._running_lock:
                 self._release_slot(instance_id)
@@ -2008,12 +2030,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         # woken run when the caller's turn ends.
         if params.get("wake_when_done") and parent_session_id and not ended_by_caller \
                 and (job is not None or was_archived):
-            await self._wake_parent(
-                instance_id, parent_session_id, manager, params,
+            return functools.partial(
+                self._wake_parent, instance_id, parent_session_id, manager, params,
                 # A job archived to make room while it RAN is dropped the moment it ends, so a
                 # guard would answer "already read" on the first ring for an ending nobody has
                 # seen. That one hands over no guard and rings the budget.
                 still_needed=None if was_archived else (lambda: self._ending_is_unread(instance_id)))
+        return None
 
     async def _async_started_message(self, params: dict[str, Any], parent_session_id: str,
                                      manager: Optional[SubAgentManager]) -> str:
@@ -2227,7 +2250,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
             # Update metadata: a finished-but-aborted run is not active any
             # more, the same way the two paths below record it.
-            await self._finish_job(
+            bell = await self._finish_job(
                 instance_id, params, job_status, manager=manager,
                 stored={"last_used": datetime.now(UTC).isoformat(),
                         "status": "active" if job_status == "completed" else job_status},
@@ -2237,19 +2260,25 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         except asyncio.CancelledError:
             # Job was cancelled (e.g., parent agent interrupted). Persisting it is what keeps a
             # coordinator from polling a job nobody runs any more after a restart.
-            await self._finish_job(
+            bell = await self._finish_job(
                 instance_id, params, "cancelled", drop_task=True,
                 stored={"status": "cancelled", "completed_at": datetime.now(UTC).isoformat()},
             )
+            if bell is not None:
+                await bell()
             raise
 
         except Exception as e:
             logger.exception(f"Async execution failed for {instance_id}: {e}")
-            await self._finish_job(
+            bell = await self._finish_job(
                 instance_id, params, "failed", error=str(e),
                 stored={"status": "failed", "completed_at": datetime.now(UTC).isoformat(),
                         "error": str(e)},
             )
+
+        # Out here, once the ending is recorded: a cancel while this rings is no ending of the job.
+        if bell is not None:
+            await bell()
 
     async def _handle_poll(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'poll' - check status of running sub-agent without blocking."""
@@ -2369,6 +2398,21 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                             "message": ("Archived while it runs; its ending is still to come"
                                         if was_archived else
                                         "Still running; its ending is still to come"),
+                        }
+                    stored = sub_agent if isinstance(sub_agent, dict) else {}
+                    if stored.get("status") == "interrupted" or _left_mid_run(stored):
+                        # `_shown_status`'s rule: an activity nobody holds was left by a process
+                        # that died mid-run. Answered "completed", the caller took the transcript
+                        # of a run nobody finished for its answer, while `list` called the same
+                        # instance interrupted.
+                        if status:
+                            await status.error(f"Poll: {instance_id} interrupted")
+                        return {
+                            "instance_id": instance_id,
+                            "status": "interrupted",
+                            "agent_type": stored.get("agent_type"),
+                            "error": ("Its run was cut off: the process running it ended before the "
+                                      "run did. Read how far it got with 'info', or 'continue' it."),
                         }
                     result = await self._stored_result(manager, user_id, instance_id)
                     if status:
@@ -2625,7 +2669,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             # Count statuses
             completed = sum(1 for r in formatted_results if r.get("status") == "completed")
             # a cancelled job did not complete either: counted nowhere, the totals read cleaner than the run was
-            failed = sum(1 for r in formatted_results if r.get("status") in ["failed", "error", "cancelled"])
+            failed = sum(1 for r in formatted_results
+                         if r.get("status") in ["failed", "error", "cancelled", "interrupted"])
 
             if status_ctx:
                 await status_ctx.end(f"Completed: {completed}, Failed: {failed} of {len(instance_ids)} instances")
