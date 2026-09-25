@@ -3102,6 +3102,26 @@
     }
   });
 
+  await check('a session looked for is asked about first when more sessions are shown than the poll takes', async () => {
+    // The poll takes 200 ids, and so does the server. Asked about after the shown ones, a
+    // session looked for fell off the end: taken for a run that is over, it was given up.
+    const pane = win().sessionManager;
+    const shown = pane.sessions;
+    await stub('/__stub/active-runs', { 's-past-cap': 'r-past-cap' });
+    try {
+      pane.sessions = Array.from({ length: 250 }, (_, i) => ({ session_id: `s-shown-${i}` }));
+      pane.awaitListing('s-past-cap');
+      await pane.refreshActivity();
+      need(pane.active.has('s-past-cap'), 'the poll did not ask about the session it looks for');
+      return need(pane.unlisted.has('s-past-cap'), 'the session looked for was given up while its run goes on');
+    } finally {
+      pane.unlisted.delete('s-past-cap');
+      pane.sessions = shown;
+      await stub('/__stub/active-runs', {});
+      await pane.loadSessions();
+    }
+  });
+
   await check('a run of a known session left before its start is closed once named', async () => {
     // Read on to its end, it held one of the browser's few connections to the server for as
     // long as the run went on -- hours, for a book. Its session is in the list: coming back

@@ -1658,6 +1658,7 @@ EXPECTED = [
     'a message the run no longer took before its answer is said so, and the answer shows once',
     'a new chat left before its run is named is closed at its start, and listed once saved',
     'a run followed again after a reload before its session was saved is listed once it is, when left',
+    'a session looked for is asked about first when more sessions are shown than the poll takes',
     'a run of a known session left before its start is closed once named',
     'a new chat left after its run is named is closed too, and listed once saved',
     'Stop clicked before the run is named stops it though its session is left before its start',
