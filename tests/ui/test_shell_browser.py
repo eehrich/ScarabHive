@@ -105,7 +105,15 @@ to catch up on: ``catch-up:<request_id>`` is ``"<catch_up>/<seen>"``.
 ``r-live-buffered`` holds four buffered events and sends only those past
 ``seen``; ``r-live-over`` reports a finished run in its reconnect and closes at
 once. A session added through /__stub/sessions may carry ``live_events_seen``,
-which is what the chat hands back as ``seen``.
+which is what the chat hands back as ``seen``; added again, a session replaces what it
+was. ``stub_stream=left-unnamed`` is ``ending``
+under a run id of its own, ``r-left-unnamed``, and ``left-unnamed-known`` the same under
+``r-left-unnamed-known``. ``stub_append_after=<s>`` answers an append that much later.
+``stub_stream=left-named-new`` (``r-left-named-new``) is ``ending`` with its answer 3 s after
+its start. ``stub_stream=slimmed`` (``r-slimmed``) sends an answer delta without its ``accumulated``, as
+the server's buffer keeps one a newer delta supersedes, and that newer one 3 s later. With ``stub_stream=end-then-open`` a run
+``r-end-then-open`` brings its final answer and end, and its connection stays open two
+seconds more, as the server's does while it saves.
 
 A mutation probe replaces a served script through the environment variable
 ``SHELL_MUTANTS`` rather than by writing to ``static/`` -- see
@@ -617,8 +625,10 @@ def stub_app() -> FastAPI:
                 "enabled": True, "current_phase": f"phase-{count}", "all_allowed_agents": [], "filtered_agents": []}
 
     @app.post("/events/{request_id}/append")
-    async def append(request_id: str):
+    async def append(request: Request, request_id: str):
         hits[f"append:{request_id}"] = hits.get(f"append:{request_id}", 0) + 1
+        # stub_append_after: the message is taken, and the answer saying so is late
+        await asyncio.sleep(float(request.cookies.get("stub_append_after") or 0))
         if request_id == "r-live-refusing":
             await asyncio.sleep(0.5)  # long enough to type something else meanwhile
             raise HTTPException(status_code=500, detail="The message queue is broken")
@@ -669,8 +679,8 @@ def stub_app() -> FastAPI:
             await asyncio.sleep(start_after)  # a run with files starts once its files are read
             yield event({"type": "start", "request_id": request_id, "session_id": session_id})
             await asyncio.sleep({"stale": 5, "ending": 1, "late-drops": 3, "question-drops": 1.5, "final-drops": 1.5,
-                                 "late-start-drops": 1}.get(ending, 0.5))
-            if ending == "ending":
+                                 "late-start-drops": 1, "left-named-new": 3}.get(ending, 0.5))
+            if ending in ("ending", "left-unnamed", "left-named-new"):
                 yield event({"type": "final", "content": "Done"})
                 yield event({"type": "end"})
             if ending == "answered":  # its save and hooks take 3 s after the answer
@@ -681,6 +691,11 @@ def stub_app() -> FastAPI:
                 yield event({"type": "final", "content": "Done"})
                 async for chunk in saving(session_id, request_id, request_goes_on=True):
                     yield chunk
+            if ending == "end-then-open":  # its end, and the connection open while the server saves
+                yield event({"type": "final", "content": "Done"})
+                yield event({"type": "end"})
+                await asyncio.sleep(2)
+                return
             if ending == "saving-drops":  # word from the save a second after the answer, then the connection breaks
                 yield event({"type": "final", "content": "Done"})
                 await asyncio.sleep(1)
@@ -796,6 +811,18 @@ def stub_app() -> FastAPI:
                              "request_id": request_id, "message": "completed (2 steps)", "meta": {}})
                 yield event({"type": "end"})
                 return
+            if ending == "slimmed":
+                # An answer delta the server's buffer slimmed (a newer one of the step follows,
+                # so it keeps only its own piece), and the newer one late, as a chunk boundary
+                # between the two can make it.
+                yield event({"type": "thinking", "step": 1})
+                yield event({"type": "thinking_delta", "step": 1, "delta": "The ", "accumulated": "The "})
+                yield event({"type": "thinking_delta", "step": 1, "delta": "answer"})
+                await asyncio.sleep(3)
+                yield event({"type": "thinking_delta", "step": 1, "delta": ".", "accumulated": "The answer."})
+                yield event({"type": "final", "summary": "The answer."})
+                yield event({"type": "end"})
+                return
             if ending in ("last-answer", "last-answer-whole"):
                 # One call, the run's last, with a pause while its answer is on the way:
                 # what a command typed in that pause meets.
@@ -817,7 +844,7 @@ def stub_app() -> FastAPI:
                 async for chunk in subrun_stream(request_id):
                     yield chunk
                 return
-            if ending in ("closes", "stale", "ending", "answered", "saving"):
+            if ending in ("closes", "stale", "ending", "left-unnamed", "left-named-new", "answered", "saving"):
                 return
             if ending in ("final-drops", "cancelled-drops"):
                 yield event({"type": "final", "content": "Done"} if ending == "final-drops"
@@ -1158,12 +1185,15 @@ def stub_app() -> FastAPI:
                    "ending": "r-ending", "late-start-drops": "r-late-started", "answered": "r-answered",
                    "saving": "r-saving", "saving-drops": "r-saving-dropped", "reasons": "r-reasons",
                    "steps": "r-steps", "subrun": "r-subrun", "last-answer": "r-last-answer",
-                   "last-answer-whole": "r-last-answer-whole"}
+                   "last-answer-whole": "r-last-answer-whole", "end-then-open": "r-end-then-open",
+                   "left-unnamed": "r-left-unnamed", "left-unnamed-known": "r-left-unnamed-known",
+                   "slimmed": "r-slimmed", "left-named-new": "r-left-named-new"}
         if ending in started:
             # stub_start_after: a run whose start event is late -- the chat has sent it and
             # waits, and nothing of it has reached the page yet
             late = 1.5 if ending == "late-start-drops" else float(request.cookies.get("stub_start_after") or 0)
-            return started_stream(started[ending], body.get("session_id", ""), ending, start_after=late)
+            return started_stream(started[ending], body.get("session_id", ""),
+                                  "left-unnamed" if ending == "left-unnamed-known" else ending, start_after=late)
         return run_stream()
 
     @app.post("/run")
@@ -1316,7 +1346,13 @@ def stub_app() -> FastAPI:
 
     @app.post("/__stub/sessions")
     async def add_session(request: Request):
-        sessions.append({**sessions[0], **await request.json()})
+        added = {**sessions[0], **await request.json()}
+        # added again, it replaces what it was, where it was
+        at = next((i for i, s in enumerate(sessions) if s["session_id"] == added["session_id"]), None)
+        if at is None:
+            sessions.append(added)
+        else:
+            sessions[at] = added
         return {}
 
     @app.post("/__stub/children")
@@ -1572,13 +1608,29 @@ EXPECTED = [
     'a poll that cannot be answered does not end the wait for a session working elsewhere',
     "the mark goes the moment a run of this page's own takes the chat",
     'a session worked on in another process is not deleted out from under it',
+    'a session opened while another process works on it says so, and its turn arrives when it lets go',
+    'the watch for a successor goes on while the ended run still holds its connection',
+    'the watch for a successor does not join the run that has just ended while it saves',
+    'a session loaded twice joins its run by what the later load has shown',
+    'a click back to the session whose run is followed wins over a click before it still loading',
+    'Stop clicked before the run is named stops it once it is',
+    'a message the run no longer took before its answer is said so, and the answer shows once',
+    'a new chat left before its run is named is read to its end',
+    'a run of a known session left before its start is closed once named',
+    'a new chat left after its run is named is read to its end too',
+    'Stop clicked before the run is named stops it though its session is left before its start',
+    'a message whose confirmation comes after the run answered is said to wait for the next run',
+    'a run followed again after a reload past its answer is shown as answered',
+    'the note on a late message stays out of a session opened before its confirmation',
+    'an answer delta the server slimmed leaves the answer shown so far standing',
+    'a run followed again after a reload comes back with the conversation before it',
     'a run works on while another session is read, and the chat picks it up again on return',
     'leaving a session with a file run does not cut that run short',
     'a delete finds the run of a session that is running somewhere else',
     'a run the chat cannot follow is marked but not attached to',
     'coming back shows what the run sent while away, and shows it once',
     'a run that ended while the viewer was away is not reported as a lost connection',
-    'the session of a run being read for its end is not attached to a second time',
+    'the session of a run being read for its end, opened again, follows that run as the answered one it is',
     'a click on another session is not swallowed by an attach that answers late',
     'a run past its answer is left alone when its session is deleted',
     'a failed activity poll leaves the marks as they were',

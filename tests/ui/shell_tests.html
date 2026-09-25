@@ -1277,10 +1277,9 @@
       // the sub-agent itself does sits under it.
       if (parent.getAttribute('data-depth') !== '0' || child.getAttribute('data-depth') !== '1') return false;
       // A row whose parent NEVER arrives is still shown. addStatusEvent stands a
-      // virtual parent up before registering the child, so registerNode's "queue it
-      // and hide it until the parent comes" cannot strand a line that has no parent
-      // coming. Without this the tree could not be forwarded at all: an orphan would
-      // not indent, it would disappear.
+      // virtual parent up before registering the child, so a line with no parent
+      // coming is never hidden until one comes. Without this the tree could not be
+      // forwarded at all: an orphan would not indent, it would disappear.
       const orphan = row('_sub_002_001');
       if (!orphan || !orphan.getClientRects().length) return false;
       // A scope that never got its own `end` -- the spawn, whose sub-agent works on in
@@ -2861,6 +2860,379 @@
     }
   });
 
+  await check('a session opened while another process works on it says so, and its turn arrives when it lets go', async () => {
+    // The watch for a woken run started only at the end of a run this page followed. A
+    // session opened (or a reload) while it works showed its old state and stayed there.
+    const note = () => $('#chat > .working-elsewhere');
+    try {
+      await stub('/__stub/active-runs', { 's-1': 'woken^' });
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      await until('the session says it is working elsewhere', () => !!note(), 8000);
+      const readBefore = await hits('session:s-1');
+      await stub('/__stub/active-runs', {});
+      await until('the session read again and the note gone',
+        async () => await hits('session:s-1') > readBefore && !note(), 12000);
+      return true;
+    } finally {
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('the watch for a successor goes on while the ended run still holds its connection', async () => {
+    // The server saves after a run's end and closes the stream only then. The watch's
+    // first tick found that stream still open, took it for a run being followed, and
+    // stopped -- a woken run's turn then showed only on the next load.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'end-then-open');
+      $('#task').value = 'Answer and save slowly';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-end-then-open', 3000);
+      await until('its end', () => !win().chatModule.activeRun(), 5000);
+      need(win().chatModule.hasActiveRequest(), 'fixture: the stream closed with the end');
+      await stub('/__stub/active-runs', { 's-1': 'r-live' });   // the run that follows it
+      await until('the successor followed', () => sessionStorage.getItem('activeRequestId') === 'r-live'
+        && win().chatModule.hasActiveRequest(), 8000);
+      return true;
+    } finally {
+      cookie('stub_stream', null);
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('the watch for a successor does not join the run that has just ended while it saves', async () => {
+    // Its job runs on through the save (a mirrored /run's until its caller is done), so the
+    // server still names it for the session: joined by the watch, it was replayed whole
+    // below itself.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'end-then-open');
+      const joins = await hits('catch-up:r-end-then-open');
+      $('#task').value = 'Answer and save slowly';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-end-then-open', 3000);
+      await stub('/__stub/active-runs', { 's-1': 'r-end-then-open~' });   // still saving, past its answer
+      await until('its end', () => !win().chatModule.activeRun(), 5000);
+      const blocks = $$('#chat .msg.assistant').length;
+      await sleep(4500);   // the watch's first ticks, and its stream closed meanwhile
+      need(await hits('catch-up:r-end-then-open') === joins, 'the ended run was joined again');
+      return need($$('#chat .msg.assistant').length === blocks, 'a block was added for the ended run');
+    } finally {
+      cookie('stub_stream', null);
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a session loaded twice joins its run by what the later load has shown', async () => {
+    // The first load's question about the session's run can come back after the second
+    // load: joined with that load's count, the run sends again what the later one shows.
+    try {
+      const twice = (seen) => stub('/__stub/sessions', { session_id: 's-twice', title: 'Loaded twice',
+                                                         has_children: false, live_events_seen: seen });
+      await twice(7);
+      await stub('/__stub/active-runs', { 's-twice': 'r-live-buffered' });
+      await win().sessionManager.loadSessions();
+      cookie('stub_active', 'slow');   // each question about its run answers 1.2 s later
+      win().sessionManager.loadSession('s-twice');
+      await until('the first load', () => $('#headerSessionId').textContent === 'Loaded twice', 3000);
+      await twice(9);   // the run went on meanwhile
+      const reads = await hits('session:s-twice');
+      win().sessionManager.loadSession('s-twice');
+      await until('the second load', async () => await hits('session:s-twice') > reads, 3000);
+      await until('the run joined', () => win().chatModule.hasActiveRequest(), 5000);
+      await sleep(1500);   // the other answer is in by now
+      return need(await hits('catch-up:r-live-buffered') === 'skip/9',
+        `joined by ${await hits('catch-up:r-live-buffered')}`);
+    } finally {
+      cookie('stub_active', '');
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a click back to the session whose run is followed wins over a click before it still loading', async () => {
+    // The chat keeps the run's session without a load -- but a click on another session
+    // still loading was not told: its answer came in afterwards and took the chat.
+    try {
+      await stub('/__stub/sessions', { session_id: 's-slow-back', title: 'Slow to load', has_children: false, delay: 1.5 });
+      await win().sessionManager.loadSessions();
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      $('#task').value = 'Work a while';
+      $('#f').requestSubmit();
+      await until('its run', () => win().chatModule.activeRun(), 3000);
+      sessionButton('s-slow-back', 'open').click();   // answers in 1.5 s
+      await sleep(200);
+      sessionButton('s-1', 'open').click();   // and back, before that
+      await sleep(2000);
+      return need($('#headerSessionId').textContent === 'Refactor the kit' && win().chatModule.activeRun(),
+        `the chat shows ${$('#headerSessionId').textContent}`);
+    } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('Stop clicked before the run is named stops it once it is', async () => {
+    // Stop shows from the moment a message is sent, and the run has no id to be cancelled
+    // by until its start: the click did nothing, and the run went on.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'subrun');
+      cookie('stub_start_after', '1.5');
+      const before = await hits('cancel:r-subrun');
+      $('#task').value = 'Get help';
+      $('#f').requestSubmit();
+      await until('the run under way', () => win().chatModule.hasActiveRequest(), 3000);
+      $('#stopBtn').click();
+      need($('#stopBtn').classList.contains('cancelling'), 'Stop said nothing');
+      await until('the stop sent once the run is named', async () => await hits('cancel:r-subrun') > before, 5000);
+      return true;
+    } finally {
+      cookie('stub_stream', null);
+      cookie('stub_start_after', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a message the run no longer took before its answer is said so, and the answer shows once', async () => {
+    // The server keeps such a message in the session for the next run. The chat moved the
+    // answer below it as if it were the reply, and so showed it twice.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'last-answer');
+      $('#task').value = 'Get help';
+      $('#f').requestSubmit();
+      await until('the answer on its way', () => $$('#chat .msg.assistant').at(-1).querySelector('.response-text.streaming'), 3000);
+      $('#task').value = 'And one more thing';
+      $('#f').requestSubmit();
+      await until('the message taken', async () => await hits('append:r-last-answer') > 0, 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 8000);
+      const answers = $$('#chat .msg.assistant .response-text').filter((el) => el.textContent.includes('The answer.'));
+      need(answers.length === 1, `the answer is there ${answers.length} times`);
+      return need($$('#chat .msg.note').some((el) => el.textContent.includes('already answered')),
+        'nothing says the message waits for the next run');
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a new chat left before its run is named is read to its end', async () => {
+    // Closed then, the run went on in a session of its own that nothing here would ever
+    // ask for again. Read to its end, the session list is read again then.
+    try {
+      await win().sessionManager.newConversation();
+      cookie('stub_stream', 'left-unnamed');
+      cookie('stub_start_after', '1');
+      $('#task').value = 'Start something new';
+      $('#f').requestSubmit();
+      await until('the run under way', () => win().chatModule.hasActiveRequest(), 3000);
+      sessionButton('s-2', 'open').click();   // before its start
+      await until('the other session', () => $('#headerSessionId').textContent === 'Fresh session', 3000);
+      await until('the stream read to its end', async () => (await (await stub('/__stub/streams')).json())['r-left-unnamed'] === 'read', 6000);
+      return true;
+    } finally {
+      cookie('stub_stream', null);
+      cookie('stub_start_after', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a new chat left after its run is named is read to its end too', async () => {
+    // Its session reaches the list only with the run's first save: closed at the leaving,
+    // the new conversation was missing from the list until a manual refresh.
+    try {
+      await win().sessionManager.newConversation();
+      cookie('stub_stream', 'left-named-new');
+      $('#task').value = 'Start something new';
+      $('#f').requestSubmit();
+      await until('the run named', () => win().chatModule.activeRun()?.requestId === 'r-left-named-new', 3000);
+      sessionButton('s-2', 'open').click();
+      await until('the other session', () => $('#headerSessionId').textContent === 'Fresh session', 3000);
+      await until('the stream read to its end',
+        async () => (await (await stub('/__stub/streams')).json())['r-left-named-new'], 6000);
+      return need((await (await stub('/__stub/streams')).json())['r-left-named-new'] === 'read', 'the stream was cut');
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a run of a known session left before its start is closed once named', async () => {
+    // Read on to its end, it held one of the browser's few connections to the server for as
+    // long as the run went on -- hours, for a book. Its session is in the list: coming back
+    // to it joins the run from there.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'left-unnamed-known');
+      cookie('stub_start_after', '1');
+      $('#task').value = 'Work a while';
+      $('#f').requestSubmit();
+      await until('the run under way', () => win().chatModule.hasActiveRequest(), 3000);
+      sessionButton('s-2', 'open').click();   // before its start
+      await until('the other session', () => $('#headerSessionId').textContent === 'Fresh session', 3000);
+      await until('the stream closed at its start',
+        async () => (await (await stub('/__stub/streams')).json())['r-left-unnamed-known'] === 'cut', 6000);
+      return true;
+    } finally {
+      cookie('stub_stream', null);
+      cookie('stub_start_after', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('Stop clicked before the run is named stops it though its session is left before its start', async () => {
+    // The stop waits for the start that names the run -- and a session opened meanwhile
+    // stopped reading the run's events, the start among them: the run went on.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'left-unnamed');
+      cookie('stub_start_after', '1.5');
+      const before = await hits('cancel:r-left-unnamed');
+      $('#task').value = 'Work a while';
+      $('#f').requestSubmit();
+      await until('the run under way', () => win().chatModule.hasActiveRequest(), 3000);
+      $('#stopBtn').click();
+      sessionButton('s-2', 'open').click();   // before its start
+      await until('the other session', () => $('#headerSessionId').textContent === 'Fresh session', 3000);
+      await until('the stop sent once the run is named', async () => await hits('cancel:r-left-unnamed') > before, 5000);
+      return true;
+    } finally {
+      cookie('stub_stream', null);
+      cookie('stub_start_after', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a message whose confirmation comes after the run answered is said to wait for the next run', async () => {
+    // The server took it while the run was finishing, and the answer reached the chat first:
+    // nothing was left to say it at, and it sat in the session with no word.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'last-answer');
+      $('#task').value = 'Get help';
+      $('#f').requestSubmit();
+      await until('the answer on its way', () => $$('#chat .msg.assistant').at(-1).querySelector('.response-text.streaming'), 3000);
+      cookie('stub_append_after', '2.5');
+      const before = await hits('append:r-last-answer');
+      $('#task').value = 'And one more thing';
+      $('#f').requestSubmit();
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 8000);
+      need(await hits('append:r-last-answer') > before, 'fixture: the message was not sent to the run');
+      return await until('the note', () => $$('#chat .msg.note').some((el) => el.textContent.includes('already answered')), 4000);
+    } finally {
+      cookie('stub_stream', null);
+      cookie('stub_append_after', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('the note on a late message stays out of a session opened before its confirmation', async () => {
+    // The confirmation comes after the answer; a session opened in between is another chat.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'last-answer');
+      $('#task').value = 'Get help';
+      $('#f').requestSubmit();
+      await until('the answer on its way', () => $$('#chat .msg.assistant').at(-1).querySelector('.response-text.streaming'), 3000);
+      cookie('stub_append_after', '3');
+      const before = await hits('append:r-last-answer');
+      $('#task').value = 'And one more thing';
+      $('#f').requestSubmit();
+      await until('the message on its way', async () => await hits('append:r-last-answer') > before, 3000);
+      await until('the answer', () => !win().chatModule.activeRun(), 4000);
+      sessionButton('s-2', 'open').click();   // before the confirmation
+      await until('the other session', () => $('#headerSessionId').textContent === 'Fresh session', 3000);
+      await sleep(3500);   // the confirmation is in by now
+      return need(!$$('#chat .msg.note').some((el) => el.textContent.includes('already answered')),
+        'the note landed in the session opened meanwhile');
+    } finally {
+      cookie('stub_stream', null);
+      cookie('stub_append_after', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('an answer delta the server slimmed leaves the answer shown so far standing', async () => {
+    // The server's buffer keeps an answer delta that a newer one of its step supersedes
+    // without the whole answer so far; read as one, the answer box went blank until the next.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'slimmed');
+      $('#task').value = 'Answer slowly';
+      $('#f').requestSubmit();
+      const box = () => $$('#chat .msg.assistant').at(-1).querySelector('.response-text.streaming');
+      // Well inside the 3 s before the next delta: waited out, that one shows the answer again.
+      await until('the answer on its way', () => box()?.textContent.includes('The'), 2000);
+      await sleep(700);   // the slimmed delta is in; the next one is not
+      need(box()?.textContent.includes('The'), `the answer box reads "${box()?.textContent}"`);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
+      return true;
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a run followed again after a reload past its answer is shown as answered', async () => {
+    // The reload's session load stood past the run's final, so the stream it joins never
+    // says the run has answered -- the load has to, or Stop cancels its session-end hooks.
+    try {
+      await stub('/__stub/sessions', { session_id: 's-reload-answered', title: 'Answered before the reload',
+                                       has_children: false, live_events_seen: 4, live_run_answered: true });
+      storeRun('r-live', 's-reload-answered');
+      await go(`/?load=${performance.now()}`);
+      await until('the run joined', async () => await hits('catch-up:r-live') === 'skip/4', 5000);
+      await sleep(300);
+      return need(!win().chatModule.activeRun(), 'the answered run offers Stop');
+    } finally {
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a run followed again after a reload comes back with the conversation before it', async () => {
+    // Followed from its buffer alone, the chat came back with the run and nothing of the
+    // session: not the earlier turns, not the question the run answers.
+    storeRun('r-live', 's-1');
+    try {
+      await go(`/?load=${performance.now()}`);
+      await until('the reattached run', reattached);
+      need($('#chat').textContent.includes('Build the kit'), 'the conversation before the run is not shown');
+      return need(await hits('catch-up:r-live') !== 'replay/-',
+        'the run was replayed whole, not joined from where the load stands');
+    } finally {
+      forgetRun();
+    }
+  });
+
   await check('a run works on while another session is read, and the chat picks it up again on return', async () => {
     // The whole point of the change: an agent at work must not pin the viewer to its
     // session. The server is what the chat asks on the way back -- so a run this tab
@@ -3028,12 +3400,13 @@
     }
   });
 
-  await check('the session of a run being read for its end is not attached to a second time', async () => {
+  await check('the session of a run being read for its end, opened again, follows that run as the answered one it is', async () => {
     // Between a run's answer and its end -- the seconds of the save and the session-end
     // hooks -- its stream is still being read, for the end and the session-list refresh
-    // that comes with it. Opening that same session again would attach a second reader
-    // to the same run, and the server hands each event to one reader only: the two split
-    // them, and the newcomer waits for an end that went to the other.
+    // that comes with it. Opening that same session again joins the run once more (every
+    // reader of a run gets every event), from where the load stands: past the run's final.
+    // Nothing on that stream says the run has answered, so the server's word has to --
+    // Stop on it would cancel its background sub-agents, and its close is no lost connection.
     cookie('stub_stream', 'answered');  // its final answer, its end 3 s later
     try {
       await loadShell();
@@ -3041,18 +3414,20 @@
       await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit', 4000);
       $('#task').value = 'Answer and then save';
       $('#f').requestSubmit();
-      await stub('/__stub/active-runs', { 's-1': 'r-answered' });  // the server still calls it running
+      await stub('/__stub/active-runs', { 's-1': 'r-answered~' });  // still running, past its answer
       await until('its answer', () => $('#chat').textContent.includes('Done')
         && !win().chatModule.activeRun(), 6000);
       // The state this is about: answered, and the stream still being read for the end
       // that comes 3 s later. Said out loud -- a stream that had already finished would
       // make the test pass or fail on something else entirely.
       if (!win().chatModule.hasActiveRequest()) throw new Error('fixture: the stream had already ended');
+      const catchUps = await hits('catch-up:r-answered');
       sessionButton('s-1', 'open').click();  // the same session again, while its run finishes
       await until('the session shown again', () => $('#headerSessionId').textContent === 'Refactor the kit', 3000);
-      await sleep(600);  // an attach is one fetch away; this is several times that
-      if (!win().chatModule.hasActiveRequest()) return true;
-      throw new Error('a second reader was attached to the run still being read');
+      await until('the run joined again', async () => await hits('catch-up:r-answered') !== catchUps, 3000);
+      need(!win().chatModule.activeRun(), 'the answered run offers Stop');
+      await until('its stream closed', () => !win().chatModule.hasActiveRequest(), 8000);
+      return need(!$('#chat').textContent.includes('Connection lost'), 'the answered run was reported as a lost connection');
     } finally {
       cookie('stub_stream', '');
       await stub('/__stub/active-runs', {});

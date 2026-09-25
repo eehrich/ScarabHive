@@ -511,15 +511,22 @@ export class SessionManager {
     this.onShown();
   }
 
-  /** Open a session in the chat. Resolves true when it is shown. Clicked twice quickly, the last click wins, not the last answer. */
-  async loadSession(id) {
+  /**
+   * Open a session in the chat. Resolves true when it is shown, false when it could not be, and null when a later
+   * click took over: clicked twice quickly, the last click wins, not the last answer. `quiet`: a failed load is the
+   * caller's to handle -- no toast, and no new chat in its place.
+   */
+  async loadSession(id, { quiet = false } = {}) {
     if (this.going.has(id)) {
       toast('The session is being deleted', { kind: 'warn' });
       return false;
     }
     // the open session while its run works: it is already shown, and there is no
-    // stream to move -- the chat keeps following the one it has
+    // stream to move -- the chat keeps following the one it has. Still a click: one on
+    // another session still loading must not take the chat from it.
     if (id === this.currentSessionId && window.chatModule.activeRun()) {
+      this.loading++;
+      this.requested = id;
       this.onShown();
       return true;
     }
@@ -527,13 +534,14 @@ export class SessionManager {
     this.requested = id;
     let session;
     try {
-      session = await api(`/api/sessions/${encodeURIComponent(id)}`);
+      session = await api(`/api/sessions/${encodeURIComponent(id)}`, { quiet });
     } catch {
+      if (attempt !== this.loading) return null;
       // api() already told the user; with no session open the chat offers a start again -- as it did, no choice
-      if (attempt === this.loading && !this.currentSessionId) this.startNew({ chosen: false });
+      if (!quiet && !this.currentSessionId) this.startNew({ chosen: false });
       return false;
     }
-    if (attempt !== this.loading) return false;
+    if (attempt !== this.loading) return null;
     this.show(session);
     this.onShown();
     return true;
